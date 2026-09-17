@@ -1,0 +1,119 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { SensorPipeline } from '../../src/core/pipeline.ts';
+import { UserSensorRouter } from '../../src/core/router.ts';
+import { deferred, processor, screenshot, signal } from '../helpers.ts';
+
+test('capture happens at submission, processing remains FIFO, and queue is bounded', async () => {
+  const waiting = deferred<string>();
+  const delivered: number[] = [];
+  const events: string[] = [];
+  let captures = 0;
+  let transcripts = 0;
+
+  const router = new UserSensorRouter({ detect: async () => 'IGNORE' }, () => {});
+  processor('IGNORE', async (frame) => {
+    delivered.push(frame.id);
+  }).subscribe(router);
+
+  const pipeline = new SensorPipeline(
+    {
+      capture: async () => {
+        captures++;
+        return screenshot;
+      },
+      transcribe: async () => (++transcripts === 1 ? waiting.promise : 'speech'),
+    },
+    router,
+    (stage) => {
+      events.push(stage);
+    },
+    signal(),
+  );
+
+  // Hold the first transcription open while new utterances keep arriving.
+  assert.equal(pipeline.submit(new Float32Array(16000)), true);
+  assert.equal(pipeline.submit(new Float32Array(16000)), true);
+  assert.equal(pipeline.submit(new Float32Array(16000)), true);
+  assert.equal(pipeline.submit(new Float32Array(16000)), false);
+  assert.equal(captures, 3);
+  assert.equal(transcripts, 1);
+
+  // Once ASR is released, the worker must deliver accepted frames in order.
+  waiting.resolve('first');
+  await pipeline.idle();
+
+  assert.deepEqual(delivered, [1, 2, 3]);
+  assert.ok(events.includes('dropped'));
+});
+
+test('capture failure discards its frame and the next utterance still runs', async () => {
+  let captures = 0;
+  let detections = 0;
+
+  const router = new UserSensorRouter(
+    {
+      detect: async () => {
+        detections++;
+        return 'IGNORE';
+      },
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+
+  const pipeline = new SensorPipeline(
+    {
+      capture: async () => {
+        if (++captures === 1) {
+          throw Error('Focus changed');
+        }
+        return screenshot;
+      },
+      transcribe: async () => 'hello',
+    },
+    router,
+    () => {},
+    signal(),
+  );
+
+  pipeline.submit(new Float32Array(16000));
+  await pipeline.idle();
+
+  pipeline.submit(new Float32Array(16000));
+  await pipeline.idle();
+
+  assert.equal(pipeline.failures, 1);
+  assert.equal(detections, 1);
+});
+
+test('shutdown during ASR discards the result and pending audio without dispatch', async () => {
+  const controller = new AbortController();
+  const waiting = deferred<string>();
+
+  const router = new UserSensorRouter(
+    { detect: async () => assert.fail('Dispatched after stop') },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+
+  const pipeline = new SensorPipeline(
+    { capture: async () => screenshot, transcribe: async () => waiting.promise },
+    router,
+    () => {},
+    controller.signal,
+  );
+
+  const samples = new Float32Array(16000).fill(0.2);
+  pipeline.submit(samples);
+  pipeline.submit(new Float32Array(16000));
+
+  // Simulate ASR resolving just after a requested stop: its text must be ignored.
+  controller.abort();
+  waiting.resolve('late transcript');
+  await pipeline.idle();
+
+  assert.ok(samples.every((sample) => sample === 0));
+  assert.equal(pipeline.failures, 0);
+});

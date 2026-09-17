@@ -62,6 +62,37 @@ disables Qwen thinking using `chat_template_kwargs.enable_thinking = false`.
 
 ## Data flow and review order
 
+The directories follow the responsibilities of the modules:
+
+```text
+src/
+  cli.ts                         Start, connect, and stop the modules
+  config.ts                      Read and validate configuration
+  core/
+    frame.ts                     Shared types and data contracts
+    pipeline.ts                  Assemble frames while capture continues
+    router.ts                    Register processors and dispatch frames
+    intent-detector.ts           Compose the prompt and run one Pi turn
+  processors/
+    send-text-to-application.ts   Type an utterance after checking focus
+    ignore.ts                    Handle speech that requires no action
+  sensors/
+    audio/
+      capture.ts                 PipeWire / file input and PCM decoding
+      vad.ts                     Silero speech probability
+      segmenter.ts               Collect audio into utterances
+      transcriber.ts             Local speech-to-text through Voxtype
+    screen/
+      capture.ts                 Read and capture the active window
+  system/
+    command.ts                   Run and cancel external commands
+test/
+  unit/                          Automated tests with controlled inputs
+  live/                          Optional desktop and microphone checks
+  fixtures/                      Public test audio
+  helpers.ts                     Shared test data and small test helpers
+```
+
 ```text
 PipeWire → Float32Array (512 samples at 16 kHz) → Silero → Segment
                                                           │
@@ -83,18 +114,23 @@ PipeWire → Float32Array (512 samples at 16 kHz) → Silero → Segment
 
 | Module | Input | Output |
 | --- | --- | --- |
-| [audio.ts](src/audio.ts) | PipeWire / FFmpeg PCM bytes | `Float32Array` frames |
-| [vad.ts](src/vad.ts) | One audio frame | Speech probability |
-| [segmenter.ts](src/segmenter.ts) | Probability + audio | `Segment` containing one utterance |
-| [asr.ts](src/asr.ts) | Segment samples | Transcript `string` |
-| [screen.ts](src/screen.ts) | Active Hyprland window | `Screenshot` |
-| [pipeline.ts](src/pipeline.ts) | Audio segment + capture | `UserSensorFrame` |
-| [router.ts](src/router.ts) | Frame + processor subscriptions | Dispatch to one processor |
-| [intent-detector.ts](src/intent-detector.ts) | Frame + registered intents | Validated intent-name `string` |
-| [processors.ts](src/processors.ts) | Original frame | Type text or ignore |
+| [Audio capture](src/sensors/audio/capture.ts) | PipeWire / FFmpeg PCM bytes | `Float32Array` frames |
+| [Voice activity detection](src/sensors/audio/vad.ts) | One audio frame | Speech probability |
+| [Segmentation](src/sensors/audio/segmenter.ts) | Probability + audio | `Segment` containing one utterance |
+| [Transcription](src/sensors/audio/transcriber.ts) | Segment samples | Transcript `string` |
+| [Screen capture](src/sensors/screen/capture.ts) | Active Hyprland window | `Screenshot` |
+| [Pipeline](src/core/pipeline.ts) | Audio segment + capture | `UserSensorFrame` |
+| [Router](src/core/router.ts) | Frame + processor subscriptions | Dispatch to one processor |
+| [Intent detector](src/core/intent-detector.ts) | Frame + registered intents | Validated intent-name `string` |
+| [Text processor](src/processors/send-text-to-application.ts) | Original frame | Type text if focus matches |
+| [Ignore processor](src/processors/ignore.ts) | Original frame | Log that no action is needed |
 
-Start reviewing with the shared contracts in [frame.ts](src/frame.ts), then the
+Start reviewing with the shared contracts in [frame.ts](src/core/frame.ts), then the
 router, detector, and processors. [cli.ts](src/cli.ts) wires the components.
+
+The shared system prompt is in `core/intent-detector.ts`. Each processor keeps
+its own intent instruction next to its action. Prompt text is preserved verbatim
+during formatting and structural changes.
 
 Each processor exposes a `name`, an `instruction`, `subscribe(router)`, and
 `process(frame, signal)`. Subscription registers the processor with the router.
@@ -148,3 +184,19 @@ second of microphone audio, transcribes the public speech fixture, captures a
 real window, calls the configured model, checks actual keyboard delivery, and
 changes focus after inference to verify that neither field gets additional
 text. It closes its windows and restores the previous window afterward.
+
+## Code style
+
+Use blank lines between logical steps, one statement per line, and braces around
+control-flow bodies. Keep comments close to the code they explain: describe a
+module's role, the data it accepts and returns, units, ownership, and why timing
+or cleanup matters. Keep one processor per file and preserve prompt wording when
+changing layout.
+
+Prettier handles indentation, wrapping, and quote style. It preserves the blank
+lines that separate steps:
+
+```sh
+npm run format
+npm run format:check
+```

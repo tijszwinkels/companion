@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "CLI sensor frames and intent routing",
-  "engines": { "node": ">=22.19" },
+  "engines": {
+    "node": ">=22.19"
+  },
   "scripts": {
     "start": "tsx src/cli.ts",
     "check": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
-    "test:live": "tsx test/live.ts"
+    "test": "tsx --test test/unit/*.test.ts",
+    "test:live": "tsx test/live/run.ts",
+    "format": "prettier --write src test package.json tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check src test package.json tsconfig.json .prettierrc.json"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "26.5.1",
+    "prettier": "3.9.7",
     "tsx": "4.23.13",
     "typescript": "7.0.2"
   }
