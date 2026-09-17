@@ -57,7 +57,7 @@ Usage: npm start -- [options]
   --device name      PipeWire capture node (default: system microphone)
   --seconds N        Stop microphone capture after N seconds
   --config path      JSON configuration (default: companion.config.json)
-  --no-sounds        Disable audible feedback
+  --no-sounds        Start with audible feedback muted
   --no-desktop       Disable history, sounds, and desktop control
   --paused           Start paused; resume through the desktop control
 

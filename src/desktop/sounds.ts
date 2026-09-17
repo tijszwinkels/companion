@@ -30,11 +30,31 @@ export function soundSamples(cue: SoundCue): Float32Array {
 export class SoundFeedback {
   private directory?: string;
   private playing = Promise.resolve();
+  private playback = new AbortController();
 
   constructor(
     private readonly log: Log,
     private readonly signal: AbortSignal,
+    private playbackAllowed = true,
+    private readonly run = command,
   ) {}
+
+  get enabled(): boolean {
+    return this.playbackAllowed;
+  }
+
+  setEnabled(enabled: boolean): void {
+    if (enabled === this.playbackAllowed) {
+      return;
+    }
+
+    this.playbackAllowed = enabled;
+
+    // Each unmuted period owns its cues. Muting stops the current player and
+    // permanently cancels its queue, even if sounds are immediately re-enabled.
+    this.playback.abort();
+    this.playback = new AbortController();
+  }
 
   async initialize(): Promise<void> {
     this.directory = await mkdtemp(join(tmpdir(), 'companion-sounds-'));
@@ -47,27 +67,34 @@ export class SoundFeedback {
   play(cue: SoundCue): void {
     const directory = this.directory;
 
-    if (!directory || this.signal.aborted) {
+    if (!directory || !this.enabled || this.signal.aborted) {
       return;
     }
+
+    const playbackSignal = this.playback.signal;
 
     // Preserve cue order and keep cues from masking one another.
     this.playing = this.playing
       .then(async () => {
-        await command(
+        if (playbackSignal.aborted || this.signal.aborted) {
+          return;
+        }
+
+        await this.run(
           'pw-play',
           [join(directory, `${cue}.wav`)],
-          AbortSignal.any([this.signal, AbortSignal.timeout(2000)]),
+          AbortSignal.any([this.signal, playbackSignal, AbortSignal.timeout(2000)]),
         );
       })
       .catch((error) => {
-        if (!this.signal.aborted) {
+        if (!this.signal.aborted && !playbackSignal.aborted) {
           this.log('sound', String(error));
         }
       });
   }
 
   async close(): Promise<void> {
+    this.setEnabled(false);
     await this.playing;
 
     if (this.directory) {

@@ -42,13 +42,15 @@ Run `npm start -- --help` for all flags.
 
 Companion plays a short cue when an utterance is accepted for processing, an
 ascending cue after actual delivery, and a descending cue for ignored speech.
-Use `--no-sounds` to mute these cues. Preview mode is silent.
+Use `--no-sounds` to start with these cues muted, or toggle them from the top bar
+microphone menu during a session. Preview mode is silent.
 
 The optional [Omarchy adapter](integrations/omarchy/README.md) adds:
 
 - **Super+Alt+V**: hold to see recent utterances, select with **Up/Down**, and
   release to paste. A quick tap pastes the latest utterance; **Escape** cancels.
-- A microphone control in the top bar: click to pause or resume. Pause closes
+- A microphone control in the top bar: click for separate listening and sound
+  effects switches. Mute the bleeps while keeping Companion active. Pause closes
   microphone capture, cancels pending work, and discards partial speech.
 
 Install the adapter once from this checkout with `npm run omarchy:install`, then

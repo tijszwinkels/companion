@@ -4,7 +4,7 @@
   "name": "Companion",
   "version": "0.1.0",
   "author": "Companion",
-  "description": "Speech history and listening control",
+  "description": "Speech history, listening, and sound controls",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
     "service": "Service.qml",
@@ -12,7 +12,7 @@
   },
   "barWidget": {
     "displayName": "Companion",
-    "description": "Click to pause or resume speech input",
+    "description": "Click to control listening and sound effects",
     "category": "System",
     "defaultSection": "right",
     "allowMultiple": false

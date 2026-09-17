@@ -17,6 +17,7 @@ On connection and state changes, the server sends:
   "protocol": 1,
   "ready": true,
   "paused": false,
+  "soundsEnabled": true,
   "processing": 0,
   "preview": false,
   "history": [
@@ -40,11 +41,16 @@ Commands:
 
 ```json
 {"action":"toggle-pause"}
+{"action":"toggle-sounds"}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 ```
 
 Replies are `{"type":"result","result":"sent"}` (or `skipped`, `preview`,
-`paused`, `listening`) and `{"type":"error","message":"..."}`.
+`paused`, `listening`, `sounds-enabled`, `sounds-muted`) and
+`{"type":"error","message":"..."}`. Sound feedback can be muted independently
+of listening. Muting stops current and queued cues. `--no-sounds` sets the initial
+state; controls can enable sounds later. This setting lasts for the process's
+session. Preview mode is always silent and rejects `toggle-sounds`.
 Only one request per connection runs at a time. Close your overlay before asking
 to paste, and pass the window address from when the user opened it. Companion
 waits 150 ms for unmapping and checks focus again before literal keyboard input.

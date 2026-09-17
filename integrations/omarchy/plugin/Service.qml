@@ -11,6 +11,8 @@ Item {
   property var shell: null
   property bool online: false
   property bool paused: false
+  property bool soundsEnabled: false
+  property bool soundsAvailable: false
   property int processing: 0
   property var history: []
   property string lastError: ""
@@ -34,6 +36,10 @@ Item {
     root.send({ action: "toggle-pause" })
   }
 
+  function toggleSounds() {
+    root.send({ action: "toggle-sounds" })
+  }
+
   function receive(line) {
     try {
       const message = JSON.parse(line)
@@ -41,6 +47,8 @@ Item {
       if (message.type === "state" && message.protocol === 1) {
         root.online = message.ready
         root.paused = message.paused
+        root.soundsEnabled = message.soundsEnabled === true
+        root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
         root.history = message.history
       } else if (message.type === "error") {
@@ -131,10 +139,12 @@ Item {
     target: "companion"
     function status(): string {
       return JSON.stringify({ online: root.online, paused: root.paused,
+        soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
         count: root.history.length, error: root.lastError })
     }
     function togglePause(): void { root.togglePause() }
+    function toggleSounds(): void { root.toggleSounds() }
     function cancel(): void { root.cancel() }
   }
 

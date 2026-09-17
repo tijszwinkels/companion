@@ -28,12 +28,15 @@ needed to update this adapter.
 - Tap the chord to immediately recover the latest utterance.
 - **Escape** cancels. Empty history does nothing. Changing the target window
   before delivery skips the paste.
-- Click the microphone in the top bar to pause/resume. Pausing closes the
+- Click the microphone in the top bar for separate **Listening** and **Sound
+  effects** switches. Turn listening off to pause, or mute the bleeps while
+  keeping Companion active. Pausing closes the
   recorder, cancels unfinished work, and discards partial speech. The dimmed icon
   means Companion is not running; the paused icon has an active highlight.
 - An ascending two-note cue confirms successful delivery; a descending cue
   means ignored. A single note means accepted for processing. `--no-sounds`
-  disables them. Preview mode is silent and does not type.
+  starts with them muted; the menu can enable them for the current session.
+  Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
 The global shortcut uses Hyprland's resident
 [press/release protocol](https://quickshell.org/docs/v0.2.0/types/Quickshell.Hyprland/GlobalShortcut/)

@@ -51,7 +51,7 @@ export class DesktopRuntime {
     },
   ) {
     this.history = new UtteranceHistory(options.database);
-    this.sounds = new SoundFeedback(log, signal);
+    this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview);
     this.server = new DesktopServer(
       options.socket,
       () => this.snapshot(),
@@ -98,7 +98,9 @@ export class DesktopRuntime {
     await this.server.start();
     await this.history.open();
 
-    if (this.options.sounds) {
+    // Prepare cues even when starting muted, so the desktop can enable them
+    // later without restarting. Preview mode remains silent throughout.
+    if (!this.options.preview) {
       await this.sounds.initialize();
     }
 
@@ -121,6 +123,7 @@ export class DesktopRuntime {
       protocol: 1,
       ready: this.ready,
       paused: this.pause.paused,
+      soundsEnabled: this.sounds.enabled,
       processing: this.processing.size,
       preview: this.options.preview,
       history: this.ready ? this.history.snapshot() : [],
@@ -141,13 +144,26 @@ export class DesktopRuntime {
       return this.pause.paused ? 'paused' : 'listening';
     }
 
+    if (request.action === 'toggle-sounds') {
+      if (this.options.preview) {
+        throw Error('Sound feedback is unavailable in preview mode');
+      }
+
+      this.sounds.setEnabled(!this.sounds.enabled);
+      this.log('sound', this.sounds.enabled ? 'Feedback enabled' : 'Feedback muted');
+      this.server.broadcast();
+      return this.sounds.enabled ? 'sounds-enabled' : 'sounds-muted';
+    }
+
     if (
       request.action !== 'paste' ||
       typeof request.id !== 'string' ||
       typeof request.target !== 'string' ||
       !/^0x[0-9a-f]+$/i.test(request.target)
     ) {
-      throw Error('Expected toggle-pause or paste with an utterance id and target window');
+      throw Error(
+        'Expected toggle-pause, toggle-sounds, or paste with an utterance id and target window',
+      );
     }
 
     const entry = this.history.find(request.id);
