@@ -33,7 +33,7 @@ BarWidget {
     // Opening the menu must not replace the status color with the bar accent.
     useActiveColor: false
     foreground: !root.online || root.paused ? (root.bar ? root.bar.barForeground : Color.foreground)
-      : root.companion.processing > 0 ? "#66bb6a" : "#ef5350"
+      : root.companion.processing > 0 ? "#66bb6a" : "#9e9e9e"
     pressable: root.online
     tooltipText: !root.online ? "Companion is not running"
       : root.companion.lastError ? root.companion.lastError

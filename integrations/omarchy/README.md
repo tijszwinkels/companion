@@ -32,7 +32,7 @@ needed to update this adapter.
   effects** switches. Turn listening off to pause, or mute the bleeps while
   keeping Companion active. Pausing closes the
   recorder, cancels unfinished work, and discards partial speech. The microphone
-  is red while recording, green while processing, and neutral when paused.
+  is grey while recording, green while processing, and neutral when paused.
   The dimmed icon means Companion is not running. Processing takes priority
   when listening and processing overlap.
 - An ascending two-note cue confirms successful delivery; a descending cue
