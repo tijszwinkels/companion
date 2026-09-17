@@ -74,7 +74,8 @@ including storage and sounds, for isolated CLI use.
 ## Prerequisites and configuration
 
 - Node.js 22.19 or newer.
-- Hyprland, `hyprctl`, `grim`, `pw-record`, `pw-play`, and `wtype` on PATH.
+- Hyprland, `hyprctl`, `grim`, `pw-record`, `pw-play`, `wtype`, and util-linux
+  `flock` on PATH.
 - Voxtype 1.0.1 at `~/.local/bin/voxtype` and Parakeet at
   `~/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8`.
 - A vision-capable Qwen endpoint. Defaults match the spike:
