@@ -29,6 +29,11 @@ BarWidget {
     text: root.online && !root.paused ? "󰍬" : "󰍭"
     dimmed: !root.online
     active: root.paused || root.popupOpen
+    // Processing takes precedence while the microphone continues listening.
+    // Opening the menu must not replace the status color with the bar accent.
+    useActiveColor: false
+    foreground: !root.online || root.paused ? (root.bar ? root.bar.barForeground : Color.foreground)
+      : root.companion.processing > 0 ? "#66bb6a" : "#ef5350"
     pressable: root.online
     tooltipText: !root.online ? "Companion is not running"
       : root.companion.lastError ? root.companion.lastError
