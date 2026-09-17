@@ -95,5 +95,8 @@ may have landed. This applies to both automatic sends and manual pastes, includi
 pause, shutdown, timeout, and nonzero process exit. Work cancelled before keyboard
 input starts is `cancelled`. Startup recovery uses the persisted delivery marker
 to distinguish these cases after a crash. Migration preserves uncertainty for
-unfinished version 1 sends/pastes, which lacked that marker. The original
+unfinished or previously failed/cancelled legacy sends/pastes, which lacked that
+marker. Reclassified records retain their old label in `legacy_outcome`;
+previously completed records retain their timestamps. Migration also repairs a
+version 0 database left by an interrupted first-time setup. The original
 intent/outcome stays intact when a user recovers text manually.

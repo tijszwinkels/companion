@@ -181,11 +181,12 @@ test('crash recovery distinguishes pending work from started automatic and manua
   }
 });
 
-test('version 1 migration preserves legacy delivery uncertainty and completed outcomes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'companion-migration-'));
-  const path = join(directory, 'utterances.sqlite');
-  const old = new DatabaseSync(path);
-  old.exec(`
+for (const version of [0, 1]) {
+  test(`version ${version} migration preserves legacy delivery uncertainty and completion times`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'companion-migration-'));
+    const path = join(directory, 'utterances.sqlite');
+    const old = new DatabaseSync(path);
+    old.exec(`
     CREATE TABLE utterances (
       id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, transcript TEXT NOT NULL,
       application TEXT, window_title TEXT, window_address TEXT, recognized_intent TEXT,
@@ -200,34 +201,123 @@ test('version 1 migration preserves legacy delivery uncertainty and completed ou
       ('send', 1, 'Unfinished send', 'SEND_TEXT_TO_APPLICATION', 'processing'),
       ('pending', 2, 'Pending decision', NULL, 'processing'),
       ('done', 3, 'Completed send', 'SEND_TEXT_TO_APPLICATION', 'sent');
+    INSERT INTO utterances (id, observed_at, transcript, recognized_intent, outcome, completed_at) VALUES
+      ('cancelled', 4, 'Possible partial delivery', 'SEND_TEXT_TO_APPLICATION', 'cancelled', 40),
+      ('error', 5, 'Failed during delivery', 'SEND_TEXT_TO_APPLICATION', 'error', 50),
+      ('capture-error', 6, 'Capture failed', NULL, 'error', 60);
     INSERT INTO paste_events (id, utterance_id, attempted_at, target_address, outcome)
       VALUES ('paste', 'send', 1, '0xabc', 'pending');
-    PRAGMA user_version = 1;
+    INSERT INTO paste_events (id, utterance_id, attempted_at, target_address, outcome, completed_at) VALUES
+      ('cancelled', 'done', 2, '0xabc', 'cancelled', 20),
+      ('error', 'done', 3, '0xabc', 'error', 30),
+      ('skipped', 'done', 4, '0xabc', 'skipped', 40);
+    PRAGMA user_version = ${version};
   `);
-  old.close();
-  const history = new UtteranceHistory(path);
-
-  try {
-    await history.open();
-    assert.deepEqual(
-      history.snapshot().map((row) => row.outcome),
-      ['sent', 'cancelled', 'interrupted'],
-    );
-    history.close();
-    await history.open();
-    const database = new DatabaseSync(path, { readOnly: true });
+    old.close();
+    const history = new UtteranceHistory(path);
 
     try {
-      assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 2);
-      assert.equal(
-        database.prepare('SELECT outcome FROM paste_events').get()?.outcome,
-        'interrupted',
+      await history.open();
+      assert.deepEqual(
+        history.snapshot().map((row) => row.outcome),
+        ['error', 'interrupted', 'interrupted', 'sent', 'cancelled', 'interrupted'],
       );
+      // A later cancellation with the new marker semantics must stay cancelled
+      // on the next open; migration must not reclassify it repeatedly.
+      const entry = history.snapshot()[0];
+      const cancelled = history.beginPaste(entry.id, '0xabc');
+      history.finishPaste(cancelled, 'cancelled', null);
+      history.close();
+      await history.open();
+      const database = new DatabaseSync(path, { readOnly: true });
+
+      try {
+        assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 2);
+        assert.equal(
+          database.prepare("SELECT legacy_outcome FROM utterances WHERE id = 'cancelled'").get()
+            ?.legacy_outcome,
+          'cancelled',
+        );
+        assert.equal(
+          database.prepare("SELECT legacy_outcome FROM utterances WHERE id = 'error'").get()
+            ?.legacy_outcome,
+          'error',
+        );
+        assert.equal(
+          database.prepare("SELECT completed_at FROM utterances WHERE id = 'cancelled'").get()
+            ?.completed_at,
+          40,
+        );
+        const pastes = database
+          .prepare('SELECT outcome, completed_at, legacy_outcome FROM paste_events ORDER BY rowid')
+          .all();
+        assert.deepEqual(
+          pastes.map((row) => row.outcome),
+          ['interrupted', 'interrupted', 'interrupted', 'skipped', 'cancelled'],
+        );
+        assert.deepEqual(
+          pastes.slice(1, 4).map((row) => row.completed_at),
+          [20, 30, 40],
+        );
+        assert.deepEqual(
+          pastes.map((row) => row.legacy_outcome),
+          ['pending', 'cancelled', 'error', null, null],
+        );
+      } finally {
+        database.close();
+      }
     } finally {
-      database.close();
+      history.close();
+      await rm(directory, { recursive: true, force: true });
     }
-  } finally {
-    history.close();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+  });
+}
+
+for (const existingTable of ['utterances', 'paste_events']) {
+  test(`migration repairs a partial old setup containing only ${existingTable}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'companion-partial-schema-'));
+    const path = join(directory, 'utterances.sqlite');
+    const old = new DatabaseSync(path);
+    const utterances = `
+    CREATE TABLE utterances (
+      id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, transcript TEXT NOT NULL,
+      application TEXT, window_title TEXT, window_address TEXT, recognized_intent TEXT,
+      outcome TEXT NOT NULL DEFAULT 'processing', completed_at INTEGER
+    );
+  `;
+    const pastes = `
+    CREATE TABLE paste_events (
+      id TEXT PRIMARY KEY, utterance_id TEXT NOT NULL REFERENCES utterances(id),
+      attempted_at INTEGER NOT NULL, target_address TEXT NOT NULL, target_application TEXT,
+      outcome TEXT NOT NULL, completed_at INTEGER
+    );
+  `;
+    old.exec(existingTable === 'utterances' ? utterances : pastes);
+    old.close();
+    const history = new UtteranceHistory(path);
+
+    try {
+      await history.open();
+      history.add({ id: 1, observedAt: 1, utterance: 'Recovered setup' });
+      const entry = history.snapshot()[0];
+      const paste = history.beginPaste(entry.id, '0xabc');
+      history.markPasteStarted(paste, 'fixture');
+      history.close();
+      await history.open();
+      assert.equal(history.snapshot()[0].outcome, 'cancelled');
+      const database = new DatabaseSync(path, { readOnly: true });
+
+      try {
+        assert.equal(
+          database.prepare('SELECT outcome FROM paste_events').get()?.outcome,
+          'interrupted',
+        );
+      } finally {
+        database.close();
+      }
+    } finally {
+      history.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

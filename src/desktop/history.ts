@@ -53,7 +53,8 @@ export class UtteranceHistory {
         recognized_intent TEXT,
         outcome TEXT NOT NULL DEFAULT 'processing',
         completed_at INTEGER,
-        delivery_started_at INTEGER
+        delivery_started_at INTEGER,
+        legacy_outcome TEXT
       );
 
       CREATE INDEX IF NOT EXISTS utterances_recent ON utterances(observed_at DESC);
@@ -66,7 +67,8 @@ export class UtteranceHistory {
         target_application TEXT,
         outcome TEXT NOT NULL,
         completed_at INTEGER,
-        delivery_started_at INTEGER
+        delivery_started_at INTEGER,
+        legacy_outcome TEXT
       );
 
       CREATE INDEX IF NOT EXISTS paste_events_utterance ON paste_events(utterance_id);
@@ -77,10 +79,42 @@ export class UtteranceHistory {
     this.database.exec('BEGIN IMMEDIATE');
 
     try {
-      if (version === 1) {
+      // A crash during the old first-time setup could leave either table at
+      // version 0. Inspect each table instead of assuming version 0 is empty.
+      const utteranceColumns = this.database.prepare('PRAGMA table_info(utterances)').all();
+      const pasteColumns = this.database.prepare('PRAGMA table_info(paste_events)').all();
+      const legacyUtterances = !utteranceColumns.some(
+        (column) => column.name === 'delivery_started_at',
+      );
+      const legacyPastes = !pasteColumns.some((column) => column.name === 'delivery_started_at');
+
+      if (!utteranceColumns.some((column) => column.name === 'legacy_outcome')) {
+        this.database.exec('ALTER TABLE utterances ADD COLUMN legacy_outcome TEXT');
+      }
+
+      if (!pasteColumns.some((column) => column.name === 'legacy_outcome')) {
+        this.database.exec('ALTER TABLE paste_events ADD COLUMN legacy_outcome TEXT');
+      }
+
+      if (legacyUtterances) {
+        this.database.exec('ALTER TABLE utterances ADD COLUMN delivery_started_at INTEGER');
+
+        // Old cancellation/error labels could include partially inserted text.
+        // We cannot reconstruct whether typing began, so retain the original
+        // completion time and label for evaluation, while making uncertainty
+        // explicit in the current outcome.
         this.database.exec(`
-          ALTER TABLE utterances ADD COLUMN delivery_started_at INTEGER;
-          ALTER TABLE paste_events ADD COLUMN delivery_started_at INTEGER;
+          UPDATE utterances SET legacy_outcome = outcome, outcome = 'interrupted'
+          WHERE recognized_intent = 'SEND_TEXT_TO_APPLICATION'
+          AND outcome IN ('cancelled', 'error');
+        `);
+      }
+
+      if (legacyPastes) {
+        this.database.exec('ALTER TABLE paste_events ADD COLUMN delivery_started_at INTEGER');
+        this.database.exec(`
+          UPDATE paste_events SET legacy_outcome = outcome, outcome = 'interrupted'
+          WHERE outcome IN ('cancelled', 'error');
         `);
       }
 
@@ -90,20 +124,22 @@ export class UtteranceHistory {
       // cannot forget that the old rows had no delivery-start marker.
       this.database
         .prepare(
-          `UPDATE utterances SET outcome = CASE
+          `UPDATE utterances SET legacy_outcome = CASE WHEN ? = 1 THEN outcome ELSE legacy_outcome END,
+        outcome = CASE
         WHEN delivery_started_at IS NOT NULL OR (? = 1 AND recognized_intent = 'SEND_TEXT_TO_APPLICATION')
           THEN 'interrupted' ELSE 'cancelled' END, completed_at = ?
       WHERE outcome IN ('processing', 'delivering')`,
         )
-        .run(version, Date.now());
+        .run(Number(legacyUtterances), Number(legacyUtterances), Date.now());
       this.database
         .prepare(
-          `UPDATE paste_events SET outcome = CASE
+          `UPDATE paste_events SET legacy_outcome = CASE WHEN ? = 1 THEN outcome ELSE legacy_outcome END,
+        outcome = CASE
         WHEN delivery_started_at IS NOT NULL OR ? = 1 THEN 'interrupted' ELSE 'cancelled' END,
         completed_at = ?
       WHERE outcome = 'pending'`,
         )
-        .run(version, Date.now());
+        .run(Number(legacyPastes), Number(legacyPastes), Date.now());
       this.database.exec('PRAGMA user_version = 2; COMMIT;');
     } catch (error) {
       this.database.exec('ROLLBACK');
