@@ -16,6 +16,7 @@ Item {
   property int processing: 0
   property var history: []
   property string lastError: ""
+  property string lastErrorAction: ""
   property bool opened: false
   property var rows: []
   property int selectedIndex: 0
@@ -53,8 +54,16 @@ Item {
         root.history = message.history
       } else if (message.type === "error") {
         root.lastError = message.message
+        root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
-        root.lastError = message.result === "skipped" ? "Paste skipped: focus changed" : ""
+        if (message.result === "skipped") {
+          root.lastError = "Paste skipped: focus changed"
+          root.lastErrorAction = "paste"
+        } else if (root.lastErrorAction === (message.action || "")) {
+          // A delayed paste result must not hide an unrelated control error.
+          root.lastError = ""
+          root.lastErrorAction = ""
+        }
       }
     } catch (error) {
       root.lastError = "Could not read Companion state"

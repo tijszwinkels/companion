@@ -38,7 +38,8 @@ test('SQLite retains all transcripts and original intent, with linked recovery o
     assert.equal(latest.utterance, 'Speech 105');
     const pasteId = history.beginPaste(latest.id, '0x456');
     history.finishPaste(pasteId, 'sent', 'terminal');
-    history.beginPaste(latest.id, '0x789');
+    const interruptedPaste = history.beginPaste(latest.id, '0x789');
+    history.markPasteStarted(interruptedPaste, 'editor');
     history.add({ id: 106, observedAt: 106, utterance: 'Unfinished' });
     history.close();
     await history.open();

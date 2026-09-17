@@ -5,7 +5,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { Activity } from '../core/activity.ts';
 import type { Log } from '../core/frame.ts';
 import { PauseControl } from '../core/pause-control.ts';
-import { activeWindow } from '../sensors/screen/capture.ts';
+import { DeliveryControl } from '../core/delivery-control.ts';
+import { failureOutcome } from '../core/delivery-error.ts';
+import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
+import { command } from '../system/command.ts';
+import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
 import { UtteranceHistory } from './history.ts';
 import { DesktopServer } from './server.ts';
@@ -35,7 +39,8 @@ export class DesktopRuntime {
   private readonly server: DesktopServer;
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
-  private readonly manuallyRecovered = new Set<number>();
+  private readonly delivery = new DeliveryControl();
+  private readonly databaseLock: InstanceLock;
   private ready = false;
   private pasting = false;
 
@@ -49,8 +54,10 @@ export class DesktopRuntime {
       preview: boolean;
       sounds: boolean;
     },
+    private readonly run: RunCommand = command,
   ) {
     this.history = new UtteranceHistory(options.database);
+    this.databaseLock = new InstanceLock(options.database + '.lock');
     this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview);
     this.server = new DesktopServer(
       options.socket,
@@ -59,7 +66,11 @@ export class DesktopRuntime {
     );
 
     this.activity = {
-      deliveryAllowed: (id) => !this.manuallyRecovered.has(id),
+      delivery: this.delivery,
+      deliveryStarted: (id) => {
+        this.history.markDeliveryStarted(id);
+        this.server.broadcast();
+      },
       processing: (id) => {
         this.processing.add(id);
         this.sounds.play('processing');
@@ -86,7 +97,7 @@ export class DesktopRuntime {
       },
       finished: (id) => {
         this.processing.delete(id);
-        this.manuallyRecovered.delete(id);
+        this.delivery.finish(id);
         this.history.finish(id);
         this.server.broadcast();
       },
@@ -94,20 +105,29 @@ export class DesktopRuntime {
   }
 
   async start(): Promise<void> {
-    // Acquire the single-instance socket before opening/recovering the database.
-    await this.server.start();
-    await this.history.open();
+    // Hold database ownership from before recovery until after SQLite closes.
+    // The separate socket lock protects stale-socket recovery, including when
+    // another caller uses the same database with a different socket path.
+    await this.databaseLock.acquire();
 
-    // Prepare cues even when starting muted, so the desktop can enable them
-    // later without restarting. Preview mode remains silent throughout.
-    if (!this.options.preview) {
-      await this.sounds.initialize();
+    try {
+      await this.server.start();
+      await this.history.open();
+
+      // Prepare cues even when starting muted, so the desktop can enable them
+      // later without restarting. Preview mode remains silent throughout.
+      if (!this.options.preview) {
+        await this.sounds.initialize();
+      }
+
+      this.ready = true;
+      this.pause.on('change', this.pauseChanged);
+      this.server.broadcast();
+      this.log('desktop', `Utterances: ${this.options.database}`);
+    } catch (error) {
+      await this.close();
+      throw error;
     }
-
-    this.ready = true;
-    this.pause.on('change', this.pauseChanged);
-    this.server.broadcast();
-    this.log('desktop', `Utterances: ${this.options.database}`);
   }
 
   private readonly pauseChanged = () => {
@@ -175,32 +195,40 @@ export class DesktopRuntime {
     const eventId = this.history.beginPaste(entry.id, request.target);
     this.pasting = true;
 
-    // A user can select a transcript while the model is still considering it.
-    // That explicit action supersedes an automatic send which has not started.
-    // Keep the original model decision for evaluation when it eventually arrives.
+    // The shared delivery owner either supersedes a pending automatic send or
+    // rejects recovery if that utterance is already being typed.
     const frameId = this.history.activeFrameId(entry.id);
-
-    if (frameId !== undefined) {
-      this.manuallyRecovered.add(frameId);
-    }
     let application: string | null = null;
 
     try {
-      // Give the overlay time to unmap and return keyboard focus. Its original
-      // target is checked again immediately before typing; focus is never forced.
-      await delay(150, undefined, { signal: this.signal });
-      const window = await activeWindow(this.signal);
-      application = window.address === request.target ? window.class : null;
-      let outcome: string;
+      const target = request.target;
+      const outcome = await this.delivery.recover(frameId, this.signal, async () => {
+        // Bound the initial focus lookup as well as typing. A wedged compositor
+        // cannot hold the shared keyboard queue indefinitely. Recheck only when
+        // this request reaches the front; focus may change while it waits.
+        const deadline = AbortSignal.any([this.signal, AbortSignal.timeout(5000)]);
+        await delay(150, undefined, { signal: deadline });
+        const window = await activeWindow(deadline, this.run);
+        application = window.address === target ? window.class : null;
 
-      if (window.address !== request.target) {
-        outcome = 'skipped';
-      } else if (this.options.preview) {
-        outcome = 'preview';
-      } else {
-        const delivered = await typeText(entry.utterance, request.target, this.signal);
-        outcome = delivered ? 'sent' : 'skipped';
-      }
+        if (window.address !== target) {
+          return 'skipped';
+        }
+
+        if (this.options.preview) {
+          return 'preview';
+        }
+
+        const delivered = await typeText(
+          entry.utterance,
+          target,
+          deadline,
+          this.run,
+          () => true,
+          () => this.history.markPasteStarted(eventId, application),
+        );
+        return delivered ? 'sent' : 'skipped';
+      });
 
       this.history.finishPaste(eventId, outcome, application);
       this.log('paste', `${outcome}: ${entry.id}`);
@@ -211,7 +239,7 @@ export class DesktopRuntime {
 
       return outcome;
     } catch (error) {
-      this.history.finishPaste(eventId, this.signal.aborted ? 'cancelled' : 'error', application);
+      this.history.finishPaste(eventId, failureOutcome(error, this.signal), application);
       throw error;
     } finally {
       this.pasting = false;
@@ -219,9 +247,15 @@ export class DesktopRuntime {
   }
 
   async close(): Promise<void> {
+    this.ready = false;
     this.pause.off('change', this.pauseChanged);
-    await this.server.close();
-    await this.sounds.close();
-    this.history.close();
+
+    try {
+      await this.server.close();
+      await this.sounds.close();
+    } finally {
+      this.history.close();
+      await this.databaseLock.close();
+    }
   }
 }

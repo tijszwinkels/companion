@@ -4,10 +4,12 @@ import type { RunCommand } from '../sensors/screen/capture.ts';
 import { command } from '../system/command.ts';
 import { typeText } from '../system/type-text.ts';
 import type { Activity } from '../core/activity.ts';
+import { DeliveryControl } from '../core/delivery-control.ts';
 
 /** Types the original utterance if its captured window is still focused. */
 export class SendTextToApplication implements UserSensorProcessor {
   readonly name = 'SEND_TEXT_TO_APPLICATION';
+  private readonly delivery: DeliveryControl;
 
   // This is the user's prompt text; formatting must not change its contents.
   readonly instruction =
@@ -18,7 +20,9 @@ export class SendTextToApplication implements UserSensorProcessor {
     private readonly preview = false,
     private readonly run: RunCommand = command,
     private readonly activity: Activity = {},
-  ) {}
+  ) {
+    this.delivery = activity.delivery ?? new DeliveryControl();
+  }
 
   subscribe(router: UserSensorRouter): void {
     router.register(this);
@@ -33,12 +37,15 @@ export class SendTextToApplication implements UserSensorProcessor {
 
     // Inference may take seconds. Re-read focus now rather than using the window
     // that happened to be active when the screenshot was captured.
-    const delivered = await typeText(
-      frame.utterance,
-      frame.screenshot.window.address,
-      signal,
-      this.run,
-      () => this.activity.deliveryAllowed?.(frame.id) !== false,
+    const delivered = await this.delivery.automatic(frame.id, signal, (claim) =>
+      typeText(
+        frame.utterance,
+        frame.screenshot.window.address,
+        signal,
+        this.run,
+        () => this.activity.deliveryAllowed?.(frame.id) !== false && claim(),
+        () => this.activity.deliveryStarted?.(frame.id),
+      ),
     );
     if (!delivered) {
       this.log(

@@ -1,6 +1,7 @@
 import type { Log, Screenshot } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
 import type { Activity } from './activity.ts';
+import { failureOutcome } from './delivery-error.ts';
 
 interface Sensors {
   capture(
@@ -148,7 +149,7 @@ export class SensorPipeline {
       } catch (error) {
         // A failed frame should not stop listening. A requested shutdown is
         // expected control flow and does not count as a processing failure.
-        this.activity.outcome?.(job.id, job.signal.aborted ? 'cancelled' : 'error');
+        this.activity.outcome?.(job.id, failureOutcome(error, job.signal));
 
         if (!job.signal.aborted) {
           this.failures++;

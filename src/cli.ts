@@ -12,6 +12,7 @@ import { VoiceActivityDetector } from './sensors/audio/vad.ts';
 import { listen } from './sensors/audio/listener.ts';
 import { SensorPipeline } from './core/pipeline.ts';
 import { PauseControl } from './core/pause-control.ts';
+import { failureOutcome } from './core/delivery-error.ts';
 import { DesktopRuntime, desktopPaths } from './desktop/runtime.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
@@ -140,7 +141,7 @@ No Enter key is sent. Start inside your Hyprland desktop session.`);
       } catch (error) {
         // Like audio input, supplied text is retained even if capture fails.
         activity.transcribed?.(transcript);
-        activity.outcome?.(1, controller.signal.aborted ? 'cancelled' : 'error');
+        activity.outcome?.(1, failureOutcome(error, controller.signal));
         throw error;
       } finally {
         activity.finished?.(1);

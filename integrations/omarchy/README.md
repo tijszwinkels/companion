@@ -28,6 +28,8 @@ needed to update this adapter.
 - Tap the chord to immediately recover the latest utterance.
 - **Escape** cancels. Empty history does nothing. Changing the target window
   before delivery skips the paste.
+- Recovering an utterance already being typed is rejected to avoid duplication.
+  Other keyboard output waits its turn and checks focus again before typing.
 - Click the microphone in the top bar for separate **Listening** and **Sound
   effects** switches. Turn listening off to pause, or mute the bleeps while
   keeping Companion active. Pausing closes the
@@ -35,6 +37,7 @@ needed to update this adapter.
   is grey while recording, green while processing, and neutral when paused.
   The dimmed icon means Companion is not running. Processing takes priority
   when listening and processing overlap.
+  Pause and sound controls remain responsive during manual recovery.
 - An ascending two-note cue confirms successful delivery; a descending cue
   means ignored. A single note means accepted for processing. `--no-sounds`
   starts with them muted; the menu can enable them for the current session.

@@ -1,5 +1,6 @@
 import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
 import { command } from './command.ts';
+import { DeliveryInterruptedError } from '../core/delivery-error.ts';
 
 /**
  * Both automatic delivery and explicit history recovery use the same focus
@@ -12,6 +13,7 @@ export async function typeText(
   signal: AbortSignal,
   run: RunCommand = command,
   deliveryAllowed: () => boolean = () => true,
+  deliveryStarted: () => void = () => {},
 ): Promise<boolean> {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
   const current = await activeWindow(deadline, run);
@@ -24,6 +26,15 @@ export async function typeText(
   const text = utterance.replace(/[\u0000-\u001f\u007f]/g, ' ');
 
   // `--` treats leading dashes literally. No Enter key or command expansion.
-  await run('wtype', ['--', text], deadline);
+  // Commit the delivery marker before spawning, so even a hard crash preserves
+  // uncertainty. No asynchronous gap separates the ownership claim and spawn.
+  deliveryStarted();
+
+  try {
+    await run('wtype', ['--', text], deadline);
+  } catch (error) {
+    throw new DeliveryInterruptedError(error);
+  }
+
   return true;
 }

@@ -1,5 +1,8 @@
+import type { DeliveryControl } from './delivery-control.ts';
+
 /** Results describe actual delivery, rather than just the model's chosen intent. */
-export type UtteranceOutcome = 'sent' | 'ignored' | 'skipped' | 'preview' | 'error' | 'cancelled';
+export type UtteranceOutcome =
+  'sent' | 'ignored' | 'skipped' | 'preview' | 'error' | 'cancelled' | 'interrupted';
 
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {
@@ -11,8 +14,11 @@ export interface Transcript {
 
 /** Optional feedback keeps the sensor pipeline independent of desktop services. */
 export interface Activity {
+  /** Shared output ownership keeps explicit recovery and automatic sends atomic. */
+  delivery?: DeliveryControl;
   /** An explicit manual recovery may supersede a still-pending automatic send. */
   deliveryAllowed?(id: number): boolean;
+  deliveryStarted?(id: number): void;
   processing?(id: number): void;
   transcribed?(transcript: Transcript): void;
   intentRecognized?(id: number, intent: string): void;

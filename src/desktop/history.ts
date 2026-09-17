@@ -11,7 +11,7 @@ export interface HistoryEntry {
   utterance: string;
   application: string | null;
   intent: string | null;
-  outcome: UtteranceOutcome | 'processing';
+  outcome: UtteranceOutcome | 'processing' | 'delivering';
 }
 
 /**
@@ -34,7 +34,7 @@ export class UtteranceHistory {
 
     const version = this.database.prepare('PRAGMA user_version').get()?.user_version;
 
-    if (typeof version !== 'number' || version > 1) {
+    if (typeof version !== 'number' || version > 2) {
       throw Error('Unsupported Companion database schema version');
     }
 
@@ -52,7 +52,8 @@ export class UtteranceHistory {
         window_address TEXT,
         recognized_intent TEXT,
         outcome TEXT NOT NULL DEFAULT 'processing',
-        completed_at INTEGER
+        completed_at INTEGER,
+        delivery_started_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS utterances_recent ON utterances(observed_at DESC);
@@ -64,27 +65,50 @@ export class UtteranceHistory {
         target_address TEXT NOT NULL,
         target_application TEXT,
         outcome TEXT NOT NULL,
-        completed_at INTEGER
+        completed_at INTEGER,
+        delivery_started_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS paste_events_utterance ON paste_events(utterance_id);
-      PRAGMA user_version = 1;
     `);
 
-    // Interrupted work remains useful for evaluation. Do not guess whether a
-    // paste landed if the previous process exited before recording completion.
-    this.database
-      .prepare(
-        `UPDATE utterances SET outcome = 'cancelled', completed_at = ?
-      WHERE outcome = 'processing'`,
-      )
-      .run(Date.now());
-    this.database
-      .prepare(
-        `UPDATE paste_events SET outcome = 'interrupted', completed_at = ?
+    // Migrate both tables atomically. The owner holds the database's process
+    // lock during schema changes, crash recovery, and every later write.
+    this.database.exec('BEGIN IMMEDIATE');
+
+    try {
+      if (version === 1) {
+        this.database.exec(`
+          ALTER TABLE utterances ADD COLUMN delivery_started_at INTEGER;
+          ALTER TABLE paste_events ADD COLUMN delivery_started_at INTEGER;
+        `);
+      }
+
+      // Version 1 did not record when typing began. Conservatively preserve
+      // uncertainty for its unfinished sends/pastes; newer records are precise.
+      // Commit recovery and the schema version together so a crash mid-migration
+      // cannot forget that the old rows had no delivery-start marker.
+      this.database
+        .prepare(
+          `UPDATE utterances SET outcome = CASE
+        WHEN delivery_started_at IS NOT NULL OR (? = 1 AND recognized_intent = 'SEND_TEXT_TO_APPLICATION')
+          THEN 'interrupted' ELSE 'cancelled' END, completed_at = ?
+      WHERE outcome IN ('processing', 'delivering')`,
+        )
+        .run(version, Date.now());
+      this.database
+        .prepare(
+          `UPDATE paste_events SET outcome = CASE
+        WHEN delivery_started_at IS NOT NULL OR ? = 1 THEN 'interrupted' ELSE 'cancelled' END,
+        completed_at = ?
       WHERE outcome = 'pending'`,
-      )
-      .run(Date.now());
+        )
+        .run(version, Date.now());
+      this.database.exec('PRAGMA user_version = 2; COMMIT;');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   private get db(): DatabaseSync {
@@ -158,6 +182,18 @@ export class UtteranceHistory {
     }
   }
 
+  markDeliveryStarted(frameId: number): void {
+    const id = this.frameEntries.get(frameId);
+
+    if (id) {
+      this.db
+        .prepare(
+          "UPDATE utterances SET delivery_started_at = ?, outcome = 'delivering' WHERE id = ?",
+        )
+        .run(Date.now(), id);
+    }
+  }
+
   finish(frameId: number): void {
     this.frameEntries.delete(frameId);
   }
@@ -191,6 +227,14 @@ export class UtteranceHistory {
       WHERE id = ?`,
       )
       .run(outcome, targetApplication, Date.now(), id);
+  }
+
+  markPasteStarted(id: string, targetApplication: string | null): void {
+    this.db
+      .prepare(
+        'UPDATE paste_events SET delivery_started_at = ?, target_application = ? WHERE id = ?',
+      )
+      .run(Date.now(), targetApplication, id);
   }
 
   close(): void {

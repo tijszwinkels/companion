@@ -1,6 +1,7 @@
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { chmod, mkdir, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { InstanceLock } from '../system/instance-lock.ts';
 
 /** Desktop integrations exchange newline-delimited JSON over a private socket. */
 export class DesktopServer {
@@ -8,21 +9,36 @@ export class DesktopServer {
   private readonly clients = new Set<Socket>();
   private readonly requests = new Set<Promise<void>>();
   private listening = false;
+  private readonly lock: InstanceLock;
 
   constructor(
     private readonly path: string,
     private readonly snapshot: () => unknown,
     private readonly handle: (request: unknown) => Promise<unknown>,
-  ) {}
+  ) {
+    this.lock = new InstanceLock(path + '.lock');
+  }
 
   async start(): Promise<void> {
+    await this.lock.acquire();
+
+    try {
+      await this.bind();
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
+  }
+
+  private async bind(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
     await chmod(dirname(this.path), 0o700);
 
     this.server = createServer((socket) => this.connected(socket));
 
-    // Bind first: two simultaneous startups cannot both claim a missing socket.
-    // Only EADDRINUSE warrants checking for a stale socket from an old process.
+    // Ownership covers the entire probe/unlink/rebind sequence. Another starter
+    // cannot remove a socket we just recovered. Keep the probe for older
+    // Companion versions that did not acquire the process lock.
     try {
       await this.listen();
       await chmod(this.path, 0o600);
@@ -113,6 +129,7 @@ export class DesktopServer {
 
     let buffered = '';
     let handling = false;
+    let controlsInFlight = 0;
 
     socket.on('data', (chunk: string) => {
       buffered += chunk;
@@ -128,23 +145,53 @@ export class DesktopServer {
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
 
-        // A slow paste must not create an unbounded queue of repeated requests.
-        if (handling) {
-          this.send(socket, { type: 'error', message: 'Previous request is still running' });
+        let value: unknown;
+
+        try {
+          value = JSON.parse(line);
+        } catch {
+          this.send(socket, { type: 'error', message: 'Invalid JSON request' });
           continue;
         }
 
-        handling = true;
+        const action =
+          value && typeof value === 'object'
+            ? (value as Record<string, unknown>).action
+            : undefined;
+        const control = action === 'toggle-pause' || action === 'toggle-sounds';
+
+        // Listening/sound controls run independently of slow keyboard delivery.
+        // Bound both paths so a client cannot build an unbounded promise queue.
+        if ((control && controlsInFlight >= 16) || (!control && handling)) {
+          this.send(socket, {
+            type: 'error',
+            action,
+            message: 'Previous request is still running',
+          });
+          continue;
+        }
+
+        if (control) {
+          controlsInFlight++;
+        } else {
+          handling = true;
+        }
+
         const request = Promise.resolve()
           .then(async () => {
-            const result = await this.handle(JSON.parse(line));
-            this.send(socket, { type: 'result', result });
+            const result = await this.handle(value);
+            this.send(socket, { type: 'result', action, result });
           })
           .catch((error) => {
-            this.send(socket, { type: 'error', message: String(error) });
+            this.send(socket, { type: 'error', action, message: String(error) });
           })
           .finally(() => {
-            handling = false;
+            if (control) {
+              controlsInFlight--;
+            } else {
+              handling = false;
+            }
+
             this.requests.delete(request);
           });
 
@@ -167,5 +214,6 @@ export class DesktopServer {
     // The owner cancels actions before closing; let them record their outcomes
     // before it closes SQLite or removes any other resources they reference.
     await Promise.all(this.requests);
+    await this.lock.close();
   }
 }
