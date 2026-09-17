@@ -1,7 +1,8 @@
 # Companion
 
 A CLI that listens, captures the active application when speech ends, detects
-one intent, and routes the original sensor frame to a subscribed processor.
+one intent, and routes the sensor frame to a subscribed processor. Explicit
+command prefixes skip intent inference.
 The previous experiment lives in `../companion_spike`.
 
 ## Run
@@ -16,7 +17,17 @@ npm start
 
 This starts microphone capture and **types detected dictation into the active
 application**. Select the intended text field and speak. Ctrl+C stops capture,
-inference, and child processes. No Enter key is sent. To observe without typing:
+inference, and child processes.
+
+- **“insert hello”** types `hello`, without pressing Enter.
+- **“enter hello”** types `hello`, then presses Enter.
+- Other utterances go through the LLM as before; detected dictation never presses Enter.
+
+Both commands bypass the LLM. Matching is case-insensitive and accepts punctuation
+after the command, such as “Insert, hello”. It matches whole prefixes: “entering”
+does not trigger “enter”. A command with no following text does nothing.
+
+To observe without typing or pressing Enter:
 
 ```sh
 npm start -- --preview
@@ -30,6 +41,8 @@ Other input modes use the same router and processors:
 
 ```sh
 npm start -- --preview --text "Please type hello into this document."
+npm start -- --preview --text "insert Hello world"
+npm start -- --preview --text "enter Hello world"
 npm start -- --preview --wav test/fixtures/speech.wav
 npm start -- --preview --seconds 10
 ```
@@ -50,7 +63,8 @@ Run `npm start -- --help` for all flags.
   PyGObject and GTK4, and uses Hyprland's 0.55+ Lua dispatch syntax.
 
 The bundled Silero VAD runs locally with ONNX Runtime. Transcription is local.
-The configured model endpoint receives the utterance, window identity, and PNG.
+For utterances without a matching prefix, the configured model endpoint receives
+the utterance, window identity, and PNG. Prefix commands make no model request.
 Screenshots stay in memory; temporary ASR files are removed after each call.
 
 Optionally copy `companion.config.example.json` to `companion.config.json`.
@@ -72,9 +86,11 @@ src/
     frame.ts                     Shared types and data contracts
     pipeline.ts                  Assemble frames while capture continues
     router.ts                    Register processors and dispatch frames
+    prefix.ts                    Match and remove literal command prefixes
     intent-detector.ts           Compose the prompt and run one Pi turn
   processors/
     send-text-to-application.ts   Type an utterance after checking focus
+    enter-text-to-application.ts  Type and press Enter on explicit command
     ignore.ts                    Handle speech that requires no action
   sensors/
     audio/
@@ -86,6 +102,7 @@ src/
       capture.ts                 Read and capture the active window
   system/
     command.ts                   Run and cancel external commands
+    text-input.ts                Shared focus checks and keyboard delivery
 test/
   unit/                          Automated tests with controlled inputs
   live/                          Optional desktop and microphone checks
@@ -104,12 +121,15 @@ PipeWire → Float32Array (512 samples at 16 kHz) → Silero → Segment
                                       └─────────── UserSensorFrame ───────┘
                                                          ↓
                                                  UserSensorRouter
-                                                         ↓
-                                                   IntentDetector
-                                                         ↓
-                                                    intent name
-                                                         ↓
-                                            matching processor.process(frame)
+                                                 /               \
+                                          prefix match         no match
+                                              ↓                    ↓
+                                       strip prefix          IntentDetector
+                                              ↓                    ↓
+                                              │               intent name
+                                              └─────────┬──────────┘
+                                                        ↓
+                                           matching processor.process(frame)
 ```
 
 | Module | Input | Output |
@@ -122,7 +142,8 @@ PipeWire → Float32Array (512 samples at 16 kHz) → Silero → Segment
 | [Pipeline](src/core/pipeline.ts) | Audio segment + capture | `UserSensorFrame` |
 | [Router](src/core/router.ts) | Frame + processor subscriptions | Dispatch to one processor |
 | [Intent detector](src/core/intent-detector.ts) | Frame + registered intents | Validated intent-name `string` |
-| [Text processor](src/processors/send-text-to-application.ts) | Original frame | Type text if focus matches |
+| [Text processor](src/processors/send-text-to-application.ts) | Frame, with prefix removed if matched | Type text if focus matches |
+| [Enter processor](src/processors/enter-text-to-application.ts) | Frame with `enter` removed | Type text, recheck focus, press Enter |
 | [Ignore processor](src/processors/ignore.ts) | Original frame | Log that no action is needed |
 
 Start reviewing with the shared contracts in [frame.ts](src/core/frame.ts), then the
@@ -132,11 +153,47 @@ The shared system prompt is in `core/intent-detector.ts`. Each processor keeps
 its own intent instruction next to its action. Prompt text is preserved verbatim
 during formatting and structural changes.
 
-Each processor exposes a `name`, an `instruction`, `subscribe(router)`, and
-`process(frame, signal)`. Subscription registers the processor with the router.
-The router passes current registrations to the detector to compose its prompt,
-then invokes exactly the processor whose name comes back. Adding an intent
-requires a processor and a subscription in the CLI; the detector needs no edit.
+Each processor exposes a `name`, `subscribe(router)`, and `process(frame, signal)`,
+plus an `instruction`, `prefixes`, or both. Subscription registers the processor
+with the router. Only processors with an instruction become LLM choices;
+prefix-only processors can only run through an explicit command.
+
+A minimal prefix-only module looks like this:
+
+```ts
+import type { UserSensorFrame, UserSensorProcessor } from './core/frame.ts';
+import type { UserSensorRouter } from './core/router.ts';
+
+class Remember implements UserSensorProcessor {
+  readonly name = 'REMEMBER';
+  readonly prefixes = ['remember', 'take note'];
+
+  subscribe(router: UserSensorRouter): void {
+    router.register(this);
+  }
+
+  async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+
+    // "remember buy milk" arrives here with utterance === "buy milk".
+    console.log(frame.utterance);
+  }
+}
+
+// In the CLI, after creating the router:
+new Remember().subscribe(router);
+```
+
+Adding a module requires its implementation and a subscription in the CLI; the
+detector needs no edit. Duplicate names or prefixes fail during registration.
+When prefixes overlap, the longest match wins regardless of subscription order.
+Only one prefix is removed: “insert enter hello” types `enter hello` without
+pressing Enter. All prefix commands require a nonempty payload.
+
+Prefix routing copies the frame with the remaining utterance, preserving the
+screenshot and observation metadata. LLM routing delivers the original frame.
+The router passes registrations with instructions to the detector to compose its
+prompt, then invokes exactly the processor whose name comes back.
 
 The detector wraps a Pi `Agent` from `@earendil-works/pi-agent-core`. One request
 contains one user message with text and image together. Each frame gets a fresh
@@ -147,18 +204,25 @@ failed, or timed-out responses are logged as errors and never dispatched.
 Audio/VAD runs independently of the sequential ASR/routing worker. Capture
 starts at speech end, before ASR, including when a preceding frame is still being
 processed. The worker holds one active and up to two queued utterances; additional
-utterances are explicitly logged as dropped. File input waits for each result.
+utterances are explicitly logged as dropped. Prefix commands use this same queue
+and preserve speech order; they do not overtake an earlier LLM request. File input
+waits for each result.
 Silero uses the spike's thresholds: 400 ms minimum speech, 800 ms ending silence,
 256 ms preroll, and a 30-second segment limit. Voxtype loads Parakeet per utterance,
 as in the spike; it is a measurable part of latency.
 
 ## Text delivery
 
-`SendTextToApplication` re-reads the active window immediately before invoking
+Both text processors use the same delivery helper to re-read the active window before invoking
 `wtype`. If the window address differs from the screenshot's address, it logs a
 skip and types nothing. It never restores focus. ASR text is delivered unchanged
-except that control characters become spaces, so newlines cannot press Enter
-and tabs cannot change fields. No command-wrapper removal or rewriting occurs.
+except that matched prefixes are removed and control characters become spaces,
+so newlines cannot press Enter and tabs cannot change fields. LLM-based dictation
+does not remove any command wrapper or rewrite the utterance.
+
+`EnterTextToApplication` checks focus again after typing and only then presses
+Enter. A focus change, typing failure, or cancellation prevents that keypress.
+This processor has no LLM instruction: only the explicit “enter” prefix selects it.
 
 The focus check identifies a window, not a browser tab or an individual text
 field. A focus change during keyboard delivery cannot be made atomic with
@@ -172,10 +236,13 @@ There is no sandboxing in v1.
 npm run check
 npm test
 npm run test:live
+# Desktop shortcut checks only, without microphone, ASR, or LLM:
+npm run test:live -- --prefix-only
 ```
 
 Automated tests cover real Pi HTTP payloads with a local mock endpoint, strict
-intent parsing, subscription/dispatch, focus-change suppression, PCM boundaries,
+intent parsing, subscription/dispatch, prefix matching and LLM bypass, explicit
+Enter sequencing, focus-change suppression, PCM boundaries,
 actual Silero inference on silence, VAD segmentation, capture races, bounded
 queues, and cancellation. They do not capture the desktop or type anything.
 
@@ -183,7 +250,9 @@ The opt-in live test opens two disposable text fields, records approximately one
 second of microphone audio, transcribes the public speech fixture, captures a
 real window, calls the configured model, checks actual keyboard delivery, and
 changes focus after inference to verify that neither field gets additional
-text. It closes its windows and restores the previous window afterward.
+text. It also verifies actual prefix typing and Enter, including focus changes
+before delivery and between typing and Enter. It closes its windows and restores
+the previous window afterward. `--prefix-only` runs just these shortcut checks.
 
 ## Code style
 

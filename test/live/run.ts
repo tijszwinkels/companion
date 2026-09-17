@@ -1,5 +1,6 @@
 // Opt-in: records ~1 s of microphone audio, opens two fields, calls the local LLM,
-// and types only into those fields. Run inside the Hyprland desktop session.
+// and types only into those fields. --prefix-only skips audio and the model.
+// Run inside the Hyprland desktop session.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -17,10 +18,11 @@ import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { IntentDetector } from '../../src/core/intent-detector.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
+import { EnterTextToApplication } from '../../src/processors/enter-text-to-application.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import type { Log } from '../../src/core/frame.ts';
 
-const config = await loadConfig();
+const prefixOnly = process.argv.includes('--prefix-only');
 const signal = AbortSignal.timeout(60000);
 const previous = await activeWindow(signal);
 const directory = await mkdtemp(join(tmpdir(), 'companion-live-'));
@@ -66,69 +68,123 @@ try {
   const a = windows.find((window) => window.title.startsWith('Companion test A'))!;
   const b = windows.find((window) => window.title.startsWith('Companion test B'))!;
   await focus(a.address);
-
-  let microphoneFrames = 0;
-  for await (const _frame of audioFrames(signal)) {
-    if (++microphoneFrames === 32) {
-      break;
-    }
-  }
-  console.log(`PASS microphone: ${microphoneFrames} PCM frames`);
-
-  vad = await VoiceActivityDetector.create(config.vadModel);
-  const segmenter = new Segmenter(),
-    segments: Float32Array[] = [];
-  for await (const frame of audioFrames(signal, {
-    file: fileURLToPath(new URL('../fixtures/speech.wav', import.meta.url)),
-  })) {
-    const segment = segmenter.push(await vad.probability(frame), frame);
-    if (segment) {
-      segments.push(segment.samples);
-    }
-  }
-  const tail = segmenter.finish();
-  if (tail) {
-    segments.push(tail.samples);
-  }
-  assert.ok(segments.length > 0);
-  const speech = await new Transcriber(config.asr).transcribe(segments[0], signal);
-  assert.match(speech, /Dublin/i);
-  console.log(`PASS VAD + ASR: ${JSON.stringify(speech)}`);
-
-  const screenshot = await captureActiveWindow(signal);
-  const detector = new IntentDetector(config.llm);
-  const router = new UserSensorRouter(detector, log);
-  new SendTextToApplication(log).subscribe(router);
-  new Ignore(log).subscribe(router);
-  assert.equal(
-    await router.route({ id: 1, observedAt: Date.now(), utterance: speech, screenshot }, signal),
-    'IGNORE',
-  );
-
-  const utterance = 'Please type this message: Hello from Companion.';
-  const frame = { id: 2, observedAt: Date.now(), utterance, screenshot };
-  assert.equal(await router.route(frame, signal), 'SEND_TEXT_TO_APPLICATION');
-  await delay(200, undefined, { signal });
   const texts = () => readFile(join(directory, 'text.json'), 'utf8').then(JSON.parse);
-  assert.deepEqual(await texts(), { A: utterance, B: '' });
-  console.log('PASS actual text delivery: exact utterance, no Enter');
+  let expectedText = '';
 
-  const switchedRouter = new UserSensorRouter(
-    {
-      detect: async (...args) => {
-        const name = await detector.detect(...args);
-        await focus(b.address);
-        return name;
+  if (!prefixOnly) {
+    const config = await loadConfig();
+    let microphoneFrames = 0;
+    for await (const _frame of audioFrames(signal)) {
+      if (++microphoneFrames === 32) {
+        break;
+      }
+    }
+    console.log(`PASS microphone: ${microphoneFrames} PCM frames`);
+
+    vad = await VoiceActivityDetector.create(config.vadModel);
+    const segmenter = new Segmenter();
+    const segments: Float32Array[] = [];
+    for await (const frame of audioFrames(signal, {
+      file: fileURLToPath(new URL('../fixtures/speech.wav', import.meta.url)),
+    })) {
+      const segment = segmenter.push(await vad.probability(frame), frame);
+      if (segment) {
+        segments.push(segment.samples);
+      }
+    }
+    const tail = segmenter.finish();
+    if (tail) {
+      segments.push(tail.samples);
+    }
+    assert.ok(segments.length > 0);
+    const speech = await new Transcriber(config.asr).transcribe(segments[0], signal);
+    assert.match(speech, /Dublin/i);
+    console.log(`PASS VAD + ASR: ${JSON.stringify(speech)}`);
+
+    const screenshot = await captureActiveWindow(signal);
+    const detector = new IntentDetector(config.llm);
+    const router = new UserSensorRouter(detector, log);
+    new SendTextToApplication(log).subscribe(router);
+    new Ignore(log).subscribe(router);
+    assert.equal(
+      await router.route({ id: 1, observedAt: Date.now(), utterance: speech, screenshot }, signal),
+      'IGNORE',
+    );
+
+    const utterance = 'Please type this message: Hello from Companion.';
+    const frame = { id: 2, observedAt: Date.now(), utterance, screenshot };
+    assert.equal(await router.route(frame, signal), 'SEND_TEXT_TO_APPLICATION');
+    await delay(200, undefined, { signal });
+    assert.deepEqual(await texts(), { A: utterance, B: '' });
+    console.log('PASS actual text delivery: exact utterance, no Enter');
+
+    const switchedRouter = new UserSensorRouter(
+      {
+        detect: async (...args) => {
+          const name = await detector.detect(...args);
+          await focus(b.address);
+          return name;
+        },
       },
-    },
-    log,
-  );
-  new SendTextToApplication(log).subscribe(switchedRouter);
-  new Ignore(log).subscribe(switchedRouter);
-  assert.equal(await switchedRouter.route({ ...frame, id: 3 }, signal), 'SEND_TEXT_TO_APPLICATION');
+      log,
+    );
+    new SendTextToApplication(log).subscribe(switchedRouter);
+    new Ignore(log).subscribe(switchedRouter);
+    assert.equal(
+      await switchedRouter.route({ ...frame, id: 3 }, signal),
+      'SEND_TEXT_TO_APPLICATION',
+    );
+    await delay(200, undefined, { signal });
+    assert.deepEqual(await texts(), { A: utterance, B: '' });
+    console.log('PASS focus change after inference: neither field receives text');
+    expectedText = utterance;
+  }
+
+  // A detector that fails if called proves that the shortcuts do not need a
+  // working model. Real screenshots and wtype still exercise the desktop path.
+  const noInference = { detect: async () => assert.fail('Prefix called the LLM') };
+  const prefixRouter = new UserSensorRouter(noInference, log);
+  new SendTextToApplication(log).subscribe(prefixRouter);
+  new EnterTextToApplication(log).subscribe(prefixRouter);
+
+  await focus(a.address);
+  const screenshot = await captureActiveWindow(signal);
+  const prefixFrame = { id: 4, observedAt: Date.now(), utterance: 'Insert, hello ', screenshot };
+  assert.equal(await prefixRouter.route(prefixFrame, signal), 'SEND_TEXT_TO_APPLICATION');
+  expectedText += 'hello ';
   await delay(200, undefined, { signal });
-  assert.deepEqual(await texts(), { A: utterance, B: '' });
-  console.log('PASS focus change after inference: neither field receives text');
+  assert.deepEqual(await texts(), { A: expectedText, B: '' });
+  console.log('PASS insert prefix: command removed, exact payload, no Enter, no inference');
+
+  await prefixRouter.route({ ...prefixFrame, id: 5, utterance: 'ENTER world' }, signal);
+  expectedText += 'world\n';
+  await delay(200, undefined, { signal });
+  assert.deepEqual(await texts(), { A: expectedText, B: '' });
+  console.log('PASS enter prefix: payload followed by one actual Enter, no inference');
+
+  await focus(b.address);
+  await prefixRouter.route({ ...prefixFrame, id: 6, utterance: 'enter must not appear' }, signal);
+  await delay(200, undefined, { signal });
+  assert.deepEqual(await texts(), { A: expectedText, B: '' });
+  console.log('PASS prefix focus mismatch: no text and no Enter');
+
+  // Move focus after the real text command has completed. The processor must
+  // check again and suppress Return, leaving the second disposable field empty.
+  await focus(a.address);
+  const switchedEnter = new EnterTextToApplication(log, false, async (file, args, signal) => {
+    const result = await command(file, args, signal);
+    if (file === 'wtype' && args[0] === '--') {
+      await focus(b.address);
+    }
+    return result;
+  });
+  const switchedPrefixRouter = new UserSensorRouter(noInference, log);
+  switchedEnter.subscribe(switchedPrefixRouter);
+  await switchedPrefixRouter.route({ ...prefixFrame, id: 7, utterance: 'enter stay here' }, signal);
+  expectedText += 'stay here';
+  await delay(200, undefined, { signal });
+  assert.deepEqual(await texts(), { A: expectedText, B: '' });
+  console.log('PASS focus change during typing: text stays in A, no Enter in B');
 } finally {
   gui.kill('SIGKILL');
   await closed;

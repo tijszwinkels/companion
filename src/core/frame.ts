@@ -41,11 +41,19 @@ export interface Intent {
   instruction: string;
 }
 
-/** A processor describes its intent and handles frames classified with that name. */
-export interface UserSensorProcessor extends Intent {
+/** A processor can be selected by the LLM, by a spoken prefix, or by both. */
+export interface UserSensorProcessor {
+  name: string;
+
+  /** Omit this for commands that must only run when explicitly requested. */
+  instruction?: string;
+
+  /** Case-insensitive command prefixes, removed before process receives a frame. */
+  prefixes?: readonly string[];
+
   subscribe(router: UserSensorRouter): void;
 
-  /** Receives the original frame; the detector returns no rewritten payload. */
+  /** LLM routing preserves the frame; prefix routing copies it with the remaining text. */
   process(frame: UserSensorFrame, signal: AbortSignal): Promise<void>;
 }
 

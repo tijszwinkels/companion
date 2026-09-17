@@ -5,6 +5,7 @@ import { loadConfig } from './config.ts';
 import { IntentDetector } from './core/intent-detector.ts';
 import { UserSensorRouter } from './core/router.ts';
 import { Ignore } from './processors/ignore.ts';
+import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
 import { captureActiveWindow } from './sensors/screen/capture.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
@@ -47,14 +48,15 @@ async function main(): Promise<void> {
 
 Usage: npm start -- [options]
   --preview          Log text delivery instead of typing it
-  --text "utterance" Classify one supplied utterance with a live screenshot
+  --text "utterance" Route one supplied utterance with a live screenshot
   --wav file.wav     Run an audio file through VAD, ASR, and intent routing
   --device name      PipeWire capture node (default: system microphone)
   --seconds N        Stop microphone capture after N seconds
   --config path      JSON configuration (default: companion.config.json)
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
-No Enter key is sent. Start inside your Hyprland desktop session.`);
+"insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
+Other dictation never presses Enter. Start inside your Hyprland desktop session.`);
     return;
   }
 
@@ -91,11 +93,15 @@ No Enter key is sent. Start inside your Hyprland desktop session.`);
       `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
     );
 
-    // Subscriptions provide both the detector's prompt entries and its targets.
+    // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
     const router = new UserSensorRouter(new IntentDetector(config.llm), log);
     new SendTextToApplication(log, values.preview).subscribe(router);
+    new EnterTextToApplication(log, values.preview).subscribe(router);
     new Ignore(log).subscribe(router);
-    log('registered', 'SEND_TEXT_TO_APPLICATION, IGNORE');
+    log(
+      'registered',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE',
+    );
 
     // Supplied text enters the same routing path but needs no audio resources.
     if (values.text !== undefined) {
