@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { UserSensorRouter } from '../../src/core/router.ts';
+import { DeliveryInterruptedError } from '../../src/core/delivery-error.ts';
 import { EnterTextToApplication } from '../../src/processors/enter-text-to-application.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import type { RunCommand } from '../../src/sensors/screen/capture.ts';
@@ -84,7 +85,10 @@ test('Enter is suppressed when focus moves during typing', async () => {
     return result;
   };
 
-  await new EnterTextToApplication(() => {}, false, run).process(frame, signal());
+  await assert.rejects(
+    new EnterTextToApplication(() => {}, false, run).process(frame, signal()),
+    DeliveryInterruptedError,
+  );
 
   assert.deepEqual(screen.calls, [
     { file: 'hyprctl', args: ['-j', 'activewindow'] },
@@ -110,7 +114,7 @@ test('failed or cancelled typing cannot be followed by Enter', async () => {
 
     await assert.rejects(
       new EnterTextToApplication(() => {}, false, run).process(frame, controller.signal),
-      /Typing failed|abort/i,
+      DeliveryInterruptedError,
     );
     assert.equal(screen.calls.length, 2);
   }

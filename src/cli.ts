@@ -10,11 +10,15 @@ import { SendTextToApplication } from './processors/send-text-to-application.ts'
 import { captureActiveWindow } from './sensors/screen/capture.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
 import { VoiceActivityDetector } from './sensors/audio/vad.ts';
-import { Segmenter } from './sensors/audio/segmenter.ts';
-import { audioFrames } from './sensors/audio/capture.ts';
+import { listen } from './sensors/audio/listener.ts';
 import { SensorPipeline } from './core/pipeline.ts';
+import { PauseControl } from './core/pause-control.ts';
+import { DeliveryControl } from './core/delivery-control.ts';
+import { failureOutcome } from './core/delivery-error.ts';
+import { DesktopRuntime, desktopPaths } from './desktop/runtime.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
+import type { Transcript } from './core/activity.ts';
 
 /** Keep each event on one line, with frame IDs connecting concurrent stages. */
 const log: Log = (stage, detail, id) => {
@@ -40,6 +44,9 @@ async function main(): Promise<void> {
       device: { type: 'string' },
       preview: { type: 'boolean', default: false },
       seconds: { type: 'string' },
+      'no-sounds': { type: 'boolean', default: false },
+      'no-desktop': { type: 'boolean', default: false },
+      paused: { type: 'boolean', default: false },
     },
   });
 
@@ -53,6 +60,9 @@ Usage: npm start -- [options]
   --device name      PipeWire capture node (default: system microphone)
   --seconds N        Stop microphone capture after N seconds
   --config path      JSON configuration (default: companion.config.json)
+  --no-sounds        Start with audible feedback muted
+  --no-desktop       Disable history, sounds, and desktop control
+  --paused           Start paused; resume through the desktop control
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
@@ -63,6 +73,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // Validate CLI input before opening the microphone or contacting the model.
   if (values.text !== undefined && values.wav) {
     throw Error('Choose --text or --wav');
+  }
+  if (values.paused && (values.text !== undefined || values.wav || values['no-desktop'])) {
+    throw Error('--paused requires microphone mode with desktop control');
   }
   if (values.text !== undefined && (!values.text.trim() || values.text.length > 4000)) {
     throw Error('--text requires 1–4000 characters');
@@ -85,7 +98,12 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let timer: ReturnType<typeof setTimeout> | undefined;
   let vad: VoiceActivityDetector | undefined;
   let pipeline: SensorPipeline | undefined;
-  let audioFrameCount = 0;
+  let desktop: DesktopRuntime | undefined;
+  const pause = new PauseControl();
+
+  if (values.paused) {
+    pause.toggle();
+  }
 
   try {
     log(
@@ -93,11 +111,22 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
     );
 
+    if (!values['no-desktop']) {
+      desktop = new DesktopRuntime(pause, log, controller.signal, {
+        ...desktopPaths(),
+        preview: values.preview,
+        sounds: !values['no-sounds'] && !values.preview,
+      });
+      await desktop.start();
+    }
+
+    const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
+
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
-    const router = new UserSensorRouter(new IntentDetector(config.llm), log);
-    new SendTextToApplication(log, values.preview).subscribe(router);
-    new EnterTextToApplication(log, values.preview).subscribe(router);
-    new Ignore(log).subscribe(router);
+    const router = new UserSensorRouter(new IntentDetector(config.llm), log, activity);
+    new SendTextToApplication(log, values.preview, command, activity).subscribe(router);
+    new EnterTextToApplication(log, values.preview, command, activity).subscribe(router);
+    new Ignore(log, activity).subscribe(router);
     log(
       'registered',
       'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE',
@@ -105,13 +134,25 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     // Supplied text enters the same routing path but needs no audio resources.
     if (values.text !== undefined) {
-      log('capture', 'Capturing active window', 1);
-      const screenshot = await captureActiveWindow(controller.signal);
-      log('frame', 'Supplied utterance + screenshot', 1);
-      await router.route(
-        { id: 1, observedAt: Date.now(), utterance: values.text, screenshot },
-        controller.signal,
-      );
+      const transcript: Transcript = { id: 1, observedAt: Date.now(), utterance: values.text };
+      activity.processing?.(1);
+
+      try {
+        log('capture', 'Capturing active window', 1);
+        const screenshot = await captureActiveWindow(controller.signal, command, (application) => {
+          transcript.application = application;
+        });
+        activity.transcribed?.(transcript);
+        log('frame', 'Supplied utterance + screenshot', 1);
+        await router.route({ ...transcript, screenshot }, controller.signal);
+      } catch (error) {
+        // Like audio input, supplied text is retained even if capture fails.
+        activity.transcribed?.(transcript);
+        activity.outcome?.(1, failureOutcome(error, controller.signal));
+        throw error;
+      } finally {
+        activity.finished?.(1);
+      }
 
       return;
     }
@@ -132,12 +173,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     const asr = new Transcriber(config.asr);
     pipeline = new SensorPipeline(
-      { capture: captureActiveWindow, transcribe: asr.transcribe.bind(asr) },
+      {
+        capture: (signal, observed) => captureActiveWindow(signal, command, observed),
+        transcribe: asr.transcribe.bind(asr),
+      },
       router,
       log,
       controller.signal,
+      activity,
     );
-    const segmenter = new Segmenter();
 
     if (seconds !== undefined) {
       timer = setTimeout(stop, seconds * 1000);
@@ -145,40 +189,29 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'listening',
-      values.wav ? `Audio file: ${values.wav}` : 'Microphone active · Ctrl+C to stop',
+      values.wav ? `Audio file: ${values.wav}` : 'Desktop control ready · Ctrl+C to stop',
     );
 
-    // The capture loop only waits for VAD. ASR and intent detection run in the
-    // pipeline's separate worker, so a model request does not pause listening.
-    for await (const frame of audioFrames(controller.signal, {
-      file: values.wav,
-      device: values.device,
-    })) {
-      const wasSpeaking = segmenter.speaking;
-      const segment = segmenter.push(await vad.probability(frame), frame);
+    do {
+      await pause.waitUntilResumed(controller.signal);
+      const listeningSignal = AbortSignal.any([controller.signal, pause.signal]);
 
-      if (!wasSpeaking && segmenter.speaking) {
-        log('speech', 'Speech detected');
-      }
-      audioFrameCount++;
-
-      if (segment) {
-        log('utterance', `Speech ended (${segment.reason})`);
-        pipeline.submit(segment.samples);
-
-        // Files can decode much faster than real time. Waiting here prevents
-        // offline playback from overflowing the bounded utterance queue.
-        if (values.wav) {
-          await pipeline.idle();
+      try {
+        await listen(vad, pipeline, log, listeningSignal, {
+          file: values.wav,
+          device: values.device,
+        });
+        break;
+      } catch (error) {
+        if (!listeningSignal.aborted || controller.signal.aborted) {
+          throw error;
         }
-      }
-    }
 
-    // A file can end during speech, without the usual silence that closes it.
-    const tail = segmenter.finish();
-    if (tail) {
-      pipeline.submit(tail.samples);
-    }
+        // Pause killed the recorder and pending work. Wait for cancellation to
+        // settle before a new period reuses VAD or accepts more microphone audio.
+        await pipeline.idle();
+      }
+    } while (!values.wav);
 
     await pipeline.idle();
   } catch (error) {
@@ -193,13 +226,11 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     await pipeline?.idle();
     await vad?.close();
+    await desktop?.close();
 
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
 
-    if (audioFrameCount) {
-      log('audio', `${audioFrameCount} frames processed`);
-    }
     if (pipeline?.failures) {
       process.exitCode = 1;
     }

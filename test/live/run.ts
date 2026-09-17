@@ -17,6 +17,7 @@ import { Segmenter } from '../../src/sensors/audio/segmenter.ts';
 import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { IntentDetector } from '../../src/core/intent-detector.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
+import { DeliveryInterruptedError } from '../../src/core/delivery-error.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import { EnterTextToApplication } from '../../src/processors/enter-text-to-application.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
@@ -180,7 +181,10 @@ try {
   });
   const switchedPrefixRouter = new UserSensorRouter(noInference, log);
   switchedEnter.subscribe(switchedPrefixRouter);
-  await switchedPrefixRouter.route({ ...prefixFrame, id: 7, utterance: 'enter stay here' }, signal);
+  await assert.rejects(
+    switchedPrefixRouter.route({ ...prefixFrame, id: 7, utterance: 'enter stay here' }, signal),
+    DeliveryInterruptedError,
+  );
   expectedText += 'stay here';
   await delay(200, undefined, { signal });
   assert.deepEqual(await texts(), { A: expectedText, B: '' });

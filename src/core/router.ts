@@ -1,5 +1,6 @@
 import type { Intent, Log, UserSensorFrame, UserSensorProcessor } from './frame.ts';
 import { stripPrefix } from './prefix.ts';
+import type { Activity } from './activity.ts';
 
 /** Allows the router to use either the Pi detector or a test implementation. */
 export interface Detector {
@@ -14,6 +15,7 @@ export class UserSensorRouter {
   constructor(
     private readonly detector: Detector,
     private readonly log: Log,
+    private readonly activity: Activity = {},
   ) {}
 
   register(processor: UserSensorProcessor): void {
@@ -69,8 +71,10 @@ export class UserSensorRouter {
       }
 
       this.log('prefix', `${JSON.stringify(prefix)} → ${processor.name} (LLM bypassed)`, frame.id);
+      this.activity.intentRecognized?.(frame.id, processor.name);
       if (!utterance.trim()) {
         this.log('skipped', 'Prefix has no following text', frame.id);
+        this.activity.outcome?.(frame.id, 'skipped');
         return processor.name;
       }
 
@@ -109,6 +113,7 @@ export class UserSensorRouter {
     }
 
     this.log('intent', `${name} (${Math.round(performance.now() - started)} ms)`, frame.id);
+    this.activity.intentRecognized?.(frame.id, name);
     this.log('dispatch', name, frame.id);
 
     await processor.process(frame, signal);

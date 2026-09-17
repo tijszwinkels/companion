@@ -55,9 +55,13 @@ export async function activeWindow(
 export async function captureActiveWindow(
   signal: AbortSignal,
   run: RunCommand = command,
+  observed?: (window: Screenshot['window']) => void,
 ): Promise<Screenshot> {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
   const before = await activeWindow(deadline, run);
+  // Preserve application context for evaluation even if the screenshot later
+  // fails or focus moves. This observation alone never authorizes delivery.
+  observed?.({ address: before.address, app: before.class, title: before.title });
 
   const monitors: Monitor[] = JSON.parse(
     (await run('hyprctl', ['-j', 'monitors'], deadline)).toString(),

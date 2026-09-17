@@ -1,19 +1,24 @@
 import type { Log, UserSensorFrame } from '../core/frame.ts';
-import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
+import type { RunCommand } from '../sensors/screen/capture.ts';
+import type { Activity } from '../core/activity.ts';
+import type { DeliveryControl } from '../core/delivery-control.ts';
 import { command } from './command.ts';
+import { typeText } from './type-text.ts';
 
 interface TextInputOptions {
   log: Log;
   preview: boolean;
   run?: RunCommand;
   pressEnter?: boolean;
+  activity: Activity;
+  delivery: DeliveryControl;
 }
 
 /** Shared keyboard delivery for dictation and explicit prefix commands. */
 export async function typeIntoCapturedWindow(
   frame: UserSensorFrame,
   signal: AbortSignal,
-  { log, preview, run = command, pressEnter = false }: TextInputOptions,
+  { log, preview, run = command, pressEnter = false, activity, delivery }: TextInputOptions,
 ): Promise<void> {
   signal.throwIfAborted();
 
@@ -22,43 +27,40 @@ export async function typeIntoCapturedWindow(
   const text = frame.utterance.replace(/[\u0000-\u001f\u007f]/g, ' ');
   if (!text.trim()) {
     log('skipped', 'No text to type', frame.id);
+    activity.outcome?.(frame.id, 'skipped');
     return;
   }
 
   if (preview) {
     const suffix = pressEnter ? ' + Enter' : '';
     log('processor', `Text delivery preview: ${JSON.stringify(text)}${suffix}`, frame.id);
+    activity.outcome?.(frame.id, 'preview');
     return;
   }
 
-  // Transcription, queued frames, and inference can delay delivery. Check the
-  // captured window's identity now, with one deadline for the whole action.
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-  const current = await activeWindow(deadline, run);
-  if (current.address !== frame.screenshot.window.address) {
-    log('skipped', 'Focus changed since capture; no text typed', frame.id);
+  // The queue covers text AND Enter. Manual recovery cannot interleave with
+  // either command, and focus is checked only after earlier writers finish.
+  const delivered = await delivery.automatic(frame.id, signal, (claim) =>
+    typeText(
+      text,
+      frame.screenshot.window.address,
+      signal,
+      run,
+      () => activity.deliveryAllowed?.(frame.id) !== false && claim(),
+      () => activity.deliveryStarted?.(frame.id),
+      pressEnter,
+    ),
+  );
+
+  if (!delivered) {
+    log('skipped', 'Focus changed or manual recovery superseded delivery; no text typed', frame.id);
+    activity.outcome?.(frame.id, 'skipped');
     return;
   }
 
-  deadline.throwIfAborted();
-
-  // `--` makes text literal, even when it begins with '-'. Keep key commands in
-  // a separate invocation so user text cannot become wtype options.
-  await run('wtype', ['--', text], deadline);
   log('processor', 'Text typed into the captured window', frame.id);
-
   if (pressEnter) {
-    // Typing itself takes time. If focus moved during delivery, do not submit
-    // into the new window. Window checks and keyboard events are not atomic.
-    deadline.throwIfAborted();
-    const afterTyping = await activeWindow(deadline, run);
-    if (afterTyping.address !== frame.screenshot.window.address) {
-      log('skipped', 'Focus changed after typing; Enter not pressed', frame.id);
-      return;
-    }
-
-    deadline.throwIfAborted();
-    await run('wtype', ['-k', 'Return'], deadline);
     log('processor', 'Enter pressed in the captured window', frame.id);
   }
+  activity.outcome?.(frame.id, 'sent');
 }

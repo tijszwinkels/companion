@@ -1,0 +1,57 @@
+# Omarchy adapter
+
+This optional adapter contains the entire shell integration: the bar button,
+themed utterance picker, and Hyprland shortcut. Companion itself has no dependency
+on this plugin. The [local protocol](../../src/desktop/README.md) can support other
+desktop adapters without changing the sensor pipeline or processors.
+
+From a Hyprland desktop terminal in this checkout:
+
+```sh
+npm run omarchy:install
+npm start
+```
+
+Stop an older Companion listener before starting another. The installer copies
+the plugin to `~/.config/omarchy/plugins/companion.desktop`, adds it to the right
+side of the bar, and sources its shortcut from the personal Hyprland bindings.
+It backs up the two modified config files, preserves existing entries, refuses
+a conflicting shortcut, reloads Hyprland, and checks configuration errors.
+It neither installs packages nor edits files shipped by Omarchy. Run it again
+after changing plugin files in this worktree to update the installed copy.
+The installer uses a separate source revision directory for changed QML so Qt's
+component cache cannot silently retain an older service. No shell restart is
+needed to update this adapter.
+
+- Hold **Super+Alt+V**, move with **Up/Down**, and release to paste the selected
+  utterance into the application that was active at press time.
+- Tap the chord to immediately recover the latest utterance.
+- **Escape** cancels. Empty history does nothing. Changing the target window
+  before delivery skips the paste.
+- Recovering an utterance already being typed is rejected to avoid duplication.
+  Other keyboard output waits its turn and checks focus again before typing.
+- Click the microphone in the top bar for separate **Listening** and **Sound
+  effects** switches. Turn listening off to pause, or mute the bleeps while
+  keeping Companion active. Pausing closes the
+  recorder, cancels unfinished work, and discards partial speech. The microphone
+  is grey while recording, green while processing, and neutral when paused.
+  The dimmed icon means Companion is not running. Processing takes priority
+  when listening and processing overlap.
+  Pause and sound controls remain responsive during manual recovery.
+- An ascending two-note cue confirms successful delivery; a descending cue
+  means ignored. A single note means accepted for processing. `--no-sounds`
+  starts with them muted; the menu can enable them for the current session.
+  Muting also stops playing and queued cues. Preview mode is silent and does not type.
+
+The global shortcut uses Hyprland's resident
+[press/release protocol](https://quickshell.org/docs/v0.2.0/types/Quickshell.Hyprland/GlobalShortcut/)
+so fast taps do not race separate helper processes. The picker follows Omarchy's
+clipboard menu colors and fonts. Its rows are frozen during selection. Focus
+stays in the destination application; temporary arrow/Escape bindings exist
+only while the picker is visible and are removed when it closes.
+
+To remove the adapter, remove its `dofile` block from `~/.config/hypr/bindings.lua`,
+remove `companion.desktop` entries from the bar layout and `plugins` list in
+`~/.config/omarchy/shell.json`, and remove its plugin directory. Then run
+`hyprctl reload`, `hyprctl configerrors`, and `omarchy-shell shell rescanPlugins`.
+The utterance database is independent of the adapter and is retained.

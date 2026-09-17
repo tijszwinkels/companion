@@ -51,10 +51,44 @@ npm start -- --preview --seconds 10
 accepts formats FFmpeg can decode. `--device NODE_NAME` selects a PipeWire source.
 Run `npm start -- --help` for all flags.
 
+## Desktop integration and history
+
+Companion plays a short cue when an utterance is accepted for processing, an
+ascending cue after actual delivery, and a descending cue for ignored speech.
+Use `--no-sounds` to start with these cues muted, or toggle them from the top bar
+microphone menu during a session. Preview mode is silent.
+
+The optional [Omarchy adapter](integrations/omarchy/README.md) adds:
+
+- **Super+Alt+V**: hold to see recent utterances, select with **Up/Down**, and
+  release to paste. A quick tap pastes the latest utterance; **Escape** cancels.
+- A microphone control in the top bar: click for separate listening and sound
+  effects switches. Mute the bleeps while keeping Companion active. Pause closes
+  microphone capture, cancels pending work, and discards partial speech.
+
+Install the adapter once from this checkout with `npm run omarchy:install`, then
+run `npm start`. Stop any older listener first. `--paused` starts with capture
+off. Explicit history recovery still works while listening is paused.
+
+All nonempty transcripts are retained in SQLite at
+`~/.local/state/companion/utterances.sqlite` (or under `$XDG_STATE_HOME`). Records
+include the application/window observed at speech end, recognized intent, and
+actual outcome. A separate `paste_events` table links manual recovery attempts
+and their outcomes to the original utterance, preserving the original decision
+for later evaluation. The picker displays the latest 100; older records remain
+in the database. Untranscribed audio, including overload drops, has no transcript
+to retain. Screenshots and raw audio are not stored in this database.
+
+The Omarchy code lives entirely in `integrations/omarchy`. The generic desktop
+service exposes a private local socket; its [protocol and database documentation](src/desktop/README.md)
+describe how other adapters can connect. `--no-desktop` disables that service,
+including storage and sounds, for isolated CLI use.
+
 ## Prerequisites and configuration
 
 - Node.js 22.19 or newer.
-- Hyprland, `hyprctl`, `grim`, `pw-record`, and `wtype` on PATH.
+- Hyprland, `hyprctl`, `grim`, `pw-record`, `pw-play`, `wtype`, and util-linux
+  `flock` on PATH.
 - Voxtype 1.0.1 at `~/.local/bin/voxtype` and Parakeet at
   `~/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8`.
 - A vision-capable Qwen endpoint. Defaults match the spike:
@@ -102,7 +136,8 @@ src/
       capture.ts                 Read and capture the active window
   system/
     command.ts                   Run and cancel external commands
-    text-input.ts                Shared focus checks and keyboard delivery
+    text-input.ts                Automatic delivery ownership and feedback
+    type-text.ts                 Shared focus checks and literal keyboard input
 test/
   unit/                          Automated tests with controlled inputs
   live/                          Optional desktop and microphone checks
@@ -221,7 +256,10 @@ so newlines cannot press Enter and tabs cannot change fields. LLM-based dictatio
 does not remove any command wrapper or rewrite the utterance.
 
 `EnterTextToApplication` checks focus again after typing and only then presses
-Enter. A focus change, typing failure, or cancellation prevents that keypress.
+Enter. A focus change, typing failure, or cancellation prevents that keypress. If text
+was already typed, the outcome is `interrupted`, preserving partial-delivery
+uncertainty in history. Both processors share the desktop recovery queue, held
+through completion of the Enter keypress.
 This processor has no LLM instruction: only the explicit “enter” prefix selects it.
 
 The focus check identifies a window, not a browser tab or an individual text
@@ -236,6 +274,7 @@ There is no sandboxing in v1.
 npm run check
 npm test
 npm run test:live
+npm run test:desktop
 # Desktop shortcut checks only, without microphone, ASR, or LLM:
 npm run test:live -- --prefix-only
 ```
@@ -253,6 +292,13 @@ changes focus after inference to verify that neither field gets additional
 text. It also verifies actual prefix typing and Enter, including focus changes
 before delivery and between typing and Enter. It closes its windows and restores
 the previous window afterward. `--prefix-only` runs just these shortcut checks.
+
+The desktop test requires the Omarchy adapter to be installed and Companion to
+be stopped. It uses disposable GTK fields and a temporary SQLite database to
+check the shortcut, selection, cancellation, recovery, and pause connection.
+It briefly enables symbol matching for wtype's synthetic keymap and restores
+that setting and the previous focus afterward. It opens no microphone and makes
+no model request.
 
 ## Code style
 

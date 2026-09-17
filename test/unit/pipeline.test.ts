@@ -4,6 +4,8 @@ import test from 'node:test';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { deferred, processor, screenshot, signal } from '../helpers.ts';
+import type { Transcript } from '../../src/core/activity.ts';
+import { PauseControl } from '../../src/core/pause-control.ts';
 
 test('capture happens at submission, processing remains FIFO, and queue is bounded', async () => {
   const waiting = deferred<string>();
@@ -115,5 +117,75 @@ test('shutdown during ASR discards the result and pending audio without dispatch
   await pipeline.idle();
 
   assert.ok(samples.every((sample) => sample === 0));
+  assert.equal(pipeline.failures, 0);
+});
+
+test('capture failure still records the transcript and observed application before the error', async () => {
+  const recorded: Transcript[] = [];
+  const outcomes: string[] = [];
+  const router = new UserSensorRouter(
+    { detect: async () => assert.fail('Invalid screenshot was routed') },
+    () => {},
+  );
+  const pipeline = new SensorPipeline(
+    {
+      capture: async (_signal, observed) => {
+        observed?.(screenshot.window);
+        throw Error('Screenshot failed');
+      },
+      transcribe: async () => 'Recover this speech',
+    },
+    router,
+    () => {},
+    signal(),
+    {
+      transcribed: (transcript) => recorded.push(transcript),
+      outcome: (_id, outcome) => outcomes.push(outcome),
+    },
+  );
+
+  pipeline.submit(new Float32Array(16000));
+  await pipeline.idle();
+  assert.equal(recorded[0].utterance, 'Recover this speech');
+  assert.deepEqual(recorded[0].application, screenshot.window);
+  assert.deepEqual(outcomes, ['error']);
+});
+
+test('pause cancels in-flight and queued delivery; resuming accepts only new speech', async () => {
+  const pause = new PauseControl();
+  const waiting = deferred<string>();
+  const delivered: number[] = [];
+  const outcomes: string[] = [];
+  let calls = 0;
+  const router = new UserSensorRouter({ detect: async () => 'IGNORE' }, () => {});
+  processor('IGNORE', async (frame) => {
+    delivered.push(frame.id);
+  }).subscribe(router);
+  const pipeline = new SensorPipeline(
+    {
+      capture: async () => screenshot,
+      transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
+    },
+    router,
+    () => {},
+    signal(),
+    {
+      outcome: (_id, outcome) => outcomes.push(outcome),
+    },
+  );
+
+  pipeline.submit(new Float32Array(16000), pause.signal);
+  pipeline.submit(new Float32Array(16000), pause.signal);
+  pause.toggle();
+  pause.toggle();
+  waiting.resolve('Stale speech');
+  await pipeline.idle();
+  assert.deepEqual(delivered, []);
+  assert.deepEqual(outcomes, ['cancelled', 'cancelled']);
+  assert.equal(calls, 1);
+
+  pipeline.submit(new Float32Array(16000), pause.signal);
+  await pipeline.idle();
+  assert.deepEqual(delivered, [3]);
   assert.equal(pipeline.failures, 0);
 });

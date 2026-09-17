@@ -111,3 +111,84 @@ test('preview does not invoke desktop commands', async () => {
     async () => assert.fail('Desktop command in preview'),
   ).process(frame, signal());
 });
+
+test('feedback reports intent separately and confirms send only after successful keyboard delivery', async () => {
+  const events: string[] = [];
+  const activity = {
+    intentRecognized: (_id: number, intent: string) => {
+      events.push(intent);
+    },
+    outcome: (_id: number, outcome: string) => {
+      events.push(outcome);
+    },
+  };
+  const router = new UserSensorRouter(
+    { detect: async () => 'SEND_TEXT_TO_APPLICATION' },
+    () => {},
+    activity,
+  );
+  const send = new SendTextToApplication(
+    () => {},
+    false,
+    async (file) => {
+      if (file === 'hyprctl') {
+        return Buffer.from(
+          JSON.stringify({
+            address: frame.screenshot.window.address,
+            class: 'editor',
+            title: 'Document',
+            at: [0, 0],
+            size: [600, 400],
+            mapped: true,
+            hidden: false,
+          }),
+        );
+      }
+
+      assert.deepEqual(events, ['SEND_TEXT_TO_APPLICATION']);
+      return Buffer.alloc(0);
+    },
+    activity,
+  );
+  send.subscribe(router);
+  new Ignore(() => {}, activity).subscribe(router);
+  await router.route(frame, signal());
+  assert.deepEqual(events, ['SEND_TEXT_TO_APPLICATION', 'sent']);
+
+  events.length = 0;
+  await new Ignore(() => {}, activity).process(frame);
+  assert.deepEqual(events, ['ignored']);
+});
+
+test('manual recovery supersedes automatic delivery even while the final focus check is running', async () => {
+  let recovered = false;
+  const outcomes: string[] = [];
+  const send = new SendTextToApplication(
+    () => {},
+    false,
+    async (file) => {
+      assert.equal(file, 'hyprctl', 'Superseded text must never reach wtype');
+      recovered = true;
+      return Buffer.from(
+        JSON.stringify({
+          address: frame.screenshot.window.address,
+          class: 'editor',
+          title: 'Document',
+          at: [0, 0],
+          size: [600, 400],
+          mapped: true,
+          hidden: false,
+        }),
+      );
+    },
+    {
+      deliveryAllowed: () => !recovered,
+      outcome: (_id, outcome) => {
+        outcomes.push(outcome);
+      },
+    },
+  );
+
+  await send.process(frame, signal());
+  assert.deepEqual(outcomes, ['skipped']);
+});
