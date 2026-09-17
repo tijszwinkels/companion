@@ -1,3 +1,4 @@
 node_modules/
 companion.config.json
 *.log
+/AGENTS.md
