@@ -5,7 +5,7 @@ import { command } from './command.ts';
 
 export class SendTextToApplication implements UserSensorProcessor {
   readonly name = 'SEND_TEXT_TO_APPLICATION';
-  readonly instruction = 'The user wants the utterance to be sent to the currently active application as keyboard input. Perhaps the user is trying to edit a document, or send a message. Based on the content on the screen, it is likely that the user wants to send this utterance to the currently active application. If so, send SEND_TEXT_TO_APPLICATION as intent.';
+  readonly instruction = 'Choose this if the user likely wants the utterance to be sent to the currently active application as keyboard input. Only use this if the utterance seems a likely text input in the context of the currently open application and its context.';
   constructor(private readonly log: Log, private readonly preview = false, private readonly run: RunCommand = command) {}
   subscribe(router: UserSensorRouter): void { router.register(this); }
   async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
@@ -29,7 +29,7 @@ export class SendTextToApplication implements UserSensorProcessor {
 
 export class Ignore implements UserSensorProcessor {
   readonly name = 'IGNORE';
-  readonly instruction = "The user is talking to someone else, or listening to a video, or talking to himself. Perhaps someone else is talking, or the transcription service picked up some sound and transcribed it, even if the user wasn't saying anything. If the text that is heard is not likely to be meant for any of the other intents, sent IGNORE as intent name.";
+  readonly instruction = "Choose this if the utterance is likely not meant to be sent to the system in any of the other defined intents. This can happen, for example, if the user is talking to someone else, talking to himself, or listening to a podcast.";
   constructor(private readonly log: Log) {}
   subscribe(router: UserSensorRouter): void { router.register(this); }
   async process(frame: UserSensorFrame): Promise<void> {
