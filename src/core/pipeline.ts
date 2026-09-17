@@ -1,16 +1,21 @@
 import type { Log, Screenshot } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
+import type { Activity } from './activity.ts';
 
 interface Sensors {
-  capture(signal: AbortSignal): Promise<Screenshot>;
+  capture(
+    signal: AbortSignal,
+    observed?: (window: Screenshot['window']) => void,
+  ): Promise<Screenshot>;
 
   transcribe(samples: Float32Array, signal: AbortSignal): Promise<string>;
 }
 
 // Capture starts before its job reaches the worker. Store failures as values so
 // an early rejection cannot become an unhandled promise while the job is queued.
-type CaptureResult =
-  { screenshot: Screenshot; error?: never } | { error: unknown; screenshot?: never };
+type CaptureResult = (
+  { screenshot: Screenshot; error?: never } | { error: unknown; screenshot?: never }
+) & { application?: Screenshot['window'] };
 
 /** Audio plus the already-running capture for a future sensor frame. */
 interface Job {
@@ -18,6 +23,7 @@ interface Job {
   observedAt: number;
   samples: Float32Array;
   capture: Promise<CaptureResult>;
+  signal: AbortSignal;
 }
 
 /** Audio/VAD continues independently; one worker routes frames in speech order. */
@@ -34,11 +40,12 @@ export class SensorPipeline {
     private readonly router: UserSensorRouter,
     private readonly log: Log,
     private readonly signal: AbortSignal,
+    private readonly activity: Activity = {},
   ) {}
 
   /** Accept ownership of a complete utterance without blocking microphone input. */
-  submit(samples: Float32Array): boolean {
-    if (this.signal.aborted) {
+  submit(samples: Float32Array, signal = this.signal): boolean {
+    if (signal.aborted || this.signal.aborted) {
       return false;
     }
 
@@ -52,22 +59,29 @@ export class SensorPipeline {
     }
 
     const observedAt = Date.now();
+    const jobSignal = AbortSignal.any([signal, this.signal]);
+    this.activity.processing?.(id);
     this.log('capture', 'Capturing active window', id);
 
     // Capture at speech end, even if ASR is busy. Handle rejection immediately.
-    const capture = this.sensors.capture(this.signal).then(
-      (screenshot) => {
-        this.log(
-          'screen',
-          `${JSON.stringify(screenshot.window.app)} ${screenshot.width}x${screenshot.height}`,
-          id,
-        );
-        return { screenshot };
-      },
-      (error) => ({ error }),
-    );
+    let application: Screenshot['window'] | undefined;
+    const capture = this.sensors
+      .capture(jobSignal, (window) => {
+        application = window;
+      })
+      .then(
+        (screenshot) => {
+          this.log(
+            'screen',
+            `${JSON.stringify(screenshot.window.app)} ${screenshot.width}x${screenshot.height}`,
+            id,
+          );
+          return { screenshot, application: screenshot.window };
+        },
+        (error) => ({ error, application }),
+      );
 
-    this.pending.push({ id, observedAt, samples, capture });
+    this.pending.push({ id, observedAt, samples, capture, signal: jobSignal });
     this.log('queued', `${(samples.length / 16000).toFixed(2)} s audio`, id);
 
     // At most one worker runs; it preserves speech order through ASR and routing.
@@ -88,18 +102,17 @@ export class SensorPipeline {
       const job = this.pending.shift()!;
 
       try {
-        this.signal.throwIfAborted();
+        job.signal.throwIfAborted();
         this.log('transcribe', 'Recognizing speech', job.id);
         const started = performance.now();
 
         // Capture is already in progress. Await both halves of the same frame;
         // a new screenshot taken after transcription could show another app.
         const [utterance, capture] = await Promise.all([
-          this.sensors.transcribe(job.samples, this.signal),
+          this.sensors.transcribe(job.samples, job.signal),
           job.capture,
         ]);
 
-        this.signal.throwIfAborted();
         this.log(
           'transcript',
           `${JSON.stringify(utterance)} (${Math.round(performance.now() - started)} ms including capture)`,
@@ -111,6 +124,16 @@ export class SensorPipeline {
           continue;
         }
 
+        // Save text before classification, including when capture failed. A late
+        // ASR result is retained, but cancellation still prevents its delivery.
+        this.activity.transcribed?.({
+          id: job.id,
+          observedAt: job.observedAt,
+          utterance,
+          application: capture.application ?? capture.screenshot?.window,
+        });
+        job.signal.throwIfAborted();
+
         if (!capture.screenshot) {
           throw capture.error;
         }
@@ -118,14 +141,16 @@ export class SensorPipeline {
         this.log('frame', 'Utterance + screenshot', job.id);
         await this.router.route(
           { id: job.id, observedAt: job.observedAt, utterance, screenshot: capture.screenshot },
-          this.signal,
+          job.signal,
         );
 
         this.log('done', `${Date.now() - job.observedAt} ms since speech end`, job.id);
       } catch (error) {
         // A failed frame should not stop listening. A requested shutdown is
         // expected control flow and does not count as a processing failure.
-        if (!this.signal.aborted) {
+        this.activity.outcome?.(job.id, job.signal.aborted ? 'cancelled' : 'error');
+
+        if (!job.signal.aborted) {
           this.failures++;
           this.log('error', error instanceof Error ? error.message : String(error), job.id);
         }
@@ -134,6 +159,7 @@ export class SensorPipeline {
         job.samples.fill(0);
 
         await job.capture; // Settle capture before shutdown releases the job.
+        this.activity.finished?.(job.id);
       }
     }
   }

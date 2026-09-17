@@ -11,8 +11,10 @@
     "check": "tsc --noEmit",
     "test": "tsx --test test/unit/*.test.ts",
     "test:live": "tsx test/live/run.ts",
-    "format": "prettier --write src test package.json tsconfig.json .prettierrc.json",
-    "format:check": "prettier --check src test package.json tsconfig.json .prettierrc.json"
+    "test:desktop": "tsx test/live/desktop.ts",
+    "omarchy:install": "tsx integrations/omarchy/install.ts",
+    "format": "prettier --write --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json"
   },
   "keywords": [],
   "author": "",

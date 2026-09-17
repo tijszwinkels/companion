@@ -47,6 +47,13 @@ export class VoiceActivityDetector {
     return probability;
   }
 
+  /** Reset acoustic context between listening periods, never during inference. */
+  reset(): void {
+    this.state.dispose();
+    this.state = new Tensor('float32', new Float32Array(256), [2, 1, 128]);
+    this.input.fill(0);
+  }
+
   /** Release native ONNX resources after the audio loop has stopped. */
   async close(): Promise<void> {
     await this.session.release();

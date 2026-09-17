@@ -1,7 +1,9 @@
 import type { Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
-import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
+import type { RunCommand } from '../sensors/screen/capture.ts';
 import { command } from '../system/command.ts';
+import { typeText } from '../system/type-text.ts';
+import type { Activity } from '../core/activity.ts';
 
 /** Types the original utterance if its captured window is still focused. */
 export class SendTextToApplication implements UserSensorProcessor {
@@ -15,6 +17,7 @@ export class SendTextToApplication implements UserSensorProcessor {
     private readonly log: Log,
     private readonly preview = false,
     private readonly run: RunCommand = command,
+    private readonly activity: Activity = {},
   ) {}
 
   subscribe(router: UserSensorRouter): void {
@@ -24,28 +27,30 @@ export class SendTextToApplication implements UserSensorProcessor {
   async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
     if (this.preview) {
       this.log('processor', `Text delivery preview: ${JSON.stringify(frame.utterance)}`, frame.id);
+      this.activity.outcome?.(frame.id, 'preview');
       return;
     }
 
     // Inference may take seconds. Re-read focus now rather than using the window
     // that happened to be active when the screenshot was captured.
-    const deadline = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
-    const current = await activeWindow(deadline, this.run);
-
-    if (current.address !== frame.screenshot.window.address) {
-      this.log('skipped', 'Focus changed since capture; no text typed', frame.id);
+    const delivered = await typeText(
+      frame.utterance,
+      frame.screenshot.window.address,
+      signal,
+      this.run,
+      () => this.activity.deliveryAllowed?.(frame.id) !== false,
+    );
+    if (!delivered) {
+      this.log(
+        'skipped',
+        'Focus changed or manual recovery superseded delivery; no text typed',
+        frame.id,
+      );
+      this.activity.outcome?.(frame.id, 'skipped');
       return;
     }
 
-    deadline.throwIfAborted();
-
-    // Newlines/tabs in ASR output must not submit a message or change fields.
-    const text = frame.utterance.replace(/[\u0000-\u001f\u007f]/g, ' ');
-
-    // `--` makes the utterance a literal argument, even when it begins with '-'.
-    // This types text only: no Enter key, clipboard operation, or focus restore.
-    await this.run('wtype', ['--', text], deadline);
-
     this.log('processor', 'Text typed into the captured window', frame.id);
+    this.activity.outcome?.(frame.id, 'sent');
   }
 }

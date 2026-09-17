@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "companion.desktop",
+  "name": "Companion",
+  "version": "0.1.0",
+  "author": "Companion",
+  "description": "Speech history and listening control",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Companion",
+    "description": "Click to pause or resume speech input",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
