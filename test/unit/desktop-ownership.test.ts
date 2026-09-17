@@ -181,7 +181,7 @@ test('crash recovery distinguishes pending work from started automatic and manua
   }
 });
 
-for (const version of [0, 1]) {
+for (const version of [0, 1, 2]) {
   test(`version ${version} migration preserves legacy delivery uncertainty and completion times`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'companion-migration-'));
     const path = join(directory, 'utterances.sqlite');
@@ -191,11 +191,13 @@ for (const version of [0, 1]) {
       id TEXT PRIMARY KEY, observed_at INTEGER NOT NULL, transcript TEXT NOT NULL,
       application TEXT, window_title TEXT, window_address TEXT, recognized_intent TEXT,
       outcome TEXT NOT NULL DEFAULT 'processing', completed_at INTEGER
+      ${version === 2 ? ', delivery_started_at INTEGER' : ''}
     );
     CREATE TABLE paste_events (
       id TEXT PRIMARY KEY, utterance_id TEXT NOT NULL REFERENCES utterances(id),
       attempted_at INTEGER NOT NULL, target_address TEXT NOT NULL, target_application TEXT,
       outcome TEXT NOT NULL, completed_at INTEGER
+      ${version === 2 ? ', delivery_started_at INTEGER' : ''}
     );
     INSERT INTO utterances (id, observed_at, transcript, recognized_intent, outcome) VALUES
       ('send', 1, 'Unfinished send', 'SEND_TEXT_TO_APPLICATION', 'processing'),
@@ -220,7 +222,14 @@ for (const version of [0, 1]) {
       await history.open();
       assert.deepEqual(
         history.snapshot().map((row) => row.outcome),
-        ['error', 'interrupted', 'interrupted', 'sent', 'cancelled', 'interrupted'],
+        [
+          'error',
+          'interrupted',
+          'interrupted',
+          'sent',
+          'cancelled',
+          version === 2 ? 'cancelled' : 'interrupted',
+        ],
       );
       // A later cancellation with the new marker semantics must stay cancelled
       // on the next open; migration must not reclassify it repeatedly.
@@ -253,7 +262,13 @@ for (const version of [0, 1]) {
           .all();
         assert.deepEqual(
           pastes.map((row) => row.outcome),
-          ['interrupted', 'interrupted', 'interrupted', 'skipped', 'cancelled'],
+          [
+            version === 2 ? 'cancelled' : 'interrupted',
+            'interrupted',
+            'interrupted',
+            'skipped',
+            'cancelled',
+          ],
         );
         assert.deepEqual(
           pastes.slice(1, 4).map((row) => row.completed_at),
@@ -261,7 +276,7 @@ for (const version of [0, 1]) {
         );
         assert.deepEqual(
           pastes.map((row) => row.legacy_outcome),
-          ['pending', 'cancelled', 'error', null, null],
+          [version === 2 ? null : 'pending', 'cancelled', 'error', null, null],
         );
       } finally {
         database.close();

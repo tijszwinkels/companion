@@ -100,3 +100,8 @@ marker. Reclassified records retain their old label in `legacy_outcome`;
 previously completed records retain their timestamps. Migration also repairs a
 version 0 database left by an interrupted first-time setup. The original
 intent/outcome stays intact when a user recovers text manually.
+
+An intermediate version-2 schema had delivery markers but no `legacy_outcome`.
+Its old and new failed rows cannot be distinguished, so migration conservatively
+marks ambiguous failed sends/pastes as `interrupted` and preserves their labels.
+Once provenance columns exist, subsequent opens leave new cancellations intact.

@@ -87,22 +87,31 @@ export class UtteranceHistory {
         (column) => column.name === 'delivery_started_at',
       );
       const legacyPastes = !pasteColumns.some((column) => column.name === 'delivery_started_at');
+      const unclassifiedUtterances = !utteranceColumns.some(
+        (column) => column.name === 'legacy_outcome',
+      );
+      const unclassifiedPastes = !pasteColumns.some((column) => column.name === 'legacy_outcome');
 
-      if (!utteranceColumns.some((column) => column.name === 'legacy_outcome')) {
+      if (unclassifiedUtterances) {
         this.database.exec('ALTER TABLE utterances ADD COLUMN legacy_outcome TEXT');
       }
 
-      if (!pasteColumns.some((column) => column.name === 'legacy_outcome')) {
+      if (unclassifiedPastes) {
         this.database.exec('ALTER TABLE paste_events ADD COLUMN legacy_outcome TEXT');
       }
 
       if (legacyUtterances) {
         this.database.exec('ALTER TABLE utterances ADD COLUMN delivery_started_at INTEGER');
+      }
 
+      if (unclassifiedUtterances || legacyUtterances) {
         // Old cancellation/error labels could include partially inserted text.
         // We cannot reconstruct whether typing began, so retain the original
         // completion time and label for evaluation, while making uncertainty
         // explicit in the current outcome.
+        // The first version-2 migration added delivery markers but did not
+        // repair old completed rows. Missing provenance identifies that mixed
+        // population too; its ambiguous failures need conservative treatment.
         this.database.exec(`
           UPDATE utterances SET legacy_outcome = outcome, outcome = 'interrupted'
           WHERE recognized_intent = 'SEND_TEXT_TO_APPLICATION'
@@ -112,6 +121,9 @@ export class UtteranceHistory {
 
       if (legacyPastes) {
         this.database.exec('ALTER TABLE paste_events ADD COLUMN delivery_started_at INTEGER');
+      }
+
+      if (unclassifiedPastes || legacyPastes) {
         this.database.exec(`
           UPDATE paste_events SET legacy_outcome = outcome, outcome = 'interrupted'
           WHERE outcome IN ('cancelled', 'error');
