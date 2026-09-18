@@ -67,6 +67,7 @@ PanelWindow {
   // and release input immediately when closing, before the slide finishes.
   mask: Region {
     x: card.x
+    y: card.y
     width: root.opened ? card.width : 0
     height: card.height
   }
@@ -75,7 +76,7 @@ PanelWindow {
     NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
   }
 
-  // The right/top anchors stay fixed while conversation overflow or a tab
+  // The right/bottom edges stay fixed while conversation overflow or a tab
   // change resizes the body. Behaviors retarget from the current size when
   // switching tabs mid-animation; hidden panels adopt their size immediately.
   Behavior on implicitWidth {
@@ -90,6 +91,7 @@ PanelWindow {
     BorderSurface {
       id: card
       x: (1 - root.reveal) * root.width
+      y: root.height - height
       width: root.width
       height: root.panelHeight
       color: Color.menu.background

@@ -46,7 +46,7 @@ needed to update this adapter.
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
-**Super+Alt+C** toggles the compact panel in the top-right corner. The close
+**Super+Alt+C** toggles the compact panel in the bottom-right corner. The close
 button also hides it. When closed, the panel disappears completely. Only the
 open panel body captures mouse input; the desktop beneath it remains usable.
 The vertical **Activity** tab has a stationary microphone whose colors
@@ -72,6 +72,7 @@ Monitor changes are observed while the panel is open. The panel body is 420 by
 space. Quick questions open a new tab with a user bubble, streamed Markdown
 answers, and expandable tool bubbles. Once its content exceeds the compact
 body, a session uses 600 logical pixels of width and all available height.
+The bottom edge stays fixed while the panel grows upward.
 Returning to Activity restores the compact body. Each session has Stop and
 Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
 inserts a newline). A follow-up resumes its Pi conversation. Closing the panel

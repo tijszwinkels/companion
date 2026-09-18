@@ -44,7 +44,7 @@ options and validation limits. Its outer window may briefly take desktop focus;
 warn the user before running it. All generated input targets the nested compositor.
 
 For a desktop check, install this worktree's adapter, then use **Super+Alt+C**.
-Verify the panel appears on the external monitor, below the bar, without changing
+Verify the panel appears at the bottom right of the external monitor, without changing
 keyboard focus or window sizes. Toggle rapidly during its slide and close it
 with the button. While open, unplugging the external display should move it to
 the remaining display. These diagnostic calls report and close the actual panel:
@@ -55,7 +55,7 @@ omarchy-shell companion closePanel
 ```
 
 The status reply includes `panelOpened`, `panelVisible`, and `panelMonitor`.
-Check that clicks below the compact open body reach the application underneath
+Check that clicks above the compact open body reach the application underneath
 without moving keyboard focus, and that closing leaves no visible control.
 `panelVisible` stays true during the short closing animation; mouse input is
 released immediately when `panelOpened` becomes false. Opening speech history
