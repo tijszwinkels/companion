@@ -1,0 +1,2 @@
+# Unified-diff context intentionally prefixes original tabs and blank lines with a space.
+printable-keycodes.patch -whitespace

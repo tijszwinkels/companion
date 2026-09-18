@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -60,7 +61,7 @@ hl.config({
             environment["WAYLAND_DISPLAY"] = displays[0].name
             environment["COMPANION_TEST_NESTED"] = "1"
             test_process = subprocess.Popen(
-                ["node", "--import", "tsx", "test/live/quick-tap.ts"],
+                ["node", "--import", "tsx", *(sys.argv[1:] or ["test/live/quick-tap.ts"])],
                 cwd=repository, env=environment, start_new_session=True,
             )
             try:
