@@ -61,9 +61,9 @@ for (const prefix of ['insert', 'enter']) {
       assert.deepEqual(
         keys,
         prefix === 'insert'
-          ? [['--', 'Hello world']]
+          ? [['-d', '1', '--', 'Hello world']]
           : [
-              ['--', 'Hello world'],
+              ['-d', '1', '--', 'Hello world'],
               ['-k', 'Return'],
             ],
       );
@@ -130,16 +130,16 @@ test('Enter owns the keyboard until Return completes, excluding recovery and lat
     );
     await Promise.resolve();
     assert.deepEqual(keys, [
-      ['--', 'First'],
+      ['-d', '1', '--', 'First'],
       ['-k', 'Return'],
     ]);
 
     releaseEnter.resolve();
     await Promise.all([first, second]);
     assert.deepEqual(keys, [
-      ['--', 'First'],
+      ['-d', '1', '--', 'First'],
       ['-k', 'Return'],
-      ['--', 'Second'],
+      ['-d', '1', '--', 'Second'],
     ]);
     const rows = fixture.database.prepare('SELECT outcome FROM utterances').all();
     assert.deepEqual(
@@ -186,7 +186,7 @@ test('pausing between text and Enter records interrupted delivery and never pres
     const row = fixture.database.prepare('SELECT * FROM utterances').get()!;
     assert.equal(row.outcome, 'interrupted');
     assert.equal(typeof row.delivery_started_at, 'number');
-    assert.deepEqual(keys, [['--', 'Hello']]);
+    assert.deepEqual(keys, [['-d', '1', '--', 'Hello']]);
   } finally {
     fixture.controller.abort();
     await pipeline.idle();

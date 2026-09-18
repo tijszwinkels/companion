@@ -58,7 +58,7 @@ test('insert types literal payload only; enter types then checks focus and press
 
     const expected = [
       { file: 'hyprctl', args: ['-j', 'activewindow'] },
-      { file: 'wtype', args: ['--', '-k Return hello world'] },
+      { file: 'wtype', args: ['-d', '1', '--', '-k Return hello world'] },
     ];
     if (prefix === 'enter') {
       expected.push(
@@ -96,7 +96,7 @@ test('Enter is suppressed when focus moves during typing', async () => {
 
   assert.deepEqual(screen.calls, [
     { file: 'hyprctl', args: ['-j', 'activewindow'] },
-    { file: 'wtype', args: ['--', frame.utterance] },
+    { file: 'wtype', args: ['-d', '1', '--', frame.utterance] },
     { file: 'hyprctl', args: ['-j', 'activewindow'] },
   ]);
 });

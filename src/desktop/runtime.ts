@@ -216,12 +216,12 @@ export class DesktopRuntime {
     try {
       const target = request.target;
       const outcome = await this.delivery.recover(frameId, this.signal, async () => {
-        // Bound the initial focus lookup as well as typing. A wedged compositor
-        // cannot hold the shared keyboard queue indefinitely. Recheck only when
-        // this request reaches the front; focus may change while it waits.
-        const deadline = AbortSignal.any([this.signal, AbortSignal.timeout(5000)]);
-        await delay(150, undefined, { signal: deadline });
-        const window = await activeWindow(deadline, this.run);
+        // Bound the initial focus lookup independently of typing. A wedged
+        // compositor cannot hold the shared keyboard queue indefinitely.
+        // Recheck only at the front of the queue; focus may change while waiting.
+        const focusDeadline = AbortSignal.any([this.signal, AbortSignal.timeout(5000)]);
+        await delay(150, undefined, { signal: focusDeadline });
+        const window = await activeWindow(focusDeadline, this.run);
         application = window.address === target ? window.class : null;
 
         if (window.address !== target) {
@@ -235,7 +235,9 @@ export class DesktopRuntime {
         const delivered = await typeText(
           entry.utterance,
           target,
-          deadline,
+          // typeText owns a separate, length-aware typing deadline. Passing the
+          // focus deadline here would still cut long recovery insertions short.
+          this.signal,
           this.run,
           () => true,
           () => this.history.markPasteStarted(eventId, application),

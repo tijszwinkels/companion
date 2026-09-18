@@ -107,7 +107,7 @@ test('typing checks focus after inference, strips control keys, and treats text 
   await send.process({ ...frame, utterance: '-k Return\nhello\tworld' }, signal());
   assert.deepEqual(calls, [
     { file: 'hyprctl', args: ['-j', 'activewindow'] },
-    { file: 'wtype', args: ['--', '-k Return hello world'] },
+    { file: 'wtype', args: ['-d', '1', '--', '-k Return hello world'] },
   ]);
 });
 

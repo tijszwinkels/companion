@@ -70,7 +70,13 @@ Recovering an utterance still being classified supersedes an automatic delivery
 which has not yet started, preventing duplicate delivery when inference finishes.
 Recovery of an utterance already being typed is rejected. All automatic and
 manual keyboard output shares one queue, with focus checked after waiting.
-Recovery's initial focus lookup and keyboard output have a five-second deadline.
+Focus lookups have a five-second deadline. All text delivery uses `wtype -d 1`,
+adding 1 ms between characters, matching the local Voxtype configuration.
+Typing gets a separate budget of five seconds plus 5 ms per UTF-16 code unit:
+this includes wtype's existing 4 ms of key-down/up waits and the extra 1 ms.
+The shared keyboard queue stays occupied through typing and any explicit Enter;
+cancellation still interrupts the keyboard process. Longer text therefore has
+time to complete without extending a stalled focus lookup's deadline.
 
 SQLite lives at `$XDG_STATE_HOME/companion/utterances.sqlite`, defaulting to
 `~/.local/state/companion/utterances.sqlite`. It uses WAL and has no automatic
