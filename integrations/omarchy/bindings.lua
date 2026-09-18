@@ -19,15 +19,36 @@ end, {
   transparent = true,
 })
 
--- Release can precede the first overlay frame, and Alt/Super may already be up.
--- This non-consuming handler leaves ordinary V typing alone and only finishes
--- a chord which started with Super+Alt. No helper-process startup can race it.
-hl.bind("V", function()
-  if history_held then
-    history_held = false
-    hl.dispatch(hl.dsp.global("companion:finish"))
+-- V can be released before either modifier. Starting wtype at that point lets
+-- Hyprland combine its text with the still-held Super/Alt keys: letters become
+-- shortcuts, and later physical releases change the active keyboard mid-text.
+-- Complete on the last chord release, however briefly the chord was held.
+local history_keys = { "v", "Super_L", "Super_R", "Alt_L", "Alt_R" }
+
+local function finish_history(released_key)
+  if not history_held then
+    return
   end
-end, { release = true, ignore_mods = true, non_consuming = true, transparent = true })
+
+  for _, key in ipairs(history_keys) do
+    -- Hyprland removes the released key from is_key_down *after* this callback.
+    -- Account for this event explicitly; the other keys still reflect reality.
+    if key ~= released_key and hl.is_key_down(key) then
+      return
+    end
+  end
+
+  history_held = false
+  hl.dispatch(hl.dsp.global("companion:finish"))
+end
+
+for _, key in ipairs(history_keys) do
+  -- Keep ordinary V/modifier input intact. These resident callbacks also work
+  -- when a tap finishes before the first picker frame or modifiers go up first.
+  hl.bind(key, function()
+    finish_history(key)
+  end, { release = true, ignore_mods = true, non_consuming = true, transparent = true })
+end
 
 -- Match Omarchy's other keyboard-driven overlays: map immediately, so a short
 -- hold does not lose navigation/release events during a compositor fade.

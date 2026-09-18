@@ -124,8 +124,9 @@ Item {
     }
   }
 
-  // The compositor sends both events to this already-running service. Unlike
-  // spawning separate press/release commands, a quick tap cannot race startup.
+  // Only finish completes a chord, after V and both modifiers are up. Hyprland
+  // also releases history on V-up, which is too early when modifiers remain.
+  // Both shortcuts use this resident connection, so a tap cannot race startup.
   GlobalShortcut {
     appid: "companion"
     name: "panel"
@@ -138,7 +139,6 @@ Item {
     name: "history"
     description: "Hold for speech history; release to paste"
     onPressed: root.begin()
-    onReleased: root.release()
   }
 
   GlobalShortcut {

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
-import { deferred, processor, screenshot, signal } from '../helpers.ts';
+import { deferred, processor, screenshot, signal, testDetector, testSensors } from '../helpers.ts';
 import type { Transcript } from '../../src/core/activity.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 
@@ -14,20 +14,25 @@ test('capture happens at submission, processing remains FIFO, and queue is bound
   let captures = 0;
   let transcripts = 0;
 
-  const router = new UserSensorRouter({ detect: async () => 'IGNORE' }, () => {});
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
   processor('IGNORE', async (frame) => {
     delivered.push(frame.id);
   }).subscribe(router);
 
   const pipeline = new SensorPipeline(
     {
-      capture: async () => {
-        captures++;
-        return screenshot;
-      },
-      transcribe: async () => (++transcripts === 1 ? waiting.promise : 'speech'),
+      ...testSensors({
+        capture: async () => {
+          captures++;
+          return screenshot;
+        },
+        transcribe: async () => (++transcripts === 1 ? waiting.promise : 'speech'),
+      }),
+      router,
     },
-    router,
     (stage) => {
       events.push(stage);
     },
@@ -56,10 +61,12 @@ test('capture failure discards its frame and the next utterance still runs', asy
 
   const router = new UserSensorRouter(
     {
-      detect: async () => {
-        detections++;
-        return 'IGNORE';
-      },
+      detector: testDetector({
+        detect: async () => {
+          detections++;
+          return 'IGNORE';
+        },
+      }),
     },
     () => {},
   );
@@ -67,15 +74,17 @@ test('capture failure discards its frame and the next utterance still runs', asy
 
   const pipeline = new SensorPipeline(
     {
-      capture: async () => {
-        if (++captures === 1) {
-          throw Error('Focus changed');
-        }
-        return screenshot;
-      },
-      transcribe: async () => 'hello',
+      ...testSensors({
+        capture: async () => {
+          if (++captures === 1) {
+            throw Error('Focus changed');
+          }
+          return screenshot;
+        },
+        transcribe: async () => 'hello',
+      }),
+      router,
     },
-    router,
     () => {},
     signal(),
   );
@@ -95,14 +104,16 @@ test('shutdown during ASR discards the result and pending audio without dispatch
   const waiting = deferred<string>();
 
   const router = new UserSensorRouter(
-    { detect: async () => assert.fail('Dispatched after stop') },
+    { detector: testDetector({ detect: async () => assert.fail('Dispatched after stop') }) },
     () => {},
   );
   processor('IGNORE').subscribe(router);
 
   const pipeline = new SensorPipeline(
-    { capture: async () => screenshot, transcribe: async () => waiting.promise },
-    router,
+    {
+      ...testSensors({ capture: async () => screenshot, transcribe: async () => waiting.promise }),
+      router,
+    },
     () => {},
     controller.signal,
   );
@@ -124,18 +135,22 @@ test('capture failure still records the transcript and observed application befo
   const recorded: Transcript[] = [];
   const outcomes: string[] = [];
   const router = new UserSensorRouter(
-    { detect: async () => assert.fail('Invalid screenshot was routed') },
+    {
+      detector: testDetector({ detect: async () => assert.fail('Invalid screenshot was routed') }),
+    },
     () => {},
   );
   const pipeline = new SensorPipeline(
     {
-      capture: async (_signal, observed) => {
-        observed?.(screenshot.window);
-        throw Error('Screenshot failed');
-      },
-      transcribe: async () => 'Recover this speech',
+      ...testSensors({
+        capture: async (_signal, observed) => {
+          observed?.(screenshot.window);
+          throw Error('Screenshot failed');
+        },
+        transcribe: async () => 'Recover this speech',
+      }),
+      router,
     },
-    router,
     () => {},
     signal(),
     {
@@ -157,16 +172,21 @@ test('pause cancels in-flight and queued delivery; resuming accepts only new spe
   const delivered: number[] = [];
   const outcomes: string[] = [];
   let calls = 0;
-  const router = new UserSensorRouter({ detect: async () => 'IGNORE' }, () => {});
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
   processor('IGNORE', async (frame) => {
     delivered.push(frame.id);
   }).subscribe(router);
   const pipeline = new SensorPipeline(
     {
-      capture: async () => screenshot,
-      transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
+      ...testSensors({
+        capture: async () => screenshot,
+        transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
+      }),
+      router,
     },
-    router,
     () => {},
     signal(),
     {

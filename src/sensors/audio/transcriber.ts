@@ -4,6 +4,11 @@ import { join } from 'node:path';
 
 import { command } from '../../system/command.ts';
 import { encodeWav } from './segmenter.ts';
+import type { InspectableModule } from '../../core/module.ts';
+
+export interface SpeechTranscriber extends InspectableModule {
+  transcribe(samples: Float32Array, signal: AbortSignal): Promise<string>;
+}
 
 export interface AsrConfig {
   binary: string;
@@ -40,8 +45,14 @@ export function parseVoxtype(stdout: string): string {
 }
 
 /** Converts one segmented utterance to text using local Parakeet transcription. */
-export class Transcriber {
-  constructor(private readonly config: AsrConfig) {}
+export class Transcriber implements SpeechTranscriber {
+  readonly label = 'Speech transcriber';
+  readonly dependencies = {};
+
+  constructor(
+    private readonly config: AsrConfig,
+    readonly id = 'transcriber',
+  ) {}
 
   async transcribe(samples: Float32Array, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
