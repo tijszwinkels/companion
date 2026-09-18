@@ -3,6 +3,8 @@ local history_held = false
 
 hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
   description = "Companion side panel",
+  -- Switching away from held history must preserve its final key releases.
+  transparent = true,
 })
 
 -- The panel owns its horizontal reveal animation, including a quick reversal

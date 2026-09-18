@@ -17,6 +17,7 @@ Item {
       processing: 0
       foreground: "white"
       muted: "gray"
+      accent: "cyan"
       fontFamily: "sans-serif"
       unit: 1
     }
@@ -49,11 +50,13 @@ Item {
       compare(status.title, "Listening")
 
       status.processing = 1
-      compare(status.title, "Processing")
+      compare(status.title, "Listening")
+      compare(status.indicatorColor, "#66bb6a")
 
       // A new utterance may overlap the previous request. It must be visible.
       status.speaking = true
-      compare(status.title, "Hearing you")
+      compare(status.title, "Listening")
+      compare(status.indicatorColor, "#ef5350")
 
       status.paused = true
       compare(status.title, "Paused")
@@ -76,6 +79,21 @@ Item {
       content.closeRequested.connect(function() { requested = true })
       mouseClick(findChild(content, "closeButton"))
       verify(requested)
+    }
+
+    function test_history_reaches_activity_and_stops_when_hidden() {
+      const content = createTemporaryObject(contentComponent, parent)
+      const activity = findChild(content, "phraseActivity")
+      content.history = [{id: "first", utterance: "An incoming phrase", intent: null, outcome: "processing"}]
+      compare(activity.phrase, "An incoming phrase")
+      compare(activity.presenting, true)
+
+      content.animationsEnabled = false
+      compare(activity.presenting, false)
+      compare(activity.visibility, 0)
+      content.history = [{id: "first", utterance: "An incoming phrase", intent: "IGNORE", outcome: "ignored"}]
+      content.animationsEnabled = true
+      compare(activity.presenting, false)
     }
   }
 }

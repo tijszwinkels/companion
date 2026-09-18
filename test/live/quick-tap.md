@@ -67,8 +67,9 @@ no Enter, held selection, Escape cancellation, focus changes, exactly-once
 delivery, and preservation of the original recognized intent/outcome. It first
 checks direct literal typing without modifiers, so a transport failure is not
 mistaken for a shortcut regression. With a panel-capable adapter it also checks
-Super+Alt+C, retained keyboard focus, and cancellation when switching between
-panel and history. Synthetic
+Super+Alt+C, retained keyboard focus, cancellation when switching between
+panel and history, and a subsequent history delivery to check that cancellation
+has not stranded the release handlers. Synthetic
 modifier tests emit key events as well as masks: `wtype -M/-m` alone does not model
 physical modifier key-down/up events.
 

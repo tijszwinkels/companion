@@ -16,6 +16,7 @@ PanelWindow {
   required property bool paused
   required property bool speaking
   required property int processing
+  property var history: []
 
   signal closeRequested()
 
@@ -70,13 +71,14 @@ PanelWindow {
         paused: root.paused
         speaking: root.speaking
         processing: root.processing
+        history: root.history
         foreground: Color.menu.text
         muted: Qt.rgba(Color.menu.text.r, Color.menu.text.g, Color.menu.text.b, 0.65)
         accent: Color.menu.selectedText
         selection: Color.menu.selectedBackground
         fontFamily: Style.font.menuFamily
         unit: Style.space(100) / 100
-        animationsEnabled: root.opened
+        animationsEnabled: root.opened && root.visible
         shortcutLabel: "Super + Alt + C to toggle"
         onCloseRequested: root.closeRequested()
       }

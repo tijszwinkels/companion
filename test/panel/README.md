@@ -8,7 +8,10 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 ```
 
 These checks cover overlapping speech/processing state, pause, disconnect and
-reconnect, and the close button. `npm test` also exercises monitor selection,
+reconnect, the close button, and monitor geometry changes without hotplug. Phrase
+tests cover the rise, processing/result colors and label positions, the shared
+fade, fast completion, interrupted animations, literal transcript text, and
+opening without replaying old results. `npm test` also exercises monitor selection,
 including mixed layouts, mirrored monitors, and a single built-in display.
 
 `npm run test:quick-tap` includes combined panel/history shortcut cases in a

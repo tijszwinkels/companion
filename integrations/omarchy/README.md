@@ -45,11 +45,19 @@ needed to update this adapter.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
 **Super+Alt+C** toggles the right-hand side panel. The close button also hides it.
-The single vertical **Activity** tab shows listening, speech capture, processing,
-paused, and offline states. Its microphone colors follow the bar, with a gentle
-listening pulse, a faster speech pulse, and an orbiting dot during processing.
-Animations stop when hidden, paused, or offline. It remains open if Companion
-disconnects and reconnects through the existing service.
+The single vertical **Activity** tab has a stationary microphone whose colors
+follow the bar. Each newly transcribed phrase rises above the mic in green, with
+**PROCESSING** at its top left. After processing completes, the intent appears
+at the top right: blue for `SEND_TEXT_TO_APPLICATION`, purple for
+`ENTER_TEXT_TO_APPLICATION`, and muted for `IGNORE`. The phrase and label hold
+for 1.4 seconds, then fade together over one second, leaving **Listening**.
+Failures without a detected intent show their outcome instead.
+
+Closing the panel or disconnecting stops its phrase animation. Opening it adopts
+a phrase still being processed but does not replay completed history. A newer
+phrase replaces an older result. Pausing shows **Paused** while any pending
+phrase finishes; a disconnected Companion shows **Not running** and reconnects
+through the existing service.
 
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.

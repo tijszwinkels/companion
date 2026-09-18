@@ -17,6 +17,7 @@ Item {
   property real unit: 1
   property bool animationsEnabled: true
   property string shortcutLabel: ""
+  property var history: []
 
   signal closeRequested()
 
@@ -75,6 +76,7 @@ Item {
 
       Accessible.role: Accessible.PageTab
       Accessible.name: "Activity"
+      Accessible.selected: true
     }
   }
 
@@ -135,9 +137,11 @@ Item {
       processing: root.processing
       foreground: root.foreground
       muted: root.muted
+      accent: root.accent
       fontFamily: root.fontFamily
       unit: root.unit
       animationsEnabled: root.animationsEnabled
+      history: root.history
     }
 
     Text {

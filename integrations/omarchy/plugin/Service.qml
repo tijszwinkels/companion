@@ -59,13 +59,15 @@ Item {
       const message = JSON.parse(line)
 
       if (message.type === "state" && message.protocol === 1) {
-        root.online = message.ready
         root.paused = message.paused
         root.speaking = message.speaking === true
         root.soundsEnabled = message.soundsEnabled === true
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
         root.history = message.history
+        // Activate the panel only after its first/reconnected snapshot is ready,
+        // so it never animates a stale phrase retained from the old connection.
+        root.online = message.ready
       } else if (message.type === "error") {
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
@@ -262,6 +264,7 @@ Item {
     paused: root.paused
     speaking: root.speaking
     processing: root.processing
+    history: root.history
     onCloseRequested: root.closePanel()
   }
 }

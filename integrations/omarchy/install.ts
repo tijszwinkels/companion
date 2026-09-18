@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { command } from '../../src/system/command.ts';
+import { assertShortcutsAvailable } from './shortcuts.ts';
 
 /** Install only this adapter. Existing layout entries and bindings are preserved. */
 const source = fileURLToPath(new URL('./', import.meta.url));
@@ -23,29 +24,8 @@ if (shell.version !== 1 || !Array.isArray(shell.bar?.layout?.right)) {
 }
 
 // Check the actual compositor, including packaged bindings not in the user file.
-const registered = JSON.parse((await command('hyprctl', ['-j', 'binds'], deadline)).toString());
-const shortcuts = [
-  { key: 'v', description: 'Companion utterance history (hold, select, release to paste)' },
-  { key: 'c', description: 'Companion side panel' },
-];
-
-for (const shortcut of shortcuts) {
-  const conflict = registered.find(
-    (binding: { modmask: number; key: string; description?: string }) => {
-      const sameShortcut = binding.modmask === 72 && binding.key.toLowerCase() === shortcut.key;
-      const installedByCompanion =
-        bindings.includes(bindingMarker) && binding.description === shortcut.description;
-
-      return sameShortcut && !installedByCompanion;
-    },
-  );
-
-  if (conflict) {
-    throw Error(
-      `Super+Alt+${shortcut.key.toUpperCase()} is already bound to ${conflict.description || 'another action'}`,
-    );
-  }
-}
+const registered = (await command('hyprctl', ['-j', 'binds'], deadline)).toString();
+assertShortcutsAvailable(registered, bindings.includes(bindingMarker));
 
 const backupSuffix = `.companion-backup-${Date.now()}`;
 await cp(bindingsPath, bindingsPath + backupSuffix);
@@ -65,6 +45,7 @@ const files = [
   'omarchy/plugin/MonitorSelection.js',
   'panel/PanelContent.qml',
   'panel/StatusView.qml',
+  'panel/PhraseActivity.qml',
 ];
 const hash = createHash('sha256');
 

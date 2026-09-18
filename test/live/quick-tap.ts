@@ -318,8 +318,9 @@ try {
     const panelChord = [...pressModifiers, '-k', 'c', ...releaseAlt, ...releaseSuper];
     await command('wtype', panelChord, signal);
     await waitFor(async () => (await status()).panelOpened === true);
-    assert.equal((await status()).panelVisible, true);
-    assert.ok((await status()).panelMonitor);
+    const openedPanel = await status();
+    assert.equal(openedPanel.panelVisible, true);
+    assert.ok(openedPanel.panelMonitor);
     assert.equal((await activeWindow(signal)).address, a.address);
 
     await command(
@@ -342,6 +343,13 @@ try {
     assert.deepEqual(await text(), { A: expected, B: '' });
     assert.equal((await activeWindow(signal)).address, a.address);
     console.log('PASS panel shortcut, preserved focus, and mutual history cancellation');
+
+    // Cancellation alone cannot prove that history's release handlers survived
+    // switching overlays. A subsequent chord must deliver the latest row once.
+    await command('wtype', [...press, ...releaseV, ...releaseAlt, ...releaseSuper], signal);
+    expected += 'New speech arriving during selection.';
+    await waitFor(async () => (await text()).A === expected);
+    console.log('PASS history delivery after panel cancellation');
   } else {
     console.log('SKIP panel cases: selected adapter predates the side panel');
   }
@@ -350,7 +358,7 @@ try {
   const outcomes = database.prepare('SELECT outcome FROM paste_events ORDER BY rowid').all();
   assert.deepEqual(
     outcomes.map((row) => row.outcome),
-    ['sent', 'sent', 'sent', 'sent', 'sent', 'skipped', 'sent'],
+    ['sent', 'sent', 'sent', 'sent', 'sent', 'skipped', 'sent', ...(hasPanel ? ['sent'] : [])],
   );
   assert.equal(
     database
