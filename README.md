@@ -102,6 +102,12 @@ tools, global resources, and project trust policy.
 New questions select their own vertical tab and open the panel. User text stays
 literal; assistant answers render as Markdown. Click a tool bubble to expand
 its arguments and output. Text updates are batched at up to 25 frames/second.
+Answers use 16px Adwaita Sans when available (with other system sans-serif
+fallbacks), spaced paragraphs and headings, and smaller monospace code in shaded
+frames. With the conversation focused, **Ctrl++** (or **Ctrl+=**) and **Ctrl+-**
+zoom the transcript and composer from 80% to 200%; **Ctrl+0** resets to 100%.
+Zoom follows you between tabs for the lifetime of the panel. Links remain
+clickable; raw HTML is literal text and Markdown images display their alt text.
 When content outgrows the compact panel, that session expands to 600 logical
 pixels wide and all available screen height; Activity remains compact. Scrolling
 up stops following the stream until you return to the bottom.

@@ -29,6 +29,10 @@ and retaining edits across submission acknowledgements or errors. Library checks
 cover right-click close, stable hover over the animated cross, history selection,
 explicit restoration of known IDs, retained drafts, visible control errors,
 screenshot thumbnails, initial fit, zoom/pan, and Escape/button/backdrop dismissal.
+Markdown checks cover paragraph spacing, proportional prose versus smaller code,
+escaped markup, safe links, streamed fences, nested lists, tables, long-code wrapping,
+and actual Ctrl++/Ctrl+=/Ctrl+-/Ctrl+0 key events with draft preservation and zoom limits.
+They also write `/tmp/companion-markdown-preview.png` for visual inspection.
 The synthetic image fixture has no user content. The suite writes offscreen visual
 previews to `/tmp/companion-{session,history,screenshot}-preview.png` for inspection. The Node suite
 uses a real fixture subprocess for Pi RPC framing, images, streaming, retries,

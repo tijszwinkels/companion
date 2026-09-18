@@ -68,7 +68,7 @@ Item {
       panel.selectedSessionId = "question-1"
       tryVerify(function() { return findChild(panel, "bubble-reply") !== null })
       const answer = findChild(findChild(panel, "bubble-reply"), "messageText")
-      compare(answer.textFormat, TextEdit.MarkdownText)
+      compare(answer.textFormat, TextEdit.RichText)
       compare(answer.getText(0, answer.length).trim(), "bold")
       const question = findChild(findChild(panel, "bubble-user"), "messageText")
       compare(question.textFormat, TextEdit.PlainText)

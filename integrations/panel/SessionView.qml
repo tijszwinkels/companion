@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
+import "Markdown.mjs" as Markdown
 
 // Chat rendering is independent of Pi and Omarchy. Stable ListModel rows keep
 // selection and expanded tool bubbles intact while text deltas update a row.
@@ -14,9 +15,16 @@ Item {
   required property string fontFamily
   // Shell chrome may be monospace (Omarchy's default). Conversation text needs
   // its own proportional face so Markdown's native code font stays distinct.
-  property string proseFontFamily: "sans-serif"
+  property string proseFontFamily: {
+    const available = Qt.fontFamilies()
+    return ["Adwaita Sans", "Inter", "Segoe UI", "Noto Sans"].find(name => available.includes(name)) || "sans-serif"
+  }
   property bool online: true
   property real unit: 1
+  // One zoom level follows the reader between tabs for this panel lifetime.
+  property int zoomPercent: 100
+  readonly property real textScale: root.unit * root.zoomPercent / 100
+  readonly property bool zoomEnabled: visible && session !== null && root.Window.window !== null && root.Window.window.active
   property string displayedId: ""
   property bool followEnd: true
   property var drafts: ({})
@@ -33,6 +41,29 @@ Item {
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
   signal screenshotRequested(url source, string title)
+
+  function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
+
+  // Window shortcuts also work while text is selected or the composer owns
+  // focus. They never register with the compositor or affect other apps.
+  Shortcut {
+    sequences: ["Ctrl++", "Ctrl+=", "Ctrl+Shift++"]
+    context: Qt.WindowShortcut
+    enabled: root.zoomEnabled
+    onActivated: root.zoomBy(10)
+  }
+  Shortcut {
+    sequence: "Ctrl+-"
+    context: Qt.WindowShortcut
+    enabled: root.zoomEnabled
+    onActivated: root.zoomBy(-10)
+  }
+  Shortcut {
+    sequence: "Ctrl+0"
+    context: Qt.WindowShortcut
+    enabled: root.zoomEnabled
+    onActivated: root.zoomPercent = 100
+  }
 
   function focusComposer() {
     if (root.online && root.visible && root.session) composer.forceActiveFocus(Qt.ShortcutFocusReason)
@@ -226,8 +257,9 @@ Item {
           width: parent.width
           height: visible ? contentHeight : 0
           visible: bubble.kind !== "tool" || bubble.expanded
-          text: bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
-          textFormat: bubble.kind === "assistant" ? TextEdit.MarkdownText : TextEdit.PlainText
+          text: bubble.kind === "assistant" ? Markdown.render(bubble.body, root.textScale, root.selection.toString(), root.accent.toString())
+            : bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
+          textFormat: bubble.kind === "assistant" ? TextEdit.RichText : TextEdit.PlainText
           readOnly: true
           selectByMouse: true
           activeFocusOnPress: false
@@ -236,7 +268,7 @@ Item {
           selectionColor: root.selection
           selectedTextColor: root.foreground
           font.family: bubble.kind === "tool" ? "monospace" : root.proseFontFamily
-          font.pixelSize: (bubble.kind === "tool" ? 13 : 14) * root.unit
+          font.pixelSize: (bubble.kind === "tool" ? 14 : 16) * root.textScale
           onLinkActivated: link => {
             // Opening a link is an explicit click; commands and file URLs do
             // not become executable UI actions through generated Markdown.
@@ -266,7 +298,7 @@ Item {
     ScrollView {
       id: composerScroll
       width: parent.width
-      height: 68 * root.unit
+      height: 76 * root.textScale
       contentWidth: availableWidth
       clip: true
       TextArea {
@@ -283,7 +315,7 @@ Item {
         selectByMouse: true
         padding: 8 * root.unit
         font.family: root.proseFontFamily
-        font.pixelSize: 14 * root.unit
+        font.pixelSize: 16 * root.textScale
         background: Rectangle {
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
           border.color: composer.activeFocus ? root.accent : root.muted
