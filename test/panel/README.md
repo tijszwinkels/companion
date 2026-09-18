@@ -7,6 +7,15 @@ or an active desktop. With Qt 6's declarative development tools installed:
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 ```
 
+Playback checks inject player objects into the adapter's state aggregator: an
+already-playing player, state changes, multiple simultaneous players, removal,
+and reappearance. Status checks distinguish media pause from manual pause.
+Node checks exercise the real private socket, report validation/ownership,
+disconnect recovery, explicit resume, disabled file/text modes, and cancellation
+of queued/in-flight speech. These tests do not start or pause real media. Live
+MPRIS reads confirmed that Chromium and cliamp expose PlaybackStatus; an installed
+adapter's end-to-end response to real playback still needs a desktop check.
+
 These checks cover overlapping speech/processing state, pause, disconnect and
 reconnect, the close button, and monitor geometry changes without hotplug.
 Surface tests exercise bottom/right anchoring through animated expansion and

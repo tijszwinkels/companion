@@ -5,6 +5,13 @@ themed utterance picker, Activity side panel, and Hyprland shortcuts. Companion 
 on this plugin. The [local protocol](../../src/desktop/README.md) can support other
 desktop adapters without changing the sensor pipeline or processors.
 
+The resident service also watches MPRIS player state through Quickshell's existing
+media service. Any player reporting Playing auto-pauses microphone listening;
+when none remain Playing, listening resumes unless manually paused. It sends only
+a boolean over the socket, including on reconnect. There is no audio capture,
+polling, or extra process for playback detection. Unsupported players are ignored.
+The bar and Activity tab distinguish **Paused for media** from manual pause.
+
 From a Hyprland desktop terminal in this checkout:
 
 ```sh

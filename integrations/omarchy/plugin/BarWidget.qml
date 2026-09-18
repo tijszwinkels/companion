@@ -8,6 +8,7 @@ BarWidget {
   readonly property var companion: bar?.shell?.serviceFor("companion.desktop") ?? null
   readonly property bool online: companion?.online ?? false
   readonly property bool paused: companion?.paused ?? false
+  readonly property string pauseDescription: companion?.pauseReason === "media" ? "Paused for media" : "Paused"
   property bool popupOpen: false
 
   function close() {
@@ -38,7 +39,7 @@ BarWidget {
     pressable: root.online
     tooltipText: !root.online ? "Companion is not running"
       : root.companion.lastError ? root.companion.lastError
-      : root.paused ? "Companion paused · Click for controls"
+      : root.paused ? "Companion · " + root.pauseDescription + " · Click for controls"
       : root.companion.speaking ? "Companion hears speech · Click for controls"
       : root.companion.processing > 0 ? "Companion processing · Click for controls"
       : "Companion listening · Click for controls"
@@ -68,7 +69,7 @@ BarWidget {
       Toggle {
         width: parent.width
         label: "Listening"
-        description: root.paused ? "Paused" : "Microphone active"
+        description: root.paused ? root.pauseDescription : "Microphone active"
         checked: !root.paused
         enabled: root.online
         onClicked: root.companion.togglePause()

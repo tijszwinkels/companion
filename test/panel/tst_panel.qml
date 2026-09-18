@@ -61,6 +61,12 @@ Item {
       status.paused = true
       compare(status.title, "Paused")
 
+      status.pauseReason = "media"
+      compare(status.title, "Paused for media")
+      compare(status.description, "Listening resumes when playback stops.")
+      status.pauseReason = "manual"
+      compare(status.title, "Paused")
+
       status.online = false
       compare(status.title, "Not running")
 

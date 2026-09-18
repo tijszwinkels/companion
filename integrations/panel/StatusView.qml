@@ -7,6 +7,7 @@ Item {
 
   required property bool online
   required property bool paused
+  property string pauseReason: ""
   required property bool speaking
   required property int processing
   required property color foreground
@@ -21,8 +22,10 @@ Item {
   // described beside the phrase; the sensor continues listening concurrently.
   readonly property color indicatorColor: !online || paused ? muted
     : speaking ? "#ef5350" : processing > 0 ? "#66bb6a" : "#9e9e9e"
-  readonly property string title: !online ? "Not running" : paused ? "Paused" : "Listening"
+  readonly property string title: !online ? "Not running"
+    : paused ? (pauseReason === "media" ? "Paused for media" : "Paused") : "Listening"
   readonly property string description: !online ? "Companion will reconnect when it starts."
+    : paused && pauseReason === "media" ? "Listening resumes when playback stops."
     : paused ? "Microphone capture is paused." : ""
 
   PhraseActivity {

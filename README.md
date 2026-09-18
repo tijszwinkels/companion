@@ -53,6 +53,19 @@ npm start -- --preview --seconds 10
 accepts formats FFmpeg can decode. `--device NODE_NAME` selects a PipeWire source.
 Run `npm start -- --help` for all flags.
 
+With the Omarchy adapter installed, microphone listening automatically pauses when
+any media player reports **Playing** through [MPRIS](https://specifications.freedesktop.org/mpris/latest/Player_Interface.html#Property:PlaybackStatus).
+The bar and Activity tab show **Paused for media**. Pausing, stopping, or closing
+the last playing player resumes listening, unless you paused Companion manually.
+**Super+Alt+P** or the Listening switch can explicitly resume during playback;
+automatic pausing rearms after playback stops. Pending dictation is cancelled on
+pause; existing agent conversations continue.
+
+This uses reported player state only, without monitoring audio. Players without
+MPRIS support are ignored; muted playback still counts if its state is Playing.
+It requires the running Omarchy adapter and does not apply to `--no-desktop`,
+`--text`, or `--wav`. Update both Companion and its adapter to enable it.
+
 ## Quick questions
 
 `START_CODING_AGENT_SESSION` is also available to the intent recognizer, for

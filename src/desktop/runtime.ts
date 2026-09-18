@@ -40,6 +40,9 @@ export class DesktopRuntime {
   private readonly server: DesktopServer;
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
+  // Reports belong to their connections, so a vanished adapter cannot leave
+  // listening paused forever or clear another adapter's active playback.
+  private readonly mediaClients = new Set<number>();
   private readonly delivery = new DeliveryControl();
   private readonly databaseLock: InstanceLock;
   private ready = false;
@@ -64,6 +67,7 @@ export class DesktopRuntime {
       preview: boolean;
       sounds: boolean;
       agents?: AgentSessions;
+      mediaPause?: boolean;
     },
     private readonly run: RunCommand = command,
   ) {
@@ -75,6 +79,9 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        if (this.mediaClients.delete(clientId)) {
+          this.pause.setMediaPlaying(this.mediaClients.size > 0);
+        }
         if (clientId === this.panelClient) {
           this.setPanelState('', false, clientId);
         }
@@ -182,7 +189,11 @@ export class DesktopRuntime {
 
     this.log(
       this.pause.paused ? 'paused' : 'listening',
-      this.pause.paused ? 'Microphone stopped; pending speech cancelled' : 'Microphone resuming',
+      this.pause.reason === 'media'
+        ? 'Media playing; microphone stopped and pending speech cancelled'
+        : this.pause.paused
+          ? 'Microphone stopped; pending speech cancelled'
+          : 'Microphone resuming',
     );
     this.server.broadcast();
   };
@@ -192,6 +203,8 @@ export class DesktopRuntime {
       protocol: 1,
       ready: this.ready,
       paused: this.pause.paused,
+      pauseReason: this.pause.reason,
+      mediaPauseAvailable: this.options.mediaPause !== false,
       speaking: this.speaking,
       soundsEnabled: this.sounds.enabled,
       processing: this.processing.size,
@@ -247,6 +260,23 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+
+    if (request.action === 'media-playback') {
+      if (typeof request.playing !== 'boolean') {
+        throw Error('Expected a boolean media playback state');
+      }
+
+      // Supplied text and audio files must not be interrupted by desktop media.
+      if (this.options.mediaPause !== false) {
+        if (request.playing) {
+          this.mediaClients.add(clientId);
+        } else {
+          this.mediaClients.delete(clientId);
+        }
+        this.pause.setMediaPlaying(this.mediaClients.size > 0);
+      }
+      return 'media-recorded';
+    }
 
     if (request.action === 'panel-state') {
       if (

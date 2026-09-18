@@ -136,6 +136,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         ...desktopPaths(),
         preview: values.preview,
         sounds: !values['no-sounds'] && !values.preview,
+        mediaPause: values.text === undefined && !values.wav,
         agents,
       });
       await desktop.start();

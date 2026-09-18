@@ -7,14 +7,59 @@ import { EventEmitter } from 'node:events';
  */
 export class PauseControl extends EventEmitter {
   private controller = new AbortController();
-  paused = false;
+  private manuallyPaused = false;
+  private mediaPlaying = false;
+  private mediaOverridden = false;
+  private pauseReason: 'manual' | 'media' | '' = '';
+
+  get paused(): boolean {
+    return this.pauseReason !== '';
+  }
+
+  get reason(): 'manual' | 'media' | '' {
+    return this.pauseReason;
+  }
 
   get signal(): AbortSignal {
     return this.controller.signal;
   }
 
   toggle(): void {
-    this.paused = !this.paused;
+    if (this.paused) {
+      this.manuallyPaused = false;
+      // An explicit resume wins for this playback period. Repeated desktop
+      // reports must not immediately undo it; a later stop rearms auto-pause.
+      this.mediaOverridden = this.mediaPlaying;
+    } else {
+      this.manuallyPaused = true;
+    }
+
+    this.update();
+  }
+
+  /** Playback owns only its pause; it can never clear a manual pause. */
+  setMediaPlaying(playing: boolean): void {
+    this.mediaPlaying = playing;
+
+    if (!playing) {
+      this.mediaOverridden = false;
+    }
+
+    this.update();
+  }
+
+  private update(): void {
+    const reason = this.manuallyPaused
+      ? 'manual'
+      : this.mediaPlaying && !this.mediaOverridden
+        ? 'media'
+        : '';
+
+    if (reason === this.pauseReason) {
+      return;
+    }
+
+    this.pauseReason = reason;
 
     if (this.paused) {
       this.controller.abort();

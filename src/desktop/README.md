@@ -20,6 +20,8 @@ On connection and state changes, the server sends:
   "protocol": 1,
   "ready": true,
   "paused": false,
+  "pauseReason": "",
+  "mediaPauseAvailable": true,
   "speaking": false,
   "soundsEnabled": true,
   "processing": 0,
@@ -50,6 +52,7 @@ Commands:
 
 ```json
 {"action":"toggle-pause"}
+{"action":"media-playback","playing":true}
 {"action":"toggle-sounds"}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
@@ -67,6 +70,22 @@ request when control replies overtake a slow paste. Sound feedback can be muted 
 of listening. Muting stops current and queued cues. `--no-sounds` sets the initial
 state; controls can enable sounds later. This setting lasts for the process's
 session. Preview mode is always silent and rejects `toggle-sounds`.
+
+`media-playback` reports whether any desktop media player is playing and returns
+`media-recorded`. Adapters must send a boolean, report changes, and resend current
+state on reconnect. Only send it when the snapshot advertises `mediaPauseAvailable`;
+older servers omit this flag. Microphone mode enables it; `--text` and `--wav` ignore
+reports. Each connection owns its report. Listening auto-pauses while any connected
+reporter says true; disconnect removes only that reporter's state. Loss of all
+reporters releases the media pause, leaving any manual pause intact.
+
+`pauseReason` is `media`, `manual`, or an empty string while listening. Media pause
+uses the same cancellation path as manual pause: stop recording and discard pending
+dictation. Existing independent agent sessions and manual history recovery continue.
+An explicit `toggle-pause` while paused resumes listening, overriding playback until
+all reporters stop playing. The next playback period rearms auto-pause. Repeated true
+reports preserve that override. A manual pause always survives playback ending.
+
 One paste per connection runs at a time; pause/mute and agent controls run independently
 with a bounded maximum of 16 outstanding control requests per connection.
 Close your overlay before asking

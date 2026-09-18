@@ -198,46 +198,53 @@ test('capture failure still records the transcript and observed application befo
   assert.deepEqual(outcomes, ['error']);
 });
 
-test('pause cancels in-flight and queued delivery; resuming accepts only new speech', async () => {
-  const pause = new PauseControl();
-  const waiting = deferred<string>();
-  const delivered: number[] = [];
-  const outcomes: string[] = [];
-  let calls = 0;
-  const router = new UserSensorRouter(
-    { detector: testDetector({ detect: async () => 'IGNORE' }) },
-    () => {},
-  );
-  processor('IGNORE', async (frame) => {
-    delivered.push(frame.id);
-  }).subscribe(router);
-  const pipeline = new SensorPipeline(
-    {
-      ...testSensors({
-        capture: async () => screenshot,
-        transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
-      }),
-      router,
-    },
-    () => {},
-    signal(),
-    {
-      outcome: (_id, outcome) => outcomes.push(outcome),
-    },
-  );
+for (const source of ['manual', 'media'] as const) {
+  test(`${source} pause cancels in-flight and queued delivery; resuming accepts only new speech`, async () => {
+    const pause = new PauseControl();
+    const waiting = deferred<string>();
+    const delivered: number[] = [];
+    const outcomes: string[] = [];
+    let calls = 0;
+    const router = new UserSensorRouter(
+      { detector: testDetector({ detect: async () => 'IGNORE' }) },
+      () => {},
+    );
+    processor('IGNORE', async (frame) => {
+      delivered.push(frame.id);
+    }).subscribe(router);
+    const pipeline = new SensorPipeline(
+      {
+        ...testSensors({
+          capture: async () => screenshot,
+          transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
+        }),
+        router,
+      },
+      () => {},
+      signal(),
+      {
+        outcome: (_id, outcome) => outcomes.push(outcome),
+      },
+    );
 
-  pipeline.submit(new Float32Array(16000), pause.signal);
-  pipeline.submit(new Float32Array(16000), pause.signal);
-  pause.toggle();
-  pause.toggle();
-  waiting.resolve('Stale speech');
-  await pipeline.idle();
-  assert.deepEqual(delivered, []);
-  assert.deepEqual(outcomes, ['cancelled', 'cancelled']);
-  assert.equal(calls, 1);
+    pipeline.submit(new Float32Array(16000), pause.signal);
+    pipeline.submit(new Float32Array(16000), pause.signal);
+    if (source === 'manual') {
+      pause.toggle();
+      pause.toggle();
+    } else {
+      pause.setMediaPlaying(true);
+      pause.setMediaPlaying(false);
+    }
+    waiting.resolve('Stale speech');
+    await pipeline.idle();
+    assert.deepEqual(delivered, []);
+    assert.deepEqual(outcomes, ['cancelled', 'cancelled']);
+    assert.equal(calls, 1);
 
-  pipeline.submit(new Float32Array(16000), pause.signal);
-  await pipeline.idle();
-  assert.deepEqual(delivered, [3]);
-  assert.equal(pipeline.failures, 0);
-});
+    pipeline.submit(new Float32Array(16000), pause.signal);
+    await pipeline.idle();
+    assert.deepEqual(delivered, [3]);
+    assert.equal(pipeline.failures, 0);
+  });
+}

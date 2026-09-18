@@ -20,6 +20,8 @@ export interface DesktopMessage {
   result?: string;
   message?: string;
   soundsEnabled?: boolean;
+  pauseReason?: string;
+  mediaPauseAvailable?: boolean;
   history?: { id: string; utterance: string }[];
   sessions?: AgentSession[];
   previousSessions?: PreviousSession[];
@@ -57,7 +59,11 @@ export function windowReply(address = frame.screenshot.window.address): Buffer {
 }
 
 /** Real private socket/SQLite, injected desktop commands, and no microphone. */
-export async function desktopFixture(run: RunCommand, agents?: AgentSessions) {
+export async function desktopFixture(
+  run: RunCommand,
+  agents?: AgentSessions,
+  options: { mediaPause?: boolean } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-regression-'));
   const path = join(directory, 'control.sock');
   const databasePath = join(directory, 'utterances.sqlite');
@@ -67,7 +73,7 @@ export async function desktopFixture(run: RunCommand, agents?: AgentSessions) {
     pause,
     () => {},
     controller.signal,
-    { database: databasePath, socket: path, preview: false, sounds: false, agents },
+    { database: databasePath, socket: path, preview: false, sounds: false, agents, ...options },
     run,
   );
   await runtime.start();

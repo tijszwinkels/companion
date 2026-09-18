@@ -9,6 +9,7 @@ Item {
 
   required property bool online
   required property bool paused
+  property string pauseReason: ""
   required property bool speaking
   required property int processing
   required property color foreground
@@ -286,6 +287,7 @@ Item {
       anchors.bottomMargin: 36 * root.unit
       online: root.online
       paused: root.paused
+      pauseReason: root.pauseReason
       speaking: root.speaking
       processing: root.processing
       foreground: root.foreground

@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
+import Quickshell.Services.Mpris
 import "../../panel" as Panel
 
 // This adapter owns Omarchy/Hyprland behavior. Companion only sees the portable
@@ -12,6 +13,8 @@ Item {
   property var shell: null
   property bool online: false
   property bool paused: false
+  property string pauseReason: ""
+  property bool mediaPauseAvailable: false
   property bool speaking: false
   property bool soundsEnabled: false
   property bool soundsAvailable: false
@@ -29,7 +32,24 @@ Item {
   property var pendingAgentInput: null
   readonly property var transport: connection.item
   onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
-  onOnlineChanged: if (online) Qt.callLater(root.reportPanelState)
+  onOnlineChanged: {
+    if (online) {
+      Qt.callLater(root.reportPanelState)
+      Qt.callLater(root.reportMediaPlayback)
+    }
+  }
+
+  PlaybackState {
+    id: playback
+    players: Mpris.players ? Mpris.players.values : []
+    onPlayingChanged: root.reportMediaPlayback()
+  }
+
+  function reportMediaPlayback() {
+    if (root.mediaPauseAvailable) {
+      root.send({action: "media-playback", playing: playback.playing})
+    }
+  }
 
   Panel.AgentSessionState {
     id: agentSessions
@@ -121,6 +141,8 @@ Item {
 
       if (message.type === "state" && message.protocol === 1) {
         root.paused = message.paused
+        root.pauseReason = message.pauseReason || ""
+        root.mediaPauseAvailable = message.mediaPauseAvailable === true
         root.speaking = message.speaking === true
         root.soundsEnabled = message.soundsEnabled === true
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
@@ -263,6 +285,7 @@ Item {
     target: "companion"
     function status(): string {
       return JSON.stringify({ online: root.online, paused: root.paused,
+        pauseReason: root.pauseReason, mediaPlaying: playback.playing,
         speaking: root.speaking, processing: root.processing,
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
@@ -355,6 +378,7 @@ Item {
     opened: root.panelOpened
     online: root.online
     paused: root.paused
+    pauseReason: root.pauseReason
     speaking: root.speaking
     processing: root.processing
     history: root.history

@@ -15,6 +15,7 @@ PanelWindow {
   required property bool opened
   required property bool online
   required property bool paused
+  property string pauseReason: ""
   required property bool speaking
   required property int processing
   property var history: []
@@ -122,6 +123,7 @@ PanelWindow {
         anchors.margins: Math.max(1, Style.space(2))
         online: root.online
         paused: root.paused
+        pauseReason: root.pauseReason
         speaking: root.speaking
         processing: root.processing
         history: root.history

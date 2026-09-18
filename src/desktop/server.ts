@@ -171,6 +171,7 @@ export class DesktopServer {
             : undefined;
         const control =
           action === 'toggle-pause' ||
+          action === 'media-playback' ||
           action === 'toggle-sounds' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
