@@ -35,8 +35,9 @@ omarchy-shell companion closePanel
 
 The status reply includes `panelOpened`, `panelVisible`, `panelHandleVisible`,
 and `panelMonitor`. The handle remains visible when the body is closed; click
-it to expand/collapse, and check that clicks above/below the collapsed handle
-reach the application underneath without moving keyboard focus.
+the full-height strip to expand/collapse. Check that clicks left of the strip
+and below the compact open body reach the application underneath without moving
+keyboard focus, and that hovering the strip keeps its background opaque.
 `panelVisible` stays true during the short closing animation; mouse input is
 released outside the handle when `panelOpened` becomes false. Opening speech history
 closes the panel, and opening the panel cancels history without delivering text.

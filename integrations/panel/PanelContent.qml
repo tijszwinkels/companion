@@ -85,7 +85,7 @@ Item {
     anchors.right: parent.right
     anchors.top: parent.top
     anchors.bottom: parent.bottom
-    anchors.margins: 24 * root.unit
+    anchors.margins: 20 * root.unit
 
     Text {
       anchors.top: parent.top
@@ -129,8 +129,8 @@ Item {
 
     StatusView {
       anchors.fill: parent
-      anchors.topMargin: 64 * root.unit
-      anchors.bottomMargin: 64 * root.unit
+      anchors.topMargin: 48 * root.unit
+      anchors.bottomMargin: 36 * root.unit
       online: root.online
       paused: root.paused
       speaking: root.speaking

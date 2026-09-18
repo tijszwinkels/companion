@@ -1,6 +1,6 @@
 import QtQuick
 
-// A small, persistent drawer handle. The host owns the window and open state;
+// A thin, persistent edge strip. The host owns the window and open state;
 // clicking (or an accessibility press) requests the same toggle as the shortcut.
 Rectangle {
   id: root
@@ -14,19 +14,27 @@ Rectangle {
 
   signal toggleRequested()
 
-  implicitWidth: 24 * unit
-  implicitHeight: 56 * unit
-  topLeftRadius: 6 * unit
-  bottomLeftRadius: 6 * unit
-  color: pointer.containsMouse ? selection : background
+  implicitWidth: 12 * unit
+  implicitHeight: 400 * unit
+  // Menu selection colors are usually translucent overlays. Keep an opaque
+  // base beneath the hover tint instead of replacing it with that tint.
+  color: Qt.rgba(background.r, background.g, background.b, 1)
   border.color: borderColor
   border.width: Math.max(1, unit)
 
+  Rectangle {
+    anchors.fill: parent
+    color: root.selection
+    visible: pointer.containsMouse
+  }
+
   // Draw a chevron without depending on a particular font or icon package.
   Item {
-    anchors.centerIn: parent
+    anchors.horizontalCenter: parent.horizontalCenter
+    y: Math.max(0, Math.min(28 * root.unit - height / 2, parent.height - height))
     width: 8 * root.unit
     height: 14 * root.unit
+    scale: 0.75
     rotation: root.opened ? 180 : 0
 
     Rectangle {

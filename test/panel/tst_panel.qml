@@ -27,7 +27,7 @@ Item {
     id: contentComponent
     Panel.PanelContent {
       width: 420
-      height: 800
+      height: 400
       online: true
       paused: false
       speaking: false

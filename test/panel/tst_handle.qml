@@ -17,11 +17,12 @@ Item {
     id: handle
     x: 400
     y: 50
+    height: 120
     opened: false
     background: "#1a1b26"
     foreground: "#c0caf5"
     borderColor: "#7aa2f7"
-    selection: "#24283b"
+    selection: "#14c0caf5"
     onToggleRequested: opened = !opened
   }
 
@@ -34,7 +35,8 @@ Item {
       verify(editor.activeFocus)
       compare(handle.Accessible.name, "Expand Companion panel")
 
-      mouseClick(handle)
+      // The entire strip is clickable, including well below the chevron.
+      mouseClick(handle, handle.width / 2, handle.height - 10)
       compare(handle.opened, true)
       compare(handle.Accessible.name, "Collapse Companion panel")
       verify(editor.activeFocus)
@@ -43,6 +45,13 @@ Item {
       compare(handle.opened, false)
       verify(handle.visible)
       verify(editor.activeFocus)
+    }
+
+    function test_translucent_hover_tint_keeps_an_opaque_background() {
+      mouseMove(handle, handle.width / 2, handle.height - 10)
+      waitForRendering(handle)
+      const rendered = grabImage(handle)
+      compare(rendered.alpha(6, 100), 255)
     }
   }
 }

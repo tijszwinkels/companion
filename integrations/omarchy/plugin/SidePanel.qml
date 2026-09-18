@@ -24,8 +24,9 @@ PanelWindow {
   // Re-evaluate on hotplug rather than retaining a disconnected screen object.
   readonly property var selectedScreen: Monitors.chooseScreen(Quickshell.screens)
   readonly property string monitorName: selectedScreen ? selectedScreen.name : ""
-  readonly property real handleWidth: Math.min(Style.space(24), width)
+  readonly property real handleWidth: Math.min(Style.space(12), width)
   readonly property real panelWidth: Math.max(0, width - handleWidth)
+  readonly property real panelHeight: Math.min(Style.space(400), height)
   // The window remains mapped for its handle. Diagnostics distinguish the
   // sliding body from that persistent surface, including during the close.
   readonly property bool panelVisible: visible && (opened || reveal > 0)
@@ -34,7 +35,7 @@ PanelWindow {
   screen: selectedScreen
   visible: selectedScreen !== null
   anchors { top: true; bottom: true; right: true }
-  implicitWidth: Math.min(Style.space(444), selectedScreen ? selectedScreen.width : Style.space(444))
+  implicitWidth: Math.min(Style.space(432), selectedScreen ? selectedScreen.width : Style.space(432))
   color: "transparent"
 
   // Respect the bar's reserved space but never reserve space ourselves: this
@@ -45,9 +46,9 @@ PanelWindow {
   WlrLayershell.layer: WlrLayer.Overlay
   WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
 
-  // Only the visible handle and open body capture clicks. The transparent area
-  // above/below the handle must not block the application when collapsed. Drop
-  // body input immediately on close, while the handle remains clickable.
+  // The narrow edge strip is always clickable. The larger input region follows
+  // only the compact body, leaving the desktop below it usable even while open.
+  // Drop body input immediately on close, keeping only the strip.
   mask: Region {
     item: handle
 
@@ -68,9 +69,9 @@ PanelWindow {
 
     BorderSurface {
       id: card
-      x: root.handleWidth + (1 - root.reveal) * root.panelWidth
+      x: (1 - root.reveal) * root.width
       width: root.panelWidth
-      height: root.height
+      height: root.panelHeight
       color: Color.menu.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
       radius: Style.cornerRadius
@@ -98,10 +99,10 @@ PanelWindow {
     Panel.PanelHandle {
       id: handle
       objectName: "panelHandle"
-      x: card.x - width
-      y: Math.max(0, (parent.height - height) / 2)
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
       width: root.handleWidth
-      height: Math.min(implicitHeight, parent.height)
       opened: root.opened
       background: Color.menu.background
       foreground: Color.menu.text
