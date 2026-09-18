@@ -4,24 +4,26 @@ import test from 'node:test';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
-import { frame, processor, signal } from '../helpers.ts';
+import { frame, processor, signal, testDetector } from '../helpers.ts';
 
 test('subscriptions supply the detector prompt and dispatch the original frame to exactly one processor', async () => {
   const delivered: unknown[] = [];
 
   const router = new UserSensorRouter(
     {
-      detect: async (input, intents) => {
-        assert.equal(input, frame);
-        assert.deepEqual(
-          intents.map((i) => [i.name, i.instruction]),
-          [
-            ['IGNORE', 'Choose IGNORE'],
-            ['CUSTOM', 'Choose CUSTOM'],
-          ],
-        );
-        return 'CUSTOM';
-      },
+      detector: testDetector({
+        detect: async (input, intents) => {
+          assert.equal(input, frame);
+          assert.deepEqual(
+            intents.map((i) => [i.name, i.instruction]),
+            [
+              ['IGNORE', 'Choose IGNORE'],
+              ['CUSTOM', 'Choose CUSTOM'],
+            ],
+          );
+          return 'CUSTOM';
+        },
+      }),
     },
     () => {},
   );
@@ -41,7 +43,10 @@ test('subscriptions supply the detector prompt and dispatch the original frame t
 
 test('unknown names and cancellation never dispatch', async () => {
   const controller = new AbortController();
-  const router = new UserSensorRouter({ detect: async () => 'UNKNOWN' }, () => {});
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'UNKNOWN' }) },
+    () => {},
+  );
   processor('IGNORE', async () => assert.fail('Should not dispatch')).subscribe(router);
 
   await assert.rejects(router.route(frame, signal()), /Unregistered/);
@@ -78,10 +83,12 @@ test('typing checks focus after inference, strips control keys, and treats text 
   // The active window changes while inference runs, before the action is called.
   const router = new UserSensorRouter(
     {
-      detect: async () => {
-        address = '0xdef';
-        return send.name;
-      },
+      detector: testDetector({
+        detect: async () => {
+          address = '0xdef';
+          return send.name;
+        },
+      }),
     },
     () => {},
   );
@@ -123,7 +130,7 @@ test('feedback reports intent separately and confirms send only after successful
     },
   };
   const router = new UserSensorRouter(
-    { detect: async () => 'SEND_TEXT_TO_APPLICATION' },
+    { detector: testDetector({ detect: async () => 'SEND_TEXT_TO_APPLICATION' }) },
     () => {},
     activity,
   );

@@ -7,12 +7,16 @@ import { EnterTextToApplication } from '../../src/processors/enter-text-to-appli
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import type { RunCommand } from '../../src/sensors/screen/capture.ts';
 import { desktopFixture, stopped, windowReply } from '../desktop-fixture.ts';
-import { deferred, frame, screenshot } from '../helpers.ts';
+import { deferred, frame, screenshot, testDetector, testSensors } from '../helpers.ts';
 
 function shortcuts(fixture: Awaited<ReturnType<typeof desktopFixture>>, run: RunCommand) {
   const activity = fixture.runtime.activity;
   const router = new UserSensorRouter(
-    { detect: async () => assert.fail('Explicit shortcut must not call the LLM') },
+    {
+      detector: testDetector({
+        detect: async () => assert.fail('Explicit shortcut must not call the LLM'),
+      }),
+    },
     () => {},
     activity,
   );
@@ -34,8 +38,10 @@ for (const prefix of ['insert', 'enter']) {
     const fixture = await desktopFixture(run);
     const utterance = `${prefix} Hello world`;
     const pipeline = new SensorPipeline(
-      { capture: async () => screenshot, transcribe: async () => utterance },
-      shortcuts(fixture, run),
+      {
+        ...testSensors({ capture: async () => screenshot, transcribe: async () => utterance }),
+        router: shortcuts(fixture, run),
+      },
       () => {},
       fixture.controller.signal,
       fixture.runtime.activity,
@@ -163,8 +169,10 @@ test('pausing between text and Enter records interrupted delivery and never pres
   };
   const fixture = await desktopFixture(run);
   const pipeline = new SensorPipeline(
-    { capture: async () => screenshot, transcribe: async () => 'enter Hello' },
-    shortcuts(fixture, run),
+    {
+      ...testSensors({ capture: async () => screenshot, transcribe: async () => 'enter Hello' }),
+      router: shortcuts(fixture, run),
+    },
     () => {},
     fixture.controller.signal,
     fixture.runtime.activity,

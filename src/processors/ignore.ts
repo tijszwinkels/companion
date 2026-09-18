@@ -4,6 +4,8 @@ import type { Activity } from '../core/activity.ts';
 
 /** A normal routing result for speech that calls for no application action. */
 export class Ignore implements UserSensorProcessor {
+  readonly label = 'Ignore';
+  readonly dependencies = {};
   readonly name = 'IGNORE';
 
   // This is the user's prompt text; formatting must not change its contents.
@@ -13,6 +15,7 @@ export class Ignore implements UserSensorProcessor {
   constructor(
     private readonly log: Log,
     private readonly activity: Activity = {},
+    readonly id = 'ignore',
   ) {}
 
   subscribe(router: UserSensorRouter): void {

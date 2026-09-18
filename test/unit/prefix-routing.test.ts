@@ -6,7 +6,7 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import { EnterTextToApplication } from '../../src/processors/enter-text-to-application.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
-import { frame, processor, signal } from '../helpers.ts';
+import { frame, processor, signal, testDetector } from '../helpers.ts';
 
 function prefixProcessor(
   name: string,
@@ -14,6 +14,9 @@ function prefixProcessor(
   process: UserSensorProcessor['process'],
 ): UserSensorProcessor {
   return {
+    id: name,
+    label: name,
+    dependencies: {},
     name,
     prefixes,
     process,
@@ -27,7 +30,7 @@ function prefixProcessor(
 test('prefixes bypass inference and deliver a copy with only the command removed', async () => {
   const delivered: UserSensorFrame[] = [];
   const router = new UserSensorRouter(
-    { detect: async () => assert.fail('Prefix must bypass the LLM') },
+    { detector: testDetector({ detect: async () => assert.fail('Prefix must bypass the LLM') }) },
     () => {},
   );
 
@@ -64,7 +67,11 @@ test('prefixes bypass inference and deliver a copy with only the command removed
 
 test('bare prefixes are consumed without inference or an action', async () => {
   const router = new UserSensorRouter(
-    { detect: async () => assert.fail('Empty command must not fall back to inference') },
+    {
+      detector: testDetector({
+        detect: async () => assert.fail('Empty command must not fall back to inference'),
+      }),
+    },
     () => {},
   );
   prefixProcessor('ENTER', ['enter'], async () => assert.fail('No payload')).subscribe(router);
@@ -79,11 +86,13 @@ test('whole-prefix matching leaves ordinary speech on the original LLM path', as
   const classified: UserSensorFrame[] = [];
   const router = new UserSensorRouter(
     {
-      detect: async (input, intents) => {
-        classified.push(input);
-        assert.deepEqual(intents, [{ name: 'IGNORE', instruction: 'Choose IGNORE' }]);
-        return 'IGNORE';
-      },
+      detector: testDetector({
+        detect: async (input, intents) => {
+          classified.push(input);
+          assert.deepEqual(intents, [{ name: 'IGNORE', instruction: 'Choose IGNORE' }]);
+          return 'IGNORE';
+        },
+      }),
     },
     () => {},
   );
@@ -104,7 +113,7 @@ test('whole-prefix matching leaves ordinary speech on the original LLM path', as
 test('longest prefix wins regardless of registration order and aliases work', async () => {
   for (const specificFirst of [true, false]) {
     const router = new UserSensorRouter(
-      { detect: async () => assert.fail('Unexpected inference') },
+      { detector: testDetector({ detect: async () => assert.fail('Unexpected inference') }) },
       () => {},
     );
     const specific = prefixProcessor('CODE', [' INSERT CODE ', 'paste code'], async (input) => {
@@ -126,7 +135,10 @@ test('longest prefix wins regardless of registration order and aliases work', as
 });
 
 test('invalid or conflicting registrations leave the registry unchanged', () => {
-  const router = new UserSensorRouter({ detect: async () => 'IGNORE' }, () => {});
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
   const noop = async () => {};
   prefixProcessor('INSERT', ['insert'], noop).subscribe(router);
 
@@ -153,13 +165,15 @@ test('the model sees dictation but never the prefix-only Enter command', async (
   const send = new SendTextToApplication(() => {}, true);
   const router = new UserSensorRouter(
     {
-      detect: async (_input, intents) => {
-        assert.deepEqual(intents, [
-          { name: send.name, instruction: send.instruction },
-          { name: 'IGNORE', instruction: new Ignore(() => {}).instruction },
-        ]);
-        return 'ENTER_TEXT_TO_APPLICATION';
-      },
+      detector: testDetector({
+        detect: async (_input, intents) => {
+          assert.deepEqual(intents, [
+            { name: send.name, instruction: send.instruction },
+            { name: 'IGNORE', instruction: new Ignore(() => {}).instruction },
+          ]);
+          return 'ENTER_TEXT_TO_APPLICATION';
+        },
+      }),
     },
     () => {},
   );
@@ -178,10 +192,12 @@ test('cancellation prevents both prefix dispatch and dispatch after inference', 
   const controller = new AbortController();
   const router = new UserSensorRouter(
     {
-      detect: async () => {
-        controller.abort();
-        return 'IGNORE';
-      },
+      detector: testDetector({
+        detect: async () => {
+          controller.abort();
+          return 'IGNORE';
+        },
+      }),
     },
     () => {},
   );

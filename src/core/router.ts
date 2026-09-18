@@ -1,29 +1,56 @@
 import type { Intent, Log, UserSensorFrame, UserSensorProcessor } from './frame.ts';
 import { stripPrefix } from './prefix.ts';
 import type { Activity } from './activity.ts';
+import type { InspectableModule, RegisteredProcessor } from './module.ts';
 
 /** Allows the router to use either the Pi detector or a test implementation. */
-export interface Detector {
+export interface Detector extends InspectableModule {
   detect(frame: UserSensorFrame, intents: readonly Intent[], signal: AbortSignal): Promise<string>;
 }
 
 /** Owns subscriptions and dispatches each frame to exactly one processor. */
-export class UserSensorRouter {
-  private readonly processors = new Map<string, UserSensorProcessor>();
+export class UserSensorRouter implements InspectableModule {
+  readonly label = 'Intent router';
+
+  private readonly registeredProcessors = new Map<string, UserSensorProcessor>();
   private readonly prefixes: { prefix: string; processor: UserSensorProcessor }[] = [];
 
   constructor(
-    private readonly detector: Detector,
+    readonly dependencies: { readonly detector: Detector },
     private readonly log: Log,
     private readonly activity: Activity = {},
+    readonly id = 'router',
   ) {}
+
+  /**
+   * Return an inspection snapshot without exposing mutable registration tables.
+   * Read prefixes from the validated routes used for dispatch, and eligibility
+   * from the same instruction field used when building the next LLM request.
+   */
+  get processors(): ReadonlyMap<string, RegisteredProcessor> {
+    const registrations = new Map<string, RegisteredProcessor>();
+
+    for (const [name, processor] of this.registeredProcessors) {
+      const prefixes = this.prefixes
+        .filter((route) => route.processor === processor)
+        .map((route) => route.prefix);
+
+      registrations.set(name, {
+        processor,
+        prefixes,
+        llmEligible: processor.instruction !== undefined,
+      });
+    }
+
+    return registrations;
+  }
 
   register(processor: UserSensorProcessor): void {
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(processor.name)) {
       throw Error('Processor requires an uppercase intent name');
     }
 
-    if (this.processors.has(processor.name)) {
+    if (this.registeredProcessors.has(processor.name)) {
       throw Error(`Duplicate intent: ${processor.name}`);
     }
 
@@ -49,7 +76,7 @@ export class UserSensorRouter {
       occupied.add(prefix);
     }
 
-    this.processors.set(processor.name, processor);
+    this.registeredProcessors.set(processor.name, processor);
     for (const prefix of prefixes) {
       this.prefixes.push({ prefix, processor });
     }
@@ -85,29 +112,29 @@ export class UserSensorRouter {
 
     // Keep the prompt's choices and the dispatch targets consistent, even if a
     // new processor subscribes while this model call is in flight.
-    const processors = new Map<string, UserSensorProcessor>();
+    const eligibleProcessors = new Map<string, UserSensorProcessor>();
     const intents: Intent[] = [];
-    for (const processor of this.processors.values()) {
+    for (const processor of this.registeredProcessors.values()) {
       if (processor.instruction !== undefined) {
-        processors.set(processor.name, processor);
+        eligibleProcessors.set(processor.name, processor);
         intents.push({ name: processor.name, instruction: processor.instruction });
       }
     }
 
-    if (!processors.has('IGNORE')) {
+    if (!eligibleProcessors.has('IGNORE')) {
       throw Error('Register an IGNORE processor with an instruction before LLM routing');
     }
 
     this.log('detect', 'Determining intent', frame.id);
     const started = performance.now();
-    const name = await this.detector.detect(frame, intents, signal);
+    const name = await this.dependencies.detector.detect(frame, intents, signal);
 
     // Cancellation during inference must prevent the processor's side effect.
     signal.throwIfAborted();
 
     // Prefix-only commands are not valid model responses, even if a detector
     // implementation returns one. In particular, inference cannot press Enter.
-    const processor = processors.get(name);
+    const processor = eligibleProcessors.get(name);
     if (!processor) {
       throw Error(`Unregistered intent: ${JSON.stringify(name)}`);
     }

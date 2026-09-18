@@ -8,9 +8,10 @@ import { DeliveryControl } from '../core/delivery-control.ts';
 
 /** An explicit "enter …" command types its payload and then presses Enter. */
 export class EnterTextToApplication implements UserSensorProcessor {
+  readonly label = 'Type text and Enter';
   readonly name = 'ENTER_TEXT_TO_APPLICATION';
   readonly prefixes = ['enter'];
-  private readonly delivery: DeliveryControl;
+  readonly dependencies: { readonly delivery: DeliveryControl };
 
   // No instruction: the LLM cannot select an action that submits text.
   constructor(
@@ -18,8 +19,11 @@ export class EnterTextToApplication implements UserSensorProcessor {
     private readonly preview = false,
     private readonly run: RunCommand = command,
     private readonly activity: Activity = {},
+    readonly id = 'enter-text',
   ) {
-    this.delivery = activity.delivery ?? new DeliveryControl();
+    this.dependencies = {
+      delivery: activity.delivery ?? new DeliveryControl(`keyboard-${id}`),
+    };
   }
 
   subscribe(router: UserSensorRouter): void {
@@ -32,7 +36,7 @@ export class EnterTextToApplication implements UserSensorProcessor {
       preview: this.preview,
       run: this.run,
       activity: this.activity,
-      delivery: this.delivery,
+      delivery: this.dependencies.delivery,
       pressEnter: true,
     });
   }
