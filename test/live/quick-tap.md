@@ -5,6 +5,8 @@ adapter and desktop recovery code. The adapter copy uses a separate shortcut
 identity, Super+Alt+F12, and private socket/database. All transcripts are synthetic.
 No clipboard command, microphone, LLM request, or live conversation is involved.
 The compositor process owns all fixture bindings and is discarded afterward.
+Its outer window can briefly take desktop focus. Warn the user before running
+this opt-in test; all generated input stays inside the nested compositor.
 
 The default editor is GTK 4. To run the same cases in native Wayland Chromium,
 point at an existing Playwright installation (no project dependency is added):
@@ -35,6 +37,9 @@ symptom; it does not establish correctness for every browser/Unicode combination
 
 For an A/B comparison, `COMPANION_TEST_ADAPTER=/absolute/path/to/adapter` selects
 another adapter source directory containing `bindings.lua` and `plugin/`.
+Adapters with `SidePanel.qml` also need their matching `../panel/` directory.
+The fixture preserves that relative layout and skips panel cases for adapters
+which predate the panel.
 
 ## Evidence on Hyprland 0.56.2
 
@@ -59,7 +64,11 @@ The Lua unit fixture checks all six release orders with left/right modifiers
 and both sides held together. The compositor fixture checks immediate and
 500 ms holds, separated modifier releases, literal dashes/punctuation/Unicode,
 no Enter, held selection, Escape cancellation, focus changes, exactly-once
-delivery, and preservation of the original recognized intent/outcome. Synthetic
+delivery, and preservation of the original recognized intent/outcome. It first
+checks direct literal typing without modifiers, so a transport failure is not
+mistaken for a shortcut regression. With a panel-capable adapter it also checks
+Super+Alt+C, retained keyboard focus, and cancellation when switching between
+panel and history. Synthetic
 modifier tests emit key events as well as masks: `wtype -M/-m` alone does not model
 physical modifier key-down/up events.
 
@@ -71,3 +80,9 @@ handles again hit a null dereference in Hyprland 0.56.2. The final fixture does
 not enumerate or unbind stale handles. It requires the nested launcher and
 discards the entire test compositor instead. No production adapter was installed
 when that crash occurred.
+
+The additional panel/history cases passed on an earlier combined GTK snapshot.
+The current runner also includes the later Chromium identity handshake and the
+direct-typing baseline. This full revised desktop runner has not been rerun;
+headless checks do not establish compositor behavior. The Chromium limitation
+described above remains unresolved.

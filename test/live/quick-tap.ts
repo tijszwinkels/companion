@@ -2,7 +2,7 @@
 // temporary F12 bindings. The real Companion instance and history stay intact.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -39,7 +39,14 @@ async function evaluate(lua: string): Promise<void> {
   assert.equal(reply.trim(), 'ok');
 }
 
-async function status(): Promise<{ online: boolean; opened: boolean; count: number }> {
+async function status(): Promise<{
+  online: boolean;
+  opened: boolean;
+  count: number;
+  panelOpened?: boolean;
+  panelVisible?: boolean;
+  panelMonitor?: string;
+}> {
   const reply = await command(
     'qs',
     ['ipc', '-p', directory, 'call', 'companion', 'status'],
@@ -92,7 +99,8 @@ function launch(file: string, args: string[]): void {
 
 // Modifier key events are essential: -M/-m alone only change a virtual keyboard's
 // mask and do not reproduce physical key-down/up ordering in the compositor.
-const press = ['-P', 'Super_L', '-M', 'logo', '-P', 'Alt_L', '-M', 'alt', '-P', 'F12'];
+const pressModifiers = ['-P', 'Super_L', '-M', 'logo', '-P', 'Alt_L', '-M', 'alt'];
+const press = [...pressModifiers, '-P', 'F12'];
 const releaseV = ['-p', 'F12'];
 const releaseAlt = ['-p', 'Alt_L', '-m', 'alt'];
 const releaseSuper = ['-p', 'Super_L', '-m', 'logo'];
@@ -117,11 +125,31 @@ try {
     'companion-history',
     identity,
   );
-  await writeFile(join(directory, 'Service.qml'), service);
-  await writeFile(join(directory, 'HistoryPicker.qml'), picker);
+  // Preserve the production layout so SidePanel can import ../../panel. A/B
+  // comparisons with older adapters still work: they have no panel to copy or
+  // exercise. When present, use the selected adapter's own shared components.
+  const pluginDirectory = join(directory, 'omarchy/plugin');
+  await cp(new URL('plugin/', adapter), pluginDirectory, { recursive: true });
+  let hasPanel = false;
+
+  try {
+    await access(new URL('plugin/SidePanel.qml', adapter));
+    hasPanel = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  if (hasPanel) {
+    await cp(new URL('../panel/', adapter), join(directory, 'panel'), { recursive: true });
+  }
+
+  await writeFile(join(pluginDirectory, 'Service.qml'), service);
+  await writeFile(join(pluginDirectory, 'HistoryPicker.qml'), picker);
   await writeFile(
     join(directory, 'shell.qml'),
-    'import Quickshell\nimport Quickshell.Hyprland\nShellRoot { property var activeWindow: Hyprland.activeToplevel; Service {} }\n',
+    'import Quickshell\nimport Quickshell.Hyprland\nimport "omarchy/plugin" as Companion\nShellRoot { property var activeWindow: Hyprland.activeToplevel; Companion.Service {} }\n',
   );
   await symlink('/usr/share/omarchy/shell/Commons', join(directory, 'Commons'));
   await symlink('/usr/share/omarchy/shell/Ui', join(directory, 'Ui'));
@@ -181,6 +209,13 @@ try {
   const a = windows.find((window) => window.title.startsWith('Companion test A'))!;
   const b = windows.find((window) => window.title.startsWith('Companion test B'))!;
   await focus(a.address);
+
+  // Establish that this editor accepts literal virtual-keyboard text before
+  // involving shortcuts. A failure here is independent of release ordering.
+  await command('wtype', ['--', literal], signal);
+  expected = literal;
+  await waitFor(async () => (await text()).A === expected);
+  console.log('PASS direct typing baseline without shortcut modifiers');
 
   for (const hold of [0, 500]) {
     for (const order of ['v-first', 'modifiers-first']) {
@@ -276,6 +311,40 @@ try {
   expected += literal;
   await waitFor(async () => (await text()).A === expected);
   console.log('PASS Up navigation and frozen rows during new speech');
+
+  if (hasPanel) {
+    // Exercise the actual panel chord alongside held history. Cancelling the
+    // history overlay must not deliver when its remaining modifiers go up.
+    const panelChord = [...pressModifiers, '-k', 'c', ...releaseAlt, ...releaseSuper];
+    await command('wtype', panelChord, signal);
+    await waitFor(async () => (await status()).panelOpened === true);
+    assert.equal((await status()).panelVisible, true);
+    assert.ok((await status()).panelMonitor);
+    assert.equal((await activeWindow(signal)).address, a.address);
+
+    await command(
+      'wtype',
+      [...press, '-s', '200', '-k', 'Escape', ...releaseV, ...releaseAlt, ...releaseSuper],
+      signal,
+    );
+    await waitFor(async () => (await status()).panelVisible === false);
+    assert.equal((await status()).opened, false);
+
+    await command(
+      'wtype',
+      [...press, '-s', '200', '-k', 'c', ...releaseV, ...releaseAlt, ...releaseSuper],
+      signal,
+    );
+    await waitFor(async () => (await status()).panelOpened === true);
+    assert.equal((await status()).opened, false);
+    await command('wtype', panelChord, signal);
+    await waitFor(async () => (await status()).panelVisible === false);
+    assert.deepEqual(await text(), { A: expected, B: '' });
+    assert.equal((await activeWindow(signal)).address, a.address);
+    console.log('PASS panel shortcut, preserved focus, and mutual history cancellation');
+  } else {
+    console.log('SKIP panel cases: selected adapter predates the side panel');
+  }
 
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const outcomes = database.prepare('SELECT outcome FROM paste_events ORDER BY rowid').all();

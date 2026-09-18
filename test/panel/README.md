@@ -11,6 +11,12 @@ These checks cover overlapping speech/processing state, pause, disconnect and
 reconnect, and the close button. `npm test` also exercises monitor selection,
 including mixed layouts, mirrored monitors, and a single built-in display.
 
+`npm run test:quick-tap` includes combined panel/history shortcut cases in a
+disposable nested compositor: focus preservation and cancellation when switching
+overlays. See [the fixture instructions](../live/quick-tap.md) for GTK/Chromium
+options and validation limits. Its outer window may briefly take desktop focus;
+warn the user before running it. All generated input targets the nested compositor.
+
 For a desktop check, install this worktree's adapter, then use **Super+Alt+C**.
 Verify the panel appears on the external monitor, below the bar, without changing
 keyboard focus or window sizes. Toggle rapidly during its slide and close it
