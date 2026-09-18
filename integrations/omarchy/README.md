@@ -44,7 +44,11 @@ needed to update this adapter.
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
-**Super+Alt+C** toggles the right-hand side panel. The close button also hides it.
+A small arrow halfway down the right edge expands the side panel on click.
+It moves with the panel and points right when expanded; clicking it again
+collapses the panel. **Super+Alt+C** also toggles it, and the close button hides
+the body while leaving the arrow available. The collapsed panel captures mouse
+input only on that small handle, leaving the desktop underneath usable.
 The single vertical **Activity** tab has a stationary microphone whose colors
 follow the bar. Each newly transcribed phrase rises above the mic in green, with
 **PROCESSING** at its top left. After processing completes, the intent appears
@@ -63,8 +67,9 @@ through the existing service.
 
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
-Monitor changes are observed while the panel is open. The panel is 420 logical
-pixels wide at the default theme scale, capped to the selected screen's width.
+Monitor changes are observed for both the panel and its handle. The panel body
+is 420 logical pixels wide at the default theme scale, plus a 24-by-56-pixel
+handle. Their combined width is capped to the selected screen's width.
 It respects the bar's reserved space and overlays windows without resizing them
 or taking keyboard focus. Opening history closes the panel; opening the panel
 cancels history without pasting. Rapid toggles reverse the 180 ms slide animation.

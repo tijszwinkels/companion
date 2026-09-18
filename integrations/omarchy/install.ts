@@ -44,6 +44,7 @@ const files = [
   'omarchy/plugin/SidePanel.qml',
   'omarchy/plugin/MonitorSelection.js',
   'panel/PanelContent.qml',
+  'panel/PanelHandle.qml',
   'panel/StatusView.qml',
   'panel/PhraseActivity.qml',
 ];
