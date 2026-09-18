@@ -42,12 +42,16 @@ export function frameMessage(frame: UserSensorFrame): UserMessage {
 
 /** Runs one Pi turn and returns only a validated, registered intent name. */
 export class IntentDetector implements Detector {
+  readonly label = 'Intent detector';
+  readonly dependencies = {};
+
   private readonly model: Model<'openai-completions'>;
   private readonly stream: StreamFn;
 
   constructor(
     private readonly config: LlmConfig,
     stream?: StreamFn,
+    readonly id = 'detector',
   ) {
     this.model = {
       id: config.model,

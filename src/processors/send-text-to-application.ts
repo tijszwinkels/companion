@@ -8,9 +8,10 @@ import { DeliveryControl } from '../core/delivery-control.ts';
 
 /** Types dictated text, selected either by the LLM or by an explicit "insert". */
 export class SendTextToApplication implements UserSensorProcessor {
+  readonly label = 'Type text';
   readonly name = 'SEND_TEXT_TO_APPLICATION';
   readonly prefixes = ['insert'];
-  private readonly delivery: DeliveryControl;
+  readonly dependencies: { readonly delivery: DeliveryControl };
 
   // This is the user's prompt text; formatting must not change its contents.
   readonly instruction =
@@ -21,8 +22,11 @@ export class SendTextToApplication implements UserSensorProcessor {
     private readonly preview = false,
     private readonly run: RunCommand = command,
     private readonly activity: Activity = {},
+    readonly id = 'send-text',
   ) {
-    this.delivery = activity.delivery ?? new DeliveryControl();
+    this.dependencies = {
+      delivery: activity.delivery ?? new DeliveryControl(`keyboard-${id}`),
+    };
   }
 
   subscribe(router: UserSensorRouter): void {
@@ -35,7 +39,7 @@ export class SendTextToApplication implements UserSensorProcessor {
       preview: this.preview,
       run: this.run,
       activity: this.activity,
-      delivery: this.delivery,
+      delivery: this.dependencies.delivery,
     });
   }
 }

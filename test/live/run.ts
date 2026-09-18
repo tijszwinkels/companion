@@ -16,6 +16,7 @@ import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
 import { Segmenter } from '../../src/sensors/audio/segmenter.ts';
 import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { IntentDetector } from '../../src/core/intent-detector.ts';
+import { testDetector } from '../helpers.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { DeliveryInterruptedError } from '../../src/core/delivery-error.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
@@ -104,7 +105,7 @@ try {
 
     const screenshot = await captureActiveWindow(signal);
     const detector = new IntentDetector(config.llm);
-    const router = new UserSensorRouter(detector, log);
+    const router = new UserSensorRouter({ detector }, log);
     new SendTextToApplication(log).subscribe(router);
     new Ignore(log).subscribe(router);
     assert.equal(
@@ -121,11 +122,13 @@ try {
 
     const switchedRouter = new UserSensorRouter(
       {
-        detect: async (...args) => {
-          const name = await detector.detect(...args);
-          await focus(b.address);
-          return name;
-        },
+        detector: testDetector({
+          detect: async (...args) => {
+            const name = await detector.detect(...args);
+            await focus(b.address);
+            return name;
+          },
+        }),
       },
       log,
     );
@@ -144,7 +147,7 @@ try {
   // A detector that fails if called proves that the shortcuts do not need a
   // working model. Real screenshots and wtype still exercise the desktop path.
   const noInference = { detect: async () => assert.fail('Prefix called the LLM') };
-  const prefixRouter = new UserSensorRouter(noInference, log);
+  const prefixRouter = new UserSensorRouter({ detector: testDetector(noInference) }, log);
   new SendTextToApplication(log).subscribe(prefixRouter);
   new EnterTextToApplication(log).subscribe(prefixRouter);
 
@@ -179,7 +182,7 @@ try {
     }
     return result;
   });
-  const switchedPrefixRouter = new UserSensorRouter(noInference, log);
+  const switchedPrefixRouter = new UserSensorRouter({ detector: testDetector(noInference) }, log);
   switchedEnter.subscribe(switchedPrefixRouter);
   await assert.rejects(
     switchedPrefixRouter.route({ ...prefixFrame, id: 7, utterance: 'enter stay here' }, signal),

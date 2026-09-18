@@ -2,15 +2,16 @@ import type { Log, Screenshot } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
 import type { Activity } from './activity.ts';
 import { failureOutcome } from './delivery-error.ts';
+import type { InspectableModule } from './module.ts';
+import type { ScreenSensor } from '../sensors/screen/sensor.ts';
+import type { SpeechTranscriber } from '../sensors/audio/transcriber.ts';
 
-interface Sensors {
-  capture(
-    signal: AbortSignal,
-    observed?: (window: Screenshot['window']) => void,
-  ): Promise<Screenshot>;
-
-  transcribe(samples: Float32Array, signal: AbortSignal): Promise<string>;
-}
+/** The exact objects used for capture, transcription, and dispatch. */
+export type PipelineDependencies = {
+  readonly screen: ScreenSensor;
+  readonly transcriber: SpeechTranscriber;
+  readonly router: UserSensorRouter;
+};
 
 // Capture starts before its job reaches the worker. Store failures as values so
 // an early rejection cannot become an unhandled promise while the job is queued.
@@ -28,7 +29,9 @@ interface Job {
 }
 
 /** Audio/VAD continues independently; one worker routes frames in speech order. */
-export class SensorPipeline {
+export class SensorPipeline implements InspectableModule {
+  readonly label = 'Sensor pipeline';
+
   private readonly pending: Job[] = [];
   private worker?: Promise<void>;
   private nextId = 0;
@@ -37,11 +40,11 @@ export class SensorPipeline {
   failures = 0;
 
   constructor(
-    private readonly sensors: Sensors,
-    private readonly router: UserSensorRouter,
+    readonly dependencies: PipelineDependencies,
     private readonly log: Log,
     private readonly signal: AbortSignal,
     private readonly activity: Activity = {},
+    readonly id = 'pipeline',
   ) {}
 
   /** Accept ownership of a complete utterance without blocking microphone input. */
@@ -66,7 +69,7 @@ export class SensorPipeline {
 
     // Capture at speech end, even if ASR is busy. Handle rejection immediately.
     let application: Screenshot['window'] | undefined;
-    const capture = this.sensors
+    const capture = this.dependencies.screen
       .capture(jobSignal, (window) => {
         application = window;
       })
@@ -110,7 +113,7 @@ export class SensorPipeline {
         // Capture is already in progress. Await both halves of the same frame;
         // a new screenshot taken after transcription could show another app.
         const [utterance, capture] = await Promise.all([
-          this.sensors.transcribe(job.samples, job.signal),
+          this.dependencies.transcriber.transcribe(job.samples, job.signal),
           job.capture,
         ]);
 
@@ -140,7 +143,7 @@ export class SensorPipeline {
         }
 
         this.log('frame', 'Utterance + screenshot', job.id);
-        await this.router.route(
+        await this.dependencies.router.route(
           { id: job.id, observedAt: job.observedAt, utterance, screenshot: capture.screenshot },
           job.signal,
         );

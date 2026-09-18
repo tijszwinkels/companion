@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { testDetector, testSensors } from '../helpers.ts';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../../src/config.ts';
@@ -32,10 +33,15 @@ for (const ending of ['silence', 'abort', 'failure', 'eof']) {
 
     const pipeline = new SensorPipeline(
       {
-        capture: async () => assert.fail('No capture expected in this listener test'),
-        transcribe: async () => assert.fail('No transcription expected in this listener test'),
+        ...testSensors({
+          capture: async () => assert.fail('No capture expected in this listener test'),
+          transcribe: async () => assert.fail('No transcription expected in this listener test'),
+        }),
+        router: new UserSensorRouter(
+          { detector: testDetector({ detect: async () => assert.fail('No inference expected') }) },
+          () => {},
+        ),
       },
-      new UserSensorRouter({ detect: async () => assert.fail('No inference expected') }, () => {}),
       () => {},
       controller.signal,
     );

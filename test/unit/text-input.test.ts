@@ -6,7 +6,7 @@ import { DeliveryInterruptedError } from '../../src/core/delivery-error.ts';
 import { EnterTextToApplication } from '../../src/processors/enter-text-to-application.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import type { RunCommand } from '../../src/sensors/screen/capture.ts';
-import { frame, signal } from '../helpers.ts';
+import { frame, signal, testDetector } from '../helpers.ts';
 
 /** Fake desktop whose focus can change at the same boundaries as real commands. */
 function desktop() {
@@ -44,7 +44,11 @@ test('insert types literal payload only; enter types then checks focus and press
   for (const prefix of ['insert', 'enter']) {
     const screen = desktop();
     const router = new UserSensorRouter(
-      { detect: async () => assert.fail('Shortcut must bypass inference') },
+      {
+        detector: testDetector({
+          detect: async () => assert.fail('Shortcut must bypass inference'),
+        }),
+      },
       () => {},
     );
     new SendTextToApplication(() => {}, false, screen.run).subscribe(router);

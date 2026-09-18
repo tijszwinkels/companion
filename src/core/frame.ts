@@ -1,4 +1,5 @@
 import type { UserSensorRouter } from './router.ts';
+import type { InspectableModule } from './module.ts';
 
 /** A window image and the identity needed to check focus before text delivery. */
 export interface Screenshot {
@@ -42,7 +43,7 @@ export interface Intent {
 }
 
 /** A processor can be selected by the LLM, by a spoken prefix, or by both. */
-export interface UserSensorProcessor {
+export interface UserSensorProcessor extends InspectableModule {
   name: string;
 
   /** Omit this for commands that must only run when explicitly requested. */

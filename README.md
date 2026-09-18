@@ -108,6 +108,27 @@ and `vadModel`. Omitted values use defaults. `--config path` selects another fil
 `COMPANION_LLM_API_KEY` supplies endpoint authentication. The adapter explicitly
 disables Qwen thinking using `chat_template_kwargs.enable_thinking = false`.
 
+## Inspect the module graph
+
+Export the current pipeline wiring without opening the microphone, capturing the
+screen, contacting the model, or starting desktop services:
+
+```sh
+npm run --silent start -- --graph mermaid
+npm run --silent start -- --graph json
+```
+
+Modules expose an ID, a label, and their actual named dependencies. The graph
+also reads the router's processor registrations, including prefixes and LLM
+eligibility. Constructor arguments and `subscribe(router)` still wire the app;
+there is no separate connection registry or graph execution engine.
+
+This graph starts at the sensor pipeline. It includes capture, transcription,
+routing, processors, and the shared keyboard queue. Audio/VAD internals and
+desktop services are outside this first inspection boundary. See the
+[module inspection design](docs/module-interfaces.md) for the interfaces,
+wiring example, graph semantics, and ownership boundaries.
+
 ## Data flow and review order
 
 The directories follow the responsibilities of the modules:
@@ -118,6 +139,9 @@ src/
   config.ts                      Read and validate configuration
   core/
     frame.ts                     Shared types and data contracts
+    module.ts                    Module identity and inspectable dependencies
+    graph.ts                     Read actual wiring into serializable graph data
+    graph-mermaid.ts             Render graph data as a Mermaid diagram
     pipeline.ts                  Assemble frames while capture continues
     router.ts                    Register processors and dispatch frames
     prefix.ts                    Match and remove literal command prefixes
@@ -134,6 +158,7 @@ src/
       transcriber.ts             Local speech-to-text through Voxtype
     screen/
       capture.ts                 Read and capture the active window
+      sensor.ts                  Named screen sensor used by the pipeline
   system/
     command.ts                   Run and cancel external commands
     text-input.ts                Automatic delivery ownership and feedback
@@ -200,6 +225,10 @@ import type { UserSensorFrame, UserSensorProcessor } from './core/frame.ts';
 import type { UserSensorRouter } from './core/router.ts';
 
 class Remember implements UserSensorProcessor {
+  readonly id = 'remember';
+  readonly label = 'Remember';
+  readonly dependencies = {};
+
   readonly name = 'REMEMBER';
   readonly prefixes = ['remember', 'take note'];
 

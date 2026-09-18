@@ -1,13 +1,20 @@
+import type { InspectableModule } from './module.ts';
+
 /**
  * One keyboard output queue shared by automatic sends and manual recovery.
  * Recovery can supersede automatic work until its final, synchronous claim
  * immediately before typing. Once typing starts, recovery of that frame fails.
  * Different utterances wait their turn and recheck focus inside the queue.
  */
-export class DeliveryControl {
+export class DeliveryControl implements InspectableModule {
+  readonly label = 'Keyboard delivery queue';
+  readonly dependencies = {};
+
   private tail = Promise.resolve();
   private readonly recovered = new Set<number>();
   private readonly typing = new Set<number>();
+
+  constructor(readonly id = 'keyboard-delivery') {}
 
   async automatic(
     frameId: number,

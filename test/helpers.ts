@@ -1,4 +1,8 @@
 import type { Screenshot, UserSensorFrame, UserSensorProcessor } from '../src/core/frame.ts';
+import type { Detector } from '../src/core/router.ts';
+import type { PipelineDependencies } from '../src/core/pipeline.ts';
+import type { ScreenSensor } from '../src/sensors/screen/sensor.ts';
+import type { SpeechTranscriber } from '../src/sensors/audio/transcriber.ts';
 
 /** A tiny PNG and a stable window identity; no desktop access is needed. */
 export const screenshot: Screenshot = {
@@ -27,11 +31,45 @@ export function processor(
   process: UserSensorProcessor['process'] = async () => {},
 ): UserSensorProcessor {
   return {
+    id: name,
+    label: name,
+    dependencies: {},
     name,
     instruction: `Choose ${name}`,
     process,
     subscribe(router) {
       router.register(this);
+    },
+  };
+}
+
+/** Attach inspection metadata to a controlled detector without changing its behavior. */
+export function testDetector(implementation: Pick<Detector, 'detect'>): Detector {
+  return {
+    id: 'test-detector',
+    label: 'Test detector',
+    dependencies: {},
+    detect: implementation.detect.bind(implementation),
+  };
+}
+
+/** Use the same named sensor objects as production, with controlled operations. */
+export function testSensors(operations: {
+  capture: ScreenSensor['capture'];
+  transcribe: SpeechTranscriber['transcribe'];
+}): Pick<PipelineDependencies, 'screen' | 'transcriber'> {
+  return {
+    screen: {
+      id: 'test-screen',
+      label: 'Test screen',
+      dependencies: {},
+      capture: operations.capture,
+    },
+    transcriber: {
+      id: 'test-transcriber',
+      label: 'Test transcriber',
+      dependencies: {},
+      transcribe: operations.transcribe,
     },
   };
 }

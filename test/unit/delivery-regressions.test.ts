@@ -7,7 +7,7 @@ import { Ignore } from '../../src/processors/ignore.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import type { RunCommand } from '../../src/sensors/screen/capture.ts';
 import { desktopFixture, stopped, waitFor, windowReply } from '../desktop-fixture.ts';
-import { deferred, frame, screenshot } from '../helpers.ts';
+import { deferred, frame, screenshot, testDetector, testSensors } from '../helpers.ts';
 
 test('recovery rejects an utterance whose automatic keyboard process already started', async () => {
   const typing = deferred<void>();
@@ -250,15 +250,17 @@ test('pausing automatic typing records interrupted through the pipeline instead 
   };
   const fixture = await desktopFixture(run);
   const router = new UserSensorRouter(
-    { detect: async () => 'SEND_TEXT_TO_APPLICATION' },
+    { detector: testDetector({ detect: async () => 'SEND_TEXT_TO_APPLICATION' }) },
     () => {},
     fixture.runtime.activity,
   );
   new SendTextToApplication(() => {}, false, run, fixture.runtime.activity).subscribe(router);
   new Ignore(() => {}, fixture.runtime.activity).subscribe(router);
   const pipeline = new SensorPipeline(
-    { capture: async () => screenshot, transcribe: async () => 'Fixture text' },
-    router,
+    {
+      ...testSensors({ capture: async () => screenshot, transcribe: async () => 'Fixture text' }),
+      router,
+    },
     () => {},
     fixture.controller.signal,
     fixture.runtime.activity,

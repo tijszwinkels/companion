@@ -7,14 +7,16 @@ import { UserSensorRouter } from './core/router.ts';
 import { Ignore } from './processors/ignore.ts';
 import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
-import { captureActiveWindow } from './sensors/screen/capture.ts';
+import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
-import { VoiceActivityDetector } from './sensors/audio/vad.ts';
+import type { VoiceActivityDetector } from './sensors/audio/vad.ts';
 import { listen } from './sensors/audio/listener.ts';
 import { SensorPipeline } from './core/pipeline.ts';
 import { PauseControl } from './core/pause-control.ts';
 import { DeliveryControl } from './core/delivery-control.ts';
 import { failureOutcome } from './core/delivery-error.ts';
+import { createGraph } from './core/graph.ts';
+import { graphToMermaid } from './core/graph-mermaid.ts';
 import { DesktopRuntime, desktopPaths } from './desktop/runtime.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
@@ -39,6 +41,7 @@ async function main(): Promise<void> {
     options: {
       help: { type: 'boolean', short: 'h' },
       config: { type: 'string' },
+      graph: { type: 'string' },
       text: { type: 'string' },
       wav: { type: 'string' },
       device: { type: 'string' },
@@ -60,6 +63,7 @@ Usage: npm start -- [options]
   --device name      PipeWire capture node (default: system microphone)
   --seconds N        Stop microphone capture after N seconds
   --config path      JSON configuration (default: companion.config.json)
+  --graph format     Print pipeline connections as json or mermaid, then exit
   --no-sounds        Start with audible feedback muted
   --no-desktop       Disable history, sounds, and desktop control
   --paused           Start paused; resume through the desktop control
@@ -71,6 +75,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   }
 
   // Validate CLI input before opening the microphone or contacting the model.
+  if (values.graph !== undefined && !['json', 'mermaid'].includes(values.graph)) {
+    throw Error('--graph requires json or mermaid');
+  }
   if (values.text !== undefined && values.wav) {
     throw Error('Choose --text or --wav');
   }
@@ -106,12 +113,14 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   }
 
   try {
-    log(
-      'start',
-      `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
-    );
+    if (!values.graph) {
+      log(
+        'start',
+        `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
+      );
+    }
 
-    if (!values['no-desktop']) {
+    if (!values['no-desktop'] && !values.graph) {
       desktop = new DesktopRuntime(pause, log, controller.signal, {
         ...desktopPaths(),
         preview: values.preview,
@@ -123,10 +132,33 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
 
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
-    const router = new UserSensorRouter(new IntentDetector(config.llm), log, activity);
+    const detector = new IntentDetector(config.llm);
+    const router = new UserSensorRouter({ detector }, log, activity);
     new SendTextToApplication(log, values.preview, command, activity).subscribe(router);
     new EnterTextToApplication(log, values.preview, command, activity).subscribe(router);
     new Ignore(log, activity).subscribe(router);
+
+    // These constructors are inert. Named dependencies are both the actual
+    // objects used for processing and the connections visible to inspection.
+    const screen = new ActiveWindowSensor(command);
+    const transcriber = new Transcriber(config.asr);
+    pipeline = new SensorPipeline(
+      { screen, transcriber, router },
+      log,
+      controller.signal,
+      activity,
+    );
+
+    // Export the same wiring as normal execution, before acquiring any audio,
+    // screen, native VAD, or desktop resources. stdout contains only the graph.
+    if (values.graph) {
+      const graph = createGraph(pipeline);
+      const output =
+        values.graph === 'json' ? JSON.stringify(graph, null, 2) + '\n' : graphToMermaid(graph);
+      process.stdout.write(output);
+      return;
+    }
+
     log(
       'registered',
       'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE',
@@ -139,7 +171,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
       try {
         log('capture', 'Capturing active window', 1);
-        const screenshot = await captureActiveWindow(controller.signal, command, (application) => {
+        const screenshot = await screen.capture(controller.signal, (application) => {
           transcript.application = application;
         });
         activity.transcribed?.(transcript);
@@ -168,20 +200,12 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       throw Error('Expected Voxtype 1.0.1');
     }
 
-    await captureActiveWindow(controller.signal);
-    vad = await VoiceActivityDetector.create(config.vadModel);
+    await screen.capture(controller.signal);
 
-    const asr = new Transcriber(config.asr);
-    pipeline = new SensorPipeline(
-      {
-        capture: (signal, observed) => captureActiveWindow(signal, command, observed),
-        transcribe: asr.transcribe.bind(asr),
-      },
-      router,
-      log,
-      controller.signal,
-      activity,
-    );
+    // Load the native runtime only when audio processing actually needs it.
+    // Help, graph export, and supplied-text mode need no ONNX installation.
+    const { VoiceActivityDetector } = await import('./sensors/audio/vad.ts');
+    vad = await VoiceActivityDetector.create(config.vadModel);
 
     if (seconds !== undefined) {
       timer = setTimeout(stop, seconds * 1000);
@@ -242,7 +266,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       process.exitCode = 1;
     }
 
-    log('stopped', 'Capture and processing stopped');
+    if (!values.graph) {
+      log('stopped', 'Capture and processing stopped');
+    }
   }
 }
 
