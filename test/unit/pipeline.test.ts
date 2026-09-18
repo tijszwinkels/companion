@@ -6,6 +6,38 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import { deferred, processor, screenshot, signal, testDetector, testSensors } from '../helpers.ts';
 import type { Transcript } from '../../src/core/activity.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
+import type { InteractionContext } from '../../src/core/frame.ts';
+
+test('sidebar context is captured at speech end before delayed transcription', async () => {
+  const waiting = deferred<string>();
+  let current: InteractionContext = {
+    agentSessionId: 'first',
+    agentComposerFocused: true,
+    revision: 1,
+  };
+  let received: InteractionContext | undefined;
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
+  processor('IGNORE', async (frame) => {
+    received = frame.interaction;
+  }).subscribe(router);
+  const pipeline = new SensorPipeline(
+    {
+      ...testSensors({ capture: async () => screenshot, transcribe: async () => waiting.promise }),
+      router,
+    },
+    () => {},
+    signal(),
+    { interactionContext: () => ({ ...current }) },
+  );
+  pipeline.submit(new Float32Array(16000));
+  current = { agentSessionId: 'second', agentComposerFocused: true, revision: 2 };
+  waiting.resolve('Please continue');
+  await pipeline.idle();
+  assert.deepEqual(received, { agentSessionId: 'first', agentComposerFocused: true, revision: 1 });
+});
 
 test('capture happens at submission, processing remains FIFO, and queue is bounded', async () => {
   const waiting = deferred<string>();
@@ -166,46 +198,53 @@ test('capture failure still records the transcript and observed application befo
   assert.deepEqual(outcomes, ['error']);
 });
 
-test('pause cancels in-flight and queued delivery; resuming accepts only new speech', async () => {
-  const pause = new PauseControl();
-  const waiting = deferred<string>();
-  const delivered: number[] = [];
-  const outcomes: string[] = [];
-  let calls = 0;
-  const router = new UserSensorRouter(
-    { detector: testDetector({ detect: async () => 'IGNORE' }) },
-    () => {},
-  );
-  processor('IGNORE', async (frame) => {
-    delivered.push(frame.id);
-  }).subscribe(router);
-  const pipeline = new SensorPipeline(
-    {
-      ...testSensors({
-        capture: async () => screenshot,
-        transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
-      }),
-      router,
-    },
-    () => {},
-    signal(),
-    {
-      outcome: (_id, outcome) => outcomes.push(outcome),
-    },
-  );
+for (const source of ['manual', 'media'] as const) {
+  test(`${source} pause cancels in-flight and queued delivery; resuming accepts only new speech`, async () => {
+    const pause = new PauseControl();
+    const waiting = deferred<string>();
+    const delivered: number[] = [];
+    const outcomes: string[] = [];
+    let calls = 0;
+    const router = new UserSensorRouter(
+      { detector: testDetector({ detect: async () => 'IGNORE' }) },
+      () => {},
+    );
+    processor('IGNORE', async (frame) => {
+      delivered.push(frame.id);
+    }).subscribe(router);
+    const pipeline = new SensorPipeline(
+      {
+        ...testSensors({
+          capture: async () => screenshot,
+          transcribe: async () => (++calls === 1 ? waiting.promise : 'New speech'),
+        }),
+        router,
+      },
+      () => {},
+      signal(),
+      {
+        outcome: (_id, outcome) => outcomes.push(outcome),
+      },
+    );
 
-  pipeline.submit(new Float32Array(16000), pause.signal);
-  pipeline.submit(new Float32Array(16000), pause.signal);
-  pause.toggle();
-  pause.toggle();
-  waiting.resolve('Stale speech');
-  await pipeline.idle();
-  assert.deepEqual(delivered, []);
-  assert.deepEqual(outcomes, ['cancelled', 'cancelled']);
-  assert.equal(calls, 1);
+    pipeline.submit(new Float32Array(16000), pause.signal);
+    pipeline.submit(new Float32Array(16000), pause.signal);
+    if (source === 'manual') {
+      pause.toggle();
+      pause.toggle();
+    } else {
+      pause.setMediaPlaying(true);
+      pause.setMediaPlaying(false);
+    }
+    waiting.resolve('Stale speech');
+    await pipeline.idle();
+    assert.deepEqual(delivered, []);
+    assert.deepEqual(outcomes, ['cancelled', 'cancelled']);
+    assert.equal(calls, 1);
 
-  pipeline.submit(new Float32Array(16000), pause.signal);
-  await pipeline.idle();
-  assert.deepEqual(delivered, [3]);
-  assert.equal(pipeline.failures, 0);
-});
+    pipeline.submit(new Float32Array(16000), pause.signal);
+    await pipeline.idle();
+    assert.deepEqual(delivered, [3]);
+    assert.equal(pipeline.failures, 0);
+  });
+}

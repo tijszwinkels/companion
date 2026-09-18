@@ -1,6 +1,12 @@
 -- Use the resident global-shortcut connection for ordered press/release events.
 local history_held = false
 
+hl.bind("SUPER + ALT + D", hl.dsp.global("companion:focus"), {
+  description = "Companion conversation input focus",
+  -- Focusing the composer while history is held must not shadow key releases.
+  transparent = true,
+})
+
 hl.bind("SUPER + ALT + P", hl.dsp.global("companion:pause"), {
   description = "Companion pause/resume listening",
   -- Pausing while history is held must not shadow its final key releases.

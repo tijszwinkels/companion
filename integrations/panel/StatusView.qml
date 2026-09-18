@@ -7,6 +7,7 @@ Item {
 
   required property bool online
   required property bool paused
+  property string pauseReason: ""
   required property bool speaking
   required property int processing
   required property color foreground
@@ -16,13 +17,17 @@ Item {
   required property real unit
   property var history: []
   property bool animationsEnabled: true
+  property bool compact: false
+  readonly property real iconUnit: unit * (compact ? 0.5 : 1)
 
   // The microphone keeps the same status colors as the top bar. Processing is
   // described beside the phrase; the sensor continues listening concurrently.
   readonly property color indicatorColor: !online || paused ? muted
     : speaking ? "#ef5350" : processing > 0 ? "#66bb6a" : "#9e9e9e"
-  readonly property string title: !online ? "Not running" : paused ? "Paused" : "Listening"
+  readonly property string title: !online ? "Not running"
+    : paused ? (pauseReason === "media" ? "Paused for media" : "Paused") : "Listening"
   readonly property string description: !online ? "Companion will reconnect when it starts."
+    : paused && pauseReason === "media" ? "Listening resumes when playback stops."
     : paused ? "Microphone capture is paused." : ""
 
   PhraseActivity {
@@ -35,6 +40,7 @@ Item {
     accent: root.accent
     fontFamily: root.fontFamily
     unit: root.unit
+    compact: root.compact
   }
 
   // Draw the microphone directly so other desktop hosts need no icon font.
@@ -42,54 +48,55 @@ Item {
   Item {
     id: microphone
     anchors.horizontalCenter: parent.horizontalCenter
-    y: Math.max(0, (parent.height - height) / 2)
-    width: 36 * root.unit
-    height: 48 * root.unit
+    y: root.compact ? Math.max(0, parent.height - height - 4 * root.unit) : Math.max(0, (parent.height - height) / 2)
+    width: 36 * root.iconUnit
+    height: 48 * root.iconUnit
     opacity: root.online && !root.paused ? 1 : 0.45
 
     Rectangle {
       anchors.horizontalCenter: parent.horizontalCenter
-      width: 16 * root.unit
-      height: 29 * root.unit
+      width: 16 * root.iconUnit
+      height: 29 * root.iconUnit
       radius: width / 2
       color: root.indicatorColor
     }
 
     Item {
-      y: 17 * root.unit
+      y: 17 * root.iconUnit
       width: parent.width
-      height: 21 * root.unit
+      height: 21 * root.iconUnit
       clip: true
 
       Rectangle {
-        y: -15 * root.unit
+        y: -15 * root.iconUnit
         width: parent.width
-        height: 35 * root.unit
+        height: 35 * root.iconUnit
         radius: width / 2
         color: "transparent"
-        border.width: 2 * root.unit
+        border.width: 2 * root.iconUnit
         border.color: root.indicatorColor
       }
     }
 
     Rectangle {
       anchors.horizontalCenter: parent.horizontalCenter
-      y: 37 * root.unit
-      width: 2 * root.unit
-      height: 9 * root.unit
+      y: 37 * root.iconUnit
+      width: 2 * root.iconUnit
+      height: 9 * root.iconUnit
       color: root.indicatorColor
     }
 
     Rectangle {
       anchors.horizontalCenter: parent.horizontalCenter
       anchors.bottom: parent.bottom
-      width: 16 * root.unit
-      height: 2 * root.unit
+      width: 16 * root.iconUnit
+      height: 2 * root.iconUnit
       color: root.indicatorColor
     }
   }
 
   Column {
+    visible: !root.compact
     anchors.top: microphone.bottom
     anchors.topMargin: 24 * root.unit
     width: parent.width

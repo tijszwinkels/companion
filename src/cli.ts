@@ -7,6 +7,10 @@ import { UserSensorRouter } from './core/router.ts';
 import { Ignore } from './processors/ignore.ts';
 import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
+import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
+import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
+import { AgentSessions } from './agents/sessions.ts';
+import { PiBackend } from './agents/pi-backend.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
 import type { VoiceActivityDetector } from './sensors/audio/vad.ts';
@@ -57,7 +61,7 @@ async function main(): Promise<void> {
     console.log(`Companion — microphone + active-window intent routing
 
 Usage: npm start -- [options]
-  --preview          Log text delivery instead of typing it
+  --preview          Log actions instead of typing or starting agents
   --text "utterance" Route one supplied utterance with a live screenshot
   --wav file.wav     Run an audio file through VAD, ASR, and intent routing
   --device name      PipeWire capture node (default: system microphone)
@@ -70,6 +74,8 @@ Usage: npm start -- [options]
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
+"new coding agent …" or "quick question …" asks Pi and opens a session tab.
+"message coding agent …" continues the currently open agent conversation.
 Other dictation never presses Enter. Start inside your Hyprland desktop session.`);
     return;
   }
@@ -98,7 +104,11 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // Every asynchronous stage observes this signal, so Ctrl+C cancels the whole
   // session, including an in-flight transcription or intent request.
   const controller = new AbortController();
-  const stop = () => controller.abort();
+  const agents = new AgentSessions({ backend: new PiBackend() }, log);
+  const stop = () => {
+    controller.abort();
+    void agents.close();
+  };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
 
@@ -121,10 +131,13 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     }
 
     if (!values['no-desktop'] && !values.graph) {
+      await agents.loadPrevious();
       desktop = new DesktopRuntime(pause, log, controller.signal, {
         ...desktopPaths(),
         preview: values.preview,
         sounds: !values['no-sounds'] && !values.preview,
+        mediaPause: values.text === undefined && !values.wav,
+        agents,
       });
       await desktop.start();
     }
@@ -137,6 +150,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     new SendTextToApplication(log, values.preview, command, activity).subscribe(router);
     new EnterTextToApplication(log, values.preview, command, activity).subscribe(router);
     new Ignore(log, activity).subscribe(router);
+    new StartCodingAgentSession({ sessions: agents }, log, values.preview, activity).subscribe(
+      router,
+    );
+    new ContinueOpenAgentConversation(
+      { sessions: agents },
+      log,
+      values.preview,
+      activity,
+    ).subscribe(router);
 
     // These constructors are inert. Named dependencies are both the actual
     // objects used for processing and the connections visible to inspection.
@@ -161,13 +183,14 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'registered',
-      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new coding agent / quick question), CONTINUE_OPEN_AGENT_CONVERSATION (message coding agent / focused composer)',
     );
 
     // Supplied text enters the same routing path but needs no audio resources.
     if (values.text !== undefined) {
       const transcript: Transcript = { id: 1, observedAt: Date.now(), utterance: values.text };
       activity.processing?.(1);
+      const interaction = activity.interactionContext?.();
 
       try {
         log('capture', 'Capturing active window', 1);
@@ -176,7 +199,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         });
         activity.transcribed?.(transcript);
         log('frame', 'Supplied utterance + screenshot', 1);
-        await router.route({ ...transcript, screenshot }, controller.signal);
+        await router.route({ ...transcript, screenshot, interaction }, controller.signal);
       } catch (error) {
         // Like audio input, supplied text is retained even if capture fails.
         activity.transcribed?.(transcript);
@@ -186,6 +209,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         activity.finished?.(1);
       }
 
+      await agents.idle();
       return;
     }
 
@@ -245,6 +269,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     } while (!values.wav);
 
     await pipeline.idle();
+    await agents.idle();
   } catch (error) {
     // A requested stop is normal. Other failures reach the top-level error log.
     if (!controller.signal.aborted) {
@@ -256,6 +281,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     clearTimeout(timer);
 
     await pipeline?.idle();
+    await agents.close();
     await vad?.close();
     await desktop?.close();
 

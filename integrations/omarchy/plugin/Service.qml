@@ -2,6 +2,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
+import Quickshell.Services.Mpris
+import "../../panel" as Panel
 
 // This adapter owns Omarchy/Hyprland behavior. Companion only sees the portable
 // JSON protocol documented in src/desktop/README.md.
@@ -11,6 +13,8 @@ Item {
   property var shell: null
   property bool online: false
   property bool paused: false
+  property string pauseReason: ""
+  property bool mediaPauseAvailable: false
   property bool speaking: false
   property bool soundsEnabled: false
   property bool soundsAvailable: false
@@ -22,9 +26,42 @@ Item {
   property var rows: []
   property int selectedIndex: 0
   property string targetAddress: ""
+  property string targetComposerId: ""
   property var pickerScreen: null
   property bool panelOpened: false
+  property var pendingAgentInput: null
   readonly property var transport: connection.item
+  onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
+  onOnlineChanged: {
+    if (online) {
+      Qt.callLater(root.reportPanelState)
+      Qt.callLater(root.reportMediaPlayback)
+    }
+  }
+
+  PlaybackState {
+    id: playback
+    players: Mpris.players ? Mpris.players.values : []
+    onPlayingChanged: root.reportMediaPlayback()
+  }
+
+  function reportMediaPlayback() {
+    if (root.mediaPauseAvailable) {
+      root.send({action: "media-playback", playing: playback.playing})
+    }
+  }
+
+  Panel.AgentSessionState {
+    id: agentSessions
+    onRevealRequested: root.panelOpened = true
+    onConversationIdChanged: Qt.callLater(root.reportPanelState)
+  }
+
+  function reportPanelState() {
+    const id = root.panelOpened ? agentSessions.conversationId : ""
+    root.send({action: "panel-state", id: id,
+      composerFocused: id !== "" && sidePanel.composerFocusId === id})
+  }
 
   function togglePanel() {
     // The history picker and status panel have separate lifetimes. Dismissing
@@ -35,6 +72,35 @@ Item {
 
   function closePanel() {
     root.panelOpened = false
+  }
+
+  function toggleComposerFocus() {
+    if (!root.online || !agentSessions.conversationId) {
+      root.panelOpened = true
+      root.lastError = "Select an agent conversation before focusing its input."
+      root.lastErrorAction = "focus-agent"
+      return
+    }
+    root.cancel()
+    const previous = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+    const address = previous && !previous.startsWith("0x") ? "0x" + previous : previous
+    root.panelOpened = true
+    sidePanel.toggleComposerFocus(address)
+    if (root.lastErrorAction === "focus-agent") {
+      root.lastError = ""
+      root.lastErrorAction = ""
+    }
+  }
+
+  function restoreApplicationFocus(address) {
+    // Addresses come from compositor state, never from chat text. A window
+    // closed since activation is no longer a valid focus destination.
+    if (!/^0x[0-9a-f]+$/i.test(address)) return
+    const exists = Hyprland.toplevels.values.some(window => {
+      const candidate = window.address.startsWith("0x") ? window.address : "0x" + window.address
+      return candidate === address
+    })
+    if (exists) Hyprland.dispatch('hl.dsp.focus({ window = "address:' + address + '" })')
   }
 
   function send(request) {
@@ -54,24 +120,54 @@ Item {
     root.send({ action: "toggle-sounds" })
   }
 
+  function sendAgentInput(id, text) {
+    if (!root.online) {
+      sidePanel.submitted(id, text, "Companion is disconnected; your draft is retained.")
+      return
+    }
+    root.pendingAgentInput = {id: id, text: text}
+    root.send({action: "send-agent", id: id, text: text})
+  }
+
+  function finishAgentInput(error) {
+    if (root.pendingAgentInput) {
+      sidePanel.submitted(root.pendingAgentInput.id, root.pendingAgentInput.text, error)
+      root.pendingAgentInput = null
+    }
+  }
+
   function receive(line) {
     try {
       const message = JSON.parse(line)
 
       if (message.type === "state" && message.protocol === 1) {
         root.paused = message.paused
+        root.pauseReason = message.pauseReason || ""
+        root.mediaPauseAvailable = message.mediaPauseAvailable === true
         root.speaking = message.speaking === true
         root.soundsEnabled = message.soundsEnabled === true
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
         root.history = message.history
+        agentSessions.replace(message.sessions || [])
+        agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready
+      } else if (message.type === "agent-session") {
+        agentSessions.update(message.session)
+      } else if (message.type === "agent-history") {
+        agentSessions.previousSessions = message.sessions || []
+      } else if (message.type === "agent-restored") {
+        agentSessions.restore(message.session)
+      } else if (message.type === "agent-removed") {
+        agentSessions.remove(message.id)
       } else if (message.type === "error") {
+        if (message.action === "send-agent") root.finishAgentInput(message.message)
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
+        if (message.action === "send-agent") root.finishAgentInput("")
         if (message.result === "skipped") {
           root.lastError = "Paste skipped: focus changed"
           root.lastErrorAction = "paste"
@@ -99,6 +195,7 @@ Item {
     root.selectedIndex = 0
     const address = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
     root.targetAddress = address && !address.startsWith("0x") ? "0x" + address : address
+    root.targetComposerId = sidePanel.composerFocusId
     const monitor = Hyprland.focusedMonitor
     root.pickerScreen = Quickshell.screens.find(screen => screen.name === monitor?.name) || null
     root.lastError = ""
@@ -122,7 +219,7 @@ Item {
     const row = root.rows[root.selectedIndex]
 
     if (root.online && row && root.targetAddress) {
-      root.send({ action: "paste", id: row.id, target: root.targetAddress })
+      root.send({ action: "paste", id: row.id, target: root.targetAddress, composer: root.targetComposerId })
     }
   }
 
@@ -140,6 +237,13 @@ Item {
     name: "panel"
     description: "Toggle Companion side panel"
     onPressed: root.togglePanel()
+  }
+
+  GlobalShortcut {
+    appid: "companion"
+    name: "focus"
+    description: "Toggle focus in the Companion conversation input"
+    onPressed: root.toggleComposerFocus()
   }
 
   // Only finish completes a chord, after V and both modifiers are up. Hyprland
@@ -182,11 +286,13 @@ Item {
     target: "companion"
     function status(): string {
       return JSON.stringify({ online: root.online, paused: root.paused,
+        pauseReason: root.pauseReason, mediaPlaying: playback.playing,
         speaking: root.speaking, processing: root.processing,
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
         panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
         panelMonitor: sidePanel.monitorName,
+        composerFocusId: sidePanel.composerFocusId, composerFocusPhase: sidePanel.composerFocusPhase,
         count: root.history.length, error: root.lastError })
     }
     function togglePause(): void { root.togglePause() }
@@ -194,9 +300,11 @@ Item {
     function cancel(): void { root.cancel() }
     function togglePanel(): void { root.togglePanel() }
     function closePanel(): void { root.closePanel() }
+    function toggleComposerFocus(): void { root.toggleComposerFocus() }
   }
 
   function connectionLost() {
+    root.finishAgentInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
     root.online = false
     root.speaking = false
     root.processing = 0
@@ -271,9 +379,26 @@ Item {
     opened: root.panelOpened
     online: root.online
     paused: root.paused
+    pauseReason: root.pauseReason
     speaking: root.speaking
     processing: root.processing
     history: root.history
+    sessions: agentSessions.sessions
+    previousSessions: agentSessions.previousSessions
+    showingPrevious: agentSessions.showingPrevious
+    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent"].includes(root.lastErrorAction) ? root.lastError : ""
+    selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
+    onSessionSelected: id => {
+      agentSessions.showingPrevious = false
+      agentSessions.selectedId = id
+    }
+    onPreviousRequested: agentSessions.showingPrevious = true
+    onReopenSessionRequested: id => root.send({action: "reopen-agent", id: id})
+    onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
+    onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
+    onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
+    onComposerFocusIdChanged: Qt.callLater(root.reportPanelState)
+    onRestoreFocusRequested: address => root.restoreApplicationFocus(address)
   }
 }

@@ -27,9 +27,22 @@ if (shell.version !== 1 || !Array.isArray(shell.bar?.layout?.right)) {
 const registered = (await command('hyprctl', ['-j', 'binds'], deadline)).toString();
 assertShortcutsAvailable(registered, bindings.includes(bindingMarker));
 
+// A QML-only update needs a plugin rescan, not a compositor configuration reload.
+// Do not even rewrite the Lua file when unchanged: file watchers can reload it.
+const installedBindingsPath = join(destination, 'bindings.lua');
+const desiredBindings = await readFile(join(source, 'bindings.lua'), 'utf8');
+let installedBindings = '';
+try {
+  installedBindings = await readFile(installedBindingsPath, 'utf8');
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+    throw error;
+  }
+}
+const bindingsChanged = desiredBindings !== installedBindings;
+const reloadRequired = bindingsChanged || !bindings.includes(bindingMarker);
+
 const backupSuffix = `.companion-backup-${Date.now()}`;
-await cp(bindingsPath, bindingsPath + backupSuffix);
-await cp(shellPath, shellPath + backupSuffix);
 await mkdir(destination, { recursive: true });
 
 // Qt caches dynamically created service components by URL. Give each source
@@ -40,12 +53,28 @@ const integrationSource = fileURLToPath(new URL('../', import.meta.url));
 const files = [
   'omarchy/plugin/Service.qml',
   'omarchy/plugin/HistoryPicker.qml',
+  'omarchy/plugin/PlaybackState.qml',
   'omarchy/plugin/BarWidget.qml',
   'omarchy/plugin/SidePanel.qml',
+  'omarchy/plugin/ScreenshotWindow.qml',
   'omarchy/plugin/MonitorSelection.js',
   'panel/PanelContent.qml',
+  'panel/PanelSurface.qml',
+  'panel/ComposerFocus.qml',
   'panel/StatusView.qml',
+  'panel/ActivityStrip.qml',
   'panel/PhraseActivity.qml',
+  'panel/AgentSessionState.qml',
+  'panel/PanelAction.qml',
+  'panel/SessionView.qml',
+  'panel/Markdown.mjs',
+  'panel/vendor/markdown-it.mjs',
+  'panel/vendor/markdown-it.LICENSE',
+  'panel/vendor/THIRD-PARTY-LICENSES.md',
+  'panel/vendor/README.md',
+  'panel/SessionTab.qml',
+  'panel/PreviousSessionsView.qml',
+  'panel/ScreenshotViewer.qml',
 ];
 const hash = createHash('sha256');
 
@@ -67,7 +96,9 @@ const manifest = JSON.parse(await readFile(join(source, 'plugin/manifest.json'),
 manifest.entryPoints.service = `${revision}/omarchy/plugin/Service.qml`;
 manifest.entryPoints.barWidget = `${revision}/omarchy/plugin/BarWidget.qml`;
 await writeFile(join(destination, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-await cp(join(source, 'bindings.lua'), join(destination, 'bindings.lua'));
+if (bindingsChanged) {
+  await writeFile(installedBindingsPath, desiredBindings);
+}
 
 if (!bindings.includes(bindingMarker)) {
   // JSON strings are also valid Lua strings for this path. Reject unusual paths
@@ -78,6 +109,7 @@ if (!bindings.includes(bindingMarker)) {
     throw Error('Unsupported characters in Omarchy configuration path');
   }
 
+  await cp(bindingsPath, bindingsPath + backupSuffix);
   await writeFile(
     bindingsPath,
     `${bindings.trimEnd()}\n\n${bindingMarker}\ndofile(${JSON.stringify(bindingFile)})\n`,
@@ -96,12 +128,20 @@ if (!shell.plugins.some((entry: { id: string }) => entry.id === 'companion.deskt
   shell.plugins.push({ id: 'companion.desktop' });
 }
 
-await writeFile(shellPath, JSON.stringify(shell, null, 2) + '\n');
-await command('hyprctl', ['reload'], deadline);
-const errors = (await command('hyprctl', ['configerrors'], deadline)).toString().trim();
+const desiredShell = JSON.stringify(shell, null, 2) + '\n';
+if (desiredShell !== shellContent) {
+  // A UI-only reinstall must not accumulate identical backups or needlessly
+  // trigger the shell's configuration watcher.
+  await cp(shellPath, shellPath + backupSuffix);
+  await writeFile(shellPath, desiredShell);
+}
+if (reloadRequired) {
+  await command('hyprctl', ['reload'], deadline);
+  const errors = (await command('hyprctl', ['configerrors'], deadline)).toString().trim();
 
-if (errors) {
-  throw Error(`Hyprland config errors: ${errors}. Backups end in ${backupSuffix}`);
+  if (errors) {
+    throw Error(`Hyprland config errors: ${errors}. Backups end in ${backupSuffix}`);
+  }
 }
 
 await command('omarchy-shell', ['shell', 'rescanPlugins'], deadline);
@@ -109,3 +149,6 @@ console.log(`Installed Companion's Omarchy adapter at ${destination}`);
 console.log('Run npm start in the Companion checkout to connect it.');
 console.log('Super+Alt+C toggles the side panel; Super+Alt+V opens speech history.');
 console.log('Super+Alt+P pauses or resumes listening.');
+console.log(
+  'Super+Alt+D toggles focus between the conversation input and the previous application.',
+);

@@ -38,7 +38,7 @@ test('subscriptions supply the detector prompt and dispatch the original frame t
   assert.equal(await router.route(frame, signal()), 'CUSTOM');
   assert.deepEqual(delivered, [frame]);
   assert.throws(() => processor('CUSTOM').subscribe(router), /Duplicate/);
-  assert.throws(() => processor('bad name').subscribe(router), /uppercase/);
+  assert.throws(() => processor('bad name').subscribe(router), /identifier/);
 });
 
 test('unknown names and cancellation never dispatch', async () => {
@@ -53,6 +53,37 @@ test('unknown names and cancellation never dispatch', async () => {
 
   controller.abort();
   await assert.rejects(router.route(frame, controller.signal), /abort/i);
+});
+
+test('a model cannot choose a dynamically unavailable processor, while its explicit prefix still works', async () => {
+  let dispatched = 0;
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        detect: async (_frame, intents) => {
+          assert.deepEqual(
+            intents.map((intent) => intent.name),
+            ['IGNORE'],
+          );
+          return 'CONDITIONAL';
+        },
+      }),
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  const conditional = {
+    ...processor('CONDITIONAL', async () => {
+      dispatched++;
+    }),
+    availableForInference: () => false,
+    prefixes: ['explicit'],
+  };
+  conditional.subscribe(router);
+  await assert.rejects(router.route(frame, signal()), /Unregistered intent/);
+  assert.equal(dispatched, 0);
+  await router.route({ ...frame, utterance: 'explicit payload' }, signal());
+  assert.equal(dispatched, 1);
 });
 
 test('typing checks focus after inference, strips control keys, and treats text as a literal argument', async () => {

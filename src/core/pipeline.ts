@@ -1,4 +1,4 @@
-import type { Log, Screenshot } from './frame.ts';
+import type { InteractionContext, Log, Screenshot } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
 import type { Activity } from './activity.ts';
 import { failureOutcome } from './delivery-error.ts';
@@ -26,6 +26,7 @@ interface Job {
   samples: Float32Array;
   capture: Promise<CaptureResult>;
   signal: AbortSignal;
+  interaction?: InteractionContext;
 }
 
 /** Audio/VAD continues independently; one worker routes frames in speech order. */
@@ -65,6 +66,7 @@ export class SensorPipeline implements InspectableModule {
     const observedAt = Date.now();
     const jobSignal = AbortSignal.any([signal, this.signal]);
     this.activity.processing?.(id);
+    const interaction = this.activity.interactionContext?.();
     this.log('capture', 'Capturing active window', id);
 
     // Capture at speech end, even if ASR is busy. Handle rejection immediately.
@@ -85,7 +87,7 @@ export class SensorPipeline implements InspectableModule {
         (error) => ({ error, application }),
       );
 
-    this.pending.push({ id, observedAt, samples, capture, signal: jobSignal });
+    this.pending.push({ id, observedAt, samples, capture, signal: jobSignal, interaction });
     this.log('queued', `${(samples.length / 16000).toFixed(2)} s audio`, id);
 
     // At most one worker runs; it preserves speech order through ASR and routing.
@@ -144,7 +146,13 @@ export class SensorPipeline implements InspectableModule {
 
         this.log('frame', 'Utterance + screenshot', job.id);
         await this.dependencies.router.route(
-          { id: job.id, observedAt: job.observedAt, utterance, screenshot: capture.screenshot },
+          {
+            id: job.id,
+            observedAt: job.observedAt,
+            utterance,
+            screenshot: capture.screenshot,
+            interaction: job.interaction,
+          },
           job.signal,
         );
 

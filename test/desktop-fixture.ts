@@ -11,6 +11,8 @@ import { PauseControl } from '../src/core/pause-control.ts';
 import { DesktopRuntime } from '../src/desktop/runtime.ts';
 import type { RunCommand } from '../src/sensors/screen/capture.ts';
 import { frame } from './helpers.ts';
+import type { AgentSessions } from '../src/agents/sessions.ts';
+import type { AgentSession, PreviousSession } from '../src/agents/types.ts';
 
 export interface DesktopMessage {
   type: string;
@@ -18,7 +20,12 @@ export interface DesktopMessage {
   result?: string;
   message?: string;
   soundsEnabled?: boolean;
+  pauseReason?: string;
+  mediaPauseAvailable?: boolean;
   history?: { id: string; utterance: string }[];
+  sessions?: AgentSession[];
+  previousSessions?: PreviousSession[];
+  session?: AgentSession;
 }
 
 export async function waitFor(check: () => boolean, milliseconds = 2000): Promise<void> {
@@ -52,7 +59,11 @@ export function windowReply(address = frame.screenshot.window.address): Buffer {
 }
 
 /** Real private socket/SQLite, injected desktop commands, and no microphone. */
-export async function desktopFixture(run: RunCommand) {
+export async function desktopFixture(
+  run: RunCommand,
+  agents?: AgentSessions,
+  options: { mediaPause?: boolean } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-regression-'));
   const path = join(directory, 'control.sock');
   const databasePath = join(directory, 'utterances.sqlite');
@@ -62,7 +73,7 @@ export async function desktopFixture(run: RunCommand) {
     pause,
     () => {},
     controller.signal,
-    { database: databasePath, socket: path, preview: false, sounds: false },
+    { database: databasePath, socket: path, preview: false, sounds: false, agents, ...options },
     run,
   );
   await runtime.start();
@@ -83,6 +94,8 @@ export async function desktopFixture(run: RunCommand) {
   await once(client, 'connect');
 
   return {
+    client,
+    socketPath: path,
     runtime,
     pause,
     controller,
@@ -105,6 +118,7 @@ export async function desktopFixture(run: RunCommand) {
     },
     async close() {
       controller.abort();
+      await agents?.close();
       client.destroy();
       await runtime.close();
       database.close();

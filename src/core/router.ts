@@ -46,8 +46,8 @@ export class UserSensorRouter implements InspectableModule {
   }
 
   register(processor: UserSensorProcessor): void {
-    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(processor.name)) {
-      throw Error('Processor requires an uppercase intent name');
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(processor.name)) {
+      throw Error('Processor requires an intent identifier (letters, digits, and underscores)');
     }
 
     if (this.registeredProcessors.has(processor.name)) {
@@ -115,7 +115,10 @@ export class UserSensorRouter implements InspectableModule {
     const eligibleProcessors = new Map<string, UserSensorProcessor>();
     const intents: Intent[] = [];
     for (const processor of this.registeredProcessors.values()) {
-      if (processor.instruction !== undefined) {
+      if (
+        processor.instruction !== undefined &&
+        (processor.availableForInference?.(frame) ?? true)
+      ) {
         eligibleProcessors.set(processor.name, processor);
         intents.push({ name: processor.name, instruction: processor.instruction });
       }

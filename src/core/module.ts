@@ -22,5 +22,6 @@ export interface InspectableModule {
 export interface RegisteredProcessor {
   readonly processor: InspectableModule;
   readonly prefixes: readonly string[];
+  /** Has an LLM instruction; a per-frame predicate may still hide this route. */
   readonly llmEligible: boolean;
 }

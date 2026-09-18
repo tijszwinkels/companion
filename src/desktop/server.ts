@@ -10,11 +10,13 @@ export class DesktopServer {
   private readonly requests = new Set<Promise<void>>();
   private listening = false;
   private readonly lock: InstanceLock;
+  private nextClientId = 0;
 
   constructor(
     private readonly path: string,
     private readonly snapshot: () => unknown,
-    private readonly handle: (request: unknown) => Promise<unknown>,
+    private readonly handle: (request: unknown, clientId: number) => Promise<unknown>,
+    private readonly disconnected: (clientId: number) => void = () => {},
   ) {
     this.lock = new InstanceLock(path + '.lock');
   }
@@ -95,8 +97,11 @@ export class DesktopServer {
       return;
     }
 
-    const message = { type: 'state', ...(this.snapshot() as object) };
+    this.publish({ type: 'state', ...(this.snapshot() as object) });
+  }
 
+  /** Incremental agent messages share the same ordered stream as snapshots. */
+  publish(message: unknown): void {
     for (const socket of this.clients) {
       this.send(socket, message);
     }
@@ -122,9 +127,13 @@ export class DesktopServer {
     }
 
     this.clients.add(socket);
+    const clientId = ++this.nextClientId;
     socket.setEncoding('utf8');
     socket.on('error', () => socket.destroy());
-    socket.once('close', () => this.clients.delete(socket));
+    socket.once('close', () => {
+      this.clients.delete(socket);
+      this.disconnected(clientId);
+    });
     this.send(socket, { type: 'state', ...(this.snapshot() as object) });
 
     let buffered = '';
@@ -134,7 +143,9 @@ export class DesktopServer {
     socket.on('data', (chunk: string) => {
       buffered += chunk;
 
-      if (buffered.length > 8192) {
+      // A 4000-character composer message may expand to six JSON characters
+      // per code unit. Keep framing bounded without rejecting escaped text.
+      if (buffered.length > 32768) {
         socket.destroy();
         return;
       }
@@ -158,7 +169,16 @@ export class DesktopServer {
           value && typeof value === 'object'
             ? (value as Record<string, unknown>).action
             : undefined;
-        const control = action === 'toggle-pause' || action === 'toggle-sounds';
+        const control =
+          action === 'toggle-pause' ||
+          action === 'media-playback' ||
+          action === 'toggle-sounds' ||
+          action === 'stop-agent' ||
+          action === 'send-agent' ||
+          action === 'composer-focus' ||
+          action === 'panel-state' ||
+          action === 'reopen-agent' ||
+          action === 'close-agent';
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
@@ -179,7 +199,7 @@ export class DesktopServer {
 
         const request = Promise.resolve()
           .then(async () => {
-            const result = await this.handle(value);
+            const result = await this.handle(value, clientId);
             this.send(socket, { type: 'result', action, result });
           })
           .catch((error) => {

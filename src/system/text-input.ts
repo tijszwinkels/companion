@@ -58,9 +58,12 @@ export async function typeIntoCapturedWindow(
     return;
   }
 
-  log('processor', 'Text typed into the captured window', frame.id);
+  const destination = frame.interaction?.agentComposerFocused
+    ? 'the Companion conversation input'
+    : 'the captured window';
+  log('processor', `Text typed into ${destination}`, frame.id);
   if (pressEnter) {
-    log('processor', 'Enter pressed in the captured window', frame.id);
+    log('processor', `Enter pressed in ${destination}`, frame.id);
   }
   activity.outcome?.(frame.id, 'sent');
 }

@@ -20,6 +20,8 @@ On connection and state changes, the server sends:
   "protocol": 1,
   "ready": true,
   "paused": false,
+  "pauseReason": "",
+  "mediaPauseAvailable": true,
   "speaking": false,
   "soundsEnabled": true,
   "processing": 0,
@@ -33,7 +35,9 @@ On connection and state changes, the server sends:
       "intent": "IGNORE",
       "outcome": "ignored"
     }
-  ]
+  ],
+  "sessions": [],
+  "previousSessions": []
 }
 ```
 
@@ -48,8 +52,15 @@ Commands:
 
 ```json
 {"action":"toggle-pause"}
+{"action":"media-playback","playing":true}
 {"action":"toggle-sounds"}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
+{"action":"stop-agent","id":"question-uuid"}
+{"action":"close-agent","id":"question-uuid"}
+{"action":"reopen-agent","id":"question-uuid"}
+{"action":"send-agent","id":"question-uuid","text":"Please explain that further"}
+{"action":"composer-focus","id":"question-uuid"}
+{"action":"panel-state","id":"question-uuid","composerFocused":true}
 ```
 
 Replies are `{"type":"result","action":"paste","result":"sent"}` (or `skipped`, `preview`,
@@ -59,7 +70,23 @@ request when control replies overtake a slow paste. Sound feedback can be muted 
 of listening. Muting stops current and queued cues. `--no-sounds` sets the initial
 state; controls can enable sounds later. This setting lasts for the process's
 session. Preview mode is always silent and rejects `toggle-sounds`.
-One paste per connection runs at a time; pause/mute controls run independently
+
+`media-playback` reports whether any desktop media player is playing and returns
+`media-recorded`. Adapters must send a boolean, report changes, and resend current
+state on reconnect. Only send it when the snapshot advertises `mediaPauseAvailable`;
+older servers omit this flag. Microphone mode enables it; `--text` and `--wav` ignore
+reports. Each connection owns its report. Listening auto-pauses while any connected
+reporter says true; disconnect removes only that reporter's state. Loss of all
+reporters releases the media pause, leaving any manual pause intact.
+
+`pauseReason` is `media`, `manual`, or an empty string while listening. Media pause
+uses the same cancellation path as manual pause: stop recording and discard pending
+dictation. Existing independent agent sessions and manual history recovery continue.
+An explicit `toggle-pause` while paused resumes listening, overriding playback until
+all reporters stop playing. The next playback period rearms auto-pause. Repeated true
+reports preserve that override. A manual pause always survives playback ending.
+
+One paste per connection runs at a time; pause/mute and agent controls run independently
 with a bounded maximum of 16 outstanding control requests per connection.
 Close your overlay before asking
 to paste, and pass the window address from when the user opened it. Companion
@@ -70,6 +97,10 @@ Recovering an utterance still being classified supersedes an automatic delivery
 which has not yet started, preventing duplicate delivery when inference finishes.
 Recovery of an utterance already being typed is rejected. All automatic and
 manual keyboard output shares one queue, with focus checked after waiting.
+For composer-focused dictation, `sent` confirms keyboard delivery only; it does
+not acknowledge that Pi accepted the Enter submission. The `application` column
+records the captured ordinary window, which may be behind the focused composer.
+CLI delivery messages distinguish that composer from the captured window.
 Focus lookups have a five-second deadline. All text delivery uses `wtype -d 1`,
 adding 1 ms between characters, matching the local Voxtype configuration.
 Typing gets a separate budget of five seconds plus 5 ms per UTF-16 code unit:
@@ -85,7 +116,10 @@ application/window identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
-NULL, not an inferred label. No raw audio or screenshot is saved.
+NULL, not an inferred label. No raw audio or screenshot is saved in this database.
+The `started` outcome means a question was handed to the independent agent
+session manager, not that text was typed or an answer succeeded. Pi persists
+the question's screenshot and conversation in its own session storage.
 
 `paste_events` references `utterances.id` and records every manual recovery
 attempt, target application/address, timestamps, and actual outcome. An ignored
@@ -115,3 +149,77 @@ An intermediate version-2 schema had delivery markers but no `legacy_outcome`.
 Its old and new failed rows cannot be distinguished, so migration conservatively
 marks ambiguous failed sends/pastes as `interrupted` and preserves their labels.
 Once provenance columns exist, subsequent opens leave new cancellations intact.
+
+## Agent sessions
+
+The optional `sessions` array in each state snapshot contains complete chat
+state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
+`updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,
+`completed`, `cancelled`, or `error`.
+Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
+`toolName`, `input`, `state` (`running`, `done`, or `error`), and a boolean
+`screenshot` attachment indicator. An optional `screenshotUrl` is a local file URL
+for the private original PNG. It may be absent on older/missing attachments; keep
+the question text visible. Image bytes never travel to the UI socket. URLs are
+computed from the validated session UUID, not trusted from serialized content.
+
+Between snapshots, `{"type":"agent-session","session":{...}}` carries current
+session metadata and **only changed messages**. Upsert by session/message ID in
+arrival order; do not replace the entire conversation with this partial array.
+Streaming updates are coalesced every 40 ms; a terminal status flushes pending
+messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
+All messages share the ordered socket with snapshots. A newly seen session opens
+and selects its panel tab once; further updates and reconnects do not reopen it.
+
+The optional `previousSessions` snapshot array and
+`{"type":"agent-history","sessions":[...]}` contain summaries only: the session
+metadata above without `messages`. They are sorted by latest turn first and must
+not automatically open tabs or invoke a model. `reopen-agent` emits
+`{"type":"agent-restored","session":{...}}` with the complete transcript, then an
+updated history list. Replace that session, select it explicitly even if its ID
+was seen before, and reveal the panel. It returns `reopened`. Closing first stops
+the agent and saves its final state; a failed save keeps the tab open and returns
+an error. Failed reopen keeps the history entry available for retry. Adapters
+must show control errors in the panel as well as retaining drafts.
+
+Snapshots and PNGs live in `~/companion/agents/.companion-sessions`, separate from
+Pi's resumable transcript. Writes atomically replace private files. Startup is
+read-only and discovers only these snapshots; unfinished turns become stopped.
+The question is saved before launching Pi and the transcript at turn completion,
+Stop, Close, and orderly shutdown. A hard crash can lose unsaved current output.
+No retention limit or legacy Pi-session import is applied.
+
+Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups are bounded
+to 4000 characters and rejected while that session is still answering. Submission
+starts a new turn in the same Pi session, without another screenshot. Message IDs
+are unique across turns, so a later answer cannot overwrite an earlier bubble.
+Adapters clear the submitted draft only after its successful reply; failed sends
+retain it. Drafts typed after submission must not be cleared by an older reply.
+
+`panel-state` reports the visible, selected agent session plus whether its composer
+actually owns keyboard focus. Use an empty `id` and `composerFocused: false` for
+a hidden panel, Activity, or another non-conversation page. Send changes to either
+field and resend after connecting; the response is `panel-recorded`. The owning
+connection's loss clears this state. Unknown session IDs and a focused empty ID
+are rejected. These reports also update the keyboard delivery focus guard.
+
+At speech end, the sensor frame captures the session ID, focus, and a local
+generation. The classifier sees the ID/focus and gains
+`CONTINUE_OPEN_AGENT_CONVERSATION` only when that composer was focused. A
+continuation rechecks the generation and target existence before calling the
+session manager, so even leaving and returning to the same tab cannot redirect
+an old utterance. Explicit `message coding agent` requires a visible session but
+not composer focus. The generation is not sent to the model.
+
+Older clients may still send `composer-focus`, which reports the session whose composer actually owns keyboard focus,
+or `id: ""` when none does. It returns `focus-recorded`. The owner connection's
+loss also clears it. This legacy report alone does not establish a visible tab
+for speech routing; current adapters use `panel-state` instead.
+Hyprland keeps its previous ordinary `activewindow` while a layer surface receives
+keys; the extra focus revision detects that transition. Speech records this revision
+before capture and checks it at delivery and again before Enter. A history recovery
+request may include `composer` with its focus ID from shortcut press time.
+
+Agent controls remain usable while microphone
+capture is paused or a keyboard delivery is pending. Agent sessions belong to
+the application lifetime, independently of each bounded sensor job.

@@ -34,15 +34,19 @@ dofile(arg[1])
 -- chord rather than depending on its position in the adapter's source file.
 local history_binding
 local pause_binding
+local focus_binding
 for _, binding in ipairs(bindings) do
   if binding.key == "SUPER + ALT + V" then
     history_binding = binding
   elseif binding.key == "SUPER + ALT + P" then
     pause_binding = binding
+  elseif binding.key == "SUPER + ALT + D" then
+    focus_binding = binding
   end
 end
 assert(history_binding, "History shortcut must be registered")
 assert(pause_binding, "Pause shortcut must be registered")
+assert(focus_binding and focus_binding.options.transparent, "Focus shortcut must preserve releases")
 
 local function event_count(name)
   local count = 0
@@ -132,3 +136,17 @@ release("Super_L")
 assert(event_count("companion:finish") == 1, "History still finishes on its final release")
 assert(event_count("companion:pause") == 1, "History releases must not dispatch pause again")
 print("PASS independent pause dispatch during a held history chord")
+
+events = {}
+down = { v = true, Super_L = true, Alt_L = true }
+pressed = true
+history_binding.callback()
+focus_binding.callback()
+assert(event_count("companion:focus") == 1, "Focus press dispatches its own event")
+assert(event_count("companion:finish") == 0, "Focus must not finish held history")
+release("v")
+release("Alt_L")
+release("Super_L")
+assert(event_count("companion:finish") == 1, "History releases still finish exactly once")
+assert(event_count("companion:focus") == 1, "History releases must not toggle focus")
+print("PASS independent focus dispatch during a held history chord")
