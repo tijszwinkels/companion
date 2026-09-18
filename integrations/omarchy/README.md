@@ -31,6 +31,8 @@ needed to update this adapter.
   before delivery skips the paste.
 - Recovering an utterance already being typed is rejected to avoid duplication.
   Other keyboard output waits its turn and checks focus again before typing.
+- **Super+Alt+P** pauses or resumes listening, including when the panel is closed.
+  It uses the same pause control as the top-bar menu and toggles once per press.
 - Click the microphone in the top bar for separate **Listening** and **Sound
   effects** switches. Turn listening off to pause, or mute the bleeps while
   keeping Companion active. Pausing closes the

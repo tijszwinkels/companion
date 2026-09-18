@@ -33,12 +33,16 @@ dofile(arg[1])
 -- Other features may register shortcuts before history. Select the actual
 -- chord rather than depending on its position in the adapter's source file.
 local history_binding
+local pause_binding
 for _, binding in ipairs(bindings) do
   if binding.key == "SUPER + ALT + V" then
     history_binding = binding
+  elseif binding.key == "SUPER + ALT + P" then
+    pause_binding = binding
   end
 end
 assert(history_binding, "History shortcut must be registered")
+assert(pause_binding, "Pause shortcut must be registered")
 
 local function event_count(name)
   local count = 0
@@ -112,3 +116,19 @@ end
 release("Alt_R")
 assert(event_count("companion:finish") == 1)
 print("PASS all release permutations, both modifier sides, and exactly-once finish")
+
+-- The pause chord has its own global event. Sharing modifiers with a held
+-- history chord must leave the history completion path intact.
+events = {}
+down = { v = true, Super_L = true, Alt_L = true }
+pressed = true
+history_binding.callback()
+pause_binding.callback()
+assert(event_count("companion:pause") == 1, "Pause press dispatches its own global event")
+assert(event_count("companion:finish") == 0, "Pause must not finish held history")
+release("v")
+release("Alt_L")
+release("Super_L")
+assert(event_count("companion:finish") == 1, "History still finishes on its final release")
+assert(event_count("companion:pause") == 1, "History releases must not dispatch pause again")
+print("PASS independent pause dispatch during a held history chord")

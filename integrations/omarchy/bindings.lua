@@ -1,6 +1,12 @@
 -- Use the resident global-shortcut connection for ordered press/release events.
 local history_held = false
 
+hl.bind("SUPER + ALT + P", hl.dsp.global("companion:pause"), {
+  description = "Companion pause/resume listening",
+  -- Pausing while history is held must not shadow its final key releases.
+  transparent = true,
+})
+
 hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
   description = "Companion side panel",
   -- Switching away from held history must preserve its final key releases.

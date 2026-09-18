@@ -126,6 +126,15 @@ Item {
     }
   }
 
+  // Handle only the press: the matching release must not immediately resume.
+  // Reuse the menu's socket action so the backend remains the source of state.
+  GlobalShortcut {
+    appid: "companion"
+    name: "pause"
+    description: "Pause or resume Companion listening"
+    onPressed: root.togglePause()
+  }
+
   GlobalShortcut {
     appid: "companion"
     name: "panel"

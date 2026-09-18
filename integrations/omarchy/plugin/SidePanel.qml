@@ -80,7 +80,7 @@ PanelWindow {
         fontFamily: Style.font.menuFamily
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
-        shortcutLabel: "Super + Alt + C to toggle"
+        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
       }
     }

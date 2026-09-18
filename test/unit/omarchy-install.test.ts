@@ -4,7 +4,7 @@ import test from 'node:test';
 import { assertShortcutsAvailable } from '../../integrations/omarchy/shortcuts.ts';
 
 test('installer rejects conflicts reported as either plain keys or Lua display chords', () => {
-  for (const key of ['C', 'SUPER + ALT + C', 'SUPER+ALT+v']) {
+  for (const key of ['C', 'SUPER + ALT + C', 'SUPER+ALT+v', 'P', 'SUPER + ALT + P']) {
     const bindings = JSON.stringify([{ modmask: 72, key, description: 'Existing action' }]);
     assert.throws(
       () => assertShortcutsAvailable(bindings, false),
@@ -16,6 +16,7 @@ test('installer rejects conflicts reported as either plain keys or Lua display c
 test('reinstall permits its own shortcuts but still rejects another action on the same chord', () => {
   const own = [
     { modmask: 72, key: 'SUPER + ALT + C', description: 'Companion side panel' },
+    { modmask: 72, key: 'SUPER + ALT + P', description: 'Companion pause/resume listening' },
     {
       modmask: 72,
       key: 'V',
@@ -29,6 +30,12 @@ test('reinstall permits its own shortcuts but still rejects another action on th
   assert.throws(
     () => assertShortcutsAvailable(JSON.stringify(conflicting), true),
     /already bound to Other plugin/,
+  );
+
+  const pauseConflict = [...own, { modmask: 72, key: 'P', description: 'Existing pause action' }];
+  assert.throws(
+    () => assertShortcutsAvailable(JSON.stringify(pauseConflict), true),
+    /Super\+Alt\+P is already bound to Existing pause action/,
   );
 
   const differentModifiers = JSON.stringify([{ modmask: 64, key: 'C' }]);
