@@ -13,10 +13,25 @@ point at an existing Playwright installation (no project dependency is added):
 COMPANION_TEST_PLAYWRIGHT=/absolute/path/to/playwright/index.mjs npm run test:quick-tap
 ```
 
+The runner prints the selected editor. Chromium supplies a startup record with
+its browser version; the runner requires that record before testing. The original
+runner in `03e2065` ignored `COMPANION_TEST_PLAYWRIGHT`, so runs previously
+reported as full Chromium validation actually used GTK. That validation claim
+was incorrect. The corrected browser fixture exposes additional `wtype`/Chromium
+failures, independently of the shortcut-release fix.
+
+In Chromium 153, plain `wtype` with no shortcut or held modifiers changed
+`-k Return; café — naïve! Ελληνικά 🙂 Next field` into
+`k Return; ca — naïve! Ελληνικά  Next field`. This browser baseline is a known
+delivery limitation, not a passing shortcut regression. The release guard does
+not change the text transport or claim to fix this separate failure.
+
 The browser uses a temporary profile and local textarea pages. Set
 `COMPANION_TEST_CHROMIUM` if Chromium is not `/usr/bin/chromium`. This exercises a
-browser editor, not the actual Mattermost editor. Manual confirmation in
-Mattermost remains necessary to establish that the reported user symptom is gone.
+browser editor, not the actual Mattermost editor. On 2026-09-18, the user confirmed
+that the shortcut fix worked after installing adapter revision
+`code-1400c6af3168`. This physical test confirms the reported modifier-release
+symptom; it does not establish correctness for every browser/Unicode combination.
 
 For an A/B comparison, `COMPANION_TEST_ADAPTER=/absolute/path/to/adapter` selects
 another adapter source directory containing `bindings.lua` and `plugin/`.

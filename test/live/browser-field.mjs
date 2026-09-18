@@ -24,6 +24,11 @@ for (const name of ['A', 'B']) {
   pages[name] = page;
 }
 
+await writeFile(
+  join(directory, 'editor.json'),
+  JSON.stringify({ kind: 'chromium', version: browser.version() }),
+);
+
 async function save() {
   if (stopping) {
     return;

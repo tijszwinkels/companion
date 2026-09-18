@@ -32,6 +32,7 @@ const runtime = new DesktopRuntime(new PauseControl(), () => {}, signal, {
   sounds: false,
 });
 const children: ReturnType<typeof spawn>[] = [];
+const browserEditor = Boolean(process.env.COMPANION_TEST_PLAYWRIGHT);
 
 async function evaluate(lua: string): Promise<void> {
   const reply = (await command('hyprctl', ['eval', lua], signal)).toString();
@@ -143,14 +144,38 @@ try {
     const state = await status().catch(() => null);
     return state?.online === true && state.count === 2;
   });
-  launch('/usr/bin/python', [
-    fileURLToPath(new URL('./text-field.py', import.meta.url)),
-    directory,
-  ]);
+  if (browserEditor) {
+    launch(process.execPath, [
+      fileURLToPath(new URL('./browser-field.mjs', import.meta.url)),
+      directory,
+    ]);
+    await waitFor(async () => {
+      // The browser child writes this only after creating its disposable pages.
+      // An environment variable alone is not evidence that Chromium ran.
+      const contents = await readFile(join(directory, 'editor.json'), 'utf8').catch(() => null);
+      if (!contents) {
+        return false;
+      }
+      const editor = JSON.parse(contents);
+      assert.equal(editor.kind, 'chromium');
+      console.log(`EDITOR Chromium ${editor.version}`);
+      return true;
+    });
+  } else {
+    launch('/usr/bin/python', [
+      fileURLToPath(new URL('./text-field.py', import.meta.url)),
+      directory,
+    ]);
+    console.log('EDITOR GTK 4');
+  }
   let windows: { address: string; title: string }[] = [];
   await waitFor(async () => {
     const clients = JSON.parse((await command('hyprctl', ['-j', 'clients'], signal)).toString());
-    windows = clients.filter((client: { title: string }) => client.title.endsWith(directory));
+    // Chromium appends its application name to the document title.
+    windows = clients.filter(
+      (client: { title: string }) =>
+        client.title.startsWith('Companion test ') && client.title.includes(directory),
+    );
     return windows.length === 2;
   });
   const a = windows.find((window) => window.title.startsWith('Companion test A'))!;

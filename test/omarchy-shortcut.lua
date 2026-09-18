@@ -30,6 +30,16 @@ hl = {
 
 dofile(arg[1])
 
+-- Other features may register shortcuts before history. Select the actual
+-- chord rather than depending on its position in the adapter's source file.
+local history_binding
+for _, binding in ipairs(bindings) do
+  if binding.key == "SUPER + ALT + V" then
+    history_binding = binding
+  end
+end
+assert(history_binding, "History shortcut must be registered")
+
 local function event_count(name)
   local count = 0
   for _, event in ipairs(events) do
@@ -46,7 +56,7 @@ local function release(key, history_release)
   -- A nested hl.dsp.global call marks the original Lua history binding for a
   -- second callback on V-up. The QML service must ignore that history release.
   if key == "v" and history_release ~= false then
-    bindings[1].callback()
+    history_binding.callback()
   end
 
   for _, binding in ipairs(bindings) do
@@ -68,7 +78,7 @@ for _, super in ipairs({ "Super_L", "Super_R" }) do
       events = {}
       down = { v = true, [super] = true, [alt] = true }
       pressed = true
-      bindings[1].callback()
+      history_binding.callback()
       assert(event_count("companion:history") == 1)
 
       local keys = { "v", super, alt }
@@ -94,7 +104,7 @@ end
 events = {}
 down = { v = true, Super_L = true, Super_R = true, Alt_L = true, Alt_R = true }
 pressed = true
-bindings[1].callback()
+history_binding.callback()
 for _, key in ipairs({ "v", "Super_L", "Alt_L", "Super_R" }) do
   release(key)
   assert(event_count("companion:finish") == 0)
