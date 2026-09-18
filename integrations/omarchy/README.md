@@ -44,13 +44,9 @@ needed to update this adapter.
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
-A thin, opaque strip runs along the right edge, with a small arrow near its top.
-Click anywhere on the strip to expand the compact panel in the top-right corner;
-click again to collapse it. The strip stays at the edge in both states, and its
-hover highlight is drawn over its solid background. **Super+Alt+C** also toggles
-the panel, and the close button hides the body while leaving the strip available.
-Only the strip and open panel body capture mouse input; the desktop beneath the
-compact panel remains usable.
+**Super+Alt+C** toggles the compact panel in the top-right corner. The close
+button also hides it. When closed, the panel disappears completely. Only the
+open panel body captures mouse input; the desktop beneath it remains usable.
 The single vertical **Activity** tab has a stationary microphone whose colors
 follow the bar. Each newly transcribed phrase rises above the mic in green, with
 **PROCESSING** at its top left. After processing completes, the intent appears
@@ -69,10 +65,9 @@ through the existing service.
 
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
-Monitor changes are observed for both the panel and its handle. The panel body
-is 420 by 400 logical pixels at the default theme scale, beside a 12-pixel-wide
-strip. Their combined width and the body's height are capped to the available
-screen space.
+Monitor changes are observed while the panel is open. The panel body is 420 by
+400 logical pixels at the default theme scale, capped to the available screen
+space.
 It respects the bar's reserved space and overlays windows without resizing them
 or taking keyboard focus. Opening history closes the panel; opening the panel
 cancels history without pasting. Rapid toggles reverse the 180 ms slide animation.

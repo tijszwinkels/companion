@@ -176,8 +176,7 @@ Item {
         speaking: root.speaking, processing: root.processing,
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
-        panelOpened: root.panelOpened, panelVisible: sidePanel.panelVisible,
-        panelHandleVisible: sidePanel.visible,
+        panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
         panelMonitor: sidePanel.monitorName,
         count: root.history.length, error: root.lastError })
     }
@@ -267,6 +266,5 @@ Item {
     processing: root.processing
     history: root.history
     onCloseRequested: root.closePanel()
-    onToggleRequested: root.togglePanel()
   }
 }

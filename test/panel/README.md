@@ -13,8 +13,6 @@ tests cover the rise, processing/result colors and label positions, the shared
 fade, fast completion, interrupted animations, literal transcript text, and
 opening without replaying old results. `npm test` also exercises monitor selection,
 including mixed layouts, mirrored monitors, and a single built-in display.
-The handle test clicks to expand/collapse and checks that keyboard focus stays
-in the existing editor.
 
 `npm run test:quick-tap` includes combined panel/history shortcut cases in a
 disposable nested compositor: focus preservation and cancellation when switching
@@ -33,11 +31,9 @@ omarchy-shell companion status
 omarchy-shell companion closePanel
 ```
 
-The status reply includes `panelOpened`, `panelVisible`, `panelHandleVisible`,
-and `panelMonitor`. The handle remains visible when the body is closed; click
-the full-height strip to expand/collapse. Check that clicks left of the strip
-and below the compact open body reach the application underneath without moving
-keyboard focus, and that hovering the strip keeps its background opaque.
+The status reply includes `panelOpened`, `panelVisible`, and `panelMonitor`.
+Check that clicks below the compact open body reach the application underneath
+without moving keyboard focus, and that closing leaves no visible control.
 `panelVisible` stays true during the short closing animation; mouse input is
-released outside the handle when `panelOpened` becomes false. Opening speech history
+released immediately when `panelOpened` becomes false. Opening speech history
 closes the panel, and opening the panel cancels history without delivering text.

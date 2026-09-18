@@ -19,23 +19,17 @@ PanelWindow {
   property var history: []
 
   signal closeRequested()
-  signal toggleRequested()
 
   // Re-evaluate on hotplug rather than retaining a disconnected screen object.
   readonly property var selectedScreen: Monitors.chooseScreen(Quickshell.screens)
   readonly property string monitorName: selectedScreen ? selectedScreen.name : ""
-  readonly property real handleWidth: Math.min(Style.space(12), width)
-  readonly property real panelWidth: Math.max(0, width - handleWidth)
   readonly property real panelHeight: Math.min(Style.space(400), height)
-  // The window remains mapped for its handle. Diagnostics distinguish the
-  // sliding body from that persistent surface, including during the close.
-  readonly property bool panelVisible: visible && (opened || reveal > 0)
   property real reveal: opened ? 1 : 0
 
   screen: selectedScreen
-  visible: selectedScreen !== null
+  visible: selectedScreen !== null && (opened || reveal > 0)
   anchors { top: true; bottom: true; right: true }
-  implicitWidth: Math.min(Style.space(432), selectedScreen ? selectedScreen.width : Style.space(432))
+  implicitWidth: Math.min(Style.space(420), selectedScreen ? selectedScreen.width : Style.space(420))
   color: "transparent"
 
   // Respect the bar's reserved space but never reserve space ourselves: this
@@ -46,17 +40,12 @@ PanelWindow {
   WlrLayershell.layer: WlrLayer.Overlay
   WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
 
-  // The narrow edge strip is always clickable. The larger input region follows
-  // only the compact body, leaving the desktop below it usable even while open.
-  // Drop body input immediately on close, keeping only the strip.
+  // Only the compact body captures clicks. Leave the desktop below it usable,
+  // and release input immediately when closing, before the slide finishes.
   mask: Region {
-    item: handle
-
-    Region {
-      x: card.x
-      width: root.opened ? card.width : 0
-      height: card.height
-    }
+    x: card.x
+    width: root.opened ? card.width : 0
+    height: card.height
   }
 
   Behavior on reveal {
@@ -70,7 +59,7 @@ PanelWindow {
     BorderSurface {
       id: card
       x: (1 - root.reveal) * root.width
-      width: root.panelWidth
+      width: root.width
       height: root.panelHeight
       color: Color.menu.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
@@ -94,22 +83,6 @@ PanelWindow {
         shortcutLabel: "Super + Alt + C to toggle"
         onCloseRequested: root.closeRequested()
       }
-    }
-
-    Panel.PanelHandle {
-      id: handle
-      objectName: "panelHandle"
-      anchors.right: parent.right
-      anchors.top: parent.top
-      anchors.bottom: parent.bottom
-      width: root.handleWidth
-      opened: root.opened
-      background: Color.menu.background
-      foreground: Color.menu.text
-      borderColor: Color.menu.border
-      selection: Color.menu.selectedBackground
-      unit: Style.space(100) / 100
-      onToggleRequested: root.toggleRequested()
     }
   }
 }
