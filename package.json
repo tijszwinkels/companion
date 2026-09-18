@@ -12,6 +12,7 @@
     "test": "tsx --test test/unit/*.test.ts",
     "test:live": "tsx test/live/run.ts",
     "test:desktop": "tsx test/live/desktop.ts",
+    "test:quick-tap": "/usr/bin/python test/live/nested-hyprland.py",
     "omarchy:install": "tsx integrations/omarchy/install.ts",
     "format": "prettier --write --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json",
     "format:check": "prettier --check --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json"

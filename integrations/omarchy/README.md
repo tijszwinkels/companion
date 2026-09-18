@@ -25,7 +25,8 @@ needed to update this adapter.
 
 - Hold **Super+Alt+V**, move with **Up/Down**, and release to paste the selected
   utterance into the application that was active at press time.
-- Tap the chord to immediately recover the latest utterance.
+- Tap the chord to recover the latest utterance. Insertion starts after V,
+  Super, and Alt are all released, in any order; no minimum hold is required.
 - **Escape** cancels. Empty history does nothing. Changing the target window
   before delivery skips the paste.
 - Recovering an utterance already being typed is rejected to avoid duplication.
@@ -49,6 +50,20 @@ so fast taps do not race separate helper processes. The picker follows Omarchy's
 clipboard menu colors and fonts. Its rows are frozen during selection. Focus
 stays in the destination application; temporary arrow/Escape bindings exist
 only while the picker is visible and are removed when it closes.
+
+The Lua adapter completes recovery only on the last shortcut-key release.
+Hyprland combines modifiers from physical and virtual keyboards, so starting
+`wtype` while Super/Alt remain held can turn transcript letters into shortcuts.
+The service ignores the earlier `history` release from V and accepts only
+`finish`. The backend's existing overlay-unmap delay is not a modifier guard.
+
+Run `npm run test:quick-tap` from a desktop terminal for the isolated compositor
+regression. It starts a nested Hyprland with its own configuration, runtime
+directory, socket, synthetic history, and disposable GTK fields. It does not
+install the plugin or use the running Companion's socket/database. Requires
+Hyprland, Quickshell, wtype, and Python with GTK 4. See
+[quick-tap validation](../../test/live/quick-tap.md) for the optional Chromium
+fixture, the failure reproduced before the fix, and remaining limitations.
 
 To remove the adapter, remove its `dofile` block from `~/.config/hypr/bindings.lua`,
 remove `companion.desktop` entries from the bar layout and `plugins` list in
