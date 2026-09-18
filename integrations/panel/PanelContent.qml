@@ -14,6 +14,9 @@ Item {
   required property color accent
   required property color selection
   required property string fontFamily
+  property color tooltipBackground: selection
+  property color tooltipForeground: foreground
+  property color tooltipBorder: muted
   property real unit: 1
   property bool animationsEnabled: true
   property string shortcutLabel: ""
@@ -133,6 +136,9 @@ Item {
             muted: root.muted
             accent: root.accent
             selection: root.selection
+            tooltipBackground: root.tooltipBackground
+            tooltipForeground: root.tooltipForeground
+            tooltipBorder: root.tooltipBorder
             fontFamily: root.fontFamily
             unit: root.unit
             onSelectedRequested: root.sessionSelected(modelData.id)
@@ -205,7 +211,7 @@ Item {
       Text {
         anchors.centerIn: parent
         text: "×"
-        color: root.muted
+        color: closeMouse.containsMouse ? root.accent : root.muted
         font.family: root.fontFamily
         font.pixelSize: 22 * root.unit
       }

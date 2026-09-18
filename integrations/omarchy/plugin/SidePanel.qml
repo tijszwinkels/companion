@@ -134,6 +134,9 @@ PanelWindow {
         muted: Qt.rgba(Color.menu.text.r, Color.menu.text.g, Color.menu.text.b, 0.65)
         accent: Color.menu.selectedText
         selection: Color.menu.selectedBackground
+        tooltipBackground: Color.tooltip.background
+        tooltipForeground: Color.tooltip.text
+        tooltipBorder: Color.tooltip.border
         fontFamily: Style.font.menuFamily
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible

@@ -13,6 +13,9 @@ Rectangle {
   required property color accent
   required property color selection
   required property string fontFamily
+  property color tooltipBackground: selection
+  property color tooltipForeground: foreground
+  property color tooltipBorder: muted
   property real unit: 1
   property bool online: true
   readonly property bool hovered: hover.hovered
@@ -58,7 +61,9 @@ Rectangle {
     width: 22 * root.unit
     height: width
     radius: width / 2
-    color: closeMouse.containsMouse ? root.accent : root.selection
+    color: root.selection
+    border.width: closeMouse.containsMouse ? root.unit : 0
+    border.color: root.accent
     opacity: root.hovered || activeFocus ? 1 : 0
     scale: 0.75 + 0.25 * opacity
     Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
@@ -68,7 +73,8 @@ Rectangle {
     Text {
       anchors.centerIn: parent
       text: "×"
-      color: root.foreground
+      color: closeMouse.containsMouse ? root.accent : root.foreground
+      font.family: root.fontFamily
       font.pixelSize: 16 * root.unit
     }
     MouseArea {
@@ -80,8 +86,28 @@ Rectangle {
       cursorShape: Qt.PointingHandCursor
       onClicked: root.closeRequested()
     }
-    ToolTip.visible: closeMouse.containsMouse
-    ToolTip.text: "Close session · saved in Previous sessions"
+    // Explicit colors keep the tooltip in the host theme instead of picking
+    // Qt Quick Controls' unrelated default palette.
+    ToolTip {
+      id: closeTip
+      visible: closeMouse.containsMouse
+      text: "Close session · saved in Previous sessions"
+      delay: 400
+      padding: 8 * root.unit
+      background: Rectangle {
+        color: root.tooltipBackground
+        border.color: root.tooltipBorder
+        border.width: root.unit
+        radius: 4 * root.unit
+      }
+      contentItem: Text {
+        text: closeTip.text
+        textFormat: Text.PlainText
+        color: root.tooltipForeground
+        font.family: root.fontFamily
+        font.pixelSize: 11 * root.unit
+      }
+    }
     Accessible.role: Accessible.Button
     Accessible.name: "Close " + root.title
     Accessible.onPressAction: if (root.online) root.closeRequested()
