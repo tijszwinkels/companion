@@ -46,7 +46,7 @@ needed to update this adapter.
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
-**Super+Alt+C** toggles the compact panel in the top-right corner. The close
+**Super+Alt+C** toggles the compact panel in the bottom-right corner. The close
 button also hides it. When closed, the panel disappears completely. Only the
 open panel body captures mouse input; the desktop beneath it remains usable.
 The vertical **Activity** tab has a stationary microphone whose colors
@@ -72,10 +72,22 @@ Monitor changes are observed while the panel is open. The panel body is 420 by
 space. Quick questions open a new tab with a user bubble, streamed Markdown
 answers, and expandable tool bubbles. Once its content exceeds the compact
 body, a session uses 600 logical pixels of width and all available height.
+The bottom edge stays fixed while the panel grows upward.
 Returning to Activity restores the compact body. Each session has Stop and
 Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
 inserts a newline). A follow-up resumes its Pi conversation. Closing the panel
-keeps its questions running and retains its drafts.
+keeps its questions running and retains its drafts. Right-click a question tab or
+use the animated **×** at its top-right corner to stop and archive it. **Previous
+sessions** at the bottom of the tab rail shows saved titles, dates, and status in
+the pane to its right. Click an entry to reopen it without a model call. Drafts
+survive close/reopen during the same UI lifetime; the saved transcript and PNG
+survive Companion restarts. Errors from Close/Reopen remain visible in the panel.
+
+Click an attached screenshot to open a separate viewer on the panel's display.
+It uses the Omarchy menu palette and font, initially fits the whole image, and
+provides scroll/button zoom, drag-to-pan, and Fit. Escape, the close button, and
+the backdrop dismiss it. This viewer temporarily requests keyboard focus for
+Escape and zoom shortcuts. Closing the panel or changing pages dismisses it too.
 It respects the bar's reserved space and overlays windows without resizing them.
 Activity does not accept keyboard focus. Session tabs use layer-shell OnDemand
 focus to allow typing into the composer, following the compositor's normal focus
@@ -87,7 +99,7 @@ the 180 ms slide animation.
 
 The reusable QtQuick body lives in [`../panel`](../panel). It accepts state and
 theme values and emits a close request. The Omarchy adapter alone owns the
-Wayland window, monitor choice, shortcut, and theme bindings. Future desktop
+Wayland windows, monitor choice, shortcut, and theme bindings. Future desktop
 adapters can reuse that body or consume the same desktop state protocol. See
 [quick questions](../../README.md#quick-questions) for Pi setup and session limits.
 

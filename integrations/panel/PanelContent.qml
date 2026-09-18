@@ -19,14 +19,20 @@ Item {
   property string shortcutLabel: ""
   property var history: []
   property var sessions: []
+  property var previousSessions: []
+  property bool showingPrevious: false
+  property string controlError: ""
   property string selectedSessionId: ""
   property var expandedSessions: ({})
-  readonly property var selectedSession: sessions.find(entry => entry.id === selectedSessionId) || null
-  readonly property bool expanded: selectedSession !== null && expandedSessions[selectedSessionId] === true
+  readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
+  readonly property bool expanded: showingPrevious || selectedSession !== null && expandedSessions[selectedSessionId] === true
   readonly property string composerFocusId: chat.composerFocusId
 
   signal closeRequested()
   signal sessionSelected(string id)
+  signal previousRequested()
+  signal reopenSessionRequested(string id)
+  signal screenshotRequested(url source, string title)
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
@@ -47,12 +53,12 @@ Item {
       anchors.horizontalCenter: parent.horizontalCenter
       width: 48 * root.unit
       height: 64 * root.unit
-      color: root.selectedSession === null ? root.selection : "transparent"
+      color: !root.showingPrevious && root.selectedSession === null ? root.selection : "transparent"
 
       Rectangle {
         width: 2 * root.unit
         height: parent.height
-        color: root.selectedSession === null ? root.accent : "transparent"
+        color: !root.showingPrevious && root.selectedSession === null ? root.accent : "transparent"
       }
 
       Column {
@@ -88,7 +94,7 @@ Item {
 
       Accessible.role: Accessible.PageTab
       Accessible.name: "Activity"
-      Accessible.selected: root.selectedSession === null
+      Accessible.selected: !root.showingPrevious && root.selectedSession === null
       Accessible.onPressAction: root.sessionSelected("")
       MouseArea {
         anchors.fill: parent
@@ -100,7 +106,7 @@ Item {
     Flickable {
       anchors.fill: parent
       anchors.topMargin: 100 * root.unit
-      anchors.bottomMargin: 8 * root.unit
+      anchors.bottomMargin: 82 * root.unit
       contentHeight: tabs.height
       clip: true
       boundsBehavior: Flickable.StopAtBounds
@@ -111,39 +117,58 @@ Item {
         spacing: 8 * root.unit
         Repeater {
           model: root.sessions
-          Rectangle {
+          SessionTab {
             required property var modelData
             required property int index
+            objectName: "tab-" + modelData.id
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 48 * root.unit
-            height: 62 * root.unit
-            color: root.selectedSessionId === modelData.id ? root.selection : "transparent"
-            Text {
-              anchors.fill: parent
-              anchors.margins: 4 * root.unit
-              text: "Q" + (parent.index + 1) + "\n" + parent.modelData.title
-              textFormat: Text.PlainText
-              maximumLineCount: 3
-              elide: Text.ElideRight
-              wrapMode: Text.Wrap
-              horizontalAlignment: Text.AlignHCenter
-              color: root.selectedSessionId === parent.modelData.id ? root.accent : root.muted
-              font.family: root.fontFamily
-              font.pixelSize: 9 * root.unit
-            }
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.sessionSelected(parent.modelData.id)
-            }
-            Accessible.role: Accessible.PageTab
-            Accessible.name: modelData.title
-            Accessible.selected: root.selectedSessionId === modelData.id
-            Accessible.onPressAction: root.sessionSelected(modelData.id)
+            title: modelData.title
+            number: index + 1
+            selected: !root.showingPrevious && root.selectedSessionId === modelData.id
+            online: root.online
+            foreground: root.foreground
+            muted: root.muted
+            accent: root.accent
+            selection: root.selection
+            fontFamily: root.fontFamily
+            unit: root.unit
+            onSelectedRequested: root.sessionSelected(modelData.id)
+            onCloseRequested: root.dismissSessionRequested(modelData.id)
           }
         }
       }
     }
+  }
+
+  Rectangle {
+    objectName: "previousSessionsButton"
+    anchors.bottom: parent.bottom
+    anchors.bottomMargin: 12 * root.unit
+    x: 8 * root.unit
+    width: 48 * root.unit
+    height: 60 * root.unit
+    radius: 5 * root.unit
+    color: root.showingPrevious || previousMouse.containsMouse ? root.selection : "transparent"
+    Text {
+      anchors.centerIn: parent
+      text: "◷\nPrevious\nsessions"
+      horizontalAlignment: Text.AlignHCenter
+      color: root.showingPrevious ? root.accent : root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 9 * root.unit
+      lineHeight: 1.2
+    }
+    MouseArea {
+      id: previousMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.previousRequested()
+    }
+    Accessible.role: Accessible.PageTab
+    Accessible.name: "Previous sessions"
+    Accessible.selected: root.showingPrevious
+    Accessible.onPressAction: root.previousRequested()
   }
 
   Item {
@@ -156,7 +181,7 @@ Item {
     Text {
       anchors.top: parent.top
       width: parent.width - 38 * root.unit
-      text: root.selectedSession ? root.selectedSession.title : "Companion"
+      text: root.showingPrevious ? "Previous sessions" : root.selectedSession ? root.selectedSession.title : "Companion"
       textFormat: Text.PlainText
       elide: Text.ElideRight
       color: root.foreground
@@ -195,10 +220,39 @@ Item {
       Accessible.onPressAction: root.closeRequested()
     }
 
-    StatusView {
-      visible: root.selectedSession === null
+    Text {
+      id: actionError
+      objectName: "sessionControlError"
+      y: 38 * root.unit
+      width: parent.width
+      visible: text !== ""
+      text: root.controlError
+      textFormat: Text.PlainText
+      color: "#ef5350"
+      wrapMode: Text.Wrap
+      font.family: root.fontFamily
+      font.pixelSize: 11 * root.unit
+    }
+
+    PreviousSessionsView {
+      visible: root.showingPrevious
       anchors.fill: parent
-      anchors.topMargin: 48 * root.unit
+      anchors.topMargin: 48 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+      sessions: root.previousSessions
+      online: root.online
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      selection: root.selection
+      fontFamily: root.fontFamily
+      unit: root.unit
+      onReopenRequested: id => root.reopenSessionRequested(id)
+    }
+
+    StatusView {
+      visible: !root.showingPrevious && root.selectedSession === null
+      anchors.fill: parent
+      anchors.topMargin: 48 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
       anchors.bottomMargin: 36 * root.unit
       online: root.online
       paused: root.paused
@@ -218,7 +272,7 @@ Item {
       objectName: "sessionView"
       visible: root.selectedSession !== null
       anchors.fill: parent
-      anchors.topMargin: 44 * root.unit
+      anchors.topMargin: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
       session: root.selectedSession
       online: root.online
       foreground: root.foreground
@@ -227,6 +281,7 @@ Item {
       selection: root.selection
       fontFamily: root.fontFamily
       unit: root.unit
+      onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)
@@ -245,7 +300,7 @@ Item {
       anchors.bottom: parent.bottom
       width: parent.width
       text: root.shortcutLabel
-      visible: root.selectedSession === null
+      visible: !root.showingPrevious && root.selectedSession === null
       textFormat: Text.PlainText
       horizontalAlignment: Text.AlignHCenter
       color: root.muted

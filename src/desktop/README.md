@@ -34,7 +34,8 @@ On connection and state changes, the server sends:
       "outcome": "ignored"
     }
   ],
-  "sessions": []
+  "sessions": [],
+  "previousSessions": []
 }
 ```
 
@@ -53,6 +54,7 @@ Commands:
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
 {"action":"close-agent","id":"question-uuid"}
+{"action":"reopen-agent","id":"question-uuid"}
 {"action":"send-agent","id":"question-uuid","text":"Please explain that further"}
 {"action":"composer-focus","id":"question-uuid"}
 {"action":"panel-state","id":"question-uuid","composerFocused":true}
@@ -128,11 +130,15 @@ Once provenance columns exist, subsequent opens leave new cancellations intact.
 ## Agent sessions
 
 The optional `sessions` array in each state snapshot contains complete chat
-state for reconnects. A session has `id`, `title`, `status`, `model`, `error`, and
-`messages`. Status is `starting`, `running`, `completed`, `cancelled`, or `error`.
+state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
+`updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,
+`completed`, `cancelled`, or `error`.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
 `toolName`, `input`, `state` (`running`, `done`, or `error`), and a boolean
-`screenshot` attachment indicator. Image bytes never travel to the UI socket.
+`screenshot` attachment indicator. An optional `screenshotUrl` is a local file URL
+for the private original PNG. It may be absent on older/missing attachments; keep
+the question text visible. Image bytes never travel to the UI socket. URLs are
+computed from the validated session UUID, not trusted from serialized content.
 
 Between snapshots, `{"type":"agent-session","session":{...}}` carries current
 session metadata and **only changed messages**. Upsert by session/message ID in
@@ -142,7 +148,25 @@ messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
 All messages share the ordered socket with snapshots. A newly seen session opens
 and selects its panel tab once; further updates and reconnects do not reopen it.
 
-Agent controls return `stopped`, `closed`, or `submitted`. Follow-ups are bounded
+The optional `previousSessions` snapshot array and
+`{"type":"agent-history","sessions":[...]}` contain summaries only: the session
+metadata above without `messages`. They are sorted by latest turn first and must
+not automatically open tabs or invoke a model. `reopen-agent` emits
+`{"type":"agent-restored","session":{...}}` with the complete transcript, then an
+updated history list. Replace that session, select it explicitly even if its ID
+was seen before, and reveal the panel. It returns `reopened`. Closing first stops
+the agent and saves its final state; a failed save keeps the tab open and returns
+an error. Failed reopen keeps the history entry available for retry. Adapters
+must show control errors in the panel as well as retaining drafts.
+
+Snapshots and PNGs live in `~/companion/agents/.companion-sessions`, separate from
+Pi's resumable transcript. Writes atomically replace private files. Startup is
+read-only and discovers only these snapshots; unfinished turns become stopped.
+The question is saved before launching Pi and the transcript at turn completion,
+Stop, Close, and orderly shutdown. A hard crash can lose unsaved current output.
+No retention limit or legacy Pi-session import is applied.
+
+Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups are bounded
 to 4000 characters and rejected while that session is still answering. Submission
 starts a new turn in the same Pi session, without another screenshot. Message IDs
 are unique across turns, so a later answer cannot overwrite an earlier bubble.

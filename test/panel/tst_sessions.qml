@@ -42,6 +42,11 @@ Item {
       state.update(session([message("user", "user", "Question")]))
       compare(revealed, 1)
       compare(state.selectedId, "question-1")
+      compare(state.conversationId, "question-1")
+      state.showingPrevious = true
+      compare(state.conversationId, "", "History is not a voice message destination")
+      state.showingPrevious = false
+      compare(state.conversationId, "question-1")
       state.update(session([message("reply", "assistant", "First token")]))
       compare(state.sessions[0].messages.length, 2)
       state.update(session([message("reply", "assistant", "First token and more")]))

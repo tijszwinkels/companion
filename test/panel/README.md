@@ -17,9 +17,16 @@ including mixed layouts, mirrored monitors, and a single built-in display.
 Session checks cover incremental bubbles, opening a new tab only once, reconnect
 snapshots, Markdown versus literal user/tool text, persistent tool disclosure,
 content-driven expansion, Stop/Close controls, per-tab drafts, Enter/Shift+Enter,
-and retaining edits across submission acknowledgements or errors. The Node suite
+and retaining edits across submission acknowledgements or errors. Library checks
+cover right-click close, stable hover over the animated cross, history selection,
+explicit restoration of known IDs, retained drafts, visible control errors,
+screenshot thumbnails, initial fit, zoom/pan, and Escape/button/backdrop dismissal.
+The synthetic image fixture has no user content. The suite writes offscreen visual
+previews to `/tmp/companion-{session,history,screenshot}-preview.png` for inspection. The Node suite
 uses a real fixture subprocess for Pi RPC framing, images, streaming, retries,
-cancellation, failures, and missing resume history. Private-socket tests exercise
+cancellation, failures, and missing resume history. Storage checks cover private
+atomic PNG/JSON writes, missing images, damaged snapshots, interrupted turns,
+restart/archive/reopen/resume, failed saves, and concurrent Close/Follow-up. Private-socket tests exercise
 follow-ups and composer focus transitions, including suppressing Enter when the
 underlying ordinary window address has not changed.
 
@@ -37,7 +44,7 @@ options and validation limits. Its outer window may briefly take desktop focus;
 warn the user before running it. All generated input targets the nested compositor.
 
 For a desktop check, install this worktree's adapter, then use **Super+Alt+C**.
-Verify the panel appears on the external monitor, below the bar, without changing
+Verify the panel appears at the bottom right of the external monitor, without changing
 keyboard focus or window sizes. Toggle rapidly during its slide and close it
 with the button. While open, unplugging the external display should move it to
 the remaining display. These diagnostic calls report and close the actual panel:
@@ -48,7 +55,7 @@ omarchy-shell companion closePanel
 ```
 
 The status reply includes `panelOpened`, `panelVisible`, and `panelMonitor`.
-Check that clicks below the compact open body reach the application underneath
+Check that clicks above the compact open body reach the application underneath
 without moving keyboard focus, and that closing leaves no visible control.
 `panelVisible` stays true during the short closing animation; mouse input is
 released immediately when `panelOpened` becomes false. Opening speech history

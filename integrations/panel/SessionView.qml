@@ -29,6 +29,7 @@ Item {
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
+  signal screenshotRequested(url source, string title)
 
   function submit() {
     if (!root.canSend) return
@@ -81,7 +82,7 @@ Item {
       const message = incoming[index]
       const row = {messageId: message.id, kind: message.kind, body: message.text,
         toolName: message.toolName, input: message.input, state: message.state,
-        screenshot: message.screenshot}
+        screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || ""}
       if (index < messages.count) {
         messages.set(index, row)
       } else {
@@ -125,6 +126,7 @@ Item {
       required property string input
       required property string state
       required property bool screenshot
+      required property string screenshotUrl
       property bool expanded: false
       objectName: "bubble-" + messageId
       width: transcript.width - 8 * root.unit
@@ -145,7 +147,7 @@ Item {
           width: parent.width
           text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + bubble.toolName
             + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-            : bubble.kind === "user" ? "You" + (bubble.screenshot ? " · screenshot attached" : "") : "Pi"
+            : bubble.kind === "user" ? "You" + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: bubble.state === "error" ? "#ef5350" : root.muted
@@ -161,6 +163,53 @@ Item {
           Accessible.role: bubble.kind === "tool" ? Accessible.Button : Accessible.StaticText
           Accessible.name: text
           Accessible.onPressAction: if (bubble.kind === "tool") bubble.expanded = !bubble.expanded
+        }
+
+        Rectangle {
+          objectName: "screenshotThumbnail"
+          visible: bubble.kind === "user" && bubble.screenshot && bubble.screenshotUrl !== ""
+          width: parent.width
+          height: visible ? 132 * root.unit : 0
+          radius: 6 * root.unit
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+          border.color: thumbnailHover.containsMouse ? root.accent : "transparent"
+          Image {
+            id: thumbnail
+            anchors.fill: parent
+            anchors.margins: 6 * root.unit
+            source: parent.visible ? bubble.screenshotUrl : ""
+            sourceSize.width: 600
+            asynchronous: true
+            fillMode: Image.PreserveAspectFit
+          }
+          Rectangle {
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: 8 * root.unit
+            width: zoomLabel.width + 16 * root.unit
+            height: 24 * root.unit
+            radius: 12 * root.unit
+            color: root.selection
+            Text {
+              id: zoomLabel
+              anchors.centerIn: parent
+              text: thumbnail.status === Image.Error ? "Screenshot unavailable" : "↗  Enlarge"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: 10 * root.unit
+            }
+          }
+          MouseArea {
+            id: thumbnailHover
+            anchors.fill: parent
+            hoverEnabled: true
+            enabled: thumbnail.status === Image.Ready
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.screenshotRequested(bubble.screenshotUrl, root.session.title)
+          }
+          Accessible.role: Accessible.Button
+          Accessible.name: "Enlarge attached screenshot"
+          Accessible.onPressAction: if (thumbnail.status === Image.Ready) root.screenshotRequested(bubble.screenshotUrl, root.session.title)
         }
 
         TextEdit {

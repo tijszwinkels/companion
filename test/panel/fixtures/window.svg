@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <rect width="1600" height="1000" fill="#121924"/>
+  <rect width="1600" height="64" fill="#202b3a"/>
+  <circle cx="30" cy="32" r="7" fill="#ed8796"/><circle cx="54" cy="32" r="7" fill="#eed49f"/><circle cx="78" cy="32" r="7" fill="#a6da95"/>
+  <g font-family="sans-serif" fill="#dce5ef">
+    <text x="116" y="40" font-size="22">Companion · synthetic screenshot fixture</text>
+    <text x="70" y="154" font-size="18" fill="#8ba0b8">WORKSPACE / DESIGN NOTES</text>
+    <text x="70" y="216" font-size="44">A quieter way to work.</text>
+    <text x="70" y="264" font-size="23" fill="#8ba0b8">Ask a question. Keep your place. Continue when you’re ready.</text>
+    <rect x="70" y="322" width="930" height="510" rx="18" fill="#202b3a"/>
+    <text x="108" y="385" font-size="25">Conversation flow</text>
+    <g fill="#293a51"><rect x="108" y="423" width="850" height="92" rx="12"/><rect x="108" y="536" width="850" height="92" rx="12"/><rect x="108" y="649" width="850" height="92" rx="12"/></g>
+    <g font-size="24" fill="#9fc0f7"><text x="140" y="478">01    Capture the question and its context</text><text x="140" y="591">02    Follow the answer in your sidebar</text><text x="140" y="704">03    Come back to the conversation later</text></g>
+    <rect x="1040" y="322" width="490" height="510" rx="18" fill="#202b3a"/>
+    <text x="1080" y="386" font-size="25">Small details matter</text>
+    <g font-size="22" fill="#8ba0b8"><text x="1080" y="446">Your words stay yours.</text><text x="1080" y="493">Screenshots keep their detail.</text><text x="1080" y="540">Conversations have a home.</text></g>
+    <rect x="1080" y="688" width="222" height="58" rx="29" fill="#9fc0f7"/>
+    <text x="1114" y="726" font-size="22" fill="#121924">Resume later ↗</text>
+    <text x="70" y="930" font-size="19" fill="#8ba0b8">SYNTHETIC FIXTURE · NO USER CONTENT · 1600 × 1000</text>
+  </g>
+</svg>
