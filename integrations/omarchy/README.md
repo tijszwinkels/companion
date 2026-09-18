@@ -15,8 +15,10 @@ npm start
 Stop an older Companion listener before starting another. The installer copies
 the plugin to `~/.config/omarchy/plugins/companion.desktop`, adds it to the right
 side of the bar, and sources its shortcut from the personal Hyprland bindings.
-It backs up the two modified config files, preserves existing entries, refuses
-a conflicting shortcut, reloads Hyprland, and checks configuration errors.
+It backs up the two modified config files, preserves existing entries, and refuses
+a conflicting shortcut. When the Lua shortcuts change, it reloads Hyprland's
+configuration and checks for errors. QML-only updates rescan the plugin without
+reloading Hyprland or rewriting the unchanged Lua file.
 It neither installs packages nor edits files shipped by Omarchy. Run it again
 after changing plugin files in this worktree to update the installed copy.
 The installer uses a separate source revision directory for changed QML so Qt's
@@ -33,6 +35,9 @@ needed to update this adapter.
   Other keyboard output waits its turn and checks focus again before typing.
 - **Super+Alt+P** pauses or resumes listening, including when the panel is closed.
   It uses the same pause control as the top-bar menu and toggles once per press.
+- **Super+Alt+A** focuses the selected conversation's input, opening the panel
+  if hidden. Press it again to return to the previous application. Select a
+  conversation first; Activity and Previous sessions have no composer to focus.
 - Click the microphone in the top bar for separate **Listening** and **Sound
   effects** switches. Turn listening off to pause, or mute the bleeps while
   keeping Companion active. Pausing closes the

@@ -38,6 +38,8 @@ Item {
   signal sendSessionRequested(string id, string text)
 
   function submitted(id, text, error) { chat.submitted(id, text, error) }
+  function focusComposer() { chat.focusComposer() }
+  function releaseComposerFocus() { chat.releaseComposerFocus() }
 
   // Activity remains the first tab. Questions get their own vertically stacked
   // tabs, scrollable independently of the conversation itself.

@@ -21,6 +21,7 @@ export function assertShortcutsAvailable(
     { key: 'v', description: 'Companion utterance history (hold, select, release to paste)' },
     { key: 'c', description: 'Companion side panel' },
     { key: 'p', description: 'Companion pause/resume listening' },
+    { key: 'a', description: 'Companion conversation input focus' },
   ];
 
   for (const binding of registered) {

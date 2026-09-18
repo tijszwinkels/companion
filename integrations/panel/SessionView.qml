@@ -31,6 +31,12 @@ Item {
   signal sendRequested(string id, string text)
   signal screenshotRequested(url source, string title)
 
+  function focusComposer() {
+    if (root.online && root.visible && root.session) composer.forceActiveFocus(Qt.ShortcutFocusReason)
+  }
+
+  function releaseComposerFocus() { composer.focus = false }
+
   function submit() {
     if (!root.canSend) return
     root.inputError = ""

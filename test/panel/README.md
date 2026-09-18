@@ -15,6 +15,12 @@ tests cover the rise, processing/result colors and label positions, the shared
 fade, fast completion, interrupted animations, literal transcript text, and
 opening without replaying old results. `npm test` also exercises monitor selection,
 including mixed layouts, mirrored monitors, and a single built-in display.
+Focus checks cover the brief native-focus acquisition phase, delayed restoration
+after releasing keyboard ownership, rapid toggles, cancellation on tab/visibility
+changes, waiting for a mapped surface, and preserving the actual composer's draft.
+The staged installer checks first-install reloads, QML-only reinstall without a
+Lua rewrite/reload, changed-shortcut reloads, copied components, retained config,
+and rejection of a conflicting focus shortcut before any configuration writes.
 
 Session checks cover incremental bubbles, opening a new tab only once, reconnect
 snapshots, Markdown versus literal user/tool text, persistent tool disclosure,
@@ -72,6 +78,11 @@ context on a follow-up, closing/reopening preserves drafts, and a long answer
 expands the panel without reserving workspace area. Session tabs use OnDemand
 keyboard focus; Activity still uses None. Give the user the advance reload and
 focus-change warning before running any of these desktop checks.
+Use **Super+Alt+A** with a selected conversation to focus the input; use it again
+to return to the previous application. Also check a hidden panel, a click-focused
+composer, rapid toggles, and a previous application that has since closed.
+The focus lifecycle is tested offscreen; the native shortcut and compositor
+focus transfer still require this manual check.
 
 Contextual voice routing is covered offline by real private-socket tests:
 focused-composer eligibility, the exact continuation prompt, both start aliases,

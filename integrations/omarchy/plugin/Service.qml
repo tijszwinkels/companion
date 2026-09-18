@@ -54,6 +54,34 @@ Item {
     root.panelOpened = false
   }
 
+  function toggleComposerFocus() {
+    if (!root.online || !agentSessions.conversationId) {
+      root.lastError = "Select an agent conversation before focusing its input."
+      root.lastErrorAction = "focus-agent"
+      return
+    }
+    root.cancel()
+    const previous = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+    const address = previous && !previous.startsWith("0x") ? "0x" + previous : previous
+    root.panelOpened = true
+    sidePanel.toggleComposerFocus(address)
+    if (root.lastErrorAction === "focus-agent") {
+      root.lastError = ""
+      root.lastErrorAction = ""
+    }
+  }
+
+  function restoreApplicationFocus(address) {
+    // Addresses come from compositor state, never from chat text. A window
+    // closed since activation is no longer a valid focus destination.
+    if (!/^0x[0-9a-f]+$/i.test(address)) return
+    const exists = Hyprland.toplevels.values.some(window => {
+      const candidate = window.address.startsWith("0x") ? window.address : "0x" + window.address
+      return candidate === address
+    })
+    if (exists) Hyprland.dispatch("focuswindow address:" + address)
+  }
+
   function send(request) {
     if (!root.online) {
       return
@@ -188,6 +216,13 @@ Item {
     onPressed: root.togglePanel()
   }
 
+  GlobalShortcut {
+    appid: "companion"
+    name: "focus"
+    description: "Toggle focus in the Companion conversation input"
+    onPressed: root.toggleComposerFocus()
+  }
+
   // Only finish completes a chord, after V and both modifiers are up. Hyprland
   // also releases history on V-up, which is too early when modifiers remain.
   // Both shortcuts use this resident connection, so a tap cannot race startup.
@@ -233,6 +268,7 @@ Item {
         opened: root.opened, selectedIndex: root.selectedIndex,
         panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
         panelMonitor: sidePanel.monitorName,
+        composerFocusId: sidePanel.composerFocusId, composerFocusPhase: sidePanel.composerFocusPhase,
         count: root.history.length, error: root.lastError })
     }
     function togglePause(): void { root.togglePause() }
@@ -240,6 +276,7 @@ Item {
     function cancel(): void { root.cancel() }
     function togglePanel(): void { root.togglePanel() }
     function closePanel(): void { root.closePanel() }
+    function toggleComposerFocus(): void { root.toggleComposerFocus() }
   }
 
   function connectionLost() {
@@ -324,7 +361,7 @@ Item {
     sessions: agentSessions.sessions
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["close-agent", "reopen-agent", "stop-agent"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onSessionSelected: id => {
@@ -337,5 +374,6 @@ Item {
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
     onComposerFocusIdChanged: Qt.callLater(root.reportPanelState)
+    onRestoreFocusRequested: address => root.restoreApplicationFocus(address)
   }
 }

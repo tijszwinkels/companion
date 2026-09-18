@@ -115,7 +115,9 @@ tool subprocesses. Supplied-text/file modes wait for accepted questions to
 finish. CLI logs include completed answers when no panel is attached.
 
 Each tab has a composer. Click it to type a follow-up, press **Enter** to send,
-or **Shift+Enter** for a newline. A follow-up resumes the same Pi conversation,
+or **Shift+Enter** for a newline. **Super+Alt+A** opens the panel and focuses the
+selected conversation's input; press it again to return to your previous
+application. A follow-up resumes the same Pi conversation,
 including the original screenshot; it does not capture another screenshot.
 You can prepare a draft while Pi works, then send after completion or Stop.
 Drafts remain separate per tab and clear only after the backend confirms receipt.
@@ -165,6 +167,9 @@ The optional [Omarchy adapter](integrations/omarchy/README.md) adds:
 
 - **Super+Alt+V**: hold to see recent utterances, select with **Up/Down**, and
   release to paste. A quick tap pastes the latest utterance; **Escape** cancels.
+- **Super+Alt+C**: toggle the panel. **Super+Alt+A**: toggle focus between the
+  selected conversation's input and the previous application.
+- **Super+Alt+P**: pause or resume listening.
 - A microphone control in the top bar: click for separate listening and sound
   effects switches. Mute the bleeps while keeping Companion active. Pause closes
   microphone capture, cancels pending work, and discards partial speech.

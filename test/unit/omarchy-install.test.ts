@@ -4,7 +4,15 @@ import test from 'node:test';
 import { assertShortcutsAvailable } from '../../integrations/omarchy/shortcuts.ts';
 
 test('installer rejects conflicts reported as either plain keys or Lua display chords', () => {
-  for (const key of ['C', 'SUPER + ALT + C', 'SUPER+ALT+v', 'P', 'SUPER + ALT + P']) {
+  for (const key of [
+    'C',
+    'SUPER + ALT + C',
+    'SUPER+ALT+v',
+    'P',
+    'SUPER + ALT + P',
+    'A',
+    'SUPER + ALT + A',
+  ]) {
     const bindings = JSON.stringify([{ modmask: 72, key, description: 'Existing action' }]);
     assert.throws(
       () => assertShortcutsAvailable(bindings, false),
@@ -17,6 +25,7 @@ test('reinstall permits its own shortcuts but still rejects another action on th
   const own = [
     { modmask: 72, key: 'SUPER + ALT + C', description: 'Companion side panel' },
     { modmask: 72, key: 'SUPER + ALT + P', description: 'Companion pause/resume listening' },
+    { modmask: 72, key: 'SUPER + ALT + A', description: 'Companion conversation input focus' },
     {
       modmask: 72,
       key: 'V',

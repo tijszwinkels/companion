@@ -25,6 +25,7 @@ PanelWindow {
   property string screenshotTitle: ""
   property string selectedSessionId: ""
   readonly property string composerFocusId: root.opened ? content.composerFocusId : ""
+  readonly property string composerFocusPhase: focusControl.phase
 
   signal closeRequested()
   signal sessionSelected(string id)
@@ -33,12 +34,29 @@ PanelWindow {
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
+  signal restoreFocusRequested(string address)
 
   onOpenedChanged: if (!opened) screenshotSource = ""
   onSelectedSessionIdChanged: screenshotSource = ""
   onShowingPreviousChanged: screenshotSource = ""
 
   function submitted(id, text, error) { content.submitted(id, text, error) }
+  function toggleComposerFocus(address) {
+    root.screenshotSource = ""
+    focusControl.toggle(address)
+  }
+
+  Panel.ComposerFocus {
+    id: focusControl
+    available: root.opened && root.online && root.selectedScreen !== null && !root.showingPrevious
+      && root.screenshotSource.toString() === "" && content.selectedSession !== null
+    mapped: root.backingWindowVisible
+    actualFocus: root.composerFocusId !== ""
+    sessionId: root.selectedSessionId
+    onFocusRequested: content.focusComposer()
+    onReleaseRequested: content.releaseComposerFocus()
+    onRestoreRequested: address => root.restoreFocusRequested(address)
+  }
 
   // Re-evaluate on hotplug rather than retaining a disconnected screen object.
   readonly property var selectedScreen: Monitors.chooseScreen(Quickshell.screens)
@@ -58,10 +76,11 @@ PanelWindow {
   exclusionMode: ExclusionMode.Normal
   WlrLayershell.namespace: "companion-panel"
   WlrLayershell.layer: WlrLayer.Overlay
-  // Activity never accepts keyboard input. Conversation tabs permit ordinary
-  // compositor-directed focus so clicking the composer supports typing.
-  WlrLayershell.keyboardFocus: root.opened && !root.showingPrevious && root.selectedSessionId
-    ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+  // Like Omarchy's KeyboardPanel, explicitly summoned focus uses a 75ms
+  // Exclusive prime, then OnDemand so normal clicks can leave the panel.
+  // Activity, history, viewer transitions and toggle-off relinquish the keys.
+  WlrLayershell.keyboardFocus: focusControl.keyboardMode === "exclusive" ? WlrKeyboardFocus.Exclusive
+    : focusControl.keyboardMode === "on-demand" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
   // Only the visible body captures clicks. Leave the surrounding desktop usable,
   // and release input immediately when closing, before the slide finishes.
@@ -110,7 +129,7 @@ PanelWindow {
         fontFamily: Style.font.menuFamily
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
-        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + A · conversation focus\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)
