@@ -8,7 +8,9 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 ```
 
 These checks cover overlapping speech/processing state, pause, disconnect and
-reconnect, the close button, and monitor geometry changes without hotplug. Phrase
+reconnect, the close button, and monitor geometry changes without hotplug.
+Surface tests exercise bottom/right anchoring through animated expansion and
+shrinkage, rapid slide reversal, and bounds on small displays. Phrase
 tests cover the rise, processing/result colors and label positions, the shared
 fade, fast completion, interrupted animations, literal transcript text, and
 opening without replaying old results. `npm test` also exercises monitor selection,

@@ -45,6 +45,7 @@ const files = [
   'omarchy/plugin/ScreenshotWindow.qml',
   'omarchy/plugin/MonitorSelection.js',
   'panel/PanelContent.qml',
+  'panel/PanelSurface.qml',
   'panel/StatusView.qml',
   'panel/PhraseActivity.qml',
   'panel/AgentSessionState.qml',
