@@ -15,7 +15,7 @@ tests cover the rise, processing/result colors and label positions, the shared
 fade, fast completion, interrupted animations, literal transcript text, and
 opening without replaying old results. `npm test` also exercises monitor selection,
 including mixed layouts, mirrored monitors, and a single built-in display.
-Focus checks cover the brief native-focus acquisition phase, delayed restoration
+Focus checks cover holding keyboard ownership until explicit release, delayed restoration
 after releasing keyboard ownership, rapid toggles, cancellation on tab/visibility
 changes, waiting for a mapped surface, and preserving the actual composer's draft.
 The staged installer checks first-install reloads, QML-only reinstall without a
@@ -85,8 +85,18 @@ focus-change warning before running any of these desktop checks.
 Use **Super+Alt+A** with a selected conversation to focus the input; use it again
 to return to the previous application. Also check a hidden panel, a click-focused
 composer, rapid toggles, and a previous application that has since closed.
-The focus lifecycle is tested offscreen; the native shortcut and compositor
-focus transfer still require this manual check.
+`npm run test:panel-focus` exercises the native focus path in a disposable nested
+Hyprland with `follow_mouse=1`. It uses a private Super+Alt+F10 binding and synthetic
+windows: the composer must retain focus past 75 ms and while the pointer moves
+outside, accept typed text, toggle back without losing its draft, and acquire
+focus from a hidden panel. A separate assertion verifies the production restore
+command can select the captured application from another window. Warn the user
+first: the outer nested window may briefly take desktop focus. All generated
+input stays inside the private compositor; no real backend or conversation is used.
+`COMPANION_FOCUS_REF=d6dd76c npm run test:panel-focus` reproduces the old timed-focus
+failure using the same fixture. Both the failing baseline and passing fix have
+been checked. Outside-click dismissal, click-focused composers, and monitor-specific
+behavior still need the manual checks above.
 
 Contextual voice routing is covered offline by real private-socket tests:
 focused-composer eligibility, the exact continuation prompt, both start aliases,

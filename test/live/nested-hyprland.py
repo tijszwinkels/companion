@@ -1,9 +1,10 @@
-"""Own a disposable nested compositor for the quick-tap regression.
+"""Own a disposable nested compositor for shortcut and panel-focus regressions.
 
 No user config is loaded. A private runtime directory isolates its sockets and
 clients; environment import and systemd notifications are disabled. Killing this
 process cleans up all its bindings, avoiding expired Lua handles in Hyprland.
 """
+import argparse
 import os
 from pathlib import Path
 import signal
@@ -12,6 +13,9 @@ import tempfile
 import time
 
 repository = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser()
+parser.add_argument("--focus", action="store_true", help="Run the conversation focus regression")
+arguments = parser.parse_args()
 parent_runtime = os.environ["XDG_RUNTIME_DIR"]
 parent_display = os.environ["WAYLAND_DISPLAY"]
 
@@ -27,6 +31,9 @@ hl.config({
   input = { follow_mouse = 0 },
 })
 ''')
+    if arguments.focus:
+        with config.open("a") as focus_config:
+            focus_config.write("\nhl.config({ input = { follow_mouse = 1 } })\n")
     environment = {
         **os.environ,
         "XDG_RUNTIME_DIR": temporary,
@@ -59,8 +66,9 @@ hl.config({
             environment["HYPRLAND_INSTANCE_SIGNATURE"] = sockets[0].parent.name
             environment["WAYLAND_DISPLAY"] = displays[0].name
             environment["COMPANION_TEST_NESTED"] = "1"
+            test_script = "test/live/panel-focus.ts" if arguments.focus else "test/live/quick-tap.ts"
             test_process = subprocess.Popen(
-                ["node", "--import", "tsx", "test/live/quick-tap.ts"],
+                ["node", "--import", "tsx", test_script],
                 cwd=repository, env=environment, start_new_session=True,
             )
             try:

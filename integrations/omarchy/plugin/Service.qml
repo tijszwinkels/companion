@@ -79,7 +79,7 @@ Item {
       const candidate = window.address.startsWith("0x") ? window.address : "0x" + window.address
       return candidate === address
     })
-    if (exists) Hyprland.dispatch("focuswindow address:" + address)
+    if (exists) Hyprland.dispatch('hl.dsp.focus({ window = "address:' + address + '" })')
   }
 
   function send(request) {

@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 import "../../panel" as Panel
@@ -58,6 +59,15 @@ PanelWindow {
     onRestoreRequested: address => root.restoreFocusRequested(address)
   }
 
+  // The protocol both acquires keyboard focus and retains it until an outside
+  // click or explicit release. An Exclusive -> OnDemand timer instead makes
+  // Hyprland simulate mouse movement and refocus the app under the pointer.
+  HyprlandFocusGrab {
+    active: focusControl.grabRequested && root.backingWindowVisible
+    windows: [root]
+    onCleared: if (focusControl.grabRequested) focusControl.reset()
+  }
+
   // Re-evaluate on hotplug rather than retaining a disconnected screen object.
   readonly property var selectedScreen: Monitors.chooseScreen(Quickshell.screens)
   readonly property string monitorName: selectedScreen ? selectedScreen.name : ""
@@ -76,11 +86,9 @@ PanelWindow {
   exclusionMode: ExclusionMode.Normal
   WlrLayershell.namespace: "companion-panel"
   WlrLayershell.layer: WlrLayer.Overlay
-  // Like Omarchy's KeyboardPanel, explicitly summoned focus uses a 75ms
-  // Exclusive prime, then OnDemand so normal clicks can leave the panel.
-  // Activity, history, viewer transitions and toggle-off relinquish the keys.
-  WlrLayershell.keyboardFocus: focusControl.keyboardMode === "exclusive" ? WlrKeyboardFocus.Exclusive
-    : focusControl.keyboardMode === "on-demand" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+  // Clicks may focus a conversation normally. Keyboard summoning uses the
+  // dismissible grab above; no timed interactivity change can steal it back.
+  WlrLayershell.keyboardFocus: focusControl.keyboardMode === "on-demand" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
   // Only the visible body captures clicks. Leave the surrounding desktop usable,
   // and release input immediately when closing, before the slide finishes.

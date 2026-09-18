@@ -98,7 +98,10 @@ Escape and zoom shortcuts. Closing the panel or changing pages dismisses it too.
 It respects the bar's reserved space and overlays windows without resizing them.
 Activity does not accept keyboard focus. Session tabs use layer-shell OnDemand
 focus to allow typing into the composer, following the compositor's normal focus
-policy. The adapter reports actual composer focus to preserve the delivery guard
+policy. The focus shortcut holds a dismissible Hyprland focus grab, so moving the
+pointer outside the panel does not take keyboard focus away. Toggling again
+returns to the captured application; an outside click releases the grab.
+The adapter reports actual composer focus to preserve the delivery guard
 when Hyprland still reports an underlying ordinary window. Opening history leaves
 the panel open. Toggling the
 panel cancels any held history selection without pasting. Rapid toggles reverse

@@ -12,7 +12,7 @@ Item {
       mapped: true
       sessionId: "question-1"
       settleDuration: 40
-      onFocusRequested: actualFocus = true
+      onFocusRequested: if (mapped) actualFocus = true
       onReleaseRequested: actualFocus = false
     }
   }
@@ -42,11 +42,14 @@ Item {
       })
       control.toggle("0xabc")
       compare(control.actualFocus, true)
-      compare(control.keyboardMode, "exclusive")
+      compare(control.grabRequested, true)
       tryCompare(control, "phase", "idle")
       compare(control.keyboardMode, "on-demand")
+      wait(control.settleDuration * 3)
+      compare(control.grabRequested, true, "Keyboard summoning must not expire after a timer")
       control.toggle("0xabc")
       compare(control.actualFocus, false)
+      compare(control.grabRequested, false)
       compare(control.keyboardMode, "none")
       compare(restored, "")
       tryVerify(function() { return restored === "0xabc" })
@@ -64,6 +67,19 @@ Item {
       compare(restored, 0)
       compare(control.actualFocus, true)
       compare(control.previousWindow, "0xdef")
+    }
+
+    function test_external_focus_loss_releases_without_restoring_the_previous_app() {
+      const control = createTemporaryObject(focusComponent, parent)
+      let restored = 0
+      control.restoreRequested.connect(function() { restored++ })
+      control.toggle("0xabc")
+      compare(control.grabRequested, true)
+      control.actualFocus = false
+      compare(control.grabRequested, false)
+      compare(control.previousWindow, "")
+      wait(control.settleDuration * 2)
+      compare(restored, 0)
     }
 
     function test_hiding_or_changing_tab_cancels_pending_focus_and_restore() {
