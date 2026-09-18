@@ -124,9 +124,6 @@ Item {
     }
   }
 
-  // Only finish completes a chord, after V and both modifiers are up. Hyprland
-  // also releases history on V-up, which is too early when modifiers remain.
-  // Both shortcuts use this resident connection, so a tap cannot race startup.
   GlobalShortcut {
     appid: "companion"
     name: "panel"
@@ -134,6 +131,9 @@ Item {
     onPressed: root.togglePanel()
   }
 
+  // Only finish completes a chord, after V and both modifiers are up. Hyprland
+  // also releases history on V-up, which is too early when modifiers remain.
+  // Both shortcuts use this resident connection, so a tap cannot race startup.
   GlobalShortcut {
     appid: "companion"
     name: "history"
