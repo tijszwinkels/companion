@@ -7,8 +7,8 @@ import type { AgentSessions } from '../agents/sessions.ts';
 export class StartCodingAgentSession implements UserSensorProcessor {
   readonly id = 'start-agent-session';
   readonly label = 'Ask the local agent';
-  readonly name = 'start_coding_agent_session';
-  readonly prefixes = ['quick question'];
+  readonly name = 'START_CODING_AGENT_SESSION';
+  readonly prefixes = ['quick question', 'new coding agent'];
   readonly instruction =
     'Choose this if the user is asking the AI assistant on this computer a question or requesting its help, including a question about what is visible on the screen. Do not choose this for text that the user is dictating into the active application or for speech not addressed to the assistant.';
 

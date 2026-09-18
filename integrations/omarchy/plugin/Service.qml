@@ -28,10 +28,20 @@ Item {
   property bool panelOpened: false
   property var pendingAgentInput: null
   readonly property var transport: connection.item
+  onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
+  onOnlineChanged: if (online) Qt.callLater(root.reportPanelState)
 
   Panel.AgentSessionState {
     id: agentSessions
     onRevealRequested: root.panelOpened = true
+    onSelectedIdChanged: Qt.callLater(root.reportPanelState)
+  }
+
+  function reportPanelState() {
+    const selected = agentSessions.sessions.some(session => session.id === agentSessions.selectedId)
+    const id = root.panelOpened && selected ? agentSessions.selectedId : ""
+    root.send({action: "panel-state", id: id,
+      composerFocused: id !== "" && sidePanel.composerFocusId === id})
   }
 
   function togglePanel() {
@@ -314,6 +324,6 @@ Item {
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
-    onComposerFocusIdChanged: root.send({action: "composer-focus", id: composerFocusId})
+    onComposerFocusIdChanged: Qt.callLater(root.reportPanelState)
   }
 }

@@ -6,6 +6,38 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import { deferred, processor, screenshot, signal, testDetector, testSensors } from '../helpers.ts';
 import type { Transcript } from '../../src/core/activity.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
+import type { InteractionContext } from '../../src/core/frame.ts';
+
+test('sidebar context is captured at speech end before delayed transcription', async () => {
+  const waiting = deferred<string>();
+  let current: InteractionContext = {
+    agentSessionId: 'first',
+    agentComposerFocused: true,
+    revision: 1,
+  };
+  let received: InteractionContext | undefined;
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
+  processor('IGNORE', async (frame) => {
+    received = frame.interaction;
+  }).subscribe(router);
+  const pipeline = new SensorPipeline(
+    {
+      ...testSensors({ capture: async () => screenshot, transcribe: async () => waiting.promise }),
+      router,
+    },
+    () => {},
+    signal(),
+    { interactionContext: () => ({ ...current }) },
+  );
+  pipeline.submit(new Float32Array(16000));
+  current = { agentSessionId: 'second', agentComposerFocused: true, revision: 2 };
+  waiting.resolve('Please continue');
+  await pipeline.idle();
+  assert.deepEqual(received, { agentSessionId: 'first', agentComposerFocused: true, revision: 1 });
+});
 
 test('capture happens at submission, processing remains FIFO, and queue is bounded', async () => {
   const waiting = deferred<string>();

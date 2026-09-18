@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import type { Activity } from '../core/activity.ts';
-import type { Log } from '../core/frame.ts';
+import type { InteractionContext, Log } from '../core/frame.ts';
 import { PauseControl } from '../core/pause-control.ts';
 import { DeliveryControl } from '../core/delivery-control.ts';
 import { failureOutcome } from '../core/delivery-error.ts';
@@ -49,6 +49,9 @@ export class DesktopRuntime {
   private composerSession = '';
   private composerClient = 0;
   private composerRevision = 0;
+  private panelSession = '';
+  private panelClient = 0;
+  private interactionRevision = 0;
   private readonly frameComposerRevisions = new Map<number, number>();
 
   constructor(
@@ -72,14 +75,27 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        if (clientId === this.panelClient) {
+          this.setPanelState('', false, clientId);
+        }
         if (clientId === this.composerClient) {
           this.setComposerFocus('', 0);
         }
       },
     );
-    this.unsubscribeAgents = options.agents?.subscribe((event) => this.server.publish(event));
+    this.unsubscribeAgents = options.agents?.subscribe((event) => {
+      if (event.type === 'agent-removed' && event.id === this.panelSession) {
+        this.setPanelState('', false, this.panelClient);
+      }
+      this.server.publish(event);
+    });
 
     this.activity = {
+      interactionContext: () => this.interactionContext(),
+      interactionCurrent: (context) =>
+        context.revision === this.interactionRevision &&
+        context.agentSessionId === this.panelSession &&
+        this.options.agents?.has(context.agentSessionId) === true,
       speechChanged: (speaking) => {
         const next = speaking && !this.pause.paused;
         if (this.speaking !== next) {
@@ -190,6 +206,35 @@ export class DesktopRuntime {
       this.composerSession = id;
       this.composerClient = clientId;
       this.composerRevision++;
+      this.interactionRevision++;
+    }
+  }
+
+  private interactionContext(): InteractionContext {
+    const id = this.options.agents?.has(this.panelSession) ? this.panelSession : '';
+    return {
+      agentSessionId: id,
+      agentComposerFocused: Boolean(
+        id && this.composerSession === id && this.composerClient === this.panelClient,
+      ),
+      revision: this.interactionRevision,
+    };
+  }
+
+  /** One ordered UI report binds the visible tab and keyboard focus together. */
+  private setPanelState(id: string, focused: boolean, clientId: number): void {
+    // A stale/disconnecting observer must not clear another UI's selected tab.
+    if (!id && clientId !== this.panelClient) {
+      return;
+    }
+    const owner = id ? clientId : 0;
+    if (id !== this.panelSession || owner !== this.panelClient) {
+      this.panelSession = id;
+      this.panelClient = owner;
+      this.interactionRevision++;
+    }
+    if (focused || clientId === this.composerClient) {
+      this.setComposerFocus(focused ? id : '', focused ? clientId : 0);
     }
   }
 
@@ -201,6 +246,19 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+
+    if (request.action === 'panel-state') {
+      if (
+        typeof request.id !== 'string' ||
+        typeof request.composerFocused !== 'boolean' ||
+        (!request.id && request.composerFocused) ||
+        (request.id !== '' && !this.options.agents?.has(request.id))
+      ) {
+        throw Error('Expected a visible agent session id (or empty id) and composerFocused');
+      }
+      this.setPanelState(request.id, request.composerFocused, clientId);
+      return 'panel-recorded';
+    }
 
     if (request.action === 'composer-focus') {
       if (

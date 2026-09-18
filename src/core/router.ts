@@ -115,7 +115,10 @@ export class UserSensorRouter implements InspectableModule {
     const eligibleProcessors = new Map<string, UserSensorProcessor>();
     const intents: Intent[] = [];
     for (const processor of this.registeredProcessors.values()) {
-      if (processor.instruction !== undefined) {
+      if (
+        processor.instruction !== undefined &&
+        (processor.availableForInference?.(frame) ?? true)
+      ) {
         eligibleProcessors.set(processor.name, processor);
         intents.push({ name: processor.name, instruction: processor.instruction });
       }

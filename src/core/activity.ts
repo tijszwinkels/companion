@@ -1,4 +1,5 @@
 import type { DeliveryControl } from './delivery-control.ts';
+import type { InteractionContext } from './frame.ts';
 
 /** Results describe actual delivery, rather than just the model's chosen intent. */
 export type UtteranceOutcome =
@@ -14,6 +15,11 @@ export interface Transcript {
 
 /** Optional feedback keeps the sensor pipeline independent of desktop services. */
 export interface Activity {
+  /** Snapshot interaction state at speech end, alongside screen capture. */
+  interactionContext?(): InteractionContext;
+  /** Recheck that the captured target still represents the same interaction. */
+  interactionCurrent?(context: InteractionContext): boolean;
+
   /** Live VAD state, independent of work already queued for transcription. */
   speechChanged?(speaking: boolean): void;
 

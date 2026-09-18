@@ -34,6 +34,16 @@ export interface UserSensorFrame {
 
   utterance: string;
   screenshot: Screenshot;
+  /** Sidebar state captured with the screenshot, before transcription/inference. */
+  interaction?: InteractionContext;
+}
+
+export interface InteractionContext {
+  /** Empty when the panel is hidden or no agent conversation is selected. */
+  readonly agentSessionId: string;
+  readonly agentComposerFocused: boolean;
+  /** Local generation used to reject a target that changed while processing. */
+  readonly revision: number;
 }
 
 /** The part of a processor's registration that the LLM needs to see. */
@@ -48,6 +58,9 @@ export interface UserSensorProcessor extends InspectableModule {
 
   /** Omit this for commands that must only run when explicitly requested. */
   instruction?: string;
+
+  /** Optional per-frame eligibility; explicit prefixes still reach process(). */
+  availableForInference?(frame: UserSensorFrame): boolean;
 
   /** Case-insensitive command prefixes, removed before process receives a frame. */
   prefixes?: readonly string[];

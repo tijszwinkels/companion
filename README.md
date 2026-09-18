@@ -55,10 +55,26 @@ Run `npm start -- --help` for all flags.
 
 ## Quick questions
 
-`start_coding_agent_session` is also available to the intent recognizer, for
+`START_CODING_AGENT_SESSION` is also available to the intent recognizer, for
 questions addressed to the computer's AI assistant. Each invocation starts an
-independent Pi session in `~/companion/agents`. The literal **“quick question …”**
-prefix is a reliable way to invoke it without intent inference.
+independent Pi session in `~/companion/agents`. The literal **“new coding agent …”**
+and **“quick question …”** prefixes invoke it without intent inference.
+
+When a visible agent conversation's input field owns keyboard focus,
+`CONTINUE_OPEN_AGENT_CONVERSATION` joins the classifier's choices. Its instruction
+defaults speech to that conversation unless the context strongly suggests another
+intention. **“message coding agent …”** bypasses classification and sends directly
+to the visible, selected conversation, even when its input field is not focused.
+Both paths send the speech as a follow-up, without typing into the composer or
+capturing another attachment. **“insert …”** and **“enter …”** retain their existing
+explicit keyboard behavior.
+
+The selected conversation and focus are captured at speech end, before ASR.
+Switching tabs, closing the panel/session, changing composer focus, or losing the
+UI connection before dispatch skips the continuation instead of redirecting it.
+An explicit message shortcut without an open conversation is also skipped.
+As with typed follow-ups, wait for the agent's answer or use Stop before sending
+another turn. Bare prefixes without a following message do nothing.
 
 Pi 0.85.1 or newer must be installed and authenticated. Companion uses real
 `pi --mode rpc` processes: questions include the captured PNG and window identity;

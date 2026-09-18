@@ -87,6 +87,8 @@ export async function desktopFixture(run: RunCommand, agents?: AgentSessions) {
   await once(client, 'connect');
 
   return {
+    client,
+    socketPath: path,
     runtime,
     pause,
     controller,

@@ -96,6 +96,30 @@ test('real Pi transport sends one multimodal user message, no history, thinking 
   });
 });
 
+test('the model sees captured sidebar state without the internal focus generation', async () => {
+  await endpoint(async (config, requests) => {
+    await new IntentDetector(config).detect(
+      {
+        ...frame,
+        interaction: {
+          agentSessionId: 'selected-session',
+          agentComposerFocused: true,
+          revision: 42,
+        },
+      },
+      intents,
+      signal(),
+    );
+    const input = JSON.parse(requests[0].messages[1].content[0].text);
+    assert.deepEqual(input.interaction, {
+      agentSessionId: 'selected-session',
+      agentComposerFocused: true,
+    });
+    assert.equal(input.utterance, frame.utterance);
+    assert.deepEqual(input.application, frame.screenshot.window);
+  });
+});
+
 for (const reply of ['IGNORE because this is background speech', '"IGNORE"', 'UNKNOWN', '']) {
   test(`rejects malformed intent ${JSON.stringify(reply)}`, async () => {
     await endpoint(async (config) => {

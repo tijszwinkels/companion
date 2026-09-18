@@ -63,3 +63,13 @@ context on a follow-up, closing/reopening preserves drafts, and a long answer
 expands the panel without reserving workspace area. Session tabs use OnDemand
 keyboard focus; Activity still uses None. Give the user the advance reload and
 focus-change warning before running any of these desktop checks.
+
+Contextual voice routing is covered offline by real private-socket tests:
+focused-composer eligibility, the exact continuation prompt, both start aliases,
+direct messages to an unfocused visible chat, and cancellation/preview/stale
+target handling. The pipeline test holds ASR open while the selected tab changes
+to verify that the original interaction snapshot survives. On a later desktop
+check, focus a composer and speak a follow-up without a prefix, then verify
+`message coding agent …` targets that same visible chat from another application's
+focus and `new coding agent …` always creates a fresh tab. These new voice paths
+have not been exercised on the live compositor.

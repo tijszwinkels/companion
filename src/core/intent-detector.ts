@@ -33,7 +33,16 @@ export function frameMessage(frame: UserSensorFrame): UserMessage {
     content: [
       {
         type: 'text',
-        text: JSON.stringify({ utterance: frame.utterance, application: frame.screenshot.window }),
+        text: JSON.stringify({
+          utterance: frame.utterance,
+          application: frame.screenshot.window,
+          interaction: frame.interaction
+            ? {
+                agentSessionId: frame.interaction.agentSessionId,
+                agentComposerFocused: frame.interaction.agentComposerFocused,
+              }
+            : undefined,
+        }),
       },
       { type: 'image', mimeType: 'image/png', data: frame.screenshot.png.toString('base64') },
     ],

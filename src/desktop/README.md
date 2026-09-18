@@ -55,6 +55,7 @@ Commands:
 {"action":"close-agent","id":"question-uuid"}
 {"action":"send-agent","id":"question-uuid","text":"Please explain that further"}
 {"action":"composer-focus","id":"question-uuid"}
+{"action":"panel-state","id":"question-uuid","composerFocused":true}
 ```
 
 Replies are `{"type":"result","action":"paste","result":"sent"}` (or `skipped`, `preview`,
@@ -148,9 +149,25 @@ are unique across turns, so a later answer cannot overwrite an earlier bubble.
 Adapters clear the submitted draft only after its successful reply; failed sends
 retain it. Drafts typed after submission must not be cleared by an older reply.
 
-`composer-focus` reports the session whose composer actually owns keyboard focus,
+`panel-state` reports the visible, selected agent session plus whether its composer
+actually owns keyboard focus. Use an empty `id` and `composerFocused: false` for
+a hidden panel, Activity, or another non-conversation page. Send changes to either
+field and resend after connecting; the response is `panel-recorded`. The owning
+connection's loss clears this state. Unknown session IDs and a focused empty ID
+are rejected. These reports also update the keyboard delivery focus guard.
+
+At speech end, the sensor frame captures the session ID, focus, and a local
+generation. The classifier sees the ID/focus and gains
+`CONTINUE_OPEN_AGENT_CONVERSATION` only when that composer was focused. A
+continuation rechecks the generation and target existence before calling the
+session manager, so even leaving and returning to the same tab cannot redirect
+an old utterance. Explicit `message coding agent` requires a visible session but
+not composer focus. The generation is not sent to the model.
+
+Older clients may still send `composer-focus`, which reports the session whose composer actually owns keyboard focus,
 or `id: ""` when none does. It returns `focus-recorded`. The owner connection's
-loss also clears it. This is a delivery guard, not input to intent recognition.
+loss also clears it. This legacy report alone does not establish a visible tab
+for speech routing; current adapters use `panel-state` instead.
 Hyprland keeps its previous ordinary `activewindow` while a layer surface receives
 keys; the extra focus revision detects that transition. Speech records this revision
 before capture and checks it at delivery and again before Enter. A history recovery

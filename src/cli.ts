@@ -8,6 +8,7 @@ import { Ignore } from './processors/ignore.ts';
 import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
+import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
 import { AgentSessions } from './agents/sessions.ts';
 import { PiBackend } from './agents/pi-backend.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
@@ -73,7 +74,8 @@ Usage: npm start -- [options]
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
-"quick question …" asks Pi with the screenshot and opens a session tab.
+"new coding agent …" or "quick question …" asks Pi and opens a session tab.
+"message coding agent …" continues the currently open agent conversation.
 Other dictation never presses Enter. Start inside your Hyprland desktop session.`);
     return;
   }
@@ -149,6 +151,12 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     new StartCodingAgentSession({ sessions: agents }, log, values.preview, activity).subscribe(
       router,
     );
+    new ContinueOpenAgentConversation(
+      { sessions: agents },
+      log,
+      values.preview,
+      activity,
+    ).subscribe(router);
 
     // These constructors are inert. Named dependencies are both the actual
     // objects used for processing and the connections visible to inspection.
@@ -173,13 +181,14 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'registered',
-      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, start_coding_agent_session (quick question)',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new coding agent / quick question), CONTINUE_OPEN_AGENT_CONVERSATION (message coding agent / focused composer)',
     );
 
     // Supplied text enters the same routing path but needs no audio resources.
     if (values.text !== undefined) {
       const transcript: Transcript = { id: 1, observedAt: Date.now(), utterance: values.text };
       activity.processing?.(1);
+      const interaction = activity.interactionContext?.();
 
       try {
         log('capture', 'Capturing active window', 1);
@@ -188,7 +197,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         });
         activity.transcribed?.(transcript);
         log('frame', 'Supplied utterance + screenshot', 1);
-        await router.route({ ...transcript, screenshot }, controller.signal);
+        await router.route({ ...transcript, screenshot, interaction }, controller.signal);
       } catch (error) {
         // Like audio input, supplied text is retained even if capture fails.
         activity.transcribed?.(transcript);
