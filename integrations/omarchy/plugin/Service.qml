@@ -23,7 +23,19 @@ Item {
   property int selectedIndex: 0
   property string targetAddress: ""
   property var pickerScreen: null
+  property bool panelOpened: false
   readonly property var transport: connection.item
+
+  function togglePanel() {
+    // The history picker and status panel have separate lifetimes. Dismissing
+    // history here cancels it; opening the panel must never trigger a paste.
+    root.cancel()
+    root.panelOpened = !root.panelOpened
+  }
+
+  function closePanel() {
+    root.panelOpened = false
+  }
 
   function send(request) {
     if (!root.online) {
@@ -77,6 +89,8 @@ Item {
       return
     }
 
+    root.closePanel()
+
     // Snapshot rows at press time. Arriving speech must never move the selected
     // utterance underneath a held shortcut. A tap starts on the newest row.
     root.rows = root.history.slice()
@@ -112,6 +126,13 @@ Item {
 
   // The compositor sends both events to this already-running service. Unlike
   // spawning separate press/release commands, a quick tap cannot race startup.
+  GlobalShortcut {
+    appid: "companion"
+    name: "panel"
+    description: "Toggle Companion side panel"
+    onPressed: root.togglePanel()
+  }
+
   GlobalShortcut {
     appid: "companion"
     name: "history"
@@ -153,11 +174,15 @@ Item {
         speaking: root.speaking, processing: root.processing,
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
+        panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
+        panelMonitor: sidePanel.monitorName,
         count: root.history.length, error: root.lastError })
     }
     function togglePause(): void { root.togglePause() }
     function toggleSounds(): void { root.toggleSounds() }
     function cancel(): void { root.cancel() }
+    function togglePanel(): void { root.togglePanel() }
+    function closePanel(): void { root.closePanel() }
   }
 
   function connectionLost() {
@@ -226,5 +251,17 @@ Item {
     selectedIndex: root.selectedIndex
     pickerScreen: root.pickerScreen
     onCancelled: root.cancel()
+  }
+
+  // Leave the panel open on socket loss so it can explain the offline state
+  // and visibly reconnect when Companion starts again.
+  SidePanel {
+    id: sidePanel
+    opened: root.panelOpened
+    online: root.online
+    paused: root.paused
+    speaking: root.speaking
+    processing: root.processing
+    onCloseRequested: root.closePanel()
   }
 }

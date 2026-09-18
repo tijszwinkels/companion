@@ -1,7 +1,7 @@
 # Omarchy adapter
 
 This optional adapter contains the entire shell integration: the bar button,
-themed utterance picker, and Hyprland shortcut. Companion itself has no dependency
+themed utterance picker, Activity side panel, and Hyprland shortcuts. Companion itself has no dependency
 on this plugin. The [local protocol](../../src/desktop/README.md) can support other
 desktop adapters without changing the sensor pipeline or processors.
 
@@ -42,6 +42,27 @@ needed to update this adapter.
   means ignored. A single note means accepted for processing. `--no-sounds`
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
+
+**Super+Alt+C** toggles the right-hand side panel. The close button also hides it.
+The single vertical **Activity** tab shows listening, speech capture, processing,
+paused, and offline states. Its microphone colors follow the bar, with a gentle
+listening pulse, a faster speech pulse, and an orbiting dot during processing.
+Animations stop when hidden, paused, or offline. It remains open if Companion
+disconnects and reconnects through the existing service.
+
+The default is the rightmost external monitor (by its logical right edge), with
+built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
+Monitor changes are observed while the panel is open. The panel is 420 logical
+pixels wide at the default theme scale, capped to the selected screen's width.
+It respects the bar's reserved space and overlays windows without resizing them
+or taking keyboard focus. Opening history closes the panel; opening the panel
+cancels history without pasting. Rapid toggles reverse the 180 ms slide animation.
+
+The reusable QtQuick body lives in [`../panel`](../panel). It accepts state and
+theme values and emits a close request. The Omarchy adapter alone owns the
+Wayland window, monitor choice, shortcut, and theme bindings. Future desktop
+adapters can reuse that body or consume the same desktop state protocol. Agent
+tabs and HTML message rendering are not part of this first version.
 
 The global shortcut uses Hyprland's resident
 [press/release protocol](https://quickshell.org/docs/v0.2.0/types/Quickshell.Hyprland/GlobalShortcut/)

@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { command } from '../../src/system/command.ts';
@@ -24,12 +24,27 @@ if (shell.version !== 1 || !Array.isArray(shell.bar?.layout?.right)) {
 
 // Check the actual compositor, including packaged bindings not in the user file.
 const registered = JSON.parse((await command('hyprctl', ['-j', 'binds'], deadline)).toString());
-const conflict = registered.find((binding: { modmask: number; key: string }) => {
-  return binding.modmask === 72 && binding.key.toLowerCase() === 'v';
-});
+const shortcuts = [
+  { key: 'v', description: 'Companion utterance history (hold, select, release to paste)' },
+  { key: 'c', description: 'Companion side panel' },
+];
 
-if (conflict && !bindings.includes(bindingMarker)) {
-  throw Error(`Super+Alt+V is already bound to ${conflict.description || 'another action'}`);
+for (const shortcut of shortcuts) {
+  const conflict = registered.find(
+    (binding: { modmask: number; key: string; description?: string }) => {
+      const sameShortcut = binding.modmask === 72 && binding.key.toLowerCase() === shortcut.key;
+      const installedByCompanion =
+        bindings.includes(bindingMarker) && binding.description === shortcut.description;
+
+      return sameShortcut && !installedByCompanion;
+    },
+  );
+
+  if (conflict) {
+    throw Error(
+      `Super+Alt+${shortcut.key.toUpperCase()} is already bound to ${conflict.description || 'another action'}`,
+    );
+  }
 }
 
 const backupSuffix = `.companion-backup-${Date.now()}`;
@@ -39,23 +54,37 @@ await mkdir(destination, { recursive: true });
 
 // Qt caches dynamically created service components by URL. Give each source
 // revision a stable, distinct URL so updates apply without restarting the shell.
-const files = ['Service.qml', 'HistoryPicker.qml', 'BarWidget.qml'];
+// Preserve the source layout so relative imports also work in a checkout or an
+// isolated test host. Shared panel content is deliberately outside Omarchy.
+const integrationSource = fileURLToPath(new URL('../', import.meta.url));
+const files = [
+  'omarchy/plugin/Service.qml',
+  'omarchy/plugin/HistoryPicker.qml',
+  'omarchy/plugin/BarWidget.qml',
+  'omarchy/plugin/SidePanel.qml',
+  'omarchy/plugin/MonitorSelection.js',
+  'panel/PanelContent.qml',
+  'panel/StatusView.qml',
+];
 const hash = createHash('sha256');
 
 for (const file of files) {
-  hash.update(await readFile(join(source, 'plugin', file)));
+  hash.update(file);
+  hash.update(await readFile(join(integrationSource, file)));
 }
 
 const revision = `code-${hash.digest('hex').slice(0, 12)}`;
 await mkdir(join(destination, revision), { recursive: true });
 
 for (const file of files) {
-  await cp(join(source, 'plugin', file), join(destination, revision, file));
+  const installedFile = join(destination, revision, file);
+  await mkdir(dirname(installedFile), { recursive: true });
+  await cp(join(integrationSource, file), installedFile);
 }
 
 const manifest = JSON.parse(await readFile(join(source, 'plugin/manifest.json'), 'utf8'));
-manifest.entryPoints.service = `${revision}/Service.qml`;
-manifest.entryPoints.barWidget = `${revision}/BarWidget.qml`;
+manifest.entryPoints.service = `${revision}/omarchy/plugin/Service.qml`;
+manifest.entryPoints.barWidget = `${revision}/omarchy/plugin/BarWidget.qml`;
 await writeFile(join(destination, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 await cp(join(source, 'bindings.lua'), join(destination, 'bindings.lua'));
 
@@ -97,3 +126,4 @@ if (errors) {
 await command('omarchy-shell', ['shell', 'rescanPlugins'], deadline);
 console.log(`Installed Companion's Omarchy adapter at ${destination}`);
 console.log('Run npm start in the Companion checkout to connect it.');
+console.log('Super+Alt+C toggles the side panel; Super+Alt+V opens speech history.');

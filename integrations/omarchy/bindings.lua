@@ -1,6 +1,14 @@
 -- Use the resident global-shortcut connection for ordered press/release events.
 local history_held = false
 
+hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
+  description = "Companion side panel",
+})
+
+-- The panel owns its horizontal reveal animation, including a quick reversal
+-- if the toggle is pressed again before the first animation finishes.
+hl.layer_rule({ match = { namespace = "companion-panel" }, no_anim = true, animation = "none" })
+
 hl.bind("SUPER + ALT + V", function()
   history_held = true
   hl.dispatch(hl.dsp.global("companion:history"))
