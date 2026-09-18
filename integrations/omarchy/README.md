@@ -49,7 +49,7 @@ needed to update this adapter.
 **Super+Alt+C** toggles the compact panel in the top-right corner. The close
 button also hides it. When closed, the panel disappears completely. Only the
 open panel body captures mouse input; the desktop beneath it remains usable.
-The single vertical **Activity** tab has a stationary microphone whose colors
+The vertical **Activity** tab has a stationary microphone whose colors
 follow the bar. Each newly transcribed phrase rises above the mic in green, with
 **PROCESSING** at its top left. After processing completes, the intent appears
 at the top right: blue for `SEND_TEXT_TO_APPLICATION`, purple for
@@ -69,17 +69,27 @@ The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
 Monitor changes are observed while the panel is open. The panel body is 420 by
 400 logical pixels at the default theme scale, capped to the available screen
-space.
-It respects the bar's reserved space and overlays windows without resizing them
-or taking keyboard focus. Opening history leaves the panel open. Toggling the
+space. Quick questions open a new tab with a user bubble, streamed Markdown
+answers, and expandable tool bubbles. Once its content exceeds the compact
+body, a session uses 600 logical pixels of width and all available height.
+Returning to Activity restores the compact body. Each session has Stop and
+Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
+inserts a newline). A follow-up resumes its Pi conversation. Closing the panel
+keeps its questions running and retains its drafts.
+It respects the bar's reserved space and overlays windows without resizing them.
+Activity does not accept keyboard focus. Session tabs use layer-shell OnDemand
+focus to allow typing into the composer, following the compositor's normal focus
+policy. The adapter reports actual composer focus to preserve the delivery guard
+when Hyprland still reports an underlying ordinary window. Opening history leaves
+the panel open. Toggling the
 panel cancels any held history selection without pasting. Rapid toggles reverse
 the 180 ms slide animation.
 
 The reusable QtQuick body lives in [`../panel`](../panel). It accepts state and
 theme values and emits a close request. The Omarchy adapter alone owns the
 Wayland window, monitor choice, shortcut, and theme bindings. Future desktop
-adapters can reuse that body or consume the same desktop state protocol. Agent
-tabs and HTML message rendering are not part of this first version.
+adapters can reuse that body or consume the same desktop state protocol. See
+[quick questions](../../README.md#quick-questions) for Pi setup and session limits.
 
 The global shortcut uses Hyprland's resident
 [press/release protocol](https://quickshell.org/docs/v0.2.0/types/Quickshell.Hyprland/GlobalShortcut/)

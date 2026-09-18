@@ -18,11 +18,23 @@ Item {
   property bool animationsEnabled: true
   property string shortcutLabel: ""
   property var history: []
+  property var sessions: []
+  property string selectedSessionId: ""
+  property var expandedSessions: ({})
+  readonly property var selectedSession: sessions.find(entry => entry.id === selectedSessionId) || null
+  readonly property bool expanded: selectedSession !== null && expandedSessions[selectedSessionId] === true
+  readonly property string composerFocusId: chat.composerFocusId
 
   signal closeRequested()
+  signal sessionSelected(string id)
+  signal stopSessionRequested(string id)
+  signal dismissSessionRequested(string id)
+  signal sendSessionRequested(string id, string text)
 
-  // A vertical rail leaves room for session tabs without inventing a session
-  // model before those interactions have been designed.
+  function submitted(id, text, error) { chat.submitted(id, text, error) }
+
+  // Activity remains the first tab. Questions get their own vertically stacked
+  // tabs, scrollable independently of the conversation itself.
   Rectangle {
     id: rail
     width: 64 * root.unit
@@ -35,12 +47,12 @@ Item {
       anchors.horizontalCenter: parent.horizontalCenter
       width: 48 * root.unit
       height: 64 * root.unit
-      color: root.selection
+      color: root.selectedSession === null ? root.selection : "transparent"
 
       Rectangle {
         width: 2 * root.unit
         height: parent.height
-        color: root.accent
+        color: root.selectedSession === null ? root.accent : "transparent"
       }
 
       Column {
@@ -76,7 +88,61 @@ Item {
 
       Accessible.role: Accessible.PageTab
       Accessible.name: "Activity"
-      Accessible.selected: true
+      Accessible.selected: root.selectedSession === null
+      Accessible.onPressAction: root.sessionSelected("")
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.sessionSelected("")
+      }
+    }
+
+    Flickable {
+      anchors.fill: parent
+      anchors.topMargin: 100 * root.unit
+      anchors.bottomMargin: 8 * root.unit
+      contentHeight: tabs.height
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+
+      Column {
+        id: tabs
+        width: parent.width
+        spacing: 8 * root.unit
+        Repeater {
+          model: root.sessions
+          Rectangle {
+            required property var modelData
+            required property int index
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 48 * root.unit
+            height: 62 * root.unit
+            color: root.selectedSessionId === modelData.id ? root.selection : "transparent"
+            Text {
+              anchors.fill: parent
+              anchors.margins: 4 * root.unit
+              text: "Q" + (parent.index + 1) + "\n" + parent.modelData.title
+              textFormat: Text.PlainText
+              maximumLineCount: 3
+              elide: Text.ElideRight
+              wrapMode: Text.Wrap
+              horizontalAlignment: Text.AlignHCenter
+              color: root.selectedSessionId === parent.modelData.id ? root.accent : root.muted
+              font.family: root.fontFamily
+              font.pixelSize: 9 * root.unit
+            }
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.sessionSelected(parent.modelData.id)
+            }
+            Accessible.role: Accessible.PageTab
+            Accessible.name: modelData.title
+            Accessible.selected: root.selectedSessionId === modelData.id
+            Accessible.onPressAction: root.sessionSelected(modelData.id)
+          }
+        }
+      }
     }
   }
 
@@ -89,8 +155,10 @@ Item {
 
     Text {
       anchors.top: parent.top
-      text: "Companion"
+      width: parent.width - 38 * root.unit
+      text: root.selectedSession ? root.selectedSession.title : "Companion"
       textFormat: Text.PlainText
+      elide: Text.ElideRight
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: 16 * root.unit
@@ -128,6 +196,7 @@ Item {
     }
 
     StatusView {
+      visible: root.selectedSession === null
       anchors.fill: parent
       anchors.topMargin: 48 * root.unit
       anchors.bottomMargin: 36 * root.unit
@@ -140,14 +209,43 @@ Item {
       accent: root.accent
       fontFamily: root.fontFamily
       unit: root.unit
-      animationsEnabled: root.animationsEnabled
+      animationsEnabled: root.animationsEnabled && visible
       history: root.history
+    }
+
+    SessionView {
+      id: chat
+      objectName: "sessionView"
+      visible: root.selectedSession !== null
+      anchors.fill: parent
+      anchors.topMargin: 44 * root.unit
+      session: root.selectedSession
+      online: root.online
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      selection: root.selection
+      fontFamily: root.fontFamily
+      unit: root.unit
+      onStopRequested: id => root.stopSessionRequested(id)
+      onDismissRequested: id => root.dismissSessionRequested(id)
+      onSendRequested: (id, text) => root.sendSessionRequested(id, text)
+      onOverflowed: {
+        // Latch expansion for this session. Reflowing into a wider window must
+        // not immediately shrink it and oscillate between the two sizes.
+        if (root.selectedSession && !root.expanded) {
+          const expanded = Object.assign({}, root.expandedSessions)
+          expanded[root.selectedSessionId] = true
+          root.expandedSessions = expanded
+        }
+      }
     }
 
     Text {
       anchors.bottom: parent.bottom
       width: parent.width
       text: root.shortcutLabel
+      visible: root.selectedSession === null
       textFormat: Text.PlainText
       horizontalAlignment: Text.AlignHCenter
       color: root.muted

@@ -46,6 +46,9 @@ const files = [
   'panel/PanelContent.qml',
   'panel/StatusView.qml',
   'panel/PhraseActivity.qml',
+  'panel/AgentSessionState.qml',
+  'panel/PanelAction.qml',
+  'panel/SessionView.qml',
 ];
 const hash = createHash('sha256');
 

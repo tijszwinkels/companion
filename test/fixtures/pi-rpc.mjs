@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+// A real child process speaking only the subset of Pi RPC used by Companion.
+// It never opens a model, desktop connection, or real user's agent settings.
+import { existsSync, writeFileSync } from 'node:fs';
+
+const option = (name) => process.argv[process.argv.indexOf(name) + 1];
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+let buffered = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buffered += chunk;
+  let newline;
+  while ((newline = buffered.indexOf('\n')) >= 0) {
+    const request = JSON.parse(buffered.slice(0, newline));
+    buffered = buffered.slice(newline + 1);
+    receive(request);
+  }
+});
+
+function receive(request) {
+  if (request.type === 'get_state') {
+    const [provider, id] = option('--model').split('/');
+    send({
+      type: 'response',
+      id: request.id,
+      success: true,
+      data: {
+        model: { provider, id },
+        thinkingLevel: option('--thinking'),
+        messageCount: existsSync('request.json') ? 2 : 0,
+      },
+    });
+  }
+  if (request.type === 'abort') {
+    writeFileSync('aborted', 'yes');
+  }
+  if (request.type !== 'prompt') {
+    return;
+  }
+  writeFileSync(
+    'request.json',
+    JSON.stringify({ request, argv: process.argv.slice(2), pid: process.pid }),
+  );
+  if (request.message.startsWith('reject')) {
+    send({ type: 'response', command: 'prompt', success: false, error: 'fixture rejection' });
+    return;
+  }
+  if (request.message.startsWith('exit')) {
+    process.exit(3);
+  }
+  if (request.message.startsWith('dialog')) {
+    send({ type: 'extension_ui_request', id: 'dialog', method: 'confirm' });
+    return;
+  }
+
+  send({ type: 'response', command: 'prompt', success: true });
+  send({ type: 'message_start', message: { role: 'assistant', content: [] } });
+  send({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'First 🙂\u2028line' },
+  });
+  if (request.message.startsWith('stall')) {
+    return;
+  }
+  send({
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'First 🙂\u2028line.' }],
+      stopReason: 'toolUse',
+    },
+  });
+  send({
+    type: 'tool_execution_start',
+    toolCallId: 'read-1',
+    toolName: 'read',
+    args: { path: 'example.txt' },
+  });
+  send({
+    type: 'tool_execution_update',
+    toolCallId: 'read-1',
+    partialResult: { content: [{ type: 'text', text: 'partial' }] },
+  });
+  send({
+    type: 'tool_execution_end',
+    toolCallId: 'read-1',
+    isError: false,
+    result: { content: [{ type: 'text', text: 'complete tool output' }] },
+  });
+
+  // Completion must not be inferred from agent_end; retry work follows it.
+  send({ type: 'agent_end', willRetry: true });
+  setTimeout(() => {
+    send({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    send({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '## Answer\n**42**' },
+    });
+    send({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '## Answer\n**42**' }],
+        stopReason: request.message.startsWith('error') ? 'error' : 'stop',
+        errorMessage: 'fixture model failure',
+      },
+    });
+    send({ type: 'agent_settled' });
+  }, 150);
+}

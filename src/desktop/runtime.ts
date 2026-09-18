@@ -14,6 +14,7 @@ import { typeText } from '../system/type-text.ts';
 import { UtteranceHistory } from './history.ts';
 import { DesktopServer } from './server.ts';
 import { SoundFeedback } from './sounds.ts';
+import type { AgentSessions } from '../agents/sessions.ts';
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -44,6 +45,11 @@ export class DesktopRuntime {
   private ready = false;
   private pasting = false;
   private speaking = false;
+  private unsubscribeAgents?: () => void;
+  private composerSession = '';
+  private composerClient = 0;
+  private composerRevision = 0;
+  private readonly frameComposerRevisions = new Map<number, number>();
 
   constructor(
     private readonly pause: PauseControl,
@@ -54,6 +60,7 @@ export class DesktopRuntime {
       socket: string;
       preview: boolean;
       sounds: boolean;
+      agents?: AgentSessions;
     },
     private readonly run: RunCommand = command,
   ) {
@@ -63,8 +70,14 @@ export class DesktopRuntime {
     this.server = new DesktopServer(
       options.socket,
       () => this.snapshot(),
-      (request) => this.handle(request),
+      (request, clientId) => this.handle(request, clientId),
+      (clientId) => {
+        if (clientId === this.composerClient) {
+          this.setComposerFocus('', 0);
+        }
+      },
     );
+    this.unsubscribeAgents = options.agents?.subscribe((event) => this.server.publish(event));
 
     this.activity = {
       speechChanged: (speaking) => {
@@ -75,11 +88,18 @@ export class DesktopRuntime {
         }
       },
       delivery: this.delivery,
+      // Hyprland's activewindow still names the last ordinary window when a
+      // layer-shell composer owns keyboard focus. Track that extra boundary
+      // so leaving/entering a composer cannot redirect pending dictation.
+      deliveryAllowed: (id) =>
+        !this.frameComposerRevisions.has(id) ||
+        this.frameComposerRevisions.get(id) === this.composerRevision,
       deliveryStarted: (id) => {
         this.history.markDeliveryStarted(id);
         this.server.broadcast();
       },
       processing: (id) => {
+        this.frameComposerRevisions.set(id, this.composerRevision);
         this.processing.add(id);
         this.sounds.play('processing');
         this.server.broadcast();
@@ -104,6 +124,7 @@ export class DesktopRuntime {
         this.server.broadcast();
       },
       finished: (id) => {
+        this.frameComposerRevisions.delete(id);
         this.processing.delete(id);
         this.delivery.finish(id);
         this.history.finish(id);
@@ -145,7 +166,7 @@ export class DesktopRuntime {
 
     this.log(
       this.pause.paused ? 'paused' : 'listening',
-      this.pause.paused ? 'Microphone and pending work stopped' : 'Microphone resuming',
+      this.pause.paused ? 'Microphone stopped; pending speech cancelled' : 'Microphone resuming',
     );
     this.server.broadcast();
   };
@@ -160,10 +181,19 @@ export class DesktopRuntime {
       processing: this.processing.size,
       preview: this.options.preview,
       history: this.ready ? this.history.snapshot() : [],
+      sessions: this.options.agents?.snapshot() ?? [],
     };
   }
 
-  private async handle(value: unknown): Promise<string> {
+  private setComposerFocus(id: string, clientId: number): void {
+    if (id !== this.composerSession || clientId !== this.composerClient) {
+      this.composerSession = id;
+      this.composerClient = clientId;
+      this.composerRevision++;
+    }
+  }
+
+  private async handle(value: unknown, clientId: number): Promise<string> {
     this.signal.throwIfAborted();
 
     if (!this.ready || !value || typeof value !== 'object') {
@@ -171,6 +201,43 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+
+    if (request.action === 'composer-focus') {
+      if (
+        typeof request.id !== 'string' ||
+        (request.id !== '' && !this.options.agents?.has(request.id))
+      ) {
+        throw Error('Expected a current composer session id or an empty id');
+      }
+      if (request.id !== '' || clientId === this.composerClient) {
+        this.setComposerFocus(request.id, request.id ? clientId : 0);
+      }
+      return 'focus-recorded';
+    }
+
+    if (request.action === 'send-agent') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.text !== 'string'
+      ) {
+        throw Error('Expected an agent session id and follow-up text');
+      }
+      this.options.agents.followUp(request.id, request.text, this.signal);
+      return 'submitted';
+    }
+
+    if (request.action === 'stop-agent' || request.action === 'close-agent') {
+      if (!this.options.agents || typeof request.id !== 'string') {
+        throw Error('Expected an agent session id');
+      }
+      if (request.action === 'close-agent') {
+        await this.options.agents.remove(request.id);
+      } else {
+        await this.options.agents.stop(request.id);
+      }
+      return request.action === 'close-agent' ? 'closed' : 'stopped';
+    }
 
     if (request.action === 'toggle-pause') {
       this.pause.toggle();
@@ -206,6 +273,9 @@ export class DesktopRuntime {
     }
 
     const eventId = this.history.beginPaste(entry.id, request.target);
+    const composerRevision = this.composerRevision;
+    const expectedComposer =
+      typeof request.composer === 'string' ? request.composer : this.composerSession;
     this.pasting = true;
 
     // The shared delivery owner either supersedes a pending automatic send or
@@ -239,7 +309,8 @@ export class DesktopRuntime {
           // focus deadline here would still cut long recovery insertions short.
           this.signal,
           this.run,
-          () => true,
+          () =>
+            this.composerRevision === composerRevision && this.composerSession === expectedComposer,
           () => this.history.markPasteStarted(eventId, application),
         );
         return delivered ? 'sent' : 'skipped';
@@ -262,6 +333,7 @@ export class DesktopRuntime {
   }
 
   async close(): Promise<void> {
+    this.unsubscribeAgents?.();
     this.ready = false;
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);

@@ -38,7 +38,7 @@ test('subscriptions supply the detector prompt and dispatch the original frame t
   assert.equal(await router.route(frame, signal()), 'CUSTOM');
   assert.deepEqual(delivered, [frame]);
   assert.throws(() => processor('CUSTOM').subscribe(router), /Duplicate/);
-  assert.throws(() => processor('bad name').subscribe(router), /uppercase/);
+  assert.throws(() => processor('bad name').subscribe(router), /identifier/);
 });
 
 test('unknown names and cancellation never dispatch', async () => {

@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Hyprland
+import "../../panel" as Panel
 
 // This adapter owns Omarchy/Hyprland behavior. Companion only sees the portable
 // JSON protocol documented in src/desktop/README.md.
@@ -22,9 +23,16 @@ Item {
   property var rows: []
   property int selectedIndex: 0
   property string targetAddress: ""
+  property string targetComposerId: ""
   property var pickerScreen: null
   property bool panelOpened: false
+  property var pendingAgentInput: null
   readonly property var transport: connection.item
+
+  Panel.AgentSessionState {
+    id: agentSessions
+    onRevealRequested: root.panelOpened = true
+  }
 
   function togglePanel() {
     // The history picker and status panel have separate lifetimes. Dismissing
@@ -54,6 +62,22 @@ Item {
     root.send({ action: "toggle-sounds" })
   }
 
+  function sendAgentInput(id, text) {
+    if (!root.online) {
+      sidePanel.submitted(id, text, "Companion is disconnected; your draft is retained.")
+      return
+    }
+    root.pendingAgentInput = {id: id, text: text}
+    root.send({action: "send-agent", id: id, text: text})
+  }
+
+  function finishAgentInput(error) {
+    if (root.pendingAgentInput) {
+      sidePanel.submitted(root.pendingAgentInput.id, root.pendingAgentInput.text, error)
+      root.pendingAgentInput = null
+    }
+  }
+
   function receive(line) {
     try {
       const message = JSON.parse(line)
@@ -65,13 +89,20 @@ Item {
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
         root.history = message.history
+        agentSessions.replace(message.sessions || [])
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready
+      } else if (message.type === "agent-session") {
+        agentSessions.update(message.session)
+      } else if (message.type === "agent-removed") {
+        agentSessions.remove(message.id)
       } else if (message.type === "error") {
+        if (message.action === "send-agent") root.finishAgentInput(message.message)
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
+        if (message.action === "send-agent") root.finishAgentInput("")
         if (message.result === "skipped") {
           root.lastError = "Paste skipped: focus changed"
           root.lastErrorAction = "paste"
@@ -99,6 +130,7 @@ Item {
     root.selectedIndex = 0
     const address = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
     root.targetAddress = address && !address.startsWith("0x") ? "0x" + address : address
+    root.targetComposerId = sidePanel.composerFocusId
     const monitor = Hyprland.focusedMonitor
     root.pickerScreen = Quickshell.screens.find(screen => screen.name === monitor?.name) || null
     root.lastError = ""
@@ -122,7 +154,7 @@ Item {
     const row = root.rows[root.selectedIndex]
 
     if (root.online && row && root.targetAddress) {
-      root.send({ action: "paste", id: row.id, target: root.targetAddress })
+      root.send({ action: "paste", id: row.id, target: root.targetAddress, composer: root.targetComposerId })
     }
   }
 
@@ -197,6 +229,7 @@ Item {
   }
 
   function connectionLost() {
+    root.finishAgentInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
     root.online = false
     root.speaking = false
     root.processing = 0
@@ -274,6 +307,13 @@ Item {
     speaking: root.speaking
     processing: root.processing
     history: root.history
+    sessions: agentSessions.sessions
+    selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
+    onSessionSelected: id => agentSessions.selectedId = id
+    onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
+    onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
+    onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
+    onComposerFocusIdChanged: root.send({action: "composer-focus", id: composerFocusId})
   }
 }

@@ -17,19 +17,28 @@ PanelWindow {
   required property bool speaking
   required property int processing
   property var history: []
+  property var sessions: []
+  property string selectedSessionId: ""
+  readonly property string composerFocusId: root.opened ? content.composerFocusId : ""
 
   signal closeRequested()
+  signal sessionSelected(string id)
+  signal stopSessionRequested(string id)
+  signal dismissSessionRequested(string id)
+  signal sendSessionRequested(string id, string text)
+
+  function submitted(id, text, error) { content.submitted(id, text, error) }
 
   // Re-evaluate on hotplug rather than retaining a disconnected screen object.
   readonly property var selectedScreen: Monitors.chooseScreen(Quickshell.screens)
   readonly property string monitorName: selectedScreen ? selectedScreen.name : ""
-  readonly property real panelHeight: Math.min(Style.space(400), height)
+  readonly property real panelHeight: content.expanded ? height : Math.min(Style.space(400), height)
   property real reveal: opened ? 1 : 0
 
   screen: selectedScreen
   visible: selectedScreen !== null && (opened || reveal > 0)
   anchors { top: true; bottom: true; right: true }
-  implicitWidth: Math.min(Style.space(420), selectedScreen ? selectedScreen.width : Style.space(420))
+  implicitWidth: Math.min(Style.space(content.expanded ? 600 : 420), selectedScreen ? selectedScreen.width : Style.space(420))
   color: "transparent"
 
   // Respect the bar's reserved space but never reserve space ourselves: this
@@ -38,7 +47,10 @@ PanelWindow {
   exclusionMode: ExclusionMode.Normal
   WlrLayershell.namespace: "companion-panel"
   WlrLayershell.layer: WlrLayer.Overlay
-  WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+  // Activity never accepts keyboard input. Conversation tabs permit ordinary
+  // compositor-directed focus so clicking the composer supports typing.
+  WlrLayershell.keyboardFocus: root.opened && root.selectedSessionId
+    ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
   // Only the compact body captures clicks. Leave the desktop below it usable,
   // and release input immediately when closing, before the slide finishes.
@@ -66,6 +78,7 @@ PanelWindow {
       radius: Style.cornerRadius
 
       Panel.PanelContent {
+        id: content
         anchors.fill: parent
         anchors.margins: Math.max(1, Style.space(2))
         online: root.online
@@ -73,6 +86,8 @@ PanelWindow {
         speaking: root.speaking
         processing: root.processing
         history: root.history
+        sessions: root.sessions
+        selectedSessionId: root.selectedSessionId
         foreground: Color.menu.text
         muted: Qt.rgba(Color.menu.text.r, Color.menu.text.g, Color.menu.text.b, 0.65)
         accent: Color.menu.selectedText
@@ -82,6 +97,10 @@ PanelWindow {
         animationsEnabled: root.opened && root.visible
         shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
+        onSessionSelected: id => root.sessionSelected(id)
+        onStopSessionRequested: id => root.stopSessionRequested(id)
+        onDismissSessionRequested: id => root.dismissSessionRequested(id)
+        onSendSessionRequested: (id, text) => root.sendSessionRequested(id, text)
       }
     }
   }

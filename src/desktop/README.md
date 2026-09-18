@@ -33,7 +33,8 @@ On connection and state changes, the server sends:
       "intent": "IGNORE",
       "outcome": "ignored"
     }
-  ]
+  ],
+  "sessions": []
 }
 ```
 
@@ -50,6 +51,10 @@ Commands:
 {"action":"toggle-pause"}
 {"action":"toggle-sounds"}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
+{"action":"stop-agent","id":"question-uuid"}
+{"action":"close-agent","id":"question-uuid"}
+{"action":"send-agent","id":"question-uuid","text":"Please explain that further"}
+{"action":"composer-focus","id":"question-uuid"}
 ```
 
 Replies are `{"type":"result","action":"paste","result":"sent"}` (or `skipped`, `preview`,
@@ -59,7 +64,7 @@ request when control replies overtake a slow paste. Sound feedback can be muted 
 of listening. Muting stops current and queued cues. `--no-sounds` sets the initial
 state; controls can enable sounds later. This setting lasts for the process's
 session. Preview mode is always silent and rejects `toggle-sounds`.
-One paste per connection runs at a time; pause/mute controls run independently
+One paste per connection runs at a time; pause/mute and agent controls run independently
 with a bounded maximum of 16 outstanding control requests per connection.
 Close your overlay before asking
 to paste, and pass the window address from when the user opened it. Companion
@@ -85,7 +90,10 @@ application/window identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
-NULL, not an inferred label. No raw audio or screenshot is saved.
+NULL, not an inferred label. No raw audio or screenshot is saved in this database.
+The `started` outcome means a question was handed to the independent agent
+session manager, not that text was typed or an answer succeeded. Pi persists
+the question's screenshot and conversation in its own session storage.
 
 `paste_events` references `utterances.id` and records every manual recovery
 attempt, target application/address, timestamps, and actual outcome. An ignored
@@ -115,3 +123,39 @@ An intermediate version-2 schema had delivery markers but no `legacy_outcome`.
 Its old and new failed rows cannot be distinguished, so migration conservatively
 marks ambiguous failed sends/pastes as `interrupted` and preserves their labels.
 Once provenance columns exist, subsequent opens leave new cancellations intact.
+
+## Agent sessions
+
+The optional `sessions` array in each state snapshot contains complete chat
+state for reconnects. A session has `id`, `title`, `status`, `model`, `error`, and
+`messages`. Status is `starting`, `running`, `completed`, `cancelled`, or `error`.
+Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
+`toolName`, `input`, `state` (`running`, `done`, or `error`), and a boolean
+`screenshot` attachment indicator. Image bytes never travel to the UI socket.
+
+Between snapshots, `{"type":"agent-session","session":{...}}` carries current
+session metadata and **only changed messages**. Upsert by session/message ID in
+arrival order; do not replace the entire conversation with this partial array.
+Streaming updates are coalesced every 40 ms; a terminal status flushes pending
+messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
+All messages share the ordered socket with snapshots. A newly seen session opens
+and selects its panel tab once; further updates and reconnects do not reopen it.
+
+Agent controls return `stopped`, `closed`, or `submitted`. Follow-ups are bounded
+to 4000 characters and rejected while that session is still answering. Submission
+starts a new turn in the same Pi session, without another screenshot. Message IDs
+are unique across turns, so a later answer cannot overwrite an earlier bubble.
+Adapters clear the submitted draft only after its successful reply; failed sends
+retain it. Drafts typed after submission must not be cleared by an older reply.
+
+`composer-focus` reports the session whose composer actually owns keyboard focus,
+or `id: ""` when none does. It returns `focus-recorded`. The owner connection's
+loss also clears it. This is a delivery guard, not input to intent recognition.
+Hyprland keeps its previous ordinary `activewindow` while a layer surface receives
+keys; the extra focus revision detects that transition. Speech records this revision
+before capture and checks it at delivery and again before Enter. A history recovery
+request may include `composer` with its focus ID from shortcut press time.
+
+Agent controls remain usable while microphone
+capture is paused or a keyboard delivery is pending. Agent sessions belong to
+the application lifetime, independently of each bounded sensor job.

@@ -50,7 +50,7 @@ export async function typeText(
       deadline.throwIfAborted();
       const enterFocusDeadline = AbortSignal.any([deadline, AbortSignal.timeout(5000)]);
       const afterTyping = await activeWindow(enterFocusDeadline, run);
-      if (afterTyping.address !== targetAddress) {
+      if (afterTyping.address !== targetAddress || !deliveryAllowed()) {
         throw Error('Focus changed after typing; Enter not pressed');
       }
 

@@ -3,7 +3,7 @@ import type { InspectableModule } from './module.ts';
 
 /** A window image and the identity needed to check focus before text delivery. */
 export interface Screenshot {
-  /** PNG bytes kept in memory; only the detector converts them to base64. */
+  /** PNG bytes; the detector and question backend encode them at their boundaries. */
   png: Buffer;
 
   /** Unix time in milliseconds, recorded after the capture has been checked. */

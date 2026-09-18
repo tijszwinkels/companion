@@ -2,7 +2,7 @@ import type { DeliveryControl } from './delivery-control.ts';
 
 /** Results describe actual delivery, rather than just the model's chosen intent. */
 export type UtteranceOutcome =
-  'sent' | 'ignored' | 'skipped' | 'preview' | 'error' | 'cancelled' | 'interrupted';
+  'sent' | 'started' | 'ignored' | 'skipped' | 'preview' | 'error' | 'cancelled' | 'interrupted';
 
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {

@@ -21,13 +21,15 @@ inference, and child processes.
 
 - **“insert hello”** types `hello`, without pressing Enter.
 - **“enter hello”** types `hello`, then presses Enter.
+- **“quick question, what does this error mean?”** sends the question and captured
+  window to a headless Pi agent and opens its answer in a new panel tab.
 - Other utterances go through the LLM as before; detected dictation never presses Enter.
 
-Both commands bypass the LLM. Matching is case-insensitive and accepts punctuation
+These prefixes bypass the intent LLM. Matching is case-insensitive and accepts punctuation
 after the command, such as “Insert, hello”. It matches whole prefixes: “entering”
 does not trigger “enter”. A command with no following text does nothing.
 
-To observe without typing or pressing Enter:
+To observe without typing, pressing Enter, or launching an agent:
 
 ```sh
 npm start -- --preview
@@ -50,6 +52,74 @@ npm start -- --preview --seconds 10
 `--text` and `--wav` still capture the currently focused application. `--wav`
 accepts formats FFmpeg can decode. `--device NODE_NAME` selects a PipeWire source.
 Run `npm start -- --help` for all flags.
+
+## Quick questions
+
+`start_coding_agent_session` is also available to the intent recognizer, for
+questions addressed to the computer's AI assistant. Each invocation starts an
+independent Pi session in `~/companion/agents`. The literal **“quick question …”**
+prefix is a reliable way to invoke it without intent inference.
+
+Pi 0.85.1 or newer must be installed and authenticated. Companion uses real
+`pi --mode rpc` processes: questions include the captured PNG and window identity;
+answers and tool activity stream back while microphone processing continues.
+The backend verifies the selected model and thinking level before sending the
+question, and reports startup, model, image, and tool-run failures in the tab.
+
+The first question creates `~/companion/agents/companion-agent.json` if absent:
+
+```json
+{
+  "executable": "pi",
+  "model": "openai-codex/gpt-6-astra",
+  "thinking": "medium"
+}
+```
+
+Edit this file to change the next question's model or executable. Pi calls the
+Codex provider `openai-codex`. An absolute executable path can pin an installed
+Pi release and avoid version-manager wrapper behavior. Existing files are never
+overwritten. Companion passes these settings explicitly; project trust is not
+needed just to load this configuration. Pi otherwise uses its normal credentials,
+tools, global resources, and project trust policy.
+
+New questions select their own vertical tab and open the panel. User text stays
+literal; assistant answers render as Markdown. Click a tool bubble to expand
+its arguments and output. Text updates are batched at up to 25 frames/second.
+When content outgrows the compact panel, that session expands to 600 logical
+pixels wide and all available screen height; Activity remains compact. Scrolling
+up stops following the stream until you return to the bottom.
+
+**Stop** cancels the selected agent. **Close session** stops it and removes its
+tab. Closing the panel merely hides it. Pausing the microphone leaves accepted
+agent questions running; stopping Companion cancels all its agents and their
+tool subprocesses. Supplied-text/file modes wait for accepted questions to
+finish. CLI logs include completed answers when no panel is attached.
+
+Each tab has a composer. Click it to type a follow-up, press **Enter** to send,
+or **Shift+Enter** for a newline. A follow-up resumes the same Pi conversation,
+including the original screenshot; it does not capture another screenshot.
+You can prepare a draft while Pi works, then send after completion or Stop.
+Drafts remain separate per tab and clear only after the backend confirms receipt.
+With the composer focused, **“insert …”** dictates into it and **“enter …”**
+dictates and sends. These explicit prefixes avoid inferring a new question.
+As elsewhere, dictation requires a visible ordinary application for screen capture.
+
+Conversation tabs accept normal compositor-directed keyboard focus. Activity
+remains non-focusable. Focus changes between a composer and the underlying
+application invalidate pending keyboard delivery, even when Hyprland's
+`activewindow` still names that same underlying window. Enter rechecks this guard
+after typing. These guards are covered offline; real compositor focus and
+dictation into the composer still need desktop validation before claiming them
+verified on this installation.
+
+Pi persists the conversation, including its screenshot, in its normal session
+storage. Panel tabs currently last for the Companion process; closing a tab does
+not delete the Pi transcript. This first version permits four simultaneous
+questions and twelve tabs, with a 256 KiB/200-message display limit per session.
+Tool output is clipped to 16 KiB in a bubble. Interactive Pi extension dialogs
+are cancelled with a visible explanation rather than left waiting for a terminal.
+Per-session speech routing remains for the next iteration.
 
 ## Desktop integration and history
 
