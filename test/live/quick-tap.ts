@@ -365,6 +365,14 @@ try {
   }
 
   const database = new DatabaseSync(databasePath, { readOnly: true });
+
+  // The final character can appear before wtype releases its last key, exits,
+  // and records the result. Wait for delivery to settle before checking it.
+  const pendingPastes = database.prepare(
+    "SELECT count(*) AS count FROM paste_events WHERE outcome = 'pending'",
+  );
+  await waitFor(async () => pendingPastes.get()?.count === 0);
+
   const outcomes = database.prepare('SELECT outcome FROM paste_events ORDER BY rowid').all();
   assert.deepEqual(
     outcomes.map((row) => row.outcome),
