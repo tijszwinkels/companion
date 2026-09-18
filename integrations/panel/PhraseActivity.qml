@@ -32,13 +32,22 @@ Item {
   property real visibility: 0
 
   readonly property bool completed: outcome !== "processing" && outcome !== "delivering"
-  readonly property string label: showingResult ? (intent || outcome.toUpperCase()) : "PROCESSING"
+  readonly property bool failed: outcome === "error" || outcome === "skipped"
+    || outcome === "cancelled" || outcome === "interrupted"
+
+  // Recognition can succeed even when delivery fails or is skipped after a
+  // focus change. Keep the detected intent, but make that outcome explicit.
+  // Preview also needs a label because it deliberately sends no keyboard input.
+  readonly property string resultLabel: (failed || outcome === "preview")
+    ? outcome.toUpperCase() + (intent ? " · " + intent : "")
+    : intent || outcome.toUpperCase()
+  readonly property string label: showingResult ? resultLabel : "PROCESSING"
   readonly property color phraseColor: !showingResult ? "#66bb6a"
+    : failed ? "#ef5350"
     : intent === "SEND_TEXT_TO_APPLICATION" ? "#82aaff"
     : intent === "ENTER_TEXT_TO_APPLICATION" ? "#c792ea"
     : intent === "IGNORE" ? muted
-    : intent ? accent
-    : outcome === "error" || outcome === "interrupted" ? "#ef5350" : muted
+    : intent ? accent : muted
 
   function reset() {
     rise.stop()

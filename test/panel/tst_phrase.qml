@@ -120,6 +120,41 @@ Item {
       tryCompare(view, "presenting", false)
     }
 
+    function test_failed_delivery_keeps_its_outcome_data() {
+      return [
+        {tag: "focus changed", outcome: "skipped"},
+        {tag: "typing failed", outcome: "error"},
+        {tag: "cancelled", outcome: "cancelled"},
+        {tag: "interrupted", outcome: "interrupted"}
+      ]
+    }
+
+    function test_failed_delivery_keeps_its_outcome(data) {
+      const view = createTemporaryObject(phraseComponent, parent)
+      const label = findChild(view, "phraseLabel")
+      const text = findChild(view, "phraseText")
+      view.history = [row("failed-send", "SEND_TEXT_TO_APPLICATION", "delivering")]
+      compare(label.text, "PROCESSING")
+      compare(text.color, "#66bb6a")
+
+      view.history = [row("failed-send", "SEND_TEXT_TO_APPLICATION", data.outcome)]
+      tryCompare(view, "showingResult", true)
+      compare(label.text, data.outcome.toUpperCase() + " · SEND_TEXT_TO_APPLICATION")
+      compare(label.horizontalAlignment, Text.AlignRight)
+      compare(label.color, "#ef5350")
+      compare(text.color, label.color)
+      tryCompare(view, "presenting", false)
+    }
+
+    function test_preview_reports_that_no_input_was_sent() {
+      const view = createTemporaryObject(phraseComponent, parent)
+      view.history = [row("preview", null, "processing")]
+      view.history = [row("preview", "SEND_TEXT_TO_APPLICATION", "preview")]
+      tryCompare(view, "showingResult", true)
+      compare(view.label, "PREVIEW · SEND_TEXT_TO_APPLICATION")
+      compare(view.phraseColor, "#82aaff")
+    }
+
     function test_transcript_is_literal_text() {
       const view = createTemporaryObject(phraseComponent, parent)
       const transcript = "<b>Keep this literal</b> & café — 🙂"

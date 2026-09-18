@@ -51,7 +51,9 @@ follow the bar. Each newly transcribed phrase rises above the mic in green, with
 at the top right: blue for `SEND_TEXT_TO_APPLICATION`, purple for
 `ENTER_TEXT_TO_APPLICATION`, and muted for `IGNORE`. The phrase and label hold
 for 1.4 seconds, then fade together over one second, leaving **Listening**.
-Failures without a detected intent show their outcome instead.
+Failed, skipped, cancelled, or interrupted processing shows the outcome in red
+alongside any detected intent. Preview prefixes the intent with **PREVIEW** to
+make clear that no keyboard input was sent.
 
 Closing the panel or disconnecting stops its phrase animation. Opening it adopts
 a phrase still being processed but does not replay completed history. A newer

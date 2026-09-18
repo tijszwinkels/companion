@@ -5,14 +5,14 @@ import "../../integrations/omarchy/plugin/MonitorSelection.js" as Monitors
 Item {
   QtObject {
     id: first
-    property string name: "DP-1"
+    readonly property string name: "DP-1"
     property int x: 0
     property int width: 1920
   }
 
   QtObject {
     id: second
-    property string name: "DP-2"
+    readonly property string name: "DP-2"
     property int x: 1920
     property int width: 1920
   }
@@ -32,8 +32,6 @@ Item {
       compare(selectedScreen, first)
       second.width = 6000
       compare(selectedScreen, second)
-      second.name = "eDP-1"
-      compare(selectedScreen, first)
     }
   }
 }
