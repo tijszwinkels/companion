@@ -18,14 +18,25 @@ PanelWindow {
   required property int processing
   property var history: []
   property var sessions: []
+  property var previousSessions: []
+  property bool showingPrevious: false
+  property string controlError: ""
+  property url screenshotSource: ""
+  property string screenshotTitle: ""
   property string selectedSessionId: ""
   readonly property string composerFocusId: root.opened ? content.composerFocusId : ""
 
   signal closeRequested()
   signal sessionSelected(string id)
+  signal previousRequested()
+  signal reopenSessionRequested(string id)
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
+
+  onOpenedChanged: if (!opened) screenshotSource = ""
+  onSelectedSessionIdChanged: screenshotSource = ""
+  onShowingPreviousChanged: screenshotSource = ""
 
   function submitted(id, text, error) { content.submitted(id, text, error) }
 
@@ -49,7 +60,7 @@ PanelWindow {
   WlrLayershell.layer: WlrLayer.Overlay
   // Activity never accepts keyboard input. Conversation tabs permit ordinary
   // compositor-directed focus so clicking the composer supports typing.
-  WlrLayershell.keyboardFocus: root.opened && root.selectedSessionId
+  WlrLayershell.keyboardFocus: root.opened && !root.showingPrevious && root.selectedSessionId
     ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
   // Only the compact body captures clicks. Leave the desktop below it usable,
@@ -100,6 +111,9 @@ PanelWindow {
         processing: root.processing
         history: root.history
         sessions: root.sessions
+        previousSessions: root.previousSessions
+        showingPrevious: root.showingPrevious
+        controlError: root.controlError
         selectedSessionId: root.selectedSessionId
         foreground: Color.menu.text
         muted: Qt.rgba(Color.menu.text.r, Color.menu.text.g, Color.menu.text.b, 0.65)
@@ -110,11 +124,24 @@ PanelWindow {
         animationsEnabled: root.opened && root.visible
         shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
+        onPreviousRequested: root.previousRequested()
+        onReopenSessionRequested: id => root.reopenSessionRequested(id)
+        onScreenshotRequested: (source, title) => {
+          root.screenshotTitle = title
+          root.screenshotSource = source
+        }
         onSessionSelected: id => root.sessionSelected(id)
         onStopSessionRequested: id => root.stopSessionRequested(id)
         onDismissSessionRequested: id => root.dismissSessionRequested(id)
         onSendSessionRequested: (id, text) => root.sendSessionRequested(id, text)
       }
     }
+  }
+
+  ScreenshotWindow {
+    screen: root.selectedScreen
+    source: root.screenshotSource
+    title: root.screenshotTitle
+    onDismissed: root.screenshotSource = ""
   }
 }

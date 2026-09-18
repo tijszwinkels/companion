@@ -90,8 +90,10 @@ When content outgrows the compact panel, that session expands to 600 logical
 pixels wide and all available screen height; Activity remains compact. Scrolling
 up stops following the stream until you return to the bottom.
 
-**Stop** cancels the selected agent. **Close session** stops it and removes its
-tab. Closing the panel merely hides it. Pausing the microphone leaves accepted
+**Stop** cancels the selected agent. Right-click a question tab, use its hover
+**×**, or choose **Close session** to stop it and move it to **Previous sessions**
+at the bottom of the tab rail. Pick a saved conversation there to reopen it;
+reopening does not run the model. Closing the panel merely hides it. Pausing the microphone leaves accepted
 agent questions running; stopping Companion cancels all its agents and their
 tool subprocesses. Supplied-text/file modes wait for accepted questions to
 finish. CLI logs include completed answers when no panel is attached.
@@ -101,6 +103,7 @@ or **Shift+Enter** for a newline. A follow-up resumes the same Pi conversation,
 including the original screenshot; it does not capture another screenshot.
 You can prepare a draft while Pi works, then send after completion or Stop.
 Drafts remain separate per tab and clear only after the backend confirms receipt.
+Closing and reopening a tab preserves its draft while the UI remains running.
 With the composer focused, **“insert …”** dictates into it and **“enter …”**
 dictates and sends. These explicit prefixes avoid inferring a new question.
 As elsewhere, dictation requires a visible ordinary application for screen capture.
@@ -113,9 +116,23 @@ after typing. These guards are covered offline; real compositor focus and
 dictation into the composer still need desktop validation before claiming them
 verified on this installation.
 
-Pi persists the conversation, including its screenshot, in its normal session
-storage. Panel tabs currently last for the Companion process; closing a tab does
-not delete the Pi transcript. This first version permits four simultaneous
+Click the screenshot in the first question to open a separate, themed viewer on
+that display. It starts fitted to the available space. Scroll or use **+ / −** to
+zoom, drag to pan, and choose **Fit** (or **0**) to reset. **Escape**, **×**, or a
+click outside the image dismisses it.
+
+Pi persists the model conversation in its normal session storage. Companion saves
+its display transcript and original PNG separately in
+`~/companion/agents/.companion-sessions` (private directory and files). Saved
+conversations appear in Previous sessions after a restart; tabs do not reopen
+automatically. This history only includes Companion's own saved conversations,
+not unrelated Pi sessions. Missing screenshots leave the text readable. Sessions
+from before this store existed are not imported and have no recoverable panel
+attachment. History has no automatic deletion. Normal Stop/Close/shutdown saves
+the partial answer; a hard crash may lose the current turn's unsaved output, but
+its saved question is recovered as stopped. A missing Pi transcript still permits
+viewing history, but continuing it fails visibly instead of starting without context.
+This first version permits four simultaneous
 questions and twelve tabs, with a 256 KiB/200-message display limit per session.
 Tool output is clipped to 16 KiB in a bubble. Interactive Pi extension dialogs
 are cancelled with a visible explanation rather than left waiting for a terminal.

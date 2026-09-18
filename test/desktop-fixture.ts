@@ -12,7 +12,7 @@ import { DesktopRuntime } from '../src/desktop/runtime.ts';
 import type { RunCommand } from '../src/sensors/screen/capture.ts';
 import { frame } from './helpers.ts';
 import type { AgentSessions } from '../src/agents/sessions.ts';
-import type { AgentSession } from '../src/agents/types.ts';
+import type { AgentSession, PreviousSession } from '../src/agents/types.ts';
 
 export interface DesktopMessage {
   type: string;
@@ -22,6 +22,7 @@ export interface DesktopMessage {
   soundsEnabled?: boolean;
   history?: { id: string; utterance: string }[];
   sessions?: AgentSession[];
+  previousSessions?: PreviousSession[];
   session?: AgentSession;
 }
 

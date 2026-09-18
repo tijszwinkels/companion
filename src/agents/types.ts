@@ -10,6 +10,8 @@ export interface AgentMessage {
   input: string;
   state: 'running' | 'done' | 'error';
   screenshot: boolean;
+  /** Local, private PNG attachment; omitted while saving or on older messages. */
+  screenshotUrl?: string;
 }
 
 export interface AgentSession {
@@ -19,11 +21,17 @@ export interface AgentSession {
   model: string;
   error: string;
   messages: AgentMessage[];
+  updatedAt: number;
 }
+
+export type PreviousSession = Omit<AgentSession, 'messages'>;
 
 /** Updates contain changed messages only; a reconnect snapshot contains them all. */
 export type SessionEvent =
-  { type: 'agent-session'; session: AgentSession } | { type: 'agent-removed'; id: string };
+  | { type: 'agent-session'; session: AgentSession }
+  | { type: 'agent-removed'; id: string }
+  | { type: 'agent-restored'; session: AgentSession }
+  | { type: 'agent-history'; sessions: PreviousSession[] };
 
 export interface AgentSettings {
   executable: string;

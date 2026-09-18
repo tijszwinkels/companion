@@ -17,9 +17,16 @@ including mixed layouts, mirrored monitors, and a single built-in display.
 Session checks cover incremental bubbles, opening a new tab only once, reconnect
 snapshots, Markdown versus literal user/tool text, persistent tool disclosure,
 content-driven expansion, Stop/Close controls, per-tab drafts, Enter/Shift+Enter,
-and retaining edits across submission acknowledgements or errors. The Node suite
+and retaining edits across submission acknowledgements or errors. Library checks
+cover right-click close, stable hover over the animated cross, history selection,
+explicit restoration of known IDs, retained drafts, visible control errors,
+screenshot thumbnails, initial fit, zoom/pan, and Escape/button/backdrop dismissal.
+The synthetic image fixture has no user content. The suite writes offscreen visual
+previews to `/tmp/companion-{session,history,screenshot}-preview.png` for inspection. The Node suite
 uses a real fixture subprocess for Pi RPC framing, images, streaming, retries,
-cancellation, failures, and missing resume history. Private-socket tests exercise
+cancellation, failures, and missing resume history. Storage checks cover private
+atomic PNG/JSON writes, missing images, damaged snapshots, interrupted turns,
+restart/archive/reopen/resume, failed saves, and concurrent Close/Follow-up. Private-socket tests exercise
 follow-ups and composer focus transitions, including suppressing Enter when the
 underlying ordinary window address has not changed.
 

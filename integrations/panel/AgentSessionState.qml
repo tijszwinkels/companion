@@ -5,6 +5,8 @@ import QtQuick
 QtObject {
   id: root
   property var sessions: []
+  property var previousSessions: []
+  property bool showingPrevious: false
   property string selectedId: ""
   property var knownIds: ({})
   signal revealRequested()
@@ -18,6 +20,7 @@ QtObject {
       }
     }
     if (newest) {
+      root.showingPrevious = false
       root.selectedId = newest
       root.revealRequested()
     }
@@ -50,6 +53,14 @@ QtObject {
     }
     root.sessions = entries
     root.announce([patch])
+  }
+
+  function restore(session) {
+    root.sessions = root.sessions.filter(entry => entry.id !== session.id).concat([session])
+    root.knownIds[session.id] = true
+    root.showingPrevious = false
+    root.selectedId = session.id
+    root.revealRequested()
   }
 
   function remove(id) {

@@ -129,6 +129,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     }
 
     if (!values['no-desktop'] && !values.graph) {
+      await agents.loadPrevious();
       desktop = new DesktopRuntime(pause, log, controller.signal, {
         ...desktopPaths(),
         preview: values.preview,

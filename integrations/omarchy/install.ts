@@ -42,6 +42,7 @@ const files = [
   'omarchy/plugin/HistoryPicker.qml',
   'omarchy/plugin/BarWidget.qml',
   'omarchy/plugin/SidePanel.qml',
+  'omarchy/plugin/ScreenshotWindow.qml',
   'omarchy/plugin/MonitorSelection.js',
   'panel/PanelContent.qml',
   'panel/StatusView.qml',
@@ -49,6 +50,9 @@ const files = [
   'panel/AgentSessionState.qml',
   'panel/PanelAction.qml',
   'panel/SessionView.qml',
+  'panel/SessionTab.qml',
+  'panel/PreviousSessionsView.qml',
+  'panel/ScreenshotViewer.qml',
 ];
 const hash = createHash('sha256');
 

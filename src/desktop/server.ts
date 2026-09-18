@@ -175,6 +175,7 @@ export class DesktopServer {
           action === 'stop-agent' ||
           action === 'send-agent' ||
           action === 'composer-focus' ||
+          action === 'reopen-agent' ||
           action === 'close-agent';
 
         // Listening/sound controls run independently of slow keyboard delivery.

@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
+import { SessionStore } from './session-store.ts';
 import {
   chatMessage,
   type AgentBackend,
   type AgentMessage,
   type AgentSession,
   type SessionEvent,
+  type PreviousSession,
 } from './types.ts';
 
 interface RunningSession {
@@ -17,13 +20,18 @@ interface RunningSession {
   done: Promise<void>;
   changed: Map<string, AgentMessage>;
   timer?: ReturnType<typeof setTimeout>;
+  // Closing blocks new turns until the archive write settles. Busy also covers
+  // final persistence, when the displayed model status may already be terminal.
+  closing: boolean;
+  busy: boolean;
 }
 
 /**
  * Owns independent question lifetimes. The sensor worker only hands off a frame;
  * it never waits for a long answer. Microphone pause therefore does not cancel
  * accepted questions. Stop, close-tab, and application shutdown do cancel them.
- * Transcripts persist in Pi; panel tabs last for this Companion process.
+ * Closed tabs are saved for reopening. Pi owns the resumable model transcript;
+ * Companion owns its display transcript and the original screenshot attachment.
  */
 export class AgentSessions implements InspectableModule {
   readonly id = 'agent-sessions';
@@ -31,12 +39,36 @@ export class AgentSessions implements InspectableModule {
   private readonly sessions = new Map<string, RunningSession>();
   private readonly listeners = new Set<(event: SessionEvent) => void>();
   private closed = false;
+  private readonly previous = new Map<string, PreviousSession>();
+  private readonly restoring = new Set<string>();
+  private readonly store: SessionStore;
 
   constructor(
     readonly dependencies: { backend: AgentBackend },
     private readonly log: Log,
     private readonly directory = agentDirectory(),
-  ) {}
+  ) {
+    this.store = new SessionStore(join(directory, '.companion-sessions'));
+  }
+
+  /** Read-only startup: old conversations appear in history, without launching agents. */
+  async loadPrevious(): Promise<void> {
+    for (const entry of await this.store.previous(this.log)) {
+      if (!this.sessions.has(entry.id)) {
+        this.previous.set(entry.id, entry);
+      }
+    }
+  }
+
+  previousSnapshot(): PreviousSession[] {
+    return [...this.previous.values()].sort((first, second) => second.updatedAt - first.updatedAt);
+  }
+
+  private publishHistory(): void {
+    for (const listener of this.listeners) {
+      listener({ type: 'agent-history', sessions: this.previousSnapshot() });
+    }
+  }
 
   snapshot(): AgentSession[] {
     return [...this.sessions.values()].map(({ view }) => ({
@@ -59,7 +91,7 @@ export class AgentSessions implements InspectableModule {
     if (this.closed) {
       throw Error('Agent sessions are shutting down');
     }
-    if (this.sessions.size >= 12) {
+    if (this.sessions.size + this.restoring.size >= 12) {
       throw Error('Close a question tab before starting another (12 tabs maximum)');
     }
     const active = [...this.sessions.values()].filter(({ view }) =>
@@ -80,10 +112,13 @@ export class AgentSessions implements InspectableModule {
         model: '',
         error: '',
         messages: [question],
+        updatedAt: Date.now(),
       },
       controller: new AbortController(),
       done: Promise.resolve(),
       changed: new Map([[question.id, question]]),
+      closing: false,
+      busy: true,
     };
     this.sessions.set(id, session);
     this.flush(session);
@@ -100,10 +135,10 @@ export class AgentSessions implements InspectableModule {
   followUp(id: string, text: string, signal: AbortSignal): void {
     signal.throwIfAborted();
     const session = this.sessions.get(id);
-    if (this.closed || !session) {
+    if (this.closed || !session || session.closing) {
       throw Error('Question session is unavailable');
     }
-    if (session.view.status === 'starting' || session.view.status === 'running') {
+    if (session.busy) {
       throw Error('Wait for this answer or stop it before sending a follow-up');
     }
     if (!text.trim() || text.length > 4000) {
@@ -118,6 +153,7 @@ export class AgentSessions implements InspectableModule {
 
     this.message(session, chatMessage(`user-${randomUUID()}`, 'user', text));
     session.controller = new AbortController();
+    session.busy = true;
     session.view.status = 'starting';
     session.view.error = '';
     this.flush(session);
@@ -132,6 +168,19 @@ export class AgentSessions implements InspectableModule {
   ): Promise<void> {
     const turnId = randomUUID();
     try {
+      if (prompt.screenshot) {
+        const question = session.view.messages[0];
+        question.screenshotUrl = await this.store.screenshot(
+          session.view.id,
+          prompt.screenshot.png,
+        );
+        session.changed.set(question.id, question);
+      }
+      // Save the question before launching Pi. An interrupted turn can still be
+      // found in history after a restart and is shown as stopped, never running.
+      session.view.updatedAt = Date.now();
+      await this.store.save(session.view);
+      session.controller.signal.throwIfAborted();
       const settings = await loadAgentSettings(this.directory);
       session.controller.signal.throwIfAborted();
       session.view.model = settings.model;
@@ -159,6 +208,14 @@ export class AgentSessions implements InspectableModule {
           session.changed.set(finished.id, finished);
         }
       }
+      session.view.updatedAt = Date.now();
+      try {
+        await this.store.save(session.view);
+      } catch (error) {
+        session.view.error = `Could not save session history: ${String(error)}`;
+        this.log('agent-history', session.view.error, frameId);
+      }
+      session.busy = false;
       this.flush(session);
       this.log('agent', `${session.view.status}: ${session.view.id}`, frameId);
     }
@@ -216,10 +273,58 @@ export class AgentSessions implements InspectableModule {
   }
 
   async remove(id: string): Promise<void> {
-    await this.stop(id);
-    this.sessions.delete(id);
-    for (const listener of this.listeners) {
-      listener({ type: 'agent-removed', id });
+    const session = this.sessions.get(id);
+    if (!session) {
+      throw Error('Question session not found');
+    }
+    if (session.closing) {
+      throw Error('Question session is already closing');
+    }
+    session.closing = true;
+    try {
+      await this.stop(id);
+      // Do not discard the visible tab if saving fails. Closing can be retried.
+      await this.store.save(session.view);
+      const { messages: _messages, ...summary } = session.view;
+      this.previous.set(id, summary);
+      this.sessions.delete(id);
+      for (const listener of this.listeners) {
+        listener({ type: 'agent-removed', id });
+      }
+      this.publishHistory();
+    } finally {
+      session.closing = false;
+    }
+  }
+
+  async reopen(id: string): Promise<void> {
+    if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
+      throw Error('Previous session is unavailable');
+    }
+    if (this.sessions.size + this.restoring.size >= 12) {
+      throw Error('Close a question tab before reopening another (12 tabs maximum)');
+    }
+    this.restoring.add(id);
+    try {
+      const view = await this.store.read(id);
+      if (this.closed) {
+        throw Error('Agent sessions are shutting down');
+      }
+      this.sessions.set(id, {
+        view,
+        controller: new AbortController(),
+        done: Promise.resolve(),
+        changed: new Map(),
+        closing: false,
+        busy: false,
+      });
+      this.previous.delete(id);
+      for (const listener of this.listeners) {
+        listener({ type: 'agent-restored', session: view });
+      }
+      this.publishHistory();
+    } finally {
+      this.restoring.delete(id);
     }
   }
 

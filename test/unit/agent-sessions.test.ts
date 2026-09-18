@@ -156,7 +156,8 @@ test('question handoff frees the router, preserves screenshot, and can be stoppe
   );
   await sessions.remove(id);
   assert.deepEqual(sessions.snapshot(), []);
-  assert.equal(events.at(-1)?.type, 'agent-removed');
+  assert.equal(events.at(-2)?.type, 'agent-removed');
+  assert.equal(events.at(-1)?.type, 'agent-history');
 });
 
 test('preview and pre-handoff cancellation never launch an agent', async (context) => {
@@ -282,6 +283,23 @@ test('desktop clients receive question updates, snapshots, and independent stop/
   assert.equal((await desktop.reply('close-agent')).result, 'closed');
   await waitFor(() => desktop.messages.some((message) => message.type === 'agent-removed'));
   assert.deepEqual(sessions.snapshot(), []);
+  assert.equal(sessions.previousSnapshot()[0].id, id);
+  desktop.send({ action: 'toggle-pause' });
+  await desktop.reply('toggle-pause');
+  await waitFor(() => desktop.messages.some((message) => message.previousSessions?.[0]?.id === id));
+  const snapshot = desktop.messages.find((message) => message.previousSessions?.[0]?.id === id)!;
+  assert.deepEqual(snapshot.sessions, []);
+  assert.equal('messages' in snapshot.previousSessions![0], false);
+  desktop.send({ action: 'reopen-agent', id });
+  assert.equal((await desktop.reply('reopen-agent')).result, 'reopened');
+  assert.equal(sessions.snapshot()[0].id, id);
+  assert.equal(
+    sessions.snapshot()[0].messages.filter((message) => message.kind === 'user').length,
+    2,
+  );
+  await waitFor(() => desktop.messages.some((message) => message.type === 'agent-restored'));
+  desktop.send({ action: 'reopen-agent', id: 'missing' });
+  assert.equal((await desktop.reply('reopen-agent')).type, 'error');
 });
 
 test('follow-ups reuse the conversation, omit a new screenshot, and preserve earlier answer IDs', async (context) => {

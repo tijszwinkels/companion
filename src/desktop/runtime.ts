@@ -182,6 +182,7 @@ export class DesktopRuntime {
       preview: this.options.preview,
       history: this.ready ? this.history.snapshot() : [],
       sessions: this.options.agents?.snapshot() ?? [],
+      previousSessions: this.options.agents?.previousSnapshot() ?? [],
     };
   }
 
@@ -227,12 +228,19 @@ export class DesktopRuntime {
       return 'submitted';
     }
 
-    if (request.action === 'stop-agent' || request.action === 'close-agent') {
+    if (
+      request.action === 'stop-agent' ||
+      request.action === 'close-agent' ||
+      request.action === 'reopen-agent'
+    ) {
       if (!this.options.agents || typeof request.id !== 'string') {
         throw Error('Expected an agent session id');
       }
       if (request.action === 'close-agent') {
         await this.options.agents.remove(request.id);
+      } else if (request.action === 'reopen-agent') {
+        await this.options.agents.reopen(request.id);
+        return 'reopened';
       } else {
         await this.options.agents.stop(request.id);
       }

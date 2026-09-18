@@ -90,11 +90,16 @@ Item {
         root.processing = message.processing
         root.history = message.history
         agentSessions.replace(message.sessions || [])
+        agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready
       } else if (message.type === "agent-session") {
         agentSessions.update(message.session)
+      } else if (message.type === "agent-history") {
+        agentSessions.previousSessions = message.sessions || []
+      } else if (message.type === "agent-restored") {
+        agentSessions.restore(message.session)
       } else if (message.type === "agent-removed") {
         agentSessions.remove(message.id)
       } else if (message.type === "error") {
@@ -308,9 +313,17 @@ Item {
     processing: root.processing
     history: root.history
     sessions: agentSessions.sessions
+    previousSessions: agentSessions.previousSessions
+    showingPrevious: agentSessions.showingPrevious
+    controlError: ["close-agent", "reopen-agent", "stop-agent"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
-    onSessionSelected: id => agentSessions.selectedId = id
+    onSessionSelected: id => {
+      agentSessions.showingPrevious = false
+      agentSessions.selectedId = id
+    }
+    onPreviousRequested: agentSessions.showingPrevious = true
+    onReopenSessionRequested: id => root.send({action: "reopen-agent", id: id})
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
