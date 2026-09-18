@@ -64,6 +64,14 @@ PanelWindow {
     NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
   }
 
+  // The right/top anchors stay fixed while conversation overflow or a tab
+  // change resizes the body. Behaviors retarget from the current size when
+  // switching tabs mid-animation; hidden panels adopt their size immediately.
+  Behavior on implicitWidth {
+    enabled: root.opened && root.visible
+    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+  }
+
   Item {
     anchors.fill: parent
     clip: true
@@ -76,6 +84,11 @@ PanelWindow {
       color: Color.menu.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
       radius: Style.cornerRadius
+
+      Behavior on height {
+        enabled: root.opened && root.visible
+        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+      }
 
       Panel.PanelContent {
         id: content
