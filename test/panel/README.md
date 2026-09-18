@@ -15,8 +15,8 @@ opening without replaying old results. `npm test` also exercises monitor selecti
 including mixed layouts, mirrored monitors, and a single built-in display.
 
 `npm run test:quick-tap` includes combined panel/history shortcut cases in a
-disposable nested compositor: focus preservation and cancellation when switching
-overlays. See [the fixture instructions](../live/quick-tap.md) for GTK/Chromium
+disposable nested compositor: focus preservation, history alongside the panel,
+and history cancellation when toggling the panel. See [the fixture instructions](../live/quick-tap.md) for GTK/Chromium
 options and validation limits. Its outer window may briefly take desktop focus;
 warn the user before running it. All generated input targets the nested compositor.
 
@@ -36,4 +36,5 @@ Check that clicks below the compact open body reach the application underneath
 without moving keyboard focus, and that closing leaves no visible control.
 `panelVisible` stays true during the short closing animation; mouse input is
 released immediately when `panelOpened` becomes false. Opening speech history
-closes the panel, and opening the panel cancels history without delivering text.
+leaves the panel open, including after cancelling or delivering the selection.
+Toggling the panel still cancels history without delivering text.

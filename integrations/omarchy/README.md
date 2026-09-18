@@ -71,8 +71,9 @@ Monitor changes are observed while the panel is open. The panel body is 420 by
 400 logical pixels at the default theme scale, capped to the available screen
 space.
 It respects the bar's reserved space and overlays windows without resizing them
-or taking keyboard focus. Opening history closes the panel; opening the panel
-cancels history without pasting. Rapid toggles reverse the 180 ms slide animation.
+or taking keyboard focus. Opening history leaves the panel open. Toggling the
+panel cancels any held history selection without pasting. Rapid toggles reverse
+the 180 ms slide animation.
 
 The reusable QtQuick body lives in [`../panel`](../panel). It accepts state and
 theme values and emits a close request. The Omarchy adapter alone owns the

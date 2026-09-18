@@ -323,13 +323,21 @@ try {
     assert.ok(openedPanel.panelMonitor);
     assert.equal((await activeWindow(signal)).address, a.address);
 
-    await command(
+    const historyBesidePanel = command(
       'wtype',
-      [...press, '-s', '200', '-k', 'Escape', ...releaseV, ...releaseAlt, ...releaseSuper],
+      [...press, '-s', '500', '-k', 'Escape', ...releaseV, ...releaseAlt, ...releaseSuper],
       signal,
     );
-    await waitFor(async () => (await status()).panelVisible === false);
+    await waitFor(async () => (await status()).opened);
+    assert.equal((await status()).panelOpened, true);
+    assert.equal((await status()).panelVisible, true);
+    assert.equal((await activeWindow(signal)).address, a.address);
+    await historyBesidePanel;
     assert.equal((await status()).opened, false);
+    assert.equal((await status()).panelOpened, true);
+
+    await command('wtype', panelChord, signal);
+    await waitFor(async () => (await status()).panelVisible === false);
 
     await command(
       'wtype',
@@ -338,18 +346,20 @@ try {
     );
     await waitFor(async () => (await status()).panelOpened === true);
     assert.equal((await status()).opened, false);
-    await command('wtype', panelChord, signal);
-    await waitFor(async () => (await status()).panelVisible === false);
     assert.deepEqual(await text(), { A: expected, B: '' });
     assert.equal((await activeWindow(signal)).address, a.address);
-    console.log('PASS panel shortcut, preserved focus, and mutual history cancellation');
+    console.log('PASS history alongside the panel, preserved focus, and safe panel toggling');
 
     // Cancellation alone cannot prove that history's release handlers survived
     // switching overlays. A subsequent chord must deliver the latest row once.
     await command('wtype', [...press, ...releaseV, ...releaseAlt, ...releaseSuper], signal);
     expected += 'New speech arriving during selection.';
     await waitFor(async () => (await text()).A === expected);
-    console.log('PASS history delivery after panel cancellation');
+    assert.equal((await status()).panelOpened, true);
+    assert.equal((await status()).panelVisible, true);
+    await command('wtype', panelChord, signal);
+    await waitFor(async () => (await status()).panelVisible === false);
+    console.log('PASS history delivery with the activity panel still open');
   } else {
     console.log('SKIP panel cases: selected adapter predates the side panel');
   }

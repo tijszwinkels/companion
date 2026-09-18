@@ -67,9 +67,10 @@ no Enter, held selection, Escape cancellation, focus changes, exactly-once
 delivery, and preservation of the original recognized intent/outcome. It first
 checks direct literal typing without modifiers, so a transport failure is not
 mistaken for a shortcut regression. With a panel-capable adapter it also checks
-Super+Alt+C, retained keyboard focus, cancellation when switching between
-panel and history, and a subsequent history delivery to check that cancellation
-has not stranded the release handlers. Synthetic
+Super+Alt+C, retained keyboard focus with panel and history open together,
+history cancellation when toggling the panel, and a subsequent history delivery
+with the panel still open to check that cancellation has not stranded the release
+handlers. Synthetic
 modifier tests emit key events as well as masks: `wtype -M/-m` alone does not model
 physical modifier key-down/up events.
 
@@ -83,7 +84,8 @@ discards the entire test compositor instead. No production adapter was installed
 when that crash occurred.
 
 The additional panel/history cases passed on an earlier combined GTK snapshot.
-The current runner also includes the later Chromium identity handshake and the
-direct-typing baseline. This full revised desktop runner has not been rerun;
+The current runner also includes the later Chromium identity handshake, the
+direct-typing baseline, and history remaining alongside the open panel. This
+full revised desktop runner has not been rerun;
 headless checks do not establish compositor behavior. The Chromium limitation
 described above remains unresolved.

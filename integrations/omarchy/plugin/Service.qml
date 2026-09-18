@@ -91,8 +91,8 @@ Item {
       return
     }
 
-    root.closePanel()
-
+    // The activity panel keeps its own visibility while history is selected.
+    // Both overlays leave keyboard focus in the destination application.
     // Snapshot rows at press time. Arriving speech must never move the selected
     // utterance underneath a held shortcut. A tap starts on the newest row.
     root.rows = root.history.slice()
