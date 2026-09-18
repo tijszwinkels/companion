@@ -48,6 +48,13 @@ Item {
   function focusComposer() { chat.focusComposer() }
   function releaseComposerFocus() { chat.releaseComposerFocus() }
 
+  Shortcut {
+    sequence: "Alt+0"
+    context: Qt.WindowShortcut
+    enabled: root.visible && root.animationsEnabled && root.Window.window !== null && root.Window.window.active
+    onActivated: root.sessionSelected("")
+  }
+
   // These are local to this focused panel, never desktop-global bindings.
   // Numbers follow the same current order as Q1–Q9 in the tab rail.
   Instantiator {
@@ -265,10 +272,31 @@ Item {
       font.pixelSize: 11 * root.unit
     }
 
+    ActivityStrip {
+      id: activityStrip
+      objectName: "activityStrip"
+      visible: root.selectedSession !== null || root.showingPrevious
+      y: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+      width: parent.width
+      online: root.online
+      paused: root.paused
+      pauseReason: root.pauseReason
+      speaking: root.speaking
+      processing: root.processing
+      history: root.history
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      selection: root.selection
+      fontFamily: root.fontFamily
+      unit: root.unit
+      animationsEnabled: root.animationsEnabled
+    }
+
     PreviousSessionsView {
       visible: root.showingPrevious
       anchors.fill: parent
-      anchors.topMargin: 48 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+      anchors.topMargin: activityStrip.y + activityStrip.height + 12 * root.unit
       sessions: root.previousSessions
       online: root.online
       foreground: root.foreground
@@ -281,6 +309,7 @@ Item {
     }
 
     StatusView {
+      objectName: "fullActivityStatus"
       visible: !root.showingPrevious && root.selectedSession === null
       anchors.fill: parent
       anchors.topMargin: 48 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
@@ -304,7 +333,7 @@ Item {
       objectName: "sessionView"
       visible: root.selectedSession !== null
       anchors.fill: parent
-      anchors.topMargin: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+      anchors.topMargin: activityStrip.y + activityStrip.height + 12 * root.unit
       session: root.selectedSession
       online: root.online
       focusShortcut: root.focusShortcut

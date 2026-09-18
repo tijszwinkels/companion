@@ -64,6 +64,7 @@ const files = [
   'panel/PanelSurface.qml',
   'panel/ComposerFocus.qml',
   'panel/StatusView.qml',
+  'panel/ActivityStrip.qml',
   'panel/PhraseActivity.qml',
   'panel/AgentSessionState.qml',
   'panel/PanelAction.qml',

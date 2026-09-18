@@ -8,6 +8,7 @@ Item {
 
   property var history: []
   property bool active: false
+  property bool compact: false
   required property color muted
   required property color accent
   required property string fontFamily
@@ -173,13 +174,13 @@ Item {
     id: card
     objectName: "phraseCard"
     width: parent.width
-    spacing: 8 * root.unit
+    spacing: (root.compact ? 4 : 8) * root.unit
     visible: root.presenting
     opacity: root.visibility
 
     // Begin at the microphone's center, then rise until the entire card clears
     // it. Long phrases wrap and elide within the available upper half-panel.
-    readonly property real destinationY: Math.max(0, root.height - height - 48 * root.unit)
+    readonly property real destinationY: Math.max(0, root.height - height - (root.compact ? 14 : 48) * root.unit)
     y: root.height + root.lift * (destinationY - root.height)
 
     Text {
@@ -189,6 +190,8 @@ Item {
       textFormat: Text.PlainText
       horizontalAlignment: root.showingResult ? Text.AlignRight : Text.AlignLeft
       wrapMode: Text.WrapAnywhere
+      maximumLineCount: root.compact ? 2 : 2147483647
+      elide: root.compact ? Text.ElideRight : Text.ElideNone
       color: root.phraseColor
       font.family: root.fontFamily
       font.pixelSize: 9 * root.unit
@@ -201,13 +204,13 @@ Item {
       text: root.phrase
       textFormat: Text.PlainText
       wrapMode: Text.Wrap
-      maximumLineCount: Math.max(1, Math.floor((root.height - 80 * root.unit) / (22 * root.unit)))
+      maximumLineCount: root.compact ? 2 : Math.max(1, Math.floor((root.height - 80 * root.unit) / (22 * root.unit)))
       elide: Text.ElideRight
       color: root.phraseColor
       font.family: root.fontFamily
-      font.pixelSize: 17 * root.unit
+      font.pixelSize: (root.compact ? 13 : 17) * root.unit
       lineHeightMode: Text.FixedHeight
-      lineHeight: 22 * root.unit
+      lineHeight: (root.compact ? 16 : 22) * root.unit
       Accessible.ignored: true
     }
 

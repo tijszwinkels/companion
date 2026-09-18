@@ -45,9 +45,16 @@ They also write `/tmp/companion-markdown-preview.png` for visual inspection.
 Copy checks use only the offscreen platform's private clipboard: actual Ctrl+C
 events with and without composer focus, native composer selection precedence,
 whole-message hover copying, collapsed tool output, and preserving drafts and
-selection. Numbered-tab checks exercise Alt+1–9, current tab order after removal,
+selection. Numbered-tab checks exercise Alt+0 for Activity, Alt+1–9, current tab order after removal,
 missing numbers, hidden-panel gating, and retained drafts. Focus checks also
 cover keeping the grab and original return window across conversation changes.
+Compact Activity checks cover live state and phrase/result propagation, fade,
+collapse/expand, adopting pending work without replaying completed results,
+hidden-animation cleanup, a header fixed during transcript scrolling, and
+retaining drafts, focus, and the collapsed setting across tabs. Synthetic
+previews are saved to `/tmp/companion-activity-{processing,result,collapsed}-preview.png`.
+Alt+0 and the compact header have offscreen coverage; their native desktop
+interaction has not been exercised by automated input.
 The synthetic image fixture has no user content. The suite writes offscreen visual
 previews to `/tmp/companion-{session,history,screenshot}-preview.png` for inspection. The Node suite
 uses a real fixture subprocess for Pi RPC framing, images, streaming, retries,

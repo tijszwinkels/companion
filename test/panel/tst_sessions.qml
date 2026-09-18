@@ -197,6 +197,17 @@ Item {
       tryCompare(panel, "composerFocusId", "question-9")
       compare(composer.text, "Draft nine")
 
+      keyClick(Qt.Key_0, Qt.AltModifier)
+      compare(panel.selectedSessionId, "")
+      compare(panel.composerFocusId, "")
+      compare(findChild(panel, "fullActivityStatus").visible, true)
+      compare(findChild(panel, "activityStrip").visible, false)
+      // The portable host stays active; the native adapter releases keyboard
+      // ownership on Activity. Reselecting the conversation retains its draft.
+      panel.selectedSessionId = "question-9"
+      panel.focusComposer()
+      compare(composer.text, "Draft nine")
+
       panel.sessions = sessions.filter(entry => entry.id !== "question-2")
       keyClick(Qt.Key_2, Qt.AltModifier)
       tryCompare(panel, "selectedSessionId", "question-3", 1000)
@@ -205,6 +216,47 @@ Item {
       panel.animationsEnabled = false
       keyClick(Qt.Key_1, Qt.AltModifier)
       compare(panel.selectedSessionId, "question-3", "Closed native panels do not take these keys")
+      keyClick(Qt.Key_0, Qt.AltModifier)
+      compare(panel.selectedSessionId, "question-3", "Alt+0 also stays local to the open panel")
+    }
+
+    function test_activity_header_stays_fixed_and_collapse_preserves_focus_and_drafts() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.sessions = [session([message("reply", "assistant", "A paragraph of the answer.\n\n".repeat(60))]),
+        Object.assign({}, session([]), {id: "question-2"})]
+      panel.selectedSessionId = "question-1"
+      panel.focusComposer()
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "An unfinished follow-up"
+      const strip = findChild(panel, "activityStrip")
+      const chat = findChild(panel, "sessionView")
+      const transcript = findChild(panel, "sessionTranscript")
+      tryVerify(function() { return transcript.contentHeight > transcript.height })
+      const headerPosition = strip.mapToItem(panel, 0, 0)
+      transcript.positionViewAtBeginning()
+      const beginning = transcript.contentY
+      transcript.positionViewAtEnd()
+      verify(transcript.contentY > beginning)
+      compare(strip.mapToItem(panel, 0, 0), headerPosition)
+      verify(chat.y >= strip.y + strip.height, "The transcript starts below the fixed header")
+
+      const expandedChatHeight = chat.height
+      mouseClick(findChild(strip, "toggleActivity"))
+      tryCompare(strip, "height", 28)
+      verify(chat.height > expandedChatHeight, "Collapsing returns space to the conversation")
+      compare(panel.composerFocusId, "question-1")
+      compare(composer.text, "An unfinished follow-up")
+      panel.selectedSessionId = "question-2"
+      compare(strip.collapsed, true)
+      panel.showingPrevious = true
+      compare(strip.visible, true)
+      compare(strip.collapsed, true)
+      panel.showingPrevious = false
+      panel.selectedSessionId = "question-1"
+      compare(composer.text, "An unfinished follow-up")
+      mouseClick(findChild(strip, "toggleActivity"))
+      tryCompare(strip, "height", 124)
+      compare(strip.collapsed, false)
     }
   }
 }

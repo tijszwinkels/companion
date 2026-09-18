@@ -46,7 +46,8 @@ needed to update this adapter.
   if hidden. Press it again to return to the previous application. Select a
   conversation first; Activity and Previous sessions have no composer to focus.
 - With the panel focused, **Alt+1** through **Alt+9** select the corresponding
-  Q1–Q9 tabs and retain drafts. **Ctrl+C** copies selected message text; each
+  Q1–Q9 tabs and retain drafts. **Alt+0** selects Activity and releases keyboard
+  focus. **Ctrl+C** copies selected message text; each
   message also reveals a **Copy** button on hover for copying its entire contents.
 - Click the microphone in the top bar for separate **Listening** and **Sound
   effects** switches. Turn listening off to pause, or mute the bleeps while
@@ -90,6 +91,10 @@ body, a session uses 600 logical pixels of width and all available height.
 The bottom edge stays fixed while the panel grows upward. The visible card
 animates inside a stable native surface, avoiding per-frame Wayland window
 resizes; only the visible card captures input.
+A compact Activity visualization sits above each conversation and Previous
+sessions, outside the scrolling content. Its arrow collapses it to a one-line
+status or expands the microphone and phrase animation. The choice follows you
+between tabs until the plugin is restarted; hidden animations stop immediately.
 Returning to Activity restores the compact body. Each session has Stop and
 Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
 inserts a newline). A follow-up resumes its Pi conversation. Closing the panel

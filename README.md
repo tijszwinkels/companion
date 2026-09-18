@@ -125,6 +125,12 @@ When content outgrows the compact panel, that session expands to 600 logical
 pixels wide and all available screen height; Activity remains compact. Scrolling
 up stops following the stream until you return to the bottom.
 
+A compact Activity visualization stays above conversations and Previous sessions
+while their contents scroll. It shows the same microphone state, rising phrase,
+and detected intent as the Activity tab. Use its top-right arrow to collapse it
+to a slim status row or expand it again; the setting follows you between tabs
+for the lifetime of the panel.
+
 **Stop** cancels the selected agent. Right-click a question tab, use its hover
 **×**, or choose **Close session** to stop it and move it to **Previous sessions**
 at the bottom of the tab rail. Pick a saved conversation there to reopen it;
@@ -140,6 +146,7 @@ application. A follow-up resumes the same Pi conversation,
 including the original screenshot; it does not capture another screenshot.
 While the panel has keyboard focus, **Alt+1** through **Alt+9** select Q1–Q9 in
 the current tab order and focus that conversation's composer, keeping its draft.
+**Alt+0** selects Activity and releases the composer's keyboard focus.
 Select message text and press **Ctrl+C** to copy the selection. Hover over a
 message for its **Copy** button, which copies the whole message (including the
 original Markdown for agent answers) without changing your selection or draft.
@@ -191,7 +198,7 @@ The optional [Omarchy adapter](integrations/omarchy/README.md) adds:
 
 - **Super+Alt+V**: hold to see recent utterances, select with **Up/Down**, and
   release to paste. A quick tap pastes the latest utterance; **Escape** cancels.
-- **Super+Alt+C**: toggle the panel. **Super+Alt+A**: toggle focus between the
+- **Super+Alt+C**: toggle the panel. **Super+Alt+D**: toggle focus between the
   selected conversation's input and the previous application.
 - **Super+Alt+P**: pause or resume listening.
 - A microphone control in the top bar: click for separate listening and sound

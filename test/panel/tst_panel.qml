@@ -89,7 +89,7 @@ Item {
 
     function test_history_reaches_activity_and_stops_when_hidden() {
       const content = createTemporaryObject(contentComponent, parent)
-      const activity = findChild(content, "phraseActivity")
+      const activity = findChild(findChild(content, "fullActivityStatus"), "phraseActivity")
       content.history = [{id: "first", utterance: "An incoming phrase", intent: null, outcome: "processing"}]
       compare(activity.phrase, "An incoming phrase")
       compare(activity.presenting, true)
@@ -100,6 +100,54 @@ Item {
       content.history = [{id: "first", utterance: "An incoming phrase", intent: "IGNORE", outcome: "ignored"}]
       content.animationsEnabled = true
       compare(activity.presenting, false)
+    }
+
+    function test_compact_activity_tracks_state_and_collapsing_resets_hidden_animation() {
+      const content = createTemporaryObject(contentComponent, parent)
+      content.showingPrevious = true
+      const strip = findChild(content, "activityStrip")
+      const status = findChild(strip, "compactActivityStatus")
+      const activity = findChild(status, "phraseActivity")
+      activity.riseDuration = 30
+      activity.resultHoldDuration = 80
+      activity.fadeDuration = 40
+
+      content.paused = true
+      content.pauseReason = "media"
+      compare(findChild(strip, "activityStripTitle").text, "Activity · Paused for media")
+      content.paused = false
+      content.speaking = true
+      compare(status.indicatorColor, "#ef5350")
+      content.speaking = false
+      content.processing = 1
+      compare(status.indicatorColor, "#66bb6a")
+
+      content.history = [{id: "pending", utterance: "Explain the function on screen", outcome: "processing"}]
+      compare(activity.phrase, "Explain the function on screen")
+      compare(activity.label, "PROCESSING")
+      tryCompare(activity, "arrived", true)
+      content.history = [{id: "pending", utterance: "Explain the function on screen", intent: "START_CODING_AGENT_SESSION", outcome: "sent"}]
+      compare(activity.label, "START_CODING_AGENT_SESSION")
+      compare(activity.phraseColor, content.accent)
+      tryCompare(activity, "presenting", false)
+
+      const toggle = findChild(strip, "toggleActivity")
+      mouseClick(toggle)
+      tryCompare(strip, "height", 28)
+      compare(activity.active, false)
+      content.history = [{id: "hidden", utterance: "A completed hidden phrase", intent: "IGNORE", outcome: "ignored"}]
+      mouseClick(toggle)
+      tryCompare(strip, "height", 124)
+      compare(activity.presenting, false, "Expansion must not replay old results")
+
+      mouseClick(toggle)
+      content.history = [{id: "incoming", utterance: "A phrase still processing", outcome: "processing"}]
+      mouseClick(toggle)
+      compare(activity.phrase, "A phrase still processing")
+      compare(activity.presenting, true)
+      content.animationsEnabled = false
+      compare(activity.presenting, false)
+      compare(activity.visibility, 0)
     }
   }
 }

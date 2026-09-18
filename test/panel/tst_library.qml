@@ -198,6 +198,17 @@ Item {
       panel.selectedSessionId = saved.id
       wait(200)
       grabImage(host).save("/tmp/companion-session-preview.png")
+      panel.history = [{id: "phrase", utterance: "Can you explain how this works?", outcome: "processing"}]
+      const strip = findChild(panel, "activityStrip")
+      const phrase = findChild(strip, "phraseActivity")
+      tryCompare(phrase, "arrived", true)
+      grabImage(host).save("/tmp/companion-activity-processing-preview.png")
+      panel.history = [{id: "phrase", utterance: "Can you explain how this works?", intent: "CONTINUE_OPEN_AGENT_CONVERSATION", outcome: "sent"}]
+      wait(50)
+      grabImage(host).save("/tmp/companion-activity-result-preview.png")
+      mouseClick(findChild(strip, "toggleActivity"))
+      tryCompare(strip, "height", 28)
+      grabImage(host).save("/tmp/companion-activity-collapsed-preview.png")
       panel.previousSessions = [saved, Object.assign({}, saved, {id: "saved-2", title: "Explain this terminal error", status: "cancelled", updatedAt: 1789673000000})]
       panel.showingPrevious = true
       wait(100)
