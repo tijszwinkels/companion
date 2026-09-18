@@ -43,13 +43,13 @@ PanelWindow {
   // Re-evaluate on hotplug rather than retaining a disconnected screen object.
   readonly property var selectedScreen: Monitors.chooseScreen(Quickshell.screens)
   readonly property string monitorName: selectedScreen ? selectedScreen.name : ""
-  readonly property real panelHeight: content.expanded ? height : Math.min(Style.space(400), height)
-  property real reveal: opened ? 1 : 0
 
   screen: selectedScreen
-  visible: selectedScreen !== null && (opened || reveal > 0)
+  visible: selectedScreen !== null && (opened || surface.reveal > 0)
   anchors { top: true; bottom: true; right: true }
-  implicitWidth: Math.min(Style.space(content.expanded ? 600 : 420), selectedScreen ? selectedScreen.width : Style.space(420))
+  // Keep the native Wayland surface stable while the card slides/resizes. The
+  // input region below excludes all transparent space beside and above it.
+  implicitWidth: Math.min(Style.space(600), selectedScreen ? selectedScreen.width : Style.space(600))
   color: "transparent"
 
   // Respect the bar's reserved space but never reserve space ourselves: this
@@ -63,44 +63,30 @@ PanelWindow {
   WlrLayershell.keyboardFocus: root.opened && !root.showingPrevious && root.selectedSessionId
     ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
-  // Only the compact body captures clicks. Leave the desktop below it usable,
+  // Only the visible body captures clicks. Leave the surrounding desktop usable,
   // and release input immediately when closing, before the slide finishes.
   mask: Region {
-    x: card.x
-    y: card.y
-    width: root.opened ? card.width : 0
-    height: card.height
-  }
-
-  Behavior on reveal {
-    NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-  }
-
-  // The right/bottom edges stay fixed while conversation overflow or a tab
-  // change resizes the body. Behaviors retarget from the current size when
-  // switching tabs mid-animation; hidden panels adopt their size immediately.
-  Behavior on implicitWidth {
-    enabled: root.opened && root.visible
-    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+    x: surface.x
+    y: surface.y
+    width: root.opened ? surface.width : 0
+    height: surface.height
   }
 
   Item {
     anchors.fill: parent
     clip: true
 
-    BorderSurface {
-      id: card
-      x: (1 - root.reveal) * root.width
-      y: root.height - height
-      width: root.width
-      height: root.panelHeight
-      color: Color.menu.background
-      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-      radius: Style.cornerRadius
+    Panel.PanelSurface {
+      id: surface
+      opened: root.opened
+      expanded: content.expanded
+      unit: Style.space(100) / 100
 
-      Behavior on height {
-        enabled: root.opened && root.visible
-        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+      BorderSurface {
+        anchors.fill: parent
+        color: Color.menu.background
+        borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+        radius: Style.cornerRadius
       }
 
       Panel.PanelContent {
