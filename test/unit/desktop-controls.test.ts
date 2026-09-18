@@ -15,6 +15,8 @@ interface ControlMessage {
   type: string;
   paused?: boolean;
   soundsEnabled?: boolean;
+  speaking?: boolean;
+  processing?: number;
   result?: string;
   message?: string;
 }
@@ -104,6 +106,55 @@ test('preview cannot enable audible feedback through desktop controls', async ()
     assert.equal(reply?.type, 'error');
     assert.match(reply?.message ?? '', /preview/);
     assert.equal((await exchange(socket))[0].soundsEnabled, false);
+  } finally {
+    controller.abort();
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('speech state reaches the desktop independently of processing and clears on pause', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-speech-test-'));
+  const socket = join(directory, 'control.sock');
+  const pause = new PauseControl();
+  const controller = new AbortController();
+  const runtime = new DesktopRuntime(pause, () => {}, controller.signal, {
+    database: join(directory, 'utterances.sqlite'),
+    socket,
+    sounds: false,
+    preview: true,
+  });
+
+  try {
+    await runtime.start();
+    assert.equal((await exchange(socket))[0].speaking, false);
+
+    runtime.activity.processing?.(1);
+    runtime.activity.speechChanged?.(true);
+    const speaking = (await exchange(socket))[0];
+    assert.equal(speaking.speaking, true);
+    assert.equal(speaking.processing, 1);
+
+    runtime.activity.speechChanged?.(false);
+    const silence = (await exchange(socket))[0];
+    assert.equal(silence.speaking, false);
+    assert.equal(silence.processing, 1);
+
+    runtime.activity.speechChanged?.(true);
+    await exchange(socket, 'toggle-pause');
+    assert.equal((await exchange(socket))[0].speaking, false);
+    runtime.activity.speechChanged?.(true);
+    assert.equal(
+      (await exchange(socket))[0].speaking,
+      false,
+      'Late speech cannot revive paused state',
+    );
+
+    await exchange(socket, 'toggle-pause');
+    runtime.activity.finished?.(1);
+    const resumed = (await exchange(socket))[0];
+    assert.equal(resumed.speaking, false);
+    assert.equal(resumed.processing, 0);
   } finally {
     controller.abort();
     await runtime.close();

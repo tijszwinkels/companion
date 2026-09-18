@@ -1,5 +1,6 @@
 import type { Log } from '../../core/frame.ts';
 import type { SensorPipeline } from '../../core/pipeline.ts';
+import type { Activity } from '../../core/activity.ts';
 import { audioFrames } from './capture.ts';
 import { Segmenter } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
@@ -11,35 +12,49 @@ export async function listen(
   log: Log,
   signal: AbortSignal,
   options: { file?: string; device?: string },
+  activity: Activity = {},
 ): Promise<void> {
   const segmenter = new Segmenter();
   vad.reset();
 
-  for await (const frame of audioFrames(signal, options)) {
-    signal.throwIfAborted();
-    const wasSpeaking = segmenter.speaking;
-    const segment = segmenter.push(await vad.probability(frame), frame);
+  try {
+    for await (const frame of audioFrames(signal, options)) {
+      signal.throwIfAborted();
+      const wasSpeaking = segmenter.speaking;
+      const probability = await vad.probability(frame);
+      signal.throwIfAborted();
+      const segment = segmenter.push(probability, frame);
 
-    if (!wasSpeaking && segmenter.speaking) {
-      log('speech', 'Speech detected');
-    }
+      // Report transitions only, rather than sending desktop updates at 31 Hz.
+      // This also clears the indicator for short sounds that never become jobs.
+      if (wasSpeaking !== segmenter.speaking) {
+        activity.speechChanged?.(segmenter.speaking);
+      }
 
-    if (segment) {
-      log('utterance', `Speech ended (${segment.reason})`);
-      pipeline.submit(segment.samples, signal);
+      if (!wasSpeaking && segmenter.speaking) {
+        log('speech', 'Speech detected');
+      }
 
-      // Files decode faster than real time. Keep every file segment by waiting
-      // for the worker; microphone capture always continues independently.
-      if (options.file) {
-        await pipeline.idle();
+      if (segment) {
+        log('utterance', `Speech ended (${segment.reason})`);
+        pipeline.submit(segment.samples, signal);
+
+        // Files decode faster than real time. Keep every file segment by waiting
+        // for the worker; microphone capture always continues independently.
+        if (options.file) {
+          await pipeline.idle();
+        }
       }
     }
-  }
 
-  signal.throwIfAborted();
-  const tail = segmenter.finish();
+    signal.throwIfAborted();
+    const tail = segmenter.finish();
 
-  if (tail) {
-    pipeline.submit(tail.samples, signal);
+    if (tail) {
+      pipeline.submit(tail.samples, signal);
+    }
+  } finally {
+    // EOF, pause, failure, and shutdown must never leave the microphone red.
+    activity.speechChanged?.(false);
   }
 }

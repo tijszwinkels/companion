@@ -11,6 +11,7 @@ Item {
   property var shell: null
   property bool online: false
   property bool paused: false
+  property bool speaking: false
   property bool soundsEnabled: false
   property bool soundsAvailable: false
   property int processing: 0
@@ -48,6 +49,7 @@ Item {
       if (message.type === "state" && message.protocol === 1) {
         root.online = message.ready
         root.paused = message.paused
+        root.speaking = message.speaking === true
         root.soundsEnabled = message.soundsEnabled === true
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
@@ -148,6 +150,7 @@ Item {
     target: "companion"
     function status(): string {
       return JSON.stringify({ online: root.online, paused: root.paused,
+        speaking: root.speaking, processing: root.processing,
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
         count: root.history.length, error: root.lastError })
@@ -159,6 +162,8 @@ Item {
 
   function connectionLost() {
     root.online = false
+    root.speaking = false
+    root.processing = 0
     root.history = []
     root.cancel()
 

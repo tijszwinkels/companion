@@ -197,10 +197,17 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       const listeningSignal = AbortSignal.any([controller.signal, pause.signal]);
 
       try {
-        await listen(vad, pipeline, log, listeningSignal, {
-          file: values.wav,
-          device: values.device,
-        });
+        await listen(
+          vad,
+          pipeline,
+          log,
+          listeningSignal,
+          {
+            file: values.wav,
+            device: values.device,
+          },
+          activity,
+        );
         break;
       } catch (error) {
         if (!listeningSignal.aborted || controller.signal.aborted) {

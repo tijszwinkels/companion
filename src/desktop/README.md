@@ -20,6 +20,7 @@ On connection and state changes, the server sends:
   "protocol": 1,
   "ready": true,
   "paused": false,
+  "speaking": false,
   "soundsEnabled": true,
   "processing": 0,
   "preview": false,
@@ -37,6 +38,9 @@ On connection and state changes, the server sends:
 ```
 
 The recent view contains the latest 100 nonempty transcripts, newest first.
+`speaking` is the current VAD speech state, independent of the processing count.
+It returns to false on silence, pause, end of input, or capture failure. Older
+servers omit this optional field; adapters should treat absence as false.
 It is a view limit, not a database retention policy. Snapshot the rows when
 opening a picker so new utterances cannot displace its selected item.
 

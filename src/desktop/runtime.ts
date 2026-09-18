@@ -43,6 +43,7 @@ export class DesktopRuntime {
   private readonly databaseLock: InstanceLock;
   private ready = false;
   private pasting = false;
+  private speaking = false;
 
   constructor(
     private readonly pause: PauseControl,
@@ -66,6 +67,13 @@ export class DesktopRuntime {
     );
 
     this.activity = {
+      speechChanged: (speaking) => {
+        const next = speaking && !this.pause.paused;
+        if (this.speaking !== next) {
+          this.speaking = next;
+          this.server.broadcast();
+        }
+      },
       delivery: this.delivery,
       deliveryStarted: (id) => {
         this.history.markDeliveryStarted(id);
@@ -131,6 +139,10 @@ export class DesktopRuntime {
   }
 
   private readonly pauseChanged = () => {
+    if (this.pause.paused) {
+      this.speaking = false;
+    }
+
     this.log(
       this.pause.paused ? 'paused' : 'listening',
       this.pause.paused ? 'Microphone and pending work stopped' : 'Microphone resuming',
@@ -143,6 +155,7 @@ export class DesktopRuntime {
       protocol: 1,
       ready: this.ready,
       paused: this.pause.paused,
+      speaking: this.speaking,
       soundsEnabled: this.sounds.enabled,
       processing: this.processing.size,
       preview: this.options.preview,
@@ -248,6 +261,7 @@ export class DesktopRuntime {
 
   async close(): Promise<void> {
     this.ready = false;
+    this.speaking = false;
     this.pause.off('change', this.pauseChanged);
 
     try {

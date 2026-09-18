@@ -14,6 +14,9 @@ export interface Transcript {
 
 /** Optional feedback keeps the sensor pipeline independent of desktop services. */
 export interface Activity {
+  /** Live VAD state, independent of work already queued for transcription. */
+  speechChanged?(speaking: boolean): void;
+
   /** Shared output ownership keeps explicit recovery and automatic sends atomic. */
   delivery?: DeliveryControl;
   /** An explicit manual recovery may supersede a still-pending automatic send. */
