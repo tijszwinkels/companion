@@ -99,7 +99,7 @@ export class Segmenter {
   }
 }
 
-/** Voxtype consumes a WAV file, so wrap the float samples in a PCM16 WAV header. */
+/** Wrap samples in a mono, 16 kHz PCM16 WAV file for fixtures and file tools. */
 export function encodeWav(samples: Float32Array): Buffer {
   const wav = Buffer.alloc(44 + samples.length * 2);
 
@@ -120,13 +120,21 @@ export function encodeWav(samples: Float32Array): Buffer {
   wav.write('data', 36);
   wav.writeUInt32LE(samples.length * 2, 40);
 
-  // PCM16 has asymmetric limits: -32768 and +32767. Clamp before conversion.
-  samples.forEach((v, i) =>
-    wav.writeInt16LE(
-      Math.round(Math.max(-1, Math.min(1, v)) * (v < 0 ? 32768 : 32767)),
-      44 + i * 2,
-    ),
-  );
+  encodePcm16(samples).copy(wav, 44);
 
   return wav;
+}
+
+/** Shared PCM16 conversion for WAV files and the persistent worker's pipe. */
+export function encodePcm16(samples: Float32Array): Buffer {
+  const pcm = Buffer.alloc(samples.length * 2);
+
+  // PCM16 has asymmetric limits: -32768 and +32767. Clamp before conversion.
+  samples.forEach((value, index) => {
+    const clamped = Math.max(-1, Math.min(1, value));
+    const scale = value < 0 ? 32768 : 32767;
+    pcm.writeInt16LE(Math.round(clamped * scale), index * 2);
+  });
+
+  return pcm;
 }

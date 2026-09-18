@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pcmFrames } from '../../src/sensors/audio/capture.ts';
 import { Segmenter, encodeWav } from '../../src/sensors/audio/segmenter.ts';
-import { parseVoxtype, Transcriber } from '../../src/sensors/audio/transcriber.ts';
+import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
 import { loadConfig } from '../../src/config.ts';
 import { captureActiveWindow, type RunCommand } from '../../src/sensors/screen/capture.ts';
@@ -72,7 +72,7 @@ test('local Silero model loads and classifies digital silence as non-speech', as
   }
 });
 
-test('ASR WAV format, output parsing, and silence filtering', async () => {
+test('ASR WAV format and silence filtering', async () => {
   const wav = encodeWav(new Float32Array([-1, 0, 1]));
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
   assert.equal(wav.readUInt32LE(24), 16000);
@@ -82,16 +82,11 @@ test('ASR WAV format, output parsing, and silence filtering', async () => {
     [-32768, 0, 32767],
   );
   assert.equal(
-    parseVoxtype('Loading audio file: file\nProcessing 16000 samples (1s)...\n\nHello world.\n'),
-    'Hello world.',
-  );
-  assert.equal(parseVoxtype('No speech detected, skipping transcription.'), '');
-  assert.throws(() => parseVoxtype('unexpected logging'), /Unrecognized/);
-  assert.equal(
-    await new Transcriber({ binary: '/nonexistent', modelDir: '', timeoutMs: 100 }).transcribe(
-      new Float32Array(16000),
-      signal(),
-    ),
+    await new Transcriber({
+      workerBinary: '/nonexistent',
+      modelDir: '',
+      timeoutMs: 100,
+    }).transcribe(new Float32Array(16000), signal()),
     '',
   );
 });

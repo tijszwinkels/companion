@@ -52,6 +52,7 @@ const focus = async (address: string) => {
   assert.equal((await activeWindow(signal)).address, address);
 };
 let vad: VoiceActivityDetector | undefined;
+let transcriber: Transcriber | undefined;
 try {
   let windows: { title: string; address: string; mapped: boolean; hidden: boolean }[] = [];
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -99,7 +100,9 @@ try {
       segments.push(tail.samples);
     }
     assert.ok(segments.length > 0);
-    const speech = await new Transcriber(config.asr).transcribe(segments[0], signal);
+    transcriber = new Transcriber(config.asr);
+    await transcriber.start(signal);
+    const speech = await transcriber.transcribe(segments[0], signal);
     assert.match(speech, /Dublin/i);
     console.log(`PASS VAD + ASR: ${JSON.stringify(speech)}`);
 
@@ -195,6 +198,7 @@ try {
 } finally {
   gui.kill('SIGKILL');
   await closed;
+  await transcriber?.close();
   await vad?.close();
   await command('hyprctl', focusArgs(previous.address), AbortSignal.timeout(3000)).catch(() => {});
   await rm(directory, { recursive: true, force: true });
