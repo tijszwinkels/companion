@@ -40,7 +40,7 @@ for _, binding in ipairs(bindings) do
     history_binding = binding
   elseif binding.key == "SUPER + ALT + P" then
     pause_binding = binding
-  elseif binding.key == "SUPER + ALT + A" then
+  elseif binding.key == "SUPER + ALT + D" then
     focus_binding = binding
   end
 end

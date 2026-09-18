@@ -148,10 +148,10 @@ test('staged install rejects a conflicting focus shortcut before writing config'
   const beforeShell = await readFile(setup.shellPath, 'utf8');
   await writeFile(
     setup.registeredPath,
-    JSON.stringify([{ modmask: 72, key: 'SUPER + ALT + A', description: 'Existing action' }]),
+    JSON.stringify([{ modmask: 72, key: 'SUPER + ALT + D', description: 'Existing action' }]),
   );
 
-  await assert.rejects(setup.install(), /Super\+Alt\+A is already bound/);
+  await assert.rejects(setup.install(), /Super\+Alt\+D is already bound/);
   assert.equal(await readFile(setup.bindingsPath, 'utf8'), beforeBindings);
   assert.equal(await readFile(setup.shellPath, 'utf8'), beforeShell);
   await assert.rejects(stat(setup.destination), { code: 'ENOENT' });

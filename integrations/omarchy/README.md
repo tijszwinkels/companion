@@ -35,7 +35,7 @@ needed to update this adapter.
   Other keyboard output waits its turn and checks focus again before typing.
 - **Super+Alt+P** pauses or resumes listening, including when the panel is closed.
   It uses the same pause control as the top-bar menu and toggles once per press.
-- **Super+Alt+A** focuses the selected conversation's input, opening the panel
+- **Super+Alt+D** focuses the selected conversation's input, opening the panel
   if hidden. Press it again to return to the previous application. Select a
   conversation first; Activity and Previous sessions have no composer to focus.
 - Click the microphone in the top bar for separate **Listening** and **Sound

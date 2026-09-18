@@ -82,7 +82,7 @@ context on a follow-up, closing/reopening preserves drafts, and a long answer
 expands the panel without reserving workspace area. Session tabs use OnDemand
 keyboard focus; Activity still uses None. Give the user the advance reload and
 focus-change warning before running any of these desktop checks.
-Use **Super+Alt+A** with a selected conversation to focus the input; use it again
+Use **Super+Alt+D** with a selected conversation to focus the input; use it again
 to return to the previous application. Also check a hidden panel, a click-focused
 composer, rapid toggles, and a previous application that has since closed.
 `npm run test:panel-focus` exercises the native focus path in a disposable nested

@@ -17,6 +17,7 @@ Item {
   property real unit: 1
   property bool animationsEnabled: true
   property string shortcutLabel: ""
+  property string focusShortcut: ""
   property var history: []
   property var sessions: []
   property var previousSessions: []
@@ -277,6 +278,7 @@ Item {
       anchors.topMargin: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
       session: root.selectedSession
       online: root.online
+      focusShortcut: root.focusShortcut
       foreground: root.foreground
       muted: root.muted
       accent: root.accent

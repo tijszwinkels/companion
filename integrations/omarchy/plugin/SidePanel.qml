@@ -137,7 +137,8 @@ PanelWindow {
         fontFamily: Style.font.menuFamily
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
-        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + A · conversation focus\nSuper + Alt + P · pause/resume"
+        focusShortcut: "⌥⌘D"
+        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + D · conversation focus\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)

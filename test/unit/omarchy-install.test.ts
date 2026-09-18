@@ -10,8 +10,8 @@ test('installer rejects conflicts reported as either plain keys or Lua display c
     'SUPER+ALT+v',
     'P',
     'SUPER + ALT + P',
-    'A',
-    'SUPER + ALT + A',
+    'D',
+    'SUPER + ALT + D',
   ]) {
     const bindings = JSON.stringify([{ modmask: 72, key, description: 'Existing action' }]);
     assert.throws(
@@ -25,7 +25,7 @@ test('reinstall permits its own shortcuts but still rejects another action on th
   const own = [
     { modmask: 72, key: 'SUPER + ALT + C', description: 'Companion side panel' },
     { modmask: 72, key: 'SUPER + ALT + P', description: 'Companion pause/resume listening' },
-    { modmask: 72, key: 'SUPER + ALT + A', description: 'Companion conversation input focus' },
+    { modmask: 72, key: 'SUPER + ALT + D', description: 'Companion conversation input focus' },
     {
       modmask: 72,
       key: 'V',

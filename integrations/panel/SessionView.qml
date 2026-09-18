@@ -20,6 +20,8 @@ Item {
     return ["Adwaita Sans", "Inter", "Segoe UI", "Noto Sans"].find(name => available.includes(name)) || "sans-serif"
   }
   property bool online: true
+  // The desktop host supplies the shortcut; other hosts can leave it unset.
+  property string focusShortcut: ""
   property real unit: 1
   // One zoom level follows the reader between tabs for this panel lifetime.
   property int zoomPercent: 100
@@ -305,7 +307,9 @@ Item {
         id: composer
         objectName: "sessionComposer"
         width: composerScroll.availableWidth
-        placeholderText: root.running ? "Write a follow-up while Pi answers…" : "Ask a follow-up…"
+        placeholderText: !root.composerFocusId && root.focusShortcut
+          ? root.focusShortcut + " to focus"
+          : root.running ? "Write a follow-up while Pi answers…" : "Ask a follow-up…"
         placeholderTextColor: root.muted
         color: root.foreground
         selectionColor: root.selection
