@@ -12,6 +12,9 @@ Item {
   required property color accent
   required property color selection
   required property string fontFamily
+  // Shell chrome may be monospace (Omarchy's default). Conversation text needs
+  // its own proportional face so Markdown's native code font stays distinct.
+  property string proseFontFamily: "sans-serif"
   property bool online: true
   property real unit: 1
   property string displayedId: ""
@@ -232,8 +235,8 @@ Item {
           color: root.foreground
           selectionColor: root.selection
           selectedTextColor: root.foreground
-          font.family: bubble.kind === "tool" ? "monospace" : root.fontFamily
-          font.pixelSize: 13 * root.unit
+          font.family: bubble.kind === "tool" ? "monospace" : root.proseFontFamily
+          font.pixelSize: (bubble.kind === "tool" ? 13 : 14) * root.unit
           onLinkActivated: link => {
             // Opening a link is an explicit click; commands and file URLs do
             // not become executable UI actions through generated Markdown.
@@ -279,8 +282,8 @@ Item {
         textFormat: TextEdit.PlainText
         selectByMouse: true
         padding: 8 * root.unit
-        font.family: root.fontFamily
-        font.pixelSize: 13 * root.unit
+        font.family: root.proseFontFamily
+        font.pixelSize: 14 * root.unit
         background: Rectangle {
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
           border.color: composer.activeFocus ? root.accent : root.muted
