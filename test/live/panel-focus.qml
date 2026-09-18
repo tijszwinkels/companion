@@ -65,7 +65,13 @@ ShellRoot {
     selectedSessionId: "fixture"
     onComposerFocusIdChanged: console.log("fixture composer:", composerFocusId)
     onComposerFocusPhaseChanged: console.log("fixture phase:", composerFocusPhase)
-    sessions: [{id: "fixture", title: "Focus fixture", status: "completed", error: "", messages: []}]
+    sessions: [
+      {id: "fixture", title: "Focus fixture", status: "completed", error: "", messages: [
+        {id: "answer", kind: "assistant", text: "A useful answer to copy.", toolName: "", input: "", state: "done", screenshot: false}
+      ]},
+      {id: "fixture-two", title: "Second fixture", status: "completed", error: "", messages: []}
+    ]
+    onSessionSelected: id => selectedSessionId = id
     onRestoreFocusRequested: address => adapter.restoreApplicationFocus(address)
   }
 
@@ -86,5 +92,9 @@ ShellRoot {
     }
     function closePanel(): void { panel.opened = false }
     function restoreApplication(): void { adapter.restoreApplicationFocus(root.previousApplication) }
+    function selectAnswer(): void {
+      const bubble = root.findItem(panel.contentItem, "bubble-answer")
+      root.findItem(bubble, "messageText").select(2, 8)
+    }
   }
 }

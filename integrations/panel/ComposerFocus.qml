@@ -48,7 +48,10 @@ QtObject {
   }
 
   onAvailableChanged: if (!available) reset()
-  onSessionIdChanged: reset()
+  // Changing between conversations keeps an explicitly acquired grab and its
+  // return destination. Losing the conversation or an in-progress release
+  // still resets, so tab navigation cannot revive a cancelled focus request.
+  onSessionIdChanged: if (!requested || !actualFocus || !available || !sessionId) reset()
   onActualFocusChanged: {
     if (actualFocus && phase === "acquiring") root.phase = "idle"
     else if (!actualFocus && phase === "idle") {

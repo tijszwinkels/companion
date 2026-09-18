@@ -38,6 +38,9 @@ needed to update this adapter.
 - **Super+Alt+D** focuses the selected conversation's input, opening the panel
   if hidden. Press it again to return to the previous application. Select a
   conversation first; Activity and Previous sessions have no composer to focus.
+- With the panel focused, **Alt+1** through **Alt+9** select the corresponding
+  Q1–Q9 tabs and retain drafts. **Ctrl+C** copies selected message text; each
+  message also reveals a **Copy** button on hover for copying its entire contents.
 - Click the microphone in the top bar for separate **Listening** and **Sound
   effects** switches. Turn listening off to pause, or mute the bleeps while
   keeping Companion active. Pausing closes the

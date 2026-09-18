@@ -33,6 +33,12 @@ Markdown checks cover paragraph spacing, proportional prose versus smaller code,
 escaped markup, safe links, streamed fences, nested lists, tables, long-code wrapping,
 and actual Ctrl++/Ctrl+=/Ctrl+-/Ctrl+0 key events with draft preservation and zoom limits.
 They also write `/tmp/companion-markdown-preview.png` for visual inspection.
+Copy checks use only the offscreen platform's private clipboard: actual Ctrl+C
+events with and without composer focus, native composer selection precedence,
+whole-message hover copying, collapsed tool output, and preserving drafts and
+selection. Numbered-tab checks exercise Alt+1–9, current tab order after removal,
+missing numbers, hidden-panel gating, and retained drafts. Focus checks also
+cover keeping the grab and original return window across conversation changes.
 The synthetic image fixture has no user content. The suite writes offscreen visual
 previews to `/tmp/companion-{session,history,screenshot}-preview.png` for inspection. The Node suite
 uses a real fixture subprocess for Pi RPC framing, images, streaming, retries,
@@ -89,7 +95,10 @@ composer, rapid toggles, and a previous application that has since closed.
 Hyprland with `follow_mouse=1`. It uses a private Super+Alt+F10 binding and synthetic
 windows: the composer must retain focus past 75 ms and while the pointer moves
 outside, accept typed text, toggle back without losing its draft, and acquire
-focus from a hidden panel. A separate assertion verifies the production restore
+focus from a hidden panel. It also verifies the production restore
+path after Alt+1/2 tab switches and draft edits; Ctrl+C is checked against the
+nested compositor's private clipboard, leaving the desktop clipboard untouched.
+A separate assertion verifies the production restore
 command can select the captured application from another window. Warn the user
 first: the outer nested window may briefly take desktop focus. All generated
 input stays inside the private compositor; no real backend or conversation is used.

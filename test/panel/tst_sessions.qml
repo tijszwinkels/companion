@@ -173,5 +173,38 @@ Item {
       panel.selectedSessionId = second.id
       compare(composer.text, "Draft two")
     }
+
+    function test_alt_numbers_select_visible_tab_order_and_preserve_drafts() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.sessionSelected.connect(function(id) { panel.showingPrevious = false; panel.selectedSessionId = id })
+      const sessions = []
+      for (let index = 1; index <= 9; index++) sessions.push(Object.assign({}, session([]), {id: "question-" + index}))
+      panel.sessions = sessions
+      panel.selectedSessionId = "question-1"
+      panel.focusComposer()
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Draft one"
+      for (let index = 2; index <= 9; index++) {
+        keyClick(Qt.Key_0 + index, Qt.AltModifier)
+        tryCompare(panel, "selectedSessionId", "question-" + index)
+        tryCompare(panel, "composerFocusId", "question-" + index)
+      }
+      composer.text = "Draft nine"
+      keyClick(Qt.Key_1, Qt.AltModifier)
+      tryCompare(panel, "composerFocusId", "question-1")
+      compare(composer.text, "Draft one")
+      keyClick(Qt.Key_9, Qt.AltModifier)
+      tryCompare(panel, "composerFocusId", "question-9")
+      compare(composer.text, "Draft nine")
+
+      panel.sessions = sessions.filter(entry => entry.id !== "question-2")
+      keyClick(Qt.Key_2, Qt.AltModifier)
+      tryCompare(panel, "selectedSessionId", "question-3", 1000)
+      keyClick(Qt.Key_9, Qt.AltModifier)
+      compare(panel.selectedSessionId, "question-3", "Missing numbers do nothing")
+      panel.animationsEnabled = false
+      keyClick(Qt.Key_1, Qt.AltModifier)
+      compare(panel.selectedSessionId, "question-3", "Closed native panels do not take these keys")
+    }
   }
 }

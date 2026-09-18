@@ -121,10 +121,15 @@ tool subprocesses. Supplied-text/file modes wait for accepted questions to
 finish. CLI logs include completed answers when no panel is attached.
 
 Each tab has a composer. Click it to type a follow-up, press **Enter** to send,
-or **Shift+Enter** for a newline. **Super+Alt+A** opens the panel and focuses the
+or **Shift+Enter** for a newline. **Super+Alt+D** opens the panel and focuses the
 selected conversation's input; press it again to return to your previous
 application. A follow-up resumes the same Pi conversation,
 including the original screenshot; it does not capture another screenshot.
+While the panel has keyboard focus, **Alt+1** through **Alt+9** select Q1–Q9 in
+the current tab order and focus that conversation's composer, keeping its draft.
+Select message text and press **Ctrl+C** to copy the selection. Hover over a
+message for its **Copy** button, which copies the whole message (including the
+original Markdown for agent answers) without changing your selection or draft.
 You can prepare a draft while Pi works, then send after completion or Stop.
 Drafts remain separate per tab and clear only after the backend confirms receipt.
 Closing and reopening a tab preserves its draft while the UI remains running.

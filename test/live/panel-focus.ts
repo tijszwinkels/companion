@@ -137,6 +137,24 @@ try {
   await waitFor(async () => (await state()).composerText === 'Inside the conversation.');
   assert.equal((await state()).applicationText, '');
 
+  // Copy through the focused composer, but inspect only this compositor's
+  // private clipboard. The user's clipboard is on a different Wayland socket.
+  await command('qs', ['ipc', '-p', directory, 'call', 'fixture', 'selectAnswer'], signal);
+  await command('wtype', ['-M', 'ctrl', '-k', 'c', '-m', 'ctrl'], signal);
+  assert.equal((await command('wl-paste', ['--no-newline'], signal)).toString(), 'useful');
+  assert.equal((await state()).focused, 'fixture');
+
+  await command('wtype', ['-M', 'alt', '-k', '2', '-m', 'alt'], signal);
+  await waitFor(async () => (await state()).focused === 'fixture-two');
+  await delay(350, undefined, { signal });
+  assert.equal((await state()).focused, 'fixture-two');
+  assert.equal((await state()).composerText, '');
+  await command('wtype', ['--', 'Draft in the second conversation.'], signal);
+  await waitFor(async () => (await state()).composerText === 'Draft in the second conversation.');
+  await command('wtype', ['-M', 'alt', '-k', '1', '-m', 'alt'], signal);
+  await waitFor(async () => (await state()).focused === 'fixture');
+  assert.equal((await state()).composerText, 'Inside the conversation.');
+
   await toggle();
   await waitFor(async () => (await state()).applicationActive);
   await command('wtype', ['--', 'Back in the application.'], signal);
@@ -163,7 +181,7 @@ try {
   await command('qs', ['ipc', '-p', directory, 'call', 'fixture', 'restoreApplication'], signal);
   await waitFor(async () => (await state()).applicationActive);
   console.log(
-    'PASS: held focus, pointer movement, typed destinations, toggle back, and hidden-panel activation',
+    'PASS: held focus, private clipboard copy, numbered tabs/drafts, typed destinations, toggle back, and hidden-panel activation',
   );
 } catch (error) {
   console.error(shellLog.slice(-6000));

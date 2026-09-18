@@ -141,7 +141,7 @@ PanelWindow {
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
         focusShortcut: "⌥⌘D"
-        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + D · conversation focus\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + D · conversation focus\nAlt + 1–9 · conversation tabs (when focused)\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)

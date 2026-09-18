@@ -32,6 +32,8 @@ Item {
   property var drafts: ({})
   property var pendingSubmission: null
   property string inputError: ""
+  property var selectedMessage: null
+  readonly property bool hasMessageSelection: selectedMessage !== null && selectedMessage.visible && selectedMessage.selectedText !== ""
   readonly property bool running: session && (session.status === "starting" || session.status === "running")
   readonly property int messageCount: messages.count
   readonly property bool canSend: online && session !== null && !running && pendingSubmission === null
@@ -46,8 +48,46 @@ Item {
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
 
+  function clearMessageSelection() {
+    const previous = root.selectedMessage
+    root.selectedMessage = null
+    if (previous) previous.deselect()
+  }
+
+  function messageSelectionChanged(item) {
+    if (item.selectedText !== "") {
+      if (root.selectedMessage !== item) root.clearMessageSelection()
+      root.selectedMessage = item
+      composer.deselect()
+    } else if (root.selectedMessage === item) {
+      root.selectedMessage = null
+    }
+  }
+
+  function copySelectedMessage() {
+    if (!root.hasMessageSelection) return false
+    root.selectedMessage.copy()
+    return true
+  }
+
+  // A hidden plain-text buffer copies a whole message without moving keyboard
+  // focus or disturbing the reader's selection. Assistant copies keep Markdown.
+  TextEdit { id: copyBuffer; visible: false; textFormat: TextEdit.PlainText }
+  function copyMessage(text) {
+    copyBuffer.text = text
+    copyBuffer.selectAll()
+    copyBuffer.copy()
+    copyBuffer.text = ""
+  }
+
   // Window shortcuts also work while text is selected or the composer owns
   // focus. They never register with the compositor or affect other apps.
+  Shortcut {
+    sequences: [StandardKey.Copy]
+    context: Qt.WindowShortcut
+    enabled: root.zoomEnabled && root.hasMessageSelection
+    onActivated: root.copySelectedMessage()
+  }
   Shortcut {
     sequences: ["Ctrl++", "Ctrl+=", "Ctrl+Shift++"]
     context: Qt.WindowShortcut
@@ -111,6 +151,7 @@ Item {
   function synchronize() {
     const id = root.session ? root.session.id : ""
     if (id !== root.displayedId) {
+      root.clearMessageSelection()
       if (root.displayedId) root.drafts[root.displayedId] = composer.text
       messages.clear()
       root.displayedId = id
@@ -177,6 +218,8 @@ Item {
       color: kind === "user" ? root.selection
         : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
 
+      HoverHandler { id: messageHover }
+
       Column {
         id: contents
         x: 10 * root.unit
@@ -186,7 +229,9 @@ Item {
 
         Text {
           id: heading
-          width: parent.width
+          width: parent.width - copyButton.width - 8 * root.unit
+          height: Math.max(implicitHeight, copyButton.height)
+          verticalAlignment: Text.AlignVCenter
           text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + bubble.toolName
             + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
             : bubble.kind === "user" ? "You" + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
@@ -255,6 +300,7 @@ Item {
         }
 
         TextEdit {
+          id: messageText
           objectName: "messageText"
           width: parent.width
           height: visible ? contentHeight : 0
@@ -265,6 +311,9 @@ Item {
           readOnly: true
           selectByMouse: true
           activeFocusOnPress: false
+          onSelectedTextChanged: root.messageSelectionChanged(messageText)
+          Component.onDestruction: if (root.selectedMessage === messageText) root.selectedMessage = null
+          onVisibleChanged: if (!visible && root.selectedMessage === messageText) root.clearMessageSelection()
           wrapMode: TextEdit.Wrap
           color: root.foreground
           selectionColor: root.selection
@@ -277,6 +326,45 @@ Item {
             if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link)
           }
         }
+      }
+
+      Rectangle {
+        id: copyButton
+        objectName: "copyMessage"
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 10 * root.unit
+        width: 58 * root.unit
+        height: 24 * root.unit
+        radius: 4 * root.unit
+        color: root.selection
+        opacity: messageHover.hovered || copyMouse.containsMouse || copied.running ? 1 : 0
+        visible: messageText.text !== ""
+        Behavior on opacity { NumberAnimation { duration: 120 } }
+        function activate() {
+          const source = bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
+          root.copyMessage(source)
+          copied.restart()
+        }
+        Timer { id: copied; interval: 1400 }
+        Text {
+          anchors.centerIn: parent
+          text: copied.running ? "Copied" : "Copy"
+          color: copyMouse.containsMouse || copied.running ? root.accent : root.foreground
+          font.family: root.proseFontFamily
+          font.pixelSize: 11 * root.unit
+        }
+        MouseArea {
+          id: copyMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          enabled: copyButton.opacity > 0.5
+          cursorShape: Qt.PointingHandCursor
+          onClicked: copyButton.activate()
+        }
+        Accessible.role: Accessible.Button
+        Accessible.name: "Copy message"
+        Accessible.onPressAction: activate()
       }
     }
 
@@ -327,6 +415,14 @@ Item {
         }
         onTextChanged: {
           if (root.displayedId) root.drafts[root.displayedId] = text
+        }
+        onSelectedTextChanged: if (selectedText !== "") root.clearMessageSelection()
+        TapHandler { onPressedChanged: if (pressed) root.clearMessageSelection() }
+        // TextArea consumes the standard copy key before window shortcuts.
+        // When the reader selected a message, route that same key explicitly;
+        // otherwise leave ordinary composer copying to TextArea.
+        Keys.onPressed: event => {
+          if (event.matches(StandardKey.Copy) && root.copySelectedMessage()) event.accepted = true
         }
         Keys.onReturnPressed: event => root.enterPressed(event)
         Keys.onEnterPressed: event => root.enterPressed(event)

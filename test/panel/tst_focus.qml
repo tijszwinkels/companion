@@ -82,6 +82,20 @@ Item {
       compare(restored, 0)
     }
 
+    function test_switching_conversations_keeps_grab_and_original_return_target() {
+      const control = createTemporaryObject(focusComponent, parent)
+      let restored = ""
+      control.restoreRequested.connect(function(address) { restored = address })
+      control.toggle("0xabc")
+      control.sessionId = "question-2"
+      compare(control.actualFocus, true)
+      compare(control.grabRequested, true)
+      compare(control.previousWindow, "0xabc")
+      control.toggle("0xdef")
+      tryVerify(function() { return restored === "0xabc" })
+      compare(control.grabRequested, false)
+    }
+
     function test_hiding_or_changing_tab_cancels_pending_focus_and_restore() {
       for (const disable of [true, false]) {
         const control = createTemporaryObject(focusComponent, parent)

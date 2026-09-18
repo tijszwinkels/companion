@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Window
+import QtQml.Models
 
 // Reusable panel body. The desktop adapter owns the window, shortcut, monitor
 // selection, and theme; this item only renders the selected page and tab rail.
@@ -44,6 +46,25 @@ Item {
   function submitted(id, text, error) { chat.submitted(id, text, error) }
   function focusComposer() { chat.focusComposer() }
   function releaseComposerFocus() { chat.releaseComposerFocus() }
+
+  // These are local to this focused panel, never desktop-global bindings.
+  // Numbers follow the same current order as Q1–Q9 in the tab rail.
+  Instantiator {
+    model: Math.min(root.sessions.length, 9)
+    delegate: Shortcut {
+      required property int index
+      sequence: "Alt+" + (index + 1)
+      context: Qt.WindowShortcut
+      enabled: root.visible && root.animationsEnabled && root.Window.window !== null && root.Window.window.active
+      onActivated: {
+        const id = root.sessions[index].id
+        root.sessionSelected(id)
+        Qt.callLater(function() {
+          if (root.selectedSession && root.selectedSessionId === id && root.Window.window && root.Window.window.active) root.focusComposer()
+        })
+      }
+    }
+  }
 
   // Activity remains the first tab. Questions get their own vertically stacked
   // tabs, scrollable independently of the conversation itself.

@@ -8,6 +8,7 @@ Rectangle {
   width: 600
   height: 900
   color: "#161e2b"
+  TextEdit { id: clipboardReader; visible: false; textFormat: TextEdit.PlainText }
   Component {
     id: chatComponent
     Panel.SessionView {
@@ -30,6 +31,92 @@ Rectangle {
     name: "CompanionMarkdown"
     when: windowShown
     function answer(chat) { return findChild(findChild(chat, "bubble-answer"), "messageText") }
+    function clipboardText() {
+      clipboardReader.text = ""
+      clipboardReader.paste()
+      return clipboardReader.text
+    }
+
+    function test_copy_selection_routes_from_composer_without_losing_focus_or_draft() {
+      const chat = createTemporaryObject(chatComponent, scene)
+      chat.session = conversation("Answer **to copy**.")
+      tryVerify(function() { return answer(chat) !== null })
+      const composer = findChild(chat, "sessionComposer")
+      composer.text = "Keep my draft"
+      chat.focusComposer()
+      const body = answer(chat)
+      body.select(0, 6)
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      compare(clipboardText(), "Answer")
+      compare(composer.activeFocus, true)
+      compare(chat.composerFocusId, "markdown")
+      compare(composer.text, "Keep my draft")
+
+      // Selecting the composer again restores its ordinary Copy behavior.
+      composer.select(0, 4)
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      compare(clipboardText(), "Keep")
+      compare(body.selectedText, "")
+
+      // The window shortcut also handles selection without composer focus.
+      chat.releaseComposerFocus()
+      body.select(7, 9)
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      compare(clipboardText(), "to")
+      compare(composer.activeFocus, false)
+    }
+
+    function test_copy_button_keeps_selection_and_copies_whole_markdown() {
+      const chat = createTemporaryObject(chatComponent, scene)
+      const source = "Answer **to copy**.\n\n```ts\nconst value = 42;\n```"
+      chat.session = conversation(source)
+      tryVerify(function() { return answer(chat) !== null })
+      chat.focusComposer()
+      const composer = findChild(chat, "sessionComposer")
+      composer.text = "Unsent draft"
+      const body = answer(chat)
+      body.select(0, 6)
+      const bubble = findChild(chat, "bubble-answer")
+      const button = findChild(bubble, "copyMessage")
+      mouseMove(scene, 595, 895)
+      tryCompare(button, "opacity", 0)
+      mouseMove(bubble, 15, 15)
+      tryCompare(button, "opacity", 1)
+      mouseClick(button, button.width / 2, button.height / 2)
+      compare(clipboardText(), source)
+      compare(body.selectedText, "Answer")
+      compare(composer.text, "Unsent draft")
+      compare(composer.activeFocus, true)
+      // Ctrl+C still copies the original selection after whole-message Copy.
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      compare(clipboardText(), "Answer")
+      chat.session = conversation("Different answer", "second")
+      compare(chat.hasMessageSelection, false)
+    }
+
+    function test_copy_uses_the_latest_selection_and_supports_collapsed_tools() {
+      const chat = createTemporaryObject(chatComponent, scene)
+      const current = conversation("First answer")
+      current.messages.push({id: "second", kind: "assistant", text: "Second answer", input: "", toolName: "", screenshot: false, state: "done"})
+      current.messages.push({id: "tool", kind: "tool", text: "Tool output", input: '{"path":"file.txt"}', toolName: "read", screenshot: false, state: "done"})
+      chat.session = current
+      tryVerify(function() { return findChild(chat, "bubble-tool") !== null })
+      const first = answer(chat)
+      const second = findChild(findChild(chat, "bubble-second"), "messageText")
+      chat.focusComposer()
+      first.select(0, 5)
+      second.select(0, 6)
+      compare(first.selectedText, "")
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      compare(clipboardText(), "Second")
+      const tool = findChild(chat, "bubble-tool")
+      const button = findChild(tool, "copyMessage")
+      mouseMove(tool, 15, 15)
+      tryCompare(button, "opacity", 1)
+      mouseClick(button, button.width / 2, button.height / 2)
+      compare(tool.expanded, false)
+      compare(clipboardText(), '{"path":"file.txt"}\n\nTool output')
+    }
 
     function test_paragraph_spacing_and_prose_code_typography() {
       const chat = createTemporaryObject(chatComponent, scene)
@@ -126,6 +213,8 @@ Rectangle {
     function test_markdown_visual_preview() {
       const chat = createTemporaryObject(chatComponent, scene, {x: 20, y: 20, width: 560})
       chat.session = conversation("## A little more breathing room\n\nNormal answers use **Adwaita Sans**, with a comfortable reading size and space between paragraphs. Inline `code` stays distinct.\n\n```ts\nconst reply = await agent.ask(question);\nconsole.log(reply.text);\n```\n\nCode gets its own shaded frame. Lists also have room to breathe:\n\n- Clearer hierarchy\n- Selectable, streaming Markdown\n\n> Keep the reading experience calm.\n\n[Open the documentation](https://example.com)")
+      tryVerify(function() { return findChild(chat, "bubble-answer") !== null })
+      mouseMove(findChild(chat, "bubble-answer"), 15, 15)
       wait(150)
       grabImage(scene).save("/tmp/companion-markdown-preview.png")
     }
