@@ -152,5 +152,8 @@ console.log('Run npm start in the Companion checkout to connect it.');
 console.log('Super+Alt+C toggles the side panel; Super+Alt+V opens speech history.');
 console.log('Super+Alt+P pauses or resumes listening.');
 console.log(
+  'Inside the focused panel: Super+Alt+0 selects Activity, Super+Alt+Tab cycles tabs, Alt+1–9 selects conversations.',
+);
+console.log(
   'Super+Alt+D toggles focus between the conversation input and the previous application.',
 );

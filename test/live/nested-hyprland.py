@@ -5,6 +5,7 @@ clients; environment import and systemd notifications are disabled. Killing this
 process cleans up all its bindings, avoiding expired Lua handles in Hyprland.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
@@ -66,6 +67,24 @@ hl.config({
             environment["HYPRLAND_INSTANCE_SIGNATURE"] = sockets[0].parent.name
             environment["WAYLAND_DISPLAY"] = displays[0].name
             environment["COMPANION_TEST_NESTED"] = "1"
+
+            # Sockets appear before the nested Wayland monitor. Wait for an
+            # actual output before Qt can cache a zero-sized placeholder screen.
+            for attempt in range(100):
+                result = subprocess.run(
+                    ["hyprctl", "-j", "monitors"], env=environment,
+                    capture_output=True, text=True,
+                )
+                monitors = json.loads(result.stdout) if result.returncode == 0 else []
+                if any(m.get("name") != "FALLBACK" and m.get("width", 0) > 0
+                       and m.get("height", 0) > 0 for m in monitors):
+                    break
+                if compositor.poll() is not None:
+                    raise RuntimeError("Nested Hyprland exited before its monitor was ready")
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Timed out waiting for the nested Wayland monitor")
+
             test_script = "test/live/panel-focus.ts" if arguments.focus else "test/live/quick-tap.ts"
             test_process = subprocess.Popen(
                 ["node", "--import", "tsx", test_script],

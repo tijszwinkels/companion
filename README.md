@@ -123,7 +123,8 @@ Zoom follows you between tabs for the lifetime of the panel. Links remain
 clickable; raw HTML is literal text and Markdown images display their alt text.
 All tabs, including Activity, use 600 logical pixels of width (capped to the
 screen) and all available screen height. Switching tabs keeps the same size. Scrolling
-up stops following the stream until you return to the bottom.
+up stops following the stream until you return to the bottom. Conversation wheel
+and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
 Activity shows floating labels for the available voice prefixes and switches for
 every registered intent. Click an intent to disable or re-enable both its LLM and
@@ -156,7 +157,10 @@ application. A follow-up resumes the same Pi conversation,
 including the original screenshot; it does not capture another screenshot.
 While the panel has keyboard focus, **Alt+1** through **Alt+9** select Q1–Q9 in
 the current tab order and focus that conversation's composer, keeping its draft.
-**Alt+0** selects Activity and releases the composer's keyboard focus.
+**Super+Alt+0** (or **Alt+0**) selects Activity; **Super+Alt+Tab** cycles
+Activity → conversations → Activity. These shortcuts work only while Companion
+has keyboard focus. Activity keeps that focus for tab navigation, with no hidden
+text input. Outside Companion, Super+Alt+Tab retains Omarchy's group navigation.
 Select message text and press **Ctrl+C** to copy the selection. Hover over a
 message for its **Copy** button, which copies the whole message (including the
 original Markdown for agent answers) without changing your selection or draft.
@@ -171,8 +175,9 @@ delivery, not acceptance of a Pi turn; its application field identifies the
 ordinary window captured with the utterance, not the overlaid composer.
 As elsewhere, dictation requires a visible ordinary application for screen capture.
 
-Conversation tabs accept normal compositor-directed keyboard focus. Activity
-remains non-focusable. Focus changes between a composer and the underlying
+Activity and conversation tabs accept normal compositor-directed keyboard focus.
+Opening the panel alone does not take focus from the application.
+Focus changes between a composer and the underlying
 application invalidate pending keyboard delivery, even when Hyprland's
 `activewindow` still names that same underlying window. Enter rechecks this guard
 after typing. These guards are covered offline; real compositor focus and

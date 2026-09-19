@@ -251,6 +251,18 @@ Item {
     onPressed: root.toggleComposerFocus()
   }
 
+  // Hyprland owns Super+Alt+Tab before Qt sees it. Its Lua adapter forwards it
+  // while our panel exists; only a focused panel takes it for tab navigation.
+  // Otherwise perform the original desktop action in the ordinary application.
+  GlobalShortcut {
+    appid: "companion"
+    name: "next-tab"
+    onPressed: {
+      if (sidePanel.keyboardFocused) sidePanel.nextTab()
+      else Hyprland.dispatch("hl.dsp.group.next()")
+    }
+  }
+
   // Only finish completes a chord, after V and both modifiers are up. Hyprland
   // also releases history on V-up, which is too early when modifiers remain.
   // Both shortcuts use this resident connection, so a tap cannot race startup.
@@ -296,6 +308,7 @@ Item {
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
         panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
+        selectedSessionId: agentSessions.conversationId,
         panelMonitor: sidePanel.monitorName,
         composerFocusId: sidePanel.composerFocusId, composerFocusPhase: sidePanel.composerFocusPhase,
         count: root.history.length, error: root.lastError })

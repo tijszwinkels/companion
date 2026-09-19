@@ -1,7 +1,8 @@
 import QtQuick
 
-// Portable focus-toggle lifecycle. The adapter holds a dismissible focus grab
-// while requested, and restores the captured application on explicit release.
+// Portable focus-toggle lifecycle. The adapter holds a dismissible panel focus
+// grab across tab navigation, and restores the captured application on release.
+// actualFocus describes the native window; Activity has focus without a composer.
 QtObject {
   id: root
   property bool available: false
@@ -28,10 +29,10 @@ QtObject {
     if (hadFocus) root.releaseRequested()
   }
 
-  function toggle(address) {
+  function toggle(address, inputFocused = root.actualFocus) {
     if (!root.available) return
     settling.stop()
-    if (root.actualFocus || root.requested) {
+    if (inputFocused || root.requested) {
       // Click-focused composers also support toggle-off. In that case the
       // adapter supplies the last ordinary application as the return target.
       if (!root.previousWindow) root.previousWindow = address
@@ -43,15 +44,17 @@ QtObject {
       root.previousWindow = address
       root.phase = "acquiring"
       root.requested = true
-      if (root.mapped) root.focusRequested()
+      if (root.mapped) {
+        root.focusRequested()
+        if (root.actualFocus) root.phase = "idle"
+      }
     }
   }
 
   onAvailableChanged: if (!available) reset()
-  // Changing between conversations keeps an explicitly acquired grab and its
-  // return destination. Losing the conversation or an in-progress release
-  // still resets, so tab navigation cannot revive a cancelled focus request.
-  onSessionIdChanged: if (!requested || !actualFocus || !available || !sessionId) reset()
+  // An empty session id is Activity, which keeps an acquired grab. A pending
+  // release still resets, so changing tabs cannot revive cancelled focus.
+  onSessionIdChanged: if (!requested || !actualFocus || !available) reset()
   onActualFocusChanged: {
     if (actualFocus && phase === "acquiring") root.phase = "idle"
     else if (!actualFocus && phase === "idle") {

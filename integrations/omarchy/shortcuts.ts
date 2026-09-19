@@ -22,6 +22,7 @@ export function assertShortcutsAvailable(
     { key: 'c', description: 'Companion side panel' },
     { key: 'p', description: 'Companion pause/resume listening' },
     { key: 'd', description: 'Companion conversation input focus' },
+    { key: 'tab', description: 'Companion next tab or next grouped window' },
   ];
 
   for (const binding of registered) {
@@ -39,6 +40,12 @@ export function assertShortcutsAvailable(
     const shortcut = shortcuts.find((candidate) => candidate.key === key);
 
     if (binding.modmask !== 72 || !shortcut) {
+      continue;
+    }
+
+    // The adapter preserves Omarchy's group action outside Companion, adding
+    // local panel navigation to this one known desktop binding.
+    if (key === 'tab' && !binding.submap && binding.description === 'Next window in group') {
       continue;
     }
 

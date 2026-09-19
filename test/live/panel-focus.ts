@@ -2,7 +2,9 @@
 // no real Companion socket, transcript, clipboard, microphone or model is used.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,6 +17,30 @@ const directory = await mkdtemp(join(tmpdir(), 'companion-panel-focus-'));
 const identity = `companion-focus-${process.pid}`;
 let shell: ReturnType<typeof spawn> | undefined;
 let shellLog = '';
+const clients = new Set<Socket>();
+const backend = createServer((client) => {
+  clients.add(client);
+  client.on('close', () => clients.delete(client));
+  client.on('error', () => {});
+  client.on('data', () => {});
+  client.write(
+    JSON.stringify({
+      type: 'state',
+      protocol: 1,
+      ready: true,
+      paused: false,
+      processing: 0,
+      history: [],
+      sessions: ['local-one', 'local-two'].map((id) => ({
+        id,
+        title: id,
+        status: 'completed',
+        error: '',
+        messages: [],
+      })),
+    }) + '\n',
+  );
+});
 
 interface FocusState {
   toggles: number;
@@ -29,6 +55,26 @@ interface FocusState {
 async function state(): Promise<FocusState> {
   const result = await command('qs', ['ipc', '-p', directory, 'call', 'fixture', 'state'], signal);
   return JSON.parse(result.toString());
+}
+
+async function adapterState() {
+  const result = await command(
+    'qs',
+    ['ipc', '-p', directory, 'call', 'companion', 'status'],
+    signal,
+  );
+  return JSON.parse(result.toString()) as {
+    online: boolean;
+    panelOpened: boolean;
+    selectedSessionId: string;
+    composerFocusId: string;
+  };
+}
+
+async function panelKey(key: string, superKey = true): Promise<void> {
+  const modifiers = superKey ? ['-M', 'logo', '-M', 'alt'] : ['-M', 'alt'];
+  const releases = superKey ? ['-m', 'alt', '-m', 'logo'] : ['-m', 'alt'];
+  await command('wtype', [...modifiers, '-k', key, ...releases], signal);
 }
 
 async function waitFor(check: () => Promise<boolean>): Promise<void> {
@@ -170,6 +216,9 @@ try {
   await toggle();
   await waitFor(async () => (await state()).applicationActive);
   // Merely dropping layer focus can return to the last application by itself.
+  // Wait for the explicit restore too before deliberately focusing another
+  // window; otherwise its pending callback can undo this fixture's next step.
+  await waitFor(async () => (await state()).phase === 'idle');
   // Move to a different window first, proving the production restore command
   // actually selects its captured address rather than relying on that fallback.
   await command(
@@ -180,6 +229,67 @@ try {
   await waitFor(async () => (await state()).otherApplicationActive);
   await command('qs', ['ipc', '-p', directory, 'call', 'fixture', 'restoreApplication'], signal);
   await waitFor(async () => (await state()).applicationActive);
+
+  // Connect the production Service to synthetic sessions in this compositor's
+  // private runtime. Its real Lua adapter handles the otherwise desktop-owned
+  // Super+Alt+Tab; ordinary Alt+numbers and Super+Alt+0 stay within Qt.
+  await command('qs', ['ipc', '-p', directory, 'call', 'fixture', 'closePanel'], signal);
+  const socketDirectory = join(process.env.XDG_RUNTIME_DIR!, 'companion');
+  await mkdir(socketDirectory);
+  backend.listen(join(socketDirectory, 'control.sock'));
+  await once(backend, 'listening');
+  await command(
+    'hyprctl',
+    ['eval', `dofile(${JSON.stringify(join(process.cwd(), 'integrations/omarchy/bindings.lua'))})`],
+    signal,
+  );
+  await waitFor(async () => (await adapterState()).online);
+  await command('qs', ['ipc', '-p', directory, 'call', 'companion', 'toggleComposerFocus'], signal);
+  await waitFor(async () => (await adapterState()).composerFocusId === 'local-two');
+
+  await panelKey('0');
+  await waitFor(async () => (await adapterState()).selectedSessionId === '');
+  await delay(150, undefined, { signal });
+  assert.equal((await state()).applicationActive, false, 'Activity keeps native panel focus');
+  assert.equal(
+    (await adapterState()).composerFocusId,
+    '',
+    'Activity has no voice/text destination',
+  );
+  await panelKey('1', false);
+  await waitFor(async () => (await adapterState()).composerFocusId === 'local-one');
+  await panelKey('Tab');
+  await waitFor(async () => (await adapterState()).composerFocusId === 'local-two');
+  await panelKey('Tab');
+  await waitFor(async () => (await adapterState()).selectedSessionId === '');
+  await panelKey('Tab');
+  await waitFor(async () => (await adapterState()).composerFocusId === 'local-one');
+  await panelKey('9', false);
+  assert.equal((await adapterState()).selectedSessionId, 'local-one', 'Missing numbers do nothing');
+
+  await command('qs', ['ipc', '-p', directory, 'call', 'companion', 'toggleComposerFocus'], signal);
+  await waitFor(async () => (await state()).applicationActive);
+  for (const key of ['Tab', '0']) {
+    await panelKey(key);
+    assert.equal(
+      (await adapterState()).selectedSessionId,
+      'local-one',
+      'An unfocused panel cannot receive navigation',
+    );
+  }
+  await panelKey('2', false);
+  assert.equal((await adapterState()).selectedSessionId, 'local-one');
+  await command('qs', ['ipc', '-p', directory, 'call', 'companion', 'closePanel'], signal);
+  await delay(250, undefined, { signal });
+  await panelKey('Tab');
+  assert.equal(
+    (await adapterState()).panelOpened,
+    false,
+    'Local shortcuts cannot open a hidden panel',
+  );
+  console.log(
+    'PASS: local Super+Alt+0/Tab and Alt+numbers, Activity focus, tab wrap, outside/hidden panel gating and focus return',
+  );
   console.log(
     'PASS: held focus, private clipboard copy, numbered tabs/drafts, typed destinations, toggle back, and hidden-panel activation',
   );
@@ -194,5 +304,7 @@ try {
     shell.kill('SIGTERM');
     await closed;
   }
+  for (const client of clients) client.destroy();
+  if (backend.listening) await new Promise<void>((resolve) => backend.close(() => resolve()));
   await rm(directory, { recursive: true, force: true });
 }

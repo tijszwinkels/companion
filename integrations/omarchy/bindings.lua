@@ -19,6 +19,20 @@ hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
   transparent = true,
 })
 
+-- Super+Alt+Tab already means next grouped window in Omarchy. Keep that action
+-- unless the Companion panel has focus. Qt owns that focus decision; when no
+-- panel is mapped, use the native dispatcher directly (also if the UI exits).
+hl.unbind("SUPER + ALT + TAB")
+hl.bind("SUPER + ALT + TAB", function()
+  for _, layer in ipairs(hl.get_layers()) do
+    if layer.namespace == "companion-panel" and layer.mapped then
+      hl.dispatch(hl.dsp.global("companion:next-tab"))
+      return
+    end
+  end
+  hl.dispatch(hl.dsp.group.next())
+end, { description = "Companion next tab or next grouped window", transparent = true })
+
 -- The panel owns its horizontal reveal animation, including a quick reversal
 -- if the toggle is pressed again before the first animation finishes.
 hl.layer_rule({ match = { namespace = "companion-panel" }, no_anim = true, animation = "none" })

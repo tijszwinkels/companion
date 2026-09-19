@@ -29,6 +29,7 @@ PanelWindow {
   property string selectedSessionId: ""
   readonly property string composerFocusId: root.opened ? content.composerFocusId : ""
   readonly property string composerFocusPhase: focusControl.phase
+  readonly property bool keyboardFocused: root.opened && content.keyboardFocused
 
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled)
@@ -47,15 +48,16 @@ PanelWindow {
   function submitted(id, text, error) { content.submitted(id, text, error) }
   function toggleComposerFocus(address) {
     root.screenshotSource = ""
-    focusControl.toggle(address)
+    focusControl.toggle(address, root.composerFocusId !== "")
   }
+  function nextTab() { content.nextTab() }
 
   Panel.ComposerFocus {
     id: focusControl
-    available: root.opened && root.online && root.selectedScreen !== null && !root.showingPrevious
-      && root.screenshotSource.toString() === "" && content.selectedSession !== null
+    available: root.opened && root.online && root.selectedScreen !== null
+      && root.screenshotSource.toString() === ""
     mapped: root.backingWindowVisible
-    actualFocus: root.composerFocusId !== ""
+    actualFocus: root.keyboardFocused
     sessionId: root.selectedSessionId
     onFocusRequested: content.focusComposer()
     onReleaseRequested: content.releaseComposerFocus()
@@ -89,7 +91,7 @@ PanelWindow {
   exclusionMode: ExclusionMode.Normal
   WlrLayershell.namespace: "companion-panel"
   WlrLayershell.layer: WlrLayer.Overlay
-  // Clicks may focus a conversation normally. Keyboard summoning uses the
+  // Clicks may focus Activity or a conversation. Keyboard summoning uses the
   // dismissible grab above; no timed interactivity change can steal it back.
   WlrLayershell.keyboardFocus: focusControl.keyboardMode === "on-demand" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
 
@@ -145,7 +147,7 @@ PanelWindow {
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
         focusShortcut: "⌥⌘D"
-        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + D · conversation focus\nAlt + 0 · Activity / 1–9 · conversations\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
         onPreviousRequested: root.previousRequested()

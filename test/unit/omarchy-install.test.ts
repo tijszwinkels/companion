@@ -12,6 +12,8 @@ test('installer rejects conflicts reported as either plain keys or Lua display c
     'SUPER + ALT + P',
     'D',
     'SUPER + ALT + D',
+    'TAB',
+    'SUPER + ALT + TAB',
   ]) {
     const bindings = JSON.stringify([{ modmask: 72, key, description: 'Existing action' }]);
     assert.throws(
@@ -26,6 +28,7 @@ test('reinstall permits its own shortcuts but still rejects another action on th
     { modmask: 72, key: 'SUPER + ALT + C', description: 'Companion side panel' },
     { modmask: 72, key: 'SUPER + ALT + P', description: 'Companion pause/resume listening' },
     { modmask: 72, key: 'SUPER + ALT + D', description: 'Companion conversation input focus' },
+    { modmask: 72, key: 'TAB', description: 'Companion next tab or next grouped window' },
     {
       modmask: 72,
       key: 'V',
@@ -49,6 +52,16 @@ test('reinstall permits its own shortcuts but still rejects another action on th
 
   const differentModifiers = JSON.stringify([{ modmask: 64, key: 'C' }]);
   assert.doesNotThrow(() => assertShortcutsAvailable(differentModifiers, false));
+});
+
+test('local tab routing preserves the known Omarchy group action', () => {
+  const stock = [{ modmask: 72, key: 'TAB', description: 'Next window in group' }];
+  assert.doesNotThrow(() => assertShortcutsAvailable(JSON.stringify(stock), false));
+  const custom = [{ modmask: 72, key: 'TAB', description: 'My Tab action' }];
+  assert.throws(
+    () => assertShortcutsAvailable(JSON.stringify(custom), true),
+    /already bound to My Tab action/,
+  );
 });
 
 test('installer fails closed when compositor bindings cannot be inspected', () => {

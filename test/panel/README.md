@@ -42,19 +42,27 @@ Markdown checks cover paragraph spacing, proportional prose versus smaller code,
 escaped markup, safe links, streamed fences, nested lists, tables, long-code wrapping,
 and actual Ctrl++/Ctrl+=/Ctrl+-/Ctrl+0 key events with draft preservation and zoom limits.
 They also write `/tmp/companion-markdown-preview.png` for visual inspection.
+Scrolling checks send real Qt wheel events over the message body, check the faster
+step and both bounds, and preserve selection, composer focus and drafts during
+scrolling. Stream updates preserve the reader's position until scrolling back to
+the bottom. The old adapter moved 72 pixels per notch in the same offscreen test;
+the new setting moves 216. Native touchpad gestures have not been exercised here.
 Copy checks use only the offscreen platform's private clipboard: actual Ctrl+C
 events with and without composer focus, native composer selection precedence,
 whole-message hover copying, collapsed tool output, and preserving drafts and
 selection. Numbered-tab checks exercise Alt+0 for Activity, Alt+1–9, current tab order after removal,
 missing numbers, hidden-panel gating, and retained drafts. Focus checks also
-cover keeping the grab and original return window across conversation changes.
+cover keeping the grab and original return window across conversation and
+Activity changes, with no hidden composer receiving ordinary text on Activity.
+Local Super+Alt+0/Tab checks cover cycling, wraparound, empty conversations,
+retained drafts and closed-panel gating.
 Compact Activity checks cover live state and phrase/result propagation, fade,
 collapse/expand, adopting pending work without replaying completed results,
 hidden-animation cleanup, a header fixed during transcript scrolling, and
 retaining drafts, focus, and the collapsed setting across tabs. Synthetic
 previews are saved to `/tmp/companion-activity-{processing,result,collapsed}-preview.png`.
-Alt+0 and the compact header have offscreen coverage; their native desktop
-interaction has not been exercised by automated input.
+The compact header has offscreen coverage; its native desktop interaction has
+not been exercised by automated input.
 Intent-control checks click the real Activity chips, wait for backend-owned
 state changes, and check off/context/paused/offline colors, shortcut visibility,
 the fixed IGNORE fallback, and scrolling in small panels. The synthetic preview
@@ -113,8 +121,8 @@ and click its composer after the answer finishes. Check typing, **“insert …�
 and **“enter …”**, then move focus away during a slow dictation and verify it is
 skipped or that Enter is suppressed. Check that a completed answer retains its
 context on a follow-up, closing/reopening preserves drafts, and switching between
-Activity and conversations keeps the same panel size without reserving workspace area. Session tabs use OnDemand
-keyboard focus; Activity still uses None. Give the user the advance reload and
+Activity and conversations keeps the same panel size without reserving workspace area.
+Both accept OnDemand keyboard focus. Give the user the advance reload and
 focus-change warning before running any of these desktop checks.
 Use **Super+Alt+D** with a selected conversation to focus the input; use it again
 to return to the previous application. Also check a hidden panel, a click-focused
@@ -134,6 +142,14 @@ input stays inside the private compositor; no real backend or conversation is us
 failure using the same fixture. Both the failing baseline and passing fix have
 been checked. Outside-click dismissal, click-focused composers, and monitor-specific
 behavior still need the manual checks above.
+
+The same native fixture then connects the production Service to synthetic
+sessions on the nested runtime's private socket. It loads the production Lua
+adapter and exercises Super+Alt+0/Tab and Alt+numbers from Activity and
+conversations, then verifies that navigation cannot affect an unfocused or
+hidden panel. Lua tests check the native group-next fallback when the panel is
+absent. No real Companion data or model is used. The runner waits for a native
+output before starting Qt to avoid its startup placeholder-screen race.
 
 Contextual voice routing is covered offline by real private-socket tests:
 focused-composer eligibility, the exact continuation prompt, both start aliases,

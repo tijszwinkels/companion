@@ -46,8 +46,12 @@ needed to update this adapter.
   if hidden. Press it again to return to the previous application. Select a
   conversation first; Activity and Previous sessions have no composer to focus.
 - With the panel focused, **Alt+1** through **Alt+9** select the corresponding
-  Q1–Q9 tabs and retain drafts. **Alt+0** selects Activity and releases keyboard
-  focus. **Ctrl+C** copies selected message text; each
+  Q1–Q9 tabs and retain drafts. **Super+Alt+0** (or **Alt+0**) selects Activity;
+  **Super+Alt+Tab** cycles Activity → conversations → Activity. Activity retains
+  panel focus for these local shortcuts, with no hidden composer.
+  Super+Alt+Tab keeps its original group-window action outside Companion; no
+  desktop-wide numbered shortcuts are registered.
+  **Ctrl+C** copies selected message text; each
   message also reveals a **Copy** button on hover for copying its entire contents.
 - Click the microphone in the top bar for separate **Listening** and **Sound
   effects** switches. Turn listening off to pause, or mute the bleeps while
@@ -122,9 +126,9 @@ provides scroll/button zoom, drag-to-pan, and Fit. Escape, the close button, and
 the backdrop dismiss it. This viewer temporarily requests keyboard focus for
 Escape and zoom shortcuts. Closing the panel or changing pages dismisses it too.
 It respects the bar's reserved space and overlays windows without resizing them.
-Activity does not accept keyboard focus. Session tabs use layer-shell OnDemand
-focus to allow typing into the composer, following the compositor's normal focus
-policy. The focus shortcut holds a dismissible Hyprland focus grab, so moving the
+Activity and session tabs use layer-shell OnDemand focus for local navigation
+and typing into conversation composers. Opening the panel does not take focus
+from the application. The focus shortcut holds a dismissible Hyprland focus grab, so moving the
 pointer outside the panel does not take keyboard focus away. Toggling again
 returns to the captured application; an outside click releases the grab.
 The adapter reports actual composer focus to preserve the delivery guard

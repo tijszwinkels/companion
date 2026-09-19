@@ -33,6 +33,14 @@ Item {
   property string selectedSessionId: ""
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
   readonly property string composerFocusId: chat.composerFocusId
+  readonly property bool keyboardFocused: root.Window.window !== null && root.Window.window.active
+
+  // Activity needs window focus for tab navigation, but has no text cursor or
+  // dictation destination. Clear the hidden composer when leaving a conversation.
+  onSelectedSessionChanged: if (selectedSession === null) {
+    chat.releaseComposerFocus()
+    if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
+  }
 
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled)
@@ -48,11 +56,34 @@ Item {
   function focusComposer() { chat.focusComposer() }
   function releaseComposerFocus() { chat.releaseComposerFocus() }
 
+  function selectConversation(id) {
+    root.sessionSelected(id)
+    Qt.callLater(function() {
+      if (root.selectedSession && root.selectedSessionId === id && root.keyboardFocused) root.focusComposer()
+    })
+  }
+
+  // Cycle Activity -> Q1 -> Q2 -> ... -> Activity. Previous sessions joins
+  // the sequence at Activity; a missing/closed conversation does the same.
+  function nextTab() {
+    const index = root.showingPrevious ? -1 : root.sessions.findIndex(entry => entry.id === root.selectedSessionId)
+    const next = root.sessions[index + 1]
+    if (next) root.selectConversation(next.id)
+    else root.sessionSelected("")
+  }
+
   Shortcut {
-    sequence: "Alt+0"
+    sequences: ["Alt+0", "Meta+Alt+0"]
     context: Qt.WindowShortcut
     enabled: root.visible && root.animationsEnabled && root.Window.window !== null && root.Window.window.active
     onActivated: root.sessionSelected("")
+  }
+
+  Shortcut {
+    sequence: "Meta+Alt+Tab"
+    context: Qt.WindowShortcut
+    enabled: root.visible && root.animationsEnabled && root.keyboardFocused
+    onActivated: root.nextTab()
   }
 
   // These are local to this focused panel, never desktop-global bindings.
@@ -65,11 +96,7 @@ Item {
       context: Qt.WindowShortcut
       enabled: root.visible && root.animationsEnabled && root.Window.window !== null && root.Window.window.active
       onActivated: {
-        const id = root.sessions[index].id
-        root.sessionSelected(id)
-        Qt.callLater(function() {
-          if (root.selectedSession && root.selectedSessionId === id && root.Window.window && root.Window.window.active) root.focusComposer()
-        })
+        root.selectConversation(root.sessions[index].id)
       }
     }
   }
@@ -83,6 +110,7 @@ Item {
     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
 
     Rectangle {
+      objectName: "activityTab"
       anchors.top: parent.top
       anchors.topMargin: 20 * root.unit
       anchors.horizontalCenter: parent.horizontalCenter

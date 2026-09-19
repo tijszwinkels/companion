@@ -28,7 +28,7 @@ Item {
         online: true; paused: false; speaking: false; processing: 0
         foreground: "#dce5ef"; muted: "#8ba0b8"; accent: "#9fc0f7"; selection: "#293a51"
         fontFamily: "sans-serif"
-        shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + D · conversation focus\nAlt + 0 · Activity / 1–9 · conversations\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations\nSuper + Alt + P · pause/resume"
         intents: scene.inventory()
       }
     }

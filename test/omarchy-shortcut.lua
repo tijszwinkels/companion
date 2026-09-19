@@ -4,9 +4,14 @@ local bindings = {}
 local down = {}
 local events = {}
 local pressed = true
+local layers = {}
+local removed = {}
 
 hl = {
   dsp = {
+    group = { next = function()
+      return function() table.insert(events, { name = "group-next" }) end
+    end },
     global = function(name)
       return function()
         table.insert(events, { name = name, pressed = pressed })
@@ -18,6 +23,8 @@ hl = {
     table.insert(bindings, binding)
     return { unbind = function() end }
   end,
+  unbind = function(key) removed[key] = true end,
+  get_layers = function() return layers end,
   dispatch = function(callback)
     callback()
   end,
@@ -35,6 +42,7 @@ dofile(arg[1])
 local history_binding
 local pause_binding
 local focus_binding
+local tab_binding
 for _, binding in ipairs(bindings) do
   if binding.key == "SUPER + ALT + V" then
     history_binding = binding
@@ -42,11 +50,15 @@ for _, binding in ipairs(bindings) do
     pause_binding = binding
   elseif binding.key == "SUPER + ALT + D" then
     focus_binding = binding
+  elseif binding.key == "SUPER + ALT + TAB" then
+    tab_binding = binding
   end
 end
 assert(history_binding, "History shortcut must be registered")
 assert(pause_binding, "Pause shortcut must be registered")
 assert(focus_binding and focus_binding.options.transparent, "Focus shortcut must preserve releases")
+assert(tab_binding and tab_binding.options.transparent, "Tab shortcut must preserve releases")
+assert(removed["SUPER + ALT + TAB"], "Replace the stock Tab binding once, retaining its fallback")
 
 local function event_count(name)
   local count = 0
@@ -150,3 +162,19 @@ release("Super_L")
 assert(event_count("companion:finish") == 1, "History releases still finish exactly once")
 assert(event_count("companion:focus") == 1, "History releases must not toggle focus")
 print("PASS independent focus dispatch during a held history chord")
+
+for _, mapped in ipairs({false, true}) do
+  events = {}
+  layers = {{namespace = "companion-panel", mapped = mapped}}
+  tab_binding.callback()
+  assert(event_count(mapped and "companion:next-tab" or "group-next") == 1)
+  assert(#events == 1, "Tab takes exactly one path")
+end
+events = {}
+layers = {}
+tab_binding.callback()
+assert(event_count("group-next") == 1, "Group navigation works without a running panel")
+for _, binding in ipairs(bindings) do
+  assert(not binding.key:match("^SUPER %+ ALT %+ %d$"), "Numbered shortcuts remain local")
+end
+print("PASS panel Tab routing and native fallback without global number bindings")

@@ -186,10 +186,10 @@ Item {
       compare(panel.composerFocusId, "")
       compare(findChild(panel, "fullActivityStatus").visible, true)
       compare(findChild(panel, "activityStrip").visible, false)
-      // The portable host stays active; the native adapter releases keyboard
-      // ownership on Activity. Reselecting the conversation retains its draft.
-      panel.selectedSessionId = "question-9"
-      panel.focusComposer()
+      // Activity retains local navigation but no hidden composer cursor.
+      keyClick(Qt.Key_X)
+      keyClick(Qt.Key_9, Qt.AltModifier)
+      tryCompare(panel, "composerFocusId", "question-9")
       compare(composer.text, "Draft nine")
 
       panel.sessions = sessions.filter(entry => entry.id !== "question-2")
@@ -202,6 +202,33 @@ Item {
       compare(panel.selectedSessionId, "question-3", "Closed native panels do not take these keys")
       keyClick(Qt.Key_0, Qt.AltModifier)
       compare(panel.selectedSessionId, "question-3", "Alt+0 also stays local to the open panel")
+    }
+
+    function test_local_super_alt_zero_and_tab_cycle_activity_and_conversations() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.sessionSelected.connect(function(id) { panel.showingPrevious = false; panel.selectedSessionId = id })
+      panel.sessions = [session([]), Object.assign({}, session([]), {id: "question-2"})]
+      panel.selectedSessionId = "question-1"
+      panel.focusComposer()
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Keep this draft"
+      keyClick(Qt.Key_0, Qt.MetaModifier | Qt.AltModifier)
+      compare(panel.selectedSessionId, "")
+      compare(panel.composerFocusId, "")
+      keyClick(Qt.Key_Tab, Qt.MetaModifier | Qt.AltModifier)
+      tryCompare(panel, "composerFocusId", "question-1")
+      compare(composer.text, "Keep this draft")
+      keyClick(Qt.Key_Tab, Qt.MetaModifier | Qt.AltModifier)
+      tryCompare(panel, "composerFocusId", "question-2")
+      keyClick(Qt.Key_Tab, Qt.MetaModifier | Qt.AltModifier)
+      compare(panel.selectedSessionId, "")
+      panel.sessions = []
+      keyClick(Qt.Key_Tab, Qt.MetaModifier | Qt.AltModifier)
+      compare(panel.selectedSessionId, "")
+      panel.animationsEnabled = false
+      panel.sessions = [session([])]
+      keyClick(Qt.Key_Tab, Qt.MetaModifier | Qt.AltModifier)
+      compare(panel.selectedSessionId, "", "Closed panels do not receive local keys")
     }
 
     function test_activity_header_stays_fixed_and_collapse_preserves_focus_and_drafts() {

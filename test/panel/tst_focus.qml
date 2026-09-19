@@ -96,6 +96,30 @@ Item {
       compare(control.grabRequested, false)
     }
 
+    function test_activity_keeps_native_focus_and_original_return_target() {
+      const control = createTemporaryObject(focusComponent, parent)
+      control.toggle("0xabc")
+      control.sessionId = ""
+      compare(control.actualFocus, true)
+      compare(control.grabRequested, true)
+      compare(control.keyboardMode, "on-demand")
+      compare(control.previousWindow, "0xabc")
+      control.sessionId = "question-2"
+      compare(control.grabRequested, true)
+      compare(control.previousWindow, "0xabc")
+    }
+
+    function test_focus_shortcut_from_answer_text_still_acquires_the_composer() {
+      const control = createTemporaryObject(focusComponent, parent, {actualFocus: true})
+      let requested = 0
+      control.focusRequested.connect(function() { requested++ })
+      control.toggle("0xabc", false)
+      compare(requested, 1)
+      compare(control.grabRequested, true)
+      compare(control.phase, "idle")
+      compare(control.previousWindow, "0xabc")
+    }
+
     function test_hiding_or_changing_tab_cancels_pending_focus_and_restore() {
       for (const disable of [true, false]) {
         const control = createTemporaryObject(focusComponent, parent)
