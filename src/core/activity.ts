@@ -40,6 +40,8 @@ export interface Activity {
   transcribed?(transcript: Transcript): void;
   /** Persist the captured input before routing; shutdown waits for this write. */
   screenshotCaptured?(id: number, screenshot: Screenshot): Promise<void>;
+  /** Persist the ASR input before the pipeline clears its owned sample buffer. */
+  audioCaptured?(id: number, samples: Float32Array): Promise<void>;
   intentRecognized?(id: number, intent: string): void;
   /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
   labelPrevious?(id: number, correct: boolean): string | undefined;

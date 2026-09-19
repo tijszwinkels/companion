@@ -5,7 +5,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
 import type { Screenshot } from '../core/frame.ts';
-import { saveScreenshot } from './screenshots.ts';
+import { encodeWav } from '../sensors/audio/segmenter.ts';
+import { saveArtifact } from './artifacts.ts';
 
 export interface HistoryEntry {
   id: string;
@@ -20,8 +21,8 @@ export interface HistoryEntry {
  * Permanent evaluation records, with a bounded recent view for desktop pickers.
  * The database belongs to Companion. Each small synchronous transaction commits
  * before observers see its result, so the UI never refers to unsaved text.
- * Screenshots live beside the database, linked by relative path. Raw audio is
- * not retained. Explicit feedback is separate from the original prediction.
+ * Screenshots and utterance audio live beside the database, linked by their UUID
+ * filenames. Explicit feedback is separate from the original prediction.
  */
 export class UtteranceHistory {
   private database?: DatabaseSync;
@@ -37,7 +38,7 @@ export class UtteranceHistory {
 
     const version = this.database.prepare('PRAGMA user_version').get()?.user_version;
 
-    if (typeof version !== 'number' || version > 3) {
+    if (typeof version !== 'number' || version > 4) {
       throw Error('Unsupported Companion database schema version');
     }
 
@@ -87,8 +88,14 @@ export class UtteranceHistory {
       const utteranceColumns = this.database.prepare('PRAGMA table_info(utterances)').all();
       const pasteColumns = this.database.prepare('PRAGMA table_info(paste_events)').all();
 
-      if (!utteranceColumns.some((column) => column.name === 'screenshot_path')) {
-        this.database.exec('ALTER TABLE utterances ADD COLUMN screenshot_path TEXT');
+      // The filename already contains the utterance UUID. Retire earlier path
+      // columns without touching recorded files or changing their identities.
+      if (utteranceColumns.some((column) => column.name === 'screenshot_path')) {
+        this.database.exec('ALTER TABLE utterances DROP COLUMN screenshot_path');
+      }
+
+      if (utteranceColumns.some((column) => column.name === 'audio_path')) {
+        this.database.exec('ALTER TABLE utterances DROP COLUMN audio_path');
       }
 
       // No rows are inferred from delivery, recovery, or lack of complaints.
@@ -171,7 +178,7 @@ export class UtteranceHistory {
       WHERE outcome = 'pending'`,
         )
         .run(Number(legacyPastes), Number(legacyPastes), Date.now());
-      this.database.exec('PRAGMA user_version = 3; COMMIT;');
+      this.database.exec('PRAGMA user_version = 4; COMMIT;');
     } catch (error) {
       this.database.exec('ROLLBACK');
       throw error;
@@ -247,8 +254,21 @@ export class UtteranceHistory {
     }
 
     const entry = this.find(id)!;
-    const path = await saveScreenshot(dirname(this.path), id, entry.observedAt, screenshot);
-    this.db.prepare('UPDATE utterances SET screenshot_path = ? WHERE id = ?').run(path, id);
+    await saveArtifact(dirname(this.path), id, entry.observedAt, 'screenshots', screenshot.png);
+  }
+
+  async saveAudio(frameId: number, samples: Float32Array): Promise<void> {
+    const id = this.frameEntries.get(frameId);
+
+    if (!id) {
+      return;
+    }
+
+    const entry = this.find(id)!;
+    // Use the same PCM16 encoding as Voxtype's input, without resampling or
+    // trimming. The pipeline retains ownership until this write settles.
+    const wav = encodeWav(samples);
+    await saveArtifact(dirname(this.path), id, entry.observedAt, 'audio', wav);
   }
 
   /**

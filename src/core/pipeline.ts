@@ -139,8 +139,13 @@ export class SensorPipeline implements InspectableModule {
           application: capture.application ?? capture.screenshot?.window,
         });
 
-        // Keep the exact image paired with this transcript, including a late
-        // result after cancellation. No action runs until storage has settled.
+        // Retain the speech used for ASR, even if screen capture failed or a
+        // late transcript arrived after cancellation. Await storage before the
+        // finally block clears this job's samples and releases their ownership.
+        await this.activity.audioCaptured?.(job.id, job.samples);
+
+        // Keep the exact image paired with this transcript. No action runs until
+        // storage has settled, and cancellation still prevents dispatch below.
         if (capture.screenshot) {
           await this.activity.screenshotCaptured?.(job.id, capture.screenshot);
         }

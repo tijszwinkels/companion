@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -11,13 +11,16 @@ import { UtteranceHistory } from '../../src/desktop/history.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { LabelPreviousCorrect } from '../../src/processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from '../../src/processors/label-previous-incorrect.ts';
-import { desktopFixture } from '../desktop-fixture.ts';
+import { encodeWav } from '../../src/sensors/audio/segmenter.ts';
+import { desktopFixture, findArtifact } from '../desktop-fixture.ts';
 import { frame, screenshot, signal, testDetector, testSensors } from '../helpers.ts';
 
-test('sensor input saves the exact PNG before inference; bare feedback commands update only their target', async () => {
+test('sensor input saves PNG and ASR audio before inference; bare feedback commands update only their target', async () => {
   const fixture = await desktopFixture(async () => Buffer.alloc(0));
   const directory = dirname(fixture.socketPath);
   const activity = fixture.runtime.activity;
+  const samples = new Float32Array(16000).fill(0.25);
+  const expectedAudio = encodeWav(samples);
   let utterance = 'Ordinary speech';
   let detections = 0;
   let originalId = '';
@@ -37,9 +40,15 @@ test('sensor input saves the exact PNG before inference; bare feedback commands 
           originalId = String(row.id);
           assert.equal(row.recognized_intent, null);
           assert.deepEqual(
-            await readFile(join(directory, String(row.screenshot_path))),
+            await readFile(await findArtifact(directory, String(row.id), 'screenshots')),
             screenshot.png,
           );
+          assert.deepEqual(
+            await readFile(await findArtifact(directory, String(row.id), 'audio')),
+            expectedAudio,
+          );
+          assert.equal('screenshot_path' in row, false);
+          assert.equal('audio_path' in row, false);
           return 'IGNORE';
         },
       }),
@@ -52,7 +61,13 @@ test('sensor input saves the exact PNG before inference; bare feedback commands 
   new LabelPreviousIncorrect(() => {}, false, activity).subscribe(router);
   const pipeline = new SensorPipeline(
     {
-      ...testSensors({ capture: async () => screenshot, transcribe: async () => utterance }),
+      ...testSensors({
+        capture: async () => screenshot,
+        transcribe: async (input) => {
+          assert.deepEqual(input, samples);
+          return utterance;
+        },
+      }),
       router,
     },
     () => {},
@@ -61,7 +76,7 @@ test('sensor input saves the exact PNG before inference; bare feedback commands 
   );
 
   try {
-    pipeline.submit(new Float32Array(16000));
+    pipeline.submit(samples.slice());
     await pipeline.idle();
     assert.equal(
       fixture.database.prepare('SELECT count(*) AS count FROM intent_feedback').get()?.count,
@@ -77,7 +92,7 @@ test('sensor input saves the exact PNG before inference; bare feedback commands 
       ['label previous incorrent', false],
     ] as const) {
       utterance = text;
-      pipeline.submit(new Float32Array(16000));
+      pipeline.submit(samples.slice());
       await pipeline.idle();
       const labels = fixture.database.prepare('SELECT * FROM intent_feedback').all();
       assert.deepEqual(
@@ -104,10 +119,14 @@ test('sensor input saves the exact PNG before inference; bare feedback commands 
     );
 
     for (const row of rows) {
-      const path = join(directory, String(row.screenshot_path));
+      const path = await findArtifact(directory, String(row.id), 'screenshots');
       assert.ok(path.endsWith(`/screenshots/${row.id}.png`));
       assert.deepEqual(await readFile(path), screenshot.png);
       assert.equal((await stat(path)).mode & 0o777, 0o600);
+      const audioPath = await findArtifact(directory, String(row.id), 'audio');
+      assert.ok(audioPath.endsWith(`/audio/${row.id}.wav`));
+      assert.deepEqual(await readFile(audioPath), expectedAudio);
+      assert.equal((await stat(audioPath)).mode & 0o777, 0o600);
     }
   } finally {
     await fixture.close();
@@ -229,7 +248,7 @@ test('feedback skips missing targets, extra text, disabled commands, preview, an
   }
 });
 
-test('screenshots use the observation local date, with missing images represented by null', async () => {
+test('screenshots use the observation local date and UUID filename, with no file for failed captures', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'companion-screenshots-'));
   const path = join(directory, 'utterances.sqlite');
   const history = new UtteranceHistory(path);
@@ -247,11 +266,12 @@ test('screenshots use the observation local date, with missing images represente
 
     const database = new DatabaseSync(path, { readOnly: true });
     try {
-      const rows = database.prepare('SELECT screenshot_path FROM utterances ORDER BY rowid').all();
-      assert.equal(rows[0].screenshot_path, `data/2026-09-19/screenshots/${entry.id}.png`);
-      assert.equal(rows[1].screenshot_path, null);
+      const rows = database.prepare('SELECT * FROM utterances ORDER BY rowid').all();
+      assert.ok(rows.every((row) => !('screenshot_path' in row)));
+      const screenshotDirectory = join(directory, 'data/2026-09-19/screenshots');
+      assert.deepEqual(await readdir(screenshotDirectory), [`${entry.id}.png`]);
       assert.deepEqual(
-        await readFile(join(directory, String(rows[0].screenshot_path))),
+        await readFile(join(screenshotDirectory, `${entry.id}.png`)),
         screenshot.png,
       );
     } finally {
@@ -263,7 +283,7 @@ test('screenshots use the observation local date, with missing images represente
   }
 });
 
-test('screenshot write failure retains text and prevents inference with an unsaved image', async () => {
+test('artifact write failure retains text and prevents inference with unsaved input', async () => {
   const fixture = await desktopFixture(async () => Buffer.alloc(0));
   const directory = dirname(fixture.socketPath);
   const router = new UserSensorRouter(
@@ -291,7 +311,8 @@ test('screenshot write failure retains text and prevents inference with an unsav
     await pipeline.idle();
     const row = fixture.database.prepare('SELECT * FROM utterances').get()!;
     assert.equal(row.transcript, 'Keep this text');
-    assert.equal(row.screenshot_path, null);
+    assert.equal('screenshot_path' in row, false);
+    assert.equal('audio_path' in row, false);
     assert.equal(row.recognized_intent, null);
     assert.equal(row.outcome, 'error');
     assert.equal(pipeline.failures, 1);

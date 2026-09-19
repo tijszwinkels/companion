@@ -140,6 +140,7 @@ export class DesktopRuntime {
         this.server.broadcast();
       },
       screenshotCaptured: (id, screenshot) => this.history.saveScreenshot(id, screenshot),
+      audioCaptured: (id, samples) => this.history.saveAudio(id, samples),
       intentRecognized: (id, intent) => {
         this.history.setIntent(id, intent);
         this.server.broadcast();

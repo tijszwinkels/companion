@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,6 +58,32 @@ export function windowReply(address = frame.screenshot.window.address): Buffer {
       hidden: false,
     }),
   );
+}
+
+/** Locate recorded test input by UUID, without relying on a database path. */
+export async function findArtifact(
+  directory: string,
+  id: string,
+  kind: 'screenshots' | 'audio',
+): Promise<string> {
+  const dataDirectory = join(directory, 'data');
+  const extension = kind === 'screenshots' ? 'png' : 'wav';
+  const matches: string[] = [];
+
+  for (const day of await readdir(dataDirectory)) {
+    const path = join(dataDirectory, day, kind, `${id}.${extension}`);
+    try {
+      await access(path);
+      matches.push(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
+  assert.equal(matches.length, 1, `Expected one ${kind} artifact for ${id}`);
+  return matches[0];
 }
 
 /** Real private socket/SQLite, injected desktop commands, and no microphone. */

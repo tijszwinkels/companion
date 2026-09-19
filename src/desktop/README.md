@@ -150,20 +150,39 @@ application/window identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
-NULL, not an inferred label. Raw audio is not retained.
+NULL, not an inferred label.
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
 the question's screenshot and conversation in its own session storage.
 
-Schema version 3 adds nullable `utterances.screenshot_path` and `intent_feedback`.
+Schema version 3 introduced screenshot recording and `intent_feedback`.
+Version 4 removes the earlier screenshot/audio path columns. Files link to
+`utterances.id` through their UUID filenames; migration preserves the files,
+original utterances, and feedback. No file paths are stored in SQLite.
+
 The sensor pipeline saves the exact captured PNG before intent routing, at
 `~/companion/data/YYYY-MM-DD/screenshots/<utterance-id>.png`. The day uses the
-observation's local date, not the later write time. Paths in SQLite are relative
-to `~/companion`; custom database paths use their parent directory as the root.
-The file is written privately and renamed into place before its database path is
-committed. Shutdown waits for accepted writes. A failed capture or old record
-has a NULL path. A failed screenshot write keeps the transcript, records an error,
-and prevents routing that observation.
+observation's local date, not the later write time. Custom database paths use
+their parent directory as the data root. The file is written privately and
+renamed into place only once complete. Shutdown waits for accepted writes.
+A failed capture or old record has no screenshot file. A failed screenshot
+write keeps the transcript, records an error, and prevents routing that observation.
+
+Speech for each retained
+transcript is saved as `~/companion/data/YYYY-MM-DD/audio/<utterance-id>.wav`.
+These uncompressed 16 kHz mono PCM16 WAVs use the same encoder and complete sample
+buffer as Voxtype's input, including the utterance's segmentation padding. They
+share the screenshot writer's private atomic publication and UUID filenames.
+The pipeline saves audio before screenshots, even if capture failed or a late ASR
+result arrived after cancellation. It awaits the write before clearing its owned
+sample buffer; cancellation still prevents routing. Storage failure leaves the
+transcript available and prevents the action. Successful
+writes survive later delivery failures and `IGNORE` decisions.
+
+Older records and supplied `--text` input have no audio. The storage boundary
+remains a nonempty transcript: failed/empty transcription, untranscribed cancelled
+jobs, and overload drops create no recording or history row. `--no-desktop`
+disables both audio and screenshot persistence.
 
 The default database's first startup copies the old
 `$XDG_STATE_HOME/companion/utterances.sqlite` (default

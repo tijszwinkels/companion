@@ -237,9 +237,15 @@ for later evaluation. The picker displays the latest 100; older records remain
 in the database. Untranscribed audio, including overload drops, has no transcript
 to retain. The exact PNG captured for each transcribed utterance is saved as
 `~/companion/data/YYYY-MM-DD/screenshots/<id>.png`, using the utterance UUID and
-the local date when speech ended. The row's `screenshot_path` is relative to
-`~/companion`. Old records and failed captures have no screenshot. Raw audio is
-not retained.
+the local date when speech ended. The filename's UUID links to `utterances.id`;
+no file paths are stored in SQLite. Old records and failed captures have no screenshot.
+
+Speech audio for each saved transcript is retained alongside its screenshot at
+`~/companion/data/YYYY-MM-DD/audio/<id>.wav`, using the same utterance UUID.
+The WAV is uncompressed 16 kHz mono PCM16, encoded exactly like the input to
+transcription. Audio is saved even if screen capture or the later action fails,
+and for ignored speech. Old records and `--text` input have no audio file.
+Segments with failed or empty transcription, and overload drops, are not retained.
 
 Say **“label previous correct”** or **“label previous incorrect”** to give feedback
 on the preceding utterance's selected intent. These standalone shortcuts bypass
@@ -276,7 +282,9 @@ including storage and sounds, for isolated CLI use.
 The bundled Silero VAD runs locally with ONNX Runtime. Transcription is local.
 For utterances without a matching prefix, the configured model endpoint receives
 the utterance, window identity, and PNG. Prefix commands make no model request.
-Screenshots stay in memory; temporary ASR files are removed after each call.
+With desktop history enabled, screenshots and speech audio for saved transcripts
+are retained under `~/companion/data`. Temporary ASR working files are removed
+after each call. `--no-desktop` disables this history and artifact storage.
 
 Optionally copy `companion.config.example.json` to `companion.config.json`.
 Supported configuration is defined in [src/config.ts](src/config.ts):
