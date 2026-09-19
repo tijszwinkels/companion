@@ -36,6 +36,10 @@ Item {
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
   readonly property string composerFocusId: chat.composerFocusId
   readonly property bool keyboardFocused: root.Window.window !== null && root.Window.window.active
+  // Activity and the session library share the conversation's reader zoom.
+  // Keep geometry in theme units; only text and its measured layout grow.
+  property alias zoomPercent: chat.zoomPercent
+  readonly property bool pageZoomEnabled: root.visible && root.animationsEnabled && root.keyboardFocused && root.selectedSession === null
 
   // Activity needs window focus for tab navigation, but has no text cursor or
   // dictation destination. Clear the hidden composer when leaving a conversation.
@@ -73,6 +77,27 @@ Item {
     const next = root.sessions[index + 1]
     if (next) root.selectConversation(next.id)
     else root.sessionSelected("")
+  }
+
+  // SessionView already owns these keys while a conversation is visible.
+  // Enable this set only on the other pages, avoiding ambiguous shortcuts.
+  Shortcut {
+    sequences: ["Ctrl++", "Ctrl+=", "Ctrl+Shift++"]
+    context: Qt.WindowShortcut
+    enabled: root.pageZoomEnabled
+    onActivated: chat.zoomBy(10)
+  }
+  Shortcut {
+    sequence: "Ctrl+-"
+    context: Qt.WindowShortcut
+    enabled: root.pageZoomEnabled
+    onActivated: chat.zoomBy(-10)
+  }
+  Shortcut {
+    sequence: "Ctrl+0"
+    context: Qt.WindowShortcut
+    enabled: root.pageZoomEnabled
+    onActivated: root.zoomPercent = 100
   }
 
   Shortcut {
@@ -336,6 +361,7 @@ Item {
       selection: root.selection
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: chat.textScale
       onReopenRequested: id => root.reopenSessionRequested(id)
     }
 
@@ -354,6 +380,7 @@ Item {
       accent: root.accent
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: chat.textScale
       animationsEnabled: root.animationsEnabled && visible
       history: root.history
       intents: root.intents

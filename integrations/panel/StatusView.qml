@@ -15,6 +15,7 @@ Item {
   required property color accent
   required property string fontFamily
   required property real unit
+  property real textScale: unit
   property var history: []
   property bool animationsEnabled: true
   property bool compact: false
@@ -40,6 +41,7 @@ Item {
     accent: root.accent
     fontFamily: root.fontFamily
     unit: root.unit
+    textScale: root.textScale
     compact: root.compact
   }
 
@@ -111,7 +113,7 @@ Item {
       horizontalAlignment: Text.AlignHCenter
       color: root.foreground
       font.family: root.fontFamily
-      font.pixelSize: 18 * root.unit
+      font.pixelSize: 18 * root.textScale
     }
 
     Text {
@@ -123,7 +125,7 @@ Item {
       wrapMode: Text.WordWrap
       color: root.muted
       font.family: root.fontFamily
-      font.pixelSize: 12 * root.unit
+      font.pixelSize: 12 * root.textScale
     }
   }
 

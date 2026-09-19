@@ -17,6 +17,7 @@ Rectangle {
   required property color selection
   required property string fontFamily
   property real unit: 1
+  property real textScale: unit
   property bool choosingIntent: false
   readonly property bool actionsVisible: hover.hovered || choosingIntent
   readonly property color tone: feedback === "correct" ? "#65d6a1" : feedback === "incorrect" ? "#f17f90" : accent
@@ -88,7 +89,7 @@ Rectangle {
         text: Qt.formatTime(new Date(root.observedAt), "HH:mm:ss") + (root.feedback ? "  ·  " + root.feedback : "")
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 9 * root.unit
+        font.pixelSize: 9 * root.textScale
       }
     }
 
@@ -100,7 +101,7 @@ Rectangle {
       wrapMode: Text.Wrap
       color: root.foreground
       font.family: root.fontFamily
-      font.pixelSize: 14 * root.unit
+      font.pixelSize: 14 * root.textScale
       lineHeight: 1.3
     }
 
@@ -113,7 +114,7 @@ Rectangle {
       wrapMode: Text.WrapAnywhere
       color: root.tone
       font.family: root.fontFamily
-      font.pixelSize: 9 * root.unit
+      font.pixelSize: 9 * root.textScale
       opacity: 0.8
     }
 
@@ -163,6 +164,7 @@ Rectangle {
             selection: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.12)
             fontFamily: root.fontFamily
             unit: root.unit
+            textScale: root.textScale
             enabled: root.actionsVisible && (modelData.action === "copy" || root.online) && (!["correct", "incorrect"].includes(modelData.action) || root.intent !== "")
             onTriggered: {
               const action = modelData.action;
@@ -201,7 +203,7 @@ Rectangle {
         text: "What should it have been?"
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 11 * root.unit
+        font.pixelSize: 11 * root.textScale
       }
       Flow {
         width: parent.width
@@ -225,7 +227,7 @@ Rectangle {
               wrapMode: Text.Wrap
               color: root.foreground
               font.family: root.fontFamily
-              font.pixelSize: 11 * root.unit
+              font.pixelSize: 11 * root.textScale
             }
             function choose() {
               if (!root.online)
@@ -256,6 +258,7 @@ Rectangle {
         selection: "transparent"
         fontFamily: root.fontFamily
         unit: root.unit
+        textScale: root.textScale
         onTriggered: root.choosingIntent = false
       }
     }

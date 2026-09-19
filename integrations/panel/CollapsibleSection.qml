@@ -10,6 +10,7 @@ Item {
   required property string fontFamily
   property string detail: ""
   property real unit: 1
+  property real textScale: unit
   property bool expanded: true
   default property alias content: body.data
   implicitHeight: header.height + (expanded ? body.height + 12 * unit : 0)
@@ -21,29 +22,31 @@ Item {
       id: header
       objectName: "sectionToggle"
       width: parent.width
-      height: 32 * root.unit
+      height: Math.max(32 * root.unit, heading.implicitHeight + 12 * root.unit)
       radius: 6 * root.unit
       color: hover.containsMouse ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.06) : "transparent"
       Text {
+        id: heading
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
-        width: parent.width - info.width - 32 * root.unit
+        width: Math.max(0, (info.visible ? info.x : arrow.x) - 12 * root.unit)
         text: root.title
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: 13 * root.unit
+        font.pixelSize: 13 * root.textScale
         font.weight: Font.DemiBold
         elide: Text.ElideRight
       }
       Text {
         id: info
+        visible: heading.implicitWidth + implicitWidth + arrow.width + 28 * root.unit <= parent.width
         anchors.right: arrow.left
         anchors.rightMargin: 12 * root.unit
         anchors.verticalCenter: parent.verticalCenter
         text: root.detail
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 10 * root.unit
+        font.pixelSize: 10 * root.textScale
       }
       Text {
         id: arrow
@@ -53,7 +56,7 @@ Item {
         text: "⌄"
         rotation: root.expanded ? 0 : -90
         color: hover.containsMouse ? root.accent : root.muted
-        font.pixelSize: 18 * root.unit
+        font.pixelSize: 18 * root.textScale
         Behavior on rotation {
           NumberAnimation {
             duration: 160

@@ -13,19 +13,22 @@ Item {
   required property color selection
   required property string fontFamily
   property real unit: 1
+  property real textScale: unit
   property bool animationsEnabled: true
   signal actionRequested(string action, string id, var value)
   readonly property int count: historyModel ? historyModel.count : 0
-  height: count ? Math.min(400 * unit, Math.max(110 * unit, list.contentHeight)) : 64 * unit
+  height: count ? Math.min(400 * unit, Math.max(110 * unit, list.contentHeight)) : Math.max(64 * unit, emptyLabel.implicitHeight + 16 * unit)
 
   Text {
-    anchors.fill: parent
+    id: emptyLabel
+    width: parent.width
+    anchors.verticalCenter: parent.verticalCenter
     visible: root.count === 0
     text: !root.available ? "Restart Companion to connect session history." : "Completed utterances will appear here.\nThis Companion run · all entries retained"
     textFormat: Text.PlainText
     color: root.muted
     font.family: root.fontFamily
-    font.pixelSize: 12 * root.unit
+    font.pixelSize: 12 * root.textScale
     lineHeight: 1.5
     wrapMode: Text.WordWrap
     verticalAlignment: Text.AlignVCenter
@@ -60,6 +63,7 @@ Item {
       selection: root.selection
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: root.textScale
       onActionRequested: (action, id, value) => root.actionRequested(action, id, value)
     }
     add: Transition {

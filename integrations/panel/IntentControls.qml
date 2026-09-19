@@ -15,6 +15,7 @@ Item {
   required property color selection
   required property string fontFamily
   property real unit: 1
+  property real textScale: unit
   signal intentEnabledRequested(string name, bool enabled)
 
   readonly property var shortcuts: {
@@ -50,6 +51,7 @@ Item {
       accent: root.accent
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: root.textScale
 
       Flow {
         width: parent.width
@@ -74,7 +76,7 @@ Item {
               wrapMode: Text.Wrap
               color: root.accent
               font.family: root.fontFamily
-              font.pixelSize: 13 * root.unit
+              font.pixelSize: 13 * root.textScale
             }
             Accessible.role: Accessible.StaticText
             Accessible.name: modelData.prefix + ": " + modelData.label
@@ -88,7 +90,7 @@ Item {
         wrapMode: Text.WordWrap
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 12 * root.unit
+        font.pixelSize: 12 * root.textScale
       }
     }
 
@@ -102,6 +104,7 @@ Item {
       accent: root.accent
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: root.textScale
 
       GridLayout {
         width: parent.width
@@ -154,7 +157,7 @@ Item {
                 wrapMode: Text.Wrap
                 color: chip.active ? root.foreground : root.muted
                 font.family: root.fontFamily
-                font.pixelSize: 13 * root.unit
+                font.pixelSize: 13 * root.textScale
               }
               Text {
                 id: stateLabel
@@ -163,7 +166,7 @@ Item {
                 wrapMode: Text.WordWrap
                 color: chip.active ? root.accent : root.muted
                 font.family: root.fontFamily
-                font.pixelSize: 11 * root.unit
+                font.pixelSize: 11 * root.textScale
               }
               Flow {
                 objectName: "intentCardShortcuts"
@@ -186,7 +189,7 @@ Item {
                       wrapMode: Text.Wrap
                       color: chip.active ? root.accent : root.muted
                       font.family: root.fontFamily
-                      font.pixelSize: 10 * root.unit
+                      font.pixelSize: 10 * root.textScale
                     }
                   }
                 }
@@ -215,7 +218,7 @@ Item {
                 text: intentTip.text
                 color: root.foreground
                 font.family: root.fontFamily
-                font.pixelSize: 11 * root.unit
+                font.pixelSize: 11 * root.textScale
               }
             }
             Accessible.role: Accessible.CheckBox
@@ -234,7 +237,7 @@ Item {
         wrapMode: Text.WordWrap
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 11 * root.unit
+        font.pixelSize: 11 * root.textScale
       }
     }
   }

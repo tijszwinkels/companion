@@ -41,6 +41,9 @@ screenshot thumbnails, initial fit, zoom/pan, and Escape/button/backdrop dismiss
 Markdown checks cover paragraph spacing, proportional prose versus smaller code,
 escaped markup, safe links, streamed fences, nested lists, tables, long-code wrapping,
 and actual Ctrl++/Ctrl+=/Ctrl+-/Ctrl+0 key events with draft preservation and zoom limits.
+Activity/history checks exercise the same reader zoom across Activity, Previous
+sessions and conversations, including narrow layouts at 200% and the ordering of
+History below Intentions.
 They also write `/tmp/companion-markdown-preview.png` for visual inspection.
 Scrolling checks send real Qt wheel events over the message body, check the faster
 step and both bounds, and preserve selection, composer focus and drafts during

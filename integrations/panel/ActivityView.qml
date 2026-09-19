@@ -17,6 +17,7 @@ Flickable {
   required property color selection
   required property string fontFamily
   property real unit: 1
+  property real textScale: unit
   property bool animationsEnabled: true
   property var history: []
   property var intents: []
@@ -49,6 +50,7 @@ Flickable {
       accent: root.accent
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: root.textScale
 
       Rectangle {
         width: parent.width
@@ -73,37 +75,9 @@ Flickable {
           accent: root.accent
           fontFamily: root.fontFamily
           unit: root.unit
+          textScale: root.textScale
           animationsEnabled: root.animationsEnabled && root.visible && listeningSection.expanded
         }
-      }
-    }
-
-    CollapsibleSection {
-      id: historySection
-      objectName: "historySection"
-      width: parent.width
-      title: "History"
-      detail: historyView.count + " · this run"
-      foreground: root.foreground
-      muted: root.muted
-      accent: root.accent
-      fontFamily: root.fontFamily
-      unit: root.unit
-      ActivityHistoryView {
-        id: historyView
-        width: parent.width
-        historyModel: root.activityHistoryModel
-        available: root.activityHistoryAvailable
-        intents: root.intents
-        online: root.online
-        foreground: root.foreground
-        muted: root.muted
-        accent: root.accent
-        selection: root.selection
-        fontFamily: root.fontFamily
-        unit: root.unit
-        animationsEnabled: root.animationsEnabled && historySection.expanded
-        onActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
       }
     }
 
@@ -119,7 +93,39 @@ Flickable {
       selection: root.selection
       fontFamily: root.fontFamily
       unit: root.unit
+      textScale: root.textScale
       onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
+    }
+
+    CollapsibleSection {
+      id: historySection
+      objectName: "historySection"
+      width: parent.width
+      title: "History"
+      detail: historyView.count + " · this run"
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      fontFamily: root.fontFamily
+      unit: root.unit
+      textScale: root.textScale
+      ActivityHistoryView {
+        id: historyView
+        width: parent.width
+        historyModel: root.activityHistoryModel
+        available: root.activityHistoryAvailable
+        intents: root.intents
+        online: root.online
+        foreground: root.foreground
+        muted: root.muted
+        accent: root.accent
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        textScale: root.textScale
+        animationsEnabled: root.animationsEnabled && historySection.expanded
+        onActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
+      }
     }
 
     Column {
@@ -137,7 +143,7 @@ Flickable {
         text: "Keyboard shortcuts"
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 11 * root.unit
+        font.pixelSize: 11 * root.textScale
         font.weight: Font.DemiBold
       }
       Text {
@@ -147,7 +153,7 @@ Flickable {
         wrapMode: Text.WordWrap
         color: root.muted
         font.family: root.fontFamily
-        font.pixelSize: 10 * root.unit
+        font.pixelSize: 10 * root.textScale
         lineHeight: 1.5
       }
     }

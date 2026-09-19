@@ -159,7 +159,7 @@ PanelWindow {
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
         focusShortcut: "⌥⌘D"
-        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nIn panel: Ctrl + plus/minus · text size / Ctrl + 0 · reset\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
         onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)

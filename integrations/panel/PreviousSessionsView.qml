@@ -11,6 +11,7 @@ Item {
   required property color selection
   required property string fontFamily
   property real unit: 1
+  property real textScale: unit
   property bool online: true
   signal reopenRequested(string id)
 
@@ -20,7 +21,7 @@ Item {
     text: root.online ? "Pick up where you left off." : "Reconnect to reopen a conversation."
     color: root.muted
     font.family: root.fontFamily
-    font.pixelSize: 12 * root.unit
+    font.pixelSize: 12 * root.textScale
     wrapMode: Text.Wrap
   }
   Text {
@@ -32,7 +33,7 @@ Item {
     lineHeight: 1.4
     color: root.muted
     font.family: root.fontFamily
-    font.pixelSize: 14 * root.unit
+    font.pixelSize: 14 * root.textScale
   }
   ListView {
     id: list
@@ -68,7 +69,7 @@ Item {
           elide: Text.ElideRight
           color: root.foreground
           font.family: root.fontFamily
-          font.pixelSize: 13 * root.unit
+          font.pixelSize: 13 * root.textScale
         }
         Text {
           width: parent.width
@@ -77,7 +78,7 @@ Item {
           textFormat: Text.PlainText
           color: root.muted
           font.family: root.fontFamily
-          font.pixelSize: 10 * root.unit
+          font.pixelSize: 10 * root.textScale
           wrapMode: Text.Wrap
         }
       }
@@ -87,7 +88,7 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         text: "↗"
         color: root.accent
-        font.pixelSize: 20 * root.unit
+        font.pixelSize: 20 * root.textScale
       }
       MouseArea {
         id: rowMouse

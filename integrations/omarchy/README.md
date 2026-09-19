@@ -100,7 +100,7 @@ have no trailing ellipsis. Listening, History, Voice shortcuts, and Intentions
 can each be collapsed by clicking the section header; their state lasts for the
 current UI lifetime.
 
-History sits below Listening. Completed utterances fade into cards, newest first,
+History sits below Intentions. Completed utterances fade into cards, newest first,
 with the original detected intent in a smaller corner label. It retains every
 completed utterance from the current **Companion listener run**; panel closes and
 socket reconnects preserve that run. The older Super+Alt+V picker remains a
@@ -117,6 +117,12 @@ Choosing a chip saves the intended intent separately from the original predictio
 Closing the choices leaves an incorrect label without inventing an intended one.
 Colors follow acknowledged storage changes, including the spoken labeling commands.
 The new history controls require a listener restart after upgrading the backend.
+
+Inside the focused panel, **Ctrl+plus** (or **Ctrl+equals**) increases text size,
+**Ctrl+minus** decreases it, and **Ctrl+0** resets it. Reader zoom ranges from
+80% to 200% in 10% steps and follows you between Activity, conversations, and
+Previous sessions. It lasts until the panel plugin restarts. Text reflows within
+the existing panel width; shortcuts do not affect other applications.
 
 Closing the panel or disconnecting stops its phrase animation. Opening it adopts
 a phrase still being processed but does not replay completed history. A newer

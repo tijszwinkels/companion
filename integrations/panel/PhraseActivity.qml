@@ -13,6 +13,7 @@ Item {
   required property color accent
   required property string fontFamily
   required property real unit
+  property real textScale: unit
 
   // Exposed timings also let headless tests exercise the complete lifecycle.
   property int riseDuration: 360
@@ -194,7 +195,7 @@ Item {
       elide: root.compact ? Text.ElideRight : Text.ElideNone
       color: root.phraseColor
       font.family: root.fontFamily
-      font.pixelSize: 9 * root.unit
+      font.pixelSize: 9 * root.textScale
       Accessible.ignored: true
     }
 
@@ -204,13 +205,13 @@ Item {
       text: root.phrase
       textFormat: Text.PlainText
       wrapMode: Text.Wrap
-      maximumLineCount: root.compact ? 2 : Math.max(1, Math.floor((root.height - 80 * root.unit) / (22 * root.unit)))
+      maximumLineCount: root.compact ? 2 : Math.max(1, Math.floor((root.height - 80 * root.unit) / (22 * root.textScale)))
       elide: Text.ElideRight
       color: root.phraseColor
       font.family: root.fontFamily
-      font.pixelSize: (root.compact ? 13 : 17) * root.unit
+      font.pixelSize: (root.compact ? 13 : 17) * root.textScale
       lineHeightMode: Text.FixedHeight
-      lineHeight: (root.compact ? 16 : 22) * root.unit
+      lineHeight: (root.compact ? 16 : 22) * root.textScale
       Accessible.ignored: true
     }
 

@@ -81,6 +81,77 @@ Item {
     name: "CompanionActivityHistory"
     when: windowShown
 
+    function showHistory(host) {
+      verify(waitForRendering(host));
+      const page = findChild(host, "fullActivityStatus");
+      const history = findChild(host, "historySection");
+      page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, history.y));
+      verify(waitForRendering(host));
+    }
+
+    function test_text_zoom_follows_activity_history_library_and_conversation() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("zoom-run");
+      state.update("zoom-run", entry(1, null));
+      const host = createTemporaryObject(viewComponent, scene);
+      const panel = host.panel;
+      panel.activityHistoryModel = state.model;
+      panel.forceActiveFocus();
+      verify(waitForRendering(host));
+      const page = findChild(host, "fullActivityStatus");
+      const history = findChild(host, "historySection");
+      const controls = findChild(host, "intentControls");
+      verify(history.y >= controls.y + controls.height, "History follows Intentions");
+      const originalWidth = panel.width;
+      keyClick(Qt.Key_Plus, Qt.ControlModifier);
+      compare(panel.zoomPercent, 110);
+      keyClick(Qt.Key_Equal, Qt.ControlModifier);
+      keyClick(Qt.Key_Plus, Qt.ControlModifier | Qt.ShiftModifier);
+      compare(panel.zoomPercent, 130);
+      keyClick(Qt.Key_Minus, Qt.ControlModifier);
+      compare(panel.zoomPercent, 120);
+      compare(controls.textScale, 1.2);
+      showHistory(host);
+      const utterance = findChild(host, "historyUtterance");
+      compare(utterance.font.pixelSize, 17);
+      compare(panel.width, originalWidth, "Reader zoom keeps the panel width");
+
+      panel.sessions = [{id: "zoom-chat", title: "Zoom test", status: "completed", error: "", messages: []}];
+      panel.selectedSessionId = "zoom-chat";
+      const chat = findChild(host, "sessionView");
+      const composer = findChild(chat, "sessionComposer");
+      composer.text = "Keep this draft";
+      panel.focusComposer();
+      keyClick(Qt.Key_Plus, Qt.ControlModifier);
+      compare(panel.zoomPercent, 130, "Conversation handles the key exactly once");
+      compare(composer.text, "Keep this draft");
+
+      panel.showingPrevious = true;
+      keyClick(Qt.Key_Minus, Qt.ControlModifier);
+      compare(panel.zoomPercent, 120);
+      compare(findChild(panel, "previousSessionsList").parent.textScale, 1.2);
+      panel.showingPrevious = false;
+      panel.selectedSessionId = "";
+      compare(page.textScale, 1.2);
+      keyClick(Qt.Key_0, Qt.ControlModifier);
+      compare(panel.zoomPercent, 100);
+      panel.selectedSessionId = "zoom-chat";
+      compare(composer.text, "Keep this draft");
+      panel.selectedSessionId = "";
+      panel.zoomPercent = 200;
+      keyClick(Qt.Key_Plus, Qt.ControlModifier);
+      compare(panel.zoomPercent, 200);
+      host.width = 360;
+      showHistory(host);
+      grabImage(host).save("/tmp/companion-activity-history-zoom.png");
+      panel.zoomPercent = 80;
+      keyClick(Qt.Key_Minus, Qt.ControlModifier);
+      compare(panel.zoomPercent, 80);
+      panel.animationsEnabled = false;
+      keyClick(Qt.Key_0, Qt.ControlModifier);
+      compare(panel.zoomPercent, 80, "Closed panels do not handle reader zoom");
+    }
+
     function test_pages_live_updates_and_reconnect_preserve_newer_feedback() {
       const state = createTemporaryObject(stateComponent, scene);
       const requests = [];
@@ -125,6 +196,7 @@ Item {
       state.update("run", entry(1, null));
       const host = createTemporaryObject(viewComponent, scene);
       host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
       const requests = [];
       host.panel.historyActionRequested.connect((action, id, value) => requests.push({
           action: action,
@@ -132,6 +204,7 @@ Item {
           value: value
         }));
       verify(waitForRendering(host));
+      showHistory(host);
       const card = findChild(host, "history-utterance-1");
       verify(card !== null);
       mouseMove(card, 10, 10);
@@ -169,6 +242,7 @@ Item {
       const host = createTemporaryObject(viewComponent, scene);
       host.panel.activityHistoryModel = state.model;
       verify(waitForRendering(host));
+      showHistory(host);
       const history = findChild(host, "historySection");
       const expandedHeight = history.height;
       mouseClick(findChild(history, "sectionToggle"));
