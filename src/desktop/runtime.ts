@@ -18,6 +18,7 @@ import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import { IntentPreferences } from './intent-preferences.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
+import { ActivityHistory } from './activity-history.ts';
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -39,6 +40,7 @@ export function desktopPaths(): { database: string; socket: string } {
 export class DesktopRuntime {
   readonly activity: Activity;
   private readonly history: UtteranceHistory;
+  private readonly activityHistory = new ActivityHistory();
   private readonly server: DesktopServer;
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
@@ -54,6 +56,8 @@ export class DesktopRuntime {
   private composerSession = '';
   private composerClient = 0;
   private composerRevision = 0;
+  private panelKeyboardFocused = false;
+  private panelKeyboardClient = 0;
   private panelSession = '';
   private panelClient = 0;
   private interactionRevision = 0;
@@ -86,6 +90,7 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        this.setPanelKeyboardFocus(false, clientId);
         if (this.mediaClients.delete(clientId)) {
           this.pause.setMediaPlaying(this.mediaClients.size > 0);
         }
@@ -145,7 +150,13 @@ export class DesktopRuntime {
         this.history.setIntent(id, intent);
         this.server.broadcast();
       },
-      labelPrevious: (id, correct) => this.history.labelPrevious(id, correct),
+      labelPrevious: (id, correct) => {
+        const target = this.history.labelPrevious(id, correct);
+        if (target) {
+          this.publishFeedback(target);
+        }
+        return target;
+      },
       outcome: (id, outcome) => {
         this.history.setOutcome(id, outcome);
 
@@ -161,7 +172,14 @@ export class DesktopRuntime {
         this.frameComposerRevisions.delete(id);
         this.processing.delete(id);
         this.delivery.finish(id);
-        this.history.finish(id);
+        const entry = this.history.finish(id);
+        if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
+          this.server.publish({
+            type: 'activity-entry',
+            sessionId: this.activityHistory.sessionId,
+            entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
+          });
+        }
         this.server.broadcast();
       },
     };
@@ -250,6 +268,8 @@ export class DesktopRuntime {
       processing: this.processing.size,
       preview: this.options.preview,
       history: this.ready ? this.history.snapshot() : [],
+      activitySessionId: this.activityHistory.sessionId,
+      activityHistoryCount: this.activityHistory.count,
       sessions: this.options.agents?.snapshot() ?? [],
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
@@ -262,6 +282,18 @@ export class DesktopRuntime {
       this.composerClient = clientId;
       this.composerRevision++;
       this.interactionRevision++;
+    }
+  }
+
+  private setPanelKeyboardFocus(focused: boolean, clientId: number): void {
+    if (!focused && clientId !== this.panelKeyboardClient) {
+      return;
+    }
+    const owner = focused ? clientId : 0;
+    if (focused !== this.panelKeyboardFocused || owner !== this.panelKeyboardClient) {
+      this.panelKeyboardFocused = focused;
+      this.panelKeyboardClient = owner;
+      this.composerRevision++;
     }
   }
 
@@ -297,7 +329,21 @@ export class DesktopRuntime {
     }
   }
 
-  private async handle(value: unknown, clientId: number): Promise<string> {
+  private publishFeedback(id: string): void {
+    // Voice feedback may target an earlier run. Persist it, but only refresh
+    // cards already belonging to the current run's Activity history.
+    if (!this.activityHistory.has(id)) {
+      return;
+    }
+    const entry = this.history.find(id)!;
+    this.server.publish({
+      type: 'activity-entry',
+      sessionId: this.activityHistory.sessionId,
+      entry: this.activityHistory.update(entry, this.history.feedback(id)),
+    });
+  }
+
+  private async handle(value: unknown, clientId: number): Promise<unknown> {
     this.signal.throwIfAborted();
 
     if (!this.ready || !value || typeof value !== 'object') {
@@ -305,6 +351,56 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+
+    if (request.action === 'activity-history') {
+      if (
+        request.sessionId !== this.activityHistory.sessionId ||
+        !Number.isSafeInteger(request.after) ||
+        !Number.isSafeInteger(request.through) ||
+        (request.after as number) < 0 ||
+        (request.through as number) < (request.after as number) ||
+        (request.through as number) > this.activityHistory.count
+      ) {
+        throw Error('Expected the current Activity session and a valid history range');
+      }
+      return this.activityHistory.page(request.after as number, request.through as number);
+    }
+
+    if (request.action === 'label-history' || request.action === 'start-history-agent') {
+      if (typeof request.id !== 'string' || !this.activityHistory.has(request.id)) {
+        throw Error('Choose a completed utterance from this Companion run');
+      }
+      if (request.action === 'label-history') {
+        if (
+          typeof request.correct !== 'boolean' ||
+          (request.actualIntent !== undefined &&
+            request.actualIntent !== null &&
+            (typeof request.actualIntent !== 'string' ||
+              !this.router?.processors.has(request.actualIntent)))
+        ) {
+          throw Error('Expected a correctness label and an optional registered intent');
+        }
+        if (this.options.preview) {
+          return 'preview';
+        }
+        this.history.label(
+          request.id,
+          request.correct,
+          request.actualIntent as string | null | undefined,
+        );
+        this.publishFeedback(request.id);
+        return 'labeled';
+      }
+      if (!this.options.agents) {
+        throw Error('Coding sessions are unavailable');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      const frame = await this.history.recordedFrame(request.id);
+      this.options.agents.start(frame, this.signal);
+      return 'started';
+    }
 
     if (request.action === 'set-intent-enabled') {
       if (
@@ -348,11 +444,16 @@ export class DesktopRuntime {
       if (
         typeof request.id !== 'string' ||
         typeof request.composerFocused !== 'boolean' ||
+        (request.keyboardFocused !== undefined && typeof request.keyboardFocused !== 'boolean') ||
         (!request.id && request.composerFocused) ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
         throw Error('Expected a visible agent session id (or empty id) and composerFocused');
       }
+      this.setPanelKeyboardFocus(
+        request.keyboardFocused === true || request.composerFocused,
+        clientId,
+      );
       this.setPanelState(request.id, request.composerFocused, clientId);
       return 'panel-recorded';
     }
@@ -473,7 +574,9 @@ export class DesktopRuntime {
           this.signal,
           this.run,
           () =>
-            this.composerRevision === composerRevision && this.composerSession === expectedComposer,
+            this.composerRevision === composerRevision &&
+            this.composerSession === expectedComposer &&
+            (expectedComposer !== '' || !this.panelKeyboardFocused),
           () => this.history.markPasteStarted(eventId, application),
         );
         return delivered ? 'sent' : 'skipped';

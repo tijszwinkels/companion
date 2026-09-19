@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir } from 'node:fs/promises';
+import { chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
-import type { Screenshot } from '../core/frame.ts';
+import type { Screenshot, UserSensorFrame } from '../core/frame.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
-import { saveArtifact } from './artifacts.ts';
+import { artifactPath, saveArtifact } from './artifacts.ts';
+
+export interface IntentFeedback {
+  correct: boolean | null;
+  actualIntent: string | null;
+}
 
 export interface HistoryEntry {
   id: string;
@@ -299,6 +304,29 @@ export class UtteranceHistory {
       return undefined;
     }
 
+    this.label(previous.id, correct);
+    return previous.id;
+  }
+
+  feedback(id: string): IntentFeedback {
+    const row = this.db
+      .prepare('SELECT correct, actual_intent FROM intent_feedback WHERE id = ?')
+      .get(id) as { correct: number; actual_intent: string | null } | undefined;
+    return { correct: row ? Boolean(row.correct) : null, actualIntent: row?.actual_intent ?? null };
+  }
+
+  /** Explicit correction preserves the detected intent and delivery outcome. */
+  label(id: string, correct: boolean, actualIntent: string | null = null): void {
+    const entry = this.find(id);
+    if (!entry?.intent) {
+      throw Error('This utterance has no detected intent to label');
+    }
+    if (correct && actualIntent !== null && actualIntent !== entry.intent) {
+      throw Error('A correct label must match the detected intent');
+    }
+    if (!correct && actualIntent === entry.intent) {
+      throw Error('Choose a different intended intent, or label this detection correct');
+    }
     this.db
       .prepare(
         `INSERT INTO intent_feedback (id, correct, recognized_intent, actual_intent)
@@ -308,14 +336,50 @@ export class UtteranceHistory {
           recognized_intent = excluded.recognized_intent,
           actual_intent = excluded.actual_intent`,
       )
-      .run(
-        previous.id,
-        Number(correct),
-        previous.recognized_intent,
-        correct ? previous.recognized_intent : null,
-      );
+      .run(id, Number(correct), entry.intent, correct ? entry.intent : actualIntent);
+  }
 
-    return previous.id;
+  /** Start a question from its original observation, not today's active screen. */
+  async recordedFrame(id: string): Promise<UserSensorFrame> {
+    const entry = this.find(id);
+    if (!entry) {
+      throw Error('Utterance not found');
+    }
+    const row = this.db
+      .prepare('SELECT window_address, window_title FROM utterances WHERE id = ?')
+      .get(id) as { window_address: string | null; window_title: string | null };
+    const path = artifactPath(dirname(this.path), entry.id, entry.observedAt, 'screenshots');
+    let png: Buffer;
+    try {
+      png = await readFile(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw Error('The original screenshot is unavailable for this utterance');
+      }
+      throw error;
+    }
+    if (
+      png.length < 24 ||
+      !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ) {
+      throw Error('The recorded screenshot is not a valid PNG');
+    }
+    return {
+      id: 0, // Explicit history action; it is not a new sensor observation.
+      observedAt: entry.observedAt,
+      utterance: entry.utterance,
+      screenshot: {
+        png,
+        capturedAt: entry.observedAt,
+        width: png.readUInt32BE(16),
+        height: png.readUInt32BE(20),
+        window: {
+          address: row.window_address ?? '',
+          app: entry.application ?? '',
+          title: row.window_title ?? '',
+        },
+      },
+    };
   }
 
   setOutcome(frameId: number, outcome: UtteranceOutcome): void {
@@ -340,8 +404,10 @@ export class UtteranceHistory {
     }
   }
 
-  finish(frameId: number): void {
+  finish(frameId: number): HistoryEntry | undefined {
+    const id = this.frameEntries.get(frameId);
     this.frameEntries.delete(frameId);
+    return id ? this.find(id) : undefined;
   }
 
   activeFrameId(id: string): number | undefined {

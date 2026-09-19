@@ -174,6 +174,8 @@ export class DesktopServer {
           action === 'media-playback' ||
           action === 'toggle-sounds' ||
           action === 'set-intent-enabled' ||
+          action === 'activity-history' ||
+          action === 'label-history' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
           action === 'composer-focus' ||

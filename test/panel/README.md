@@ -158,6 +158,23 @@ XKB codes 20/21, rather than relying on symbolic shortcut matching. Offscreen
 surface tests cover bounds, theme scale, monitor-size changes, right anchoring,
 and retaining width after closing and reopening.
 
+Activity history tests cover bounded reconnect pages interleaved with newer
+feedback, listener replacement, all hover action payloads, correction chips,
+feedback colors, section collapse without losing rows, more than 100 entries,
+and wrapped metadata at narrow widths. Synthetic previews are saved to
+`/tmp/companion-activity-history-preview.png` and its `-narrow` variant.
+Backend tests use real private sockets/SQLite and a recording agent backend;
+they check completion gating, retention, direct labels, missing screenshots,
+original observations, and panel-focus rejection before insertion.
+
+The native focus runner finally replaces its synthetic session server with the
+real DesktopRuntime and a private SQLite database. It exercises the adapter's
+history action handler from focused Activity through native focus release and
+the real keyboard delivery queue, checking exact inserted text and exactly one
+successful paste record. Feedback and recorded-frame session creation are checked
+with the same private runtime; the agent backend does not launch Pi. Mouse action
+wiring is exercised separately by the offscreen card tests.
+
 Contextual voice routing is covered offline by real private-socket tests:
 focused-composer eligibility, the exact continuation prompt, both start aliases,
 direct messages to an unfocused visible chat, and cancellation/preview/stale

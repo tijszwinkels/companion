@@ -20,6 +20,8 @@ PanelWindow {
   required property int processing
   property var history: []
   property var intents: []
+  property var activityHistoryModel: null
+  property bool activityHistoryAvailable: false
   property var sessions: []
   property var previousSessions: []
   property bool showingPrevious: false
@@ -33,6 +35,7 @@ PanelWindow {
 
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled)
+  signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
   signal previousRequested()
   signal reopenSessionRequested(string id)
@@ -52,6 +55,11 @@ PanelWindow {
   }
   function nextTab() { content.nextTab() }
   function resizeBy(logicalPixels) { surface.resizeBy(logicalPixels) }
+  function releaseForInsertion(address) {
+    root.screenshotSource = ""
+    focusControl.previousWindow = address
+    focusControl.toggle(address, true)
+  }
 
   Panel.ComposerFocus {
     id: focusControl
@@ -133,6 +141,8 @@ PanelWindow {
         processing: root.processing
         history: root.history
         intents: root.intents
+        activityHistoryModel: root.activityHistoryModel
+        activityHistoryAvailable: root.activityHistoryAvailable
         sessions: root.sessions
         previousSessions: root.previousSessions
         showingPrevious: root.showingPrevious
@@ -152,6 +162,7 @@ PanelWindow {
         shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
+        onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)
         onScreenshotRequested: (source, title) => {

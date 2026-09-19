@@ -92,6 +92,9 @@ ShellRoot {
         applicationText: applicationInput.text, composerText: input ? input.text : null})
     }
     function closePanel(): void { panel.opened = false }
+    function insertHistory(id: string): void { adapter.historyAction("paste", id, {}) }
+    function labelHistory(id: string): void { adapter.historyAction("label-history", id, {correct: false, actualIntent: "START_CODING_AGENT_SESSION"}) }
+    function startHistoryAgent(id: string): void { adapter.historyAction("start-history-agent", id, {}) }
     function restoreApplication(): void { adapter.restoreApplicationFocus(root.previousApplication) }
     function selectAnswer(): void {
       const bubble = root.findItem(panel.contentItem, "bubble-answer")

@@ -26,6 +26,8 @@ Item {
   property string focusShortcut: ""
   property var history: []
   property var intents: []
+  property var activityHistoryModel: null
+  property bool activityHistoryAvailable: false
   property var sessions: []
   property var previousSessions: []
   property bool showingPrevious: false
@@ -44,6 +46,7 @@ Item {
 
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled)
+  signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
   signal previousRequested()
   signal reopenSessionRequested(string id)
@@ -354,9 +357,12 @@ Item {
       animationsEnabled: root.animationsEnabled && visible
       history: root.history
       intents: root.intents
+      activityHistoryModel: root.activityHistoryModel
+      activityHistoryAvailable: root.activityHistoryAvailable
       selection: root.selection
       shortcutLabel: root.shortcutLabel
       onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
+      onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
     }
 
     SessionView {

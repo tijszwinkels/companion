@@ -8,16 +8,26 @@ import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { DatabaseSync } from 'node:sqlite';
 
 import { command } from '../../src/system/command.ts';
+import { DesktopRuntime } from '../../src/desktop/runtime.ts';
+import { PauseControl } from '../../src/core/pause-control.ts';
+import { AgentSessions } from '../../src/agents/sessions.ts';
+import { UserSensorRouter } from '../../src/core/router.ts';
+import { frame, processor, testDetector } from '../helpers.ts';
 
 assert.equal(process.env.COMPANION_TEST_NESTED, '1', 'Run through nested-hyprland.py --focus');
-const signal = AbortSignal.timeout(20000);
+const signal = AbortSignal.timeout(30000);
 const directory = await mkdtemp(join(tmpdir(), 'companion-panel-focus-'));
 const identity = `companion-focus-${process.pid}`;
 let shell: ReturnType<typeof spawn> | undefined;
 let shellLog = '';
 const clients = new Set<Socket>();
+const runtimeController = new AbortController();
+let historyRuntime: DesktopRuntime | undefined;
+let historyAgents: AgentSessions | undefined;
+let historyDatabase: DatabaseSync | undefined;
 const backend = createServer((client) => {
   clients.add(client);
   client.on('close', () => clients.delete(client));
@@ -70,6 +80,7 @@ async function adapterState() {
     selectedSessionId: string;
     composerFocusId: string;
     panelWidth: number;
+    activityHistoryCount: number;
   };
 }
 
@@ -305,8 +316,8 @@ try {
   // Outside Companion, resize the ordinary test application using the exact
   // native +/-100 dispatcher. Floating gives a predictable dimension without
   // relying on the compositor's tiled split direction.
-  const clients = JSON.parse((await command('hyprctl', ['-j', 'clients'], signal)).toString());
-  const application = clients.find(
+  const windows = JSON.parse((await command('hyprctl', ['-j', 'clients'], signal)).toString());
+  const application = windows.find(
     (client: { title: string }) => client.title === 'Companion focus fixture',
   );
   if (!application.floating) {
@@ -334,6 +345,105 @@ try {
     false,
     'Local shortcuts cannot open a hidden panel',
   );
+
+  // Replace the synthetic session server with the real desktop runtime and a
+  // private SQLite database. Its keyboard writer uses only this nested display;
+  // the agent backend records prompts without launching Pi or making requests.
+  for (const client of clients) client.destroy();
+  await new Promise<void>((resolve) => backend.close(() => resolve()));
+  const agentPrompts: string[] = [];
+  historyAgents = new AgentSessions(
+    {
+      backend: {
+        id: 'native-history-fixture',
+        label: 'Native history fixture',
+        dependencies: {},
+        async run(request) {
+          agentPrompts.push(request.prompt.text);
+        },
+      },
+    },
+    () => {},
+    join(directory, 'agents'),
+  );
+  historyAgents.start(
+    { ...frame, utterance: 'History fixture conversation' },
+    runtimeController.signal,
+  );
+  await historyAgents.idle();
+  const databasePath = join(directory, 'history.sqlite');
+  historyRuntime = new DesktopRuntime(new PauseControl(), () => {}, runtimeController.signal, {
+    database: databasePath,
+    socket: join(socketDirectory, 'control.sock'),
+    preview: false,
+    sounds: false,
+    agents: historyAgents,
+    mediaPause: false,
+  });
+  await historyRuntime.start();
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
+  for (const name of ['IGNORE', 'START_CODING_AGENT_SESSION']) processor(name).subscribe(router);
+  await historyRuntime.connectRouter(router);
+  const activity = historyRuntime.activity;
+  const insertion = 'Native history insertion.';
+  activity.transcribed?.({ ...frame, utterance: insertion });
+  await activity.screenshotCaptured?.(frame.id, frame.screenshot);
+  activity.intentRecognized?.(frame.id, 'IGNORE');
+  activity.outcome?.(frame.id, 'ignored');
+  activity.finished?.(frame.id);
+  historyDatabase = new DatabaseSync(databasePath, { readOnly: true });
+  const historyId = String(historyDatabase.prepare('SELECT id FROM utterances').get()!.id);
+  await waitFor(async () => (await adapterState()).activityHistoryCount === 1);
+  await command('qs', ['ipc', '-p', directory, 'call', 'companion', 'toggleComposerFocus'], signal);
+  await waitFor(async () => (await adapterState()).composerFocusId !== '');
+  await panelKey('0');
+  await waitFor(async () => (await adapterState()).selectedSessionId === '');
+  assert.equal((await state()).applicationActive, false);
+  const beforeInsertion = (await state()).applicationText;
+  await command(
+    'qs',
+    ['ipc', '-p', directory, 'call', 'fixture', 'insertHistory', historyId],
+    signal,
+  );
+  await waitFor(async () => (await state()).applicationText === beforeInsertion + insertion);
+  await waitFor(
+    async () =>
+      historyDatabase!
+        .prepare("SELECT COUNT(*) AS count FROM paste_events WHERE outcome = 'sent'")
+        .get()!.count === 1,
+  );
+  assert.equal(
+    (await state()).applicationActive,
+    true,
+    'History insert restores the real application',
+  );
+  assert.equal((await adapterState()).panelOpened, true, 'Inserting keeps the panel open');
+  await command(
+    'qs',
+    ['ipc', '-p', directory, 'call', 'fixture', 'labelHistory', historyId],
+    signal,
+  );
+  await waitFor(
+    async () =>
+      historyDatabase!.prepare('SELECT actual_intent FROM intent_feedback').get()?.actual_intent ===
+      'START_CODING_AGENT_SESSION',
+  );
+  await command(
+    'qs',
+    ['ipc', '-p', directory, 'call', 'fixture', 'startHistoryAgent', historyId],
+    signal,
+  );
+  await waitFor(async () => agentPrompts.includes(insertion));
+  assert.equal(
+    historyDatabase.prepare('SELECT recognized_intent FROM utterances').get()!.recognized_intent,
+    'IGNORE',
+  );
+  console.log(
+    'PASS: real runtime history pages, Activity focus release, exact insertion once, durable intent correction, and recorded-frame agent action',
+  );
   console.log(
     'PASS: physical Super+minus/equal resize, Activity focus retained, ordinary window resize with panel unfocused or hidden',
   );
@@ -347,6 +457,10 @@ try {
   console.error(shellLog.slice(-6000));
   throw error;
 } finally {
+  runtimeController.abort();
+  await historyAgents?.close();
+  await historyRuntime?.close();
+  historyDatabase?.close();
   // The parent discards the compositor and its binding. Never unbind an expired
   // Lua handle during cleanup, and never touch the user's compositor.
   if (shell && shell.exitCode === null) {

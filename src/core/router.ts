@@ -20,6 +20,7 @@ export interface IntentState {
   inferenceAvailable: boolean;
   prefixes: readonly string[];
   prefixAvailable: boolean;
+  acceptsEmptyPrefix?: boolean;
 }
 
 /** Owns subscriptions and dispatches each frame to exactly one processor. */
@@ -55,6 +56,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       prefixAvailable:
         this.prefixes.some((route) => route.processor === processor) &&
         (processor.availableForPrefix?.(context) ?? true),
+      ...(processor.acceptsEmptyPrefix ? { acceptsEmptyPrefix: true } : {}),
     }));
   }
 

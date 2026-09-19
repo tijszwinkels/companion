@@ -14,11 +14,18 @@ import { frame } from './helpers.ts';
 import type { AgentSessions } from '../src/agents/sessions.ts';
 import type { AgentSession, PreviousSession } from '../src/agents/types.ts';
 import type { IntentState } from '../src/core/router.ts';
+import type { ActivityHistoryEntry } from '../src/desktop/activity-history.ts';
 
 export interface DesktopMessage {
   type: string;
   action?: string;
-  result?: string;
+  result?:
+    | string
+    | { sessionId: string; entries: ActivityHistoryEntry[]; next: number | null; through: number };
+  activitySessionId?: string;
+  activityHistoryCount?: number;
+  sessionId?: string;
+  entry?: ActivityHistoryEntry;
   message?: string;
   soundsEnabled?: boolean;
   pauseReason?: string;

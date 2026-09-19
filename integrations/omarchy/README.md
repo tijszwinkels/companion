@@ -94,7 +94,29 @@ restart instead of displaying switches that would not affect routing.
 The Activity page starts with the listening area. Its shortcut labels, intention cards,
 and keyboard help occupy one measured vertical column. The page scrolls on small
 displays; keyboard help reserves its actual wrapped height instead of overlapping
-the switches. Intention cards use “intent” and “shortcut” for their routing modes.
+the switches. Intention cards use “intent” and “shortcut” for their routing modes
+and show their spoken prefixes, including when switched off. Standalone commands
+have no trailing ellipsis. Listening, History, Voice shortcuts, and Intentions
+can each be collapsed by clicking the section header; their state lasts for the
+current UI lifetime.
+
+History sits below Listening. Completed utterances fade into cards, newest first,
+with the original detected intent in a smaller corner label. It retains every
+completed utterance from the current **Companion listener run**; panel closes and
+socket reconnects preserve that run. The older Super+Alt+V picker remains a
+separate 100-entry view spanning restarts. A listener restart begins a fresh
+Activity history; saved database rows, recordings and feedback remain on disk.
+
+Hover a card for **Copy**, **Insert**, **New coding session**, **Label correct**,
+and **Label incorrect**. Copy keeps the text literal. Insert releases panel focus
+to the active ordinary application, checks focus through the delivery queue, and
+never presses Enter. New coding session uses the original saved screenshot and
+utterance, with an error if that screenshot is unavailable. Correct labels tint
+the card green; incorrect labels tint it red and disclose intent-choice chips.
+Choosing a chip saves the intended intent separately from the original prediction.
+Closing the choices leaves an incorrect label without inventing an intended one.
+Colors follow acknowledged storage changes, including the spoken labeling commands.
+The new history controls require a listener restart after upgrading the backend.
 
 Closing the panel or disconnecting stops its phrase animation. Opening it adopts
 a phrase still being processed but does not replay completed history. A newer

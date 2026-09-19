@@ -31,6 +31,7 @@ Item {
   property var pickerScreen: null
   property bool panelOpened: false
   property var pendingAgentInput: null
+  property var pendingHistoryInsert: null
   readonly property var transport: connection.item
   onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
   onOnlineChanged: {
@@ -58,10 +59,16 @@ Item {
     onConversationIdChanged: Qt.callLater(root.reportPanelState)
   }
 
+  Panel.ActivityHistoryState {
+    id: activityHistory
+    onPageRequested: request => root.send(request)
+  }
+
   function reportPanelState() {
     const id = root.panelOpened ? agentSessions.conversationId : ""
     root.send({action: "panel-state", id: id,
-      composerFocused: id !== "" && sidePanel.composerFocusId === id})
+      composerFocused: id !== "" && sidePanel.composerFocusId === id,
+      keyboardFocused: sidePanel.keyboardFocused})
   }
 
   function togglePanel() {
@@ -72,6 +79,7 @@ Item {
   }
 
   function closePanel() {
+    root.pendingHistoryInsert = null
     root.panelOpened = false
   }
 
@@ -137,6 +145,24 @@ Item {
     }
   }
 
+  function historyAction(action, id, value) {
+    if (!root.online) return
+    if (action !== "paste") {
+      root.send(Object.assign({action: action, id: id}, value))
+      return
+    }
+    if (root.pendingHistoryInsert) return
+    const previous = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+    const address = previous && !previous.startsWith("0x") ? "0x" + previous : previous
+    if (!/^0x[0-9a-f]+$/i.test(address)) {
+      root.lastErrorAction = "paste"
+      root.lastError = "Select an application window before inserting."
+      return
+    }
+    root.pendingHistoryInsert = {id: id, target: address}
+    sidePanel.releaseForInsertion(address)
+  }
+
   function receive(line) {
     try {
       const message = JSON.parse(line)
@@ -159,6 +185,9 @@ Item {
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready
+        if (root.online) activityHistory.observe(message.activitySessionId, message.activityHistoryCount)
+      } else if (message.type === "activity-entry") {
+        activityHistory.update(message.sessionId, message.entry)
       } else if (message.type === "agent-session") {
         agentSessions.update(message.session)
       } else if (message.type === "agent-history") {
@@ -168,10 +197,12 @@ Item {
       } else if (message.type === "agent-removed") {
         agentSessions.remove(message.id)
       } else if (message.type === "error") {
+        if (message.action === "activity-history") activityHistory.loading = false
         if (message.action === "send-agent") root.finishAgentInput(message.message)
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
+        if (message.action === "activity-history") activityHistory.page(message.result)
         if (message.action === "send-agent") root.finishAgentInput("")
         if (message.result === "skipped") {
           root.lastError = "Paste skipped: focus changed"
@@ -331,6 +362,7 @@ Item {
         selectedSessionId: agentSessions.conversationId,
         panelMonitor: sidePanel.monitorName,
         panelWidth: sidePanel.width,
+        activityHistoryCount: activityHistory.model.count,
         composerFocusId: sidePanel.composerFocusId, composerFocusPhase: sidePanel.composerFocusPhase,
         count: root.history.length, error: root.lastError })
     }
@@ -348,6 +380,8 @@ Item {
     root.speaking = false
     root.processing = 0
     root.history = []
+    root.pendingHistoryInsert = null
+    activityHistory.disconnected()
     root.intents = []
     root.cancel()
 
@@ -424,13 +458,16 @@ Item {
     processing: root.processing
     history: root.history
     intents: root.intents
+    activityHistoryModel: activityHistory.model
+    activityHistoryAvailable: activityHistory.available
     sessions: agentSessions.sessions
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent", "set-intent-enabled"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled) => root.send({action: "set-intent-enabled", name: name, enabled: enabled})
+    onHistoryActionRequested: (action, id, value) => root.historyAction(action, id, value)
     onSessionSelected: id => {
       agentSessions.showingPrevious = false
       agentSessions.selectedId = id
@@ -441,6 +478,28 @@ Item {
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
     onComposerFocusIdChanged: Qt.callLater(root.reportPanelState)
-    onRestoreFocusRequested: address => root.restoreApplicationFocus(address)
+    onKeyboardFocusedChanged: Qt.callLater(root.reportPanelState)
+    onRestoreFocusRequested: address => {
+      const pending = root.pendingHistoryInsert
+      root.pendingHistoryInsert = null
+      if (pending) {
+        const active = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+        const current = active && !active.startsWith("0x") ? "0x" + active : active
+        if (current !== pending.target) {
+          root.lastErrorAction = "paste"
+          root.lastError = "Paste skipped: focus changed"
+          return
+        }
+      }
+      root.restoreApplicationFocus(address)
+      if (pending && pending.target === address) {
+        // Report relinquished panel focus before queuing keyboard delivery.
+        // The backend rechecks both the ordinary window and this focus boundary.
+        Qt.callLater(function() {
+          root.reportPanelState()
+          root.send({action: "paste", id: pending.id, target: pending.target, composer: ""})
+        })
+      }
+    }
   }
 }

@@ -13,12 +13,7 @@ export async function saveArtifact(
   kind: 'screenshots' | 'audio',
   content: Buffer,
 ): Promise<void> {
-  const date = new Date(observedAt);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const extension = kind === 'screenshots' ? 'png' : 'wav';
-  const path = join(directory, 'data', `${year}-${month}-${day}`, kind, `${id}.${extension}`);
+  const path = artifactPath(directory, id, observedAt, kind);
   const temporary = `${path}.tmp`;
 
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -31,4 +26,19 @@ export async function saveArtifact(
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+/** Resolve only a database-owned UUID, never an arbitrary path from the UI. */
+export function artifactPath(
+  directory: string,
+  id: string,
+  observedAt: number,
+  kind: 'screenshots' | 'audio',
+): string {
+  const date = new Date(observedAt);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const extension = kind === 'screenshots' ? 'png' : 'wav';
+  return join(directory, 'data', `${year}-${month}-${day}`, kind, `${id}.${extension}`);
 }

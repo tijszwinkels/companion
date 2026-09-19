@@ -26,6 +26,8 @@ On connection and state changes, the server sends:
   "soundsEnabled": true,
   "processing": 0,
   "preview": false,
+  "activitySessionId": "listener-run-uuid",
+  "activityHistoryCount": 1,
   "history": [
     {
       "id": "stable-uuid",
@@ -73,6 +75,10 @@ Commands:
 {"action":"send-agent","id":"question-uuid","text":"Please explain that further"}
 {"action":"composer-focus","id":"question-uuid"}
 {"action":"panel-state","id":"question-uuid","composerFocused":true}
+{"action":"activity-history","sessionId":"listener-run-uuid","after":0,"through":1}
+{"action":"label-history","id":"utterance-uuid","correct":true}
+{"action":"label-history","id":"utterance-uuid","correct":false,"actualIntent":"START_CODING_AGENT_SESSION"}
+{"action":"start-history-agent","id":"utterance-uuid"}
 ```
 
 Replies are `{"type":"result","action":"paste","result":"sent"}` (or `skipped`, `preview`,
@@ -82,6 +88,44 @@ request when control replies overtake a slow paste. Sound feedback can be muted 
 of listening. Muting stops current and queued cues. `--no-sounds` sets the initial
 state; controls can enable sounds later. This setting lasts for the process's
 session. Preview mode is always silent and rejects `toggle-sounds`.
+
+The Activity panel has a separate **current listener run** history. An utterance
+joins it only at the pipeline's `finished` callback, after its outcome is known.
+There is no 100-row cap here. The in-memory index lasts until listener shutdown;
+the permanent SQLite records and recordings keep their existing retention.
+Closing/reopening the panel or reconnecting its socket does not begin a new run.
+
+`activity-history` returns an object in `result`: `{sessionId, entries, next,
+through}`. It reads at most 50 entries per request in completion order; `after`
+is the number already read and `through` is the count captured at sync start.
+`next: null` ends that sync. A new or changed card is independently published as
+`{type: "activity-entry", sessionId, entry}`. An entry contains the ordinary
+history fields plus `sequence`, `revision`, nullable boolean `correct`, and
+nullable `actualIntent`. Revisions prevent delayed pages from overwriting newer
+feedback. The adapter renders newest first. The current run is not attached to
+every state snapshot, so microphone updates do not resend an ever-growing list.
+
+`label-history` accepts only completed entries from this run, and only a
+registered intent for an explicit correction. Disabled/context-ineligible
+intents are still valid labels: feedback describes the intended action, not an
+instruction to run it. A null prediction cannot be labeled. Original prediction
+and outcome remain unchanged. Label correct sets actual intent to the prediction;
+label incorrect without a selection records null. Voice feedback updates these
+same rows and refreshes any corresponding current-run cards.
+
+`start-history-agent` loads the selected utterance's saved PNG and opens a new
+coding session with that original observation. A missing/corrupt recording is an
+error; it never captures a different current screen as a substitute. Preview
+does not start an agent or save a UI feedback label.
+
+History **Insert** uses the existing `paste` request and shared keyboard queue,
+never Enter. The adapter first relinquishes panel focus and restores the ordinary
+application that was active at the click. An intervening focus change cancels
+that handoff. `panel-state` also accepts optional `keyboardFocused`; this covers
+Activity as well as composers, since Hyprland's `activewindow` can still name the
+underlying application while a layer owns its keys. Refocusing the panel or
+changing the ordinary target invalidates queued insertion. Copy is a local,
+plain-text clipboard action and does not create a delivery/feedback record.
 
 `intents` comes from the router's registered processors. `enabled` is the user's
 switch; the two availability flags describe current context eligibility for the

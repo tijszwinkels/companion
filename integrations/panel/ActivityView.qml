@@ -20,8 +20,11 @@ Flickable {
   property bool animationsEnabled: true
   property var history: []
   property var intents: []
+  property var activityHistoryModel: null
+  property bool activityHistoryAvailable: false
   property string shortcutLabel: ""
   signal intentEnabledRequested(string name, bool enabled)
+  signal historyActionRequested(string action, string id, var value)
 
   contentWidth: width
   contentHeight: contents.height
@@ -36,30 +39,71 @@ Flickable {
     width: root.width
     spacing: 28 * root.unit
 
-    Rectangle {
+    CollapsibleSection {
+      id: listeningSection
       objectName: "listeningArea"
       width: parent.width
-      height: Math.max(220 * root.unit, Math.min(280 * root.unit, root.height * 0.28))
-      radius: 16 * root.unit
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.025)
-      border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-      clip: true
+      title: "Listening"
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      fontFamily: root.fontFamily
+      unit: root.unit
 
-      StatusView {
-        anchors.fill: parent
-        anchors.margins: 20 * root.unit
+      Rectangle {
+        width: parent.width
+        // Leave a little extra room for the paused-state explanation.
+        height: (root.paused ? 200 : 180) * root.unit
+        radius: 16 * root.unit
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.025)
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+        clip: true
+
+        StatusView {
+          anchors.fill: parent
+          anchors.margins: 12 * root.unit
+          online: root.online
+          paused: root.paused
+          pauseReason: root.pauseReason
+          speaking: root.speaking
+          processing: root.processing
+          history: root.history
+          foreground: root.foreground
+          muted: root.muted
+          accent: root.accent
+          fontFamily: root.fontFamily
+          unit: root.unit
+          animationsEnabled: root.animationsEnabled && root.visible && listeningSection.expanded
+        }
+      }
+    }
+
+    CollapsibleSection {
+      id: historySection
+      objectName: "historySection"
+      width: parent.width
+      title: "History"
+      detail: historyView.count + " · this run"
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      fontFamily: root.fontFamily
+      unit: root.unit
+      ActivityHistoryView {
+        id: historyView
+        width: parent.width
+        historyModel: root.activityHistoryModel
+        available: root.activityHistoryAvailable
+        intents: root.intents
         online: root.online
-        paused: root.paused
-        pauseReason: root.pauseReason
-        speaking: root.speaking
-        processing: root.processing
-        history: root.history
         foreground: root.foreground
         muted: root.muted
         accent: root.accent
+        selection: root.selection
         fontFamily: root.fontFamily
         unit: root.unit
-        animationsEnabled: root.animationsEnabled && root.visible
+        animationsEnabled: root.animationsEnabled && historySection.expanded
+        onActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
       }
     }
 
