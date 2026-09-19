@@ -8,6 +8,11 @@ export const choiceToolName = 'companion_choices';
 export const choiceTool = {
   name: choiceToolName,
   label: 'Offer choices',
+  promptSnippet:
+    'Offer optional choices above the Companion conversation input, with clickable and spoken labels.',
+  promptGuidelines: [
+    'Use companion_choices when asking the user to choose among a few answers or next steps; always allow a freeform reply and finish your turn after offering the choices.',
+  ],
   description:
     'Offer up to 8 optional next steps or answers above this Companion conversation’s input. ' +
     'Call with options such as ["[Tests] - Run the tests", "Yes", "No"], or objects with label and optional description. ' +

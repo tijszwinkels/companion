@@ -167,7 +167,8 @@ ephemeral composer controls. Changes also arrive as
 }
 ```
 
-`available` means the conversation can accept the choice; `voiceAvailable` also
+`available` means the conversation can accept the choice, including the global
+four-agent capacity limit; `voiceAvailable` also
 accounts for reserved labels and permanent-prefix collisions. Adapters additionally
 require an online, listening connection before highlighting voice labels. Show
 these controls only for the matching selected conversation. A nonempty `stopRunId`

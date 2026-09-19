@@ -8,7 +8,7 @@ import { AgentChoiceIntents, agentChoiceStates } from '../../src/agents/choice-i
 import registerChoices, { choiceTool } from '../../src/agents/choice-tool.ts';
 import { parseChoices } from '../../src/agents/choices.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
-import type { AgentBackend } from '../../src/agents/types.ts';
+import { chatMessage, type AgentBackend } from '../../src/agents/types.ts';
 import type { Detector } from '../../src/core/router.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
@@ -19,6 +19,7 @@ type Run = {
   request: Parameters<AgentBackend['run']>[0];
   signal: AbortSignal;
   publish: NonNullable<Parameters<AgentBackend['run']>[3]>;
+  emit: Parameters<AgentBackend['run']>[2];
   finish(): void;
 };
 
@@ -31,9 +32,9 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
         id: 'choices-fixture',
         label: 'Choices fixture',
         dependencies: {},
-        async run(request, signal, _emit, publish) {
+        async run(request, signal, emit, publish) {
           const done = deferred<void>();
-          runs.push({ request, signal, publish: publish!, finish: () => done.resolve() });
+          runs.push({ request, signal, publish: publish!, emit, finish: () => done.resolve() });
           await Promise.race([done.promise, stopped(signal)]);
         },
       },
@@ -205,8 +206,19 @@ test('replacement, pending choices, clearing and late backend callbacks never re
   first.run.publish(parseChoices(['Yes']));
   const pending = setup.input('Yes');
   assert.equal(agentChoiceStates(pending, [])[0].voiceAvailable, false);
+  const dictated: string[] = [];
+  processor('SEND_TEXT_TO_APPLICATION', async (input) => {
+    dictated.push(input.utterance);
+  }).subscribe(setup.router);
+  setup.detect(async (_input, intents) => {
+    assert.equal(
+      intents.some((intent) => intent.name.startsWith('CHOOSE_AGENT_OPTION_')),
+      false,
+    );
+    return 'SEND_TEXT_TO_APPLICATION';
+  });
   await setup.router.route(pending, signal());
-  assert.equal(setup.outcomes.at(-1), 'skipped');
+  assert.deepEqual(dictated, ['Yes']);
   const oldRevision = pending.interaction.agentChoices!.revision;
   first.run.publish(parseChoices(['Yes']));
   assert.notEqual(setup.input('Yes').interaction.agentChoices!.revision, oldRevision);
@@ -214,10 +226,105 @@ test('replacement, pending choices, clearing and late backend callbacks never re
   assert.equal(setup.sessions.interaction(first.id).agentChoices, undefined);
   await setup.complete(first.run, ['No']);
   await setup.router.route(pending, signal());
-  assert.equal(setup.outcomes.at(-1), 'skipped');
+  assert.deepEqual(dictated, ['Yes', 'Yes']);
+  assert.equal(
+    setup.runs.length,
+    1,
+    'A previously unavailable label cannot become a selection later',
+  );
   first.run.publish(parseChoices(['Late']));
   assert.equal(setup.sessions.interaction(first.id).agentChoices!.options[0].label, 'No');
   assert.throws(() => setup.sessions.selectChoice(first.id, oldRevision, 0, signal()), /expired/);
+});
+
+test('choice availability follows global run capacity and rechecks it after inference', async (context) => {
+  const setup = await fixture(context);
+  const first = await setup.start();
+  await setup.complete(first.run);
+  await setup.select(first.id, true);
+  await setup.desktop.runtime.connectRouter(setup.router);
+  const waiting = [];
+  for (let index = 0; index < 3; index++) {
+    waiting.push(await setup.start(`Other ${index}`));
+  }
+  assert.equal(agentChoiceStates(setup.input(''), [])[0].available, true);
+  setup.detect(async () => {
+    waiting.push(await setup.start('Fourth concurrent run'));
+    return 'CHOOSE_AGENT_OPTION_1';
+  });
+  await setup.router.route(setup.input('Please run the tests'), signal());
+  assert.equal(setup.outcomes.at(-1), 'skipped');
+  const unavailable = agentChoiceStates(setup.input(''), [])[0];
+  assert.equal(unavailable.available, false);
+  assert.equal(unavailable.voiceAvailable, false);
+  assert.match(unavailable.voiceReason, /Four questions/);
+  await waitFor(() =>
+    setup.desktop.messages.some(
+      (message) => message.actions?.choices[0]?.voiceReason === unavailable.voiceReason,
+    ),
+  );
+  assert.equal(setup.runs.length, 5);
+  await setup.sessions.stop(waiting[0].id);
+  assert.equal(agentChoiceStates(setup.input(''), [])[0].available, true);
+  await waitFor(() => setup.desktop.messages.at(-1)?.actions?.choices[0]?.available === true);
+  await setup.router.route(setup.input('Tests'), signal());
+  await waitFor(() => setup.runs.length === 6);
+  assert.equal(setup.runs.at(-1)!.request.id, first.id);
+});
+
+test('streamed text keeps choice actions stable, while a replacement publishes new identity', async (context) => {
+  const setup = await fixture(context);
+  const first = await setup.start();
+  await setup.select(first.id, true);
+  first.run.publish(parseChoices(['Yes']));
+  const revision = setup.sessions.interaction(first.id).agentChoices!.revision;
+  await waitFor(() =>
+    setup.desktop.messages.some((message) => message.actions?.choices[0]?.revision === revision),
+  );
+  const before = setup.desktop.messages.filter(
+    (message) => message.type === 'agent-actions',
+  ).length;
+  for (let index = 0; index < 3; index++) {
+    const message = chatMessage('stream', 'assistant', `Token ${index}`);
+    message.state = 'running';
+    first.run.emit(message);
+    await waitFor(() =>
+      setup.desktop.messages.some((event) =>
+        event.session?.messages.some((entry) => entry.text === message.text),
+      ),
+    );
+  }
+  assert.equal(
+    setup.desktop.messages.filter((message) => message.type === 'agent-actions').length,
+    before,
+  );
+  first.run.publish(parseChoices(['No']));
+  const replacement = setup.sessions.interaction(first.id).agentChoices!.revision;
+  await waitFor(() =>
+    setup.desktop.messages.some((message) => message.actions?.choices[0]?.revision === replacement),
+  );
+});
+
+test('long descriptions have bounded inference context but selection submits the full text', async (context) => {
+  const setup = await fixture(context);
+  const first = await setup.start();
+  const description = ('Explain the change. ' + 'Useful detail. '.repeat(60)).trim();
+  const options = Array.from({ length: 8 }, (_, index) => ({
+    label: `Option ${index + 1}`,
+    description,
+  }));
+  await setup.complete(first.run, options);
+  await setup.select(first.id, true);
+  setup.detect(async (_input, intents) => {
+    const choices = intents.filter((intent) => intent.name.startsWith('CHOOSE_AGENT_OPTION_'));
+    assert.equal(choices.length, 8);
+    assert.ok(choices.reduce((length, intent) => length + intent.instruction.length, 0) < 3000);
+    assert.match(choices[0].instruction, /Explain the change/);
+    return 'CHOOSE_AGENT_OPTION_1';
+  });
+  await setup.router.route(setup.input('Explain it first'), signal());
+  await waitFor(() => setup.runs.length === 2);
+  assert.equal(setup.runs[1].request.prompt.text, description);
 });
 
 test('tab changes, hide/show, close/reopen, and freeform during inference invalidate captured choices', async (context) => {

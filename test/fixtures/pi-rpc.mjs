@@ -151,17 +151,22 @@ function receive(request) {
       toolCallId: 'choices-2',
       args: {},
     });
-    const options =
-      request.message === 'choices malformed'
-        ? ['Yes', 'YES!']
-        : request.message === 'choices clear'
-          ? []
-          : ['[Tests] - Run the tests'];
+    const options = request.message.startsWith('choices malformed')
+      ? ['Yes', 'YES!']
+      : request.message.startsWith('choices clear')
+        ? []
+        : ['[Tests] - Run the tests'];
+    const replacement = result(options);
+    if (request.message.startsWith('choices missing')) {
+      replacement.details = { otherExtension: true };
+    } else if (request.message.startsWith('choices version')) {
+      replacement.details.companionChoices.version = 2;
+    }
     send({
       type: 'tool_execution_end',
       toolCallId: 'choices-2',
       isError: false,
-      result: result(options),
+      result: replacement,
     });
   }
 

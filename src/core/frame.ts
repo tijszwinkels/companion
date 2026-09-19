@@ -49,6 +49,7 @@ export interface InteractionContext {
   readonly agentChoices?: AgentChoiceSet;
   readonly agentRunId?: string;
   readonly agentAcceptsFollowUp?: boolean;
+  readonly agentFollowUpUnavailableReason?: string;
 }
 
 /** The part of a processor's registration that the LLM needs to see. */

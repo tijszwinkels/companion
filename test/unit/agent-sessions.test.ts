@@ -67,16 +67,27 @@ test('Pi loads the native choice extension and accepts only correlated successfu
     (options) => cleared.push(options),
   );
   assert.deepEqual(cleared.at(-1), []);
-  await assert.rejects(
-    backend.run(
-      { ...request, prompt: { text: 'choices malformed' } },
-      signal(),
-      () => {},
-      () => {},
-    ),
-    /distinct/,
-  );
 });
+
+for (const failure of ['malformed', 'missing', 'version']) {
+  test(`Pi preserves the answer when choice metadata is ${failure}`, async (context) => {
+    const { directory, settings } = await fixture(context);
+    const sessions = new AgentSessions({ backend: new PiBackend() }, () => {}, directory);
+    context.after(() => sessions.close());
+    const id = sessions.start({ ...frame, utterance: `choices ${failure}` }, signal());
+    await sessions.idle();
+    const view = sessions.snapshot().find((session) => session.id === id)!;
+    assert.equal(view.status, 'completed');
+    assert.equal(view.error, '');
+    assert.equal(view.choices, undefined, 'An invalid replacement clears the old options');
+    assert.equal(
+      view.messages.filter((message) => message.kind === 'assistant').at(-1)?.text,
+      '## Answer\n**42**',
+    );
+    assert.equal(view.messages.filter((message) => message.kind === 'notice').length, 1);
+    assert.match(view.messages.find((message) => message.kind === 'notice')!.text, /choices/i);
+  });
+}
 
 test('headless Pi receives the exact screenshot, streams tools/text, and waits through retries', async (context) => {
   const { directory, settings } = await fixture(context);

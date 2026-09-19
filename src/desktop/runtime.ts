@@ -19,7 +19,7 @@ import type { UserSensorRouter } from '../core/router.ts';
 import { IntentPreferences } from './intent-preferences.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
-import { agentChoiceStates } from '../agents/choice-intents.ts';
+import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -65,7 +65,13 @@ export class DesktopRuntime {
   private readonly frameComposerRevisions = new Map<number, number>();
   private router?: UserSensorRouter;
   private readonly intentPreferences: IntentPreferences;
-  private lastAgentActions = '';
+  private lastAgentActions?: AgentActions;
+  private routingRevision = 0;
+  private cachedAgentActions?: {
+    context: InteractionContext;
+    routingRevision: number;
+    actions: AgentActions;
+  };
 
   constructor(
     private readonly pause: PauseControl,
@@ -198,26 +204,51 @@ export class DesktopRuntime {
       router.setEnabled(name, !disabled.has(name));
     }
     this.router = router;
+    this.routingRevision++;
     router.on('change', this.routingChanged);
     this.server.broadcast();
   }
 
-  private readonly routingChanged = () => this.server.broadcast();
+  private readonly routingChanged = () => {
+    this.routingRevision++;
+    this.server.broadcast();
+  };
 
-  private agentActions(): object {
+  private agentActions(): AgentActions {
     const interaction = this.interactionContext();
-    return {
+    const previous = this.cachedAgentActions;
+    // Choice sets are immutable. Compare their identity and the few routing
+    // fields before rebuilding/serializing potentially long descriptions on
+    // every token flush. Capacity changes in another session still invalidate.
+    if (
+      previous &&
+      previous.routingRevision === this.routingRevision &&
+      previous.context.revision === interaction.revision &&
+      previous.context.agentSessionId === interaction.agentSessionId &&
+      previous.context.agentChoices === interaction.agentChoices &&
+      previous.context.agentRunId === interaction.agentRunId &&
+      previous.context.agentAcceptsFollowUp === interaction.agentAcceptsFollowUp &&
+      previous.context.agentFollowUpUnavailableReason === interaction.agentFollowUpUnavailableReason
+    ) {
+      return previous.actions;
+    }
+    const actions = {
       sessionId: interaction.agentSessionId,
       choices: agentChoiceStates({ interaction }, this.router?.reservedPrefixes() ?? []),
       stopRunId: interaction.agentRunId ?? '',
     };
+    this.cachedAgentActions = {
+      context: interaction,
+      routingRevision: this.routingRevision,
+      actions,
+    };
+    return actions;
   }
 
   private publishAgentActions(): void {
     const actions = this.agentActions();
-    const serialized = JSON.stringify(actions);
-    if (serialized !== this.lastAgentActions) {
-      this.lastAgentActions = serialized;
+    if (actions !== this.lastAgentActions) {
+      this.lastAgentActions = actions;
       this.server.publish({ type: 'agent-actions', actions });
     }
   }

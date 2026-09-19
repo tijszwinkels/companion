@@ -18,6 +18,12 @@ export interface AgentChoiceState {
   voiceReason: string;
 }
 
+export interface AgentActions {
+  sessionId: string;
+  choices: AgentChoiceState[];
+  stopRunId: string;
+}
+
 function collision(label: string, prefixes: readonly string[]): string {
   if (voiceLabel(label) === 'stop') {
     return '“stop” is reserved for stopping the current agent';
@@ -40,7 +46,10 @@ export function agentChoiceStates(
   return interaction.agentChoices.options.map((option, index) => {
     const available = interaction.agentAcceptsFollowUp === true;
     const voiceReason =
-      collision(option.label, prefixes) || (available ? '' : 'Available when the agent finishes');
+      collision(option.label, prefixes) ||
+      (available
+        ? ''
+        : interaction.agentFollowUpUnavailableReason || 'Available when the agent finishes');
     return {
       sessionId: interaction.agentSessionId,
       revision,
@@ -78,12 +87,12 @@ export class AgentChoiceIntents {
     }
     const routes: ScopedIntent[] = agentChoiceStates(context, prefixes).map((choice) => ({
       name: `CHOOSE_AGENT_OPTION_${choice.index + 1}`,
-      // Only a complete utterance matches locally. Colliding labels remain
-      // clickable, while permanent shortcuts (including disabled ones) win.
-      exactUtterance: collision(choice.label, prefixes) ? undefined : choice.label,
+      // Unavailable labels are ordinary speech. Only choices that were active
+      // at capture can reserve a label; those still recheck identity at dispatch.
+      exactUtterance: choice.voiceAvailable ? choice.label : undefined,
       instruction:
         choice.available && voiceLabel(choice.label) !== 'stop'
-          ? `The user chooses this option offered by the open coding agent: ${JSON.stringify(choice.label)}${choice.description ? ` — ${JSON.stringify(choice.description)}` : ''}. Select only when the utterance expresses this choice; freeform follow-ups remain separate.`
+          ? this.instruction(choice)
           : undefined,
       process: async (frame, signal) => {
         signal.throwIfAborted();
@@ -135,6 +144,15 @@ export class AgentChoiceIntents {
       });
     }
     return routes;
+  }
+
+  private instruction(choice: AgentChoiceState): string {
+    // The full description remains visible and is submitted unchanged. Routing
+    // only needs a short preview; eight long payloads should not dominate every
+    // detection request for this conversation.
+    const description = choice.description.replace(/\s+/gu, ' ');
+    const preview = description.length > 160 ? description.slice(0, 160) + '…' : description;
+    return `Choose the open agent's option ${JSON.stringify(choice.label)}${preview ? `: ${JSON.stringify(preview)}` : ''}. Select only if the utterance expresses this choice; otherwise keep it as a freeform follow-up.`;
   }
 
   private skip(frame: UserSensorFrame, reason: string): void {

@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import type { AgentBackend } from './types.ts';
+import { chatMessage, type AgentBackend } from './types.ts';
 import { object, PiTranscript } from './pi-transcript.ts';
-import { parseChoices } from './choices.ts';
+import { parseChoices, type AgentChoice } from './choices.ts';
 
 const systemInstruction = `You are answering a question in Companion, a desktop voice assistant.
 Answer the user's question directly, using Markdown where helpful. Use your tools when needed.
@@ -156,10 +156,26 @@ export class PiBackend implements AgentBackend {
       ) {
         const details = object(object(event.result).details);
         const choices = object(details.companionChoices);
-        if (choices.version !== 1) {
-          throw Error('Pi returned an unsupported Companion choice result');
+        let parsed: readonly AgentChoice[];
+        try {
+          if (choices.version !== 1) {
+            throw Error('Pi returned an unsupported Companion choice result');
+          }
+          parsed = parseChoices(choices.options);
+        } catch {
+          // Other Pi extensions can rewrite result metadata. A missing or
+          // invalid decoration must not abort an otherwise valid answer. Clear
+          // the previous set so it cannot masquerade as the new suggestions.
+          parsed = [];
+          emit(
+            chatMessage(
+              'choice-warning',
+              'notice',
+              'Could not display the agent’s choices. You can still write a freeform reply.',
+            ),
+          );
         }
-        replaceChoices?.(parseChoices(choices.options));
+        replaceChoices?.(parsed);
       }
 
       transcript.receive(event);

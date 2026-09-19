@@ -87,16 +87,32 @@ export class AgentSessions implements InspectableModule {
     agentChoices?: AgentChoiceSet;
     agentRunId?: string;
     agentAcceptsFollowUp: boolean;
+    agentFollowUpUnavailableReason: string;
   } {
     const session = this.sessions.get(id);
+    let unavailableReason = '';
+    if (!session || this.closed || session.closing) {
+      unavailableReason = 'Question session is unavailable';
+    } else if (session.busy) {
+      unavailableReason = 'Available when the agent finishes';
+    } else if (this.activeRuns() >= 4) {
+      unavailableReason = 'Four questions are already running; stop one or wait for an answer';
+    }
     return {
       agentChoices: session?.view.choices,
       agentRunId:
         session && !session.closing && !session.controller.signal.aborted && session.busy
           ? session.view.runId
           : undefined,
-      agentAcceptsFollowUp: Boolean(session && !this.closed && !session.closing && !session.busy),
+      agentAcceptsFollowUp: !unavailableReason,
+      agentFollowUpUnavailableReason: unavailableReason,
     };
+  }
+
+  private activeRuns(): number {
+    return [...this.sessions.values()].filter(({ view }) =>
+      ['starting', 'running'].includes(view.status),
+    ).length;
   }
 
   /** A click/voice selection carries identity, never a caller-supplied payload. */
@@ -136,10 +152,7 @@ export class AgentSessions implements InspectableModule {
     if (this.sessions.size + this.restoring.size >= 12) {
       throw Error('Close a question tab before starting another (12 tabs maximum)');
     }
-    const active = [...this.sessions.values()].filter(({ view }) =>
-      ['starting', 'running'].includes(view.status),
-    );
-    if (active.length >= 4) {
+    if (this.activeRuns() >= 4) {
       throw Error('Four questions are already running; stop one or wait for an answer');
     }
 
@@ -188,10 +201,7 @@ export class AgentSessions implements InspectableModule {
     if (!text.trim() || text.length > 4000) {
       throw Error('A follow-up requires 1–4000 characters');
     }
-    const active = [...this.sessions.values()].filter(({ view }) =>
-      ['starting', 'running'].includes(view.status),
-    );
-    if (active.length >= 4) {
+    if (this.activeRuns() >= 4) {
       throw Error('Four questions are already running; stop one or wait for an answer');
     }
 

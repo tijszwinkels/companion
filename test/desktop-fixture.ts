@@ -15,6 +15,7 @@ import type { AgentSessions } from '../src/agents/sessions.ts';
 import type { AgentSession, PreviousSession } from '../src/agents/types.ts';
 import type { IntentState } from '../src/core/router.ts';
 import type { ActivityHistoryEntry } from '../src/desktop/activity-history.ts';
+import type { AgentActions } from '../src/agents/choice-intents.ts';
 
 export interface DesktopMessage {
   type: string;
@@ -35,6 +36,8 @@ export interface DesktopMessage {
   previousSessions?: PreviousSession[];
   session?: AgentSession;
   intents?: IntentState[];
+  agentActions?: AgentActions;
+  actions?: AgentActions;
 }
 
 export async function waitFor(check: () => boolean, milliseconds = 2000): Promise<void> {
