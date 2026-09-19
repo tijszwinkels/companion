@@ -37,7 +37,18 @@ On connection and state changes, the server sends:
     }
   ],
   "sessions": [],
-  "previousSessions": []
+  "previousSessions": [],
+  "intents": [
+    {
+      "name": "SEND_TEXT_TO_APPLICATION",
+      "label": "Type text",
+      "enabled": true,
+      "toggleable": true,
+      "inferenceAvailable": true,
+      "prefixes": ["insert"],
+      "prefixAvailable": true
+    }
+  ]
 }
 ```
 
@@ -54,6 +65,7 @@ Commands:
 {"action":"toggle-pause"}
 {"action":"media-playback","playing":true}
 {"action":"toggle-sounds"}
+{"action":"set-intent-enabled","name":"SEND_TEXT_TO_APPLICATION","enabled":false}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
 {"action":"close-agent","id":"question-uuid"}
@@ -70,6 +82,29 @@ request when control replies overtake a slow paste. Sound feedback can be muted 
 of listening. Muting stops current and queued cues. `--no-sounds` sets the initial
 state; controls can enable sounds later. This setting lasts for the process's
 session. Preview mode is always silent and rejects `toggle-sounds`.
+
+`intents` comes from the router's registered processors. `enabled` is the user's
+switch; the two availability flags describe current context eligibility for the
+LLM and for explicit prefixes, independently of that switch and microphone pause.
+A route is usable when enabled, context-eligible, and listening. `IGNORE` is the
+required no-action fallback and cannot be disabled. Older servers omit `intents`;
+adapters must show no controls until a server supplies registrations.
+
+`set-intent-enabled` returns `intent-enabled` or `intent-disabled` after saving and
+broadcasting the new state. Unknown names, nonboolean values, and disabling
+`IGNORE` are rejected. Preferences live in `disabled-intents.json` beside the
+desktop database, with mode 0600 and atomic replacement. Writes are serialized
+across clients, and a failed save leaves the live switch unchanged. Desktop
+startup restores them before accepting sensor frames; `--no-desktop` does not
+load desktop preferences.
+
+Disabled intents are omitted from the next detection prompt. Their explicit
+prefixes are consumed as skipped commands, never reinterpreted by the LLM or a
+shorter prefix. Disabling during inference invalidates that result even if the
+intent is re-enabled before the answer arrives. It also cancels a processor still
+waiting to type; a keyboard process already typing may leave partial text and is
+recorded as interrupted. Accepted independent agent sessions and explicit manual
+history recovery keep their existing controls.
 
 `media-playback` reports whether any desktop media player is playing and returns
 `media-recorded`. Adapters must send a boolean, report changes, and resend current

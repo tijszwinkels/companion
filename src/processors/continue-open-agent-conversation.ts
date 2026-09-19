@@ -1,5 +1,5 @@
 import type { Activity } from '../core/activity.ts';
-import type { Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
+import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 
@@ -26,8 +26,12 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
     router.register(this);
   }
 
-  availableForInference(frame: UserSensorFrame): boolean {
+  availableForInference(frame: IntentContext): boolean {
     return Boolean(frame.interaction?.agentSessionId && frame.interaction.agentComposerFocused);
+  }
+
+  availableForPrefix(frame: IntentContext): boolean {
+    return Boolean(frame.interaction?.agentSessionId);
   }
 
   async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {

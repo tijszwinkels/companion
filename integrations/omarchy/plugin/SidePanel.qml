@@ -19,6 +19,7 @@ PanelWindow {
   required property bool speaking
   required property int processing
   property var history: []
+  property var intents: []
   property var sessions: []
   property var previousSessions: []
   property bool showingPrevious: false
@@ -30,6 +31,7 @@ PanelWindow {
   readonly property string composerFocusPhase: focusControl.phase
 
   signal closeRequested()
+  signal intentEnabledRequested(string name, bool enabled)
   signal sessionSelected(string id)
   signal previousRequested()
   signal reopenSessionRequested(string id)
@@ -76,8 +78,8 @@ PanelWindow {
   screen: selectedScreen
   visible: selectedScreen !== null && (opened || surface.reveal > 0)
   anchors { top: true; bottom: true; right: true }
-  // Keep the native Wayland surface stable while the card slides/resizes. The
-  // input region below excludes all transparent space beside and above it.
+  // Keep the native Wayland surface stable while the card slides. The input
+  // region below excludes the transparent space beside it.
   implicitWidth: Math.min(Style.space(600), selectedScreen ? selectedScreen.width : Style.space(600))
   color: "transparent"
 
@@ -107,7 +109,6 @@ PanelWindow {
     Panel.PanelSurface {
       id: surface
       opened: root.opened
-      expanded: content.expanded
       unit: Style.space(100) / 100
 
       BorderSurface {
@@ -127,6 +128,7 @@ PanelWindow {
         speaking: root.speaking
         processing: root.processing
         history: root.history
+        intents: root.intents
         sessions: root.sessions
         previousSessions: root.previousSessions
         showingPrevious: root.showingPrevious
@@ -145,6 +147,7 @@ PanelWindow {
         focusShortcut: "⌥⌘D"
         shortcutLabel: "Super + Alt + C · panel\nSuper + Alt + D · conversation focus\nAlt + 0 · Activity / 1–9 · conversations\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
+        onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)
         onScreenshotRequested: (source, title) => {

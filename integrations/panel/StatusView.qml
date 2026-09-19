@@ -48,7 +48,8 @@ Item {
   Item {
     id: microphone
     anchors.horizontalCenter: parent.horizontalCenter
-    y: root.compact ? Math.max(0, parent.height - height - 4 * root.unit) : Math.max(0, (parent.height - height) / 2)
+    y: root.compact ? Math.max(0, parent.height - height - 4 * root.unit)
+      : Math.max(0, parent.height - height - statusCaption.height - 18 * root.unit)
     width: 36 * root.iconUnit
     height: 48 * root.iconUnit
     opacity: root.online && !root.paused ? 1 : 0.45
@@ -96,11 +97,12 @@ Item {
   }
 
   Column {
+    id: statusCaption
     visible: !root.compact
     anchors.top: microphone.bottom
-    anchors.topMargin: 24 * root.unit
+    anchors.topMargin: 18 * root.unit
     width: parent.width
-    spacing: 18 * root.unit
+    spacing: 8 * root.unit
 
     Text {
       width: parent.width
@@ -109,7 +111,7 @@ Item {
       horizontalAlignment: Text.AlignHCenter
       color: root.foreground
       font.family: root.fontFamily
-      font.pixelSize: 22 * root.unit
+      font.pixelSize: 18 * root.unit
     }
 
     Text {
@@ -124,4 +126,5 @@ Item {
       font.pixelSize: 12 * root.unit
     }
   }
+
 }

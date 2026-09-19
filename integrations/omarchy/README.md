@@ -62,7 +62,7 @@ needed to update this adapter.
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
-**Super+Alt+C** toggles the compact panel in the bottom-right corner. The close
+**Super+Alt+C** toggles the full-height panel along the right edge. The close
 button also hides it. When closed, the panel disappears completely. Only the
 open panel body captures mouse input; the desktop beneath it remains usable.
 The vertical **Activity** tab has a stationary microphone whose colors
@@ -75,6 +75,19 @@ Failed, skipped, cancelled, or interrupted processing shows the outcome in red
 alongside any detected intent. Preview prefixes the intent with **PREVIEW** to
 make clear that no keyboard input was sent.
 
+Activity also shows floating voice-prefix labels and clickable intent switches,
+derived from the live router. Disabled intents turn grey and their voice labels
+disappear; context-unavailable intents say so and can still be switched on/off.
+Hover an intent to see its exact identifier. `IGNORE` is the always-on fallback.
+Switches are saved by Companion and restored on its next desktop-enabled start.
+Paused/offline labels are dimmed. A backend predating these controls asks for a
+restart instead of displaying switches that would not affect routing.
+
+The Activity page starts with the listening area. Its shortcut labels, intention cards,
+and keyboard help occupy one measured vertical column. The page scrolls on small
+displays; keyboard help reserves its actual wrapped height instead of overlapping
+the switches. Intention cards use “intent” and “shortcut” for their routing modes.
+
 Closing the panel or disconnecting stops its phrase animation. Opening it adopts
 a phrase still being processed but does not replay completed history. A newer
 phrase replaces an older result. Pausing shows **Paused** while any pending
@@ -83,19 +96,17 @@ through the existing service.
 
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
-Monitor changes are observed while the panel is open. The panel body is 420 by
-400 logical pixels at the default theme scale, capped to the available screen
-space. Quick questions open a new tab with a user bubble, streamed Markdown
-answers, and expandable tool bubbles. Once its content exceeds the compact
-body, a session uses 600 logical pixels of width and all available height.
-The bottom edge stays fixed while the panel grows upward. The visible card
-animates inside a stable native surface, avoiding per-frame Wayland window
-resizes; only the visible card captures input.
+Monitor changes are observed while the panel is open. Every tab, including
+Activity, uses 600 logical pixels of width at the default theme scale (capped
+to the screen) and all available height below the bar. Quick questions open
+a new tab with a user bubble, streamed Markdown answers, and expandable tool
+bubbles. Switching tabs keeps the panel the same size. The visible card slides
+inside a stable native surface; only the visible card captures input.
 A compact Activity visualization sits above each conversation and Previous
 sessions, outside the scrolling content. Its arrow collapses it to a one-line
 status or expands the microphone and phrase animation. The choice follows you
 between tabs until the plugin is restarted; hidden animations stop immediately.
-Returning to Activity restores the compact body. Each session has Stop and
+Each session has Stop and
 Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
 inserts a newline). A follow-up resumes its Pi conversation. Closing the panel
 keeps its questions running and retains its drafts. Right-click a question tab or

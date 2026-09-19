@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import type { Activity } from '../core/activity.ts';
@@ -15,6 +15,8 @@ import { UtteranceHistory } from './history.ts';
 import { DesktopServer } from './server.ts';
 import { SoundFeedback } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
+import type { UserSensorRouter } from '../core/router.ts';
+import { IntentPreferences } from './intent-preferences.ts';
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -56,6 +58,8 @@ export class DesktopRuntime {
   private panelClient = 0;
   private interactionRevision = 0;
   private readonly frameComposerRevisions = new Map<number, number>();
+  private router?: UserSensorRouter;
+  private readonly intentPreferences: IntentPreferences;
 
   constructor(
     private readonly pause: PauseControl,
@@ -72,6 +76,9 @@ export class DesktopRuntime {
     private readonly run: RunCommand = command,
   ) {
     this.history = new UtteranceHistory(options.database);
+    this.intentPreferences = new IntentPreferences(
+      join(dirname(options.database), 'disabled-intents.json'),
+    );
     this.databaseLock = new InstanceLock(options.database + '.lock');
     this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview);
     this.server = new DesktopServer(
@@ -87,6 +94,7 @@ export class DesktopRuntime {
         }
         if (clientId === this.composerClient) {
           this.setComposerFocus('', 0);
+          this.server.broadcast();
         }
       },
     );
@@ -156,6 +164,22 @@ export class DesktopRuntime {
     };
   }
 
+  /** Attach after processor registration, before accepting any sensor frames. */
+  async connectRouter(router: UserSensorRouter): Promise<void> {
+    if (this.router) {
+      throw Error('Desktop router already connected');
+    }
+    const disabled = await this.intentPreferences.load();
+    for (const name of router.processors.keys()) {
+      router.setEnabled(name, !disabled.has(name));
+    }
+    this.router = router;
+    router.on('change', this.routingChanged);
+    this.server.broadcast();
+  }
+
+  private readonly routingChanged = () => this.server.broadcast();
+
   async start(): Promise<void> {
     // Hold database ownership from before recovery until after SQLite closes.
     // The separate socket lock protects stale-socket recovery, including when
@@ -212,6 +236,7 @@ export class DesktopRuntime {
       history: this.ready ? this.history.snapshot() : [],
       sessions: this.options.agents?.snapshot() ?? [],
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
+      intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
     };
   }
 
@@ -241,6 +266,7 @@ export class DesktopRuntime {
     if (!id && clientId !== this.panelClient) {
       return;
     }
+    const previousRevision = this.interactionRevision;
     const owner = id ? clientId : 0;
     if (id !== this.panelSession || owner !== this.panelClient) {
       this.panelSession = id;
@@ -249,6 +275,9 @@ export class DesktopRuntime {
     }
     if (focused || clientId === this.composerClient) {
       this.setComposerFocus(focused ? id : '', focused ? clientId : 0);
+    }
+    if (this.interactionRevision !== previousRevision) {
+      this.server.broadcast();
     }
   }
 
@@ -260,6 +289,27 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+
+    if (request.action === 'set-intent-enabled') {
+      if (
+        !this.router ||
+        typeof request.name !== 'string' ||
+        typeof request.enabled !== 'boolean'
+      ) {
+        throw Error('Expected an intent name and boolean enabled state');
+      }
+      const router = this.router;
+      const name = request.name;
+      const enabled = request.enabled;
+      if (!router.processors.has(name) || (name === 'IGNORE' && !enabled)) {
+        throw Error('Unknown intent, or an attempt to disable the IGNORE fallback');
+      }
+      await this.intentPreferences.setEnabled(name, enabled, () =>
+        router.setEnabled(name, enabled),
+      );
+      this.log('intent-control', `${name}: ${enabled ? 'enabled' : 'disabled'}`);
+      return enabled ? 'intent-enabled' : 'intent-disabled';
+    }
 
     if (request.action === 'media-playback') {
       if (typeof request.playing !== 'boolean') {
@@ -300,6 +350,7 @@ export class DesktopRuntime {
       }
       if (request.id !== '' || clientId === this.composerClient) {
         this.setComposerFocus(request.id, request.id ? clientId : 0);
+        this.server.broadcast();
       }
       return 'focus-recorded';
     }
@@ -429,6 +480,7 @@ export class DesktopRuntime {
   }
 
   async close(): Promise<void> {
+    this.router?.off('change', this.routingChanged);
     this.unsubscribeAgents?.();
     this.ready = false;
     this.speaking = false;

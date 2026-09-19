@@ -173,6 +173,7 @@ export class DesktopServer {
           action === 'toggle-pause' ||
           action === 'media-playback' ||
           action === 'toggle-sounds' ||
+          action === 'set-intent-enabled' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
           action === 'composer-focus' ||

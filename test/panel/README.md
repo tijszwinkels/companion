@@ -18,8 +18,8 @@ adapter's end-to-end response to real playback still needs a desktop check.
 
 These checks cover overlapping speech/processing state, pause, disconnect and
 reconnect, the close button, and monitor geometry changes without hotplug.
-Surface tests exercise bottom/right anchoring through animated expansion and
-shrinkage, rapid slide reversal, and bounds on small displays. Phrase
+Surface tests exercise full-height sizing, rapid slide reversal, and bounds on
+small displays. Phrase
 tests cover the rise, processing/result colors and label positions, the shared
 fade, fast completion, interrupted animations, literal transcript text, and
 opening without replaying old results. `npm test` also exercises monitor selection,
@@ -33,7 +33,7 @@ and rejection of a conflicting focus shortcut before any configuration writes.
 
 Session checks cover incremental bubbles, opening a new tab only once, reconnect
 snapshots, Markdown versus literal user/tool text, persistent tool disclosure,
-content-driven expansion, Stop/Close controls, per-tab drafts, Enter/Shift+Enter,
+Stop/Close controls, per-tab drafts, Enter/Shift+Enter,
 and retaining edits across submission acknowledgements or errors. Library checks
 cover right-click close, stable hover over the animated cross, history selection,
 explicit restoration of known IDs, retained drafts, visible control errors,
@@ -55,6 +55,18 @@ retaining drafts, focus, and the collapsed setting across tabs. Synthetic
 previews are saved to `/tmp/companion-activity-{processing,result,collapsed}-preview.png`.
 Alt+0 and the compact header have offscreen coverage; their native desktop
 interaction has not been exercised by automated input.
+Intent-control checks click the real Activity chips, wait for backend-owned
+state changes, and check off/context/paused/offline colors, shortcut visibility,
+the fixed IGNORE fallback, and scrolling in small panels. The synthetic preview
+is `/tmp/companion-intent-controls-preview.png`. Node tests cover prompt exclusion,
+disabled-prefix consumption, late inference, cancellation, private socket control,
+validation, serialized atomic preference writes and reload. These tests do not
+inject input into the desktop or change the user's stored switches.
+Activity layout checks include the production four-line keyboard-help text,
+monospace and proportional fonts, narrow/short displays, and a larger theme scale.
+They verify measured spacing between listening, controls and keyboard
+help, text fitting its cards, and a clipped area for live phrases. Additional
+previews are `/tmp/companion-activity-layout-{tall,small,processing,result}.png`.
 The synthetic image fixture has no user content. The suite writes offscreen visual
 previews to `/tmp/companion-{session,history,screenshot}-preview.png` for inspection. The Node suite
 uses a real fixture subprocess for Pi RPC framing, images, streaming, retries,
@@ -78,7 +90,7 @@ options and validation limits. Its outer window may briefly take desktop focus;
 warn the user before running it. All generated input targets the nested compositor.
 
 For a desktop check, install this worktree's adapter, then use **Super+Alt+C**.
-Verify the panel appears at the bottom right of the external monitor, without changing
+Verify the panel fills the available height along the right edge of the external monitor, without changing
 keyboard focus or window sizes. Toggle rapidly during its slide and close it
 with the button. While open, unplugging the external display should move it to
 the remaining display. These diagnostic calls report and close the actual panel:
@@ -89,7 +101,7 @@ omarchy-shell companion closePanel
 ```
 
 The status reply includes `panelOpened`, `panelVisible`, and `panelMonitor`.
-Check that clicks above the compact open body reach the application underneath
+Check that clicks to the left of the open panel reach the application underneath
 without moving keyboard focus, and that closing leaves no visible control.
 `panelVisible` stays true during the short closing animation; mouse input is
 released immediately when `panelOpened` becomes false. Opening speech history
@@ -100,8 +112,8 @@ For a session desktop check, say **“quick question …”**, verify its tab op
 and click its composer after the answer finishes. Check typing, **“insert …”**,
 and **“enter …”**, then move focus away during a slow dictation and verify it is
 skipped or that Enter is suppressed. Check that a completed answer retains its
-context on a follow-up, closing/reopening preserves drafts, and a long answer
-expands the panel without reserving workspace area. Session tabs use OnDemand
+context on a follow-up, closing/reopening preserves drafts, and switching between
+Activity and conversations keeps the same panel size without reserving workspace area. Session tabs use OnDemand
 keyboard focus; Activity still uses None. Give the user the advance reload and
 focus-change warning before running any of these desktop checks.
 Use **Super+Alt+D** with a selected conversation to focus the input; use it again

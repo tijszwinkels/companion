@@ -25,17 +25,17 @@ Item {
   property string shortcutLabel: ""
   property string focusShortcut: ""
   property var history: []
+  property var intents: []
   property var sessions: []
   property var previousSessions: []
   property bool showingPrevious: false
   property string controlError: ""
   property string selectedSessionId: ""
-  property var expandedSessions: ({})
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
-  readonly property bool expanded: showingPrevious || selectedSession !== null && expandedSessions[selectedSessionId] === true
   readonly property string composerFocusId: chat.composerFocusId
 
   signal closeRequested()
+  signal intentEnabledRequested(string name, bool enabled)
   signal sessionSelected(string id)
   signal previousRequested()
   signal reopenSessionRequested(string id)
@@ -308,12 +308,11 @@ Item {
       onReopenRequested: id => root.reopenSessionRequested(id)
     }
 
-    StatusView {
+    ActivityView {
       objectName: "fullActivityStatus"
       visible: !root.showingPrevious && root.selectedSession === null
       anchors.fill: parent
       anchors.topMargin: 48 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
-      anchors.bottomMargin: 36 * root.unit
       online: root.online
       paused: root.paused
       pauseReason: root.pauseReason
@@ -326,6 +325,10 @@ Item {
       unit: root.unit
       animationsEnabled: root.animationsEnabled && visible
       history: root.history
+      intents: root.intents
+      selection: root.selection
+      shortcutLabel: root.shortcutLabel
+      onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
     }
 
     SessionView {
@@ -347,27 +350,7 @@ Item {
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)
-      onOverflowed: {
-        // Latch expansion for this session. Reflowing into a wider window must
-        // not immediately shrink it and oscillate between the two sizes.
-        if (root.selectedSession && !root.expanded) {
-          const expanded = Object.assign({}, root.expandedSessions)
-          expanded[root.selectedSessionId] = true
-          root.expandedSessions = expanded
-        }
-      }
     }
 
-    Text {
-      anchors.bottom: parent.bottom
-      width: parent.width
-      text: root.shortcutLabel
-      visible: !root.showingPrevious && root.selectedSession === null
-      textFormat: Text.PlainText
-      horizontalAlignment: Text.AlignHCenter
-      color: root.muted
-      font.family: root.fontFamily
-      font.pixelSize: 11 * root.unit
-    }
   }
 }

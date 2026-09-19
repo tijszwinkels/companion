@@ -13,6 +13,7 @@ import type { RunCommand } from '../src/sensors/screen/capture.ts';
 import { frame } from './helpers.ts';
 import type { AgentSessions } from '../src/agents/sessions.ts';
 import type { AgentSession, PreviousSession } from '../src/agents/types.ts';
+import type { IntentState } from '../src/core/router.ts';
 
 export interface DesktopMessage {
   type: string;
@@ -26,6 +27,7 @@ export interface DesktopMessage {
   sessions?: AgentSession[];
   previousSessions?: PreviousSession[];
   session?: AgentSession;
+  intents?: IntentState[];
 }
 
 export async function waitFor(check: () => boolean, milliseconds = 2000): Promise<void> {

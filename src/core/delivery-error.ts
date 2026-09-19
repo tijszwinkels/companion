@@ -7,11 +7,18 @@ export class DeliveryInterruptedError extends Error {
   }
 }
 
+/** Explicitly disabling a route cancels its pending work without stopping capture. */
+export class IntentDisabledError extends Error {
+  constructor() {
+    super('Intent disabled; pending routing aborted');
+  }
+}
+
 /** Preserve delivery uncertainty even when a pause or shutdown also aborted. */
 export function failureOutcome(error: unknown, signal: AbortSignal): UtteranceOutcome {
   if (error instanceof DeliveryInterruptedError) {
     return 'interrupted';
   }
 
-  return signal.aborted ? 'cancelled' : 'error';
+  return signal.aborted || error instanceof IntentDisabledError ? 'cancelled' : 'error';
 }

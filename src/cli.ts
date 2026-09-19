@@ -160,6 +160,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       activity,
     ).subscribe(router);
 
+    await desktop?.connectRouter(router);
+
     // These constructors are inert. Named dependencies are both the actual
     // objects used for processing and the connections visible to inspection.
     const screen = new ActiveWindowSensor(command);

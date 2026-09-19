@@ -52,6 +52,9 @@ export interface Intent {
   instruction: string;
 }
 
+/** Context available both during routing and before speech, for the live UI. */
+export type IntentContext = Pick<UserSensorFrame, 'interaction'>;
+
 /** A processor can be selected by the LLM, by a spoken prefix, or by both. */
 export interface UserSensorProcessor extends InspectableModule {
   name: string;
@@ -60,7 +63,10 @@ export interface UserSensorProcessor extends InspectableModule {
   instruction?: string;
 
   /** Optional per-frame eligibility; explicit prefixes still reach process(). */
-  availableForInference?(frame: UserSensorFrame): boolean;
+  availableForInference?(context: IntentContext): boolean;
+
+  /** Optional context requirement shared by prefix routing and shortcut labels. */
+  availableForPrefix?(context: IntentContext): boolean;
 
   /** Case-insensitive command prefixes, removed before process receives a frame. */
   prefixes?: readonly string[];

@@ -40,7 +40,6 @@ Item {
     && composer.text.trim().length > 0 && composer.text.length <= 4000
   readonly property string composerFocusId: online && visible && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
-  signal overflowed()
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
@@ -139,12 +138,9 @@ Item {
     }
   }
 
-  function scrollAndMeasure() {
+  function followLatestMessage() {
     if (root.followEnd) {
       transcript.positionViewAtEnd()
-    }
-    if (root.visible && transcript.height > 0 && transcript.contentHeight > transcript.height + 4) {
-      root.overflowed()
     }
   }
 
@@ -175,11 +171,11 @@ Item {
     while (messages.count > incoming.length) {
       messages.remove(messages.count - 1)
     }
-    Qt.callLater(root.scrollAndMeasure)
+    Qt.callLater(root.followLatestMessage)
   }
 
   onSessionChanged: synchronize()
-  onVisibleChanged: Qt.callLater(root.scrollAndMeasure)
+  onVisibleChanged: Qt.callLater(root.followLatestMessage)
   Component.onCompleted: synchronize()
   ListModel { id: messages }
 
@@ -193,8 +189,8 @@ Item {
     model: messages
     boundsBehavior: Flickable.StopAtBounds
     onMovementEnded: root.followEnd = atYEnd
-    onContentHeightChanged: Qt.callLater(root.scrollAndMeasure)
-    onHeightChanged: Qt.callLater(root.scrollAndMeasure)
+    onContentHeightChanged: Qt.callLater(root.followLatestMessage)
+    onHeightChanged: Qt.callLater(root.followLatestMessage)
     ScrollBar.vertical: ScrollBar {
       visible: transcript.contentHeight > transcript.height
       contentItem: Rectangle { color: root.muted; radius: 2; implicitWidth: 4 }

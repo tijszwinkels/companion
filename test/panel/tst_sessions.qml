@@ -9,8 +9,8 @@ Item {
   Component {
     id: panelComponent
     Panel.PanelContent {
-      width: expanded ? 600 : 420
-      height: expanded ? 900 : 400
+      width: 600
+      height: 900
       online: true
       paused: false
       speaking: false
@@ -88,22 +88,6 @@ Item {
       compare(findChild(panel, "bubble-tool"), bubble)
       compare(bubble.expanded, true)
       compare(bubble.body, "complete output")
-    }
-
-    function test_content_expands_once_and_activity_stays_compact() {
-      const panel = createTemporaryObject(panelComponent, parent)
-      panel.sessions = [session([message("reply", "assistant", "A line of the answer.\n\n".repeat(60))])]
-      panel.selectedSessionId = "question-1"
-      tryCompare(panel, "expanded", true)
-      compare(panel.width, 600)
-      compare(panel.height, 900)
-      panel.sessions = [session([message("reply", "assistant", "Short answer")])]
-      compare(panel.expanded, true)
-      panel.selectedSessionId = ""
-      compare(panel.expanded, false)
-      compare(panel.height, 400)
-      panel.selectedSessionId = "question-1"
-      compare(panel.expanded, true)
     }
 
     function test_session_controls_target_the_selected_question() {

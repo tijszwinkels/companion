@@ -20,6 +20,7 @@ Item {
   property bool soundsAvailable: false
   property int processing: 0
   property var history: []
+  property var intents: []
   property string lastError: ""
   property string lastErrorAction: ""
   property bool opened: false
@@ -149,6 +150,10 @@ Item {
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
         root.history = message.history
+        // Speech/history snapshots must not rebuild chips underneath a held
+        // mouse click or tooltip. Only changed routing state replaces the list.
+        const intents = message.intents || []
+        if (JSON.stringify(root.intents) !== JSON.stringify(intents)) root.intents = intents
         agentSessions.replace(message.sessions || [])
         agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
@@ -309,6 +314,7 @@ Item {
     root.speaking = false
     root.processing = 0
     root.history = []
+    root.intents = []
     root.cancel()
 
     // Quickshell's Socket retains its native socket after a failed initial
@@ -383,12 +389,14 @@ Item {
     speaking: root.speaking
     processing: root.processing
     history: root.history
+    intents: root.intents
     sessions: agentSessions.sessions
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent", "set-intent-enabled"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
+    onIntentEnabledRequested: (name, enabled) => root.send({action: "set-intent-enabled", name: name, enabled: enabled})
     onSessionSelected: id => {
       agentSessions.showingPrevious = false
       agentSessions.selectedId = id

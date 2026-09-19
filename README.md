@@ -121,9 +121,19 @@ frames. With the conversation focused, **Ctrl++** (or **Ctrl+=**) and **Ctrl+-**
 zoom the transcript and composer from 80% to 200%; **Ctrl+0** resets to 100%.
 Zoom follows you between tabs for the lifetime of the panel. Links remain
 clickable; raw HTML is literal text and Markdown images display their alt text.
-When content outgrows the compact panel, that session expands to 600 logical
-pixels wide and all available screen height; Activity remains compact. Scrolling
+All tabs, including Activity, use 600 logical pixels of width (capped to the
+screen) and all available screen height. Switching tabs keeps the same size. Scrolling
 up stops following the stream until you return to the bottom.
+
+Activity shows floating labels for the available voice prefixes and switches for
+every registered intent. Click an intent to disable or re-enable both its LLM and
+voice-prefix routes. Off and context-unavailable intents appear grey, with their
+state written beneath the label; hover to see the exact intent name. `IGNORE`
+always remains available as the no-action fallback. Switches are remembered
+across desktop-enabled restarts in `~/.local/state/companion/disabled-intents.json`
+(or the corresponding `XDG_STATE_HOME` directory). Turning off an intent also
+invalidates its pending detection result and cancels pending delivery; it does
+not stop independent agent sessions that have already accepted a question.
 
 A compact Activity visualization stays above conversations and Previous sessions
 while their contents scroll. It shows the same microphone state, rising phrase,
