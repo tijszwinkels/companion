@@ -25,6 +25,7 @@ Item {
   property real unit: 1
   // One zoom level follows the reader between tabs for this panel lifetime.
   property int zoomPercent: 100
+  property real scrollSpeed: 3
   readonly property real textScale: root.unit * root.zoomPercent / 100
   readonly property bool zoomEnabled: visible && session !== null && root.Window.window !== null && root.Window.window.active
   property string displayedId: ""
@@ -191,6 +192,33 @@ Item {
     onMovementEnded: root.followEnd = atYEnd
     onContentHeightChanged: Qt.callLater(root.followLatestMessage)
     onHeightChanged: Qt.callLater(root.followLatestMessage)
+
+    // Handle the transcript's wheel events before selectable message text.
+    // Pixel deltas retain precise touchpad motion; wheel notches use the
+    // desktop's line count. Both are faster without changing shell-wide input.
+    WheelHandler {
+      parent: transcript
+      target: null
+      acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+      onWheel: event => {
+        const pixels = event.pixelDelta.y || event.angleDelta.y / 120 * Qt.styleHints.wheelScrollLines * 24 * root.unit
+        if (pixels === 0) {
+          event.accepted = false
+          return
+        }
+
+        transcript.cancelFlick()
+        root.followEnd = false
+        const beginning = transcript.originY
+        const end = beginning + Math.max(0, transcript.contentHeight - transcript.height)
+        transcript.contentY = Math.max(beginning, Math.min(end, transcript.contentY - pixels * root.scrollSpeed))
+        // Changing contentY directly does not emit movementEnded. Update this
+        // now, before a queued streaming update can jump back to the bottom.
+        root.followEnd = transcript.atYEnd
+        event.accepted = true
+      }
+    }
+
     ScrollBar.vertical: ScrollBar {
       visible: transcript.contentHeight > transcript.height
       contentItem: Rectangle { color: root.muted; radius: 2; implicitWidth: 4 }
