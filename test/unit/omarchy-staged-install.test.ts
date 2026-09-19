@@ -110,6 +110,7 @@ test('staged install preserves config and reloads only when Lua integration chan
     'omarchy/plugin/PlaybackState.qml',
     'omarchy/plugin/ScreenshotWindow.qml',
     'panel/ComposerFocus.qml',
+    'panel/AgentChoices.qml',
     'panel/ActivityStrip.qml',
     'panel/Markdown.mjs',
     'panel/vendor/markdown-it.mjs',

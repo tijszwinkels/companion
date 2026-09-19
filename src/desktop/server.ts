@@ -178,6 +178,8 @@ export class DesktopServer {
           action === 'label-history' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
+          action === 'choose-agent' ||
+          action === 'stop-agent-run' ||
           action === 'composer-focus' ||
           action === 'panel-state' ||
           action === 'reopen-agent' ||

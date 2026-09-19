@@ -19,6 +19,7 @@ import type { UserSensorRouter } from '../core/router.ts';
 import { IntentPreferences } from './intent-preferences.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
+import { agentChoiceStates } from '../agents/choice-intents.ts';
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -64,6 +65,7 @@ export class DesktopRuntime {
   private readonly frameComposerRevisions = new Map<number, number>();
   private router?: UserSensorRouter;
   private readonly intentPreferences: IntentPreferences;
+  private lastAgentActions = '';
 
   constructor(
     private readonly pause: PauseControl,
@@ -108,6 +110,7 @@ export class DesktopRuntime {
         this.setPanelState('', false, this.panelClient);
       }
       this.server.publish(event);
+      this.publishAgentActions();
     });
 
     this.activity = {
@@ -201,6 +204,24 @@ export class DesktopRuntime {
 
   private readonly routingChanged = () => this.server.broadcast();
 
+  private agentActions(): object {
+    const interaction = this.interactionContext();
+    return {
+      sessionId: interaction.agentSessionId,
+      choices: agentChoiceStates({ interaction }, this.router?.reservedPrefixes() ?? []),
+      stopRunId: interaction.agentRunId ?? '',
+    };
+  }
+
+  private publishAgentActions(): void {
+    const actions = this.agentActions();
+    const serialized = JSON.stringify(actions);
+    if (serialized !== this.lastAgentActions) {
+      this.lastAgentActions = serialized;
+      this.server.publish({ type: 'agent-actions', actions });
+    }
+  }
+
   async start(): Promise<void> {
     // Hold database ownership from before recovery until after SQLite closes.
     // The separate socket lock protects stale-socket recovery, including when
@@ -273,6 +294,7 @@ export class DesktopRuntime {
       sessions: this.options.agents?.snapshot() ?? [],
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
+      agentActions: this.agentActions(),
     };
   }
 
@@ -305,6 +327,7 @@ export class DesktopRuntime {
         id && this.composerSession === id && this.composerClient === this.panelClient,
       ),
       revision: this.interactionRevision,
+      ...this.options.agents?.interaction(id),
     };
   }
 
@@ -470,6 +493,46 @@ export class DesktopRuntime {
         this.server.broadcast();
       }
       return 'focus-recorded';
+    }
+
+    if (request.action === 'choose-agent') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.revision !== 'string' ||
+        !Number.isInteger(request.index)
+      ) {
+        throw Error('Expected a conversation, choice revision, and option index');
+      }
+      // A queued click from a tab that has since been hidden cannot submit.
+      if (clientId !== this.panelClient || request.id !== this.panelSession) {
+        throw Error('This conversation is no longer selected');
+      }
+      this.options.agents.selectChoice(
+        request.id,
+        request.revision,
+        request.index as number,
+        this.signal,
+      );
+      return 'submitted';
+    }
+
+    if (request.action === 'stop-agent-run') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.runId !== 'string'
+      ) {
+        throw Error('Expected a conversation and running turn id');
+      }
+      if (
+        clientId !== this.panelClient ||
+        request.id !== this.panelSession ||
+        !(await this.options.agents.stopRun(request.id, request.runId))
+      ) {
+        throw Error('This agent run is no longer current');
+      }
+      return 'stopped';
     }
 
     if (request.action === 'send-agent') {

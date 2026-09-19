@@ -1,5 +1,6 @@
 import type { UserSensorRouter } from './router.ts';
 import type { InspectableModule } from './module.ts';
+import type { AgentChoiceSet } from '../agents/choices.ts';
 
 /** A window image and the identity needed to check focus before text delivery. */
 export interface Screenshot {
@@ -44,6 +45,10 @@ export interface InteractionContext {
   readonly agentComposerFocused: boolean;
   /** Local generation used to reject a target that changed while processing. */
   readonly revision: number;
+  /** Capture choices and the running turn before ASR can outlive either one. */
+  readonly agentChoices?: AgentChoiceSet;
+  readonly agentRunId?: string;
+  readonly agentAcceptsFollowUp?: boolean;
 }
 
 /** The part of a processor's registration that the LLM needs to see. */

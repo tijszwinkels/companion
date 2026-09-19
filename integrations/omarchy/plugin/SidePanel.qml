@@ -22,6 +22,7 @@ PanelWindow {
   property var intents: []
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
+  property var agentActions: ({})
   property var sessions: []
   property var previousSessions: []
   property bool showingPrevious: false
@@ -44,6 +45,8 @@ PanelWindow {
   signal sendSessionRequested(string id, string text)
   signal composerFocusRequested()
   signal composerFocusReleased()
+  signal choiceRequested(string id, string revision, int index)
+  signal stopRunRequested(string id, string runId)
   signal restoreFocusRequested(string address)
 
   onOpenedChanged: if (!opened) screenshotSource = ""
@@ -51,6 +54,7 @@ PanelWindow {
   onShowingPreviousChanged: screenshotSource = ""
 
   function submitted(id, text, error) { content.submitted(id, text, error) }
+  function choiceSubmitted(id, revision, index, error) { content.choiceSubmitted(id, revision, index, error) }
   function toggleComposerFocus(address) {
     root.screenshotSource = ""
     focusControl.toggle(address, root.composerFocusId !== "")
@@ -153,6 +157,7 @@ PanelWindow {
         intents: root.intents
         activityHistoryModel: root.activityHistoryModel
         activityHistoryAvailable: root.activityHistoryAvailable
+        agentActions: root.agentActions
         sessions: root.sessions
         previousSessions: root.previousSessions
         showingPrevious: root.showingPrevious
@@ -183,6 +188,8 @@ PanelWindow {
         onStopSessionRequested: id => root.stopSessionRequested(id)
         onDismissSessionRequested: id => root.dismissSessionRequested(id)
         onSendSessionRequested: (id, text) => root.sendSessionRequested(id, text)
+        onChoiceRequested: (id, revision, index) => root.choiceRequested(id, revision, index)
+        onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
       }
     }
   }

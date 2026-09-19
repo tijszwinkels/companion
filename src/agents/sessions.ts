@@ -5,6 +5,7 @@ import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
 import { SessionStore } from './session-store.ts';
+import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
 import {
   chatMessage,
   type AgentBackend,
@@ -81,6 +82,47 @@ export class AgentSessions implements InspectableModule {
     return this.sessions.has(id);
   }
 
+  /** Immutable live choices/run identity for speech capture and UI state. */
+  interaction(id: string): {
+    agentChoices?: AgentChoiceSet;
+    agentRunId?: string;
+    agentAcceptsFollowUp: boolean;
+  } {
+    const session = this.sessions.get(id);
+    return {
+      agentChoices: session?.view.choices,
+      agentRunId:
+        session && !session.closing && !session.controller.signal.aborted && session.busy
+          ? session.view.runId
+          : undefined,
+      agentAcceptsFollowUp: Boolean(session && !this.closed && !session.closing && !session.busy),
+    };
+  }
+
+  /** A click/voice selection carries identity, never a caller-supplied payload. */
+  selectChoice(id: string, revision: string, index: number, signal: AbortSignal): void {
+    signal.throwIfAborted();
+    const choices = this.sessions.get(id)?.view.choices;
+    if (
+      !choices ||
+      choices.revision !== revision ||
+      !Number.isInteger(index) ||
+      !choices.options[index]
+    ) {
+      throw Error('These choices have expired; use the current choices or write a follow-up');
+    }
+    this.followUp(id, choiceText(choices.options[index]), signal);
+  }
+
+  /** A delayed "stop" cannot cancel the next turn in the same conversation. */
+  async stopRun(id: string, runId: string): Promise<boolean> {
+    if (!runId || this.interaction(id).agentRunId !== runId) {
+      return false;
+    }
+    await this.stop(id);
+    return true;
+  }
+
   subscribe(listener: (event: SessionEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -113,6 +155,8 @@ export class AgentSessions implements InspectableModule {
         error: '',
         messages: [question],
         updatedAt: Date.now(),
+        runId: randomUUID(),
+        acceptsFollowUp: false,
       },
       controller: new AbortController(),
       done: Promise.resolve(),
@@ -156,6 +200,9 @@ export class AgentSessions implements InspectableModule {
     session.busy = true;
     session.view.status = 'starting';
     session.view.error = '';
+    delete session.view.choices;
+    session.view.runId = randomUUID();
+    session.view.acceptsFollowUp = false;
     this.flush(session);
     session.done = this.run(session, { text }, true);
   }
@@ -167,6 +214,8 @@ export class AgentSessions implements InspectableModule {
     frameId?: number,
   ): Promise<void> {
     const turnId = randomUUID();
+    // Callbacks belong to this invocation, even if a faulty backend retains one.
+    let acceptingChoices = true;
     try {
       if (prompt.screenshot) {
         const question = session.view.messages[0];
@@ -190,6 +239,23 @@ export class AgentSessions implements InspectableModule {
         { id: session.view.id, directory: this.directory, settings, prompt, resume },
         session.controller.signal,
         (message) => this.message(session, { ...message, id: `${turnId}:${message.id}` }),
+        (options) => {
+          if (
+            !acceptingChoices ||
+            session.controller.signal.aborted ||
+            session.closing ||
+            this.closed
+          ) {
+            return;
+          }
+          const parsed = parseChoices(options);
+          if (parsed.length) {
+            session.view.choices = Object.freeze({ revision: randomUUID(), options: parsed });
+          } else {
+            delete session.view.choices;
+          }
+          this.flush(session);
+        },
       );
       session.view.status = session.controller.signal.aborted ? 'cancelled' : 'completed';
     } catch (error) {
@@ -199,6 +265,11 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-error', session.view.error, frameId);
       }
     } finally {
+      acceptingChoices = false;
+      if (session.view.status !== 'completed') {
+        delete session.view.choices;
+      }
+      delete session.view.runId;
       // A stopped partial answer/tool must not retain a running spinner.
       for (const message of session.view.messages) {
         if (message.state === 'running') {
@@ -216,6 +287,7 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-history', session.view.error, frameId);
       }
       session.busy = false;
+      session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
       this.log('agent', `${session.view.status}: ${session.view.id}`, frameId);
     }
@@ -269,6 +341,9 @@ export class AgentSessions implements InspectableModule {
       throw Error('Question session not found');
     }
     session.controller.abort();
+    delete session.view.choices;
+    delete session.view.runId;
+    this.flush(session);
     await session.done;
   }
 
@@ -294,6 +369,10 @@ export class AgentSessions implements InspectableModule {
       this.publishHistory();
     } finally {
       session.closing = false;
+      if (this.sessions.has(id)) {
+        session.view.acceptsFollowUp = !session.busy && !this.closed;
+        this.flush(session);
+      }
     }
   }
 
@@ -310,6 +389,7 @@ export class AgentSessions implements InspectableModule {
       if (this.closed) {
         throw Error('Agent sessions are shutting down');
       }
+      view.acceptsFollowUp = true;
       this.sessions.set(id, {
         view,
         controller: new AbortController(),
@@ -336,6 +416,9 @@ export class AgentSessions implements InspectableModule {
     this.closed = true;
     for (const session of this.sessions.values()) {
       session.controller.abort();
+      delete session.view.choices;
+      delete session.view.runId;
+      session.view.acceptsFollowUp = false;
     }
     await this.idle();
     this.listeners.clear();

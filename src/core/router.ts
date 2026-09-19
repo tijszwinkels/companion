@@ -5,6 +5,8 @@ import { stripPrefix } from './prefix.ts';
 import type { Activity } from './activity.ts';
 import type { InspectableModule, RegisteredProcessor } from './module.ts';
 import { DeliveryInterruptedError, IntentDisabledError } from './delivery-error.ts';
+import type { ScopedIntent, ScopedIntentSource } from './scoped-intent.ts';
+import { voiceLabel } from './voice-shortcut.ts';
 
 /** Allows the router to use either the Pi detector or a test implementation. */
 export interface Detector extends InspectableModule {
@@ -32,6 +34,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
   // Disabling aborts pending delivery, and re-enabling starts a new generation.
   // An old model response cannot become actionable again after an off/on click.
   private readonly intentControllers = new Map<string, AbortController>();
+  private readonly scopedSources: ScopedIntentSource[] = [];
 
   constructor(
     readonly dependencies: { readonly detector: Detector },
@@ -58,6 +61,19 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         (processor.availableForPrefix?.(context) ?? true),
       ...(processor.acceptsEmptyPrefix ? { acceptsEmptyPrefix: true } : {}),
     }));
+  }
+
+  /** Permanent commands retain their namespace even when switched off. */
+  reservedPrefixes(): readonly string[] {
+    return this.prefixes.map(({ prefix }) => prefix);
+  }
+
+  registerScoped(source: ScopedIntentSource): void {
+    this.scopedSources.push(source);
+  }
+
+  private scopedIntents(context: IntentContext): readonly ScopedIntent[] {
+    return this.scopedSources.flatMap((source) => source(context, this.reservedPrefixes()));
   }
 
   setEnabled(name: string, enabled: boolean): void {
@@ -201,6 +217,25 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       return processor.name;
     }
 
+    // Exact contextual labels run after permanent prefixes and before inference.
+    // Capture routes once: a replacement during detection cannot redirect them.
+    const scoped = this.scopedIntents(frame);
+    const exact = scoped.find(
+      (intent) =>
+        intent.exactUtterance !== undefined &&
+        voiceLabel(intent.exactUtterance) === voiceLabel(frame.utterance),
+    );
+    if (exact) {
+      this.log(
+        'shortcut',
+        `${JSON.stringify(exact.exactUtterance)} → ${exact.name} (LLM bypassed)`,
+        frame.id,
+      );
+      this.activity.intentRecognized?.(frame.id, exact.name);
+      await exact.process(frame, signal);
+      return exact.name;
+    }
+
     // Keep the prompt's choices and the dispatch targets consistent, even if a
     // new processor subscribes while this model call is in flight.
     const eligibleProcessors = new Map<string, UserSensorProcessor>();
@@ -218,6 +253,18 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       }
     }
 
+    const scopedByName = new Map(
+      scoped
+        .filter((intent) => intent.instruction !== undefined)
+        .map((intent) => [intent.name, intent]),
+    );
+    for (const intent of scopedByName.values()) {
+      if (this.registeredProcessors.has(intent.name)) {
+        throw Error(`Scoped intent collides with permanent intent: ${intent.name}`);
+      }
+      intents.push({ name: intent.name, instruction: intent.instruction! });
+    }
+
     if (!eligibleProcessors.has('IGNORE')) {
       throw Error('Register an IGNORE processor with an instruction before LLM routing');
     }
@@ -228,6 +275,14 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
     // Cancellation during inference must prevent the processor's side effect.
     signal.throwIfAborted();
+
+    const contextual = scopedByName.get(name);
+    if (contextual) {
+      this.log('intent', `${name} (${Math.round(performance.now() - started)} ms)`, frame.id);
+      this.activity.intentRecognized?.(frame.id, name);
+      await contextual.process(frame, signal);
+      return name;
+    }
 
     // Prefix-only commands are not valid model responses, even if a detector
     // implementation returns one. In particular, inference cannot press Enter.

@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 import type { AgentBackend } from './types.ts';
 import { object, PiTranscript } from './pi-transcript.ts';
+import { parseChoices } from './choices.ts';
 
 const systemInstruction = `You are answering a question in Companion, a desktop voice assistant.
 Answer the user's question directly, using Markdown where helpful. Use your tools when needed.
@@ -24,6 +26,7 @@ export class PiBackend implements AgentBackend {
     request: Parameters<AgentBackend['run']>[0],
     signal: AbortSignal,
     emit: Parameters<AgentBackend['run']>[2],
+    replaceChoices?: Parameters<AgentBackend['run']>[3],
   ): Promise<void> {
     signal.throwIfAborted();
     const { settings, prompt } = request;
@@ -41,6 +44,8 @@ export class PiBackend implements AgentBackend {
         '--append-system-prompt',
         systemInstruction,
         '--offline',
+        '--extension',
+        fileURLToPath(new URL('./choice-tool.ts', import.meta.url)),
       ],
       {
         cwd: request.directory,
@@ -50,6 +55,7 @@ export class PiBackend implements AgentBackend {
     );
 
     const transcript = new PiTranscript(emit);
+    const choiceCalls = new Set<string>();
     let settled = false;
     let buffered = '';
     let stderr = '';
@@ -132,6 +138,28 @@ export class PiBackend implements AgentBackend {
             'Pi requested an interactive dialog. This version supports answers and tool output; continue this session in Pi for interactive input.',
           );
         }
+      }
+
+      // Only successful completions of this tool can publish choices. Ordinary
+      // assistant text, tool output, and partial results remain transcript data.
+      if (
+        event.type === 'tool_execution_start' &&
+        event.toolName === 'companion_choices' &&
+        typeof event.toolCallId === 'string'
+      ) {
+        choiceCalls.add(event.toolCallId);
+      }
+      if (
+        event.type === 'tool_execution_end' &&
+        choiceCalls.delete(String(event.toolCallId)) &&
+        event.isError === false
+      ) {
+        const details = object(object(event.result).details);
+        const choices = object(details.companionChoices);
+        if (choices.version !== 1) {
+          throw Error('Pi returned an unsupported Companion choice result');
+        }
+        replaceChoices?.(parseChoices(choices.options));
       }
 
       transcript.receive(event);
