@@ -224,7 +224,7 @@ Item {
       contentItem: Rectangle { color: root.muted; radius: 2; implicitWidth: 4 }
     }
 
-    delegate: Rectangle {
+    delegate: Item {
       id: bubble
       required property string messageId
       required property string kind
@@ -236,159 +236,169 @@ Item {
       required property string screenshotUrl
       property bool expanded: false
       objectName: "bubble-" + messageId
-      width: transcript.width - 8 * root.unit
-      height: contents.implicitHeight + 20 * root.unit
-      radius: 6 * root.unit
-      color: kind === "user" ? root.selection
-        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+      width: transcript.width
+      height: bubbleSurface.height
 
-      HoverHandler { id: messageHover }
+      Rectangle {
+        id: bubbleSurface
+        // Keep a subtle 20px gutter opposite the sender, plus 8px for the
+        // scrollbar. The full-width row lets ListView position messages vertically
+        // without overriding each bubble's horizontal alignment.
+        width: Math.max(0, transcript.width - 28 * root.unit)
+        x: bubble.kind === "user" ? transcript.width - 8 * root.unit - width : 0
+        height: contents.implicitHeight + 20 * root.unit
+        radius: 10 * root.unit
+        color: bubble.kind === "user" ? root.selection
+          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
 
-      Column {
-        id: contents
-        x: 10 * root.unit
-        y: 10 * root.unit
-        width: parent.width - 20 * root.unit
-        spacing: 8 * root.unit
+        HoverHandler { id: messageHover }
 
-        Text {
-          id: heading
-          width: parent.width - copyButton.width - 8 * root.unit
-          height: Math.max(implicitHeight, copyButton.height)
-          verticalAlignment: Text.AlignVCenter
-          text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + bubble.toolName
-            + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-            : bubble.kind === "user" ? "You" + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
-          textFormat: Text.PlainText
-          wrapMode: Text.Wrap
-          color: bubble.state === "error" ? "#ef5350" : root.muted
-          font.family: root.fontFamily
-          font.pixelSize: 10 * root.unit
+        Column {
+          id: contents
+          x: 10 * root.unit
+          y: 10 * root.unit
+          width: parent.width - 20 * root.unit
+          spacing: 8 * root.unit
 
-          MouseArea {
-            anchors.fill: parent
-            enabled: bubble.kind === "tool"
-            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: bubble.expanded = !bubble.expanded
+          Text {
+            id: heading
+            width: parent.width - copyButton.width - 8 * root.unit
+            height: Math.max(implicitHeight, copyButton.height)
+            verticalAlignment: Text.AlignVCenter
+            text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + bubble.toolName
+              + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
+              : bubble.kind === "user" ? "You" + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: bubble.state === "error" ? "#ef5350" : root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 10 * root.unit
+
+            MouseArea {
+              anchors.fill: parent
+              enabled: bubble.kind === "tool"
+              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onClicked: bubble.expanded = !bubble.expanded
+            }
+            Accessible.role: bubble.kind === "tool" ? Accessible.Button : Accessible.StaticText
+            Accessible.name: text
+            Accessible.onPressAction: if (bubble.kind === "tool") bubble.expanded = !bubble.expanded
           }
-          Accessible.role: bubble.kind === "tool" ? Accessible.Button : Accessible.StaticText
-          Accessible.name: text
-          Accessible.onPressAction: if (bubble.kind === "tool") bubble.expanded = !bubble.expanded
+
+          Rectangle {
+            objectName: "screenshotThumbnail"
+            visible: bubble.kind === "user" && bubble.screenshot && bubble.screenshotUrl !== ""
+            width: parent.width
+            height: visible ? 132 * root.unit : 0
+            radius: 6 * root.unit
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+            border.color: thumbnailHover.containsMouse ? root.accent : "transparent"
+            Image {
+              id: thumbnail
+              anchors.fill: parent
+              anchors.margins: 6 * root.unit
+              source: parent.visible ? bubble.screenshotUrl : ""
+              sourceSize.width: 600
+              asynchronous: true
+              fillMode: Image.PreserveAspectFit
+            }
+            Rectangle {
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.margins: 8 * root.unit
+              width: zoomLabel.width + 16 * root.unit
+              height: 24 * root.unit
+              radius: 12 * root.unit
+              color: root.selection
+              Text {
+                id: zoomLabel
+                anchors.centerIn: parent
+                text: thumbnail.status === Image.Error ? "Screenshot unavailable" : "↗  Enlarge"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: 10 * root.unit
+              }
+            }
+            MouseArea {
+              id: thumbnailHover
+              anchors.fill: parent
+              hoverEnabled: true
+              enabled: thumbnail.status === Image.Ready
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.screenshotRequested(bubble.screenshotUrl, root.session.title)
+            }
+            Accessible.role: Accessible.Button
+            Accessible.name: "Enlarge attached screenshot"
+            Accessible.onPressAction: if (thumbnail.status === Image.Ready) root.screenshotRequested(bubble.screenshotUrl, root.session.title)
+          }
+
+          TextEdit {
+            id: messageText
+            objectName: "messageText"
+            width: parent.width
+            height: visible ? contentHeight : 0
+            visible: bubble.kind !== "tool" || bubble.expanded
+            text: bubble.kind === "assistant" ? Markdown.render(bubble.body, root.textScale, root.selection.toString(), root.accent.toString())
+              : bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
+            textFormat: bubble.kind === "assistant" ? TextEdit.RichText : TextEdit.PlainText
+            readOnly: true
+            selectByMouse: true
+            activeFocusOnPress: false
+            onSelectedTextChanged: root.messageSelectionChanged(messageText)
+            Component.onDestruction: if (root.selectedMessage === messageText) root.selectedMessage = null
+            onVisibleChanged: if (!visible && root.selectedMessage === messageText) root.clearMessageSelection()
+            wrapMode: TextEdit.Wrap
+            color: root.foreground
+            selectionColor: root.selection
+            selectedTextColor: root.foreground
+            font.family: bubble.kind === "tool" ? "monospace" : root.proseFontFamily
+            font.pixelSize: (bubble.kind === "tool" ? 14 : 16) * root.textScale
+            onLinkActivated: link => {
+              // Opening a link is an explicit click; commands and file URLs do
+              // not become executable UI actions through generated Markdown.
+              if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link)
+            }
+          }
         }
 
         Rectangle {
-          objectName: "screenshotThumbnail"
-          visible: bubble.kind === "user" && bubble.screenshot && bubble.screenshotUrl !== ""
-          width: parent.width
-          height: visible ? 132 * root.unit : 0
-          radius: 6 * root.unit
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-          border.color: thumbnailHover.containsMouse ? root.accent : "transparent"
-          Image {
-            id: thumbnail
-            anchors.fill: parent
-            anchors.margins: 6 * root.unit
-            source: parent.visible ? bubble.screenshotUrl : ""
-            sourceSize.width: 600
-            asynchronous: true
-            fillMode: Image.PreserveAspectFit
+          id: copyButton
+          objectName: "copyMessage"
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: 10 * root.unit
+          width: 58 * root.unit
+          height: 24 * root.unit
+          radius: 4 * root.unit
+          color: root.selection
+          opacity: messageHover.hovered || copyMouse.containsMouse || copied.running ? 1 : 0
+          visible: messageText.text !== ""
+          Behavior on opacity { NumberAnimation { duration: 120 } }
+          function activate() {
+            const source = bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
+            root.copyMessage(source)
+            copied.restart()
           }
-          Rectangle {
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.margins: 8 * root.unit
-            width: zoomLabel.width + 16 * root.unit
-            height: 24 * root.unit
-            radius: 12 * root.unit
-            color: root.selection
-            Text {
-              id: zoomLabel
-              anchors.centerIn: parent
-              text: thumbnail.status === Image.Error ? "Screenshot unavailable" : "↗  Enlarge"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: 10 * root.unit
-            }
+          Timer { id: copied; interval: 1400 }
+          Text {
+            anchors.centerIn: parent
+            text: copied.running ? "Copied" : "Copy"
+            color: copyMouse.containsMouse || copied.running ? root.accent : root.foreground
+            font.family: root.proseFontFamily
+            font.pixelSize: 11 * root.unit
           }
           MouseArea {
-            id: thumbnailHover
+            id: copyMouse
             anchors.fill: parent
             hoverEnabled: true
-            enabled: thumbnail.status === Image.Ready
+            enabled: copyButton.opacity > 0.5
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.screenshotRequested(bubble.screenshotUrl, root.session.title)
+            onClicked: copyButton.activate()
           }
           Accessible.role: Accessible.Button
-          Accessible.name: "Enlarge attached screenshot"
-          Accessible.onPressAction: if (thumbnail.status === Image.Ready) root.screenshotRequested(bubble.screenshotUrl, root.session.title)
+          Accessible.name: "Copy message"
+          Accessible.onPressAction: activate()
         }
-
-        TextEdit {
-          id: messageText
-          objectName: "messageText"
-          width: parent.width
-          height: visible ? contentHeight : 0
-          visible: bubble.kind !== "tool" || bubble.expanded
-          text: bubble.kind === "assistant" ? Markdown.render(bubble.body, root.textScale, root.selection.toString(), root.accent.toString())
-            : bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
-          textFormat: bubble.kind === "assistant" ? TextEdit.RichText : TextEdit.PlainText
-          readOnly: true
-          selectByMouse: true
-          activeFocusOnPress: false
-          onSelectedTextChanged: root.messageSelectionChanged(messageText)
-          Component.onDestruction: if (root.selectedMessage === messageText) root.selectedMessage = null
-          onVisibleChanged: if (!visible && root.selectedMessage === messageText) root.clearMessageSelection()
-          wrapMode: TextEdit.Wrap
-          color: root.foreground
-          selectionColor: root.selection
-          selectedTextColor: root.foreground
-          font.family: bubble.kind === "tool" ? "monospace" : root.proseFontFamily
-          font.pixelSize: (bubble.kind === "tool" ? 14 : 16) * root.textScale
-          onLinkActivated: link => {
-            // Opening a link is an explicit click; commands and file URLs do
-            // not become executable UI actions through generated Markdown.
-            if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link)
-          }
-        }
-      }
-
-      Rectangle {
-        id: copyButton
-        objectName: "copyMessage"
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.margins: 10 * root.unit
-        width: 58 * root.unit
-        height: 24 * root.unit
-        radius: 4 * root.unit
-        color: root.selection
-        opacity: messageHover.hovered || copyMouse.containsMouse || copied.running ? 1 : 0
-        visible: messageText.text !== ""
-        Behavior on opacity { NumberAnimation { duration: 120 } }
-        function activate() {
-          const source = bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
-          root.copyMessage(source)
-          copied.restart()
-        }
-        Timer { id: copied; interval: 1400 }
-        Text {
-          anchors.centerIn: parent
-          text: copied.running ? "Copied" : "Copy"
-          color: copyMouse.containsMouse || copied.running ? root.accent : root.foreground
-          font.family: root.proseFontFamily
-          font.pixelSize: 11 * root.unit
-        }
-        MouseArea {
-          id: copyMouse
-          anchors.fill: parent
-          hoverEnabled: true
-          enabled: copyButton.opacity > 0.5
-          cursorShape: Qt.PointingHandCursor
-          onClicked: copyButton.activate()
-        }
-        Accessible.role: Accessible.Button
-        Accessible.name: "Copy message"
-        Accessible.onPressAction: activate()
       }
     }
 
