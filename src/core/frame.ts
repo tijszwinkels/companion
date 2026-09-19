@@ -71,6 +71,9 @@ export interface UserSensorProcessor extends InspectableModule {
   /** Case-insensitive command prefixes, removed before process receives a frame. */
   prefixes?: readonly string[];
 
+  /** Standalone commands can run without dictated text after their prefix. */
+  acceptsEmptyPrefix?: boolean;
+
   subscribe(router: UserSensorRouter): void;
 
   /** LLM routing preserves the frame; prefix routing copies it with the remaining text. */

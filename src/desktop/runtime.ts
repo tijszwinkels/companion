@@ -17,10 +17,10 @@ import { SoundFeedback } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import { IntentPreferences } from './intent-preferences.ts';
+import { migrateDesktopStorage } from './storage-migration.ts';
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
-  const state = process.env.XDG_STATE_HOME || join(homedir(), '.local/state');
   const runtime = process.env.XDG_RUNTIME_DIR;
 
   if (!runtime) {
@@ -30,7 +30,7 @@ export function desktopPaths(): { database: string; socket: string } {
   }
 
   return {
-    database: join(state, 'companion', 'utterances.sqlite'),
+    database: join(homedir(), 'companion', 'utterances.sqlite'),
     socket: join(runtime, 'companion', 'control.sock'),
   };
 }
@@ -139,17 +139,19 @@ export class DesktopRuntime {
         this.history.add(transcript);
         this.server.broadcast();
       },
+      screenshotCaptured: (id, screenshot) => this.history.saveScreenshot(id, screenshot),
       intentRecognized: (id, intent) => {
         this.history.setIntent(id, intent);
         this.server.broadcast();
       },
+      labelPrevious: (id, correct) => this.history.labelPrevious(id, correct),
       outcome: (id, outcome) => {
         this.history.setOutcome(id, outcome);
 
         // A predicted send is not a delivered utterance. Skips/errors have no
         // success cue, and preview mode must not imply that text was delivered.
-        if (outcome === 'sent' || outcome === 'ignored') {
-          this.sounds.play(outcome);
+        if (outcome === 'sent' || outcome === 'ignored' || outcome === 'labeled') {
+          this.sounds.play(outcome === 'labeled' ? 'sent' : outcome);
         }
 
         this.server.broadcast();
@@ -188,6 +190,19 @@ export class DesktopRuntime {
 
     try {
       await this.server.start();
+
+      // Custom databases used by isolated runs/tests must never import personal
+      // history. Only the default destination adopts the former XDG location.
+      if (this.options.database === join(homedir(), 'companion', 'utterances.sqlite')) {
+        const state = process.env.XDG_STATE_HOME || join(homedir(), '.local/state');
+        const legacyDatabase = join(state, 'companion', 'utterances.sqlite');
+        const migrated = await migrateDesktopStorage(legacyDatabase, this.options.database);
+
+        if (migrated) {
+          this.log('desktop', `Migrated history from ${legacyDatabase}`);
+        }
+      }
+
       await this.history.open();
 
       // Prepare cues even when starting muted, so the desktop can enable them

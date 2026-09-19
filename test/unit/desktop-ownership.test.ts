@@ -241,7 +241,16 @@ for (const version of [0, 1, 2]) {
       const database = new DatabaseSync(path, { readOnly: true });
 
       try {
-        assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 2);
+        assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 3);
+        assert.equal(
+          database.prepare('SELECT count(*) AS count FROM intent_feedback').get()?.count,
+          0,
+        );
+        assert.equal(
+          database.prepare("SELECT screenshot_path FROM utterances WHERE id = 'done'").get()
+            ?.screenshot_path,
+          null,
+        );
         assert.equal(
           database.prepare("SELECT legacy_outcome FROM utterances WHERE id = 'cancelled'").get()
             ?.legacy_outcome,

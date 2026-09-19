@@ -144,17 +144,58 @@ The shared keyboard queue stays occupied through typing and any explicit Enter;
 cancellation still interrupts the keyboard process. Longer text therefore has
 time to complete without extending a stalled focus lookup's deadline.
 
-SQLite lives at `$XDG_STATE_HOME/companion/utterances.sqlite`, defaulting to
-`~/.local/state/companion/utterances.sqlite`. It uses WAL and has no automatic
+SQLite lives at `~/companion/utterances.sqlite`. It uses WAL and has no automatic
 deletion. `utterances` stores the exact transcript, speech-end timestamp, active
 application/window identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
-NULL, not an inferred label. No raw audio or screenshot is saved in this database.
+NULL, not an inferred label. Raw audio is not retained.
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
 the question's screenshot and conversation in its own session storage.
+
+Schema version 3 adds nullable `utterances.screenshot_path` and `intent_feedback`.
+The sensor pipeline saves the exact captured PNG before intent routing, at
+`~/companion/data/YYYY-MM-DD/screenshots/<utterance-id>.png`. The day uses the
+observation's local date, not the later write time. Paths in SQLite are relative
+to `~/companion`; custom database paths use their parent directory as the root.
+The file is written privately and renamed into place before its database path is
+committed. Shutdown waits for accepted writes. A failed capture or old record
+has a NULL path. A failed screenshot write keeps the transcript, records an error,
+and prevents routing that observation.
+
+The default database's first startup copies the old
+`$XDG_STATE_HOME/companion/utterances.sqlite` (default
+`~/.local/state/companion/utterances.sqlite`) and `disabled-intents.json`, preserving
+the originals as a fallback. Source and destination process locks prevent racing
+an older listener. SQLite backup includes committed WAL data, and the destination
+is published only after copying succeeds. Existing destination databases are
+authoritative and are never overwritten. Custom databases never import personal
+history. The control socket remains in `$XDG_RUNTIME_DIR`.
+
+The standalone voice shortcuts **“label previous correct”** and **“label previous
+incorrect”** register as `LABEL_PREVIOUS_CORRECT` and `LABEL_PREVIOUS_INCORRECT`.
+They have no LLM instructions. Unlike dictation prefixes, they accept an empty
+payload; additional text is rejected. The requested spelling “label previous
+incorrent” is also accepted. Successful labeling records the command's outcome
+as `labeled` and plays the success cue. Preview mode writes no feedback.
+
+`intent_feedback` contains exactly these columns:
+
+| Column              | Meaning                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `id`                | Primary key and foreign key to `utterances.id`; one current label per example.                                 |
+| `correct`           | Required SQLite boolean (0 or 1) from explicit feedback.                                                       |
+| `recognized_intent` | The original selected intent copied at labeling time.                                                          |
+| `actual_intent`     | Nullable intended intent, default NULL. “Correct” copies the recognized intent; “incorrect” clears it to NULL. |
+
+The preceding example is selected by insertion order before the command, skipping
+other labeling commands. This survives restarts and wall-clock changes. Repeated
+feedback updates that example rather than labeling a labeling command. If the
+preceding example has no selected intent, the shortcut skips without jumping to
+older speech. Feedback never changes the original intent, processing outcome, or
+paste events. Both inferred and explicitly prefixed intents can receive feedback.
 
 `paste_events` references `utterances.id` and records every manual recovery
 attempt, target application/address, timestamps, and actual outcome. An ignored

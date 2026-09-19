@@ -188,7 +188,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
       this.log('prefix', `${JSON.stringify(prefix)} → ${processor.name} (LLM bypassed)`, frame.id);
       this.activity.intentRecognized?.(frame.id, processor.name);
-      if (!utterance.trim()) {
+      if (!utterance.trim() && !processor.acceptsEmptyPrefix) {
         this.log('skipped', 'Prefix has no following text', frame.id);
         this.activity.outcome?.(frame.id, 'skipped');
         return processor.name;

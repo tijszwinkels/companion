@@ -131,8 +131,8 @@ every registered intent. Click an intent to disable or re-enable both its LLM an
 voice-prefix routes. Off and context-unavailable intents appear grey, with their
 state written beneath the label; hover to see the exact intent name. `IGNORE`
 always remains available as the no-action fallback. Switches are remembered
-across desktop-enabled restarts in `~/.local/state/companion/disabled-intents.json`
-(or the corresponding `XDG_STATE_HOME` directory). Turning off an intent also
+across desktop-enabled restarts in `~/companion/disabled-intents.json`.
+Turning off an intent also
 invalidates its pending detection result and cancels pending delivery; it does
 not stop independent agent sessions that have already accepted a question.
 
@@ -229,13 +229,32 @@ run `npm start`. Stop any older listener first. `--paused` starts with capture
 off. Explicit history recovery still works while listening is paused.
 
 All nonempty transcripts are retained in SQLite at
-`~/.local/state/companion/utterances.sqlite` (or under `$XDG_STATE_HOME`). Records
+`~/companion/utterances.sqlite`. Records
 include the application/window observed at speech end, recognized intent, and
 actual outcome. A separate `paste_events` table links manual recovery attempts
 and their outcomes to the original utterance, preserving the original decision
 for later evaluation. The picker displays the latest 100; older records remain
 in the database. Untranscribed audio, including overload drops, has no transcript
-to retain. Screenshots and raw audio are not stored in this database.
+to retain. The exact PNG captured for each transcribed utterance is saved as
+`~/companion/data/YYYY-MM-DD/screenshots/<id>.png`, using the utterance UUID and
+the local date when speech ended. The row's `screenshot_path` is relative to
+`~/companion`. Old records and failed captures have no screenshot. Raw audio is
+not retained.
+
+Say **“label previous correct”** or **“label previous incorrect”** to give feedback
+on the preceding utterance's selected intent. These standalone shortcuts bypass
+the LLM and never type text. A separate `intent_feedback` table contains only
+explicitly labeled examples: `id` (the utterance UUID), `correct` (0 or 1),
+`recognized_intent`, and nullable `actual_intent`. Correct feedback fills in the
+recognized intent as the actual intent; incorrect feedback leaves it unknown.
+Repeated labeling replaces the same example's feedback, skipping previous
+labeling commands. An utterance with no recognized intent cannot be labeled by
+these shortcuts. Preview mode logs the command without writing feedback.
+
+On the first desktop-enabled start, Companion imports an existing database and
+intent preferences from the former XDG state location into `~/companion`. The
+original files remain as a fallback; an existing destination database is never
+overwritten. Agent conversations continue to live under `~/companion/agents`.
 
 The Omarchy code lives entirely in `integrations/omarchy`. The generic desktop
 service exposes a private local socket; its [protocol and database documentation](src/desktop/README.md)

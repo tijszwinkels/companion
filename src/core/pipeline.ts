@@ -138,6 +138,13 @@ export class SensorPipeline implements InspectableModule {
           utterance,
           application: capture.application ?? capture.screenshot?.window,
         });
+
+        // Keep the exact image paired with this transcript, including a late
+        // result after cancellation. No action runs until storage has settled.
+        if (capture.screenshot) {
+          await this.activity.screenshotCaptured?.(job.id, capture.screenshot);
+        }
+
         job.signal.throwIfAborted();
 
         if (!capture.screenshot) {

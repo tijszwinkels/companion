@@ -4,6 +4,8 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
+import type { Screenshot } from '../core/frame.ts';
+import { saveScreenshot } from './screenshots.ts';
 
 export interface HistoryEntry {
   id: string;
@@ -18,7 +20,8 @@ export interface HistoryEntry {
  * Permanent evaluation records, with a bounded recent view for desktop pickers.
  * The database belongs to Companion. Each small synchronous transaction commits
  * before observers see its result, so the UI never refers to unsaved text.
- * Raw audio and screenshots are not stored here.
+ * Screenshots live beside the database, linked by relative path. Raw audio is
+ * not retained. Explicit feedback is separate from the original prediction.
  */
 export class UtteranceHistory {
   private database?: DatabaseSync;
@@ -34,7 +37,7 @@ export class UtteranceHistory {
 
     const version = this.database.prepare('PRAGMA user_version').get()?.user_version;
 
-    if (typeof version !== 'number' || version > 2) {
+    if (typeof version !== 'number' || version > 3) {
       throw Error('Unsupported Companion database schema version');
     }
 
@@ -74,7 +77,7 @@ export class UtteranceHistory {
       CREATE INDEX IF NOT EXISTS paste_events_utterance ON paste_events(utterance_id);
     `);
 
-    // Migrate both tables atomically. The owner holds the database's process
+    // Migrate the schema atomically. The owner holds the database's process
     // lock during schema changes, crash recovery, and every later write.
     this.database.exec('BEGIN IMMEDIATE');
 
@@ -83,6 +86,22 @@ export class UtteranceHistory {
       // version 0. Inspect each table instead of assuming version 0 is empty.
       const utteranceColumns = this.database.prepare('PRAGMA table_info(utterances)').all();
       const pasteColumns = this.database.prepare('PRAGMA table_info(paste_events)').all();
+
+      if (!utteranceColumns.some((column) => column.name === 'screenshot_path')) {
+        this.database.exec('ALTER TABLE utterances ADD COLUMN screenshot_path TEXT');
+      }
+
+      // No rows are inferred from delivery, recovery, or lack of complaints.
+      // A row exists only after explicit feedback on this utterance's intent.
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS intent_feedback (
+          id TEXT PRIMARY KEY NOT NULL REFERENCES utterances(id),
+          correct INTEGER NOT NULL CHECK (correct IN (0, 1)),
+          recognized_intent TEXT NOT NULL,
+          actual_intent TEXT DEFAULT NULL
+        );
+      `);
+
       const legacyUtterances = !utteranceColumns.some(
         (column) => column.name === 'delivery_started_at',
       );
@@ -152,7 +171,7 @@ export class UtteranceHistory {
       WHERE outcome = 'pending'`,
         )
         .run(Number(legacyPastes), Number(legacyPastes), Date.now());
-      this.database.exec('PRAGMA user_version = 2; COMMIT;');
+      this.database.exec('PRAGMA user_version = 3; COMMIT;');
     } catch (error) {
       this.database.exec('ROLLBACK');
       throw error;
@@ -218,6 +237,65 @@ export class UtteranceHistory {
     if (id) {
       this.db.prepare('UPDATE utterances SET recognized_intent = ? WHERE id = ?').run(intent, id);
     }
+  }
+
+  async saveScreenshot(frameId: number, screenshot: Screenshot): Promise<void> {
+    const id = this.frameEntries.get(frameId);
+
+    if (!id) {
+      return;
+    }
+
+    const entry = this.find(id)!;
+    const path = await saveScreenshot(dirname(this.path), id, entry.observedAt, screenshot);
+    this.db.prepare('UPDATE utterances SET screenshot_path = ? WHERE id = ?').run(path, id);
+  }
+
+  /**
+   * Label the preceding non-label utterance, even across a restart. Use insertion
+   * order rather than the wall clock, which can move backwards. Repeated feedback
+   * corrects the same target instead of evaluating the labeling command itself.
+   */
+  labelPrevious(frameId: number, correct: boolean): string | undefined {
+    const commandId = this.frameEntries.get(frameId);
+
+    if (!commandId) {
+      return undefined;
+    }
+
+    const previous = this.db
+      .prepare(
+        `SELECT id, recognized_intent FROM utterances
+        WHERE rowid < (SELECT rowid FROM utterances WHERE id = ?)
+          AND (recognized_intent IS NULL OR recognized_intent NOT IN
+            ('LABEL_PREVIOUS_CORRECT', 'LABEL_PREVIOUS_INCORRECT'))
+        ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(commandId) as { id: string; recognized_intent: string | null } | undefined;
+
+    // A capture/inference failure has no selected intent to evaluate. Do not
+    // silently jump past it and apply the user's feedback to older speech.
+    if (!previous?.recognized_intent) {
+      return undefined;
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO intent_feedback (id, correct, recognized_intent, actual_intent)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          correct = excluded.correct,
+          recognized_intent = excluded.recognized_intent,
+          actual_intent = excluded.actual_intent`,
+      )
+      .run(
+        previous.id,
+        Number(correct),
+        previous.recognized_intent,
+        correct ? previous.recognized_intent : null,
+      );
+
+    return previous.id;
   }
 
   setOutcome(frameId: number, outcome: UtteranceOutcome): void {

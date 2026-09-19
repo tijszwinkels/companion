@@ -1,9 +1,17 @@
 import type { DeliveryControl } from './delivery-control.ts';
-import type { InteractionContext } from './frame.ts';
+import type { InteractionContext, Screenshot } from './frame.ts';
 
 /** Results describe actual delivery, rather than just the model's chosen intent. */
 export type UtteranceOutcome =
-  'sent' | 'started' | 'ignored' | 'skipped' | 'preview' | 'error' | 'cancelled' | 'interrupted';
+  | 'sent'
+  | 'started'
+  | 'labeled'
+  | 'ignored'
+  | 'skipped'
+  | 'preview'
+  | 'error'
+  | 'cancelled'
+  | 'interrupted';
 
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {
@@ -30,7 +38,11 @@ export interface Activity {
   deliveryStarted?(id: number): void;
   processing?(id: number): void;
   transcribed?(transcript: Transcript): void;
+  /** Persist the captured input before routing; shutdown waits for this write. */
+  screenshotCaptured?(id: number, screenshot: Screenshot): Promise<void>;
   intentRecognized?(id: number, intent: string): void;
+  /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
+  labelPrevious?(id: number, correct: boolean): string | undefined;
   outcome?(id: number, outcome: UtteranceOutcome): void;
   finished?(id: number): void;
 }
