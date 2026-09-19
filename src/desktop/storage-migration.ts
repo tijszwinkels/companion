@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, chmod, copyFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 
@@ -35,6 +35,10 @@ export async function migrateDesktopStorage(source: string, destination: string)
   let database: DatabaseSync | undefined;
 
   try {
+    // Own destination setup here, rather than relying on the caller's lock file
+    // to have created the same directory as a side effect of acquiring its lock.
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+
     // Precreate privately: the backup API otherwise uses SQLite's file mode.
     await writeFile(temporary, '', { flag: 'wx', mode: 0o600 });
     database = new DatabaseSync(source, { readOnly: true });

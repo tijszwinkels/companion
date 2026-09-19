@@ -34,12 +34,11 @@ test('the default database is under ~/companion while the socket remains in the 
   }
 });
 
-test('migration copies committed WAL data and preferences, preserves the source, and never overwrites the destination', async () => {
+test('migration creates its destination, copies WAL data and preferences, and never overwrites existing data', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'companion-storage-migration-'));
   const oldDirectory = join(directory, 'old');
   const newDirectory = join(directory, 'new');
   await mkdir(oldDirectory);
-  await mkdir(newDirectory);
   const source = join(oldDirectory, 'utterances.sqlite');
   const destination = join(newDirectory, 'utterances.sqlite');
   const writer = new DatabaseSync(source);
@@ -59,7 +58,9 @@ test('migration copies committed WAL data and preferences, preserves the source,
       '["START_CODING_AGENT_SESSION"]\n',
     );
     assert.ok((await stat(`${source}-wal`)).size > 0);
+    await assert.rejects(stat(newDirectory), { code: 'ENOENT' });
     assert.equal(await migrateDesktopStorage(source, destination), true);
+    assert.equal((await stat(newDirectory)).mode & 0o777, 0o700);
     const database = new DatabaseSync(destination);
 
     try {

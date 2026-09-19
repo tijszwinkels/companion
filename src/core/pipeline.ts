@@ -139,15 +139,20 @@ export class SensorPipeline implements InspectableModule {
           application: capture.application ?? capture.screenshot?.window,
         });
 
-        // Retain the speech used for ASR, even if screen capture failed or a
-        // late transcript arrived after cancellation. Await storage before the
-        // finally block clears this job's samples and releases their ownership.
-        await this.activity.audioCaptured?.(job.id, job.samples);
+        // Preserve each available input independently, including a late ASR
+        // result after cancellation. One failed write must not discard the
+        // other recording. Await both before reporting a failure or clearing
+        // this job's samples in finally; Promise.all would return too early.
+        const audioWrite = this.activity.audioCaptured?.(job.id, job.samples);
+        const screenshotWrite = capture.screenshot
+          ? this.activity.screenshotCaptured?.(job.id, capture.screenshot)
+          : undefined;
+        const recordings = await Promise.allSettled([audioWrite, screenshotWrite]);
 
-        // Keep the exact image paired with this transcript. No action runs until
-        // storage has settled, and cancellation still prevents dispatch below.
-        if (capture.screenshot) {
-          await this.activity.screenshotCaptured?.(job.id, capture.screenshot);
+        for (const recording of recordings) {
+          if (recording.status === 'rejected') {
+            throw recording.reason;
+          }
         }
 
         job.signal.throwIfAborted();

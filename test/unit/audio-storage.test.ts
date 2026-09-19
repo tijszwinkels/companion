@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import test from 'node:test';
 
 import { SensorPipeline } from '../../src/core/pipeline.ts';
@@ -156,6 +157,87 @@ test('cancellation waits for audio storage before clearing samples and never dis
     await fixture.close();
   }
 });
+
+for (const failedRecording of ['audio', 'screenshots'] as const) {
+  test(`${failedRecording} failure still waits for and preserves the other recording`, async () => {
+    const fixture = await desktopFixture(async () => Buffer.alloc(0));
+    const activity = fixture.runtime.activity;
+    const samples = new Float32Array(16000).fill(0.2);
+    const expectedAudio = encodeWav(samples);
+    const writing = deferred<void>();
+    const release = deferred<void>();
+    let finished = false;
+
+    // Delay the healthy recording after the other write rejects. Early return
+    // would clear samples and release SQLite while that recording still needs it.
+    async function write(kind: 'audio' | 'screenshots', save: () => Promise<void>): Promise<void> {
+      if (kind === failedRecording) {
+        throw Error(`Cannot write ${kind}`);
+      }
+      writing.resolve();
+      await release.promise;
+      await save();
+    }
+
+    const router = new UserSensorRouter(
+      {
+        detector: testDetector({
+          detect: async () => assert.fail('Storage error reached inference'),
+        }),
+      },
+      () => {},
+    );
+    const pipeline = new SensorPipeline(
+      {
+        ...testSensors({
+          capture: async () => screenshot,
+          transcribe: async () => 'Keep available input',
+        }),
+        router,
+      },
+      () => {},
+      fixture.controller.signal,
+      {
+        ...activity,
+        audioCaptured: (id, input) => write('audio', () => activity.audioCaptured!(id, input)),
+        screenshotCaptured: (id, input) =>
+          write('screenshots', () => activity.screenshotCaptured!(id, input)),
+        finished(id) {
+          finished = true;
+          activity.finished?.(id);
+        },
+      },
+    );
+
+    try {
+      pipeline.submit(samples);
+      await writing.promise;
+      await nextTurn();
+      assert.equal(finished, false);
+      assert.ok(samples.some((sample) => sample !== 0));
+      release.resolve();
+      await pipeline.idle();
+
+      const row = fixture.database.prepare('SELECT * FROM utterances').get()!;
+      assert.equal(row.outcome, 'error');
+      assert.equal(row.recognized_intent, null);
+      assert.equal(pipeline.failures, 1);
+      assert.equal(finished, true);
+      assert.ok(samples.every((sample) => sample === 0));
+
+      const savedRecording = failedRecording === 'audio' ? 'screenshots' : 'audio';
+      const path = await findArtifact(dirname(fixture.socketPath), String(row.id), savedRecording);
+      assert.deepEqual(
+        await readFile(path),
+        savedRecording === 'audio' ? expectedAudio : screenshot.png,
+      );
+    } finally {
+      release.resolve();
+      await pipeline.idle();
+      await fixture.close();
+    }
+  });
+}
 
 test('migration removes old path columns while preserving recorded files, utterances, and feedback', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'companion-audio-migration-'));

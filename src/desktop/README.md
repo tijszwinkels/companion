@@ -165,6 +165,10 @@ The sensor pipeline saves the exact captured PNG before intent routing, at
 observation's local date, not the later write time. Custom database paths use
 their parent directory as the data root. The file is written privately and
 renamed into place only once complete. Shutdown waits for accepted writes.
+These renames prevent readers seeing partial files during ordinary operation;
+they do not guarantee power-loss durability because files and directories are
+not explicitly synced. An unclean process exit can leave an unused `.tmp` file;
+recording readers should only use the final `.png` and `.wav` filenames.
 A failed capture or old record has no screenshot file. A failed screenshot
 write keeps the transcript, records an error, and prevents routing that observation.
 
@@ -173,16 +177,19 @@ transcript is saved as `~/companion/data/YYYY-MM-DD/audio/<utterance-id>.wav`.
 These uncompressed 16 kHz mono PCM16 WAVs use the same encoder and complete sample
 buffer as Voxtype's input, including the utterance's segmentation padding. They
 share the screenshot writer's private atomic publication and UUID filenames.
-The pipeline saves audio before screenshots, even if capture failed or a late ASR
-result arrived after cancellation. It awaits the write before clearing its owned
-sample buffer; cancellation still prevents routing. Storage failure leaves the
-transcript available and prevents the action. Successful
-writes survive later delivery failures and `IGNORE` decisions.
+The pipeline attempts audio and screenshot writes independently, even if a late
+ASR result arrived after cancellation. It awaits both before clearing its owned
+sample buffer; cancellation still prevents routing. An audio failure still allows
+the screenshot to be saved, and a screenshot failure still allows the audio to be
+saved. Storage failure leaves the transcript available and prevents the action.
+Successful writes survive later delivery failures and `IGNORE` decisions.
 
 Older records and supplied `--text` input have no audio. The storage boundary
 remains a nonempty transcript: failed/empty transcription, untranscribed cancelled
 jobs, and overload drops create no recording or history row. `--no-desktop`
 disables both audio and screenshot persistence.
+File replay with `--wav` uses the same recording behavior as microphone input;
+use `--no-desktop` for a replay that should not enter the permanent history.
 
 The default database's first startup copies the old
 `$XDG_STATE_HOME/companion/utterances.sqlite` (default
