@@ -133,8 +133,11 @@ through the existing service.
 **Super+Alt+D** also pauses currently playing media when it focuses a conversation
 input. This uses MPRIS Pause on players that support it. Companion resumes listening
 when all players report that playback has stopped, unless you manually paused
-listening. Toggling focus back does not resume media. Ordinary textbox clicks and
-tab changes do not send media commands.
+listening. Leaving the input (by toggling focus back, clicking elsewhere, closing
+the panel, or selecting Activity) resumes only players Companion paused for that
+interaction. Players that were already paused, were stopped/closed, or resumed
+independently are left alone. Ordinary textbox clicks do not initiate media
+pausing, and switching directly between conversation inputs keeps media paused.
 
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.

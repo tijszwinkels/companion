@@ -11,7 +11,13 @@ Playback checks inject player objects into the adapter's state aggregator: an
 already-playing player, state changes, multiple simultaneous players, removal,
 and reappearance. They also check pause-only commands, unsupported players,
 waiting for player acknowledgements, and focus acquisition versus release or
-cancellation. Status checks distinguish media pause from manual pause.
+cancellation. Restore checks cover only previously playing players, quick release
+before Pause replies, outside focus loss, duplicate callbacks, user stop/resume,
+removed/replaced players and missing Play capability. Pending restoration waits
+for Paused (the installed Quickshell suppresses Play while still Playing), is
+cancelled by refocusing, and expires after five seconds without acknowledgement.
+Status checks distinguish
+media pause from manual pause.
 Node checks exercise the real private socket, report validation/ownership,
 disconnect recovery, explicit resume, disabled file/text modes, and cancellation
 of queued/in-flight speech. These tests do not start or pause real media. Live

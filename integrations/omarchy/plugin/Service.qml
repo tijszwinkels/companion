@@ -44,6 +44,7 @@ Item {
   PlaybackState {
     id: playback
     players: Mpris.players ? Mpris.players.values : []
+    pausedState: MprisPlaybackState.Paused
     onPlayingChanged: root.reportMediaPlayback()
   }
 
@@ -69,6 +70,13 @@ Item {
     root.send({action: "panel-state", id: id,
       composerFocused: id !== "" && sidePanel.composerFocusId === id,
       keyboardFocused: sidePanel.keyboardFocused})
+  }
+
+  function composerFocusChanged() {
+    root.reportPanelState()
+    // Coalesce transient focus changes while switching between conversation
+    // tabs. Leaving the composer for another window or Activity restores media.
+    if (sidePanel.composerFocusId === "") playback.resumePaused()
   }
 
   function togglePanel() {
@@ -478,7 +486,8 @@ Item {
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
     onComposerFocusRequested: playback.pausePlaying()
-    onComposerFocusIdChanged: Qt.callLater(root.reportPanelState)
+    onComposerFocusReleased: Qt.callLater(root.composerFocusChanged)
+    onComposerFocusIdChanged: Qt.callLater(root.composerFocusChanged)
     onKeyboardFocusedChanged: Qt.callLater(root.reportPanelState)
     onRestoreFocusRequested: address => {
       const pending = root.pendingHistoryInsert

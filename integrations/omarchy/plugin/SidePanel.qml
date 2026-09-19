@@ -43,6 +43,7 @@ PanelWindow {
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
   signal composerFocusRequested()
+  signal composerFocusReleased()
   signal restoreFocusRequested(string address)
 
   onOpenedChanged: if (!opened) screenshotSource = ""
@@ -75,7 +76,10 @@ PanelWindow {
       // changes, clicks, focus release and cancelled acquisition do not.
       root.composerFocusRequested()
     }
-    onReleaseRequested: content.releaseComposerFocus()
+    onReleaseRequested: {
+      content.releaseComposerFocus()
+      root.composerFocusReleased()
+    }
     onRestoreRequested: address => root.restoreFocusRequested(address)
   }
 
