@@ -477,6 +477,7 @@ Item {
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
+    onComposerFocusRequested: playback.pausePlaying()
     onComposerFocusIdChanged: Qt.callLater(root.reportPanelState)
     onKeyboardFocusedChanged: Qt.callLater(root.reportPanelState)
     onRestoreFocusRequested: address => {

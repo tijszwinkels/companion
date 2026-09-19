@@ -130,6 +130,12 @@ phrase replaces an older result. Pausing shows **Paused** while any pending
 phrase finishes; a disconnected Companion shows **Not running** and reconnects
 through the existing service.
 
+**Super+Alt+D** also pauses currently playing media when it focuses a conversation
+input. This uses MPRIS Pause on players that support it. Companion resumes listening
+when all players report that playback has stopped, unless you manually paused
+listening. Toggling focus back does not resume media. Ordinary textbox clicks and
+tab changes do not send media commands.
+
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
 Monitor changes are observed while the panel is open. Every tab, including

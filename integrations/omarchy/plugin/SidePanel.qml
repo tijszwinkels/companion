@@ -42,6 +42,7 @@ PanelWindow {
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
+  signal composerFocusRequested()
   signal restoreFocusRequested(string address)
 
   onOpenedChanged: if (!opened) screenshotSource = ""
@@ -68,7 +69,12 @@ PanelWindow {
     mapped: root.backingWindowVisible
     actualFocus: root.keyboardFocused
     sessionId: root.selectedSessionId
-    onFocusRequested: content.focusComposer()
+    onFocusRequested: {
+      content.focusComposer()
+      // Only the shortcut's acquisition path asks to quiet media. Ordinary tab
+      // changes, clicks, focus release and cancelled acquisition do not.
+      root.composerFocusRequested()
+    }
     onReleaseRequested: content.releaseComposerFocus()
     onRestoreRequested: address => root.restoreFocusRequested(address)
   }

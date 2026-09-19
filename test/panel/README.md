@@ -9,7 +9,9 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 
 Playback checks inject player objects into the adapter's state aggregator: an
 already-playing player, state changes, multiple simultaneous players, removal,
-and reappearance. Status checks distinguish media pause from manual pause.
+and reappearance. They also check pause-only commands, unsupported players,
+waiting for player acknowledgements, and focus acquisition versus release or
+cancellation. Status checks distinguish media pause from manual pause.
 Node checks exercise the real private socket, report validation/ownership,
 disconnect recovery, explicit resume, disabled file/text modes, and cancellation
 of queued/in-flight speech. These tests do not start or pause real media. Live
