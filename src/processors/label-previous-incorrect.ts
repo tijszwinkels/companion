@@ -7,8 +7,7 @@ export class LabelPreviousIncorrect implements UserSensorProcessor {
   readonly id = 'label-previous-incorrect';
   readonly label = 'Label previous incorrect';
   readonly name = 'LABEL_PREVIOUS_INCORRECT';
-  // Also accept the transcription spelling used when this shortcut was requested.
-  readonly prefixes = ['label previous incorrect', 'label previous incorrent'];
+  readonly prefixes = ['label previous incorrect'];
   readonly acceptsEmptyPrefix = true;
   readonly dependencies = {};
 

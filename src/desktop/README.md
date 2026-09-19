@@ -196,8 +196,7 @@ history. The control socket remains in `$XDG_RUNTIME_DIR`.
 The standalone voice shortcuts **“label previous correct”** and **“label previous
 incorrect”** register as `LABEL_PREVIOUS_CORRECT` and `LABEL_PREVIOUS_INCORRECT`.
 They have no LLM instructions. Unlike dictation prefixes, they accept an empty
-payload; additional text is rejected. The requested spelling “label previous
-incorrent” is also accepted. Successful labeling records the command's outcome
+payload; additional text is rejected. Successful labeling records the command's outcome
 as `labeled` and plays the success cue. Preview mode writes no feedback.
 
 `intent_feedback` contains exactly these columns:

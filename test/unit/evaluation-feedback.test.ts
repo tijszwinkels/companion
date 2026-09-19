@@ -84,12 +84,12 @@ test('sensor input saves PNG and ASR audio before inference; bare feedback comma
     );
 
     // Successive corrections must keep targeting the original speech. Include
-    // ASR punctuation/case and the spelling in the original feature request.
+    // ASR punctuation and case variations of the supported commands.
     for (const [text, correct] of [
       ['LABEL PREVIOUS CORRECT.', true],
       ['label previous incorrect', false],
       ['label previous correct', true],
-      ['label previous incorrent', false],
+      ['Label previous incorrect.', false],
     ] as const) {
       utterance = text;
       pipeline.submit(samples.slice());
