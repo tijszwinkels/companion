@@ -51,6 +51,10 @@ needed to update this adapter.
   panel focus for these local shortcuts, with no hidden composer.
   Super+Alt+Tab keeps its original group-window action outside Companion; no
   desktop-wide numbered shortcuts are registered.
+- While the panel has keyboard focus, **Super+minus** widens it and
+  **Super+equals** narrows it by 100 logical pixels. These are Omarchy's existing
+  physical horizontal-resize keys (`code:20`/`code:21`); their original window
+  actions still run outside Companion. Shift/Alt/Ctrl variants are unchanged.
   **Ctrl+C** copies selected message text; each
   message also reveals a **Copy** button on hover for copying its entire contents.
 - Click the microphone in the top bar for separate **Listening** and **Sound
@@ -101,11 +105,20 @@ through the existing service.
 The default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
 Monitor changes are observed while the panel is open. Every tab, including
-Activity, uses 600 logical pixels of width at the default theme scale (capped
-to the screen) and all available height below the bar. Quick questions open
+Activity, starts at 600 logical pixels of width at the default theme scale and
+uses all available height below the bar. Resizing is bounded between 360 logical
+pixels and the monitor width (smaller monitors use their full width). The chosen
+width survives tab switches and closing the panel, until the plugin restarts.
+Quick questions open
 a new tab with a user bubble, streamed Markdown answers, and expandable tool
 bubbles. Switching tabs keeps the panel the same size. The visible card slides
 inside a stable native surface; only the visible card captures input.
+
+The resize installer check rejects custom actions when Hyprland reports the
+physical keycode or a minus/equal symbol. Hyprland 0.56.2 can report Lua physical
+bindings with an empty key and keycode zero, so those cannot be identified from
+`hyprctl -j binds`; inspect personal Lua overrides before installing on such a
+configuration. The packaged Omarchy horizontal actions are the supported defaults.
 A compact Activity visualization sits above each conversation and Previous
 sessions, outside the scrolling content. Its arrow collapses it to a one-line
 status or expands the microphone and phrase animation. The choice follows you

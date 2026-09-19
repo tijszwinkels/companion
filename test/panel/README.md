@@ -151,6 +151,13 @@ hidden panel. Lua tests check the native group-next fallback when the panel is
 absent. No real Companion data or model is used. The runner waits for a native
 output before starting Qt to avoid its startup placeholder-screen race.
 
+The native fixture also sends the physical Super+minus/equal chords: Activity
+resizes without losing focus, and the original window resize works with an
+unfocused or hidden panel. It seeds wtype's synthetic keymap to put those keys at
+XKB codes 20/21, rather than relying on symbolic shortcut matching. Offscreen
+surface tests cover bounds, theme scale, monitor-size changes, right anchoring,
+and retaining width after closing and reopening.
+
 Contextual voice routing is covered offline by real private-socket tests:
 focused-composer eligibility, the exact continuation prompt, both start aliases,
 direct messages to an unfocused visible chat, and cancellation/preview/stale

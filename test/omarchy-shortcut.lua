@@ -9,6 +9,10 @@ local removed = {}
 
 hl = {
   dsp = {
+    window = { resize = function(size)
+      assert(size.y == 0 and size.relative, "Keep the native horizontal resize action")
+      return function() table.insert(events, { name = "resize:" .. size.x }) end
+    end },
     group = { next = function()
       return function() table.insert(events, { name = "group-next" }) end
     end },
@@ -178,3 +182,24 @@ for _, binding in ipairs(bindings) do
   assert(not binding.key:match("^SUPER %+ ALT %+ %d$"), "Numbered shortcuts remain local")
 end
 print("PASS panel Tab routing and native fallback without global number bindings")
+
+for _, binding in ipairs(bindings) do
+  local code = binding.key:match("^SUPER %+ code:(%d+)$")
+  if code then
+    assert(removed[binding.key], "Replace each stock resize chord exactly once")
+    assert(binding.options.transparent, "Resizing must preserve history releases")
+    local native = code == "20" and "resize:-100" or "resize:100"
+    local panel = code == "20" and "companion:expand-width" or "companion:shrink-width"
+    for _, mapped in ipairs({false, true}) do
+      events = {}
+      layers = {{namespace = "companion-panel", mapped = mapped}}
+      binding.callback()
+      assert(#events == 1 and event_count(mapped and panel or native) == 1)
+    end
+    events = {}
+    layers = {}
+    binding.callback()
+    assert(#events == 1 and event_count(native) == 1, "Resize works without the panel")
+  end
+end
+print("PASS physical resize routing and native fallback")

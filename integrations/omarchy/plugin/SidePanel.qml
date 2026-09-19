@@ -51,6 +51,7 @@ PanelWindow {
     focusControl.toggle(address, root.composerFocusId !== "")
   }
   function nextTab() { content.nextTab() }
+  function resizeBy(logicalPixels) { surface.resizeBy(logicalPixels) }
 
   Panel.ComposerFocus {
     id: focusControl
@@ -82,7 +83,7 @@ PanelWindow {
   anchors { top: true; bottom: true; right: true }
   // Keep the native Wayland surface stable while the card slides. The input
   // region below excludes the transparent space beside it.
-  implicitWidth: Math.min(Style.space(600), selectedScreen ? selectedScreen.width : Style.space(600))
+  implicitWidth: surface.width
   color: "transparent"
 
   // Respect the bar's reserved space but never reserve space ourselves: this
@@ -112,6 +113,7 @@ PanelWindow {
       id: surface
       opened: root.opened
       unit: Style.space(100) / 100
+      availableWidth: root.selectedScreen ? root.selectedScreen.width : Style.space(600)
 
       BorderSurface {
         anchors.fill: parent
@@ -147,7 +149,7 @@ PanelWindow {
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
         focusShortcut: "⌥⌘D"
-        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
         onPreviousRequested: root.previousRequested()

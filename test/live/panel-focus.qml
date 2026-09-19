@@ -88,6 +88,7 @@ ShellRoot {
         toggles: root.toggleCount,
         otherApplicationActive: otherApplication.contentItem.Window.window.active,
         applicationActive: applicationInput.Window.window.active,
+        applicationWidth: application.width,
         applicationText: applicationInput.text, composerText: input ? input.text : null})
     }
     function closePanel(): void { panel.opened = false }

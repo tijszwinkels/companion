@@ -7,8 +7,18 @@ Item {
   required property bool opened
   property real unit: 1
   property real reveal: opened ? 1 : 0
+  property real preferredWidth: 600
+  property real availableWidth: parent.width
 
-  width: Math.min(parent.width, 600 * unit)
+  // Remember the chosen width across tabs and closing. Start from the visible
+  // width when resizing after a monitor change, avoiding invisible extra steps.
+  function resizeBy(logicalPixels) {
+    const maximum = availableWidth / unit
+    const minimum = Math.min(360, maximum)
+    preferredWidth = Math.max(minimum, Math.min(maximum, width / unit + logicalPixels))
+  }
+
+  width: Math.min(availableWidth, preferredWidth * unit)
   height: parent.height
   x: parent.width - width + (1 - reveal) * width
   y: parent.height - height

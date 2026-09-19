@@ -263,6 +263,26 @@ Item {
     }
   }
 
+  // These are Omarchy's existing horizontal resize actions. Its leftward
+  // expansion widens our right-anchored panel; outside it, retain the original
+  // window dispatcher and its direction exactly.
+  GlobalShortcut {
+    appid: "companion"
+    name: "expand-width"
+    onPressed: {
+      if (sidePanel.keyboardFocused) sidePanel.resizeBy(100)
+      else Hyprland.dispatch("hl.dsp.window.resize({ x = -100, y = 0, relative = true })")
+    }
+  }
+  GlobalShortcut {
+    appid: "companion"
+    name: "shrink-width"
+    onPressed: {
+      if (sidePanel.keyboardFocused) sidePanel.resizeBy(-100)
+      else Hyprland.dispatch("hl.dsp.window.resize({ x = 100, y = 0, relative = true })")
+    }
+  }
+
   // Only finish completes a chord, after V and both modifiers are up. Hyprland
   // also releases history on V-up, which is too early when modifiers remain.
   // Both shortcuts use this resident connection, so a tap cannot race startup.
@@ -310,6 +330,7 @@ Item {
         panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
         selectedSessionId: agentSessions.conversationId,
         panelMonitor: sidePanel.monitorName,
+        panelWidth: sidePanel.width,
         composerFocusId: sidePanel.composerFocusId, composerFocusPhase: sidePanel.composerFocusPhase,
         count: root.history.length, error: root.lastError })
     }

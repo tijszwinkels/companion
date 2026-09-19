@@ -72,3 +72,24 @@ test('installer fails closed when compositor bindings cannot be inspected', () =
     );
   }
 });
+
+test('resize routing accepts stock or installed bindings and rejects custom actions', () => {
+  for (const code of [20, 21]) {
+    for (const key of [
+      { key: `SUPER + code:${code}` },
+      { key: '', keycode: code },
+      { key: code === 20 ? 'minus' : 'equal' },
+    ]) {
+      const stock = code === 20 ? 'Expand window left' : 'Shrink window left';
+      const own = `Companion width or ${stock.toLowerCase()}`;
+      const binding = { modmask: 64, ...key, description: stock };
+      const check = (description: string, installed: boolean) =>
+        assertShortcutsAvailable(JSON.stringify([{ ...binding, description }]), installed);
+
+      assert.doesNotThrow(() => check(stock, false));
+      assert.doesNotThrow(() => check(own, true));
+      assert.throws(() => check(own, false), /already bound/);
+      assert.throws(() => check('My resize action', true), /already bound to My resize action/);
+    }
+  }
+});

@@ -22,16 +22,32 @@ hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
 -- Super+Alt+Tab already means next grouped window in Omarchy. Keep that action
 -- unless the Companion panel has focus. Qt owns that focus decision; when no
 -- panel is mapped, use the native dispatcher directly (also if the UI exits).
-hl.unbind("SUPER + ALT + TAB")
-hl.bind("SUPER + ALT + TAB", function()
+local function panel_or_window(action, fallback)
   for _, layer in ipairs(hl.get_layers()) do
     if layer.namespace == "companion-panel" and layer.mapped then
-      hl.dispatch(hl.dsp.global("companion:next-tab"))
+      hl.dispatch(hl.dsp.global("companion:" .. action))
       return
     end
   end
-  hl.dispatch(hl.dsp.group.next())
+  hl.dispatch(fallback)
+end
+
+hl.unbind("SUPER + ALT + TAB")
+hl.bind("SUPER + ALT + TAB", function()
+  panel_or_window("next-tab", hl.dsp.group.next())
 end, { description = "Companion next tab or next grouped window", transparent = true })
+
+-- Use the same physical keys as Omarchy (minus/equal on US keyboards). Only
+-- plain Super is intercepted; its Shift/Alt/Ctrl variants remain unchanged.
+hl.unbind("SUPER + code:20")
+hl.bind("SUPER + code:20", function()
+  panel_or_window("expand-width", hl.dsp.window.resize({ x = -100, y = 0, relative = true }))
+end, { description = "Companion width or expand window left", transparent = true })
+
+hl.unbind("SUPER + code:21")
+hl.bind("SUPER + code:21", function()
+  panel_or_window("shrink-width", hl.dsp.window.resize({ x = 100, y = 0, relative = true }))
+end, { description = "Companion width or shrink window left", transparent = true })
 
 -- The panel owns its horizontal reveal animation, including a quick reversal
 -- if the toggle is pressed again before the first animation finishes.

@@ -37,6 +37,35 @@ export function assertShortcutsAvailable(
       .at(-1)
       ?.trim()
       .toLowerCase();
+
+    // Omarchy binds resize to physical keys. Some Hyprland versions expose
+    // those as code:N, others as keycode. Versions reporting neither cannot
+    // reveal such conflicts; inspect their user Lua before changing the keys.
+    let physicalCode = binding.keycode;
+    if (key?.startsWith('code:')) {
+      physicalCode = Number(key.slice(5));
+    } else if (key === 'minus') {
+      physicalCode = 20;
+    } else if (key === 'equal') {
+      physicalCode = 21;
+    }
+    if (binding.modmask === 64 && (physicalCode === 20 || physicalCode === 21)) {
+      const action = physicalCode === 20 ? 'expand' : 'shrink';
+      const stock = physicalCode === 20 ? 'Expand window left' : 'Shrink window left';
+      const own = `Companion width or ${action} window left`;
+
+      if (
+        !binding.submap &&
+        (binding.description === stock || (alreadyInstalled && binding.description === own))
+      ) {
+        continue;
+      }
+
+      throw Error(
+        `Super+code:${physicalCode} is already bound to ${binding.description || 'another action'}`,
+      );
+    }
+
     const shortcut = shortcuts.find((candidate) => candidate.key === key);
 
     if (binding.modmask !== 72 || !shortcut) {

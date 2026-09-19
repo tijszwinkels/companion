@@ -59,5 +59,42 @@ Item {
       surface.destroy()
       host.destroy()
     }
+
+    function test_resize_bounds_and_remembered_width() {
+      const surface = createTemporaryObject(surfaceComponent, scene, {availableWidth: 1200})
+      surface.resizeBy(100)
+      compare(surface.width, 700)
+      surface.resizeBy(-100)
+      compare(surface.width, 600)
+      surface.resizeBy(-1000)
+      compare(surface.width, 360)
+      surface.resizeBy(2000)
+      compare(surface.width, 1200)
+      // A smaller monitor clamps immediately; the next press uses that actual
+      // width rather than the remembered width of the larger monitor.
+      surface.availableWidth = 800
+      compare(surface.width, 800)
+      surface.resizeBy(-100)
+      compare(surface.width, 700)
+      surface.opened = true
+      tryCompare(surface, "reveal", 1)
+      compare(surface.x + surface.width, scene.width)
+      surface.opened = false
+      tryCompare(surface, "reveal", 0)
+      surface.opened = true
+      compare(surface.width, 700)
+      surface.availableWidth = 320
+      surface.resizeBy(-100)
+      compare(surface.width, 320)
+    }
+
+    function test_resize_uses_theme_units() {
+      const surface = createTemporaryObject(surfaceComponent, scene, {unit: 1.5, availableWidth: 1600})
+      compare(surface.width, 900)
+      surface.resizeBy(100)
+      compare(surface.width, 1050)
+      surface.resizeBy(-2000)
+      compare(surface.width, 540)
+    }
   }
 }

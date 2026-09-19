@@ -47,6 +47,7 @@ interface FocusState {
   focused: string;
   phase: string;
   applicationActive: boolean;
+  applicationWidth: number;
   otherApplicationActive: boolean;
   applicationText: string;
   composerText: string;
@@ -68,6 +69,7 @@ async function adapterState() {
     panelOpened: boolean;
     selectedSessionId: string;
     composerFocusId: string;
+    panelWidth: number;
   };
 }
 
@@ -75,6 +77,20 @@ async function panelKey(key: string, superKey = true): Promise<void> {
   const modifiers = superKey ? ['-M', 'logo', '-M', 'alt'] : ['-M', 'alt'];
   const releases = superKey ? ['-m', 'alt', '-m', 'logo'] : ['-m', 'alt'];
   await command('wtype', [...modifiers, '-k', key, ...releases], signal);
+}
+
+async function resizeKey(expand: boolean): Promise<void> {
+  // Stock wtype allocates each distinct symbol at consecutive evdev codes
+  // starting at 1. Seed harmless function keys so minus/equal occupy 12/13
+  // (XKB 20/21), exercising the actual physical-code bindings in this private
+  // compositor, not just their global-shortcut handlers.
+  const count = expand ? 11 : 12;
+  const seed = Array.from({ length: count }, (_, index) => ['-k', `F${index + 1}`]).flat();
+  await command(
+    'wtype',
+    [...seed, '-M', 'logo', '-k', expand ? 'minus' : 'equal', '-m', 'logo'],
+    signal,
+  );
 }
 
 async function waitFor(check: () => Promise<boolean>): Promise<void> {
@@ -256,6 +272,12 @@ try {
     '',
     'Activity has no voice/text destination',
   );
+  const initialWidth = (await adapterState()).panelWidth;
+  await resizeKey(false);
+  await waitFor(async () => (await adapterState()).panelWidth === initialWidth - 100);
+  await resizeKey(true);
+  await waitFor(async () => (await adapterState()).panelWidth === initialWidth);
+  assert.equal((await state()).applicationActive, false, 'Resizing retains panel focus');
   await panelKey('1', false);
   await waitFor(async () => (await adapterState()).composerFocusId === 'local-one');
   await panelKey('Tab');
@@ -279,13 +301,41 @@ try {
   }
   await panelKey('2', false);
   assert.equal((await adapterState()).selectedSessionId, 'local-one');
+
+  // Outside Companion, resize the ordinary test application using the exact
+  // native +/-100 dispatcher. Floating gives a predictable dimension without
+  // relying on the compositor's tiled split direction.
+  const clients = JSON.parse((await command('hyprctl', ['-j', 'clients'], signal)).toString());
+  const application = clients.find(
+    (client: { title: string }) => client.title === 'Companion focus fixture',
+  );
+  if (!application.floating) {
+    await command(
+      'hyprctl',
+      ['eval', 'hl.dispatch(hl.dsp.window.float({ action = "toggle" }))'],
+      signal,
+    );
+    await delay(100, undefined, { signal });
+  }
+  const applicationWidth = (await state()).applicationWidth;
+  await resizeKey(true);
+  await waitFor(async () => (await state()).applicationWidth === applicationWidth - 100);
+  await resizeKey(false);
+  await waitFor(async () => (await state()).applicationWidth === applicationWidth);
+  assert.equal((await adapterState()).panelWidth, initialWidth, 'Unfocused panel keeps its width');
+
   await command('qs', ['ipc', '-p', directory, 'call', 'companion', 'closePanel'], signal);
   await delay(250, undefined, { signal });
+  await resizeKey(true);
+  await waitFor(async () => (await state()).applicationWidth === applicationWidth - 100);
   await panelKey('Tab');
   assert.equal(
     (await adapterState()).panelOpened,
     false,
     'Local shortcuts cannot open a hidden panel',
+  );
+  console.log(
+    'PASS: physical Super+minus/equal resize, Activity focus retained, ordinary window resize with panel unfocused or hidden',
   );
   console.log(
     'PASS: local Super+Alt+0/Tab and Alt+numbers, Activity focus, tab wrap, outside/hidden panel gating and focus return',
