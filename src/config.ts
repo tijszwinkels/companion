@@ -16,7 +16,9 @@ export async function loadConfig(path?: string): Promise<Config> {
   const defaults: Config = {
     llm: { baseUrl: 'http://127.0.0.1:18081/v1', model: 'qwen3.8-128k', timeoutMs: 15000 },
     asr: {
-      binary: `${homedir()}/.local/bin/voxtype`,
+      workerBinary: fileURLToPath(
+        new URL('../native/asr-worker/target/release/companion-asr-worker', import.meta.url),
+      ),
       modelDir: `${homedir()}/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8`,
       timeoutMs: 90000,
     },
@@ -44,6 +46,12 @@ export async function loadConfig(path?: string): Promise<Config> {
     if (!(key in defaults)) {
       throw Error(`Unknown config key: ${key}`);
     }
+  }
+
+  if (input.asr && typeof input.asr === 'object' && 'binary' in input.asr) {
+    throw Error(
+      'asr.binary was replaced by asr.workerBinary; remove asr.binary and run npm run asr:build',
+    );
   }
 
   // Merge each nested group independently so a single override keeps its peers.

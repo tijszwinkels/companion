@@ -1,0 +1,31 @@
+{
+  "fixture": "test/fixtures/speech.wav",
+  "fixtureSha256": "523c26311148fb0aba901a1cca4809d4b80b4850749790c00b3ab523cc19ff7d",
+  "audioSeconds": 5,
+  "cpu": "unknown",
+  "node": "v26.8.1",
+  "platform": "linux/arm64",
+  "baseline": {
+    "engine": "Voxtype 1.0.1, --engine parakeet",
+    "milliseconds": [1672.590452, 1801.786021, 1745.9480710000003]
+  },
+  "persistent": {
+    "engine": "Parakeet TDT, parakeet-rs 0.3.5, CPU defaults",
+    "startupMs": 1444.0429269999995,
+    "warmMilliseconds": [
+      283.9205150000007, 276.789135, 191.850735, 249.48565599999984, 313.6897479999998
+    ],
+    "startupPlusFirstMs": 1727.9634420000002
+  },
+  "medianSpeedup": 6.307863460753256,
+  "transcript": "and says, How do I get to Dublin? And the answer that comes back is",
+  "modelDir": "/home/user/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8",
+  "modelFiles": {
+    ".voxtype-manifest.json": "a7c13fd4daa098ff5d1cb8281327e441ba43bbbd8569ec66a279bf8de77da899",
+    "config.json": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",
+    "decoder_joint-model.int8.onnx": "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
+    "encoder-model.int8.onnx": "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
+    "vocab.txt": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+  },
+  "note": "Fresh-process baseline; OS file caches were not flushed. Warm calls share one process. Excludes VAD, ending silence, screenshot, LLM and delivery."
+}

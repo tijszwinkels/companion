@@ -224,7 +224,7 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
     configPath,
     JSON.stringify({
       llm: { baseUrl: 'http://127.0.0.1:1/v1' },
-      asr: { binary: '/nonexistent/voxtype', modelDir: '/nonexistent/model' },
+      asr: { workerBinary: '/nonexistent/asr-worker', modelDir: '/nonexistent/model' },
       vadModel: '/nonexistent/vad.onnx',
     }),
   );

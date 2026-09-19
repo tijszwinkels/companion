@@ -8,6 +8,9 @@
   },
   "scripts": {
     "start": "tsx src/cli.ts",
+    "asr:build": "cargo build --release --locked --manifest-path native/asr-worker/Cargo.toml",
+    "asr:test": "cargo test --locked --manifest-path native/asr-worker/Cargo.toml",
+    "asr:bench": "tsx test/bench/asr.ts",
     "check": "tsc --noEmit",
     "test": "tsx --test test/unit/*.test.ts",
     "test:live": "tsx test/live/run.ts",

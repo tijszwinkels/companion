@@ -1,5 +1,4 @@
 import { parseArgs, styleText, stripVTControlCharacters } from 'node:util';
-import { access } from 'node:fs/promises';
 
 import { loadConfig } from './config.ts';
 import { IntentDetector } from './core/intent-detector.ts';
@@ -117,6 +116,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let vad: VoiceActivityDetector | undefined;
+  let transcriber: Transcriber | undefined;
   let pipeline: SensorPipeline | undefined;
   let desktop: DesktopRuntime | undefined;
   const pause = new PauseControl();
@@ -171,7 +171,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // These constructors are inert. Named dependencies are both the actual
     // objects used for processing and the connections visible to inspection.
     const screen = new ActiveWindowSensor(command);
-    const transcriber = new Transcriber(config.asr);
+    transcriber = new Transcriber(config.asr);
     pipeline = new SensorPipeline(
       { screen, transcriber, router },
       log,
@@ -222,16 +222,10 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       return;
     }
 
-    // Check local dependencies before announcing that microphone capture is on.
-    await access(config.asr.modelDir);
-    const version = await command(
-      config.asr.binary,
-      ['--version'],
-      AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
-    );
-    if (!/^voxtype 1\.0\.1\s*$/m.test(version.toString())) {
-      throw Error('Expected Voxtype 1.0.1');
-    }
+    // Only audio mode owns a native ASR worker. Finish model loading before
+    // capture starts; successful utterances then reuse this session's model.
+    log('asr', 'Loading Parakeet transcription worker');
+    await transcriber.start(controller.signal);
 
     await screen.capture(controller.signal);
 
@@ -290,6 +284,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     clearTimeout(timer);
 
     await pipeline?.idle();
+    await transcriber?.close();
     await agents.close();
     await vad?.close();
     await desktop?.close();

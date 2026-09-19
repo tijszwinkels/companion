@@ -12,6 +12,7 @@ From a terminal inside the Hyprland desktop session:
 ```sh
 cd ~/Work/companion
 npm ci
+npm run asr:build
 npm start
 ```
 
@@ -272,8 +273,12 @@ including storage and sounds, for isolated CLI use.
 - Node.js 22.19 or newer.
 - Hyprland, `hyprctl`, `grim`, `pw-record`, `pw-play`, `wtype`, and util-linux
   `flock` on PATH.
-- Voxtype 1.0.1 at `~/.local/bin/voxtype` and Parakeet at
+- Rust/Cargo 1.88+ and a C/C++ build toolchain to build the bundled ASR helper
+  (`npm run asr:build`). The build downloads its pinned dependencies and CPU ONNX
+  Runtime. See [persistent ASR setup](native/asr-worker/README.md).
+- The existing Parakeet TDT model at
   `~/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8`.
+  Companion does not download or replace model files.
 - A vision-capable Qwen endpoint. Defaults match the spike:
   `http://127.0.0.1:18081/v1`, model `qwen3.8-128k`.
 - FFmpeg for file input. The live test additionally needs `/usr/bin/python`,
@@ -283,13 +288,19 @@ The bundled Silero VAD runs locally with ONNX Runtime. Transcription is local.
 For utterances without a matching prefix, the configured model endpoint receives
 the utterance, window identity, and PNG. Prefix commands make no model request.
 With desktop history enabled, screenshots and speech audio for saved transcripts
-are retained under `~/companion/data`. Temporary ASR working files are removed
-after each call. `--no-desktop` disables this history and artifact storage.
+are retained under `~/companion/data`. Transcription itself uses private pipes and
+creates no temporary audio files. `--no-desktop` disables history and artifact
+storage.
 
 Optionally copy `companion.config.example.json` to `companion.config.json`.
 Supported configuration is defined in [src/config.ts](src/config.ts):
-`llm: { baseUrl, model, timeoutMs }`, `asr: { binary, modelDir, timeoutMs }`,
-and `vadModel`. Omitted values use defaults. `--config path` selects another file;
+`llm: { baseUrl, model, timeoutMs }`, `asr: { workerBinary, modelDir, timeoutMs }`,
+and `vadModel`. Omitted values use defaults. `asr.workerBinary` defaults to this
+checkout's `native/asr-worker/target/release/companion-asr-worker`. Remove any old
+`asr.binary` Voxtype override and run `npm run asr:build`; the old key is rejected
+with migration instructions. Keep `modelDir` unchanged. `timeoutMs` bounds startup
+and each transcription (including recovery startup), default 90 seconds.
+`--config path` selects another file;
 `COMPANION_LLM_API_KEY` supplies endpoint authentication. The adapter explicitly
 disables Qwen thinking using `chat_template_kwargs.enable_thinking = false`.
 
@@ -340,7 +351,8 @@ src/
       capture.ts                 PipeWire / file input and PCM decoding
       vad.ts                     Silero speech probability
       segmenter.ts               Collect audio into utterances
-      transcriber.ts             Local speech-to-text through Voxtype
+      transcriber.ts             Session-owned Parakeet speech-to-text
+      asr-worker.ts              Bounded pipes and native worker cleanup
     screen/
       capture.ts                 Read and capture the active window
       sensor.ts                  Named screen sensor used by the pipeline
@@ -457,8 +469,11 @@ utterances are explicitly logged as dropped. Prefix commands use this same queue
 and preserve speech order; they do not overtake an earlier LLM request. File input
 waits for each result.
 Silero uses the spike's thresholds: 400 ms minimum speech, 800 ms ending silence,
-256 ms preroll, and a 30-second segment limit. Voxtype loads Parakeet per utterance,
-as in the spike; it is a measurable part of latency.
+256 ms preroll, and a 30-second segment limit. Audio startup loads one persistent
+Parakeet worker before capture. Successful utterances reuse it. Pause keeps an idle
+model warm; cancellation during ASR kills the worker, and the next utterance loads
+a replacement. Shutdown closes it. Failures are never replayed and the transcriber
+has no additional queue. [Protocol, recovery and measured latency](native/asr-worker/README.md).
 
 ## Text delivery
 
@@ -487,6 +502,8 @@ There is no sandboxing in v1.
 ```sh
 npm run check
 npm test
+npm run asr:test
+npm run asr:bench  # Public fixture only; no desktop or microphone
 npm run test:live
 npm run test:desktop
 # Desktop shortcut checks only, without microphone, ASR, or LLM:
