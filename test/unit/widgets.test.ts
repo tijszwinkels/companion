@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
@@ -50,7 +50,13 @@ class ControlledRenderer extends WidgetRenderer {
   }
 }
 
-async function fixture(context: { after(fn: () => Promise<unknown>): void }) {
+async function fixture(
+  context: { after(fn: () => Promise<unknown>): void },
+  options: {
+    validateChanges?: (records: WidgetRecord[]) => () => void;
+    publication?: () => Promise<void>;
+  } = {},
+) {
   const directory = await mkdtemp('/tmp/companion-widgets-unit-');
   context.after(() => rm(directory, { recursive: true, force: true }));
   const renderer = new ControlledRenderer();
@@ -59,9 +65,11 @@ async function fixture(context: { after(fn: () => Promise<unknown>): void }) {
     directory,
     async (record) => {
       changed.push(record);
+      await options.publication?.();
     },
     undefined,
     renderer,
+    options.validateChanges,
   );
   context.after(() => service.close());
   const owner = randomUUID();
@@ -451,4 +459,100 @@ test('pop-out revalidates its view after browser startup and before navigation',
   assert.equal(navigations, 0);
   assert.equal(closed, 1);
   assert.equal((renderer as any).popouts.size, 0);
+});
+
+test('bookkeeping: rejected publications preserve only committed view capabilities', async (context) => {
+  let reject = false;
+  const { service, send, owner } = await fixture(context, {
+    validateChanges: () => {
+      if (reject) {
+        throw Error('Transcript budget rejected');
+      }
+      return () => {};
+    },
+  });
+  const committed = await send({ method: 'publish', widget: 'todo', props: { items: [] } });
+  const reference = (await service.restored(owner))[0].reference;
+  reject = true;
+  for (let index = 0; index < 12; index++) {
+    await send({ method: 'publish', widget: 'todo', props: { items: [] } }, 400);
+  }
+  await send({ method: 'present', id: committed.id, presentation: { placement: 'pinned' } }, 400);
+  assert.equal((service as any).records.size, 1);
+  assert.equal((service as any).capabilities.size, 1);
+  assert.equal((service as any).widgetCapabilities.size, 1);
+  const state = await fetch(reference.viewUrl + '/state');
+  assert.equal(state.status, 200);
+  await state.json();
+});
+
+for (const failure of ['cancelled', 'write failed'] as const) {
+  test(`bookkeeping: ${failure} publication allocates no view capabilities`, async (context) => {
+    const { service, renderer, send, owner, controller, directory } = await fixture(context);
+    if (failure === 'cancelled') {
+      renderer.describeGate = async () => controller.abort();
+    } else {
+      // A directory at the snapshot path makes atomic rename fail without
+      // changing permissions or touching any production state.
+      await mkdir(join(directory, owner + '.json'));
+    }
+    await send({ method: 'publish', widget: 'todo', props: { items: [] } }, 400);
+    assert.equal((service as any).records.size, 0);
+    assert.equal((service as any).capabilities.size, 0);
+    assert.equal((service as any).widgetCapabilities.size, 0);
+  });
+}
+
+test('bookkeeping: transcript failure after durable commit preserves its capability', async (context) => {
+  const { service, send, owner, changed, directory } = await fixture(context, {
+    publication: async () => {
+      throw Error('Transcript publication failed');
+    },
+  });
+  await send({ method: 'publish', widget: 'todo', props: { items: [] } }, 400);
+  assert.equal(changed.length, 1);
+  assert.equal((service as any).records.size, 1);
+  assert.equal((service as any).capabilities.size, 1);
+  assert.equal((service as any).widgetCapabilities.size, 1);
+  const saved = JSON.parse(await readFile(join(directory, owner + '.json'), 'utf8'));
+  assert.equal(saved[0].id, changed[0].id);
+  const capability = (service as any).widgetCapabilities.get(saved[0].id);
+  const reference = (await service.restored(owner))[0].reference;
+  assert.ok(reference.viewUrl!.endsWith('/' + capability));
+});
+
+test('bookkeeping: repeated owner close leaves no operation counters or view capabilities', async (context) => {
+  const { service } = await fixture(context);
+  for (let index = 0; index < 12; index++) {
+    const owner = randomUUID();
+    const lease = await service.lease(owner, new AbortController().signal);
+    const publish = widgetTools(lease.endpoint, lease.token)[1];
+    await publish.execute('publish', { widget: 'todo', props: { items: [] } });
+    await service.deactivate(owner);
+  }
+  assert.equal((service as any).records.size, 0);
+  assert.equal((service as any).queues.size, 0);
+  assert.equal((service as any).queued.size, 0);
+  assert.equal((service as any).capabilities.size, 0);
+  assert.equal((service as any).widgetCapabilities.size, 0);
+});
+
+test('bookkeeping: finishing one operation preserves the count for its queued successor', async (context) => {
+  const { service, owner } = await fixture(context);
+  const firstGate = deferred();
+  const secondGate = deferred();
+  context.after(async () => {
+    firstGate.resolve();
+    secondGate.resolve();
+  });
+  const first = (service as any).serialized(owner, () => firstGate.promise);
+  const second = (service as any).serialized(owner, () => secondGate.promise);
+  assert.equal((service as any).queued.get(owner), 2);
+  firstGate.resolve();
+  await first;
+  assert.equal((service as any).queued.get(owner), 1);
+  secondGate.resolve();
+  await second;
+  assert.equal((service as any).queued.has(owner), false);
+  assert.equal((service as any).queues.has(owner), false);
 });

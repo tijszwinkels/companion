@@ -292,7 +292,12 @@ export class WidgetService {
     try {
       return await result;
     } finally {
-      this.queued.set(owner, (this.queued.get(owner) ?? 1) - 1);
+      const remaining = (this.queued.get(owner) ?? 1) - 1;
+      if (remaining > 0) {
+        this.queued.set(owner, remaining);
+      } else {
+        this.queued.delete(owner);
+      }
       if (this.queues.get(owner) === result) {
         this.queues.delete(owner);
       }
@@ -331,7 +336,6 @@ export class WidgetService {
     for (const entry of changed) {
       transaction.set(entry.id, entry);
     }
-    const references = await Promise.all(changed.map((entry) => this.reference(entry)));
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const release = this.validateChanges(changed);
     try {
@@ -343,6 +347,10 @@ export class WidgetService {
       for (const entry of changed) {
         this.records.set(entry.id, entry);
       }
+      // Allocate capabilities only for durable records. Validation, cancellation
+      // and failed writes must not leave references for unpublished widgets.
+      // A later transcript failure retains these committed records and views.
+      const references = await Promise.all(changed.map((entry) => this.reference(entry)));
       const publications = await Promise.allSettled(
         changed.map((entry, index) => this.changed(entry, references[index])),
       );
