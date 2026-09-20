@@ -435,6 +435,60 @@ test('preview, cancelled speech and a disconnected owner cannot act on choices o
   assert.equal(setup.outcomes.at(-1), 'skipped');
 });
 
+test('ordered choice clicks preserve unchanged focus and invalidate dictation when the panel acquires focus', async (context) => {
+  const setup = await fixture(context);
+  const first = await setup.start();
+  await setup.complete(first.run);
+  await setup.select(first.id, true);
+
+  // Service reports panel state immediately before every choice click. An
+  // unchanged report must not create a false keyboard-delivery boundary.
+  setup.activity.processing?.(frame.id);
+  let choices = setup.sessions.interaction(first.id).agentChoices!;
+  setup.desktop.send({
+    action: 'panel-state',
+    id: first.id,
+    composerFocused: true,
+    keyboardFocused: true,
+  });
+  setup.desktop.send({
+    action: 'choose-agent',
+    id: first.id,
+    revision: choices.revision,
+    index: 0,
+  });
+  assert.equal((await setup.desktop.reply('panel-state')).type, 'result');
+  assert.equal((await setup.desktop.reply('choose-agent')).result, 'submitted');
+  assert.equal(setup.activity.deliveryAllowed!(frame.id), true);
+  await waitFor(() => setup.runs.length === 2);
+  assert.equal(setup.runs[1].request.prompt.text, 'Run the tests');
+  await setup.complete(setup.runs[1]);
+
+  // Clicking the panel from an application really does change the keyboard
+  // target. Keep Activity's insertion protection while accepting the click.
+  await setup.select(first.id, false);
+  setup.activity.processing?.(frame.id + 1);
+  choices = setup.sessions.interaction(first.id).agentChoices!;
+  setup.desktop.send({
+    action: 'panel-state',
+    id: first.id,
+    composerFocused: false,
+    keyboardFocused: true,
+  });
+  setup.desktop.send({
+    action: 'choose-agent',
+    id: first.id,
+    revision: choices.revision,
+    index: 1,
+  });
+  assert.equal((await setup.desktop.reply('panel-state')).type, 'result');
+  assert.equal((await setup.desktop.reply('choose-agent')).result, 'submitted');
+  assert.equal(setup.activity.deliveryAllowed!(frame.id + 1), false);
+  await waitFor(() => setup.runs.length === 3);
+  assert.equal(setup.runs[2].request.id, first.id);
+  assert.equal(setup.runs[2].request.prompt.text, 'No');
+});
+
 test('socket selections validate ownership and revisions, consume once, and leave no durable choices', async (context) => {
   const setup = await fixture(context);
   const first = await setup.start();
