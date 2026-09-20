@@ -63,8 +63,8 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
       return;
     }
 
-    // The session manager enforces one answer at a time, as it does for the
-    // typed composer. An accepted turn is independent of microphone pause.
+    // The session manager queues this behind any current answer, just as it
+    // does for typed input. Acceptance is independent of microphone pause.
     this.dependencies.sessions.followUp(context.agentSessionId, frame.utterance, signal);
     this.log('agent', `Continued question ${context.agentSessionId}`, frame.id);
     this.activity.outcome?.(frame.id, 'started');

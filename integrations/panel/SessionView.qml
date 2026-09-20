@@ -37,7 +37,7 @@ Item {
   readonly property bool hasMessageSelection: selectedMessage !== null && selectedMessage.visible && selectedMessage.selectedText !== ""
   readonly property bool running: session && (session.status === "starting" || session.status === "running")
   readonly property int messageCount: messages.count
-  readonly property bool canSend: online && session !== null && !running && pendingSubmission === null
+  readonly property bool canSend: online && session !== null && pendingSubmission === null
     && composer.text.trim().length > 0 && composer.text.length <= 4000
   readonly property string composerFocusId: online && visible && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
@@ -267,7 +267,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + bubble.toolName
               + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? "You" + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
+              : bubble.kind === "user" ? "You" + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
+                + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: bubble.state === "error" ? "#ef5350" : root.muted
@@ -480,7 +481,7 @@ Item {
       PanelAction {
         objectName: "sendSession"
         enabled: root.canSend
-        text: "Send"
+        text: root.running ? "Queue" : "Send"
         foreground: root.foreground
         selection: root.selection
         fontFamily: root.fontFamily

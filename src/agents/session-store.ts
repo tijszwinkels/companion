@@ -87,7 +87,7 @@ export class SessionStore {
         typeof message.toolName !== 'string' ||
         typeof message.screenshot !== 'boolean' ||
         !['user', 'assistant', 'tool', 'notice'].includes(message.kind) ||
-        !['running', 'done', 'error'].includes(message.state)
+        !['queued', 'running', 'done', 'error'].includes(message.state)
       ) {
         throw Error('Invalid saved message');
       }
@@ -99,7 +99,9 @@ export class SessionStore {
         toolName: message.toolName,
         input: message.input,
         screenshot: message.screenshot,
-        state: message.state === 'running' ? 'error' : message.state,
+        // Queued messages are display history, never instructions to replay
+        // after reopening a tab or restarting Companion.
+        state: ['queued', 'running'].includes(message.state) ? 'error' : message.state,
       };
       if (message.screenshot && message.kind === 'user' && screenshotUrl) {
         restored.screenshotUrl = screenshotUrl;
