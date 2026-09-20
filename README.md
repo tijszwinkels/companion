@@ -476,8 +476,11 @@ processed. The worker holds one active and up to two queued utterances; addition
 utterances are explicitly logged as dropped. Prefix commands use this same queue
 and preserve speech order; they do not overtake an earlier LLM request. File input
 waits for each result.
-Silero uses the spike's thresholds: 400 ms minimum speech, 800 ms ending silence,
-256 ms preroll, and a 30-second segment limit. Audio startup loads one persistent
+Silero requires 128 ms of detected speech (four 32 ms frames), so short words such
+as "stop", "yes", and "no" can reach transcription. Shorter triggers are discarded;
+lead-in and ending silence do not count toward that minimum. The detector uses
+0.65/0.35 start/continue probabilities, 800 ms ending silence, 256 ms preroll,
+and a 30-second segment limit. Audio startup loads one persistent
 Parakeet worker before capture. Successful utterances reuse it. Pause keeps an idle
 model warm; cancellation during ASR kills the worker, and the next utterance loads
 a replacement. Shutdown closes it. Failures are never replayed and the transcriber

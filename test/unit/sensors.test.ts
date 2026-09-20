@@ -30,24 +30,65 @@ test('PCM decoding preserves samples across odd chunk boundaries and pads only t
   assert.ok(all.slice(515).every((value) => value === 0));
 });
 
-test('VAD rejects short sounds, keeps preroll, ends on silence and caps continuous speech', () => {
-  const frame = new Float32Array(512).fill(0.1),
-    segmenter = new Segmenter();
-  for (let i = 0; i < 10; i++) {
-    assert.equal(segmenter.push(0.95, frame), undefined);
+test('VAD keeps short-word speech with its lead-in and still waits for ending silence', () => {
+  const silence = new Float32Array(512);
+  const speech = new Float32Array(512).fill(0.1);
+
+  // Four to twelve voiced frames represent 128–384 ms of speech: all were
+  // discarded by the old 400 ms gate, regardless of confidence or word content.
+  for (const voicedFrames of [4, 6, 12]) {
+    const segmenter = new Segmenter();
+    for (let index = 0; index < 10; index++) {
+      assert.equal(segmenter.push(0, silence), undefined);
+    }
+    for (let index = 0; index < voicedFrames; index++) {
+      // A clear onset can continue below the starting threshold, as before.
+      assert.equal(segmenter.push(index === 0 ? 0.95 : 0.5, speech), undefined);
+    }
+    for (let index = 0; index < 24; index++) {
+      assert.equal(segmenter.push(0, silence), undefined);
+    }
+
+    const segment = segmenter.push(0, silence);
+    assert.ok(segment, `${voicedFrames * 32} ms of speech must reach transcription`);
+    assert.equal(segment.reason, 'silence');
+    assert.equal(segment.samples.length, (8 + voicedFrames + 25) * 512);
+    assert.deepEqual(segment.samples.slice(0, 8 * 512), new Float32Array(8 * 512));
+    assert.deepEqual(segment.samples.slice(8 * 512, 9 * 512), speech);
+    assert.equal(segmenter.finish(), undefined, 'The utterance is emitted only once');
   }
-  for (let i = 0; i < 30; i++) {
-    assert.equal(segmenter.push(0, frame), undefined);
+});
+
+test('VAD rejects isolated spikes without counting lead-in or trailing silence as speech', () => {
+  const silence = new Float32Array(512);
+  const sound = new Float32Array(512).fill(0.1);
+  const segmenter = new Segmenter();
+  for (const voicedFrames of [1, 2, 3]) {
+    for (let index = 0; index < 10; index++) {
+      assert.equal(segmenter.push(0, silence), undefined);
+    }
+    for (let index = 0; index < voicedFrames; index++) {
+      assert.equal(segmenter.push(0.95, sound), undefined);
+    }
+    for (let index = 0; index < 25; index++) {
+      assert.equal(segmenter.push(0, silence), undefined);
+    }
+    assert.equal(segmenter.finish(), undefined);
   }
-  for (let i = 0; i < 16; i++) {
-    segmenter.push(0.95, frame);
+
+  // Each rejected burst resets the counters. A subsequent short word is kept,
+  // including at EOF when there is no final 800 ms of silence.
+  for (let index = 0; index < 4; index++) {
+    segmenter.push(0.95, sound);
   }
-  let segment;
-  for (let i = 0; i < 25; i++) {
-    segment = segmenter.push(0, frame);
-  }
-  assert.equal(segment?.reason, 'silence');
-  assert.ok(segment!.samples.length > 16 * 512);
+  const tail = segmenter.finish();
+  assert.equal(tail?.reason, 'end');
+  assert.equal(tail?.samples.length, 4 * 512);
+});
+
+test('VAD caps continuous speech without losing independent subsequent segments', () => {
+  const frame = new Float32Array(512).fill(0.1);
+  const segmenter = new Segmenter();
   const lengths: number[] = [];
   for (let i = 0; i < 2000; i++) {
     const result = segmenter.push(0.95, frame);
