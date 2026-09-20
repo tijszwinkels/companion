@@ -243,6 +243,40 @@ test('invalid reducer results cannot alter canonical state', async (context) => 
   assert.equal((await send({ method: 'discover', id: created.id })).revision, 1);
 });
 
+test('unpin persists and reopens with the saved fallback while Chromium is unavailable', async (context) => {
+  const { renderer, service, send, owner, directory, changed } = await fixture(context);
+  const created = await send({
+    method: 'publish',
+    widget: 'todo',
+    props: { title: 'Saved fallback', items: [] },
+    presentation: { placement: 'pinned', heightPercent: 100 },
+  });
+  const original = (await service.restored(owner))[0].reference;
+  renderer.fail = true;
+
+  const response = await fetch(original.viewUrl + '/present', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'unpin-without-browser',
+      presentation: { placement: 'inline' },
+    }),
+  });
+  const result = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(result));
+  assert.equal(changed.at(-1)!.text, 'Saved fallback');
+  const saved = JSON.parse(await readFile(join(directory, owner + '.json'), 'utf8'));
+  assert.equal(saved[0].id, created.id);
+  assert.equal(saved[0].presentation.placement, 'inline');
+  assert.equal(saved[0].text, 'Saved fallback');
+
+  await service.deactivate(owner);
+  const reopened = (await service.restored(owner))[0];
+  assert.equal(reopened.record.presentation.placement, 'inline');
+  assert.equal(reopened.record.text, 'Saved fallback');
+  assert.notEqual(reopened.reference.viewUrl, original.viewUrl);
+});
+
 test('late input cannot revive a closed conversation or reuse its capability after reopen', async (context) => {
   const { renderer, service, send, owner, changed } = await fixture(context);
   const inputs: string[] = [];

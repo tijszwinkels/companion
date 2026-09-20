@@ -462,7 +462,11 @@ export class WidgetService {
       } else {
         throw Error('Unknown widget method');
       }
-      record.text = await this.renderer.describe(record, bundle);
+      // Moving a widget must remain possible when its browser is unavailable.
+      // Only property changes require a newly generated text description.
+      if (method !== 'present') {
+        record.text = await this.renderer.describe(record, bundle);
+      }
       record.revision++;
       result = { ...result, id: record.id, revision: record.revision };
       record.receipts = [...record.receipts, { id: String(command.requestId), result }].slice(-64);
