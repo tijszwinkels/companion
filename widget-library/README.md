@@ -47,6 +47,15 @@ but runtime code and assets must be bundled into these files or data URLs.
 - `widget.js`: browser-only ES module exporting `describe`, `mount` and `actions`.
 - `style.css`: local CSS using the theme variables below.
 
+Use ordinary directories and regular entry files. Symlinks are rejected for the
+library path, its ancestor directories, each widget directory and all three entry
+files, including links to other files inside the library. Copy or bundle shared
+sources into the entry files instead. On Linux, the loader opens each path
+component relative to an already opened directory through `/proc/self/fd`, refuses
+symlinks, and validates and reads the same file handle with a byte limit. Renaming
+a directory during a load cannot redirect it to an outside symlink destination.
+An edit in progress may fail to load; retry after saving all three files.
+
 Start from an existing example. An action's manifest entry declares
 `description`, `parameters` for arguments and `returns` for its custom result.
 Schemas use this bounded JSON Schema subset: `type`, `properties`, `required`,

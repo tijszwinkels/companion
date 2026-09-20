@@ -123,7 +123,7 @@ test('library discovery, schema defaults, immutable bundles and path containment
   assert.equal(((await registry.discover('bar')) as any).widgets.length, 1);
   await assert.rejects(registry.load('../todo'));
   await symlink('/tmp', join(library, 'escape'));
-  await assert.rejects(registry.load('escape'), /inside the library/);
+  await assert.rejects(registry.load('escape'), /without symlinks/);
   const cached = join(directory, 'cache', bundle.hash + '.json');
   const value = JSON.parse(await readFile(cached, 'utf8'));
   value.javascript += ' altered';

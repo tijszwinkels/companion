@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { constants } from 'node:fs';
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+  type FileHandle,
+} from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv, type ValidateFunction } from 'ajv';
 
@@ -15,6 +25,69 @@ import {
 export const libraryDirectory = fileURLToPath(new URL('../../widget-library/', import.meta.url));
 const names = /^[a-z][a-z0-9-]{0,47}$/;
 const hashes = /^[0-9a-f]{64}$/;
+const readFlags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+/**
+ * Linux's proc descriptor paths anchor each lookup to an already opened parent.
+ * O_NOFOLLOW protects only the final component, so walk every component from /
+ * instead of re-resolving a checked path. A concurrent rename cannot retarget an
+ * open handle. Keep parents alive until their child opens; close every handle on
+ * failure. No authored symlink is followed, including in the library's ancestry.
+ */
+async function openDirectory(path: string): Promise<FileHandle> {
+  const flags = readFlags | constants.O_DIRECTORY;
+  let directory = await open('/', flags);
+  try {
+    for (const component of resolve(path).split('/').filter(Boolean)) {
+      const parent = directory;
+      directory = await open(`/proc/self/fd/${parent.fd}/${component}`, flags);
+      await parent.close();
+    }
+    return directory;
+  } catch (cause) {
+    await directory.close();
+    throw Error('Widget paths must use directories without symlinks', { cause });
+  }
+}
+
+async function readAsset(
+  directory: FileHandle,
+  name: string,
+  maxCharacters: number,
+): Promise<string> {
+  // These names are fixed entry files, never paths supplied by a manifest.
+  // Nonblocking open prevents a substituted FIFO from waiting for a writer.
+  const file = await open(`/proc/self/fd/${directory.fd}/${name}`, readFlags);
+  try {
+    const metadata = await file.stat();
+    if (!metadata.isFile()) {
+      throw Error('Widget assets must be regular files');
+    }
+    const maxBytes = maxCharacters * 4;
+    if (metadata.size > maxBytes) {
+      throw Error('Widget asset exceeds its size limit');
+    }
+    // fstat is only an early rejection. Bound the actual read as well, since
+    // an author may grow the same inode after the size check. The extra byte
+    // distinguishes a full allowed file from an oversized one without readFile.
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) {
+        break;
+      }
+      length += bytesRead;
+    }
+    const text = buffer.toString('utf8', 0, length);
+    if (length > maxBytes || text.length > maxCharacters) {
+      throw Error('Widget asset exceeds its size limit');
+    }
+    return text;
+  } finally {
+    await file.close();
+  }
+}
 
 export async function atomicJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -174,34 +247,22 @@ export class WidgetRegistry {
     if (!names.test(name)) {
       throw Error('Unknown widget name');
     }
-    const root = await realpath(this.library);
-    const directory = await realpath(join(root, name));
-    if (!directory.startsWith(root + sep)) {
-      throw Error('Widget paths must remain inside the library');
+    const directory = await openDirectory(join(this.library, name));
+    try {
+      const manifest = this.manifest(
+        JSON.parse(await readAsset(directory, 'widget.json', 48 * 1024)),
+      );
+      if (manifest.name !== name) {
+        throw Error('Widget name must match its directory');
+      }
+      const javascript = await readAsset(directory, 'widget.js', 1024 * 1024);
+      const css = await readAsset(directory, 'style.css', 32 * 1024);
+      const content = { manifest, javascript, css };
+      const hash = createHash('sha256').update(JSON.stringify(content)).digest('hex');
+      return { hash, ...content };
+    } finally {
+      await directory.close();
     }
-    const read = async (file: string, max: number): Promise<string> => {
-      const path = await realpath(join(directory, file));
-      if (!path.startsWith(directory + sep)) {
-        throw Error('Widget assets must remain inside their directory');
-      }
-      if ((await stat(path)).size > max * 4) {
-        throw Error('Widget asset exceeds its size limit');
-      }
-      const text = await readFile(path, 'utf8');
-      if (text.length > max) {
-        throw Error('Widget asset exceeds its size limit');
-      }
-      return text;
-    };
-    const manifest = this.manifest(JSON.parse(await read('widget.json', 48 * 1024)));
-    if (manifest.name !== name) {
-      throw Error('Widget name must match its directory');
-    }
-    const javascript = await read('widget.js', 1024 * 1024);
-    const css = await read('style.css', 32 * 1024);
-    const content = { manifest, javascript, css };
-    const hash = createHash('sha256').update(JSON.stringify(content)).digest('hex');
-    return { hash, ...content };
   }
 
   async retain(bundle: WidgetBundle): Promise<void> {
