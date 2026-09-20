@@ -103,6 +103,73 @@ function receive(request) {
     result: { content: [{ type: 'text', text: 'complete tool output' }] },
   });
 
+  if (request.message.startsWith('choices')) {
+    const result = (options) => ({
+      content: [{ type: 'text', text: 'Choices' }],
+      details: { companionChoices: { version: 1, options } },
+    });
+    // Neither uncorrelated results, partial results, failed tool calls, nor
+    // ordinary assistant text containing [labels] can create live actions.
+    send({
+      type: 'tool_execution_end',
+      toolCallId: 'unrelated',
+      isError: false,
+      result: result(['Wrong']),
+    });
+    send({
+      type: 'tool_execution_start',
+      toolName: 'companion_choices',
+      toolCallId: 'failed',
+      args: {},
+    });
+    send({
+      type: 'tool_execution_end',
+      toolCallId: 'failed',
+      isError: true,
+      result: result(['Wrong']),
+    });
+    send({
+      type: 'tool_execution_start',
+      toolName: 'companion_choices',
+      toolCallId: 'choices-1',
+      args: {},
+    });
+    send({
+      type: 'tool_execution_update',
+      toolCallId: 'choices-1',
+      partialResult: result(['Partial']),
+    });
+    send({
+      type: 'tool_execution_end',
+      toolCallId: 'choices-1',
+      isError: false,
+      result: result(['Yes', 'No']),
+    });
+    send({
+      type: 'tool_execution_start',
+      toolName: 'companion_choices',
+      toolCallId: 'choices-2',
+      args: {},
+    });
+    const options = request.message.startsWith('choices malformed')
+      ? ['Yes', 'YES!']
+      : request.message.startsWith('choices clear')
+        ? []
+        : ['[Tests] - Run the tests'];
+    const replacement = result(options);
+    if (request.message.startsWith('choices missing')) {
+      replacement.details = { otherExtension: true };
+    } else if (request.message.startsWith('choices version')) {
+      replacement.details.companionChoices.version = 2;
+    }
+    send({
+      type: 'tool_execution_end',
+      toolCallId: 'choices-2',
+      isError: false,
+      result: replacement,
+    });
+  }
+
   // Completion must not be inferred from agent_end; retry work follows it.
   send({ type: 'agent_end', willRetry: true });
   setTimeout(() => {

@@ -73,6 +73,8 @@ Commands:
 {"action":"close-agent","id":"question-uuid"}
 {"action":"reopen-agent","id":"question-uuid"}
 {"action":"send-agent","id":"question-uuid","text":"Please explain that further"}
+{"action":"choose-agent","id":"question-uuid","revision":"choice-set-uuid","index":0}
+{"action":"stop-agent-run","id":"question-uuid","runId":"running-turn-uuid"}
 {"action":"composer-focus","id":"question-uuid"}
 {"action":"panel-state","id":"question-uuid","composerFocused":true}
 {"action":"activity-history","sessionId":"listener-run-uuid","after":0,"through":1}
@@ -141,6 +143,45 @@ desktop database, with mode 0600 and atomic replacement. Writes are serialized
 across clients, and a failed save leaves the live switch unchanged. Desktop
 startup restores them before accepting sensor frames; `--no-desktop` does not
 load desktop preferences.
+
+The optional `agentActions` snapshot field describes the selected conversation's
+ephemeral composer controls. Changes also arrive as
+`{"type":"agent-actions","actions":{...}}`, without resending transcripts:
+
+```json
+{
+  "sessionId": "question-uuid",
+  "stopRunId": "",
+  "choices": [
+    {
+      "sessionId": "question-uuid",
+      "revision": "choice-set-uuid",
+      "index": 0,
+      "label": "Tests",
+      "description": "Run the tests",
+      "available": true,
+      "voiceAvailable": true,
+      "voiceReason": ""
+    }
+  ]
+}
+```
+
+`available` means the conversation can accept the choice, including the global
+four-agent capacity limit; `voiceAvailable` also
+accounts for reserved labels and permanent-prefix collisions. Adapters additionally
+require an online, listening connection before highlighting voice labels. Show
+these controls only for the matching selected conversation. A nonempty `stopRunId`
+enables the exact `stop` shortcut for that running turn. Choice sets and run IDs are
+also included in live session patches, but are never restored from disk.
+
+`choose-agent` and `stop-agent-run` require the sending connection to own the
+selected conversation reported by `panel-state`. They return `submitted` or
+`stopped`, or an error when the supplied choice/run has expired. Send IDs and the
+option index, never the displayed text as a payload. Clients must not retry an
+unacknowledged selection automatically; retain the freeform draft and refresh
+state after reconnecting. See [conversation choices](../agents/README.md) for
+tool syntax, exact voice matching and lifecycle rules.
 
 Disabled intents are omitted from the next detection prompt. Their explicit
 prefixes are consumed as skipped commands, never reinterpreted by the LLM or a

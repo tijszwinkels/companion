@@ -21,6 +21,7 @@ Item {
   property int processing: 0
   property var history: []
   property var intents: []
+  property var agentActions: ({})
   property string lastError: ""
   property string lastErrorAction: ""
   property bool opened: false
@@ -32,6 +33,7 @@ Item {
   property bool panelOpened: false
   property var pendingAgentInput: null
   property var pendingHistoryInsert: null
+  property var pendingAgentChoice: null
   readonly property var transport: connection.item
   onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
   onOnlineChanged: {
@@ -171,6 +173,29 @@ Item {
     sidePanel.releaseForInsertion(address)
   }
 
+  function chooseAgent(id, revision, index) {
+    if (!root.online) {
+      sidePanel.choiceSubmitted(id, revision, index, "Companion is disconnected.")
+      return
+    }
+    root.pendingAgentChoice = {id: id, revision: revision, index: index}
+    // Send the visible tab first, in the same ordered socket stream as the click.
+    root.reportPanelState()
+    root.send({action: "choose-agent", id: id, revision: revision, index: index})
+  }
+
+  function finishAgentChoice(error) {
+    if (!root.pendingAgentChoice) return
+    const request = root.pendingAgentChoice
+    root.pendingAgentChoice = null
+    sidePanel.choiceSubmitted(request.id, request.revision, request.index, error)
+  }
+
+  function updateAgentActions(actions) {
+    const next = actions || {}
+    if (JSON.stringify(root.agentActions) !== JSON.stringify(next)) root.agentActions = next
+  }
+
   function receive(line) {
     try {
       const message = JSON.parse(line)
@@ -188,6 +213,7 @@ Item {
         // mouse click or tooltip. Only changed routing state replaces the list.
         const intents = message.intents || []
         if (JSON.stringify(root.intents) !== JSON.stringify(intents)) root.intents = intents
+        root.updateAgentActions(message.agentActions)
         agentSessions.replace(message.sessions || [])
         agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
@@ -198,6 +224,8 @@ Item {
         activityHistory.update(message.sessionId, message.entry)
       } else if (message.type === "agent-session") {
         agentSessions.update(message.session)
+      } else if (message.type === "agent-actions") {
+        root.updateAgentActions(message.actions)
       } else if (message.type === "agent-history") {
         agentSessions.previousSessions = message.sessions || []
       } else if (message.type === "agent-restored") {
@@ -207,11 +235,13 @@ Item {
       } else if (message.type === "error") {
         if (message.action === "activity-history") activityHistory.loading = false
         if (message.action === "send-agent") root.finishAgentInput(message.message)
+        if (message.action === "choose-agent") root.finishAgentChoice(message.message)
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
         if (message.action === "activity-history") activityHistory.page(message.result)
         if (message.action === "send-agent") root.finishAgentInput("")
+        if (message.action === "choose-agent") root.finishAgentChoice("")
         if (message.result === "skipped") {
           root.lastError = "Paste skipped: focus changed"
           root.lastErrorAction = "paste"
@@ -384,6 +414,7 @@ Item {
 
   function connectionLost() {
     root.finishAgentInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
+    root.finishAgentChoice("Connection lost before confirmation. Check the conversation before choosing again.")
     root.online = false
     root.speaking = false
     root.processing = 0
@@ -391,6 +422,7 @@ Item {
     root.pendingHistoryInsert = null
     activityHistory.disconnected()
     root.intents = []
+    root.agentActions = ({})
     root.cancel()
 
     // Quickshell's Socket retains its native socket after a failed initial
@@ -468,10 +500,11 @@ Item {
     intents: root.intents
     activityHistoryModel: activityHistory.model
     activityHistoryAvailable: activityHistory.available
+    agentActions: root.agentActions
     sessions: agentSessions.sessions
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["close-agent", "reopen-agent", "stop-agent", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled) => root.send({action: "set-intent-enabled", name: name, enabled: enabled})
@@ -485,6 +518,11 @@ Item {
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
+    onChoiceRequested: (id, revision, index) => root.chooseAgent(id, revision, index)
+    onStopRunRequested: (id, runId) => {
+      root.reportPanelState()
+      root.send({action: "stop-agent-run", id: id, runId: runId})
+    }
     onComposerFocusRequested: playback.pausePlaying()
     onComposerFocusReleased: Qt.callLater(root.composerFocusChanged)
     onComposerFocusIdChanged: Qt.callLater(root.composerFocusChanged)

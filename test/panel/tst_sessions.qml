@@ -160,7 +160,7 @@ Item {
 
     function test_running_conversation_accepts_queued_input_and_preserves_rejected_drafts() {
       const panel = createTemporaryObject(panelComponent, parent)
-      panel.sessions = [session([])]
+      panel.sessions = [Object.assign(session([]), {acceptsFollowUp: false})]
       panel.selectedSessionId = "question-1"
       let submissions = []
       panel.sendSessionRequested.connect(function(id, text) { submissions.push({id: id, text: text}) })

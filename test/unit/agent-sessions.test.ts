@@ -16,6 +16,7 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import { frame, signal, testDetector } from '../helpers.ts';
 import { desktopFixture, stopped, waitFor, windowReply } from '../desktop-fixture.ts';
 import { EnterTextToApplication } from '../../src/processors/enter-text-to-application.ts';
+import type { AgentChoice } from '../../src/agents/choices.ts';
 
 async function fixture(context: { after(callback: () => Promise<unknown>): void }) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-agent-'));
@@ -26,6 +27,66 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
   const settings = { ...defaultAgentSettings, executable };
   await writeFile(join(directory, 'companion-agent.json'), JSON.stringify(settings));
   return { directory, settings };
+}
+
+test('Pi loads the native choice extension and accepts only correlated successful results', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const offered: (readonly AgentChoice[])[] = [];
+  const backend = new PiBackend();
+  const request = {
+    id: 'choices',
+    directory,
+    settings,
+    prompt: { text: 'choices' },
+    resume: false,
+  };
+  await backend.run(
+    request,
+    signal(),
+    () => {},
+    (options) => offered.push(options),
+  );
+  assert.deepEqual(offered, [
+    [
+      { label: 'Yes', description: '' },
+      { label: 'No', description: '' },
+    ],
+    [{ label: 'Tests', description: 'Run the tests' }],
+  ]);
+  const captured = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+  assert.equal(
+    captured.argv[captured.argv.indexOf('--extension') + 1],
+    fileURLToPath(new URL('../../src/agents/choice-tool.ts', import.meta.url)),
+  );
+
+  const cleared: (readonly AgentChoice[])[] = [];
+  await backend.run(
+    { ...request, prompt: { text: 'choices clear' } },
+    signal(),
+    () => {},
+    (options) => cleared.push(options),
+  );
+  assert.deepEqual(cleared.at(-1), []);
+});
+
+for (const failure of ['malformed', 'missing', 'version']) {
+  test(`Pi preserves the answer when choice metadata is ${failure}`, async (context) => {
+    const { directory, settings } = await fixture(context);
+    const sessions = new AgentSessions({ backend: new PiBackend() }, () => {}, directory);
+    context.after(() => sessions.close());
+    const id = sessions.start({ ...frame, utterance: `choices ${failure}` }, signal());
+    await sessions.idle();
+    const view = sessions.snapshot().find((session) => session.id === id)!;
+    assert.equal(view.status, 'completed');
+    assert.equal(view.error, '');
+    assert.equal(view.choices, undefined, 'An invalid replacement clears the old options');
+    assert.equal(
+      view.messages.filter((message) => message.kind === 'assistant').at(-1)?.text,
+      '## Answer\n**42**',
+    );
+    assert.equal(view.messages.filter((message) => message.kind === 'notice').length, 1);
+    assert.match(view.messages.find((message) => message.kind === 'notice')!.text, /choices/i);
+  });
 }
 
 test('headless Pi receives the exact screenshot, streams tools/text, and waits through retries', async (context) => {

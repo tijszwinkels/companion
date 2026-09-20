@@ -5,7 +5,9 @@ export const FRAME_SAMPLES = 512;
 export const VAD_SETTINGS = {
   positive: 0.65,
   negative: 0.35,
-  minSpeechMs: 400,
+  // Count voiced frames only. Short answers such as "stop", "yes", and "no"
+  // must survive the duration gate; four 32 ms frames still reject brief spikes.
+  minSpeechMs: 128,
   silenceMs: 800,
   maxMs: 30000,
   preRollMs: 256,

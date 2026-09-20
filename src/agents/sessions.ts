@@ -5,6 +5,7 @@ import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
 import { SessionStore } from './session-store.ts';
+import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
 import {
   chatMessage,
   type AgentBackend,
@@ -84,10 +85,68 @@ export class AgentSessions implements InspectableModule {
     return this.sessions.has(id);
   }
 
+  /**
+   * Immutable choices/run identity for speech capture and UI state. Availability
+   * here gates choice selection; freeform follow-ups can also queue while busy.
+   */
+  interaction(id: string): {
+    agentChoices?: AgentChoiceSet;
+    agentRunId?: string;
+    agentAcceptsFollowUp: boolean;
+    agentFollowUpUnavailableReason: string;
+  } {
+    const session = this.sessions.get(id);
+    let unavailableReason = '';
+    if (!session || this.closed || session.closing) {
+      unavailableReason = 'Question session is unavailable';
+    } else if (session.busy) {
+      unavailableReason = 'Available when the agent finishes';
+    } else if (this.activeRuns() >= 4) {
+      unavailableReason = 'Four questions are already running; stop one or wait for an answer';
+    }
+    return {
+      agentChoices: session?.view.choices,
+      agentRunId:
+        session && !session.closing && !session.controller.signal.aborted && session.busy
+          ? session.view.runId
+          : undefined,
+      agentAcceptsFollowUp: !unavailableReason,
+      agentFollowUpUnavailableReason: unavailableReason,
+    };
+  }
+
   private activeRuns(): number {
-    // Reserve the slot through persistence and between queued turns. A terminal
-    // display status alone does not mean the previous invocation has settled.
+    // Keep the slot reserved through persistence and between queued turns.
     return [...this.sessions.values()].filter((session) => session.busy).length;
+  }
+
+  /** A click/voice selection carries identity, never a caller-supplied payload. */
+  selectChoice(id: string, revision: string, index: number, signal: AbortSignal): void {
+    signal.throwIfAborted();
+    const choices = this.sessions.get(id)?.view.choices;
+    if (
+      !choices ||
+      choices.revision !== revision ||
+      !Number.isInteger(index) ||
+      !choices.options[index]
+    ) {
+      throw Error('These choices have expired; use the current choices or write a follow-up');
+    }
+    // Freeform input may queue; choices retain their existing end-of-turn gate.
+    const interaction = this.interaction(id);
+    if (!interaction.agentAcceptsFollowUp) {
+      throw Error(interaction.agentFollowUpUnavailableReason);
+    }
+    this.followUp(id, choiceText(choices.options[index]), signal);
+  }
+
+  /** A delayed "stop" cannot cancel the next turn in the same conversation. */
+  async stopRun(id: string, runId: string): Promise<boolean> {
+    if (!runId || this.interaction(id).agentRunId !== runId) {
+      return false;
+    }
+    await this.stop(id);
+    return true;
   }
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
@@ -119,6 +178,8 @@ export class AgentSessions implements InspectableModule {
         error: '',
         messages: [question],
         updatedAt: Date.now(),
+        runId: randomUUID(),
+        acceptsFollowUp: false,
       },
       controller: new AbortController(),
       done: Promise.resolve(),
@@ -161,6 +222,7 @@ export class AgentSessions implements InspectableModule {
     const message = chatMessage(`user-${randomUUID()}`, 'user', text);
     message.state = session.busy ? 'queued' : 'done';
     this.message(session, message);
+    delete session.view.choices;
     if (session.busy) {
       session.pending.push(message);
       this.flush(session);
@@ -177,6 +239,9 @@ export class AgentSessions implements InspectableModule {
     session.busy = true;
     session.view.status = 'starting';
     session.view.error = '';
+    delete session.view.choices;
+    session.view.runId = randomUUID();
+    session.view.acceptsFollowUp = false;
     this.flush(session);
   }
 
@@ -208,6 +273,7 @@ export class AgentSessions implements InspectableModule {
           session.view.error
         ) {
           this.cancelPending(session);
+          delete session.view.choices;
           return;
         }
 
@@ -222,6 +288,7 @@ export class AgentSessions implements InspectableModule {
       }
     } finally {
       session.busy = false;
+      session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
     }
   }
@@ -233,6 +300,8 @@ export class AgentSessions implements InspectableModule {
     frameId?: number,
   ): Promise<void> {
     const turnId = randomUUID();
+    // Callbacks belong to this invocation, even if a faulty backend retains one.
+    let acceptingChoices = true;
     try {
       if (prompt.screenshot) {
         const question = session.view.messages[0];
@@ -256,6 +325,24 @@ export class AgentSessions implements InspectableModule {
         { id: session.view.id, directory: this.directory, settings, prompt, resume },
         session.controller.signal,
         (message) => this.message(session, { ...message, id: `${turnId}:${message.id}` }),
+        (options) => {
+          if (
+            !acceptingChoices ||
+            session.controller.signal.aborted ||
+            session.closing ||
+            session.pending.length > 0 ||
+            this.closed
+          ) {
+            return;
+          }
+          const parsed = parseChoices(options);
+          if (parsed.length) {
+            session.view.choices = Object.freeze({ revision: randomUUID(), options: parsed });
+          } else {
+            delete session.view.choices;
+          }
+          this.flush(session);
+        },
       );
       session.view.status = session.controller.signal.aborted ? 'cancelled' : 'completed';
     } catch (error) {
@@ -265,6 +352,11 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-error', session.view.error, frameId);
       }
     } finally {
+      acceptingChoices = false;
+      if (session.view.status !== 'completed') {
+        delete session.view.choices;
+      }
+      delete session.view.runId;
       if (session.view.status !== 'completed' || session.controller.signal.aborted) {
         this.cancelPending(session);
       }
@@ -338,6 +430,8 @@ export class AgentSessions implements InspectableModule {
       throw Error('Question session not found');
     }
     session.controller.abort();
+    delete session.view.choices;
+    delete session.view.runId;
     this.cancelPending(session);
     this.flush(session);
     await session.done;
@@ -365,6 +459,10 @@ export class AgentSessions implements InspectableModule {
       this.publishHistory();
     } finally {
       session.closing = false;
+      if (this.sessions.has(id)) {
+        session.view.acceptsFollowUp = !session.busy && !this.closed;
+        this.flush(session);
+      }
     }
   }
 
@@ -381,6 +479,7 @@ export class AgentSessions implements InspectableModule {
       if (this.closed) {
         throw Error('Agent sessions are shutting down');
       }
+      view.acceptsFollowUp = true;
       this.sessions.set(id, {
         view,
         controller: new AbortController(),
@@ -408,6 +507,9 @@ export class AgentSessions implements InspectableModule {
     this.closed = true;
     for (const session of this.sessions.values()) {
       session.controller.abort();
+      delete session.view.choices;
+      delete session.view.runId;
+      session.view.acceptsFollowUp = false;
       this.cancelPending(session);
     }
     await this.idle();

@@ -71,6 +71,7 @@ const files = [
   'panel/ActivityStrip.qml',
   'panel/PhraseActivity.qml',
   'panel/AgentSessionState.qml',
+  'panel/AgentChoices.qml',
   'panel/PanelAction.qml',
   'panel/SessionView.qml',
   'panel/Markdown.mjs',

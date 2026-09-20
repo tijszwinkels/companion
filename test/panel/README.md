@@ -7,6 +7,14 @@ or an active desktop. With Qt 6's declarative development tools installed:
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 ```
 
+Dynamic-choice tests cover pinned choices above the composer, actual clicks with
+revision/index identity, retained freeform drafts, pending acknowledgements,
+label-only and described options, permanent-shortcut collisions, paused/offline
+voice highlighting, current-run Stop, tab changes, replacement, errors and eight
+long choices in a small panel. The synthetic image is
+`/tmp/companion-agent-choices-preview.png`. Backend, native-tool and lifecycle
+coverage is described in [conversation choices](../../src/agents/README.md).
+
 Playback checks inject player objects into the adapter's state aggregator: an
 already-playing player, state changes, multiple simultaneous players, removal,
 and reappearance. They also check pause-only commands, unsupported players,

@@ -28,6 +28,7 @@ Item {
   property var intents: []
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
+  property var agentActions: ({})
   property var sessions: []
   property var previousSessions: []
   property bool showingPrevious: false
@@ -58,8 +59,11 @@ Item {
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
+  signal choiceRequested(string id, string revision, int index)
+  signal stopRunRequested(string id, string runId)
 
   function submitted(id, text, error) { chat.submitted(id, text, error) }
+  function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
   function focusComposer() { chat.focusComposer() }
   function releaseComposerFocus() { chat.releaseComposerFocus() }
 
@@ -399,6 +403,8 @@ Item {
       anchors.fill: parent
       anchors.topMargin: activityStrip.y + activityStrip.height + 12 * root.unit
       session: root.selectedSession
+      agentActions: root.agentActions
+      paused: root.paused
       online: root.online
       focusShortcut: root.focusShortcut
       foreground: root.foreground
@@ -411,6 +417,8 @@ Item {
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)
+      onChoiceRequested: (id, revision, index) => root.choiceRequested(id, revision, index)
+      onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
     }
 
   }

@@ -1,5 +1,6 @@
 import type { Screenshot } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
+import type { AgentChoice, AgentChoiceSet } from './choices.ts';
 
 /** Portable chat data. Provider events and subprocess details stay in the backend. */
 export interface AgentMessage {
@@ -22,6 +23,10 @@ export interface AgentSession {
   error: string;
   messages: AgentMessage[];
   updatedAt: number;
+  /** Live affordances are deliberately not restored from saved transcripts. */
+  choices?: AgentChoiceSet;
+  runId?: string;
+  acceptsFollowUp?: boolean;
 }
 
 export type PreviousSession = Omit<AgentSession, 'messages'>;
@@ -50,6 +55,7 @@ export interface AgentBackend extends InspectableModule {
     },
     signal: AbortSignal,
     emit: (message: AgentMessage) => void,
+    replaceChoices?: (options: readonly AgentChoice[]) => void,
   ): Promise<void>;
 }
 

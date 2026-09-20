@@ -20,6 +20,10 @@ Item {
     return ["Adwaita Sans", "Inter", "Segoe UI", "Noto Sans"].find(name => available.includes(name)) || "sans-serif"
   }
   property bool online: true
+  property bool paused: false
+  property var agentActions: ({})
+  property var pendingChoice: null
+  readonly property bool actionsCurrent: session !== null && agentActions.sessionId === session.id
   // The desktop host supplies the shortcut; other hosts can leave it unset.
   property string focusShortcut: ""
   property real unit: 1
@@ -38,12 +42,15 @@ Item {
   readonly property bool running: session && (session.status === "starting" || session.status === "running")
   readonly property int messageCount: messages.count
   readonly property bool canSend: online && session !== null && pendingSubmission === null
+    && pendingChoice === null
     && composer.text.trim().length > 0 && composer.text.length <= 4000
   readonly property string composerFocusId: online && visible && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
+  signal choiceRequested(string id, string revision, int index)
+  signal stopRunRequested(string id, string runId)
   signal screenshotRequested(url source, string title)
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
@@ -128,6 +135,13 @@ Item {
       if (root.drafts[id] === text) delete root.drafts[id]
       if (root.displayedId === id && composer.text === text) composer.text = ""
     }
+  }
+
+  function choiceSubmitted(id, revision, index, error) {
+    if (!root.pendingChoice || root.pendingChoice.id !== id || root.pendingChoice.revision !== revision || root.pendingChoice.index !== index) return
+    root.pendingChoice = null
+    if (root.displayedId === id) root.inputError = error || ""
+    // Choosing never edits or clears a freeform draft, including on failure.
   }
 
   function enterPressed(event) {
@@ -420,6 +434,30 @@ Item {
     width: parent.width
     spacing: 8 * root.unit
 
+    AgentChoices {
+      objectName: "agentChoices"
+      width: parent.width
+      maximumHeight: Math.max(48 * root.unit, Math.min(180 * root.unit, root.height * 0.3))
+      choices: root.actionsCurrent ? root.agentActions.choices || [] : []
+      sessionId: root.actionsCurrent ? root.session.id : ""
+      stopRunId: root.actionsCurrent ? root.agentActions.stopRunId || "" : ""
+      online: root.online
+      listening: !root.paused
+      pending: root.pendingChoice !== null || root.pendingSubmission !== null
+      foreground: root.foreground
+      muted: root.muted
+      accent: root.accent
+      selection: root.selection
+      fontFamily: root.proseFontFamily
+      unit: root.unit
+      onChoiceRequested: (id, revision, index) => {
+        root.inputError = ""
+        root.pendingChoice = {id: id, revision: revision, index: index}
+        root.choiceRequested(id, revision, index)
+      }
+      onStopRequested: (id, runId) => root.stopRunRequested(id, runId)
+    }
+
     ScrollView {
       id: composerScroll
       width: parent.width
@@ -490,7 +528,7 @@ Item {
       }
       PanelAction {
         objectName: "stopSession"
-        visible: root.running
+        visible: root.running && !(root.actionsCurrent && root.agentActions.stopRunId)
         enabled: root.online
         text: "Stop"
         foreground: root.foreground

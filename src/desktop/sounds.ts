@@ -11,7 +11,7 @@ export type SoundCue = 'processing' | 'sent' | 'ignored';
 /** Brief, quiet synthesized cues need no downloaded or licensed sound assets. */
 export function soundSamples(cue: SoundCue): Float32Array {
   const frequencies = cue === 'processing' ? [660] : cue === 'sent' ? [660, 880] : [440, 330];
-  const noteSamples = 960; // 60 ms at 16 kHz, safely below the VAD speech minimum.
+  const noteSamples = 960; // 60 ms at 16 kHz; real-VAD tests cover each complete cue.
   const gapSamples = 240;
   const samples = new Float32Array(frequencies.length * (noteSamples + gapSamples));
 

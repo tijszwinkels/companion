@@ -12,6 +12,7 @@ import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts';
 import { AgentSessions } from './agents/sessions.ts';
 import { PiBackend } from './agents/pi-backend.ts';
+import { AgentChoiceIntents } from './agents/choice-intents.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
 import type { VoiceActivityDetector } from './sensors/audio/vad.ts';
@@ -165,6 +166,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     new LabelPreviousCorrect(log, values.preview, activity).subscribe(router);
     new LabelPreviousIncorrect(log, values.preview, activity).subscribe(router);
+    new AgentChoiceIntents({ sessions: agents }, log, values.preview, activity).subscribe(router);
 
     await desktop?.connectRouter(router);
 
