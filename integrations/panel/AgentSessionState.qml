@@ -19,6 +19,13 @@ QtObject {
   onViewedIdChanged: markRead(viewedId)
   signal revealRequested()
 
+  function select(id) {
+    // Previous sessions retains the old selection. Change the destination
+    // before revealing it, so that old conversation is never briefly read.
+    root.selectedId = id
+    root.showingPrevious = false
+  }
+
   function markRead(id) {
     if (!root.unreadIds[id]) return
     const unread = Object.assign({}, root.unreadIds)
@@ -55,8 +62,7 @@ QtObject {
       }
     }
     if (newest) {
-      root.showingPrevious = false
-      root.selectedId = newest
+      root.select(newest)
       root.revealRequested()
     }
   }
@@ -100,8 +106,7 @@ QtObject {
     root.forget(session.id)
     root.sessions = root.sessions.filter(entry => entry.id !== session.id).concat([session])
     root.knownIds[session.id] = true
-    root.showingPrevious = false
-    root.selectedId = session.id
+    root.select(session.id)
     root.revealRequested()
   }
 

@@ -65,6 +65,44 @@ Item {
       verify(!state.unreadIds.one)
     }
 
+    function test_leaving_previous_reads_only_the_chosen_destination() {
+      for (const destination of ["", "two"]) {
+        const state = createTemporaryObject(stateComponent, scene, {panelVisible: true})
+        state.replace([session("one", "running", ""), session("two", "running", "")])
+        state.select("one")
+        state.showingPrevious = true
+        state.update(session("one", "completed", "turn-1"))
+        state.update(session("two", "completed", "turn-2"))
+        verify(state.unreadIds.one)
+        verify(state.unreadIds.two)
+
+        const viewed = []
+        state.viewedIdChanged.connect(function() { viewed.push(state.viewedId) })
+        state.select(destination)
+
+        compare(state.viewedId, destination)
+        verify(state.unreadIds.one, "The retained conversation was never viewed")
+        verify(!viewed.includes("one"), "No intermediate view may consume an unread mark")
+        compare(Boolean(state.unreadIds.two), destination !== "two")
+      }
+    }
+
+    function test_new_and_restored_sessions_do_not_read_the_previous_selection() {
+      for (const action of ["update", "restore"]) {
+        const state = createTemporaryObject(stateComponent, scene, {panelVisible: true})
+        state.replace([session("one", "running", "")])
+        state.showingPrevious = true
+        state.update(session("one", "completed", "turn-1"))
+        verify(state.unreadIds.one)
+
+        state[action](session("new", "running", ""))
+
+        compare(state.viewedId, "new")
+        compare(state.showingPrevious, false)
+        verify(state.unreadIds.one, "Opening another conversation does not read the retained one")
+      }
+    }
+
     function test_reconnect_recovers_success_even_when_next_queued_turn_is_running() {
       const state = createTemporaryObject(stateComponent, scene)
       state.replace([session("one", "running", "")])

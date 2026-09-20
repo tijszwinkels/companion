@@ -513,10 +513,7 @@ Item {
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled) => root.send({action: "set-intent-enabled", name: name, enabled: enabled})
     onHistoryActionRequested: (action, id, value) => root.historyAction(action, id, value)
-    onSessionSelected: id => {
-      agentSessions.showingPrevious = false
-      agentSessions.selectedId = id
-    }
+    onSessionSelected: id => agentSessions.select(id)
     onPreviousRequested: agentSessions.showingPrevious = true
     onReopenSessionRequested: id => root.send({action: "reopen-agent", id: id})
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
