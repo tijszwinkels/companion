@@ -8,6 +8,77 @@ import type { Transcript } from '../../src/core/activity.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import type { InteractionContext } from '../../src/core/frame.ts';
 
+for (const failure of ['transcription', 'capture', 'recording', 'routing'] as const) {
+  test(`pipeline identifies ${failure} failures without blaming a later stage on ASR`, async () => {
+    const errors: string[] = [];
+    const asrJobs: number[] = [];
+    const router = new UserSensorRouter(
+      {
+        detector: testDetector({
+          detect: async () => {
+            if (failure === 'routing') {
+              throw Error('Synthetic failure');
+            }
+            return 'IGNORE';
+          },
+        }),
+      },
+      () => {},
+    );
+    processor('IGNORE').subscribe(router);
+    const pipeline = new SensorPipeline(
+      {
+        ...testSensors({
+          capture: async () => {
+            if (failure === 'capture') {
+              throw Error('Synthetic failure');
+            }
+            return screenshot;
+          },
+          transcribe: async (_samples, _signal, observe) => {
+            if (failure === 'transcription') {
+              throw Error('Synthetic failure');
+            }
+            observe?.({
+              outcome: 'text',
+              audioMs: 1000,
+              elapsedMs: 10,
+              characters: 5,
+              rms: 0.1,
+              peak: 0.1,
+              speechWindowRms: 0.1,
+            });
+            return 'Hello';
+          },
+        }),
+        router,
+      },
+      (stage, detail, id) => {
+        if (stage === 'error') {
+          errors.push(detail);
+        }
+        if (stage === 'asr') {
+          asrJobs.push(id!);
+        }
+      },
+      signal(),
+      {
+        audioCaptured: async () => {
+          if (failure === 'recording') {
+            throw Error('Synthetic failure');
+          }
+        },
+      },
+    );
+
+    pipeline.submit(new Float32Array(16000).fill(0.1));
+    await pipeline.idle();
+    assert.deepEqual(errors, [`${failure}: Synthetic failure`]);
+    assert.deepEqual(asrJobs, failure === 'transcription' ? [] : [1]);
+    assert.equal(pipeline.failures, 1);
+  });
+}
+
 test('sidebar context is captured at speech end before delayed transcription', async () => {
   const waiting = deferred<string>();
   let current: InteractionContext = {

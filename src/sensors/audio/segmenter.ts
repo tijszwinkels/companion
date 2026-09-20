@@ -19,6 +19,16 @@ export interface Segment {
   reason: 'silence' | 'limit' | 'end';
 }
 
+/** One report per completed candidate, including candidates rejected by VAD. */
+export interface SegmentDiagnostic {
+  outcome: 'accepted' | 'too-short';
+  reason: Segment['reason'];
+  audioMs: number;
+  speechMs: number;
+  trailingSilenceMs: number;
+  peakProbability: number;
+}
+
 /** Silero probabilities segment speech; a loud noise alone is not a trigger. */
 export class Segmenter {
   // Before speech starts, retain a short lead-in so the first syllable is kept.
@@ -28,6 +38,9 @@ export class Segmenter {
   private frames: Float32Array[] = [];
   private speechMs = 0;
   private silenceMs = 0;
+  private peakProbability = 0;
+
+  constructor(private readonly observe?: (diagnostic: SegmentDiagnostic) => void) {}
 
   /** The latest frame's speech state, used by the CLI for progress messages. */
   speaking = false;
@@ -63,6 +76,7 @@ export class Segmenter {
     }
 
     this.frames.push(frame.slice());
+    this.peakProbability = Math.max(this.peakProbability, probability);
 
     if (this.speaking) {
       this.speechMs += ms;
@@ -90,11 +104,23 @@ export class Segmenter {
       segment = { samples, reason };
     }
 
+    if (this.frames.length) {
+      this.observe?.({
+        outcome: segment ? 'accepted' : 'too-short',
+        reason,
+        audioMs: (this.frames.length * FRAME_SAMPLES * 1000) / SAMPLE_RATE,
+        speechMs: this.speechMs,
+        trailingSilenceMs: this.silenceMs,
+        peakProbability: this.peakProbability,
+      });
+    }
+
     // Start the next utterance with independent duration counters and buffers.
     this.frames = [];
     this.pre = [];
     this.speechMs = 0;
     this.silenceMs = 0;
+    this.peakProbability = 0;
     this.speaking = false;
 
     return segment;

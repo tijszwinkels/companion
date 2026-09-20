@@ -165,20 +165,31 @@ test('sound cues are distinct and do not produce an utterance through the real V
     assert.notDeepEqual(soundSamples('sent'), soundSamples('agent-completed'));
 
     for (const cue of soundCues) {
-      detector.reset();
-      const segmenter = new Segmenter();
-      const sound = soundSamples(cue);
-      const padded = new Float32Array(
-        Math.ceil(sound.length / FRAME_SAMPLES) * FRAME_SAMPLES + 16000,
-      );
-      padded.set(sound);
+      for (const gain of [0.25, 1, 2]) {
+        for (const offset of [0, 127, 511]) {
+          detector.reset();
+          const segmenter = new Segmenter();
+          const sound = soundSamples(cue);
+          const padded = new Float32Array(
+            Math.ceil((8000 + offset + sound.length + 16000) / FRAME_SAMPLES) * FRAME_SAMPLES,
+          );
+          padded.set(
+            sound.map((sample) => Math.max(-1, Math.min(1, sample * gain))),
+            8000 + offset,
+          );
 
-      for (let offset = 0; offset + FRAME_SAMPLES <= padded.length; offset += FRAME_SAMPLES) {
-        const frame = padded.slice(offset, offset + FRAME_SAMPLES);
-        assert.equal(segmenter.push(await detector.probability(frame), frame), undefined);
+          for (let index = 0; index < padded.length; index += FRAME_SAMPLES) {
+            const frame = padded.slice(index, index + FRAME_SAMPLES);
+            assert.equal(
+              segmenter.push(await detector.probability(frame), frame),
+              undefined,
+              `${cue}, gain ${gain}, offset ${offset}`,
+            );
+          }
+
+          assert.equal(segmenter.finish(), undefined);
+        }
       }
-
-      assert.equal(segmenter.finish(), undefined);
     }
   } finally {
     await detector.close();

@@ -67,7 +67,9 @@ Only one operation is allowed; overlapping calls fail immediately. SensorPipelin
 still owns one active plus two pending frames. Screenshots still start at speech
 end. No routing, prefix, prompt, delivery or 800 ms silence-boundary behavior is
 changed. The 31-second input bound, RMS silence threshold of 0.0005, punctuation
-filter and 4000 UTF-16-code-unit transcript bound are preserved. PCM16 conversion
+filter and 4000 UTF-16-code-unit transcript bound are preserved. The silence floor
+now applies to the strongest 128 ms window, so quiet short speech is not diluted
+by endpoint silence. It does not normalize or trim the model input. PCM16 conversion
 is shared with the old WAV encoder, preserving the audio seen by the model.
 
 On timeout, cancellation, EOF, process failure or invalid response, the parent
@@ -172,3 +174,9 @@ Validation completed on this branch: TypeScript check, all 114 unit tests (inclu
 the prerecorded benchmark, and a real helper missing-model startup check. No live
 desktop/compositor, microphone, input-injection or desktop plugin tests were run.
 The live test was updated to close its worker but was not executed.
+
+For the later quiet short-phrase regression, run `npm run asr:short-phrases`.
+It uses the same public fixture through actual PCM16 file decoding, Silero,
+segmentation, persistent ASR and an inert router. It also reports acoustic cases
+where the current model still returns empty text; passing the energy guard does
+not guarantee words. See [evidence and diagnostic stages](../../docs/short-phrase-recognition.md).

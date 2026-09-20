@@ -499,6 +499,14 @@ model warm; cancellation during ASR kills the worker, and the next utterance loa
 a replacement. Shutdown closes it. Failures are never replayed and the transcriber
 has no additional queue. [Protocol, recovery and measured latency](native/asr-worker/README.md).
 
+The pre-ASR digital-silence guard measures the strongest 128 ms audio window at
+the existing RMS floor of 0.0005. Averaging over a whole utterance could otherwise
+discard a quiet short phrase after adding ending silence. Audio is neither
+normalized nor trimmed. Bounded numeric logs distinguish VAD rejection, quiet
+input, empty model output, worker errors, and later capture/recording/routing
+failures. See [short-phrase evidence and diagnosis](docs/short-phrase-recognition.md)
+and run `npm run asr:short-phrases` for a local, prerecorded regression.
+
 ## Text delivery
 
 Both text processors use the same delivery helper to re-read the active window before invoking

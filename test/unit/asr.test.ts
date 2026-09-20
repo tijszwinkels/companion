@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../../src/config.ts';
-import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
+import { Transcriber, type TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
@@ -115,6 +115,55 @@ test('punctuation-only transcripts are filtered and exactly 4000 characters are 
   assert.equal(await punctuation.transcriber.transcribe(speech(), signal()), '');
   const bounded = await fixture(context, [{}], 'é'.repeat(4000));
   assert.equal((await bounded.transcriber.transcribe(speech(), signal())).length, 4000);
+});
+
+test('silence surrounding a quiet short word does not suppress its ASR request', async (context) => {
+  const worker = await fixture(context);
+  const diagnostics: TranscriptionDiagnostic[] = [];
+
+  // This word is above the unchanged silence floor for 128 ms. Its whole-buffer
+  // RMS falls below that floor after adding normal preroll and ending silence.
+  const word = new Float32Array(2048).fill(0.0008);
+  for (const trailingSamples of [12800, 48000]) {
+    const samples = new Float32Array(4096 + word.length + trailingSamples);
+    samples.set(word, 4096);
+    const original = samples.slice();
+    assert.equal(
+      await worker.transcriber.transcribe(samples, signal(), (entry) => diagnostics.push(entry)),
+      'Dublin.',
+    );
+    assert.deepEqual(samples, original, 'The guard must not normalize or trim model input');
+  }
+
+  assert.equal((await worker.events()).filter((entry) => entry.event === 'request').length, 2);
+  assert.ok(diagnostics.every((entry) => entry.rms < 0.0005));
+  assert.ok(diagnostics.every((entry) => entry.speechWindowRms > 0.0005));
+  assert.ok(diagnostics.every((entry) => entry.outcome === 'text'));
+});
+
+test('diagnostics distinguish quiet input, empty output, punctuation and worker failure', async (context) => {
+  const diagnostics: TranscriptionDiagnostic[] = [];
+  const observe = (entry: TranscriptionDiagnostic) => diagnostics.push(entry);
+  const quiet = await fixture(context);
+  const empty = await fixture(context, [{}], '');
+  const punctuation = await fixture(context, [{}], '...');
+  const failure = await fixture(context, [{ request: 'inference-error' }]);
+
+  assert.equal(
+    await quiet.transcriber.transcribe(new Float32Array(16000).fill(0.0004), signal(), observe),
+    '',
+  );
+  assert.deepEqual(await quiet.events(), [], 'Quiet input still acquires no native resources');
+  assert.equal(await empty.transcriber.transcribe(speech(), signal(), observe), '');
+  assert.equal(await punctuation.transcriber.transcribe(speech(), signal(), observe), '');
+  await assert.rejects(failure.transcriber.transcribe(speech(), signal(), observe), /ASR worker/);
+
+  assert.deepEqual(
+    diagnostics.map((entry) => entry.outcome),
+    ['silence', 'empty', 'punctuation', 'error'],
+  );
+  assert.ok(diagnostics.every((entry) => entry.elapsedMs >= 0));
+  assert.equal(JSON.stringify(diagnostics).includes('secret-transcript'), false);
 });
 
 for (const phase of ['start', 'request'] as const) {

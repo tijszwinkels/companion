@@ -106,6 +106,7 @@ export class SensorPipeline implements InspectableModule {
   private async drain(): Promise<void> {
     while (this.pending.length) {
       const job = this.pending.shift()!;
+      let stage = 'transcription';
 
       try {
         job.signal.throwIfAborted();
@@ -115,7 +116,9 @@ export class SensorPipeline implements InspectableModule {
         // Capture is already in progress. Await both halves of the same frame;
         // a new screenshot taken after transcription could show another app.
         const [utterance, capture] = await Promise.all([
-          this.dependencies.transcriber.transcribe(job.samples, job.signal),
+          this.dependencies.transcriber.transcribe(job.samples, job.signal, (diagnostic) => {
+            this.log('asr', JSON.stringify(diagnostic), job.id);
+          }),
           job.capture,
         ]);
 
@@ -132,6 +135,7 @@ export class SensorPipeline implements InspectableModule {
 
         // Save text before classification, including when capture failed. A late
         // ASR result is retained, but cancellation still prevents its delivery.
+        stage = 'recording';
         this.activity.transcribed?.({
           id: job.id,
           observedAt: job.observedAt,
@@ -158,9 +162,11 @@ export class SensorPipeline implements InspectableModule {
         job.signal.throwIfAborted();
 
         if (!capture.screenshot) {
+          stage = 'capture';
           throw capture.error;
         }
 
+        stage = 'routing';
         this.log('frame', 'Utterance + screenshot', job.id);
         await this.dependencies.router.route(
           {
@@ -181,7 +187,8 @@ export class SensorPipeline implements InspectableModule {
 
         if (!job.signal.aborted) {
           this.failures++;
-          this.log('error', error instanceof Error ? error.message : String(error), job.id);
+          const message = error instanceof Error ? error.message : String(error);
+          this.log('error', `${stage}: ${message}`, job.id);
         }
       } finally {
         // This job owns the audio buffer; no later processor needs raw samples.
