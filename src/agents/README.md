@@ -114,9 +114,10 @@ while listening is enabled. Each selection should submit its explanation to
 the same conversation. A typed or spoken freeform follow-up remains possible.
 During a running answer, **stop** should cancel only that selected conversation.
 
-The current voice scope is the visible, selected conversation, including when
-its composer lacks focus. Whether to require composer focus remains an open
-product decision. Native click/voice testing should account for that scope.
+Voice choices and `stop` stay active while the side panel is open on the owning
+conversation, including when its composer lacks focus. This is the user-approved
+scope: moving keyboard focus to another application does not disable them.
+Hiding the panel or selecting another tab removes the old conversation's routes.
 
 ### Automated coverage
 
