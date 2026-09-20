@@ -82,11 +82,14 @@ inference and uses the coding model (Astra by default). It replaces the old
 `QUICK_QUESTION` processor using local Qwen through the same Pi backend. Both
 send the captured screenshot and utterance and open an ordinary conversation tab.
 
-When a visible agent conversation's input field owns keyboard focus,
-`CONTINUE_OPEN_AGENT_CONVERSATION` joins the classifier's choices. Its instruction
-defaults speech to that conversation unless the context strongly suggests another
-intention. **“message coding agent …”** bypasses classification and sends directly
-to the visible, selected conversation, even when its input field is not focused.
+When an agent conversation is selected in the visible sidebar,
+`CONTINUE_OPEN_AGENT_CONVERSATION` joins the classifier's choices. With its input
+field focused, the instruction defaults speech to that conversation unless the
+context strongly suggests another intention. Without input focus, the classifier
+uses the conversation context to judge whether the utterance is a follow-up;
+an open sidebar alone does not imply continuation. **“message coding agent …”**
+bypasses classification and sends directly to the visible, selected conversation,
+even when its input field is not focused.
 Both paths send the speech as a follow-up, without typing into the composer or
 capturing another attachment. **“insert …”** and **“enter …”** send keyboard input
 to the focused field, including the Companion composer when it owns focus.
@@ -489,9 +492,18 @@ The router passes registrations with instructions to the detector to compose its
 prompt, then invokes exactly the processor whose name comes back.
 
 The detector wraps a Pi `Agent` from `@earendil-works/pi-agent-core`. One request
-contains one user message with text and image together. Each frame gets a fresh
-agent with thinking off, no tools, no previous frames, no retries, and a 32-token
-output limit. Only an exact registered name is accepted. Invalid, truncated,
+contains one user message with JSON text and an attached screenshot. Alongside
+the utterance, application and focus metadata, a visibly selected conversation
+contributes its title and first two/last two non-empty user or assistant messages,
+with overlaps included once. These are copied at speech end and sent to the
+configured intent model: at most 200 Unicode code points for the title and 2000
+per excerpt. Roles, message states and truncation flags accompany the text;
+tools, notices and unsent drafts are excluded. The excerpts remain contextual
+data in the user message, not additional system instructions.
+
+Each frame gets a fresh agent with thinking off, no tools, no previous sensor
+frames, no retries, and a 32-token output limit. Only an exact registered name
+is accepted. Invalid, truncated,
 failed, or timed-out responses are logged as errors and never dispatched.
 
 Audio/VAD runs independently of the sequential ASR/routing worker. Capture

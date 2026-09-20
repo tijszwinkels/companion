@@ -26,11 +26,11 @@ test('first/last message positions overlap only once and preserve chronological 
   }
 });
 
-test('only non-empty user/assistant text counts, with HTML fallback and original states', () => {
+test('only non-empty user/assistant text counts, retaining saved text and original states', () => {
   const queued = { ...chatMessage('q', 'user', '  A queued request\n'), state: 'queued' as const };
   const partial = { ...chatMessage('a', 'assistant', 'Partial answer'), state: 'running' as const };
   const failed = { ...chatMessage('f', 'user', 'Unsent request'), state: 'error' as const };
-  const html = { ...chatMessage('h', 'assistant', 'Text fallback'), html: '<p>HTML display</p>' };
+  const restored = chatMessage('h', 'assistant', 'Saved text fallback');
   const context = conversationContext({
     title: 'Selected title',
     messages: [
@@ -40,7 +40,7 @@ test('only non-empty user/assistant text counts, with HTML fallback and original
       partial,
       chatMessage('notice', 'notice', 'Do not use notices'),
       failed,
-      html,
+      restored,
     ],
   });
 
@@ -49,7 +49,7 @@ test('only non-empty user/assistant text counts, with HTML fallback and original
     { position: 1, role: 'user', state: 'queued', text: queued.text, truncated: false },
     { position: 2, role: 'assistant', state: 'running', text: partial.text, truncated: false },
     { position: 3, role: 'user', state: 'error', text: failed.text, truncated: false },
-    { position: 4, role: 'assistant', state: 'done', text: html.text, truncated: false },
+    { position: 4, role: 'assistant', state: 'done', text: restored.text, truncated: false },
   ]);
 });
 

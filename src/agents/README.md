@@ -16,7 +16,11 @@ coding behavior. Settings are read before each turn, so edits take effect withou
 restarting Companion; they do not alter an already-running turn. New config files
 include both profiles, while existing files are never rewritten by the loader.
 Provider registration and endpoint/auth settings remain in Pi's normal config.
-There is no implicit model fallback, and the detector's prompt is unchanged.
+There is no implicit model fallback; model profiles do not change the detector's
+prompt. The whole configuration is validated on each load, so an invalid
+quick-question override also prevents a coding turn until it is corrected.
+`QUICK_QUESTION` and `START_CODING_AGENT_SESSION` have independent enable/disable
+controls; an existing disabled coding intent does not disable the new shortcut.
 
 ## Session names
 

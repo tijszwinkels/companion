@@ -61,6 +61,7 @@ Item {
     panelVisible: root.panelOpened && sidePanel.visible
     onRevealRequested: root.panelOpened = true
     onConversationIdChanged: Qt.callLater(root.reportPanelState)
+    onPanelVisibleChanged: Qt.callLater(root.reportPanelState)
   }
 
   Panel.ActivityHistoryState {
@@ -69,7 +70,8 @@ Item {
   }
 
   function reportPanelState() {
-    const id = root.panelOpened ? agentSessions.conversationId : ""
+    // A retained selection without a displayed panel is not a voice target.
+    const id = agentSessions.viewedId
     root.send({action: "panel-state", id: id,
       composerFocused: id !== "" && sidePanel.composerFocusId === id,
       keyboardFocused: sidePanel.keyboardFocused})
