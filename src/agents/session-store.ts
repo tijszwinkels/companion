@@ -68,6 +68,7 @@ export class SessionStore {
       typeof session.model !== 'string' ||
       typeof session.error !== 'string' ||
       !statuses.includes(session.status) ||
+      (session.profile !== undefined && !['coding', 'quickQuestion'].includes(session.profile)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
       session.messages.length > 200
@@ -138,6 +139,7 @@ export class SessionStore {
       title: session.title,
       status: session.status,
       model: session.model,
+      ...(session.profile !== undefined ? { profile: session.profile } : {}),
       error: session.error,
       updatedAt: session.updatedAt,
       messages,

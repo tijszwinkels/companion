@@ -17,11 +17,16 @@ export interface AgentMessage {
   screenshotUrl?: string;
 }
 
+/** Selects a model configuration for the whole conversation, including reopening. */
+export type AgentProfile = 'coding' | 'quickQuestion';
+
 export interface AgentSession {
   id: string;
   title: string;
   status: 'starting' | 'running' | 'completed' | 'cancelled' | 'error';
   model: string;
+  /** Older saved conversations omit this and retain the coding configuration. */
+  profile?: AgentProfile;
   error: string;
   messages: AgentMessage[];
   updatedAt: number;

@@ -209,11 +209,13 @@ with the same private runtime; the agent backend does not launch Pi. Mouse actio
 wiring is exercised separately by the offscreen card tests.
 
 Contextual voice routing is covered offline by real private-socket tests:
-focused-composer eligibility, the exact continuation prompt, both start aliases,
+focused-composer eligibility, the exact continuation prompt, both model-selecting start shortcuts,
 direct messages to an unfocused visible chat, and cancellation/preview/stale
 target handling. The pipeline test holds ASR open while the selected tab changes
 to verify that the original interaction snapshot survives. On a later desktop
 check, focus a composer and speak a follow-up without a prefix, then verify
 `message coding agent …` targets that same visible chat from another application's
-focus and `new coding agent …` always creates a fresh tab. These new voice paths
+focus and `new session …` always creates a fresh coding tab. `quick question …`
+opens a local Qwen conversation, whose profile survives queued turns and reopening.
+These new voice paths
 have not been exercised on the live compositor.

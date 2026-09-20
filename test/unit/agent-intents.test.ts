@@ -11,6 +11,7 @@ import type { AgentBackend } from '../../src/agents/types.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
+import { QuickQuestion } from '../../src/processors/quick-question.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { desktopFixture, waitFor } from '../desktop-fixture.ts';
 import { frame, signal, testDetector } from '../helpers.ts';
@@ -58,26 +59,40 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
   return { sessions, requests, desktop, first, activity, feedback, continuation, outcomes, select };
 }
 
-test('new coding agent and quick question both bypass inference with the uppercase intent', async (context) => {
+test('new session and quick question bypass inference and choose their own model profiles', async (context) => {
   const setup = await fixture(context);
   const router = new UserSensorRouter(
     { detector: testDetector({ detect: async () => assert.fail('Prefix reached inference') }) },
     () => {},
   );
   new StartCodingAgentSession({ sessions: setup.sessions }, () => {}).subscribe(router);
+  new QuickQuestion({ sessions: setup.sessions }, () => {}).subscribe(router);
 
-  for (const prefix of ['new coding agent', 'QUICK QUESTION']) {
+  for (const [prefix, intent, model] of [
+    ['new session', 'START_CODING_AGENT_SESSION', 'openai-codex/gpt-6-astra'],
+    ['QUICK QUESTION', 'QUICK_QUESTION', 'pillar-vllm/qwen3.8-128k'],
+  ]) {
     assert.equal(
       await router.route({ ...frame, utterance: `${prefix}: Explain this screen.` }, signal()),
-      'START_CODING_AGENT_SESSION',
+      intent,
     );
     await setup.sessions.idle();
     assert.equal(setup.requests.at(-1)?.prompt.text, 'Explain this screen.');
     assert.equal(setup.requests.at(-1)?.prompt.screenshot, frame.screenshot);
+    assert.equal(setup.requests.at(-1)?.settings.model, model);
   }
   const count = setup.requests.length;
-  await router.route({ ...frame, utterance: 'new coding agent' }, signal());
+  await router.route({ ...frame, utterance: 'new session' }, signal());
+  await router.route({ ...frame, utterance: 'quick question' }, signal());
   assert.equal(setup.requests.length, count, 'Bare prefixes do not create empty sessions');
+  assert.deepEqual(router.reservedPrefixes().toSorted(), ['new session', 'quick question']);
+  assert.equal(
+    router.intentStates().find((intent) => intent.name === 'QUICK_QUESTION')?.inferenceAvailable,
+    false,
+  );
+  router.setEnabled('QUICK_QUESTION', false);
+  await router.route({ ...frame, utterance: 'quick question Explain this' }, signal());
+  assert.equal(setup.requests.length, count, 'A disabled local shortcut cannot fall back to Astra');
 });
 
 test('continuation is offered only for the focused composer and preserves the exact user prompt', async (context) => {

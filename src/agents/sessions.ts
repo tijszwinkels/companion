@@ -11,6 +11,7 @@ import {
   chatMessage,
   type AgentBackend,
   type AgentMessage,
+  type AgentProfile,
   type AgentSession,
   type SessionEvent,
   type PreviousSession,
@@ -155,7 +156,7 @@ export class AgentSessions implements InspectableModule {
     return () => this.listeners.delete(listener);
   }
 
-  start(frame: UserSensorFrame, signal: AbortSignal): string {
+  start(frame: UserSensorFrame, signal: AbortSignal, profile: AgentProfile = 'coding'): string {
     signal.throwIfAborted();
     if (this.closed) {
       throw Error('Agent sessions are shutting down');
@@ -176,6 +177,7 @@ export class AgentSessions implements InspectableModule {
         title: frame.utterance.slice(0, 80),
         status: 'starting',
         model: '',
+        profile,
         error: '',
         messages: [question],
         updatedAt: Date.now(),
@@ -317,7 +319,7 @@ export class AgentSessions implements InspectableModule {
       session.view.updatedAt = Date.now();
       await this.store.save(session.view);
       session.controller.signal.throwIfAborted();
-      const settings = await loadAgentSettings(this.directory);
+      const settings = await loadAgentSettings(this.directory, session.view.profile);
       session.controller.signal.throwIfAborted();
       session.view.model = settings.model;
       session.view.status = 'running';

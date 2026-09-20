@@ -12,6 +12,7 @@ import { defaultAgentSettings, loadAgentSettings } from '../../src/agents/settin
 import { PiTranscript } from '../../src/agents/pi-transcript.ts';
 import type { AgentBackend, AgentMessage, SessionEvent } from '../../src/agents/types.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
+import { QuickQuestion } from '../../src/processors/quick-question.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { frame, signal, testDetector } from '../helpers.ts';
 import { desktopFixture, stopped, waitFor, windowReply } from '../desktop-fixture.ts';
@@ -288,7 +289,7 @@ test('question handoff frees the router, preserves screenshot, and can be stoppe
     },
     () => {},
   );
-  new StartCodingAgentSession({ sessions }, () => {}).subscribe(router);
+  new QuickQuestion({ sessions }, () => {}).subscribe(router);
   const microphone = new AbortController();
   await router.route({ ...frame, utterance: 'quick question What is this?' }, microphone.signal);
   await waitFor(() => received !== undefined);

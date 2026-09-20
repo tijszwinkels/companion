@@ -47,7 +47,7 @@ Item {
             toggleable: true,
             inferenceAvailable: true,
             prefixAvailable: true,
-            prefixes: ["quick question", "new coding agent"]
+            prefixes: ["new session"]
           },
           {
             name: "IGNORE",

@@ -1,5 +1,23 @@
 # Conversation tools
 
+## Model profiles
+
+“new session …” and inferred `START_CODING_AGENT_SESSION` use the top-level
+`model`/`thinking` settings in `~/companion/agents/companion-agent.json` (Astra by
+default). “quick question …” selects the prefix-only `QUICK_QUESTION` processor
+and the same file's `quickQuestion` model/thinking overrides. It still runs a
+normal Pi session with screenshots and the same conversation tools. Default:
+`pillar-vllm/qwen3.8-128k`, thinking `off`; the Pi executable is shared.
+
+The optional persisted `AgentSession.profile` is `coding` or `quickQuestion`.
+It belongs to the conversation, so queued/spoken/typed follow-ups and restored
+conversations select the same profile. Older archives without a profile keep
+coding behavior. Settings are read before each turn, so edits take effect without
+restarting Companion; they do not alter an already-running turn. New config files
+include both profiles, while existing files are never rewritten by the loader.
+Provider registration and endpoint/auth settings remain in Pi's normal config.
+There is no implicit model fallback, and the detector's prompt is unchanged.
+
 ## HTML conversation bubbles
 
 The native Pi extension `html-tool.ts` registers `companion_html` on each backend

@@ -7,6 +7,7 @@ import { Ignore } from './processors/ignore.ts';
 import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
+import { QuickQuestion } from './processors/quick-question.ts';
 import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
 import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts';
@@ -76,7 +77,7 @@ Usage: npm start -- [options]
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
-"new coding agent …" or "quick question …" asks Pi and opens a session tab.
+"new session …" asks Pi using the coding model; "quick question …" uses local Qwen.
 "message coding agent …" continues the currently open agent conversation.
 "label previous correct" / "label previous incorrect" records intent feedback.
 Other dictation never presses Enter. Start inside your Hyprland desktop session.`);
@@ -157,6 +158,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     new StartCodingAgentSession({ sessions: agents }, log, values.preview, activity).subscribe(
       router,
     );
+    new QuickQuestion({ sessions: agents }, log, values.preview, activity).subscribe(router);
     new ContinueOpenAgentConversation(
       { sessions: agents },
       log,
@@ -193,7 +195,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'registered',
-      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new coding agent / quick question), CONTINUE_OPEN_AGENT_CONVERSATION (message coding agent / focused composer), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), CONTINUE_OPEN_AGENT_CONVERSATION (message coding agent / focused composer), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
     );
 
     // Supplied text enters the same routing path but needs no audio resources.

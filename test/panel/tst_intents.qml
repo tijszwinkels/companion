@@ -11,8 +11,9 @@ Item {
       {name: "SEND_TEXT_TO_APPLICATION", label: "Type text", enabled: true, toggleable: true, inferenceAvailable: true, prefixes: ["insert"], prefixAvailable: true},
       {name: "ENTER_TEXT_TO_APPLICATION", label: "Type text and Enter", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["enter"], prefixAvailable: true},
       {name: "IGNORE", label: "Ignore", enabled: true, toggleable: false, inferenceAvailable: true, prefixes: [], prefixAvailable: false},
-      {name: "START_CODING_AGENT_SESSION", label: "Ask the local agent", enabled: true, toggleable: true, inferenceAvailable: true, prefixes: ["quick question", "new coding agent"], prefixAvailable: true},
-      {name: "CONTINUE_OPEN_AGENT_CONVERSATION", label: "Continue the open agent conversation", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["message coding agent"], prefixAvailable: false}
+      {name: "START_CODING_AGENT_SESSION", label: "Start a coding session", enabled: true, toggleable: true, inferenceAvailable: true, prefixes: ["new session"], prefixAvailable: true},
+      {name: "CONTINUE_OPEN_AGENT_CONVERSATION", label: "Continue the open agent conversation", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["message coding agent"], prefixAvailable: false},
+      {name: "QUICK_QUESTION", label: "Quick question", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["quick question"], prefixAvailable: true}
     ]
   }
   Component {
