@@ -158,6 +158,39 @@ Item {
       compare(composer.text, "Draft two")
     }
 
+    function test_running_conversation_accepts_queued_input_and_preserves_rejected_drafts() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.sessions = [Object.assign(session([]), {acceptsFollowUp: false})]
+      panel.selectedSessionId = "question-1"
+      let submissions = []
+      panel.sendSessionRequested.connect(function(id, text) { submissions.push({id: id, text: text}) })
+      panel.focusComposer()
+      const composer = findChild(panel, "sessionComposer")
+      const send = findChild(panel, "sendSession")
+      composer.text = "After this, explain the tests"
+      compare(send.text, "Queue")
+      verify(send.enabled)
+      keyClick(Qt.Key_Return)
+      compare(submissions.length, 1)
+      keyClick(Qt.Key_Return)
+      compare(submissions.length, 1, "Await acknowledgement before sending again")
+      panel.submitted("question-1", composer.text, "Queue is full")
+      compare(composer.text, "After this, explain the tests")
+      keyClick(Qt.Key_Return)
+      compare(submissions.length, 2)
+      panel.submitted("question-1", composer.text, "")
+      compare(composer.text, "")
+      compare(panel.composerFocusId, "question-1")
+
+      const queued = Object.assign(message("waiting", "user", "After this, explain the tests"), {state: "queued", screenshot: false})
+      panel.sessions = [session([queued])]
+      tryVerify(function() { return findChild(panel, "bubble-waiting") !== null })
+      compare(findChild(panel, "bubble-waiting").state, "queued")
+      queued.state = "error"
+      panel.sessions = [session([queued])]
+      compare(findChild(panel, "bubble-waiting").state, "error")
+    }
+
     function test_alt_numbers_select_visible_tab_order_and_preserve_drafts() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.sessionSelected.connect(function(id) { panel.showingPrevious = false; panel.selectedSessionId = id })

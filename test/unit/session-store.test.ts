@@ -83,6 +83,10 @@ test('interrupted snapshots recover as stopped and damaged records do not hide v
     ...chatMessage('answer', 'assistant', 'Partial answer'),
     state: 'running',
   });
+  session.messages.push({
+    ...chatMessage('waiting', 'user', 'A queued follow-up'),
+    state: 'queued',
+  });
   await store.save(session);
   await writeFile(join(path, `${session.id}.json.interrupted.tmp`), '{interrupted replacement');
   await writeFile(join(path, `${randomUUID()}.json`), '{damaged');
@@ -97,6 +101,7 @@ test('interrupted snapshots recover as stopped and damaged records do not hide v
   const recovered = await store.read(session.id);
   assert.match(recovered.error, /stopped before/);
   assert.equal(recovered.messages[1].state, 'error');
+  assert.equal(recovered.messages[2].state, 'error');
 });
 
 test('close and restart keep history dormant; reopen restores the same UUID and resumes only on follow-up', async (context) => {

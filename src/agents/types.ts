@@ -9,7 +9,7 @@ export interface AgentMessage {
   text: string;
   toolName: string;
   input: string;
-  state: 'running' | 'done' | 'error';
+  state: 'queued' | 'running' | 'done' | 'error';
   screenshot: boolean;
   /** Local, private PNG attachment; omitted while saving or on older messages. */
   screenshotUrl?: string;

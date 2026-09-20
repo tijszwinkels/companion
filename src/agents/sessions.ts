@@ -25,7 +25,10 @@ interface RunningSession {
   // final persistence, when the displayed model status may already be terminal.
   closing: boolean;
   busy: boolean;
+  pending: AgentMessage[];
 }
+
+const maxPendingFollowUps = 8;
 
 /**
  * Owns independent question lifetimes. The sensor worker only hands off a frame;
@@ -82,7 +85,10 @@ export class AgentSessions implements InspectableModule {
     return this.sessions.has(id);
   }
 
-  /** Immutable live choices/run identity for speech capture and UI state. */
+  /**
+   * Immutable choices/run identity for speech capture and UI state. Availability
+   * here gates choice selection; freeform follow-ups can also queue while busy.
+   */
   interaction(id: string): {
     agentChoices?: AgentChoiceSet;
     agentRunId?: string;
@@ -110,9 +116,8 @@ export class AgentSessions implements InspectableModule {
   }
 
   private activeRuns(): number {
-    return [...this.sessions.values()].filter(({ view }) =>
-      ['starting', 'running'].includes(view.status),
-    ).length;
+    // Keep the slot reserved through persistence and between queued turns.
+    return [...this.sessions.values()].filter((session) => session.busy).length;
   }
 
   /** A click/voice selection carries identity, never a caller-supplied payload. */
@@ -126,6 +131,11 @@ export class AgentSessions implements InspectableModule {
       !choices.options[index]
     ) {
       throw Error('These choices have expired; use the current choices or write a follow-up');
+    }
+    // Freeform input may queue; choices retain their existing end-of-turn gate.
+    const interaction = this.interaction(id);
+    if (!interaction.agentAcceptsFollowUp) {
+      throw Error(interaction.agentFollowUpUnavailableReason);
     }
     this.followUp(id, choiceText(choices.options[index]), signal);
   }
@@ -176,10 +186,11 @@ export class AgentSessions implements InspectableModule {
       changed: new Map([[question.id, question]]),
       closing: false,
       busy: true,
+      pending: [],
     };
     this.sessions.set(id, session);
     this.flush(session);
-    session.done = this.run(
+    session.done = this.drain(
       session,
       { text: frame.utterance, screenshot: frame.screenshot },
       false,
@@ -188,24 +199,42 @@ export class AgentSessions implements InspectableModule {
     return id;
   }
 
-  /** A typed follow-up stays in its explicit tab; no intent inference is involved. */
+  /** Spoken and typed follow-ups share one FIFO, owned by their captured tab. */
   followUp(id: string, text: string, signal: AbortSignal): void {
     signal.throwIfAborted();
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing) {
       throw Error('Question session is unavailable');
     }
-    if (session.busy) {
-      throw Error('Wait for this answer or stop it before sending a follow-up');
+    if (session.busy && session.controller.signal.aborted) {
+      throw Error('Wait for this question to stop before sending a follow-up');
     }
     if (!text.trim() || text.length > 4000) {
       throw Error('A follow-up requires 1–4000 characters');
     }
-    if (this.activeRuns() >= 4) {
+    if (session.pending.length >= maxPendingFollowUps) {
+      throw Error(`This conversation already has ${maxPendingFollowUps} queued messages`);
+    }
+    if (!session.busy && this.activeRuns() >= 4) {
       throw Error('Four questions are already running; stop one or wait for an answer');
     }
 
-    this.message(session, chatMessage(`user-${randomUUID()}`, 'user', text));
+    const message = chatMessage(`user-${randomUUID()}`, 'user', text);
+    message.state = session.busy ? 'queued' : 'done';
+    this.message(session, message);
+    delete session.view.choices;
+    if (session.busy) {
+      session.pending.push(message);
+      this.flush(session);
+      return;
+    }
+
+    this.prepareFollowUp(session, message);
+    session.done = this.drain(session, { text }, true);
+  }
+
+  private prepareFollowUp(session: RunningSession, message: AgentMessage): void {
+    this.message(session, { ...message, state: 'done' });
     session.controller = new AbortController();
     session.busy = true;
     session.view.status = 'starting';
@@ -214,7 +243,54 @@ export class AgentSessions implements InspectableModule {
     session.view.runId = randomUUID();
     session.view.acceptsFollowUp = false;
     this.flush(session);
-    session.done = this.run(session, { text }, true);
+  }
+
+  private cancelPending(session: RunningSession): void {
+    for (const message of session.pending.splice(0)) {
+      this.message(session, { ...message, state: 'error' });
+    }
+  }
+
+  /**
+   * One promise owns the entire sequence, so idle/stop/close include queued
+   * work. Await both the backend and its final save before resuming Pi. Once
+   * accepted, a message is independent of microphone pause and UI tab changes.
+   */
+  private async drain(
+    session: RunningSession,
+    prompt: Parameters<AgentBackend['run']>[0]['prompt'],
+    resume: boolean,
+    frameId?: number,
+  ): Promise<void> {
+    try {
+      while (true) {
+        await this.run(session, prompt, resume, frameId);
+        if (
+          this.closed ||
+          session.closing ||
+          session.controller.signal.aborted ||
+          session.view.status !== 'completed' ||
+          session.view.error
+        ) {
+          this.cancelPending(session);
+          delete session.view.choices;
+          return;
+        }
+
+        const next = session.pending.shift();
+        if (!next) {
+          return;
+        }
+        this.prepareFollowUp(session, next);
+        prompt = { text: next.text };
+        resume = true;
+        frameId = undefined;
+      }
+    } finally {
+      session.busy = false;
+      session.view.acceptsFollowUp = !session.closing && !this.closed;
+      this.flush(session);
+    }
   }
 
   private async run(
@@ -254,6 +330,7 @@ export class AgentSessions implements InspectableModule {
             !acceptingChoices ||
             session.controller.signal.aborted ||
             session.closing ||
+            session.pending.length > 0 ||
             this.closed
           ) {
             return;
@@ -280,6 +357,9 @@ export class AgentSessions implements InspectableModule {
         delete session.view.choices;
       }
       delete session.view.runId;
+      if (session.view.status !== 'completed' || session.controller.signal.aborted) {
+        this.cancelPending(session);
+      }
       // A stopped partial answer/tool must not retain a running spinner.
       for (const message of session.view.messages) {
         if (message.state === 'running') {
@@ -293,11 +373,10 @@ export class AgentSessions implements InspectableModule {
       try {
         await this.store.save(session.view);
       } catch (error) {
+        session.view.status = 'error';
         session.view.error = `Could not save session history: ${String(error)}`;
         this.log('agent-history', session.view.error, frameId);
       }
-      session.busy = false;
-      session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
       this.log('agent', `${session.view.status}: ${session.view.id}`, frameId);
     }
@@ -353,6 +432,7 @@ export class AgentSessions implements InspectableModule {
     session.controller.abort();
     delete session.view.choices;
     delete session.view.runId;
+    this.cancelPending(session);
     this.flush(session);
     await session.done;
   }
@@ -407,6 +487,7 @@ export class AgentSessions implements InspectableModule {
         changed: new Map(),
         closing: false,
         busy: false,
+        pending: [],
       });
       this.previous.delete(id);
       for (const listener of this.listeners) {
@@ -429,6 +510,7 @@ export class AgentSessions implements InspectableModule {
       delete session.view.choices;
       delete session.view.runId;
       session.view.acceptsFollowUp = false;
+      this.cancelPending(session);
     }
     await this.idle();
     this.listeners.clear();

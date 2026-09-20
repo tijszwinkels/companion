@@ -87,8 +87,9 @@ The selected conversation and focus are captured at speech end, before ASR.
 Switching tabs, closing the panel/session, changing composer focus, or losing the
 UI connection before dispatch skips the continuation instead of redirecting it.
 An explicit message shortcut without an open conversation is also skipped.
-As with typed follow-ups, wait for the agent's answer or use Stop before sending
-another turn. Bare prefixes without a following message do nothing.
+Spoken and typed follow-ups received during an answer queue in that conversation
+and run in order after the current turn finishes. Bare prefixes without a
+following message do nothing.
 
 Pi 0.85.1 or newer must be installed and authenticated. Companion uses real
 `pi --mode rpc` processes: questions include the captured PNG and window identity;
@@ -165,12 +166,19 @@ text input. Outside Companion, Super+Alt+Tab retains Omarchy's group navigation.
 Select message text and press **Ctrl+C** to copy the selection. Hover over a
 message for its **Copy** button, which copies the whole message (including the
 original Markdown for agent answers) without changing your selection or draft.
-You can prepare a draft while Pi works, then send after completion or Stop.
+While Pi works, **Enter** or **Queue** accepts a follow-up for the next turn.
+Waiting messages show **queued**. Each conversation permits eight waiting messages;
+they run one at a time, without interrupting its answer or taking another agent slot.
+Stop, closing the tab, shutdown, or a failed turn cancels the waiting messages and
+marks them **not sent**. Reopening a conversation never replays them. Accepted
+messages survive microphone pause and switching tabs; they belong to the original
+conversation. The queue is in memory; normal transcript saves record it for display,
+but a crash can lose messages accepted since the last save.
 Drafts remain separate per tab and clear only after the backend confirms receipt.
 Closing and reopening a tab preserves its draft while the UI remains running.
 With the composer focused, **“insert …”** dictates into it and **“enter …”**
-dictates and presses Enter. If the agent is already answering, the composer keeps
-the text as a draft instead of starting a second turn. These explicit prefixes
+dictates and presses Enter. If the agent is already answering, Enter queues
+the follow-up. These explicit prefixes
 avoid inferring a new question. The history outcome `sent` confirms keyboard
 delivery, not acceptance of a Pi turn; its application field identifies the
 ordinary window captured with the utterance, not the overlaid composer.

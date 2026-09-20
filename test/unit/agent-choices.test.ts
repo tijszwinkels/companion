@@ -411,6 +411,46 @@ test('stop targets only the captured running agent and rejects an old run in the
   assert.equal(other.run.signal.aborted, false);
 });
 
+test('queued continuation expires choices without changing the current stop target', async (context) => {
+  const setup = await fixture(context);
+  const first = await setup.start();
+  await setup.select(first.id, true);
+  first.run.publish(parseChoices(['Yes']));
+  const revision = setup.sessions.interaction(first.id).agentChoices!.revision;
+  const oldStop = setup.input('stop');
+  assert.throws(() => setup.sessions.selectChoice(first.id, revision, 0, signal()), /finishes/);
+  assert.throws(() => setup.sessions.followUp(first.id, 'x'.repeat(4001), signal()), /1–4000/);
+  assert.equal(setup.sessions.interaction(first.id).agentChoices!.revision, revision);
+
+  new ContinueOpenAgentConversation(
+    { sessions: setup.sessions },
+    () => {},
+    false,
+    setup.activity,
+  ).subscribe(setup.router);
+  setup.detect(async () => 'CONTINUE_OPEN_AGENT_CONVERSATION');
+  await setup.router.route(setup.input('A freeform continuation'), signal());
+  assert.equal(setup.runs.length, 1);
+  assert.equal(setup.sessions.interaction(first.id).agentRunId, oldStop.interaction.agentRunId);
+  assert.equal(setup.sessions.interaction(first.id).agentChoices, undefined);
+  first.run.publish(parseChoices(['An obsolete choice']));
+  assert.equal(setup.sessions.interaction(first.id).agentChoices, undefined);
+  assert.throws(() => setup.sessions.selectChoice(first.id, revision, 0, signal()), /expired/);
+
+  first.run.finish();
+  await waitFor(() => setup.runs.length === 2);
+  assert.equal(setup.runs[1].request.prompt.text, 'A freeform continuation');
+  await setup.router.route(oldStop, signal());
+  assert.equal(setup.outcomes.at(-1), 'skipped');
+  assert.equal(setup.runs[1].signal.aborted, false);
+  setup.sessions.followUp(first.id, 'Waiting behind the second turn', signal());
+  await setup.router.route(setup.input('stop'), signal());
+  assert.equal(setup.runs[1].signal.aborted, true);
+  await setup.sessions.idle();
+  assert.equal(setup.runs.length, 2);
+  assert.equal(setup.sessions.snapshot()[0].messages.at(-1)!.state, 'error');
+});
+
 test('preview, cancelled speech and a disconnected owner cannot act on choices or stop', async (context) => {
   const setup = await fixture(context);
   const first = await setup.start();

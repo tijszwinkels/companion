@@ -29,6 +29,12 @@ starting an extra run or reporting a submission error.
 The model should finish its answer after offering choices, not wait for the user
 inside the tool. The composer always permits writing freeform text, including
 while the agent runs; choosing an option preserves that draft.
+Freeform speech and typed submissions during a turn queue in that conversation.
+They immediately invalidate its old choices; the current turn cannot publish
+replacement choices after a follow-up has already been accepted. Choices from
+the last queued turn can appear normally. Each queued turn gets a fresh run ID,
+so an earlier captured `stop` cannot cancel its successor. Stop clears all
+waiting follow-ups as well as cancelling the captured current run.
 
 ## Routing and lifetime
 
