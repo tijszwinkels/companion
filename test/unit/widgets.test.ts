@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 
 import { widgetTools } from '../../src/agents/widget-tools.ts';
 import { WidgetRegistry, libraryDirectory } from '../../src/widgets/registry.ts';
 import { WidgetRenderer } from '../../src/widgets/renderer.ts';
+import { Chromium, type BrowserPage } from '../../src/widgets/chromium.ts';
 import { WidgetService } from '../../src/widgets/service.ts';
 import {
   attachment,
@@ -16,6 +18,14 @@ import {
   type WidgetBundle,
   type WidgetRecord,
 } from '../../src/widgets/types.ts';
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+}
 
 class ControlledRenderer extends WidgetRenderer {
   describeGate?: () => Promise<void>;
@@ -267,4 +277,144 @@ test('late input cannot revive a closed conversation or reuse its capability aft
   assert.equal(await input(reopened.viewUrl!, 'mousePressed'), 200);
   assert.deepEqual(inputs, [created.id + ':mousePressed', created.id + ':mousePressed']);
   assert.equal(changed.length, 1);
+});
+
+for (const shutdown of ['conversation', 'service'] as const) {
+  test(`${shutdown} close drains an accepted pop-out before returning`, async (context) => {
+    const { renderer, service, send, owner } = await fixture(context);
+    await send({ method: 'publish', widget: 'todo', props: { items: [] } });
+    const reference = (await service.restored(owner))[0].reference;
+    const entered = deferred();
+    const resume = deferred();
+    const open = new Set<string>();
+    renderer.popout = async (id, _url, validate?: () => void) => {
+      entered.resolve();
+      await resume.promise;
+      validate?.();
+      open.add(id);
+    };
+    renderer.discard = async (ids) => {
+      for (const id of ids) {
+        open.delete(id);
+      }
+    };
+    renderer.close = async () => {
+      open.clear();
+    };
+
+    const pending = fetch(reference.viewUrl + '/popout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+      .then(async (response) => {
+        await response.json();
+        return response.status;
+      })
+      .catch(() => 0); // Service shutdown may close the HTTP connection.
+    await entered.promise;
+    let closed = false;
+    const closing = (
+      shutdown === 'conversation' ? service.deactivate(owner) : service.close()
+    ).then(() => {
+      closed = true;
+    });
+    await setImmediate();
+    const closedBeforeResume = closed;
+    resume.resolve();
+    const [status] = await Promise.all([pending, closing]);
+
+    assert.equal(
+      closedBeforeResume,
+      false,
+      'close must own work paused before browser registration',
+    );
+    assert.equal(open.size, 0, 'no browser may appear after close completes');
+    if (shutdown === 'conversation') {
+      assert.equal(status, 400);
+    }
+  });
+}
+
+test(
+  'repeated accepted pop-outs serialize, including recovery from an earlier failure',
+  { timeout: 5000 },
+  async (context) => {
+    const { renderer, service, send, owner } = await fixture(context);
+    await send({ method: 'publish', widget: 'todo', props: { items: [] } });
+    const reference = (await service.restored(owner))[0].reference;
+    const entered = deferred();
+    const resume = deferred();
+    context.after(() => resume.resolve());
+    let active = 0;
+    let maximum = 0;
+    let calls = 0;
+    renderer.popout = async () => {
+      calls++;
+      active++;
+      maximum = Math.max(maximum, active);
+      try {
+        if (calls === 1) {
+          entered.resolve();
+          await resume.promise;
+          throw Error('First pop-out failed');
+        }
+      } finally {
+        active--;
+      }
+    };
+    const popout = async () => {
+      const response = await fetch(reference.viewUrl + '/popout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      await response.json();
+      return response.status;
+    };
+    const first = popout();
+    await entered.promise;
+    const second = popout();
+    // The service's accepted-work counter makes this ordering deterministic;
+    // there is no browser, compositor, sleep-based scheduling or live input.
+    while ((service as any).queued.get(owner) !== 2 && calls !== 2 && !context.signal.aborted) {
+      await setImmediate();
+    }
+    resume.resolve();
+    assert.deepEqual(await Promise.all([first, second]), [400, 200]);
+    assert.equal(maximum, 1, 'an earlier completion must not race a successor registration');
+  },
+);
+
+test('pop-out revalidates its view after browser startup and before navigation', async (context) => {
+  const entered = deferred();
+  const resume = deferred();
+  let navigations = 0;
+  let closed = 0;
+  context.mock.method(Chromium.prototype, 'page', async () => {
+    entered.resolve();
+    await resume.promise;
+    return {
+      call: async () => {
+        navigations++;
+      },
+    } as unknown as BrowserPage;
+  });
+  context.mock.method(Chromium.prototype, 'close', async () => {
+    closed++;
+  });
+  const renderer = new WidgetRenderer();
+  let valid = true;
+  const pending = renderer.popout('widget', 'http://127.0.0.1:9/view/test', () => {
+    if (!valid) {
+      throw Error('View revoked during startup');
+    }
+  });
+  await entered.promise;
+  valid = false;
+  resume.resolve();
+  await assert.rejects(pending, /revoked during startup/);
+  assert.equal(navigations, 0);
+  assert.equal(closed, 1);
+  assert.equal((renderer as any).popouts.size, 0);
 });

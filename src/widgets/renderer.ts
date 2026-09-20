@@ -314,19 +314,25 @@ export class WidgetRenderer {
     });
   }
 
-  async popout(id: string, url: string): Promise<void> {
+  async popout(id: string, url: string, validate: () => void = () => {}): Promise<void> {
     // Reuse one external window per widget. Both views address the same saved
     // state through the trusted viewer host; no user browsing profile is used.
     await this.popouts.get(id)?.close();
+    validate();
     const browser = new Chromium(true);
     this.popouts.set(id, browser);
     try {
       const page = await browser.page(
         (candidate) => candidate === url || candidate.startsWith(url + '/'),
       );
+      // The service owns this whole operation until shutdown drains it. Check
+      // again after startup so revocation cannot navigate a newly ready page.
+      validate();
       await page.call('Page.navigate', { url });
     } catch (error) {
-      this.popouts.delete(id);
+      if (this.popouts.get(id) === browser) {
+        this.popouts.delete(id);
+      }
       await browser.close();
       throw error;
     }

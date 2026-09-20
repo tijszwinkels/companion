@@ -626,7 +626,20 @@ export class WidgetService {
       } else if (action === 'input') {
         this.json(response, { result: await this.renderer.input(record, bundle, body) });
       } else if (action === 'popout') {
-        await this.renderer.popout(id, viewUrl);
+        // Register accepted work before the renderer can await browser startup.
+        // Deactivation revokes admission, drains this owner queue, then discards
+        // its browsers. Repeated requests cannot replace each other mid-startup.
+        await this.serialized(record.owner, async () => {
+          const validate = () => {
+            this.check(record.owner);
+            if (this.capabilities.get(match[1]) !== id) {
+              throw Error('Widget view expired');
+            }
+          };
+          validate();
+          await this.renderer.popout(id, viewUrl, validate);
+          validate();
+        });
         this.json(response, { opened: true });
       } else {
         throw Error('Unknown widget operation');
