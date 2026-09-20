@@ -125,21 +125,26 @@ test('each successful queued turn chimes once; snapshots and reopened sessions n
   const id = sessions.start(frame, signal());
   sessions.followUp(id, 'Queued follow-up', signal());
   await waitFor(() => turns.length === 1);
+  assert.equal(sessions.snapshot()[0].completedTurnId, undefined);
   turns[0]();
   await waitFor(() => turns.length === 2 && played.length === 1);
+  assert.equal(sessions.snapshot()[0].completedTurnId, completed[0]);
+  assert.equal(sessions.snapshot()[0].status, 'running');
   turns[1]();
   await sessions.idle();
   await waitFor(() => played.length === 2);
   assert.deepEqual(played, ['agent-completed.wav', 'agent-completed.wav']);
   assert.equal(new Set(completed).size, 2);
-  sessions.snapshot();
+  assert.equal(sessions.snapshot()[0].completedTurnId, completed[1]);
   await sessions.remove(id);
   await sessions.reopen(id);
+  assert.equal(sessions.snapshot()[0].completedTurnId, undefined);
   assert.equal(played.length, 2);
 
   sessions.followUp(id, 'Stopped', signal());
   await waitFor(() => turns.length === 3);
   await sessions.stop(id);
+  assert.equal(sessions.snapshot()[0].completedTurnId, undefined);
   assert.equal(played.length, 2);
   desktop.send({ action: 'toggle-sounds' });
   await desktop.reply('toggle-sounds');
@@ -156,6 +161,7 @@ test('each successful queued turn chimes once; snapshots and reopened sessions n
   turns[4]();
   await sessions.idle();
   assert.equal(sessions.snapshot()[0].status, 'error');
+  assert.equal(sessions.snapshot()[0].completedTurnId, completed[2]);
   assert.equal(completed.length, 3);
   assert.equal(played.length, 2);
 });

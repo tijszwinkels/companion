@@ -24,6 +24,7 @@ PanelWindow {
   property bool activityHistoryAvailable: false
   property var agentActions: ({})
   property var sessions: []
+  property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
   property string controlError: ""
@@ -159,6 +160,7 @@ PanelWindow {
         activityHistoryAvailable: root.activityHistoryAvailable
         agentActions: root.agentActions
         sessions: root.sessions
+        unreadSessionIds: root.unreadSessionIds
         previousSessions: root.previousSessions
         showingPrevious: root.showingPrevious
         controlError: root.controlError

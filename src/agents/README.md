@@ -23,6 +23,26 @@ tools contain no naming tool; the extension registers its tool and guideline,
 and its call to `pi.setSessionName` is observable through native `get_state`.
 No model call or desktop interaction was used for this check.
 
+## Session indicators
+
+Open tabs show an accent ring while starting/running, and a mint dot and subtle
+tint for an unread successful turn. The leading emoji stays above the short name;
+titles without an emoji keep their Q number. Ring animations stop while the panel
+is hidden or offline. The existing close control and tab shortcuts are unchanged.
+
+A turn finishing in the visible selected conversation counts as read, without
+requiring composer focus. Hidden conversations, Activity and Previous sessions
+do not read an answer. Selecting its conversation clears the mark. A queued
+successor can have both a running ring and an earlier unread answer.
+
+Live snapshots carry `completedTurnId`, updated only after a successful save.
+The UI deduplicates it across updates and socket reconnects, including a success
+missed between two running turns. Read marks live in the sidebar instance; a full
+sidebar reload can mark the latest live completed turns unread again. This field
+is deliberately absent from saved transcripts, so reopening a historical session
+does not manufacture a new completion. Old backends without the field can show
+running rings but need a listener restart for unread completion tracking.
+
 ## Conversation choices
 
 `PiBackend` starts each turn with the native Pi extension `choice-tool.ts` using

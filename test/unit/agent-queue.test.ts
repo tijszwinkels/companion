@@ -204,6 +204,7 @@ test('a final history-write failure cannot start the next queued turn', async (c
   assert.equal(turns.length, 1);
   assert.equal(sessions.snapshot()[0].status, 'error');
   assert.equal(sessions.snapshot()[0].messages[1].state, 'error');
+  assert.equal(sessions.snapshot()[0].completedTurnId, undefined);
 });
 
 test('both classified speech and the message prefix queue to their captured conversation', async (context) => {

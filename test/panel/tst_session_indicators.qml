@@ -1,0 +1,195 @@
+import QtQuick
+import QtTest
+import "../../integrations/panel" as Panel
+
+Item {
+  id: scene
+  width: 600
+  height: 800
+  Component { id: stateComponent; Panel.AgentSessionState {} }
+  Component {
+    id: panelComponent
+    Rectangle {
+      width: 600
+      height: 800
+      color: "#161e2b"
+      property alias panel: body
+      Panel.PanelContent {
+        id: body
+        anchors.fill: parent
+        online: true; paused: false; speaking: false; processing: 0
+        foreground: "#dce5ef"; muted: "#8ba0b8"; accent: "#9fc0f7"; selection: "#293a51"
+        fontFamily: "sans-serif"
+      }
+    }
+  }
+
+  function session(id, status, turn) {
+    return {id: id, title: "🌱 Garden ideas", status: status, completedTurnId: turn,
+      messages: [], model: "fixture", error: "", updatedAt: 123}
+  }
+
+  TestCase {
+    name: "CompanionSessionIndicators"
+    when: windowShown
+
+    function test_hidden_completion_is_unread_until_conversation_is_viewed() {
+      const state = createTemporaryObject(stateComponent, scene)
+      state.update(session("one", "running", ""))
+      state.update(session("one", "completed", "turn-1"))
+      compare(state.unreadIds.one, true, "Selected but hidden is unread")
+      state.selectedId = ""
+      state.panelVisible = true
+      compare(state.unreadIds.one, true, "Activity does not read conversations")
+      state.showingPrevious = true
+      state.selectedId = "one"
+      compare(state.unreadIds.one, true, "The library does not read conversations")
+      state.showingPrevious = false
+      verify(!state.unreadIds.one)
+      state.panelVisible = false
+      state.replace([session("one", "completed", "turn-1")])
+      state.update(session("one", "completed", "turn-1"))
+      verify(!state.unreadIds.one, "Duplicate snapshots never resurrect read marks")
+    }
+
+    function test_visible_completion_counts_as_read_without_composer_focus() {
+      const state = createTemporaryObject(stateComponent, scene, {panelVisible: true})
+      state.update(session("one", "running", ""))
+      state.update(session("one", "completed", "turn-1"))
+      verify(!state.unreadIds.one)
+      state.selectedId = ""
+      state.update(session("one", "running", "turn-1"))
+      state.update(session("one", "completed", "turn-2"))
+      compare(state.unreadIds.one, true)
+      state.selectedId = "one"
+      verify(!state.unreadIds.one)
+    }
+
+    function test_reconnect_recovers_success_even_when_next_queued_turn_is_running() {
+      const state = createTemporaryObject(stateComponent, scene)
+      state.replace([session("one", "running", "")])
+      state.replace([session("one", "running", "missed-turn")])
+      compare(state.unreadIds.one, true)
+      state.update(session("one", "error", "missed-turn"))
+      compare(state.unreadIds.one, true, "A later error does not erase an unread success")
+      state.panelVisible = true
+      verify(!state.unreadIds.one)
+      state.panelVisible = false
+      state.replace([session("one", "cancelled", "missed-turn")])
+      verify(!state.unreadIds.one)
+      state.replace([session("one", "completed", "new-turn")])
+      compare(state.unreadIds.one, true)
+    }
+
+    function test_old_backend_failure_and_restore_do_not_invent_completions() {
+      const state = createTemporaryObject(stateComponent, scene)
+      state.update(session("one", "completed", undefined))
+      state.update(session("one", "error", undefined))
+      state.update(session("one", "cancelled", undefined))
+      compare(Object.keys(state.unreadIds).length, 0)
+      state.update(session("one", "completed", "turn-1"))
+      state.remove("one")
+      verify(!state.unreadIds.one)
+      state.restore(session("one", "completed", undefined))
+      verify(!state.unreadIds.one)
+      state.update(session("one", "completed", "turn-2"))
+      state.replace([])
+      verify(!state.unreadIds.one, "Closing while disconnected also forgets unread state")
+      verify(!state.completedTurns.one)
+    }
+
+    function test_emoji_tokens_stay_whole_and_plain_titles_keep_the_number() {
+      const host = createTemporaryObject(panelComponent, scene)
+      host.panel.sessions = [session("one", "completed", "")]
+      const tab = findChild(host, "tab-one")
+      for (const emoji of ["🌱", "👩🏽‍💻", "🇳🇱", "❤️", "1️⃣"]) {
+        tab.title = emoji + " Garden ideas"
+        compare(tab.glyph, emoji)
+        compare(tab.caption, "Garden ideas")
+      }
+      tab.title = "Ordinary question"
+      compare(tab.glyph, "Q1")
+      compare(tab.caption, "Ordinary question")
+      tab.title = "🌱"
+      compare(tab.glyph, "🌱")
+      compare(tab.caption, "")
+    }
+
+    function test_running_animation_stops_hidden_offline_and_on_completion() {
+      const host = createTemporaryObject(panelComponent, scene)
+      host.panel.sessions = [session("one", "starting", "")]
+      host.panel.unreadSessionIds = {one: true}
+      const tab = findChild(host, "tab-one")
+      const ring = findChild(tab, "sessionRunningRing")
+      compare(tab.spinning, true)
+      compare(findChild(tab, "sessionUnreadDot").visible, true)
+      const rotation = ring.rotation
+      tryVerify(function() { return ring.rotation !== rotation })
+      host.panel.animationsEnabled = false
+      compare(tab.spinning, false)
+      const paused = ring.rotation
+      wait(60)
+      compare(ring.rotation, paused)
+      host.panel.animationsEnabled = true
+      host.panel.online = false
+      compare(tab.spinning, false)
+      host.panel.online = true
+      host.visible = false
+      compare(tab.spinning, false)
+      host.visible = true
+      compare(tab.spinning, true)
+      host.panel.sessions = [session("one", "completed", "turn")]
+      const finished = findChild(host, "tab-one")
+      compare(finished.spinning, false)
+      compare(findChild(finished, "sessionRunningRing").visible, false)
+    }
+
+    function test_visual_preview() {
+      const host = createTemporaryObject(panelComponent, scene)
+      const active = session("one", "running", "")
+      const done = session("two", "completed", "turn")
+      done.title = "🐛 Login fix"
+      const read = session("three", "completed", "turn")
+      read.title = "🧭 Next steps"
+      const plain = session("four", "completed", "")
+      plain.title = "Original question"
+      host.panel.sessions = [active, done, read, plain]
+      host.panel.unreadSessionIds = {two: true}
+      host.panel.selectedSessionId = "one"
+      verify(waitForRendering(host))
+      let saved = false
+      host.grabToImage(function(result) {
+        saved = result.saveToFile("/tmp/companion-session-indicators.png")
+      })
+      tryVerify(function() { return saved })
+    }
+
+    function test_streaming_renaming_and_removing_other_tabs_preserve_tab_objects() {
+      const host = createTemporaryObject(panelComponent, scene)
+      host.panel.sessions = [session("one", "running", ""), session("two", "running", "")]
+      const first = findChild(host, "tab-one")
+      const second = findChild(host, "tab-two")
+      const ring = findChild(first, "sessionRunningRing")
+      const rotation = ring.rotation
+      const renamed = session("one", "running", "")
+      renamed.title = "🐛 Updated title"
+      renamed.messages = [{id: "answer", kind: "assistant", text: "A token", state: "running"}]
+      host.panel.sessions = [renamed, session("two", "running", "")]
+      compare(findChild(host, "tab-one"), first)
+      compare(findChild(first, "sessionRunningRing"), ring)
+      compare(ring.rotation, rotation, "A token must not reset the animation")
+      compare(first.title, renamed.title)
+      host.panel.sessions = [session("two", "running", ""), renamed]
+      compare(findChild(host, "tab-one"), first)
+      compare(first.number, 2)
+      compare(findChild(host, "tab-two"), second)
+      host.panel.sessions = [session("two", "running", "")]
+      compare(findChild(host, "tab-two"), second)
+      compare(second.number, 1)
+      let selected = ""
+      host.panel.sessionSelected.connect(function(id) { selected = id })
+      mouseClick(second, 20, 35)
+      compare(selected, "two")
+    }
+  }
+}

@@ -45,7 +45,9 @@ export class SessionStore {
     // Capture one coherent view before yielding to filesystem operations. URLs
     // are derived when reading; the saved file cannot redirect image loading.
     const content = JSON.stringify(session, (key, value: unknown) =>
-      ['screenshotUrl', 'choices', 'runId', 'acceptsFollowUp'].includes(key) ? undefined : value,
+      ['screenshotUrl', 'choices', 'runId', 'acceptsFollowUp', 'completedTurnId'].includes(key)
+        ? undefined
+        : value,
     );
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     await this.replace(this.path(session.id, 'json'), content + '\n');

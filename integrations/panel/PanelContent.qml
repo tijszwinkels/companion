@@ -30,6 +30,7 @@ Item {
   property bool activityHistoryAvailable: false
   property var agentActions: ({})
   property var sessions: []
+  property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
   property string controlError: ""
@@ -66,6 +67,32 @@ Item {
   function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
   function focusComposer() { chat.focusComposer() }
   function releaseComposerFocus() { chat.releaseComposerFocus() }
+
+  // Preserve each tab's animation and hover state while tokens stream. Using
+  // the sessions array directly as a Repeater model recreates every delegate.
+  ListModel { id: sessionTabs }
+  function synchronizeTabs() {
+    for (let index = sessionTabs.count - 1; index >= 0; index--) {
+      if (!root.sessions.some(entry => entry.id === sessionTabs.get(index).tabId)) {
+        sessionTabs.remove(index)
+      }
+    }
+    for (let index = 0; index < root.sessions.length; index++) {
+      const session = root.sessions[index]
+      const row = {tabId: session.id, tabTitle: session.title,
+        tabRunning: session.status === "starting" || session.status === "running"}
+      let position = index
+      while (position < sessionTabs.count && sessionTabs.get(position).tabId !== session.id) position++
+      if (position === sessionTabs.count) {
+        sessionTabs.insert(index, row)
+      } else {
+        if (position !== index) sessionTabs.move(position, index, 1)
+        sessionTabs.set(index, row)
+      }
+    }
+  }
+  onSessionsChanged: synchronizeTabs()
+  Component.onCompleted: synchronizeTabs()
 
   function selectConversation(id) {
     root.sessionSelected(id)
@@ -211,16 +238,21 @@ Item {
         width: parent.width
         spacing: 8 * root.unit
         Repeater {
-          model: root.sessions
+          model: sessionTabs
           SessionTab {
-            required property var modelData
+            required property string tabId
+            required property string tabTitle
+            required property bool tabRunning
             required property int index
-            objectName: "tab-" + modelData.id
+            objectName: "tab-" + tabId
             anchors.horizontalCenter: parent.horizontalCenter
-            title: modelData.title
+            title: tabTitle
             number: index + 1
-            selected: !root.showingPrevious && root.selectedSessionId === modelData.id
+            selected: !root.showingPrevious && root.selectedSessionId === tabId
             online: root.online
+            running: tabRunning
+            unread: root.unreadSessionIds[tabId] === true
+            animationsEnabled: root.animationsEnabled
             foreground: root.foreground
             muted: root.muted
             accent: root.accent
@@ -230,8 +262,8 @@ Item {
             tooltipBorder: root.tooltipBorder
             fontFamily: root.fontFamily
             unit: root.unit
-            onSelectedRequested: root.sessionSelected(modelData.id)
-            onCloseRequested: root.dismissSessionRequested(modelData.id)
+            onSelectedRequested: root.sessionSelected(tabId)
+            onCloseRequested: root.dismissSessionRequested(tabId)
           }
         }
       }

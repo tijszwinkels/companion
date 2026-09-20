@@ -27,6 +27,8 @@ export interface AgentSession {
   choices?: AgentChoiceSet;
   runId?: string;
   acceptsFollowUp?: boolean;
+  /** Latest successful turn in this process; snapshots recover missed UI updates. */
+  completedTurnId?: string;
 }
 
 export type PreviousSession = Omit<AgentSession, 'messages'>;

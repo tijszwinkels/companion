@@ -52,6 +52,7 @@ test('private atomic snapshots retain PNG bytes and derive attachment URLs on re
   const session = savedSession();
   session.messages[0].screenshot = true;
   session.messages[0].screenshotUrl = 'https://untrusted.example/image';
+  session.completedTurnId = 'live-completion';
   const url = await store.screenshot(session.id, frame.screenshot.png);
   await store.save(session);
   assert.equal((await stat(path)).mode & 0o777, 0o700);
@@ -61,6 +62,7 @@ test('private atomic snapshots retain PNG bytes and derive attachment URLs on re
   assert.deepEqual(await readFile(fileURLToPath(url)), frame.screenshot.png);
   assert.equal((await store.read(session.id)).messages[0].screenshotUrl, url);
   const serialized = await readFile(join(path, `${session.id}.json`), 'utf8');
+  assert.doesNotMatch(serialized, /completedTurnId/);
   const forged = JSON.parse(serialized);
   forged.messages[0].screenshotUrl = 'file:///unrelated-private-file';
   await writeFile(join(path, `${session.id}.json`), JSON.stringify(forged));
@@ -129,7 +131,8 @@ test('close and restart keep history dormant; reopen restores the same UUID and 
   const events: SessionEvent[] = [];
   restarted.subscribe((event) => events.push(event));
   await restarted.reopen(id);
-  assert.deepEqual(restarted.snapshot()[0], before);
+  const { completedTurnId: _completion, ...saved } = before;
+  assert.deepEqual(restarted.snapshot()[0], saved);
   assert.equal(requests.length, 1);
   assert.equal(events[0].type, 'agent-restored');
   assert.deepEqual(restarted.previousSnapshot(), []);

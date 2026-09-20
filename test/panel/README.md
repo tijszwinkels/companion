@@ -15,6 +15,12 @@ long choices in a small panel. The synthetic image is
 `/tmp/companion-agent-choices-preview.png`. Backend, native-tool and lifecycle
 coverage is described in [conversation choices](../../src/agents/README.md).
 
+Session-indicator checks cover running-ring animation gating, whole emoji tokens,
+unread completions while hidden/on other pages, read-on-view without focus,
+duplicate updates, reconnects during queued turns, and close/restore cleanup.
+The synthetic layout preview is `/tmp/companion-session-indicators.png`. These
+offscreen checks do not exercise the installed Wayland surface or live agents.
+
 Playback checks inject player objects into the adapter's state aggregator: an
 already-playing player, state changes, multiple simultaneous players, removal,
 and reappearance. They also check pause-only commands, unsupported players,

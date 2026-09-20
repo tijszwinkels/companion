@@ -397,11 +397,18 @@ export class AgentSessions implements InspectableModule {
         session.view.error = `Could not save session history: ${String(error)}`;
         this.log('agent-history', session.view.error, frameId);
       }
+      const completed = session.view.status === 'completed' && !session.controller.signal.aborted;
+      if (completed) {
+        // Keep the latest success in live snapshots, including while a queued
+        // successor runs. A reconnect can then recover a missed completion.
+        // This is UI state, not part of a saved/restored conversation.
+        session.view.completedTurnId = turnId;
+      }
       this.flush(session);
       this.log('agent', `${session.view.status}: ${session.view.id}`, frameId);
       // One event per successful turn, after persistence. Repeated snapshots,
       // reconnects, cancellations and failed saves are not completion signals.
-      if (session.view.status === 'completed' && !session.controller.signal.aborted) {
+      if (completed) {
         for (const listener of this.listeners) {
           listener({ type: 'agent-turn-completed', id: session.view.id, turnId });
         }

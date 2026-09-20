@@ -58,6 +58,7 @@ Item {
 
   Panel.AgentSessionState {
     id: agentSessions
+    panelVisible: root.panelOpened && sidePanel.visible
     onRevealRequested: root.panelOpened = true
     onConversationIdChanged: Qt.callLater(root.reportPanelState)
   }
@@ -502,6 +503,7 @@ Item {
     activityHistoryAvailable: activityHistory.available
     agentActions: root.agentActions
     sessions: agentSessions.sessions
+    unreadSessionIds: agentSessions.unreadIds
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
     controlError: ["close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
