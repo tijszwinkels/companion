@@ -7,16 +7,22 @@ import { once } from 'node:events';
 import test from 'node:test';
 
 import { AgentSessions } from '../../src/agents/sessions.ts';
-import type { AgentBackend } from '../../src/agents/types.ts';
+import { defaultAgentSettings, defaultQuickQuestionSettings } from '../../src/agents/settings.ts';
+import { chatMessage, type AgentBackend } from '../../src/agents/types.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
+import { SensorPipeline } from '../../src/core/pipeline.ts';
+import type { UserSensorFrame } from '../../src/core/frame.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
-import { desktopFixture, waitFor } from '../desktop-fixture.ts';
-import { frame, signal, testDetector } from '../helpers.ts';
+import { desktopFixture, stopped, waitFor } from '../desktop-fixture.ts';
+import { deferred, frame, signal, testDetector, testSensors } from '../helpers.ts';
 
-async function fixture(context: { after(callback: () => Promise<void>): void }) {
+async function fixture(
+  context: { after(callback: () => Promise<void>): void },
+  respond?: AgentBackend['run'],
+) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-agent-intents-'));
   const requests: Parameters<AgentBackend['run']>[0][] = [];
   const sessions = new AgentSessions(
@@ -25,8 +31,9 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
         id: 'intent-fixture',
         label: 'Intent fixture',
         dependencies: {},
-        async run(request) {
+        async run(request, signal, emit, publishChoices, renameSession) {
           requests.push(request);
+          await respond?.(request, signal, emit, publishChoices, renameSession);
         },
       },
     },
@@ -58,6 +65,171 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
 
   return { sessions, requests, desktop, first, activity, feedback, continuation, outcomes, select };
 }
+
+for (const profile of ['coding', 'quickQuestion'] as const) {
+  test(`unfocused inferred continuation preserves the ${profile} model profile, including reopened sessions`, async (context) => {
+    const setup = await fixture(context);
+    const id = setup.sessions.start(
+      { ...frame, utterance: 'Selected conversation' },
+      signal(),
+      profile,
+    );
+    await setup.sessions.idle();
+    const model =
+      profile === 'coding' ? defaultAgentSettings.model : defaultQuickQuestionSettings.model;
+    const router = new UserSensorRouter(
+      {
+        detector: testDetector({
+          async detect(input, intents) {
+            assert.equal(input.interaction!.agentConversation!.title, 'Selected conversation');
+            assert.ok(intents.some((intent) => intent.name === setup.continuation.name));
+            return setup.continuation.name;
+          },
+        }),
+      },
+      () => {},
+    );
+    new Ignore(() => {}).subscribe(router);
+    setup.continuation.subscribe(router);
+
+    for (const reopened of [false, true]) {
+      if (reopened) {
+        await setup.sessions.remove(id);
+        await setup.sessions.reopen(id);
+      }
+      await setup.select(id, false);
+      await router.route({ ...frame, interaction: setup.activity.interactionContext!() }, signal());
+      await setup.sessions.idle();
+
+      const request = setup.requests.at(-1)!;
+      assert.equal(request.id, id);
+      assert.equal(request.resume, true);
+      assert.equal(request.settings.model, model);
+      assert.equal(request.prompt.screenshot, undefined);
+      assert.equal(
+        setup.sessions.snapshot().find((session) => session.id === id)!.profile,
+        profile,
+      );
+    }
+  });
+}
+
+test('capture freezes the selected title and excerpts before screen capture and delayed ASR', async (context) => {
+  let emitMessage: Parameters<AgentBackend['run']>[2] | undefined;
+  let renameSession: Parameters<AgentBackend['run']>[4];
+  const setup = await fixture(context, async (request, signal, emit, _publish, rename) => {
+    rename?.('Captured title');
+    if (!request.resume) {
+      emit(chatMessage('opening', 'assistant', 'Opening answer'));
+      return;
+    }
+
+    emitMessage = emit;
+    renameSession = rename;
+    emit({ ...chatMessage('partial', 'assistant', 'Partial answer'), state: 'running' });
+    await stopped(signal);
+  });
+  await setup.select(setup.first, false);
+  setup.sessions.followUp(setup.first, 'Before speech', signal());
+  await waitFor(() => emitMessage !== undefined);
+  setup.sessions.followUp(setup.first, 'Already queued', signal());
+
+  const transcription = deferred<string>();
+  const received: UserSensorFrame[] = [];
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect(input) {
+          received.push(input);
+          return 'IGNORE';
+        },
+      }),
+    },
+    () => {},
+  );
+  new Ignore(() => {}).subscribe(router);
+  const pipeline = new SensorPipeline(
+    {
+      ...testSensors({
+        capture: async () => {
+          // Even changes during screenshot capture must not rewrite the copied
+          // conversation. The backend deliberately updates an existing bubble.
+          renameSession!('Later title');
+          emitMessage!({
+            ...chatMessage('partial', 'assistant', 'Later answer'),
+            state: 'running',
+          });
+          setup.sessions.followUp(setup.first, 'Queued later', signal());
+          return frame.screenshot;
+        },
+        transcribe: async () => transcription.promise,
+      }),
+      router,
+    },
+    () => {},
+    signal(),
+    { interactionContext: setup.activity.interactionContext },
+  );
+
+  assert.equal(pipeline.submit(new Float32Array(16000)), true);
+  assert.equal(received.length, 0);
+  transcription.resolve('Can you explain that?');
+  await pipeline.idle();
+
+  assert.equal(pipeline.failures, 0);
+  assert.equal(received.length, 1);
+  const captured = received[0].interaction!;
+  assert.deepEqual(captured.agentConversation, {
+    title: 'Captured title',
+    titleTruncated: false,
+    totalMessages: 5,
+    messages: [
+      { position: 1, role: 'user', state: 'done', text: frame.utterance, truncated: false },
+      { position: 2, role: 'assistant', state: 'done', text: 'Opening answer', truncated: false },
+      {
+        position: 4,
+        role: 'assistant',
+        state: 'running',
+        text: 'Partial answer',
+        truncated: false,
+      },
+      { position: 5, role: 'user', state: 'queued', text: 'Already queued', truncated: false },
+    ],
+  });
+  assert.equal(setup.activity.interactionCurrent!(captured), true);
+  const next = setup.activity.interactionContext!();
+  assert.equal(next.agentConversation!.title, 'Later title');
+  assert.equal(next.agentConversation!.totalMessages, 6);
+  assert.equal(next.agentConversation!.messages.at(-1)!.text, 'Queued later');
+});
+
+test('retained or previous sessions and legacy composer focus do not supply conversation excerpts', async (context) => {
+  const setup = await fixture(context);
+  assert.equal(setup.activity.interactionContext!().agentConversation, undefined);
+  setup.desktop.send({ action: 'composer-focus', id: setup.first });
+  await setup.desktop.reply('composer-focus');
+  assert.equal(setup.activity.interactionContext!().agentConversation, undefined);
+
+  await setup.select(setup.first, false);
+  assert.equal(
+    setup.activity.interactionContext!().agentConversation!.messages[0].text,
+    frame.utterance,
+  );
+  // Hidden panel, Activity and Previous sessions all report this empty ID.
+  await setup.select('', false);
+  assert.equal(setup.activity.interactionContext!().agentConversation, undefined);
+  assert.equal(setup.sessions.has(setup.first), true);
+
+  await setup.sessions.remove(setup.first);
+  assert.equal(setup.sessions.conversationContext(setup.first), undefined);
+  await setup.sessions.reopen(setup.first);
+  assert.equal(setup.activity.interactionContext!().agentConversation, undefined);
+  await setup.select(setup.first, false);
+  assert.equal(
+    setup.activity.interactionContext!().agentConversation!.messages[0].text,
+    frame.utterance,
+  );
+});
 
 test('new session and quick question bypass inference and choose their own model profiles', async (context) => {
   const setup = await fixture(context);
@@ -95,13 +267,13 @@ test('new session and quick question bypass inference and choose their own model
   assert.equal(setup.requests.length, count, 'A disabled local shortcut cannot fall back to Astra');
 });
 
-test('continuation is offered only for the focused composer and preserves the exact user prompt', async (context) => {
+test('visible continuation uses the exact focused or unfocused instruction and agrees with the UI', async (context) => {
   const setup = await fixture(context);
   let offered = false;
   const router = new UserSensorRouter(
     {
       detector: testDetector({
-        detect: async (_frame, intents) => {
+        detect: async (input, intents) => {
           const entry = intents.find(
             (intent) => intent.name === 'CONTINUE_OPEN_AGENT_CONVERSATION',
           );
@@ -109,7 +281,9 @@ test('continuation is offered only for the focused composer and preserves the ex
           if (entry) {
             assert.equal(
               entry.instruction,
-              'The user has  a coding agent session open and has the input field selected. Unless your context gives you strong reasons to think that the user has a different intention, select this intent.',
+              input.interaction?.agentComposerFocused
+                ? 'The user has  a coding agent session open and has the input field selected. Unless your context gives you strong reasons to think that the user has a different intention, select this intent.'
+                : "The user has a coding agent conversation selected in the open sidebar, but its input field is not selected. Choose this intent if the utterance is a follow-up, answer, correction, or request addressed to that conversation. Use the selected conversation's title and message excerpts together with the utterance and screenshot to judge this. The open sidebar alone is not a reason to choose this intent. Choose another intent if the utterance is intended for the active application, starts an independent request to the assistant, or is not addressed to the assistant.",
             );
             return entry.name;
           }
@@ -129,11 +303,13 @@ test('continuation is offered only for the focused composer and preserves the ex
     [setup.first, false],
   ] as const) {
     await setup.select(id, focused);
-    await router.route({ ...frame, interaction: setup.activity.interactionContext!() }, signal());
+    const interaction = setup.activity.interactionContext!();
+    assert.equal(router.intentStates({ interaction })[1].inferenceAvailable, Boolean(id));
+    await router.route({ ...frame, interaction }, signal());
     await setup.sessions.idle();
-    assert.equal(offered, focused);
+    assert.equal(offered, Boolean(id));
   }
-  assert.equal(setup.requests.length, 2);
+  assert.equal(setup.requests.length, 4);
   assert.equal(setup.requests[1].id, setup.first);
   assert.equal(setup.requests[1].resume, true);
   assert.equal(setup.requests[1].prompt.screenshot, undefined);
@@ -169,39 +345,47 @@ test('message coding agent addresses an unfocused visible chat and never falls t
   assert.equal(setup.requests.length, 2);
 });
 
-test('changing tabs or leaving and returning to a composer cannot redirect an in-flight continuation', async (context) => {
-  const setup = await fixture(context);
-  const second = setup.sessions.start({ ...frame, utterance: 'Other conversation' }, signal());
-  await setup.sessions.idle();
+for (const focused of [false, true]) {
+  test(`stale continuation is rejected after tab, visibility or focus changes (focused=${focused})`, async (context) => {
+    const setup = await fixture(context);
+    const second = setup.sessions.start({ ...frame, utterance: 'Other conversation' }, signal());
+    await setup.sessions.idle();
 
-  for (const change of ['tab', 'focus', 'close'] as const) {
-    await setup.select(setup.first, true);
-    const captured = setup.activity.interactionContext!();
-    const router = new UserSensorRouter(
-      {
-        detector: testDetector({
-          detect: async () => {
-            if (change === 'tab') {
-              await setup.select(second, true);
-            } else if (change === 'focus') {
-              await setup.select(setup.first, false);
-              await setup.select(setup.first, true);
-            } else {
-              await setup.sessions.remove(setup.first);
-            }
-            return 'CONTINUE_OPEN_AGENT_CONVERSATION';
-          },
-        }),
-      },
-      () => {},
-    );
-    new Ignore(() => {}).subscribe(router);
-    setup.continuation.subscribe(router);
-    await router.route({ ...frame, interaction: captured }, signal());
-    assert.equal(setup.requests.length, 2);
-    assert.equal(setup.outcomes.at(-1), 'skipped');
-  }
-});
+    for (const change of ['tab', 'tab-back', 'hide-back', 'focus', 'close'] as const) {
+      await setup.select(setup.first, focused);
+      const captured = setup.activity.interactionContext!();
+      const router = new UserSensorRouter(
+        {
+          detector: testDetector({
+            detect: async () => {
+              if (change === 'tab' || change === 'tab-back') {
+                await setup.select(second, focused);
+                if (change === 'tab-back') {
+                  await setup.select(setup.first, focused);
+                }
+              } else if (change === 'hide-back') {
+                await setup.select('', false);
+                await setup.select(setup.first, focused);
+              } else if (change === 'focus') {
+                await setup.select(setup.first, !focused);
+                await setup.select(setup.first, focused);
+              } else {
+                await setup.sessions.remove(setup.first);
+              }
+              return 'CONTINUE_OPEN_AGENT_CONVERSATION';
+            },
+          }),
+        },
+        () => {},
+      );
+      new Ignore(() => {}).subscribe(router);
+      setup.continuation.subscribe(router);
+      await router.route({ ...frame, interaction: captured }, signal());
+      assert.equal(setup.requests.length, 2);
+      assert.equal(setup.outcomes.at(-1), 'skipped');
+    }
+  });
+}
 
 test('preview and cancelled continuations never submit a follow-up', async (context) => {
   const setup = await fixture(context);

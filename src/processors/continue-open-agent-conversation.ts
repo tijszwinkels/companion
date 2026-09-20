@@ -3,6 +3,9 @@ import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '.
 import type { UserSensorRouter } from '../core/router.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 
+const unfocusedInstruction =
+  "The user has a coding agent conversation selected in the open sidebar, but its input field is not selected. Choose this intent if the utterance is a follow-up, answer, correction, or request addressed to that conversation. Use the selected conversation's title and message excerpts together with the utterance and screenshot to judge this. The open sidebar alone is not a reason to choose this intent. Choose another intent if the utterance is intended for the active application, starts an independent request to the assistant, or is not addressed to the assistant.";
+
 /** Send a follow-up directly to the conversation captured at speech end. */
 export class ContinueOpenAgentConversation implements UserSensorProcessor {
   readonly id = 'continue-agent-conversation';
@@ -10,8 +13,8 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
   readonly name = 'CONTINUE_OPEN_AGENT_CONVERSATION';
   readonly prefixes = ['message coding agent'];
 
-  // Exact user-supplied prompt, including its spacing. Only offer it when its
-  // premise was true in the captured interaction, not merely when a tab exists.
+  // Exact user-supplied prompt, including its spacing. Use this strong default
+  // only when the captured conversation's input field was actually focused.
   readonly instruction =
     'The user has  a coding agent session open and has the input field selected. Unless your context gives you strong reasons to think that the user has a different intention, select this intent.';
 
@@ -27,7 +30,15 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
   }
 
   availableForInference(frame: IntentContext): boolean {
-    return Boolean(frame.interaction?.agentSessionId && frame.interaction.agentComposerFocused);
+    return Boolean(frame.interaction?.agentSessionId);
+  }
+
+  instructionForInference(frame: IntentContext): string {
+    if (frame.interaction?.agentComposerFocused) {
+      return this.instruction;
+    }
+
+    return unfocusedInstruction;
   }
 
   availableForPrefix(frame: IntentContext): boolean {

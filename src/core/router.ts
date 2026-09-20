@@ -155,6 +155,9 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     if (processor.instruction !== undefined && !processor.instruction.trim()) {
       throw Error('Processor instruction must not be blank');
     }
+    if (processor.instructionForInference && processor.instruction === undefined) {
+      throw Error('A contextual instruction requires a default instruction');
+    }
 
     const prefixes = (processor.prefixes ?? []).map((prefix) => prefix.trim().toLowerCase());
     if (processor.instruction === undefined && prefixes.length === 0) {
@@ -247,9 +250,19 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         !this.intentControllers.get(processor.name)!.signal.aborted &&
         (processor.availableForInference?.(frame) ?? true)
       ) {
+        // Resolve once from the captured frame. Keep the result local instead
+        // of mutating registration state shared by UI reads and later frames.
+        let instruction = processor.instruction;
+        if (processor.instructionForInference) {
+          instruction = processor.instructionForInference(frame);
+        }
+        if (!instruction.trim()) {
+          throw Error('Processor instruction must not be blank');
+        }
+
         eligibleProcessors.set(processor.name, processor);
         intentSignals.set(processor.name, this.intentControllers.get(processor.name)!.signal);
-        intents.push({ name: processor.name, instruction: processor.instruction });
+        intents.push({ name: processor.name, instruction });
       }
     }
 

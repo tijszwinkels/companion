@@ -2,9 +2,118 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { UserSensorRouter } from '../../src/core/router.ts';
+import type { IntentContext } from '../../src/core/frame.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import { frame, processor, signal, testDetector } from '../helpers.ts';
+
+test('contextual instructions resolve per frame without changing registration or running for prefixes/UI', async () => {
+  const instructions: string[] = [];
+  let resolutions = 0;
+  let deliveries = 0;
+  const contextual = {
+    ...processor('CONTEXTUAL', async () => {
+      deliveries++;
+    }),
+    prefixes: ['explicit'],
+    instructionForInference(context: IntentContext) {
+      resolutions++;
+      return context.interaction?.agentComposerFocused ? 'Focused instruction' : this.instruction!;
+    },
+  };
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect(_frame, intents) {
+          instructions.push(intents.find((intent) => intent.name === contextual.name)!.instruction);
+          return contextual.name;
+        },
+      }),
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  contextual.subscribe(router);
+
+  router.intentStates();
+  await router.route({ ...frame, utterance: 'explicit payload' }, signal());
+  assert.equal(resolutions, 0, 'Only inference resolves contextual prompt wording');
+
+  for (const focused of [false, true, false]) {
+    await router.route(
+      {
+        ...frame,
+        interaction: { agentSessionId: 'selected', agentComposerFocused: focused, revision: 1 },
+      },
+      signal(),
+    );
+  }
+
+  assert.deepEqual(instructions, ['Choose CONTEXTUAL', 'Focused instruction', 'Choose CONTEXTUAL']);
+  assert.equal(contextual.instruction, 'Choose CONTEXTUAL');
+  assert.equal(resolutions, 3);
+  assert.equal(deliveries, 4);
+});
+
+test('contextual instructions require a default and reject blank output before inference', async () => {
+  let resolutions = 0;
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        detect: async () => assert.fail('Invalid prompt reached inference'),
+      }),
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  assert.throws(
+    () =>
+      router.register({
+        ...processor('NO_DEFAULT'),
+        instruction: undefined,
+        prefixes: ['explicit'],
+        instructionForInference: () => 'Contextual text',
+      }),
+    /requires a default instruction/,
+  );
+  router.register({
+    ...processor('BLANK'),
+    instructionForInference: () => {
+      resolutions++;
+      return ' \n';
+    },
+  });
+
+  await assert.rejects(router.route(frame, signal()), /instruction must not be blank/);
+  assert.equal(resolutions, 1);
+});
+
+test('disabled and unavailable processors never resolve their contextual instruction', async () => {
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect(_frame, intents) {
+          assert.deepEqual(
+            intents.map((intent) => intent.name),
+            ['IGNORE'],
+          );
+          return 'IGNORE';
+        },
+      }),
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  for (const name of ['DISABLED', 'UNAVAILABLE']) {
+    router.register({
+      ...processor(name),
+      availableForInference: () => name !== 'UNAVAILABLE',
+      instructionForInference: () => assert.fail('Ineligible prompt was resolved'),
+    });
+  }
+  router.setEnabled('DISABLED', false);
+  await router.route(frame, signal());
+});
 
 test('subscriptions supply the detector prompt and dispatch the original frame to exactly one processor', async () => {
   const delivered: unknown[] = [];

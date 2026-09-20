@@ -391,8 +391,9 @@ Stop, Close, and orderly shutdown. A hard crash can lose unsaved current output.
 No retention limit or legacy Pi-session import is applied.
 
 Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups are bounded
-to 4000 characters and rejected while that session is still answering. Submission
-starts a new turn in the same Pi session, without another screenshot. Message IDs
+to 4000 characters and queue while that session is answering, with at most eight
+pending messages. Submission starts or queues a new turn in the same Pi session,
+without another screenshot. Message IDs
 are unique across turns, so a later answer cannot overwrite an earlier bubble.
 Adapters clear the submitted draft only after its successful reply; failed sends
 retain it. Drafts typed after submission must not be cleared by an older reply.
@@ -405,12 +406,30 @@ connection's loss clears this state. Unknown session IDs and a focused empty ID
 are rejected. These reports also update the keyboard delivery focus guard.
 
 At speech end, the sensor frame captures the session ID, focus, and a local
-generation. The classifier sees the ID/focus and gains
-`CONTINUE_OPEN_AGENT_CONVERSATION` only when that composer was focused. A
-continuation rechecks the generation and target existence before calling the
-session manager, so even leaving and returning to the same tab cannot redirect
-an old utterance. Explicit `message coding agent` requires a visible session but
-not composer focus. The generation is not sent to the model.
+generation. `CONTINUE_OPEN_AGENT_CONVERSATION` is available whenever an agent
+conversation is selected in the visible sidebar. A focused composer retains the
+exact strong default instruction; an unfocused composer uses an instruction to
+judge whether the utterance belongs to that conversation. Activity, Previous
+sessions and hidden panels do not qualify. Explicit `message coding agent`
+continues to require a visible conversation, without requiring composer focus.
+
+The detector's user-message JSON includes `interaction.agentConversation`: the
+selected title and first two/last two non-empty user or assistant text bubbles.
+Overlapping positions appear once in chronological order. Roles and message
+states distinguish queued requests, partial answers and failed messages. Tools,
+notices and HTML are excluded; HTML bubbles contribute their plain-text fallback.
+The title is bounded to 200 Unicode code points and each of up to four messages
+to 2000, retaining the beginning/end around an omission marker. Truncation is
+flagged. These are copied values from speech end, before asynchronous screen
+capture and transcription; later streaming or renaming cannot rewrite them.
+The detector treats these excerpts as quoted context, not instructions.
+
+Continuation rechecks the generation and target existence before calling the
+session manager, so even leaving and returning to the same tab or composer cannot
+redirect an old utterance. Title/text updates alone do not invalidate a target.
+Running conversations remain eligible and freeform follow-ups use the existing
+FIFO queue. The generation is not sent to the model; transcript excerpts are
+not added to routine UI state reads or forwarded as new conversation messages.
 
 Older clients may still send `composer-focus`, which reports the session whose composer actually owns keyboard focus,
 or `id: ""` when none does. It returns `focus-recorded`. The owner connection's

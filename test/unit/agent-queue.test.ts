@@ -207,50 +207,53 @@ test('a final history-write failure cannot start the next queued turn', async (c
   assert.equal(sessions.snapshot()[0].completedTurnId, undefined);
 });
 
-test('both classified speech and the message prefix queue to their captured conversation', async (context) => {
-  const { sessions, turns } = await fixture(context);
-  const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);
-  context.after(() => desktop.close());
-  const id = sessions.start(frame, signal());
-  await waitFor(() => turns.length === 1);
-  desktop.send({ action: 'panel-state', id, composerFocused: true });
-  await desktop.reply('panel-state');
-  const activity = desktop.runtime.activity;
-  const router = new UserSensorRouter(
-    {
-      detector: testDetector({
-        detect: async (_frame, intents) => {
-          assert.ok(intents.some((intent) => intent.name === 'CONTINUE_OPEN_AGENT_CONVERSATION'));
-          return 'CONTINUE_OPEN_AGENT_CONVERSATION';
-        },
-      }),
-    },
-    () => {},
-  );
-  new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
-  new Ignore(() => {}).subscribe(router);
-  for (const utterance of ['Explain further', 'message coding agent: Then give an example']) {
-    await router.route(
-      { ...frame, utterance, interaction: activity.interactionContext!() },
-      signal(),
+for (const focused of [false, true]) {
+  test(`classified speech and the message prefix queue to their captured conversation (focused=${focused})`, async (context) => {
+    const { sessions, turns } = await fixture(context);
+    const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);
+    context.after(() => desktop.close());
+    const id = sessions.start(frame, signal());
+    await waitFor(() => turns.length === 1);
+    desktop.send({ action: 'panel-state', id, composerFocused: focused });
+    await desktop.reply('panel-state');
+    const activity = desktop.runtime.activity;
+    assert.equal(activity.interactionContext!().agentAcceptsFollowUp, false);
+    const router = new UserSensorRouter(
+      {
+        detector: testDetector({
+          detect: async (_frame, intents) => {
+            assert.ok(intents.some((intent) => intent.name === 'CONTINUE_OPEN_AGENT_CONVERSATION'));
+            return 'CONTINUE_OPEN_AGENT_CONVERSATION';
+          },
+        }),
+      },
+      () => {},
     );
-  }
-  desktop.send({ action: 'send-agent', id, text: 'Typed follow-up' });
-  assert.equal((await desktop.reply('send-agent')).result, 'submitted');
-  assert.equal(turns.length, 1);
-  // Once accepted, selecting Activity cannot redirect or cancel the queue.
-  desktop.send({ action: 'panel-state', id: '', composerFocused: false });
-  await desktop.reply('panel-state');
-  for (let index = 0; index < 4; index++) {
-    turns[index].finish();
-    if (index < 3) {
-      await waitFor(() => turns.length === index + 2);
+    new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
+    new Ignore(() => {}).subscribe(router);
+    for (const utterance of ['Explain further', 'message coding agent: Then give an example']) {
+      await router.route(
+        { ...frame, utterance, interaction: activity.interactionContext!() },
+        signal(),
+      );
     }
-  }
-  await sessions.idle();
-  assert.deepEqual(
-    turns.slice(1).map(({ request }) => request.prompt.text),
-    ['Explain further', 'Then give an example', 'Typed follow-up'],
-  );
-  assert.ok(turns.every(({ request }) => request.id === id));
-});
+    desktop.send({ action: 'send-agent', id, text: 'Typed follow-up' });
+    assert.equal((await desktop.reply('send-agent')).result, 'submitted');
+    assert.equal(turns.length, 1);
+    // Once accepted, selecting Activity cannot redirect or cancel the queue.
+    desktop.send({ action: 'panel-state', id: '', composerFocused: false });
+    await desktop.reply('panel-state');
+    for (let index = 0; index < 4; index++) {
+      turns[index].finish();
+      if (index < 3) {
+        await waitFor(() => turns.length === index + 2);
+      }
+    }
+    await sessions.idle();
+    assert.deepEqual(
+      turns.slice(1).map(({ request }) => request.prompt.text),
+      ['Explain further', 'Then give an example', 'Typed follow-up'],
+    );
+    assert.ok(turns.every(({ request }) => request.id === id));
+  });
+}

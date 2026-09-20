@@ -48,6 +48,42 @@ The pipeline likewise calls `this.dependencies.screen.capture(...)`,
 properties. `ActiveWindowSensor` gives the existing capture function an object
 identity; the capture algorithm is unchanged.
 
+## Contextual intent instructions
+
+Permanent processors register with `router.register(this)`. Their `instruction`
+is the default text for the detector's `Name`/`Instruction` entry. An optional
+`availableForInference(context)` gates eligibility; an optional
+`instructionForInference(context): string` overrides the wording for an eligible
+observation. An override requires a nonblank default instruction and must also
+return nonblank text. Existing processors need no changes.
+
+```ts
+instructionForInference(context: IntentContext): string {
+  if (context.interaction?.agentComposerFocused) {
+    return this.instruction;
+  }
+
+  return unfocusedInstruction;
+}
+```
+
+The router resolves this text once from the captured frame, after enabled and
+availability checks. It does not mutate the registered default, invoke the
+override during UI inventory reads, or use it for explicit-prefix dispatch.
+Intent identity, toggles and cancellation stay with the registered processor.
+
+Dynamic choices still use `router.registerScoped(source)`, where a source accepts
+`(context, reservedPrefixes)` and returns ephemeral `ScopedIntent` objects with
+their own `name`, optional `instruction`, optional `exactUtterance`, and guarded
+`process(frame, signal)`. Scoped strings can already be built from context; they
+do not need the permanent-processor override method.
+
+The context includes the captured sidebar selection and focus. At speech end,
+the desktop also copies bounded selected-conversation excerpts into
+`interaction.agentConversation`. The detector serializes those as JSON data in
+its user message alongside the utterance, with a separate image content part.
+Processor instructions remain system text; history is not interpolated into them.
+
 ## The inspection contract
 
 [module.ts](../src/core/module.ts) contains the complete shared interface:

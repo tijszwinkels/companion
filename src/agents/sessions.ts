@@ -7,6 +7,7 @@ import { agentDirectory, loadAgentSettings } from './settings.ts';
 import { SessionStore } from './session-store.ts';
 import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
+import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
 import {
   chatMessage,
   type AgentBackend,
@@ -85,6 +86,12 @@ export class AgentSessions implements InspectableModule {
 
   has(id: string): boolean {
     return this.sessions.has(id);
+  }
+
+  /** Only the capture path needs transcript excerpts; UI updates stay small. */
+  conversationContext(id: string): AgentConversationContext | undefined {
+    const session = this.sessions.get(id);
+    return session ? conversationContext(session.view) : undefined;
   }
 
   /**

@@ -1,6 +1,7 @@
 import type { UserSensorRouter } from './router.ts';
 import type { InspectableModule } from './module.ts';
 import type { AgentChoiceSet } from '../agents/choices.ts';
+import type { AgentConversationContext } from '../agents/conversation-context.ts';
 
 /** A window image and the identity needed to check focus before text delivery. */
 export interface Screenshot {
@@ -50,6 +51,8 @@ export interface InteractionContext {
   readonly agentRunId?: string;
   readonly agentAcceptsFollowUp?: boolean;
   readonly agentFollowUpUnavailableReason?: string;
+  /** Bounded text copied at speech end; omitted from ordinary UI state reads. */
+  readonly agentConversation?: AgentConversationContext;
 }
 
 /** The part of a processor's registration that the LLM needs to see. */
@@ -67,6 +70,12 @@ export interface UserSensorProcessor extends InspectableModule {
 
   /** Omit this for commands that must only run when explicitly requested. */
   instruction?: string;
+
+  /**
+   * Optional wording for this observation, resolved only when inference is
+   * available. Requires a default instruction; never changes intent identity.
+   */
+  instructionForInference?(context: IntentContext): string;
 
   /** Optional per-frame eligibility; explicit prefixes still reach process(). */
   availableForInference?(context: IntentContext): boolean;

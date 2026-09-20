@@ -123,7 +123,16 @@ export class DesktopRuntime {
     });
 
     this.activity = {
-      interactionContext: () => this.interactionContext(),
+      interactionContext: () => {
+        // The pipeline calls this synchronously at speech end, before screen
+        // capture and ASR. Ordinary UI reads use interactionContext() directly
+        // and do not repeatedly copy transcript excerpts during streaming.
+        const context = this.interactionContext();
+        return {
+          ...context,
+          agentConversation: this.options.agents?.conversationContext(context.agentSessionId),
+        };
+      },
       interactionCurrent: (context) =>
         context.revision === this.interactionRevision &&
         context.agentSessionId === this.panelSession &&
