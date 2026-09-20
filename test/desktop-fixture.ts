@@ -100,7 +100,7 @@ export async function findArtifact(
 export async function desktopFixture(
   run: RunCommand,
   agents?: AgentSessions,
-  options: { mediaPause?: boolean } = {},
+  options: { mediaPause?: boolean; sounds?: boolean } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-regression-'));
   const path = join(directory, 'control.sock');

@@ -36,6 +36,7 @@ export type SessionEvent =
   | { type: 'agent-session'; session: AgentSession }
   | { type: 'agent-removed'; id: string }
   | { type: 'agent-restored'; session: AgentSession }
+  | { type: 'agent-turn-completed'; id: string; turnId: string }
   | { type: 'agent-history'; sessions: PreviousSession[] };
 
 export interface AgentSettings {
@@ -56,6 +57,7 @@ export interface AgentBackend extends InspectableModule {
     signal: AbortSignal,
     emit: (message: AgentMessage) => void,
     replaceChoices?: (options: readonly AgentChoice[]) => void,
+    renameSession?: (title: string) => void,
   ): Promise<void>;
 }
 

@@ -6,6 +6,7 @@ import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
 import { SessionStore } from './session-store.ts';
 import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
+import { parseSessionName } from './session-name.ts';
 import {
   chatMessage,
   type AgentBackend,
@@ -301,7 +302,7 @@ export class AgentSessions implements InspectableModule {
   ): Promise<void> {
     const turnId = randomUUID();
     // Callbacks belong to this invocation, even if a faulty backend retains one.
-    let acceptingChoices = true;
+    let acceptingUpdates = true;
     try {
       if (prompt.screenshot) {
         const question = session.view.messages[0];
@@ -327,7 +328,7 @@ export class AgentSessions implements InspectableModule {
         (message) => this.message(session, { ...message, id: `${turnId}:${message.id}` }),
         (options) => {
           if (
-            !acceptingChoices ||
+            !acceptingUpdates ||
             session.controller.signal.aborted ||
             session.closing ||
             session.pending.length > 0 ||
@@ -343,6 +344,25 @@ export class AgentSessions implements InspectableModule {
           }
           this.flush(session);
         },
+        (title) => {
+          if (
+            !acceptingUpdates ||
+            session.controller.signal.aborted ||
+            session.closing ||
+            this.closed
+          ) {
+            return;
+          }
+          const name = parseSessionName(title);
+          if (name === session.view.title) {
+            return;
+          }
+          session.view.title = name;
+          session.view.updatedAt = Date.now();
+          // Publish immediately; the normal end-of-turn save retains the name
+          // alongside the transcript, including when this turn is stopped.
+          this.flush(session);
+        },
       );
       session.view.status = session.controller.signal.aborted ? 'cancelled' : 'completed';
     } catch (error) {
@@ -352,7 +372,7 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-error', session.view.error, frameId);
       }
     } finally {
-      acceptingChoices = false;
+      acceptingUpdates = false;
       if (session.view.status !== 'completed') {
         delete session.view.choices;
       }
@@ -379,6 +399,13 @@ export class AgentSessions implements InspectableModule {
       }
       this.flush(session);
       this.log('agent', `${session.view.status}: ${session.view.id}`, frameId);
+      // One event per successful turn, after persistence. Repeated snapshots,
+      // reconnects, cancellations and failed saves are not completion signals.
+      if (session.view.status === 'completed' && !session.controller.signal.aborted) {
+        for (const listener of this.listeners) {
+          listener({ type: 'agent-turn-completed', id: session.view.id, turnId });
+        }
+      }
     }
   }
 

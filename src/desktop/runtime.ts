@@ -92,7 +92,7 @@ export class DesktopRuntime {
       join(dirname(options.database), 'disabled-intents.json'),
     );
     this.databaseLock = new InstanceLock(options.database + '.lock');
-    this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview);
+    this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview, run);
     this.server = new DesktopServer(
       options.socket,
       () => this.snapshot(),
@@ -112,6 +112,9 @@ export class DesktopRuntime {
       },
     );
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
+      if (event.type === 'agent-turn-completed') {
+        this.sounds.play('agent-completed');
+      }
       if (event.type === 'agent-removed' && event.id === this.panelSession) {
         this.setPanelState('', false, this.panelClient);
       }

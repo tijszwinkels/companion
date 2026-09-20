@@ -9,7 +9,7 @@ import test from 'node:test';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import { UtteranceHistory } from '../../src/desktop/history.ts';
 import { DesktopServer } from '../../src/desktop/server.ts';
-import { soundSamples } from '../../src/desktop/sounds.ts';
+import { soundCues, soundSamples } from '../../src/desktop/sounds.ts';
 import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
 import { Segmenter, FRAME_SAMPLES } from '../../src/sensors/audio/segmenter.ts';
 
@@ -159,12 +159,12 @@ test('sound cues are distinct and do not produce an utterance through the real V
   const detector = await VoiceActivityDetector.create(
     new URL('../../assets/silero_vad_v5.onnx', import.meta.url).pathname,
   );
-  const cues = ['processing', 'sent', 'ignored'] as const;
 
   try {
     assert.notDeepEqual(soundSamples('sent'), soundSamples('ignored'));
+    assert.notDeepEqual(soundSamples('sent'), soundSamples('agent-completed'));
 
-    for (const cue of cues) {
+    for (const cue of soundCues) {
       detector.reset();
       const segmenter = new Segmenter();
       const sound = soundSamples(cue);

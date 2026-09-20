@@ -1,4 +1,29 @@
-# Conversation choices
+# Conversation tools
+
+## Session names
+
+`companion_name_session` is a small native Pi extension tool that calls
+`pi.setSessionName(title)`. Pi 0.85.1 has a naming API and an RPC command, but no
+built-in LLM naming tool. The tool's description and prompt guideline ask the
+agent to name a new conversation early, preferably with one emoji and 2–4 short
+words, such as **🐛 Login fix**. Names are limited to 40 Unicode code points on
+one line. A substantial topic change can justify renaming; ordinary follow-ups
+should keep the existing name.
+
+Companion reads Pi's native `get_state.sessionName` at startup, after tools, and
+once more when the turn settles. There is no custom naming-result protocol and
+no additional model request. The final metadata read has a two-second fallback;
+an invalid or missing name keeps the existing title without losing the answer.
+The sidebar updates immediately after a valid read; the normal end-of-turn save
+retains the name for Previous sessions and reopening. A crash before that save
+can leave Companion's title behind Pi's until the conversation next resumes.
+
+Verified against installed Pi 0.85.1 in an isolated offline startup: the built-in
+tools contain no naming tool; the extension registers its tool and guideline,
+and its call to `pi.setSessionName` is observable through native `get_state`.
+No model call or desktop interaction was used for this check.
+
+## Conversation choices
 
 `PiBackend` starts each turn with the native Pi extension `choice-tool.ts` using
 `--extension`. Pi 0.85.1 supports this in RPC mode; no MCP service, global plugin

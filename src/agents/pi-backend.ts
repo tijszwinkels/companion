@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { chatMessage, type AgentBackend } from './types.ts';
 import { object, PiTranscript } from './pi-transcript.ts';
 import { parseChoices, type AgentChoice } from './choices.ts';
+import { parseSessionName } from './session-name.ts';
 
 const systemInstruction = `You are answering a question in Companion, a desktop voice assistant.
 Answer the user's question directly, using Markdown where helpful. Use your tools when needed.
@@ -27,6 +28,7 @@ export class PiBackend implements AgentBackend {
     signal: AbortSignal,
     emit: Parameters<AgentBackend['run']>[2],
     replaceChoices?: Parameters<AgentBackend['run']>[3],
+    renameSession?: Parameters<AgentBackend['run']>[4],
   ): Promise<void> {
     signal.throwIfAborted();
     const { settings, prompt } = request;
@@ -46,6 +48,8 @@ export class PiBackend implements AgentBackend {
         '--offline',
         '--extension',
         fileURLToPath(new URL('./choice-tool.ts', import.meta.url)),
+        '--extension',
+        fileURLToPath(new URL('./session-name-tool.ts', import.meta.url)),
       ],
       {
         cwd: request.directory,
@@ -56,6 +60,9 @@ export class PiBackend implements AgentBackend {
 
     const transcript = new PiTranscript(emit);
     const choiceCalls = new Set<string>();
+    let namePending = false;
+    let nameTimer: ReturnType<typeof setTimeout> | undefined;
+    let modelSettled = false;
     let settled = false;
     let buffered = '';
     let stderr = '';
@@ -72,12 +79,37 @@ export class PiBackend implements AgentBackend {
     const send = (value: unknown) => {
       child.stdin.write(JSON.stringify(value) + '\n');
     };
+    const finishAnswer = () => {
+      clearTimeout(nameTimer);
+      settled = true;
+      finish(transcript.failure ? Error(transcript.failure) : undefined);
+    };
+    const readName = (state: Record<string, unknown>) => {
+      // Pi's native session name is the single source of truth. It also covers
+      // names supplied by an existing Pi extension or a previous invocation.
+      if (!renameSession || state.sessionName === undefined) {
+        return;
+      }
+      try {
+        renameSession(parseSessionName(state.sessionName));
+      } catch {
+        // A malformed display name cannot invalidate an otherwise valid answer.
+      }
+    };
     const abort = () => finish(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
     child.once('error', (error) => finish(error));
-    child.stdin.on('error', (error) => finish(error));
+    child.stdin.on('error', (error) => {
+      if (modelSettled) {
+        finishAnswer();
+      } else {
+        finish(error);
+      }
+    });
     child.once('exit', (code, exitSignal) => {
-      if (!settled) {
+      if (modelSettled) {
+        finishAnswer();
+      } else if (!settled) {
         finish(Error(`Pi exited before finishing (${code ?? exitSignal}). ${stderr}`));
       }
     });
@@ -87,7 +119,27 @@ export class PiBackend implements AgentBackend {
     });
 
     const receive = (value: unknown) => {
+      if (settled) {
+        return;
+      }
       const event = object(value);
+      if (
+        event.type === 'response' &&
+        (event.id === 'session-name' || event.id === 'final-session-name')
+      ) {
+        if (event.success !== false) {
+          readName(object(event.data));
+        }
+        if (event.id === 'final-session-name') {
+          finishAnswer();
+        } else {
+          namePending = false;
+        }
+        return;
+      }
+      if (modelSettled) {
+        return;
+      }
       if (event.type === 'response' && event.success === false) {
         throw Error(`Pi ${String(event.command)}: ${String(event.error || 'request rejected')}`);
       }
@@ -111,6 +163,7 @@ export class PiBackend implements AgentBackend {
         }
 
         clearTimeout(startupTimer);
+        readName(state);
         send({
           id: 'question',
           type: 'prompt',
@@ -178,12 +231,29 @@ export class PiBackend implements AgentBackend {
         replaceChoices?.(parsed);
       }
 
+      // Refresh after tools because an extension may have renamed the session.
+      // At most one intermediate read is pending, even during parallel tools.
+      if (renameSession && event.type === 'tool_execution_end' && !namePending) {
+        namePending = true;
+        send({ id: 'session-name', type: 'get_state' });
+      }
+
       transcript.receive(event);
       // agent_end alone can precede a retry or compaction. Pi 0.85's settled
       // event is the point at which terminating the one-shot process is safe.
       if (event.type === 'agent_settled') {
-        settled = true;
-        finish(transcript.failure ? Error(transcript.failure) : undefined);
+        modelSettled = true;
+        if (renameSession) {
+          if (nameTimer) {
+            return;
+          }
+          // One final ordered read catches a name changed while an intermediate
+          // read was pending. A failed metadata read must never hang an answer.
+          send({ id: 'final-session-name', type: 'get_state' });
+          nameTimer = setTimeout(finishAnswer, 2000);
+        } else {
+          finishAnswer();
+        }
       }
     };
 
@@ -211,7 +281,11 @@ export class PiBackend implements AgentBackend {
           throw Error('Pi returned an unterminated RPC record');
         }
       } catch (error) {
-        finish(error);
+        if (modelSettled) {
+          finishAnswer();
+        } else {
+          finish(error);
+        }
       }
     });
 
@@ -224,6 +298,7 @@ export class PiBackend implements AgentBackend {
       await completion;
     } finally {
       clearTimeout(startupTimer);
+      clearTimeout(nameTimer);
       signal.removeEventListener('abort', abort);
 
       // A cancelled run first gets a chance to persist its partial answer.

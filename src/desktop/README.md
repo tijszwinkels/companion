@@ -91,6 +91,12 @@ of listening. Muting stops current and queued cues. `--no-sounds` sets the initi
 state; controls can enable sounds later. This setting lasts for the process's
 session. Preview mode is always silent and rejects `toggle-sounds`.
 
+Successful agent turns emit `{"type":"agent-turn-completed","id":"session-uuid",
+"turnId":"turn-uuid"}` once, after their backend and history save finish. This
+triggers the `agent-completed` chime through the same sounds toggle. Reconnecting,
+restoring a tab, and receiving another completed-status snapshot do not replay
+the cue. Failed or stopped turns emit no completion event.
+
 The Activity panel has a separate **current listener run** history. An utterance
 joins it only at the pipeline's `finished` callback, after its outcome is known.
 There is no 100-row cap here. The in-memory index lasts until listener shutdown;

@@ -69,6 +69,11 @@ It requires the running Omarchy adapter and does not apply to `--no-desktop`,
 
 ## Quick questions
 
+Agents can name their conversations with **`companion_name_session`**. Its
+instructions ask for a short topic name early in the first turn, preferably
+with an emoji (for example, **🐛 Login fix**). Companion reads the name from Pi's
+native session state and retains it when the conversation is saved and reopened.
+
 `START_CODING_AGENT_SESSION` is also available to the intent recognizer, for
 questions addressed to the computer's AI assistant. Each invocation starts an
 independent Pi session in `~/companion/agents`. The literal **“new coding agent …”**
@@ -219,6 +224,8 @@ Per-session speech routing remains for the next iteration.
 
 Companion plays a short cue when an utterance is accepted for processing, an
 ascending cue after actual delivery, and a descending cue for ignored speech.
+A distinct quiet two-note chime follows each successful agent turn, including
+queued follow-ups. Stopped/failed turns and reopening old conversations stay silent.
 Use `--no-sounds` to start with these cues muted, or toggle them from the top bar
 microphone menu during a session. Preview mode is silent.
 

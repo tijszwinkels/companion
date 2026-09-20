@@ -7,6 +7,8 @@ import { spawn } from 'node:child_process';
 const option = (name) => process.argv[process.argv.indexOf(name) + 1];
 const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 let buffered = '';
+let sessionName;
+let promptText = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
   buffered += chunk;
@@ -20,6 +22,9 @@ process.stdin.on('data', (chunk) => {
 
 function receive(request) {
   if (request.type === 'get_state') {
+    if (request.id === 'final-session-name' && promptText.startsWith('native-name timeout')) {
+      return;
+    }
     const [provider, id] = option('--model').split('/');
     send({
       type: 'response',
@@ -29,6 +34,7 @@ function receive(request) {
         model: { provider, id },
         thinkingLevel: option('--thinking'),
         messageCount: existsSync('request.json') ? 2 : 0,
+        sessionName,
       },
     });
   }
@@ -38,6 +44,7 @@ function receive(request) {
   if (request.type !== 'prompt') {
     return;
   }
+  promptText = request.message;
   writeFileSync(
     'request.json',
     JSON.stringify({ request, argv: process.argv.slice(2), pid: process.pid }),
@@ -170,6 +177,27 @@ function receive(request) {
     });
   }
 
+  if (request.message.startsWith('native-name')) {
+    send({
+      type: 'tool_execution_start',
+      toolName: 'companion_name_session',
+      toolCallId: 'name-1',
+      args: {},
+    });
+    sessionName = request.message.startsWith('native-name invalid')
+      ? 'Invalid\nname'
+      : '🐛 Login fix';
+    send({
+      type: 'tool_execution_end',
+      toolCallId: 'name-1',
+      isError: false,
+      result: {
+        content: [{ type: 'text', text: 'This text is not the authoritative name' }],
+        details: { companionSessionName: { version: 1, title: 'Also not the name' } },
+      },
+    });
+  }
+
   // Completion must not be inferred from agent_end; retry work follows it.
   send({ type: 'agent_end', willRetry: true });
   setTimeout(() => {
@@ -188,5 +216,8 @@ function receive(request) {
       },
     });
     send({ type: 'agent_settled' });
+    if (request.message.startsWith('native-name exit')) {
+      process.exit(0);
+    }
   }, 150);
 }

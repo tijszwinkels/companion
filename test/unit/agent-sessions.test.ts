@@ -89,6 +89,28 @@ for (const failure of ['malformed', 'missing', 'version']) {
   });
 }
 
+for (const variant of ['success', 'invalid', 'timeout', 'exit']) {
+  test(`Pi native name ${variant}: session state is authoritative and cannot lose the answer`, async (context) => {
+    const { directory } = await fixture(context);
+    const sessions = new AgentSessions({ backend: new PiBackend() }, () => {}, directory);
+    context.after(() => sessions.close());
+    const utterance = `native-name ${variant}`;
+    sessions.start({ ...frame, utterance }, signal());
+    await sessions.idle();
+    const view = sessions.snapshot()[0];
+    assert.equal(view.status, 'completed');
+    assert.equal(view.title, variant === 'invalid' ? utterance : '🐛 Login fix');
+    assert.equal(view.messages.at(-1)?.text, '## Answer\n**42**');
+    const captured = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+    assert.ok(
+      captured.argv.includes(
+        fileURLToPath(new URL('../../src/agents/session-name-tool.ts', import.meta.url)),
+      ),
+    );
+    assert.throws(() => process.kill(captured.pid, 0), { code: 'ESRCH' });
+  });
+}
+
 test('headless Pi receives the exact screenshot, streams tools/text, and waits through retries', async (context) => {
   const { directory, settings } = await fixture(context);
   const updates: AgentMessage[] = [];

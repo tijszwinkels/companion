@@ -6,11 +6,17 @@ import type { Log } from '../core/frame.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
 import { command } from '../system/command.ts';
 
-export type SoundCue = 'processing' | 'sent' | 'ignored';
+export const soundCues = ['processing', 'sent', 'ignored', 'agent-completed'] as const;
+export type SoundCue = (typeof soundCues)[number];
 
 /** Brief, quiet synthesized cues need no downloaded or licensed sound assets. */
 export function soundSamples(cue: SoundCue): Float32Array {
-  const frequencies = cue === 'processing' ? [660] : cue === 'sent' ? [660, 880] : [440, 330];
+  const frequencies = {
+    processing: [660],
+    sent: [660, 880],
+    ignored: [440, 330],
+    'agent-completed': [880, 1174.66],
+  }[cue];
   const noteSamples = 960; // 60 ms at 16 kHz; real-VAD tests cover each complete cue.
   const gapSamples = 240;
   const samples = new Float32Array(frequencies.length * (noteSamples + gapSamples));
@@ -59,7 +65,7 @@ export class SoundFeedback {
   async initialize(): Promise<void> {
     this.directory = await mkdtemp(join(tmpdir(), 'companion-sounds-'));
 
-    for (const cue of ['processing', 'sent', 'ignored'] as const) {
+    for (const cue of soundCues) {
       await writeFile(join(this.directory, `${cue}.wav`), encodeWav(soundSamples(cue)));
     }
   }
