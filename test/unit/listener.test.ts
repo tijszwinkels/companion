@@ -18,6 +18,7 @@ for (const ending of ['silence', 'abort', 'failure', 'eof']) {
     const vad = await VoiceActivityDetector.create(config.vadModel);
     const controller = new AbortController();
     const states: boolean[] = [];
+    const logs: { stage: string; detail: string }[] = [];
     let frames = 0;
 
     context.mock.method(vad, 'probability', async () => {
@@ -51,7 +52,7 @@ for (const ending of ['silence', 'abort', 'failure', 'eof']) {
       const listening = listen(
         vad,
         pipeline,
-        () => {},
+        (stage, detail) => logs.push({ stage, detail }),
         controller.signal,
         { file: fileURLToPath(new URL('../fixtures/speech.wav', import.meta.url)) },
         { speechChanged: (speaking) => states.push(speaking) },
@@ -67,6 +68,17 @@ for (const ending of ['silence', 'abort', 'failure', 'eof']) {
       assert.equal(states.at(-1), false);
       assert.equal(states.filter(Boolean).length, 1, 'Continuous speech emits one start');
       assert.equal(submissions.mock.callCount() > 0, ending === 'eof');
+      const boundary = logs.find((entry) => entry.stage === 'audio-end');
+      assert.equal(
+        boundary?.detail,
+        ending === 'abort' ? 'cancelled' : ending === 'failure' ? 'failed' : 'eof',
+      );
+
+      if (ending === 'silence') {
+        const report = logs.find((entry) => entry.stage === 'vad');
+        assert.ok(report);
+        assert.equal(JSON.parse(report.detail).outcome, 'too-short');
+      }
     } finally {
       controller.abort();
       await pipeline.idle();

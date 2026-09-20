@@ -4,6 +4,7 @@ import type { Activity } from '../../core/activity.ts';
 import { audioFrames } from './capture.ts';
 import { Segmenter } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
+import { CaptureDiagnostics } from './capture-diagnostics.ts';
 
 /** One listening period owns its recorder and segmenter; pause discards both. */
 export async function listen(
@@ -14,7 +15,11 @@ export async function listen(
   options: { file?: string; device?: string },
   activity: Activity = {},
 ): Promise<void> {
-  const segmenter = new Segmenter();
+  const segmenter = new Segmenter((diagnostic) => {
+    log('vad', JSON.stringify(diagnostic));
+  });
+  const captureDiagnostics = new CaptureDiagnostics(log);
+  let completed = false;
   vad.reset();
 
   try {
@@ -24,6 +29,7 @@ export async function listen(
       const probability = await vad.probability(frame);
       signal.throwIfAborted();
       const segment = segmenter.push(probability, frame);
+      captureDiagnostics.push(frame, probability);
 
       // Report transitions only, rather than sending desktop updates at 31 Hz.
       // This also clears the indicator for short sounds that never become jobs.
@@ -51,9 +57,13 @@ export async function listen(
     const tail = segmenter.finish();
 
     if (tail) {
+      log('utterance', 'Speech ended (end)');
       pipeline.submit(tail.samples, signal);
     }
+    completed = true;
   } finally {
+    captureDiagnostics.finish();
+    log('audio-end', signal.aborted ? 'cancelled' : completed ? 'eof' : 'failed');
     // EOF, pause, failure, and shutdown must never leave the microphone red.
     activity.speechChanged?.(false);
   }
