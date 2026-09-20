@@ -26,6 +26,8 @@ FocusScope {
   property bool layoutPending: false
   property var inputQueue: []
   property bool sendingInput: false
+  property int viewGeneration: 0
+  property var inputLifetime: ({active: true})
   readonly property bool hovered: hover.hovered
   readonly property string viewUrl: reference && /^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}$/.test(reference.viewUrl || "") ? reference.viewUrl : ""
   // Tests can inspect intended requests without opening a desktop browser.
@@ -36,32 +38,53 @@ FocusScope {
   implicitHeight: preferredHeight
   onViewUrlChanged: {
     error = ""; rendered = false; framePending = false; layoutPending = false
-    sendingInput = false; inputQueue = []
+    viewGeneration++
     refreshLayout(); refresh()
   }
   onReferenceChanged: refreshLayout()
   onWidthChanged: refreshLayout()
   onTextScaleChanged: refreshLayout()
-  onRunningChanged: if (running) { refreshLayout(); refresh(); drainInput() } else inputQueue = []
+  // Visibility controls admission and rendering, not completion of accepted
+  // gestures. Closing a conversation separately revokes its service capability.
+  onRunningChanged: if (running) { refreshLayout(); refresh() }
+  Component.onDestruction: {
+    inputLifetime.active = false
+    inputQueue = []
+  }
 
   function request(path, body, done) {
     if (!viewUrl || !running) return
-    if (transport) { transport(path, body, done); return }
-    const url = viewUrl
+    const generation = viewGeneration
+    requestAt(viewUrl, path, body, function(result, failure) {
+      if (root.viewGeneration !== generation) return
+      root.error = failure
+      if (done) done(result)
+    })
+  }
+
+  // Only accepted work reaches this transport. Its URL never follows reference
+  // changes, and even test callbacks cannot access a destroyed QML surface.
+  function requestAt(url, path, body, done) {
+    const lifetime = inputLifetime
+    const finish = function(result, failure) {
+      if (lifetime.active) done(result, failure || "")
+    }
+    if (transport) { transport(path, body, finish, url); return }
     const xhr = new XMLHttpRequest()
     xhr.open(body === null ? "GET" : "POST", url + path)
     if (body !== null) xhr.setRequestHeader("Content-Type", "application/json")
     xhr.onreadystatechange = function() {
-      if (xhr.readyState !== XMLHttpRequest.DONE || root.viewUrl !== url) return
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      let result = null
+      let error = ""
       try {
-        const result = JSON.parse(xhr.responseText)
+        result = JSON.parse(xhr.responseText)
         if (xhr.status !== 200) throw new Error(result.error || "Widget unavailable")
-        root.error = ""
-        if (done) done(result)
       } catch (failure) {
-        root.error = String(failure.message || failure)
-        if (done) done(null)
+        result = null
+        error = String(failure.message || failure)
       }
+      finish(result, error)
     }
     xhr.send(body === null ? "" : JSON.stringify(body))
   }
@@ -96,26 +119,34 @@ FocusScope {
   }
 
   function sendInput(event) {
-    if (!running || !viewUrl) return
+    if (!running || !visible || !enabled || !viewUrl) return
     // Coalesce pointer motion, but preserve press/release and text ordering.
-    const last = inputQueue.length ? inputQueue[inputQueue.length - 1] : null
+    const tail = inputQueue.length ? inputQueue[inputQueue.length - 1] : null
+    const last = tail && tail.generation === viewGeneration ? tail.event : null
     if (event.type === "mouseMoved" && last && last.type === "mouseMoved") inputQueue.pop()
     if (event.type === "text" && last && last.type === "text" && last.text.length + event.text.length <= 4000) { last.text += event.text; return }
     if (inputQueue.length >= 64) { error = "Widget input is busy"; return }
-    inputQueue.push(event)
+    inputQueue.push({event: event, url: viewUrl, generation: viewGeneration})
     drainInput()
   }
 
   function drainInput() {
-    if (!running || !viewUrl || sendingInput || !inputQueue.length) return
+    if (sendingInput || !inputQueue.length) return
+    // Keep the accepted queue ordered across hide and reference changes. An old
+    // release still targets its old view; a revoked URL fails without reopening
+    // anything. Never carry its clipboard result or error into a replacement.
+    const accepted = inputQueue.shift()
     sendingInput = true
-    request("/input", inputQueue.shift(), function(result) {
+    requestAt(accepted.url, "/input", accepted.event, function(result, failure) {
       root.sendingInput = false
-      if (result && typeof result.result === "string") {
-        clipboard.text = result.result
-        clipboard.selectAll()
-        clipboard.copy()
-        clipboard.deselect()
+      if (root.viewGeneration === accepted.generation) {
+        root.error = failure
+        if (result && typeof result.result === "string") {
+          clipboard.text = result.result
+          clipboard.selectAll()
+          clipboard.copy()
+          clipboard.deselect()
+        }
       }
       root.drainInput()
     })

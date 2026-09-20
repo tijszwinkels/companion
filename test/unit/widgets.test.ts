@@ -232,3 +232,39 @@ test('invalid reducer results cannot alter canonical state', async (context) => 
   assert.equal(changed.length, 1);
   assert.equal((await send({ method: 'discover', id: created.id })).revision, 1);
 });
+
+test('late input cannot revive a closed conversation or reuse its capability after reopen', async (context) => {
+  const { renderer, service, send, owner, changed } = await fixture(context);
+  const inputs: string[] = [];
+  renderer.input = async (record, _bundle, event) => {
+    inputs.push(record.id + ':' + event.type);
+    return {};
+  };
+  const created = await send({ method: 'publish', widget: 'todo', props: { items: [] } });
+  const original = (await service.restored(owner))[0].reference;
+  const input = async (viewUrl: string, type: string) => {
+    const response = await fetch(viewUrl + '/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, x: 40, y: 60, button: 'left', buttons: 0 }),
+    });
+    await response.json();
+    return response.status;
+  };
+
+  assert.equal(await input(original.viewUrl!, 'mousePressed'), 200);
+  await service.deactivate(owner);
+
+  // A surface can still drain an accepted release to its original URL. The
+  // service, rather than visibility, decides whether that capability is alive.
+  assert.equal(await input(original.viewUrl!, 'mouseReleased'), 404);
+  assert.deepEqual(inputs, [created.id + ':mousePressed']);
+  assert.equal(changed.length, 1);
+
+  const reopened = (await service.restored(owner))[0].reference;
+  assert.notEqual(reopened.viewUrl, original.viewUrl);
+  assert.equal(await input(original.viewUrl!, 'mouseReleased'), 404);
+  assert.equal(await input(reopened.viewUrl!, 'mousePressed'), 200);
+  assert.deepEqual(inputs, [created.id + ':mousePressed', created.id + ':mousePressed']);
+  assert.equal(changed.length, 1);
+});
