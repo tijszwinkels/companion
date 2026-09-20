@@ -33,7 +33,7 @@ import type { Transcript } from './core/activity.ts';
 const log: Log = (stage, detail, id) => {
   const timestamp = new Date().toLocaleTimeString('en-GB');
   const frameLabel = id === undefined ? '   ' : `#${id}`;
-  const label = `${timestamp} ${frameLabel} ${stage.padEnd(10)}`;
+  const label = `${timestamp} ${frameLabel} ${stage.padEnd(12)}`;
   const prefix = process.stdout.isTTY ? styleText('cyan', label) : label;
 
   // Transcripts and subprocess errors can contain line breaks or terminal codes.
@@ -228,7 +228,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     // Only audio mode owns a native ASR worker. Finish model loading before
     // capture starts; successful utterances then reuse this session's model.
-    log('asr', 'Loading Parakeet transcription worker');
+    log('asr-start', 'Loading Parakeet transcription worker');
     await transcriber.start(controller.signal);
 
     await screen.capture(controller.signal);

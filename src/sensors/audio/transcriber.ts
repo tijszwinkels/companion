@@ -66,13 +66,18 @@ export class Transcriber implements SpeechTranscriber {
       const started = performance.now();
       const levels = audioLevels(samples);
       const report = (outcome: TranscriptionDiagnostic['outcome'], characters = 0) => {
-        observe?.({
-          outcome,
-          audioMs: samples.length / 16,
-          elapsedMs: Math.round(performance.now() - started),
-          characters,
-          ...levels,
-        });
+        try {
+          observe?.({
+            outcome,
+            audioMs: samples.length / 16,
+            elapsedMs: Math.round(performance.now() - started),
+            characters,
+            ...levels,
+          });
+        } catch {
+          // Optional diagnostics must not replace a result or the worker's
+          // original error, nor turn a successful report into a second report.
+        }
       };
 
       // Endpoint silence must not dilute a short word below the silence floor.

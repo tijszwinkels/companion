@@ -13,7 +13,8 @@ export interface AudioLevels {
  * energy check only; Silero still decides whether a sound is speech.
  */
 export function audioLevels(samples: Float32Array): AudioLevels {
-  const windowSamples = (SAMPLE_RATE * 128) / 1000;
+  // Sliding-window array indices must stay integral at any sample rate.
+  const windowSamples = Math.max(1, Math.round((SAMPLE_RATE * 128) / 1000));
   let energy = 0;
   let windowEnergy = 0;
   let strongestWindowEnergy = 0;
@@ -34,6 +35,9 @@ export function audioLevels(samples: Float32Array): AudioLevels {
       windowEnergy -= previous * previous;
     }
 
+    // Prefix energy only grows until the first full window, so including those
+    // prefixes cannot raise the maximum. For shorter input, the divisor below
+    // uses its actual length and measures the whole input as one window.
     strongestWindowEnergy = Math.max(strongestWindowEnergy, windowEnergy);
   }
 

@@ -166,6 +166,25 @@ test('diagnostics distinguish quiet input, empty output, punctuation and worker 
   assert.equal(JSON.stringify(diagnostics).includes('secret-transcript'), false);
 });
 
+test('a throwing diagnostic observer cannot replace ASR results or worker errors', async (context) => {
+  const worker = await fixture(context);
+  const failure = await fixture(context, [{ request: 'inference-error' }]);
+  const outcomes: string[] = [];
+  const observe = (entry: TranscriptionDiagnostic) => {
+    outcomes.push(entry.outcome);
+    throw Error('Observer failed');
+  };
+
+  assert.equal(await worker.transcriber.transcribe(speech(), signal(), observe), 'Dublin.');
+  assert.equal(await worker.transcriber.transcribe(new Float32Array(16000), signal(), observe), '');
+  await assert.rejects(failure.transcriber.transcribe(speech(), signal(), observe), /ASR worker/);
+  assert.deepEqual(outcomes, ['text', 'silence', 'error'], 'Each operation reports only once');
+
+  // A diagnostic failure must not poison the resident worker's next request.
+  assert.equal(await worker.transcriber.transcribe(speech(), signal()), 'Dublin.');
+  assert.equal((await worker.events()).filter((entry) => entry.event === 'start').length, 1);
+});
+
 for (const phase of ['start', 'request'] as const) {
   for (const reason of ['cancel', 'timeout', 'close'] as const) {
     test(`${reason} during ${phase} settles and reaps the worker`, async (context) => {

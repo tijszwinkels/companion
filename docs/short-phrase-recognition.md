@@ -67,6 +67,7 @@ transcript logging is unchanged; keep the complete CLI log private.
 
 | Stage | What it establishes |
 | --- | --- |
+| `asr-start` | Human-readable startup notice before loading the resident Parakeet worker. Per-utterance `asr` records remain JSON. |
 | `audio-levels` | Five-second aggregate (plus a final partial window): decoded duration, RMS, peak amplitude and peak VAD probability, including sounds that never start a candidate. Persistent low peak probability indicates no onset. |
 | `vad` / `too-short` | A candidate reached onset but had fewer than 128 ms of voiced frames; preroll and silence are excluded from that count. |
 | `vad` / `accepted` | Candidate duration, voiced duration, ending silence and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF. |
@@ -85,6 +86,9 @@ per closed candidate, and ASR reports once per valid transcription operation.
 Invalid/oversized input and pre-cancelled requests can fail before those metrics
 exist; the pipeline still identifies the transcription stage. A capture failure
 and empty ASR output can coexist; an empty result still prevents routing as before.
+File decoding zero-pads its final partial frame to 32 ms, so reported decoded
+duration can include up to 31.9 ms of padding. Optional transcription observers
+cannot change the ASR result or replace its original error if they throw.
 
 ## Validation and tradeoffs
 
@@ -114,8 +118,9 @@ and all four sound cues at three gains and three frame offsets (36 combinations)
 through real Silero. Those cue cases yield no accepted speech. This is a controlled
 false-trigger check, not a measurement of a particular room or microphone.
 
-Validation on 2026-09-20 passed TypeScript checking, all **239 unit tests**, both
-Rust framing tests, formatting, the prerecorded short-phrase checks, and the
+Validation of the original audio branch (`91fc80a`) on 2026-09-20 passed TypeScript
+checking, its **239 unit tests**, both Rust framing tests, formatting, the
+prerecorded short-phrase checks, and the
 existing ASR benchmark. Its three fresh Voxtype transcriptions and five resident
 worker transcriptions matched exactly. Warm five-second ASR took 232–288 ms
 (median 260 ms); helper startup took 1440 ms. Recovered 1376 ms quiet phrases took

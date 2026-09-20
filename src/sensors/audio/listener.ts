@@ -28,8 +28,8 @@ export async function listen(
       const wasSpeaking = segmenter.speaking;
       const probability = await vad.probability(frame);
       signal.throwIfAborted();
-      const segment = segmenter.push(probability, frame);
       captureDiagnostics.push(frame, probability);
+      const segment = segmenter.push(probability, frame);
 
       // Report transitions only, rather than sending desktop updates at 31 Hz.
       // This also clears the indicator for short sounds that never become jobs.
