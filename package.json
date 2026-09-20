@@ -19,8 +19,9 @@
     "test:quick-tap": "/usr/bin/python test/live/nested-hyprland.py",
     "test:panel-focus": "/usr/bin/python test/live/nested-hyprland.py --focus",
     "omarchy:install": "tsx integrations/omarchy/install.ts",
-    "format": "prettier --write --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json",
-    "format:check": "prettier --check --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json"
+    "format": "prettier --write --ignore-unknown src test integrations widget-library package.json tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check --ignore-unknown src test integrations widget-library package.json tsconfig.json .prettierrc.json",
+    "test:widgets": "tsx --test test/widgets/*.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +30,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
+    "ajv": "8.17.1",
     "onnxruntime-node": "1.30.0"
   },
   "devDependencies": {

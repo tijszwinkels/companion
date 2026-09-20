@@ -1,0 +1,56 @@
+import QtQuick
+import QtTest
+import "@PANEL@" as Panel
+
+Item {
+  width: 600
+  height: 360
+  Panel.WidgetSurface {
+    id: widget
+    x: 20; y: 20; width: 480; height: 280
+    reference: @REFERENCE@
+    foreground: "#e0e6f0"; muted: "#959faa"; accent: "#82aaff"; selection: "#17212d"
+    fitContent: false
+  }
+  TestCase {
+    name: "CompanionRealWidgetSurface"
+    when: windowShown
+    function test_real_frame_click_keyboard_zoom_and_snapshot() {
+      const frame = findChild(widget, "widgetFrame")
+      tryCompare(frame, "status", Image.Ready, 10000)
+      compare(widget.error, "")
+      mouseClick(widget, 24, 56)
+      let state = null
+      tryVerify(function() {
+        widget.request("/state", null, function(value) { state = value })
+        return state && state.props.items[0].completed === true
+      }, 5000)
+      mouseClick(widget, 110, 98)
+      for (const letter of "typed inside qt") keyClick(letter)
+      keyClick(Qt.Key_A, Qt.ControlModifier)
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      const clipboard = findChild(widget, "widgetClipboard")
+      tryCompare(clipboard, "text", "typed inside qt", 5000)
+      keyClick(Qt.Key_Backspace)
+      keyClick(Qt.Key_V, Qt.ControlModifier)
+      keyClick(Qt.Key_Return)
+      tryVerify(function() {
+        widget.request("/state", null, function(value) { state = value })
+        return state && state.props.items.length === 2
+      }, 5000)
+      compare(state.props.items[1].text, "typed inside qt")
+      widget.textScale = 1.25
+      widget.selection = "#e8eef5"
+      widget.foreground = "#1b2531"
+      wait(400)
+      let saved = false
+      widget.grabToImage(function(result) { saved = result.saveToFile("/tmp/companion-widget-qt.png") })
+      tryVerify(function() { return saved })
+      compare(widget.error, "")
+      widget.running = false
+      const count = widget.frameNumber
+      wait(250)
+      compare(widget.frameNumber, count)
+    }
+  }
+}

@@ -153,6 +153,15 @@ screen) and all available screen height. Switching tabs keeps the same size. Scr
 up stops following the stream until you return to the bottom. Conversation wheel
 and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
+Agents can also publish reusable **interactive widgets** from
+[`widget-library/`](widget-library/README.md): compact diagrams, comparisons,
+charts, to-do lists and WebGL views. The agent supplies props or calls a declared
+action instead of repeating the implementation. A hover arrow opens a dedicated
+Chromium window sharing the same saved state. Widgets may be pinned above the
+chat (normally 25% of sidebar height); at 100%, a host-owned **Back to chat**
+control restores the transcript and its unsent draft. Chromium and Bubblewrap
+are required for visuals; ordinary text conversations remain available.
+
 Activity shows floating labels for the available voice prefixes and switches for
 every registered intent. Click an intent to disable or re-enable both its LLM and
 voice-prefix routes. Off and context-unavailable intents appear grey, with their

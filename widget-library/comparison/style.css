@@ -1,0 +1,39 @@
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 12px;
+}
+button {
+  border: 1px solid var(--muted);
+  background: transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+input {
+  background: transparent;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  padding: 5px;
+}
+.options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+section {
+  border: 1px solid var(--muted);
+  border-radius: 8px;
+  padding: 12px;
+}
+h3 {
+  color: var(--accent);
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+ul {
+  padding-left: 18px;
+  margin: 0;
+}
+li {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}

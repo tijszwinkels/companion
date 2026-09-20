@@ -1,0 +1,59 @@
+{
+  "name": "pipeline",
+  "version": 1,
+  "description": "Show a sequence of stages, with an optional active stage.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "maxLength": 100,
+        "default": "Pipeline"
+      },
+      "steps": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "maxItems": 12,
+        "minItems": 1
+      },
+      "active": {
+        "type": "integer",
+        "minimum": -1,
+        "maximum": 11,
+        "default": -1
+      }
+    },
+    "required": ["steps"],
+    "additionalProperties": false
+  },
+  "actions": {
+    "set_active": {
+      "description": "Highlight one stage by its zero-based index; -1 clears it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 11
+          }
+        },
+        "required": ["index"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  },
+  "example": {
+    "steps": ["Listen", "Understand", "Respond"],
+    "active": 1
+  }
+}

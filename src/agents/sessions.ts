@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
+import { WidgetService } from '../widgets/service.ts';
+import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
@@ -29,6 +31,7 @@ interface RunningSession {
   closing: boolean;
   busy: boolean;
   pending: AgentMessage[];
+  widgetReservations: Map<string, AgentMessage>;
 }
 
 const maxPendingFollowUps = 8;
@@ -49,6 +52,7 @@ export class AgentSessions implements InspectableModule {
   private readonly previous = new Map<string, PreviousSession>();
   private readonly restoring = new Set<string>();
   private readonly store: SessionStore;
+  private readonly widgets: WidgetService;
 
   constructor(
     readonly dependencies: { backend: AgentBackend },
@@ -56,6 +60,59 @@ export class AgentSessions implements InspectableModule {
     private readonly directory = agentDirectory(),
   ) {
     this.store = new SessionStore(join(directory, '.companion-sessions'));
+    this.widgets = new WidgetService(
+      join(directory, '.companion-widgets'),
+      async (record, reference) => {
+        const session = this.sessions.get(record.owner);
+        if (!session) {
+          return;
+        }
+        this.message(session, {
+          ...chatMessage('widget:' + record.id, 'assistant', record.text),
+          widget: reference,
+        });
+        session.view.updatedAt = Date.now();
+        this.flush(session);
+        // User interactions continue between agent turns and must survive a close
+        // immediately after a click, without waiting for another model response.
+        await this.store.save(session.view);
+      },
+      undefined,
+      undefined,
+      (records) => this.validateWidgetChanges(records),
+    );
+  }
+
+  private validateWidgetChanges(records: WidgetRecord[]): () => void {
+    const session = this.sessions.get(records[0].owner);
+    if (!session || session.closing || this.closed) {
+      throw Error('Widget conversation is closing');
+    }
+    const messages = new Map(session.view.messages.map((message) => [message.id, message]));
+    for (const record of records) {
+      messages.set(
+        'widget:' + record.id,
+        chatMessage('widget:' + record.id, 'assistant', record.text),
+      );
+    }
+    const size = [...messages.values()].reduce(
+      (total, message) => total + message.text.length + message.input.length,
+      0,
+    );
+    if (messages.size > 200 || size > 256 * 1024) {
+      throw Error('The panel transcript limit was reached');
+    }
+    // Reserve space across the atomic widget write. Concurrent streamed text
+    // cannot consume it before the committed visual reaches the transcript.
+    for (const record of records) {
+      const id = 'widget:' + record.id;
+      session.widgetReservations.set(id, messages.get(id)!);
+    }
+    return () => {
+      for (const record of records) {
+        session.widgetReservations.delete('widget:' + record.id);
+      }
+    };
   }
 
   /** Read-only startup: old conversations appear in history, without launching agents. */
@@ -197,6 +254,7 @@ export class AgentSessions implements InspectableModule {
       closing: false,
       busy: true,
       pending: [],
+      widgetReservations: new Map(),
     };
     this.sessions.set(id, session);
     this.flush(session);
@@ -312,6 +370,7 @@ export class AgentSessions implements InspectableModule {
     const turnId = randomUUID();
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
+    let widgetLease: WidgetLease | undefined;
     try {
       if (prompt.screenshot) {
         const question = session.view.messages[0];
@@ -331,8 +390,22 @@ export class AgentSessions implements InspectableModule {
       session.view.model = settings.model;
       session.view.status = 'running';
       this.flush(session);
+      try {
+        widgetLease = await this.widgets.lease(session.view.id, session.controller.signal);
+      } catch (error) {
+        session.controller.signal.throwIfAborted();
+        // A damaged visual cache must not block an ordinary answer/follow-up.
+        this.log('agent-widget', `Widget tools unavailable: ${String(error)}`, frameId);
+      }
       await this.dependencies.backend.run(
-        { id: session.view.id, directory: this.directory, settings, prompt, resume },
+        {
+          id: session.view.id,
+          directory: this.directory,
+          settings,
+          prompt,
+          resume,
+          widgets: widgetLease,
+        },
         session.controller.signal,
         (message) => this.message(session, { ...message, id: `${turnId}:${message.id}` }),
         (options) => {
@@ -382,6 +455,7 @@ export class AgentSessions implements InspectableModule {
       }
     } finally {
       acceptingUpdates = false;
+      widgetLease?.release();
       if (session.view.status !== 'completed') {
         delete session.view.choices;
       }
@@ -427,15 +501,16 @@ export class AgentSessions implements InspectableModule {
 
   private message(session: RunningSession, message: AgentMessage): void {
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
-    const otherSize = session.view.messages.reduce(
-      (size, entry) =>
-        size + (entry.id === message.id ? 0 : entry.text.length + entry.input.length),
+    const reserved = new Map(session.view.messages.map((entry) => [entry.id, entry]));
+    for (const [id, entry] of session.widgetReservations) {
+      reserved.set(id, entry);
+    }
+    reserved.set(message.id, message);
+    const totalSize = [...reserved.values()].reduce(
+      (size, entry) => size + entry.text.length + entry.input.length,
       0,
     );
-    if (
-      otherSize + message.text.length + message.input.length > 256 * 1024 ||
-      (index < 0 && session.view.messages.length >= 200)
-    ) {
+    if (totalSize > 256 * 1024 || reserved.size > 200) {
       throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
     }
 
@@ -491,6 +566,7 @@ export class AgentSessions implements InspectableModule {
     session.closing = true;
     try {
       await this.stop(id);
+      await this.widgets.deactivate(id);
       // Do not discard the visible tab if saving fails. Closing can be retried.
       await this.store.save(session.view);
       const { messages: _messages, ...summary } = session.view;
@@ -503,6 +579,19 @@ export class AgentSessions implements InspectableModule {
     } finally {
       session.closing = false;
       if (this.sessions.has(id)) {
+        try {
+          for (const { record, reference } of await this.widgets.restored(id)) {
+            this.message(session, {
+              ...chatMessage('widget:' + record.id, 'assistant', record.text),
+              widget: reference,
+            });
+          }
+        } catch (error) {
+          this.log(
+            'agent-widget',
+            `Could not restore visuals after failed close: ${String(error)}`,
+          );
+        }
         session.view.acceptsFollowUp = !session.busy && !this.closed;
         this.flush(session);
       }
@@ -522,6 +611,28 @@ export class AgentSessions implements InspectableModule {
       if (this.closed) {
         throw Error('Agent sessions are shutting down');
       }
+      // Canonical widget state repairs a display snapshot interrupted after a
+      // widget commit. Missing bundles leave the saved text readable instead.
+      try {
+        for (const { record, reference } of await this.widgets.restored(id)) {
+          const message = {
+            ...chatMessage('widget:' + record.id, 'assistant', record.text),
+            widget: reference,
+          };
+          const index = view.messages.findIndex((entry) => entry.id === message.id);
+          if (index >= 0) {
+            view.messages[index] = message;
+          } else if (view.messages.length < 200) {
+            view.messages.push(message);
+          }
+        }
+      } catch (error) {
+        this.log('agent-widget', `Could not restore visuals: ${String(error)}`);
+      }
+      if (this.closed) {
+        await this.widgets.deactivate(id);
+        throw Error('Agent sessions are shutting down');
+      }
       view.acceptsFollowUp = true;
       this.sessions.set(id, {
         view,
@@ -531,6 +642,7 @@ export class AgentSessions implements InspectableModule {
         closing: false,
         busy: false,
         pending: [],
+        widgetReservations: new Map(),
       });
       this.previous.delete(id);
       for (const listener of this.listeners) {
@@ -556,6 +668,7 @@ export class AgentSessions implements InspectableModule {
       this.cancelPending(session);
     }
     await this.idle();
+    await this.widgets.close();
     this.listeners.clear();
   }
 }

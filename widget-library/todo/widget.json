@@ -1,0 +1,148 @@
+{
+  "name": "todo",
+  "version": 1,
+  "description": "A shared checklist. Add, rename, complete or remove individual items.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "maxLength": 100,
+        "default": "To do"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "maxLength": 200,
+              "minLength": 1
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 300,
+              "minLength": 1
+            },
+            "completed": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": ["id", "text"],
+          "additionalProperties": false
+        },
+        "maxItems": 200,
+        "default": []
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "actions": {
+    "add_item": {
+      "description": "Add one todo; returns its stable itemId.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1
+          }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string"
+          }
+        },
+        "required": ["itemId"],
+        "additionalProperties": false
+      }
+    },
+    "set_completed": {
+      "description": "Set whether an item is complete.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "completed": {
+            "type": "boolean"
+          }
+        },
+        "required": ["itemId", "completed"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    "rename_item": {
+      "description": "Change one item\u2019s text.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1
+          }
+        },
+        "required": ["itemId", "text"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    "remove_item": {
+      "description": "Remove one item by its stable ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": ["itemId"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  },
+  "example": {
+    "title": "Today",
+    "items": [
+      {
+        "id": "first",
+        "text": "Try the widget",
+        "completed": false
+      }
+    ]
+  }
+}

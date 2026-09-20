@@ -37,12 +37,18 @@ Item {
   property string controlError: ""
   property string selectedSessionId: ""
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
-  readonly property string composerFocusId: chat.composerFocusId
+  property var locallyUnpinned: ({})
+  readonly property var pinnedMessage: selectedSession && selectedSession.messages.find(message =>
+    message.widget && message.widget.viewUrl && message.widget.presentation.placement === "pinned"
+      && root.locallyUnpinned[message.widget.id] !== message.widget.viewUrl) || null
+  readonly property bool fullWidget: pinnedMessage !== null && pinnedMessage.widget.presentation.heightPercent === 100
+  readonly property string composerFocusId: fullWidget ? "" : chat.composerFocusId
+  onFullWidgetChanged: if (fullWidget) chat.releaseComposerFocus()
   readonly property bool keyboardFocused: root.Window.window !== null && root.Window.window.active
   // Activity and the session library share the conversation's reader zoom.
   // Keep geometry in theme units; only text and its measured layout grow.
   property alias zoomPercent: chat.zoomPercent
-  readonly property bool pageZoomEnabled: root.visible && root.animationsEnabled && root.keyboardFocused && root.selectedSession === null
+  readonly property bool pageZoomEnabled: root.visible && root.animationsEnabled && root.keyboardFocused && (root.selectedSession === null || root.fullWidget)
 
   // Activity needs window focus for tab navigation, but has no text cursor or
   // dictation destination. Clear the hidden composer when leaving a conversation.
@@ -66,7 +72,7 @@ Item {
 
   function submitted(id, text, error) { chat.submitted(id, text, error) }
   function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
-  function focusComposer() { chat.focusComposer() }
+  function focusComposer() { if (!root.fullWidget) chat.focusComposer() }
   function releaseComposerFocus() { chat.releaseComposerFocus() }
 
   // Preserve each tab's animation and hover state while tokens stream. Using
@@ -92,7 +98,30 @@ Item {
       }
     }
   }
-  onSessionsChanged: synchronizeTabs()
+  onSessionsChanged: {
+    synchronizeTabs()
+    const dismissed = Object.assign({}, root.locallyUnpinned)
+    for (const id of Object.keys(dismissed)) {
+      const stillPinned = root.sessions.some(session => session.messages.some(message =>
+        message.widget && message.widget.id === id && message.widget.viewUrl === dismissed[id]
+          && message.widget.presentation.placement === "pinned"))
+      if (!stillPinned) delete dismissed[id]
+    }
+    root.locallyUnpinned = dismissed
+  }
+
+  function backToChat() {
+    if (!root.pinnedMessage) return
+    const reference = root.pinnedMessage.widget
+    // Keep the escape route usable after a disconnect or renderer failure.
+    // Ask for durable unpin while the surface is still active, then reveal the
+    // retained chat locally without waiting for an HTTP response.
+    pinnedSurface.unpin()
+    const dismissed = Object.assign({}, root.locallyUnpinned)
+    dismissed[reference.id] = reference.viewUrl
+    root.locallyUnpinned = dismissed
+    Qt.callLater(function() { if (root.keyboardFocused) chat.focusComposer() })
+  }
   Component.onCompleted: synchronizeTabs()
 
   function selectConversation(id) {
@@ -303,6 +332,9 @@ Item {
   }
 
   Item {
+    id: body
+    readonly property real contentTop: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+    readonly property real contentHeight: Math.max(0, height - contentTop)
     anchors.left: rail.right
     anchors.right: parent.right
     anchors.top: parent.top
@@ -368,8 +400,9 @@ Item {
     ActivityStrip {
       id: activityStrip
       objectName: "activityStrip"
-      visible: root.selectedSession !== null || root.showingPrevious
-      y: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+      visible: (root.selectedSession !== null || root.showingPrevious)
+        && !root.fullWidget && !(root.pinnedMessage && root.pinnedMessage.widget.presentation.replaceActivity)
+      y: pinned.visible ? pinned.y + pinned.height + 12 * root.unit : body.contentTop
       width: parent.width
       online: root.online
       paused: root.paused
@@ -384,6 +417,55 @@ Item {
       fontFamily: root.fontFamily
       unit: root.unit
       animationsEnabled: root.animationsEnabled
+    }
+
+    Item {
+      id: pinned
+      objectName: "pinnedWidgetArea"
+      visible: root.pinnedMessage !== null
+      y: body.contentTop
+      width: parent.width
+      height: visible ? body.contentHeight * root.pinnedMessage.widget.presentation.heightPercent / 100 : 0
+      Row {
+        id: widgetControls
+        spacing: 8 * root.unit
+        PanelAction {
+          objectName: "widgetBackToChat"
+          text: root.fullWidget ? "Back to chat" : "Unpin"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.backToChat()
+        }
+        PanelAction {
+          objectName: "widgetStopSession"
+          visible: root.selectedSession !== null && (root.selectedSession.status === "running" || root.selectedSession.status === "starting")
+          text: "Stop"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.stopSessionRequested(root.selectedSessionId)
+        }
+      }
+      WidgetSurface {
+        id: pinnedSurface
+        objectName: "pinnedWidget"
+        anchors.fill: parent
+        anchors.topMargin: widgetControls.height + 6 * root.unit
+        reference: root.pinnedMessage ? root.pinnedMessage.widget : null
+        summary: root.pinnedMessage ? root.pinnedMessage.text : ""
+        fitContent: false
+        running: visible && root.online && root.animationsEnabled
+        foreground: root.foreground
+        muted: root.muted
+        accent: root.accent
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        textScale: chat.textScale
+      }
     }
 
     PreviousSessionsView {
@@ -433,9 +515,11 @@ Item {
     SessionView {
       id: chat
       objectName: "sessionView"
-      visible: root.selectedSession !== null
+      visible: root.selectedSession !== null && !root.fullWidget
+      widgetsRunning: root.online && root.animationsEnabled
       anchors.fill: parent
-      anchors.topMargin: activityStrip.y + activityStrip.height + 12 * root.unit
+      anchors.topMargin: root.fullWidget ? body.contentTop : Math.min(body.height, activityStrip.visible ? activityStrip.y + activityStrip.height + 12 * root.unit
+        : pinned.visible ? pinned.y + pinned.height + 12 * root.unit : body.contentTop)
       session: root.selectedSession
       agentActions: root.agentActions
       paused: root.paused

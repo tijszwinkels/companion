@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
+import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
 
@@ -14,6 +15,7 @@ const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
  * write is interrupted. Nothing is created during construction or inspection.
  */
 export class SessionStore {
+  private readonly writes = new Map<string, Promise<void>>();
   constructor(private readonly directory: string) {}
 
   private path(id: string, extension: string): string {
@@ -45,12 +47,34 @@ export class SessionStore {
     // Capture one coherent view before yielding to filesystem operations. URLs
     // are derived when reading; the saved file cannot redirect image loading.
     const content = JSON.stringify(session, (key, value: unknown) =>
-      ['screenshotUrl', 'choices', 'runId', 'acceptsFollowUp', 'completedTurnId'].includes(key)
+      [
+        'screenshotUrl',
+        'viewUrl',
+        'choices',
+        'runId',
+        'acceptsFollowUp',
+        'completedTurnId',
+      ].includes(key)
         ? undefined
         : value,
     );
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    await this.replace(this.path(session.id, 'json'), content + '\n');
+    // Capture order is write order, including widget clicks racing the end of
+    // an agent turn. An older snapshot cannot replace a newer one afterward.
+    const previous = this.writes.get(session.id) ?? Promise.resolve();
+    const write = previous
+      .catch(() => {})
+      .then(async () => {
+        await mkdir(this.directory, { recursive: true, mode: 0o700 });
+        await this.replace(this.path(session.id, 'json'), content + '\n');
+      });
+    this.writes.set(session.id, write);
+    try {
+      await write;
+    } finally {
+      if (this.writes.get(session.id) === write) {
+        this.writes.delete(session.id);
+      }
+    }
   }
 
   async read(id: string): Promise<AgentSession> {
@@ -110,6 +134,13 @@ export class SessionStore {
         restored.screenshotUrl = screenshotUrl;
       }
 
+      if (message.widget && message.kind === 'assistant') {
+        try {
+          restored.widget = attachment(message.widget);
+        } catch {
+          // A damaged visual retains its ordinary readable text fallback.
+        }
+      }
       return restored;
     });
     if (session.status === 'starting' || session.status === 'running') {

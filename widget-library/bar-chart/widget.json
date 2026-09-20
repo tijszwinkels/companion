@@ -1,0 +1,79 @@
+{
+  "name": "bar-chart",
+  "version": 1,
+  "description": "Compare quantities with a horizontal bar chart; append values without resending the series.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "maxLength": 100,
+        "default": "Comparison"
+      },
+      "labels": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "maxItems": 500,
+        "minItems": 1
+      },
+      "values": {
+        "type": "array",
+        "items": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000000000000.0
+        },
+        "maxItems": 500,
+        "minItems": 1
+      },
+      "unit": {
+        "type": "string",
+        "maxLength": 30,
+        "default": ""
+      }
+    },
+    "required": ["labels", "values"],
+    "additionalProperties": false
+  },
+  "actions": {
+    "append_point": {
+      "description": "Append a label and value.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 60
+          },
+          "value": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000000.0
+          }
+        },
+        "required": ["label", "value"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": ["index"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "example": {
+    "title": "Time spent",
+    "labels": ["Reading", "Coding", "Testing"],
+    "values": [15, 50, 35],
+    "unit": "minutes"
+  }
+}

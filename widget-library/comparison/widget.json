@@ -1,0 +1,54 @@
+{
+  "name": "comparison",
+  "version": 1,
+  "description": "Place two to four options side by side, each with a short list of points.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "maxLength": 100,
+        "default": "Options"
+      },
+      "options": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "points": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "maxItems": 12
+            }
+          },
+          "required": ["title", "points"],
+          "additionalProperties": false
+        },
+        "maxItems": 4,
+        "minItems": 2
+      }
+    },
+    "required": ["options"],
+    "additionalProperties": false
+  },
+  "actions": {},
+  "example": {
+    "options": [
+      {
+        "title": "Cache",
+        "points": ["Fast lookup", "Uses memory"]
+      },
+      {
+        "title": "Recompute",
+        "points": ["Less memory", "More work"]
+      }
+    ]
+  }
+}
