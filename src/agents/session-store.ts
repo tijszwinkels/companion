@@ -3,8 +3,6 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-import { parseHtmlBubble } from '../../integrations/panel/Html.mjs';
-
 import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
 
@@ -110,22 +108,6 @@ export class SessionStore {
       };
       if (message.screenshot && message.kind === 'user' && screenshotUrl) {
         restored.screenshotUrl = screenshotUrl;
-      }
-
-      if (
-        message.html !== undefined &&
-        restored.kind === 'assistant' &&
-        restored.state === 'done'
-      ) {
-        try {
-          restored.html = parseHtmlBubble({
-            version: 1,
-            html: message.html,
-            text: message.text,
-          }).html;
-        } catch {
-          // An unsupported or damaged visual never hides its saved text.
-        }
       }
 
       return restored;

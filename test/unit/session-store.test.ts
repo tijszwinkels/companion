@@ -40,6 +40,30 @@ function backend(run: AgentBackend['run'] = async () => {}): AgentBackend {
   return { id: 'fixture', label: 'Fixture', dependencies: {}, run };
 }
 
+test('archives from the removed HTML feature reopen as text without losing their model profile', async (context) => {
+  const { path, store } = await fixture(context);
+  const session = savedSession();
+  session.profile = 'quickQuestion';
+  await store.save(session);
+
+  // Match an archive written by the former renderer, without reading or
+  // rewriting any of the user's real conversations.
+  const saved = JSON.parse(await readFile(join(path, `${session.id}.json`), 'utf8'));
+  saved.messages.push({
+    ...chatMessage('graphic', 'assistant', 'Input leads to Result.'),
+    html: '<table><tr><td>Input</td><td>Result</td></tr></table>',
+  });
+  const serialized = JSON.stringify(saved);
+  await writeFile(join(path, `${session.id}.json`), serialized);
+
+  const restored = await store.read(session.id);
+  assert.equal(restored.profile, 'quickQuestion');
+  assert.equal(restored.messages[1].text, 'Input leads to Result.');
+  assert.equal('html' in restored.messages[1], false);
+  assert.equal((await store.previous(() => {})).length, 1);
+  assert.equal(await readFile(join(path, `${session.id}.json`), 'utf8'), serialized);
+});
+
 test('history inspection creates no resources and ignores unrelated Pi sessions', async (context) => {
   const { directory, path, store } = await fixture(context);
   await writeFile(join(directory, 'pi-smoke-session.jsonl'), '{}\n');

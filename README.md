@@ -144,13 +144,7 @@ fallbacks), spaced paragraphs and headings, and smaller monospace code in shaded
 frames. With the conversation focused, **Ctrl++** (or **Ctrl+=**) and **Ctrl+-**
 zoom the transcript and composer from 80% to 200%; **Ctrl+0** resets to 100%.
 Zoom follows you between tabs for the lifetime of the panel. Links remain
-clickable; raw HTML in ordinary answers is literal text and Markdown images display their alt text.
-Agents can call `companion_html` to insert a small diagram, comparison or card
-using a safe Qt HTML subset. These bubbles follow the theme and zoom, remain
-selectable, and offer **Show text**; whole-message Copy uses the supplied text
-alternative. Scripts, images, SVG, links and external resources are not supported.
-See [HTML conversation bubbles](src/agents/README.md#html-conversation-bubbles)
-for the tool format and renderer limits.
+clickable; raw HTML is literal text and Markdown images display their alt text.
 All tabs, including Activity, use 600 logical pixels of width (capped to the
 screen) and all available screen height. Switching tabs keeps the same size. Scrolling
 up stops following the stream until you return to the bottom. Conversation wheel

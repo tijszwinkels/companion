@@ -176,8 +176,7 @@ Item {
       const message = incoming[index]
       const row = {messageId: message.id, kind: message.kind, body: message.text,
         toolName: message.toolName, input: message.input, state: message.state,
-        screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
-        html: message.kind === "assistant" && message.state === "done" ? message.html || "" : ""}
+        screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || ""}
       if (index < messages.count) {
         messages.set(index, row)
       } else {
@@ -244,7 +243,6 @@ Item {
       required property string messageId
       required property string kind
       required property string body
-      required property string html
       required property string toolName
       required property string input
       required property string state
@@ -349,55 +347,12 @@ Item {
             Accessible.onPressAction: if (thumbnail.status === Image.Ready) root.screenshotRequested(bubble.screenshotUrl, root.session.title)
           }
 
-          Loader {
-            id: visualLoader
-            width: parent.width
-            active: bubble.html !== ""
-            visible: active
-            sourceComponent: Column {
-              width: visualLoader.width
-              spacing: 6 * root.unit
-              HtmlBubble {
-                id: visual
-                objectName: "htmlMessageText"
-                width: parent.width
-                source: bubble.html
-                fallback: bubble.body
-                textScale: root.textScale
-                color: root.foreground
-                muted: root.muted
-                accent: root.accent
-                themeSelection: root.selection
-                selectionColor: root.selection
-                selectedTextColor: root.foreground
-                font.family: root.proseFontFamily
-                font.pixelSize: 16 * root.textScale
-                onSelectedTextChanged: root.messageSelectionChanged(visual)
-                Component.onDestruction: if (root.selectedMessage === visual) root.selectedMessage = null
-                onVisibleChanged: if (!visible && root.selectedMessage === visual) root.clearMessageSelection()
-              }
-              PanelAction {
-                objectName: "toggleHtmlText"
-                text: !visual.fits ? "Text view" : visual.showText ? "Show graphic" : "Show text"
-                enabled: visual.fits
-                foreground: root.muted
-                selection: root.selection
-                fontFamily: root.fontFamily
-                unit: root.unit
-                onTriggered: {
-                  root.clearMessageSelection()
-                  visual.showText = !visual.showText
-                }
-              }
-            }
-          }
-
           TextEdit {
             id: messageText
             objectName: "messageText"
             width: parent.width
             height: visible ? contentHeight : 0
-            visible: bubble.html === "" && (bubble.kind !== "tool" || bubble.expanded)
+            visible: bubble.kind !== "tool" || bubble.expanded
             text: bubble.kind === "assistant" ? Markdown.render(bubble.body, root.textScale, root.selection.toString(), root.accent.toString())
               : bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
             textFormat: bubble.kind === "assistant" ? TextEdit.RichText : TextEdit.PlainText

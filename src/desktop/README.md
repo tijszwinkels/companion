@@ -355,15 +355,6 @@ for the private original PNG. It may be absent on older/missing attachments; kee
 the question text visible. Image bytes never travel to the UI socket. URLs are
 computed from the validated session UUID, not trusted from serialized content.
 
-A completed assistant message may also carry `html`, a bounded, validated HTML
-fragment. `text` remains its required standalone alternative, so older clients
-remain useful. Clients must validate this field with the shared `Html.mjs`
-allowlist before rendering; never feed it directly to a browser or privileged
-plugin. A successful `companion_html` completion replaces its running tool row
-under the same message ID. Partial and failed calls have no `html` field.
-Both incremental updates and reconnect/restore snapshots carry the same shape.
-Saved HTML is revalidated on read; unsupported content retains the text fallback.
-
 Between snapshots, `{"type":"agent-session","session":{...}}` carries current
 session metadata and **only changed messages**. Upsert by session/message ID in
 arrival order; do not replace the entire conversation with this partial array.
@@ -417,7 +408,8 @@ The detector's user-message JSON includes `interaction.agentConversation`: the
 selected title and first two/last two non-empty user or assistant text bubbles.
 Overlapping positions appear once in chronological order. Roles and message
 states distinguish queued requests, partial answers and failed messages. Tools,
-notices and HTML are excluded; HTML bubbles contribute their plain-text fallback.
+notices and non-text content are excluded. Previously saved HTML bubbles retain
+their plain-text fallback after the HTML feature was removed.
 The title is bounded to 200 Unicode code points and each of up to four messages
 to 2000, retaining the beginning/end around an omission marker. Truncation is
 flagged. These are copied values from speech end, before asynchronous screen

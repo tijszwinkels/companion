@@ -110,28 +110,6 @@ function receive(request) {
     result: { content: [{ type: 'text', text: 'complete tool output' }] },
   });
 
-  if (request.message.startsWith('html')) {
-    const bubble = {
-      version: request.message.startsWith('html version') ? 2 : 1,
-      html: request.message.startsWith('html malformed')
-        ? '<img src="file:///private">'
-        : '<p><b>Input</b> → Result</p>',
-      text: 'Input leads to Result.',
-    };
-    const result = {
-      content: [{ type: 'text', text: 'Published' }],
-      details: request.message.startsWith('html missing') ? {} : { companionHtml: bubble },
-    };
-    send({
-      type: 'tool_execution_start',
-      toolName: 'companion_html',
-      toolCallId: 'html-1',
-      args: bubble,
-    });
-    send({ type: 'tool_execution_update', toolCallId: 'html-1', partialResult: result });
-    send({ type: 'tool_execution_end', toolCallId: 'html-1', isError: false, result });
-  }
-
   if (request.message.startsWith('choices')) {
     const result = (options) => ({
       content: [{ type: 'text', text: 'Choices' }],

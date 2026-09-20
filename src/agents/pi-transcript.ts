@@ -1,5 +1,3 @@
-import { maxTextLength, parseHtmlBubble } from '../../integrations/panel/Html.mjs';
-
 import { chatMessage, type AgentMessage } from './types.ts';
 
 /** Wire data is untrusted input even though Pi is a local child process. */
@@ -33,10 +31,7 @@ export class PiTranscript {
   private readonly tools = new Map<string, AgentMessage>();
   failure = '';
 
-  constructor(
-    private readonly emit: (message: AgentMessage) => void,
-    private readonly signal?: AbortSignal,
-  ) {}
+  constructor(private readonly emit: (message: AgentMessage) => void) {}
 
   receive(event: Record<string, unknown>): void {
     const message = object(event.message);
@@ -81,9 +76,6 @@ export class PiTranscript {
     }
 
     if (event.type === 'tool_execution_start' && typeof event.toolCallId === 'string') {
-      if (this.tools.has(event.toolCallId)) {
-        return;
-      }
       const tool = chatMessage(`tool-${event.toolCallId}`, 'tool', '');
       tool.toolName = String(event.toolName || 'Tool');
       tool.input = JSON.stringify(event.args ?? {}, null, 2).slice(0, 16384);
@@ -94,7 +86,7 @@ export class PiTranscript {
 
     if (event.type === 'tool_execution_update' || event.type === 'tool_execution_end') {
       const tool = this.tools.get(String(event.toolCallId));
-      if (!tool || tool.state !== 'running') {
+      if (!tool) {
         return;
       }
 
@@ -104,33 +96,6 @@ export class PiTranscript {
         text.length > 16384 ? text.slice(0, 16384) + '\n[Output truncated in panel]' : text;
       if (event.type === 'tool_execution_end') {
         tool.state = event.isError === true ? 'error' : 'done';
-      }
-      if (
-        event.type === 'tool_execution_end' &&
-        tool.toolName === 'companion_html' &&
-        event.isError === false &&
-        !this.signal?.aborted
-      ) {
-        let bubble;
-        try {
-          bubble = parseHtmlBubble(object(result.details).companionHtml);
-        } catch {
-          const fallback = object(object(result.details).companionHtml).text;
-          const text =
-            typeof fallback === 'string' && fallback.trim() && fallback.length <= maxTextLength
-              ? fallback
-              : 'Could not display the graphic. Please ask the agent for a text explanation.';
-          this.emit(chatMessage(tool.id, 'notice', text));
-          return;
-        }
-
-        // Replace this call's running tool row atomically with its finished
-        // visual. Partial, failed, unrelated and duplicate results cannot
-        // publish HTML. Later tool updates cannot mutate the completed row.
-        const visual = chatMessage(tool.id, 'assistant', bubble.text);
-        visual.html = bubble.html;
-        this.emit(visual);
-        return;
       }
       this.emit({ ...tool });
     }

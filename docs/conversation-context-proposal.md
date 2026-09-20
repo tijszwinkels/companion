@@ -28,8 +28,9 @@ broadcasts that only need selection/choice state; the capture path requests it.
 - Read only the selected session's `AgentSession.messages` in stored order.
   Count non-empty `kind: user` and `kind: assistant` text bubbles, not turns or
   user/assistant pairs. Exclude tools, notices, empty text, raw provider history,
-  hidden reasoning, HTML, screenshots and unsent composer drafts. For HTML
-  bubbles use their existing plain-text fallback, `text`.
+  hidden reasoning, non-text content, screenshots and unsent composer drafts.
+  Previously saved HTML bubbles retain their plain-text fallback, `text`, after
+  the HTML feature was removed.
 - Preserve text verbatim within the bound. Whitespace-only text is excluded;
   trimming for eligibility does not trim the included original text.
 - Select the union of positions 1, 2, N-1 and N, ordered chronologically and

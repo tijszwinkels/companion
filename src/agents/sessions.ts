@@ -334,12 +334,7 @@ export class AgentSessions implements InspectableModule {
       await this.dependencies.backend.run(
         { id: session.view.id, directory: this.directory, settings, prompt, resume },
         session.controller.signal,
-        (message) => {
-          if (!acceptingUpdates || (message.html && session.controller.signal.aborted)) {
-            return;
-          }
-          this.message(session, { ...message, id: `${turnId}:${message.id}` });
-        },
+        (message) => this.message(session, { ...message, id: `${turnId}:${message.id}` }),
         (options) => {
           if (
             !acceptingUpdates ||
@@ -434,15 +429,11 @@ export class AgentSessions implements InspectableModule {
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
     const otherSize = session.view.messages.reduce(
       (size, entry) =>
-        size +
-        (entry.id === message.id
-          ? 0
-          : entry.text.length + entry.input.length + (entry.html?.length ?? 0)),
+        size + (entry.id === message.id ? 0 : entry.text.length + entry.input.length),
       0,
     );
     if (
-      otherSize + message.text.length + message.input.length + (message.html?.length ?? 0) >
-        256 * 1024 ||
+      otherSize + message.text.length + message.input.length > 256 * 1024 ||
       (index < 0 && session.view.messages.length >= 200)
     ) {
       throw Error('The panel transcript limit was reached. The full session is saved in Pi.');

@@ -7,14 +7,6 @@ or an active desktop. With Qt 6's declarative development tools installed:
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 ```
 
-HTML checks render table diagrams and comparison cards through the native Qt
-renderer and assert pixel colors and layout geometry. They also cover malformed
-and oversized fragments, escaped text fallback, theme/zoom, selection and copy,
-focus/drafts, scrolling during streaming, tool-row replacement and snapshot/
-restore behavior. The synthetic preview is `/tmp/companion-html-bubbles.png`.
-See [HTML conversation bubbles](../../src/agents/README.md#html-conversation-bubbles)
-for security boundaries and the explicitly limited HTML/CSS subset.
-
 Dynamic-choice tests cover pinned choices above the composer, actual clicks with
 revision/index identity, retained freeform drafts, pending acknowledgements,
 label-only and described options, permanent-shortcut collisions, paused/offline

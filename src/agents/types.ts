@@ -7,8 +7,6 @@ export interface AgentMessage {
   id: string;
   kind: 'user' | 'assistant' | 'tool' | 'notice';
   text: string;
-  /** Validated display-only HTML; text remains the standalone fallback. */
-  html?: string;
   toolName: string;
   input: string;
   state: 'queued' | 'running' | 'done' | 'error';
