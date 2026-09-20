@@ -113,6 +113,8 @@ test('staged install preserves config and reloads only when Lua integration chan
     'panel/AgentChoices.qml',
     'panel/ActivityStrip.qml',
     'panel/Markdown.mjs',
+    'panel/Html.mjs',
+    'panel/HtmlBubble.qml',
     'panel/vendor/markdown-it.mjs',
     'panel/vendor/markdown-it.LICENSE',
     'panel/PanelSurface.qml',

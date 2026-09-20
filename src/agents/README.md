@@ -1,5 +1,96 @@
 # Conversation tools
 
+## HTML conversation bubbles
+
+The native Pi extension `html-tool.ts` registers `companion_html` on each backend
+invocation. Its own `promptSnippet` and `promptGuidelines` encourage small useful
+diagrams, comparisons and cards when they improve an explanation. Ordinary
+Markdown remains available. Existing system and user-edited intent prompts are
+unchanged; there is no second model request, browser window or UI action channel.
+
+```json
+{
+  "html": "<table width=\"100%\" cellpadding=\"8\"><tr><td style=\"background-color: var(--selection)\">Input</td><td>→</td><td style=\"color: var(--accent)\">Result</td></tr></table>",
+  "text": "Input leads to Result."
+}
+```
+
+Each successful call publishes one bubble. The text must stand on its own: it is
+used by older panels, CLI logging, whole-message Copy and the **Show text** toggle.
+Selection copies the rendered text; neither selection nor the toggle takes
+composer focus or clears its draft. Completed graphics stay in saved and reopened
+conversations. Ordinary choices, naming and queued follow-ups use their existing
+paths. A new call adds another bubble rather than editing a previous answer.
+
+### Renderer and bounds
+
+This uses Qt's native rich text, **not full browser HTML**. On this host, Qt 6.11.2
+and Quickshell render the example above and a two-column comparison. Although the
+QtWebEngine module is installed, an isolated offscreen Quickshell WebEngine probe
+crashed on initialization (`Argument list is empty ... QCoreApplication`). No new
+system dependency is needed for the chosen renderer. SVG, flex/grid, arbitrary
+CSS and interactive HTML are deliberately unsupported.
+
+`integrations/panel/Html.mjs` is shared by Node and QML, with `.d.mts` declarations
+for TypeScript. It parses a restricted, balanced fragment and reconstructs every
+tag and attribute. The tool validates before returning; the RPC transcript,
+saved-session reader and panel validate again at their respective boundaries.
+No accepted tag, attribute or CSS value can load a file/remote resource or invoke
+a command. This is a capability allowlist, not an attempt to sandbox unrestricted
+HTML. There are no images, links, document headers, scripts, event handlers,
+forms, URL-valued CSS, style blocks or embedded objects. Text entities are decoded
+once and escaped again; the fallback is always escaped before rich-text display.
+QML receives no agent-supplied QML, shell command, file path or executable plugin.
+
+Accepted tags: `p div span b strong i em u s small sub sup code br hr ul ol li h3
+table tr td th`. Attributes must be lowercase and quoted: `align` (left/center/right),
+`style`, percentage `width` on table/td/th, and table `cellpadding` (0–12) and
+`cellspacing` (0–8). Supported inline styles are `color`, `background-color`,
+`font-size` (12–24px), `font-weight` (normal/bold/400–700), `font-style`
+(normal/italic) and `text-align` (left/center/right). Colors accept six-digit
+lowercase hex or `var(--foreground)`, `var(--muted)`, `var(--accent)` and
+`var(--selection)`; prefer theme variables. These variables are substituted by
+Companion, not a browser CSS engine. Use literal Unicode for diagram arrows.
+Native text layout may simplify formatting; it is not a pixel-perfect web layout.
+
+Limits are 12,288 HTML and 4,000 fallback UTF-16 code units, 160 elements, eight
+levels, and four columns/twelve rows per table, with no nested tables. HTML counts
+toward the existing 256 KiB transcript character budget and 200-message limit.
+Font sizes and table spacing follow reader zoom. A measured layout exceeding the
+available bubble width or 480 scaled pixels of height displays the text fallback
+instead of clipping a diagram or adding a nested scroll area. Malformed or
+unsupported saved HTML also keeps its text. Fixed author colors do not adapt to
+theme changes; theme variables do.
+
+### Publication and verification
+
+Only a successful `tool_execution_end` correlated to `companion_html` publishes.
+The running tool row is replaced atomically with a completed assistant message,
+including `text` and optional `html`; partial results, unrelated tools, errors,
+duplicate completions and results received after cancellation cannot publish.
+Invalid result metadata produces a visible text fallback/notice without losing
+the rest of the answer. A turn's retained message callback is ignored after it
+settles. Completed visuals before a later cancellation remain readable history.
+
+`test/unit/agent-html.test.ts` checks the native tool, rejected resource/action
+syntax, bounds, real subprocess RPC, lifecycle gates, archive/reopen, damaged
+HTML, transcript budget and late callbacks. `test/panel/tst_html.qml` renders an
+actual diagram and comparison, checks colored pixels and cell geometry, theme,
+zoom, bounds, literal fallback, selection/Copy, composer drafts/focus, scrolling,
+streaming, incremental tool-row replacement and reconnect/restore. Its synthetic
+preview is `/tmp/companion-html-bubbles.png`. The staged installer test checks that
+both renderer files are copied.
+
+The installed Pi 0.85.1 binary registered the extension and included its schema,
+snippet and guideline in an isolated offline startup with no model request. An
+isolated offscreen Quickshell process also loaded `HtmlBubble` and rendered the
+diagram successfully. These checks prove native rendering and protocol handling;
+they do not prove how often a model chooses the tool or the live Wayland sidebar
+experience. No live installation, listener restart, desktop input or microphone
+test was performed. After integration and an independently authorized install,
+ask an agent to explain a short pipeline with `companion_html`, then check the
+text toggle, copy, zoom, reopen, and a freeform queued follow-up in the sidebar.
+
 ## Session names
 
 `companion_name_session` is a small native Pi extension tool that calls

@@ -50,6 +50,8 @@ export class PiBackend implements AgentBackend {
         fileURLToPath(new URL('./choice-tool.ts', import.meta.url)),
         '--extension',
         fileURLToPath(new URL('./session-name-tool.ts', import.meta.url)),
+        '--extension',
+        fileURLToPath(new URL('./html-tool.ts', import.meta.url)),
       ],
       {
         cwd: request.directory,
@@ -58,7 +60,7 @@ export class PiBackend implements AgentBackend {
       },
     );
 
-    const transcript = new PiTranscript(emit);
+    const transcript = new PiTranscript(emit, signal);
     const choiceCalls = new Set<string>();
     let namePending = false;
     let nameTimer: ReturnType<typeof setTimeout> | undefined;

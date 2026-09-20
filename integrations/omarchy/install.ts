@@ -75,6 +75,8 @@ const files = [
   'panel/PanelAction.qml',
   'panel/SessionView.qml',
   'panel/Markdown.mjs',
+  'panel/Html.mjs',
+  'panel/HtmlBubble.qml',
   'panel/vendor/markdown-it.mjs',
   'panel/vendor/markdown-it.LICENSE',
   'panel/vendor/THIRD-PARTY-LICENSES.md',

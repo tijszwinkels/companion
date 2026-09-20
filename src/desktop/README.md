@@ -355,6 +355,15 @@ for the private original PNG. It may be absent on older/missing attachments; kee
 the question text visible. Image bytes never travel to the UI socket. URLs are
 computed from the validated session UUID, not trusted from serialized content.
 
+A completed assistant message may also carry `html`, a bounded, validated HTML
+fragment. `text` remains its required standalone alternative, so older clients
+remain useful. Clients must validate this field with the shared `Html.mjs`
+allowlist before rendering; never feed it directly to a browser or privileged
+plugin. A successful `companion_html` completion replaces its running tool row
+under the same message ID. Partial and failed calls have no `html` field.
+Both incremental updates and reconnect/restore snapshots carry the same shape.
+Saved HTML is revalidated on read; unsupported content retains the text fallback.
+
 Between snapshots, `{"type":"agent-session","session":{...}}` carries current
 session metadata and **only changed messages**. Upsert by session/message ID in
 arrival order; do not replace the entire conversation with this partial array.
