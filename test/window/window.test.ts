@@ -54,6 +54,37 @@ test('prepared shortcuts preserve ordinary desktop actions and route the native 
   assert.match(result.stdout, /BINDINGS_PASS/);
 });
 
+test('CLI rejects invalid or conflicting presentation options before starting a UI', async () => {
+  const setup = await fixture();
+  try {
+    for (const args of [
+      ['--presentation', 'nonsense'],
+      ['--command', 'show', '--presentation', 'window'],
+    ]) {
+      await assert.rejects(
+        execute(join(build, 'companion-ui'), args, {
+          env: setup.env,
+          timeout: 3000,
+          killSignal: 'SIGKILL',
+        }),
+        (error: any) => {
+          assert.equal(error.code, 1, 'reject the arguments, rather than start or time out');
+          assert.match(
+            error.stderr,
+            args.includes('--command')
+              ? /Use --presentation and --command in separate invocations/
+              : /Choose window, sidebar or dock/,
+          );
+          return true;
+        },
+      );
+    }
+    await assert.rejects(stat(join(setup.runtime, 'companion/ui.sock')), { code: 'ENOENT' });
+  } finally {
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
 test('stock Quickshell bridge connects to the isolated native control socket', async () => {
   const setup = await fixture();
   const calls: any[] = [];
@@ -270,6 +301,22 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
       () => statuses.some((entry) => entry.type === 'status' && entry.opened === false),
       () => output,
     );
+    assert.equal(requests.at(-1).id, '');
+    await assert.rejects(
+      execute(executable, ['--presentation', 'nonsense'], { env, timeout: 5000 }),
+      /Choose window, sidebar or dock/,
+    );
+    await assert.rejects(
+      execute(executable, ['--command', 'show', '--presentation', 'window'], {
+        env,
+        timeout: 5000,
+      }),
+      /Use --presentation and --command in separate invocations/,
+    );
+    // The rejected combination must not partially show or change the running UI.
+    // Send two explicit operations when both a mode change and visibility matter.
+    await execute(executable, ['--presentation', 'window'], { env, timeout: 5000 });
+    assert.equal(statuses.filter((entry) => entry.type === 'status').at(-1).opened, false);
     assert.equal(requests.at(-1).id, '');
     await execute(executable, ['--command', 'show'], {
       env,

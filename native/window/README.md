@@ -139,6 +139,15 @@ allow isolated fixtures. They are local desktop transports and are never exposed
 to widget JavaScript. Commands are not replayed on reconnect; an unconfirmed
 message retains its draft and asks the user to check the transcript.
 
+Each invocation requests one operation: `--presentation` changes the mode of an
+existing UI without showing a hidden window. To show it in a chosen mode, run
+`--presentation window` and then `--command show` separately. Combining the two
+options, or spelling a mode other than `window`, `sidebar` or `dock`, exits with
+an error before contacting or starting the UI. A valid Sidebar/Dock request still
+requires Wayland and LayerShellQt; the running UI displays an availability error
+when those are missing. Its CLI acknowledgement confirms receipt, not successful
+compositor activation.
+
 ## Packaging
 
 CMake installs the executable, QML body, native widget module and desktop entry:

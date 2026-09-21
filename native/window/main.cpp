@@ -56,6 +56,18 @@ int main(int argc, char **argv) {
     parser.addOption({"widget-rendering", "Initial widget rendering: normal, supersampled or filtered", "mode", widgetRendering.mode()});
     parser.process(app);
 
+    const auto presentation = parser.value("presentation");
+    if (parser.isSet("presentation") && presentation != "window"
+        && presentation != "sidebar" && presentation != "dock") {
+        fprintf(stderr, "Choose window, sidebar or dock for --presentation.\n");
+        return 1;
+    }
+    // Each invocation sends one operation. Reject ambiguous combinations before
+    // contacting a running UI instead of silently dropping its show/hide command.
+    if (parser.isSet("presentation") && parser.isSet("command")) {
+        fprintf(stderr, "Use --presentation and --command in separate invocations.\n");
+        return 1;
+    }
     if (!WidgetRendering::accepts(parser.value("widget-rendering"))) {
         fprintf(stderr, "Choose normal, supersampled or filtered for --widget-rendering.\n");
         return 1;
@@ -96,7 +108,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         QJsonObject request{{"action", action.isEmpty() ? "show" : action}, {"activate", true}};
-        if (parser.isSet("presentation")) request = {{"action", "presentation"}, {"mode", parser.value("presentation")}};
+        if (parser.isSet("presentation")) request = {{"action", "presentation"}, {"mode", presentation}};
         existing.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
         if (!existing.waitForBytesWritten(1000)) return 1;
         QByteArray response;
@@ -139,7 +151,7 @@ int main(int argc, char **argv) {
     if (!body || !host.listen(control)) return 1;
     host.attach(body);
     QSettings settings;
-    host.setPresentation(parser.isSet("presentation") ? parser.value("presentation")
+    host.setPresentation(parser.isSet("presentation") ? presentation
                                                     : settings.value("presentation", "window").toString());
     if (!parser.isSet("hidden")) host.show(false);
     connection.start();
