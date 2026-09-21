@@ -407,7 +407,7 @@ test('native UI preserves its QML body and Chromium view across presentation cha
           killSignal: 'SIGKILL',
         },
       );
-      assert.match(result.stdout, /4 passed, 0 failed/);
+      assert.match(result.stdout, /5 passed, 0 failed/);
       const artifacts = join(build, 'artifacts');
       await mkdir(artifacts, { recursive: true });
       await writeFile(

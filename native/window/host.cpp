@@ -104,7 +104,12 @@ void WindowHost::setPresentation(const QString &value) {
         setError("Sidebar and Dock require Wayland and the LayerShellQt package.");
         return;
     }
-    if (value == mode) return;
+    if (value == mode) {
+        // Reasserting a valid mode is also recovery from a rejected request.
+        // This matters on window-only hosts where no other mode can succeed.
+        setError("");
+        return;
+    }
     const bool visible = opened();
     const bool focused = active();
     QPointer<QQuickItem> focusItem = window()->activeFocusItem();

@@ -49,6 +49,17 @@ TestCase {
   function cleanup() {
     body.client.sessions.select("one")
   }
+  function test_presentation_error_clears_when_current_mode_is_requested() {
+    TestHost.setPresentation("window")
+    TestHost.setPresentation("unknown-mode")
+    compare(TestHost.error, "Choose Window, Sidebar or Dock.")
+    compare(TestHost.presentation, "window")
+    TestHost.setPresentation("window")
+    compare(TestHost.error, "")
+    compare(TestHost.presentation, "window")
+    TestHost.setPresentation("window")
+    compare(TestHost.error, "")
+  }
   function test_independent_intent_and_shortcut_controls() {
     // Exercise the complete native host -> portable card -> socket path. A
     // missing mode would make the backend switch both routes for either card.
