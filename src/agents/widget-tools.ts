@@ -47,7 +47,7 @@ export function widgetTools(endpoint: string, token: string) {
         'Discover a widget and inspect its schema before publishing. If a keyword search is empty, list the library: a generic comparison or chart may fit. Supply props instead of repeating HTML or JavaScript. Existing widgets can be inspected by id, updated or called through their declared actions.',
       ],
       description:
-        'List widget names, descriptions and actions. Use name to inspect a schema/example, or id to read an existing instance’s current props, revision and actions. Search with query. Bundles live in Companion’s widget-library directory.',
+        'List widget names, descriptions and actions. Use name to inspect a schema/example, or id to read an existing instance’s current props, revision, actions and lastViewport (widthCssPixels, heightCssPixels, textScale; null before layout or after view eviction). These are the last known sidebar dimensions, not a fixed size or the pop-out size. Search with query. Bundles live in Companion’s widget-library directory.',
       parameters: Type.Object({
         query: Type.Optional(Type.String({ maxLength: 100 })),
         name: Type.Optional(Type.String({ maxLength: 48 })),
@@ -61,7 +61,7 @@ export function widgetTools(endpoint: string, token: string) {
       promptSnippet: 'Insert a reusable widget into your conversation using its name and props.',
       promptGuidelines: [
         'Prefer compact inline visuals. Pin a widget when useful for ongoing work, normally using 25 percent of the sidebar height. A 100 percent pinned widget hides chat and its input until the user returns to chat.',
-        'Design for changing space: width follows the sidebar, inline height fits content within 100–420 theme units, and pinned height is a percentage. The initial 480 × 280 CSS-pixel preview is not the user’s actual viewport. Text zoom and Chromium pop-out resizing also change the layout.',
+        'Design for changing space: width follows the sidebar, inline height fits content within 100–420 theme units, and pinned height is a percentage. Inspect companion_widgets({id}) for lastViewport dimensions in CSS pixels when available. The initial 480 × 280 preview is not the user’s actual viewport. Text zoom and Chromium pop-out resizing also change the layout.',
         'When authoring library widgets, use fluid CSS, wrapping flex/grid layouts, scalable SVG viewBox graphics and rem-based text. Read root.getBoundingClientRect() for actual available width in CSS pixels and window.innerHeight for viewport height; use ResizeObserver for canvas/WebGL resizing and disconnect it in dispose. The host adds 12 CSS pixels of padding on each side. Avoid fixed-width desktop layouts.',
       ],
       description:

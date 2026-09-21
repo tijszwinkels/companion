@@ -8,6 +8,7 @@ Item {
   Panel.WidgetSurface {
     id: widget
     x: 20; y: 20; width: 480; height: 280
+    pixelRatio: 2
     reference: @REFERENCE@
     foreground: "#e0e6f0"; muted: "#959faa"; accent: "#82aaff"; selection: "#17212d"
     fitContent: false
@@ -18,6 +19,8 @@ Item {
     function test_real_frame_click_keyboard_zoom_and_snapshot() {
       const frame = findChild(widget, "widgetFrame")
       tryCompare(frame, "status", Image.Ready, 10000)
+      compare(frame.sourceSize.width, 960)
+      compare(frame.sourceSize.height, 560)
       compare(widget.error, "")
       mouseClick(widget, 24, 56)
       let state = null

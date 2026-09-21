@@ -379,6 +379,7 @@ export class WidgetService {
           revision: record.revision,
           props: record.props,
           presentation: record.presentation,
+          lastViewport: this.renderer.dimensions(record.id),
           manifest: (await this.bundle(record)).manifest,
         };
       }
@@ -517,7 +518,7 @@ export class WidgetService {
 
   private viewport(url: URL): WidgetViewport {
     const result = { ...defaultViewport };
-    for (const key of ['width', 'height', 'scale'] as const) {
+    for (const key of ['width', 'height', 'scale', 'pixelRatio'] as const) {
       if (url.searchParams.has(key)) {
         result[key] = Number(url.searchParams.get(key));
       }
@@ -531,7 +532,10 @@ export class WidgetService {
       result.height > 2200 ||
       !Number.isFinite(result.scale) ||
       result.scale < 0.5 ||
-      result.scale > 3
+      result.scale > 3 ||
+      !Number.isFinite(result.pixelRatio) ||
+      result.pixelRatio < 1 ||
+      result.pixelRatio > 3
     ) {
       throw Error('Invalid widget viewport');
     }

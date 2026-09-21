@@ -17,6 +17,85 @@ import {
 
 // These checks start only isolated headless Chromium processes. All input goes
 // to their private CDP pipes; no desktop browser, microphone or OS input is used.
+test('capture density sharpens frames without changing logical viewport dimensions', async () => {
+  const directory = await mkdtemp('/tmp/companion-widget-density-');
+  const renderer = new WidgetRenderer();
+  let reference: WidgetAttachment | undefined;
+  const service = new WidgetService(
+    directory,
+    async (_, value) => {
+      reference = value;
+    },
+    undefined,
+    renderer,
+  );
+  try {
+    const lease = await service.lease(randomUUID(), new AbortController().signal);
+    const command = async (body: object) => {
+      const response = await fetch(lease.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 200);
+      return (await response.json()) as any;
+    };
+    const created = await command({
+      method: 'publish',
+      widget: 'comparison',
+      props: {
+        options: [
+          { title: 'One', points: ['First'] },
+          { title: 'Two', points: ['Second'] },
+        ],
+      },
+      requestId: 'density',
+    });
+    const inspect = () => command({ method: 'discover', id: created.id });
+    assert.equal((await inspect()).lastViewport, null);
+
+    for (const [width, height, pixelRatio, scale] of [
+      [320, 180, 1.5, 1],
+      [480, 280, 2, 1.5],
+    ]) {
+      const response = await fetch(
+        reference!.viewUrl +
+          `/frame?width=${width}&height=${height}&pixelRatio=${pixelRatio}&scale=${scale}`,
+      );
+      assert.equal(response.status, 200);
+      const png = Buffer.from(await response.arrayBuffer());
+      assert.equal(png.subarray(1, 4).toString(), 'PNG');
+      assert.equal(png.readUInt32BE(16), width * pixelRatio);
+      assert.equal(png.readUInt32BE(20), height * pixelRatio);
+      assert.deepEqual((await inspect()).lastViewport, {
+        widthCssPixels: width,
+        heightCssPixels: height,
+        textScale: scale,
+      });
+    }
+    for (const pixelRatio of ['0', '3.1', 'NaN', 'Infinity']) {
+      const response = await fetch(reference!.viewUrl + '/frame?pixelRatio=' + pixelRatio);
+      assert.equal(response.status, 400);
+      await response.arrayBuffer();
+    }
+    const bounded = await fetch(reference!.viewUrl + '/frame?width=1600&height=2200&pixelRatio=3');
+    assert.equal(bounded.status, 200);
+    const large = Buffer.from(await bounded.arrayBuffer());
+    assert.ok(large.readUInt32BE(16) > 1600);
+    assert.ok(large.readUInt32BE(16) * large.readUInt32BE(20) <= 8_000_000);
+
+    await renderer.discard([created.id]);
+    assert.equal(
+      (await inspect()).lastViewport,
+      null,
+      'Evicted view dimensions must not look current',
+    );
+  } finally {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('real widget publication, direct input, actions, pin transactions and reopen', async () => {
   const directory = await mkdtemp('/tmp/companion-widget-test-');
   const owner = randomUUID();

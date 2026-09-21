@@ -61,6 +61,7 @@ export interface WidgetViewport {
   width: number;
   height: number;
   scale: number;
+  pixelRatio: number;
   foreground: string;
   background: string;
   accent: string;

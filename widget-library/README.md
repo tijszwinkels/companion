@@ -17,6 +17,9 @@ The initial library contains `todo`, `bar-chart`, `pipeline`, `comparison` and
    adds an item without resending the list. The result contains its `itemId`.
 5. `companion_widgets({id})` inspects current props/revision. Use
    `companion_widget_update({id, revision, props})` to replace all props.
+   Its `lastViewport` reports `widthCssPixels`, `heightCssPixels` and `textScale`
+   from the latest sidebar layout, or `null` before layout/after view eviction.
+   Treat these as a recent measurement; a hidden or resized view may differ.
 6. `companion_widget_present({id, presentation: {placement: "pinned",
 heightPercent: 25, replaceActivity: true}})` pins the widget above the chat.
    Use `placement: "inline"` to unpin it.
@@ -174,6 +177,9 @@ There is no fallback that disables these protections.
 
 Sidebar capture is capped at 10 frames/second and pauses for hidden/offscreen
 views. Eight browser surfaces are retained at most; idle ones can be recreated.
+Capture follows the Qt display pixel density (up to 3×, with an 8-megapixel
+backing-buffer budget). CSS geometry and input coordinates remain in logical
+pixels; text zoom is separate from capture density.
 This suits compact graphics and lists. It is not a native browser texture or a
 60 fps embedded canvas. Headless checks demonstrated WebGL drawing; GPU speed
 and the actual desktop pop-out still require a coordinated live check. Pop-out

@@ -28,6 +28,20 @@ export class WidgetRenderer {
   private readonly surfaces = new Map<string, Surface>();
   private readonly popouts = new Map<string, Chromium>();
 
+  /** Last sidebar layout, not a promise about a resized or unopened view. */
+  dimensions(id: string) {
+    const encoded = this.surfaces.get(id)?.viewport;
+    if (!encoded) {
+      return null;
+    }
+    const viewport = JSON.parse(encoded) as WidgetViewport;
+    return {
+      widthCssPixels: viewport.width,
+      heightCssPixels: viewport.height,
+      textScale: viewport.scale,
+    };
+  }
+
   private async use<T>(
     record: WidgetRecord,
     bundle: WidgetBundle,
@@ -133,10 +147,18 @@ export class WidgetRenderer {
   ): Promise<void> {
     const configuration = JSON.stringify(viewport);
     if (surface.viewport !== configuration) {
+      // Qt sizes and input coordinates stay in logical/CSS pixels. Capture at
+      // the display's density to avoid enlarging a low-resolution bitmap, but
+      // bound the backing buffer even for a large full-height pinned widget.
+      const pixelRatio = Math.min(
+        viewport.pixelRatio,
+        // Reserve one pixel per axis for Chromium's integer-size rounding.
+        Math.sqrt(8_000_000 / ((viewport.width + 1) * (viewport.height + 1))),
+      );
       await page.call('Emulation.setDeviceMetricsOverride', {
         width: viewport.width,
         height: viewport.height,
-        deviceScaleFactor: 1,
+        deviceScaleFactor: pixelRatio,
         mobile: false,
       });
     }

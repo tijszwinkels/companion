@@ -13,6 +13,7 @@ export const defaultViewport: WidgetViewport = {
   width: 480,
   height: 280,
   scale: 1,
+  pixelRatio: 1,
   foreground: '#e0e6f0',
   background: '#17212d',
   accent: '#82aaff',

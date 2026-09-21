@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 
 // The browser owns HTML, CSS, SVG and WebGL. This portable item owns only an
 // image and deliberate widget-local input. It cannot evaluate widget code.
@@ -13,6 +14,7 @@ FocusScope {
   property string fontFamily: "sans-serif"
   property real unit: 1
   property real textScale: 1
+  property real pixelRatio: Screen.devicePixelRatio
   property bool running: visible && enabled
   property bool fitContent: true
   property real preferredHeight: 240 * unit
@@ -47,6 +49,7 @@ FocusScope {
   onReferenceChanged: refreshLayout()
   onWidthChanged: refreshLayout()
   onTextScaleChanged: refreshLayout()
+  onPixelRatioChanged: { refreshLayout(); refresh() }
   // Visibility controls admission and rendering, not completion of accepted
   // gestures. Closing a conversation separately revokes its service capability.
   onRunningChanged: if (running) { refreshLayout(); refresh() }
@@ -100,6 +103,7 @@ FocusScope {
     return "?width=" + Math.round(Math.max(80, Math.min(1600, width)))
       + "&height=" + Math.round(Math.max(60, Math.min(2200, height)))
       + "&scale=" + Math.max(0.5, Math.min(3, textScale))
+      + "&pixelRatio=" + Math.max(1, Math.min(3, pixelRatio))
       + "&foreground=" + color(foreground) + "&background=" + color(selection)
       + "&accent=" + color(accent) + "&muted=" + color(muted)
   }
