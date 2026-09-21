@@ -339,3 +339,51 @@ test('native UI preserves its QML body and Chromium view across presentation cha
     await rm(setup.directory, { recursive: true, force: true });
   }
 });
+
+test('translucent themes survive native widget creation, pinning, close and reopen', async () => {
+  const setup = await fixture();
+  let reference: WidgetAttachment | undefined;
+  const service = new WidgetService(setup.directory, async (_, value) => {
+    reference = value;
+  });
+
+  try {
+    const lease = await service.lease(randomUUID(), new AbortController().signal);
+    const response = await fetch(lease.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+      body: JSON.stringify({
+        method: 'publish',
+        widget: 'todo',
+        requestId: 'translucent',
+        props: { title: 'Synthetic translucent theme', items: [] },
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+
+    const template = await readFile(new URL('./translucent.qml.in', import.meta.url), 'utf8');
+    const path = join(setup.directory, 'tst_translucent.qml');
+    await writeFile(
+      path,
+      template
+        .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
+        .replace('@REFERENCE@', JSON.stringify(reference)),
+    );
+
+    // The regression used to hit Chromium's fatal alpha check. Suppress core
+    // files for this synthetic child, including when checking the old version.
+    const result = await execute(
+      'prlimit',
+      ['--core=0', '--', join(build, 'companion-window-tests'), '-input', path, '-nocrashhandler'],
+      { env: setup.env, timeout: 30000, killSignal: 'SIGKILL' },
+    );
+    assert.match(result.stdout, /3 passed, 0 failed/);
+  } catch (error) {
+    throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
+      cause: error,
+    });
+  } finally {
+    await service.close();
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});

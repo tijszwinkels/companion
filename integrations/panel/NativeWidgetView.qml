@@ -21,7 +21,10 @@ WebEngineView {
   signal interactionStarted()
 
   visible: running
-  backgroundColor: theme.background || "transparent"
+  // Chromium's native clear color permits alpha 0 or 255 only; fractional
+  // Omarchy theme alpha triggers a fatal CHECK. Keep the native canvas fully
+  // transparent and let the document's CSS render the actual themed background.
+  backgroundColor: "transparent"
   focus: true
   profile: WidgetProfile { id: guardedProfile; viewUrl: browser.viewUrl }
   url: guardedProfile.documentUrl

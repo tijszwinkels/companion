@@ -38,6 +38,16 @@ injects ordinary offscreen surfaces for Sidebar/Dock; it does **not** prove the
 Wayland layer protocol, reserved workspace geometry, focus restoration, monitor
 hotplug or GPU/WebGL performance. These require a coordinated desktop check.
 
+The translucent-theme regression covers the live crash reported on 2026-09-21
+while closing a weather widget. Its core stopped at Chromium's native
+background alpha check with ARGB `0x14a9b1d6` (alpha 20/255). The same color caused
+an offscreen SIGTRAP before the fix, without using the weather widget. Native
+views now use a fully transparent clear color; CSS draws the themed background.
+Qt colors are converted to explicit CSS RGBA so `#AARRGGBB` is not mistaken for
+CSS `#RRGGBBAA`. Tests cover initial creation, theme updates, pin/unpin and repeated
+close/reopen, including the CSS tint/opacity. The synthetic crash child disables
+core files. This evidence does not establish live compositor/GPU behavior.
+
 ## Coordinated desktop activation
 
 Keep the branch's listener running. Install this revision's Omarchy adapter

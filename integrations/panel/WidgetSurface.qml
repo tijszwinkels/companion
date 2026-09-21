@@ -111,6 +111,13 @@ FocusScope {
       + "&accent=" + color(accent) + "&muted=" + color(muted)
   }
 
+  function cssColor(value) {
+    // QColor serializes translucent colors as #AARRGGBB, whereas CSS reads
+    // eight-digit hex as #RRGGBBAA. Preserve both tint and opacity explicitly.
+    return "rgba(" + Math.round(value.r * 255) + "," + Math.round(value.g * 255)
+      + "," + Math.round(value.b * 255) + "," + value.a + ")"
+  }
+
   function refreshLayout() {
     if (nativeRendering) { nativeLayout.restart(); return }
     if (!fitContent || !running || !viewUrl || width < 80) return
@@ -293,8 +300,8 @@ FocusScope {
       item.viewUrl = Qt.binding(function() { return root.viewUrl })
       item.running = Qt.binding(function() { return root.running })
       item.theme = Qt.binding(function() {
-        return {foreground: root.foreground.toString(), background: root.selection.toString(),
-          accent: root.accent.toString(), muted: root.muted.toString(), scale: root.textScale}
+        return {foreground: root.cssColor(root.foreground), background: root.cssColor(root.selection),
+          accent: root.cssColor(root.accent), muted: root.cssColor(root.muted), scale: root.textScale}
       })
     }
     onStatusChanged: if (status === Loader.Error) root.error = "Native widget renderer could not load"
