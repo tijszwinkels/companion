@@ -144,9 +144,20 @@ WidgetProfile::WidgetProfile(QObject *parent) : QQuickWebEngineProfile(parent) {
     setPersistentPermissionsPolicy(PersistentPermissionsPolicy::AskEveryTime);
     cookieStore()->setCookieFilter([](const QWebEngineCookieStore::FilterRequest &) { return false; });
     setUrlRequestInterceptor(new Requests(this));
-    installUrlSchemeHandler("companion-widget", new Endpoint(this));
+    m_endpoint = new Endpoint(this);
+    installUrlSchemeHandler("companion-widget", m_endpoint);
     connect(this, &QQuickWebEngineProfile::downloadRequested, this,
             [](QQuickWebEngineDownloadRequest *download) { download->cancel(); });
+}
+
+WidgetProfile::~WidgetProfile() {
+    // WebEngine's base-profile teardown can dispatch queued scheme requests.
+    // Retire the broker now, while this derived profile's URL/generation still
+    // exist. QObject child cleanup happens after our members are destroyed and
+    // is too late for a handler that reads them. Endpoint also disconnects and
+    // aborts its network replies before its own members are torn down.
+    removeUrlSchemeHandler(m_endpoint);
+    delete m_endpoint;
 }
 
 QUrl WidgetProfile::documentUrl() const {

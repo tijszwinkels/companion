@@ -1,0 +1,145 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+TestCase {
+  id: testCase
+  name: "WidgetRenderingModes"
+  when: windowShown
+  property var body: null
+  property var reference: @REFERENCE@
+  QtObject {
+    id: backend
+    signal received(var message)
+    signal disconnected()
+    function send(message) { return true }
+  }
+  Component {
+    id: content
+    Native.WindowContent {
+      host: TestHost
+      transport: backend
+      parent: TestHost.contentItem
+    }
+  }
+  function evaluate(frame, script) {
+    let done = false
+    let result = null
+    frame.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done })
+    return result
+  }
+  function session(placement) {
+    return {id: "rendering", title: "Rendering comparison", status: "idle", messages: [
+      {id: "visual", role: "assistant", kind: "widget", text: "Rendering fixture",
+        widget: Object.assign({}, reference, {presentation: {
+          placement: placement, heightPercent: 100, replaceActivity: true}}),
+        toolName: "", input: "", state: "", screenshot: ""}
+    ]}
+  }
+  function rendered(name) {
+    tryVerify(function() { return findChild(body, name) !== null })
+    const surface = findChild(body, name)
+    tryVerify(function() { return surface.rendered }, 10000, surface.error)
+    return surface
+  }
+  function viewport(view) {
+    return evaluate(view, "({dpr: devicePixelRatio, width: innerWidth, height: innerHeight})")
+  }
+  function initTestCase() {
+    body = content.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    TestHost.show(true)
+    backend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [session("inline")]})
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function test_live_controls_preserve_geometry_document_and_input() {
+    verify(findChild(body, "widgetRenderingControls").visible)
+    const surface = rendered("inlineWidget")
+    const view = findChild(surface, "nativeWidgetBrowser")
+    const frame = view.mainFrame.children[0]
+    const baseline = viewport(view)
+    const originalWidth = surface.width
+    const composer = findChild(body, "sessionComposer")
+    composer.text = "Keep my conversation draft"
+    evaluate(view, "window.retainedMarker = 'same document'")
+    evaluate(frame, "document.querySelector('input:not([type=checkbox])').value = 'draft'")
+
+    // Exercise the actual diagnostic controls, including the return to normal.
+    // QtTest sends input only to these disposable offscreen windows.
+    for (const mode of ["supersampled", "filtered", "normal", "supersampled"]) {
+      mouseClick(findChild(body, "widgetRendering-" + mode))
+      const factor = mode === "normal" ? 1 : 2
+      tryVerify(function() {
+        const current = viewport(view)
+        return Math.abs(current.dpr - baseline.dpr * factor) < 0.01
+          && Math.abs(current.width - baseline.width) <= 1
+          && Math.abs(view.width / factor - surface.width) < 0.01
+      })
+      compare(CompanionWidgetRendering.mode, mode)
+      compare(surface.width, originalWidth)
+      compare(findChild(surface, "nativeWidgetBrowser"), view)
+      compare(evaluate(view, "window.retainedMarker"), "same document")
+      compare(evaluate(frame, "document.querySelector('input:not([type=checkbox])').value"), "draft")
+      compare(composer.text, "Keep my conversation draft")
+      compare(view.layer.enabled, mode === "filtered")
+      compare(surface.frameNumber, 0)
+      tryVerify(function() { return JSON.parse(view.previousRenderMetrics || "{}").rendering === mode })
+    }
+    CompanionWidgetRendering.mode = "unsupported"
+    compare(CompanionWidgetRendering.mode, "supersampled")
+
+    const box = evaluate(frame, "(() => { const b = document.querySelector('input[type=checkbox]').getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()")
+    mouseClick(surface, box.x, box.y)
+    tryVerify(function() { return evaluate(frame, "document.querySelector('input[type=checkbox]').checked") === true })
+    const input = evaluate(frame, "(() => { const b = document.querySelector('input:not([type=checkbox])').getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()")
+    mouseClick(surface, input.x, input.y)
+    keyClick(Qt.Key_End)
+    keyClick(Qt.Key_A)
+    tryVerify(function() { return evaluate(frame, "document.querySelector('input:not([type=checkbox])').value") === "drafta" })
+
+    // A mode change must preserve a focused widget input, not recreate its view.
+    CompanionWidgetRendering.mode = "normal"
+    tryVerify(function() { return Math.abs(viewport(view).dpr - baseline.dpr) < 0.01 })
+    keyClick(Qt.Key_B)
+    tryVerify(function() { return evaluate(frame, "document.querySelector('input:not([type=checkbox])').value") === "draftab" })
+    CompanionWidgetRendering.mode = "supersampled"
+    tryVerify(function() { return Math.abs(viewport(view).dpr - baseline.dpr * 2) < 0.01 })
+    const button = evaluate(frame, "(() => { const b = document.querySelector('button').getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()")
+    mouseClick(surface, button.x, button.y)
+    tryVerify(function() { return evaluate(frame, "document.querySelectorAll('input[type=checkbox]').length") === 2 })
+
+    for (const presentation of ["sidebar", "dock", "window"]) {
+      TestHost.setPresentation(presentation)
+      compare(findChild(body, "nativeWidgetBrowser"), view)
+      compare(evaluate(view, "window.retainedMarker"), "same document")
+    }
+    body.panel.zoomPercent = 120
+    body.command({action: "theme", values: {selection: "#14a9b1d6"}})
+    tryVerify(function() { return view.theme.scale === 1.2 })
+    compare(view.backgroundColor.a, 0)
+    compare(composer.text, "Keep my conversation draft")
+
+    // Pinning creates another view which must inherit the chosen density;
+    // returning to chat and reopening must retain a usable escape/control row.
+    backend.received({type: "agent-session", session: session("pinned")})
+    const pinned = rendered("pinnedWidget")
+    const pinnedView = findChild(pinned, "nativeWidgetBrowser")
+    compare(pinnedView.renderScale, 2)
+    tryVerify(function() { return Math.abs(viewport(pinnedView).width - pinned.width) <= 1 })
+    verify(findChild(body, "widgetBackToChat").visible)
+    mouseClick(findChild(body, "widgetRendering-normal"))
+    tryVerify(function() { return Math.abs(viewport(pinnedView).dpr - baseline.dpr) < 0.01 })
+    mouseClick(findChild(body, "widgetBackToChat"))
+    backend.received({type: "agent-session", session: session("inline")})
+    rendered("inlineWidget")
+    backend.received({type: "agent-removed", id: "rendering"})
+    backend.received({type: "agent-restored", session: session("inline")})
+    compare(findChild(rendered("inlineWidget"), "nativeWidgetBrowser").renderScale, 1)
+  }
+}

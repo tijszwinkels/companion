@@ -19,10 +19,18 @@ WebEngineView {
   property int generation: 0
   property var lifetime: ({active: true})
   readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
+  readonly property string renderingMode: typeof CompanionWidgetRendering !== "undefined" ? CompanionWidgetRendering.mode : "normal"
+  readonly property int renderScale: typeof CompanionWidgetRendering !== "undefined" ? CompanionWidgetRendering.renderScale : 1
   property string previousRenderMetrics: ""
   signal interactionStarted()
 
   visible: running
+  zoomFactor: renderScale
+  // Filtering requires a Qt texture layer. Keep it opt-in: some Qt/backend
+  // combinations show clipping in this experimental path. Normal rendering
+  // and the unfiltered 2x comparison do not allocate this extra layer.
+  layer.enabled: renderingMode === "filtered"
+  layer.smooth: true
   // Chromium's native clear color permits alpha 0 or 255 only; fractional
   // Omarchy theme alpha triggers a fatal CHECK. Keep the native canvas fully
   // transparent and let the document's CSS render the actual themed background.
@@ -123,6 +131,8 @@ WebEngineView {
           const metrics = {kind: "widget", x: point.x, y: point.y,
             width: browser.width, height: browser.height, browserDpr: number(result.dpr),
             viewportWidth: number(result.width), viewportHeight: number(result.viewportHeight),
+            rendering: browser.renderingMode, renderScale: browser.renderScale,
+            displayWidth: browser.width / browser.renderScale, displayHeight: browser.height / browser.renderScale,
             textScale: number(browser.theme.scale)}
           const encoded = JSON.stringify(metrics)
           if (encoded !== browser.previousRenderMetrics) {

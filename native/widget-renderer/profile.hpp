@@ -3,6 +3,8 @@
 #include <QQuickWebEngineProfile>
 #include <QUrl>
 
+class QWebEngineUrlSchemeHandler;
+
 // A profile belongs to exactly one widget view. Browser requests never select
 // a network destination: the scheme handler maps three fixed paths to this
 // trusted, capability-scoped Companion endpoint.
@@ -14,6 +16,7 @@ class WidgetProfile : public QQuickWebEngineProfile {
 
 public:
     explicit WidgetProfile(QObject *parent = nullptr);
+    ~WidgetProfile() override;
     QUrl viewUrl() const { return m_viewUrl; }
     QUrl documentUrl() const;
     QString error() const { return m_error; }
@@ -29,4 +32,5 @@ private:
     QUrl m_viewUrl;
     QString m_error;
     quint64 m_generation = 0;
+    QWebEngineUrlSchemeHandler *m_endpoint = nullptr;
 };

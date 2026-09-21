@@ -10,7 +10,7 @@ if(COMPANION_SIDEBAR)
     find_package(LayerShellQt 6.6 REQUIRED)
 endif()
 
-add_library(companionwindow STATIC connection.cpp host.cpp)
+add_library(companionwindow STATIC connection.cpp host.cpp rendering.hpp)
 target_link_libraries(companionwindow PUBLIC Qt6::Quick Qt6::Network)
 if(COMPANION_SIDEBAR)
     target_link_libraries(companionwindow PUBLIC LayerShellQt::Interface)

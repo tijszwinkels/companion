@@ -16,6 +16,7 @@ FocusScope {
   property real textScale: 1
   property real pixelRatio: Screen.devicePixelRatio
   property bool nativeRendering: false
+  readonly property int nativeRenderScale: typeof CompanionWidgetRendering !== "undefined" ? CompanionWidgetRendering.renderScale : 1
   property bool running: visible && enabled
   property bool fitContent: true
   property real preferredHeight: 240 * unit
@@ -293,7 +294,13 @@ FocusScope {
   }
   Loader {
     id: embedded
-    anchors.fill: parent
+    // Chromium receives a larger viewport and matching page zoom, while Qt
+    // maps it back into the same bubble. Keep the surrounding geometry and the
+    // agent's reported CSS viewport independent of this diagnostic setting.
+    width: Math.max(0, root.width) * root.nativeRenderScale
+    height: Math.max(0, root.height) * root.nativeRenderScale
+    scale: 1 / root.nativeRenderScale
+    transformOrigin: Item.TopLeft
     active: root.nativeRendering && root.viewUrl !== ""
     source: active ? Qt.resolvedUrl("NativeWidgetView.qml") : ""
     onLoaded: {

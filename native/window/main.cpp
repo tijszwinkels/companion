@@ -1,5 +1,6 @@
 #include "connection.hpp"
 #include "host.hpp"
+#include "rendering.hpp"
 #include "../widget-renderer/initialize.hpp"
 
 #include <QCommandLineParser>
@@ -51,7 +52,15 @@ int main(int argc, char **argv) {
     parser.addOption({"command", "Send show, hide, toggle or focus to the running UI", "action"});
     parser.addOption({"hidden", "Start hidden until summoned or a conversation arrives"});
     parser.addOption({"render-diagnostics", "Log window, theme and widget rendering metrics when they change"});
+    parser.addOption({"widget-rendering", "Initial experimental widget rendering: normal, supersampled or filtered", "mode", "normal"});
     parser.process(app);
+
+    WidgetRendering widgetRendering;
+    if (!WidgetRendering::accepts(parser.value("widget-rendering"))) {
+        fprintf(stderr, "Choose normal, supersampled or filtered for --widget-rendering.\n");
+        return 1;
+    }
+    widgetRendering.setMode(parser.value("widget-rendering"));
 
     const auto runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
     if (runtime.isEmpty()) {
@@ -80,6 +89,10 @@ int main(int argc, char **argv) {
     if (existing.waitForConnected(200)) {
         if (parser.isSet("render-diagnostics")) {
             fprintf(stderr, "Stop the existing UI process before starting with --render-diagnostics.\n");
+            return 1;
+        }
+        if (parser.isSet("widget-rendering")) {
+            fprintf(stderr, "Use the running UI's rendering controls, or stop it before starting with --widget-rendering.\n");
             return 1;
         }
         QJsonObject request{{"action", action.isEmpty() ? "show" : action}, {"activate", true}};
@@ -115,6 +128,7 @@ int main(int argc, char **argv) {
     engine.rootContext()->setContextProperty("WindowHost", &host);
     engine.rootContext()->setContextProperty("DesktopConnection", &connection);
     engine.rootContext()->setContextProperty("CompanionRenderDiagnostics", parser.isSet("render-diagnostics"));
+    engine.rootContext()->setContextProperty("CompanionWidgetRendering", &widgetRendering);
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/qml");
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/../lib/companion/qml");
     const auto installed = QCoreApplication::applicationDirPath() + "/../share/companion/integrations/window/Main.qml";
@@ -154,6 +168,7 @@ int main(int argc, char **argv) {
                 {"screen", screen ? screen->name() : QString()},
                 {"screenDpr", screen ? screen->devicePixelRatio() : 0},
                 {"graphicsApi", renderer ? int(renderer->graphicsApi()) : 0},
+                {"widgetRendering", widgetRendering.mode()},
                 {"themeUnit", theme.value("unit").toDouble()},
                 {"themeBackground", theme.value("background").toString()},
                 {"themeForeground", theme.value("foreground").toString()},

@@ -65,6 +65,47 @@ a monitor move. This opt-in trace contains no conversation text, widget props or
 capability URLs. It measures reported rendering state, not the compositor's final
 buffer or perceived sharpness. It does not change scaling or restart the listener.
 
+With `--render-diagnostics`, the window also shows **Normal**, **2×** and
+**2× filtered (test)** buttons. They switch the existing embedded views in place,
+so the same widget can be compared on a real monitor. The default is Normal;
+the choice lasts only for this UI process. It does not change the ordinary Qt
+text or the separate Chromium pop-out. The trace includes the chosen mode,
+internal view dimensions, displayed dimensions and browser pixel ratio.
+
+Both 2× modes double the view dimensions and Chromium page zoom, then apply an
+inverse Qt transform to preserve the visible layout. This renders four times as
+many pixels. Filtered mode additionally uses a smooth Qt texture layer, which
+costs memory and compositing work and has shown clipping in offscreen tests.
+It is an experimental comparison, not a confirmed sharpness fix. Return to
+Normal if the result glitches. No renderer/profile reload is needed to switch;
+widget state, browser inputs and conversation drafts remain in place.
+
+To choose an initial mode, add `--widget-rendering supersampled` or
+`--widget-rendering filtered`. An existing process rejects this startup option;
+use its diagnostic buttons or stop that UI process first. For the locally
+staged LayerShellQt build, the existing launch command enables all three buttons:
+
+```sh
+QT_PLUGIN_PATH="$PWD/native/window/build/staged/usr/lib/qt6/plugins" \
+  npm run ui -- --presentation window --render-diagnostics \
+  2>&1 | tee /tmp/companion-render-live.log
+```
+
+The mode regression uses actual WebEngine views and synthetic input offscreen
+at 125% display density. It checks matching CSS/display widths, doubled browser
+density, live mode changes, retained inputs/drafts/document, checkbox/typing/add,
+presentation changes, theme/zoom, full-height return and close/reopen. These
+checks do not establish live GPU sharpness, performance or the absence of
+backend-specific clipping.
+
+The rapid close/reopen part of this regression exposed a profile teardown
+failure: WebEngine can dispatch queued scheme requests while its base profile
+is being destroyed, after the derived profile's URL members have gone away.
+The native profile now removes and destroys its request handler before that
+teardown begins. Repeating the test against the previous handler reproduces
+the failure; the fixed handler also passes the existing native interaction and
+reopen checks. This is separate from the still-unconfirmed live text blur.
+
 ## Coordinated desktop activation
 
 Keep the branch's listener running. Install this revision's Omarchy adapter

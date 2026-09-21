@@ -17,6 +17,7 @@ Item {
   property alias panel: panel
   readonly property string composerId: host.opened ? panel.composerFocusId : ""
   readonly property bool keyboardFocused: host.opened && host.active
+  readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
   width: parent ? parent.width : 620
   height: parent ? parent.height : 780
   Keys.onEscapePressed: {
@@ -192,9 +193,32 @@ Item {
     }
   }
 
+  Row {
+    id: renderingControls
+    objectName: "widgetRenderingControls"
+    visible: root.renderDiagnostics && typeof CompanionWidgetRendering !== "undefined"
+    anchors.top: modes.bottom
+    anchors.right: parent.right
+    anchors.margins: 6 * root.theme.unit
+    spacing: 6 * root.theme.unit
+    Repeater {
+      model: [{mode: "normal", label: "Normal"}, {mode: "supersampled", label: "2×"}, {mode: "filtered", label: "2× filtered (test)"}]
+      delegate: Panel.PanelAction {
+        required property var modelData
+        objectName: "widgetRendering-" + modelData.mode
+        text: modelData.label
+        foreground: typeof CompanionWidgetRendering !== "undefined" && CompanionWidgetRendering.mode === modelData.mode ? root.theme.accent : root.theme.foreground
+        selection: root.theme.selection
+        fontFamily: root.theme.fontFamily
+        unit: root.theme.unit
+        onTriggered: CompanionWidgetRendering.mode = modelData.mode
+      }
+    }
+  }
+
   Text {
     id: hostError
-    anchors.top: modes.bottom
+    anchors.top: renderingControls.visible ? renderingControls.bottom : modes.bottom
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.margins: 8 * root.theme.unit
@@ -208,7 +232,7 @@ Item {
   Panel.PanelContent {
     id: panel
     objectName: "nativePanel"
-    anchors.top: hostError.visible ? hostError.bottom : modes.bottom
+    anchors.top: hostError.visible ? hostError.bottom : renderingControls.visible ? renderingControls.bottom : modes.bottom
     anchors.bottom: parent.bottom
     anchors.left: parent.left
     anchors.right: parent.right

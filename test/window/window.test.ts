@@ -193,7 +193,11 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
   // Use installed resources and module lookup, without a QML path into the
   // build tree. This is a staged installation only, never a live package install.
   const env = { ...setup.env, QML_IMPORT_PATH: '', QT_SCALE_FACTOR: '1.25' };
-  const child = spawn(executable, ['--socket', backendPath, '--render-diagnostics'], { env });
+  const child = spawn(
+    executable,
+    ['--socket', backendPath, '--render-diagnostics', '--widget-rendering', 'supersampled'],
+    { env },
+  );
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   let output = '';
   child.stdout.on('data', (chunk) => {
@@ -244,10 +248,19 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
     assert.equal(metrics.windowDpr, 1.25);
     assert.equal(metrics.effectiveDpr, 1.25);
     assert.equal(metrics.themeUnit, 1.2);
+    assert.equal(metrics.widgetRendering, 'supersampled');
     assert.ok(metrics.timeMs > 0);
     await assert.rejects(
       execute(executable, ['--render-diagnostics'], { env, timeout: 5000 }),
       /Stop the existing UI process before starting with --render-diagnostics/,
+    );
+    await assert.rejects(
+      execute(executable, ['--widget-rendering', 'supersampled'], { env, timeout: 5000 }),
+      /Use the running UI's rendering controls/,
+    );
+    await assert.rejects(
+      execute(executable, ['--widget-rendering', 'unbounded'], { env, timeout: 5000 }),
+      /Choose normal, supersampled or filtered/,
     );
     await execute(executable, ['--command', 'hide'], {
       env,
@@ -415,6 +428,60 @@ test('translucent themes survive native widget creation, pinning, close and reop
     assert.ok(metrics.every((entry) => entry.kind === 'widget' && entry.browserDpr === 1.25));
     assert.ok(metrics.every((entry) => entry.width === entry.viewportWidth));
     assert.ok(metrics.every((entry) => entry.timeMs > 0 && !('viewUrl' in entry)));
+  } catch (error) {
+    throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
+      cause: error,
+    });
+  } finally {
+    await service.close();
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('diagnostic rendering modes keep native widget layout and interaction at fractional density', async () => {
+  const setup = await fixture();
+  let reference: WidgetAttachment | undefined;
+  const service = new WidgetService(setup.directory, async (_, value) => {
+    reference = value;
+  });
+
+  try {
+    const lease = await service.lease(randomUUID(), new AbortController().signal);
+    const response = await fetch(lease.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+      body: JSON.stringify({
+        method: 'publish',
+        widget: 'todo',
+        requestId: 'rendering-modes',
+        props: {
+          title: 'Rendering comparison',
+          items: [{ id: 'one', text: 'Sharpness fixture', completed: false }],
+        },
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const template = await readFile(new URL('./rendering.qml.in', import.meta.url), 'utf8');
+    const path = join(setup.directory, 'tst_rendering.qml');
+    await writeFile(
+      path,
+      template
+        .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
+        .replace('@REFERENCE@', JSON.stringify(reference)),
+    );
+    const result = await execute(
+      'prlimit',
+      ['--core=0', '--', join(build, 'companion-window-tests'), '-input', path, '-nocrashhandler'],
+      {
+        env: { ...setup.env, QT_SCALE_FACTOR: '1.25', COMPANION_TEST_RENDER_DIAGNOSTICS: '1' },
+        timeout: 30000,
+        killSignal: 'SIGKILL',
+      },
+    );
+    assert.match(result.stdout, /3 passed, 0 failed/);
+    for (const mode of ['normal', 'supersampled', 'filtered']) {
+      assert.ok(result.stdout.includes(`"rendering":"${mode}"`), mode);
+    }
   } catch (error) {
     throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
       cause: error,
