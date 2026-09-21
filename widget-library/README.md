@@ -27,6 +27,8 @@ heightPercent: 25, replaceActivity: true}})` pins the widget above the chat.
 Height is a percentage of usable **sidebar content height**, below the title and
 tab controls. Width follows the sidebar. One widget per conversation can be
 pinned; pinning another atomically returns the first inline. The default is 25%.
+Below 100%, the requested height is capped to leave the input, its controls and
+a readable transcript visible, accounting for text zoom and the activity strip.
 At 100% the widget replaces the transcript, activity and composer. Host-owned
 **Back to chat** and **Stop** controls remain available. Back to chat also works
 locally when disconnected; durable unpin requires the service. Local dismissal

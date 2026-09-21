@@ -434,7 +434,13 @@ Item {
       visible: root.pinnedMessage !== null
       y: body.contentTop
       width: parent.width
-      height: visible ? body.contentHeight * root.pinnedMessage.widget.presentation.heightPercent / 100 : 0
+      // Below 100%, the requested percentage yields to the measured input,
+      // controls and a readable transcript. Activity and both gaps also consume
+      // this shared area; subtract them before allocating any widget space.
+      height: !root.pinnedMessage ? 0 : root.fullWidget ? body.contentHeight : Math.min(
+        body.contentHeight * root.pinnedMessage.widget.presentation.heightPercent / 100,
+        Math.max(0, body.contentHeight - chat.minimumHeight - 12 * root.unit
+          - (activityStrip.visible ? activityStrip.height + 12 * root.unit : 0)))
       Row {
         id: widgetControls
         spacing: 8 * root.unit
@@ -528,6 +534,8 @@ Item {
       objectName: "sessionView"
       visible: root.selectedSession !== null && !root.fullWidget
       widgetsRunning: root.online && root.animationsEnabled
+      choiceHeightLimit: Math.max(48 * root.unit, Math.min(180 * root.unit,
+        (root.pinnedMessage ? body.contentHeight : chat.height) * 0.3))
       anchors.fill: parent
       anchors.topMargin: root.fullWidget ? body.contentTop : Math.min(body.height, activityStrip.visible ? activityStrip.y + activityStrip.height + 12 * root.unit
         : pinned.visible ? pinned.y + pinned.height + 12 * root.unit : body.contentTop)

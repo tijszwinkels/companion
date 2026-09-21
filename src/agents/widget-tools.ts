@@ -103,7 +103,7 @@ export function widgetTools(endpoint: string, token: string) {
       promptSnippet:
         'Pin a widget at the top of the sidebar, resize its reserved height, or return it inline.',
       description:
-        'Change presentation without replacing widget props. Pinned heightPercent is 10–100 percent of the sidebar content height, default 25. replaceActivity defaults true. At 100 percent it also replaces transcript and composer; Companion keeps a Back to chat control. Unpin with placement inline. Width always follows the sidebar.',
+        'Change presentation without replacing widget props. Pinned heightPercent is 10–100 percent of the sidebar content height, default 25. Below 100, the requested height is capped to keep chat and its input usable. replaceActivity defaults true. At 100 percent it also replaces transcript and composer; Companion keeps a Back to chat control. Unpin with placement inline. Width always follows the sidebar.',
       parameters: Type.Object({
         id,
         presentation,

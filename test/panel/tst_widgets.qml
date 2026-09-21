@@ -224,6 +224,80 @@ Item {
       compare(widget.layoutRetryNeeded, false)
     }
 
+    function test_partial_pin_keeps_chat_reachable_data() {
+      return [
+        {tag: "99 percent with activity", percent: 99, replaceActivity: false, zoom: 100, panelHeight: 900},
+        {tag: "99 percent without activity", percent: 99, replaceActivity: true, zoom: 100, panelHeight: 900},
+        {tag: "99 percent at double text size", percent: 99, replaceActivity: false, zoom: 200, panelHeight: 900},
+        {tag: "90 percent in shorter window", percent: 90, replaceActivity: true, zoom: 100, panelHeight: 600}
+      ]
+    }
+
+    function test_partial_pin_keeps_chat_reachable(data) {
+      const panel = createTemporaryObject(panelComponent, parent, {height: data.panelHeight, zoomPercent: data.zoom})
+      panel.sessions = [conversation(reference(data.percent, data.replaceActivity))]
+      panel.selectedSessionId = "session"
+      const chat = findChild(panel, "sessionView")
+      const composer = findChild(panel, "sessionComposer")
+      const transcript = findChild(panel, "sessionTranscript")
+      const send = findChild(panel, "sendSession")
+      const area = findChild(panel, "pinnedWidgetArea")
+      composer.text = "Keep my draft"
+      compare(panel.fullWidget, false)
+      verify(chat.visible)
+      tryVerify(function() { return transcript.height >= 96 * chat.textScale - 1 }, 1000, "Keep a readable transcript above the input")
+      verify(area.height > 0)
+      verify(chat.y >= area.y + area.height)
+      const composerTop = composer.mapToItem(chat, 0, 0).y
+      const sendTop = send.mapToItem(chat, 0, 0).y
+      verify(composerTop >= 0, "The input must stay within the chat clip")
+      verify(sendTop >= 0 && sendTop + send.height <= chat.height)
+      panel.focusComposer()
+      tryCompare(panel, "composerFocusId", "session")
+      composer.cursorPosition = composer.length
+      keyClick(Qt.Key_X)
+      verify(composer.text.endsWith("x"))
+
+      // Choices and an error can grow the input section after the pin is shown.
+      panel.agentActions = {sessionId: "session", stopRunId: "run", choices: [
+        {sessionId: "session", revision: "choice", index: 0, label: "Yes", description: "Continue the work", available: true, voiceAvailable: true}
+      ]}
+      chat.inputError = "Please try again."
+      tryVerify(function() { return transcript.height >= 96 * chat.textScale - 1 })
+      verify(composer.mapToItem(chat, 0, 0).y >= 0)
+      compare(panel.composerFocusId, "session")
+      const draft = composer.text
+      panel.sessions = [conversation(reference(100, data.replaceActivity))]
+      compare(panel.fullWidget, true)
+      compare(chat.visible, false)
+      compare(panel.composerFocusId, "")
+      panel.focusComposer()
+      compare(panel.composerFocusId, "")
+      panel.sessions = [conversation(reference(data.percent, data.replaceActivity))]
+      tryVerify(function() { return transcript.height >= 96 * chat.textScale - 1 })
+      compare(composer.text, draft)
+    }
+
+    function test_resize_cannot_leave_an_unreachable_composer_focused() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.sessions = [conversation(reference(99, true))]
+      panel.selectedSessionId = "session"
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Retain this draft"
+      panel.focusComposer()
+      tryCompare(panel, "composerFocusId", "session")
+      panel.height = 140
+      tryCompare(panel, "composerFocusId", "")
+      tryCompare(composer, "enabled", false)
+      panel.focusComposer()
+      compare(panel.composerFocusId, "")
+      panel.height = 900
+      tryCompare(composer, "enabled", true)
+      panel.focusComposer()
+      tryCompare(panel, "composerFocusId", "session")
+      compare(composer.text, "Retain this draft")
+    }
+
     function test_sidebar_height_activity_full_height_and_draft_preservation() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.sessions = [conversation(null)]

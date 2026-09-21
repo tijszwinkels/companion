@@ -32,6 +32,13 @@ Item {
   property int zoomPercent: 100
   property real scrollSpeed: 3
   readonly property real textScale: root.unit * root.zoomPercent / 100
+  // The host can budget choices against its available area before allocating a
+  // pin. Using the resulting chat height for that budget would create a layout
+  // cycle: pin height -> chat height -> choices -> minimum chat -> pin height.
+  property real choiceHeightLimit: Math.max(48 * root.unit, Math.min(180 * root.unit, root.height * 0.3))
+  readonly property real minimumHeight: inputSection.implicitHeight + 12 * root.unit + 96 * root.textScale
+  readonly property bool composerReachable: root.visible && root.width > 0 && root.height >= inputSection.height
+  onComposerReachableChanged: if (!composerReachable) root.releaseComposerFocus()
   readonly property bool zoomEnabled: visible && session !== null && root.Window.window !== null && root.Window.window.active
   property string displayedId: ""
   property bool followEnd: true
@@ -48,7 +55,7 @@ Item {
   readonly property bool canSend: online && session !== null && pendingSubmission === null
     && pendingChoice === null
     && composer.text.trim().length > 0 && composer.text.length <= 4000
-  readonly property string composerFocusId: online && visible && composer.activeFocus
+  readonly property string composerFocusId: online && composerReachable && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
   signal stopRequested(string id)
   signal dismissRequested(string id)
@@ -119,7 +126,7 @@ Item {
   }
 
   function focusComposer() {
-    if (root.online && root.visible && root.session) composer.forceActiveFocus(Qt.ShortcutFocusReason)
+    if (root.online && root.composerReachable && root.session) composer.forceActiveFocus(Qt.ShortcutFocusReason)
   }
 
   function releaseComposerFocus() { composer.focus = false }
@@ -474,7 +481,7 @@ Item {
     AgentChoices {
       objectName: "agentChoices"
       width: parent.width
-      maximumHeight: Math.max(48 * root.unit, Math.min(180 * root.unit, root.height * 0.3))
+      maximumHeight: root.choiceHeightLimit
       choices: root.actionsCurrent ? root.agentActions.choices || [] : []
       sessionId: root.actionsCurrent ? root.session.id : ""
       stopRunId: root.actionsCurrent ? root.agentActions.stopRunId || "" : ""
@@ -504,6 +511,7 @@ Item {
       TextArea {
         id: composer
         objectName: "sessionComposer"
+        enabled: root.composerReachable
         width: composerScroll.availableWidth
         placeholderText: !root.composerFocusId && root.focusShortcut
           ? root.focusShortcut + " to focus"
