@@ -1,5 +1,13 @@
 # Conversation tools
 
+## Panel history limit
+
+The panel retains up to 800 message bubbles per conversation, including tool
+calls. The separate limit of 262,144 text/input characters is unchanged. These
+are display-history limits, not the model's context size. Long conversations
+within these limits can be closed and reopened; exceeding either still fails
+the turn. Loading older display history on demand remains future work.
+
 ## Model profiles
 
 “new session …” and inferred `START_CODING_AGENT_SESSION` use the top-level

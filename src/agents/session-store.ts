@@ -69,7 +69,7 @@ export class SessionStore {
       (session.profile !== undefined && !['coding', 'quickQuestion'].includes(session.profile)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
-      session.messages.length > 200
+      session.messages.length > 800
     ) {
       throw Error('Invalid saved conversation');
     }

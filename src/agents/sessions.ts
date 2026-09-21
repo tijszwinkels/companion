@@ -434,7 +434,7 @@ export class AgentSessions implements InspectableModule {
     );
     if (
       otherSize + message.text.length + message.input.length > 256 * 1024 ||
-      (index < 0 && session.view.messages.length >= 200)
+      (index < 0 && session.view.messages.length >= 800)
     ) {
       throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
     }
