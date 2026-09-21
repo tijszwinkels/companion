@@ -15,7 +15,7 @@ export class SendTextToApplication implements UserSensorProcessor {
 
   // This is the user's prompt text; formatting must not change its contents.
   readonly instruction =
-    'Choose this if the user likely wants the utterance to be sent to the currently active application as keyboard input. Only use this if the utterance seems a likely text input in the context of the currently open application and its context.';
+    "If there's an input field selected, the utterance is not in the IGNORE category, and the utterance seems likely in the context of the currently open application and it's content, that's a strong indication that the user wants to insert the text in the application. If the currently active application doesn't look like it would accept text input, then that's a strong indication that another intent should be chosen.";
 
   constructor(
     private readonly log: Log,

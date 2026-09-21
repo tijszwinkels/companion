@@ -88,8 +88,8 @@ retain their own captured choice revision/run checks.
 ## Exact proposed system prompts
 
 The following are complete expansions for the four currently enabled permanent
-LLM intents, with no active dynamic choices. The first two lines and all existing
-intent instructions are copied from current source; the original `didn't intent`
+LLM intents, with no active dynamic choices. The dictation instruction reflects Tijs's exact 2026-09-21 edit. The first two
+lines and all intent instructions are copied from current source; the original `didn't intent`
 wording and focused `has  a` double space are intentional. Each prompt ends with
 one newline. The only difference between these variants is the continuation
 instruction.
@@ -105,7 +105,7 @@ Classify the current utterance in the user message. The attached screenshot and 
 Possible intents:
 
 Name: SEND_TEXT_TO_APPLICATION
-Instruction: Choose this if the user likely wants the utterance to be sent to the currently active application as keyboard input. Only use this if the utterance seems a likely text input in the context of the currently open application and its context.
+Instruction: If there's an input field selected, the utterance is not in the IGNORE category, and the utterance seems likely in the context of the currently open application and it's content, that's a strong indication that the user wants to insert the text in the application. If the currently active application doesn't look like it would accept text input, then that's a strong indication that another intent should be chosen.
 
 Name: IGNORE
 Instruction: Choose this if the utterance is likely not meant to be sent to the system in any of the other defined intents. This can happen, for example, if the user is talking to someone else, talking to himself, or listening to a podcast.
@@ -128,7 +128,7 @@ Classify the current utterance in the user message. The attached screenshot and 
 Possible intents:
 
 Name: SEND_TEXT_TO_APPLICATION
-Instruction: Choose this if the user likely wants the utterance to be sent to the currently active application as keyboard input. Only use this if the utterance seems a likely text input in the context of the currently open application and its context.
+Instruction: If there's an input field selected, the utterance is not in the IGNORE category, and the utterance seems likely in the context of the currently open application and it's content, that's a strong indication that the user wants to insert the text in the application. If the currently active application doesn't look like it would accept text input, then that's a strong indication that another intent should be chosen.
 
 Name: IGNORE
 Instruction: Choose this if the utterance is likely not meant to be sent to the system in any of the other defined intents. This can happen, for example, if the user is talking to someone else, talking to himself, or listening to a podcast.
