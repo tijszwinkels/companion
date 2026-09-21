@@ -147,6 +147,83 @@ Item {
       compare(fixture.calls.length, 1)
     }
 
+    function test_layout_failure_retries_without_user_input() {
+      let attempts = 0
+      const widget = createTemporaryObject(surfaceComponent, parent, {
+        running: false,
+        reference: reference(25, true),
+        transport: function(path, body, done) {
+          if (path.indexOf("/layout") === 0) {
+            attempts++
+            if (attempts === 1) done(null, "All widget renderers are busy; try again shortly")
+            else done({height: 190}, "")
+          } else done({}, "")
+        }
+      })
+      widget.running = true
+      compare(attempts, 1)
+      verify(widget.error.length > 0)
+      tryCompare(widget, "preferredHeight", 190, 2500)
+      compare(widget.error, "")
+      compare(attempts, 2)
+      wait(350)
+      compare(attempts, 2, "A successful retry stops layout polling")
+    }
+
+    function test_offline_escape_applies_to_the_observed_revision_only() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.selectedSessionId = "session"
+      panel.sessions = [conversation(reference(100, false))]
+      panel.online = false
+      panel.backToChat()
+      compare(panel.fullWidget, false)
+      panel.online = true
+      panel.sessions = [conversation(reference(100, false))]
+      compare(panel.pinnedMessage, null, "An unchanged reconnect snapshot must not undo escape")
+      for (const percent of [40, 60]) {
+        const next = reference(percent, false)
+        next.revision = percent / 20
+        panel.sessions = [conversation(next)]
+        verify(panel.pinnedMessage !== null, "A newer agent update can pin the widget again")
+        compare(panel.pinnedMessage.widget.presentation.heightPercent, percent)
+        panel.online = false
+        panel.backToChat()
+        panel.online = true
+        compare(panel.pinnedMessage, null)
+      }
+    }
+
+    function test_layout_retry_pauses_when_hidden_and_resets_for_new_view() {
+      const calls = []
+      const widget = createTemporaryObject(surfaceComponent, parent, {
+        running: false,
+        reference: reference(25, true),
+        transport: function(path, body, done, url) {
+          if (path.indexOf("/layout") === 0) calls.push({done: done, url: url})
+          else done({}, "")
+        }
+      })
+      widget.running = true
+      compare(calls.length, 1)
+      calls[0].done(null, "Temporary layout failure")
+      widget.running = false
+      wait(650)
+      compare(calls.length, 1, "Hidden widgets must not retry")
+      widget.running = true
+      compare(calls.length, 2)
+      const next = reference(25, true)
+      next.viewUrl = next.viewUrl.replace("a".repeat(64), "b".repeat(64))
+      widget.reference = next
+      verify(calls.length >= 3)
+      calls[1].done(null, "Old view failure")
+      compare(widget.error, "", "Old layout completion cannot taint the replacement")
+      const current = calls.filter(call => call.url === next.viewUrl)
+      verify(current.length > 0)
+      for (let index = 2; index < calls.length; index++) calls[index].done({height: 180}, "")
+      compare(widget.preferredHeight, 180)
+      compare(widget.layoutRetryNeeded, false)
+    }
+
     function test_sidebar_height_activity_full_height_and_draft_preservation() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.sessions = [conversation(null)]

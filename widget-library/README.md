@@ -29,7 +29,10 @@ tab controls. Width follows the sidebar. One widget per conversation can be
 pinned; pinning another atomically returns the first inline. The default is 25%.
 At 100% the widget replaces the transcript, activity and composer. Host-owned
 **Back to chat** and **Stop** controls remain available. Back to chat also works
-locally when disconnected; durable unpin requires the service. The unsent chat draft is
+locally when disconnected; durable unpin requires the service. Local dismissal
+applies to the displayed widget revision: an unchanged reconnect snapshot stays
+dismissed, while a newer server update or closing/reopening the conversation can
+restore its saved pin. The unsent chat draft is
 retained. Widgets belong to their conversation, including while another tab is
 selected.
 

@@ -41,7 +41,7 @@ Item {
   property var locallyUnpinned: ({})
   readonly property var pinnedMessage: selectedSession && selectedSession.messages.find(message =>
     message.widget && message.widget.viewUrl && message.widget.presentation.placement === "pinned"
-      && root.locallyUnpinned[message.widget.id] !== message.widget.viewUrl) || null
+      && !root.isLocallyUnpinned(message.widget)) || null
   readonly property bool fullWidget: pinnedMessage !== null && pinnedMessage.widget.presentation.heightPercent === 100
   readonly property string composerFocusId: fullWidget ? "" : chat.composerFocusId
   onFullWidgetChanged: if (fullWidget) chat.releaseComposerFocus()
@@ -104,11 +104,16 @@ Item {
     const dismissed = Object.assign({}, root.locallyUnpinned)
     for (const id of Object.keys(dismissed)) {
       const stillPinned = root.sessions.some(session => session.messages.some(message =>
-        message.widget && message.widget.id === id && message.widget.viewUrl === dismissed[id]
+        message.widget && message.widget.id === id && root.isLocallyUnpinned(message.widget)
           && message.widget.presentation.placement === "pinned"))
       if (!stillPinned) delete dismissed[id]
     }
     root.locallyUnpinned = dismissed
+  }
+
+  function isLocallyUnpinned(reference) {
+    const dismissed = root.locallyUnpinned[reference.id]
+    return dismissed && dismissed.viewUrl === reference.viewUrl && reference.revision <= dismissed.revision
   }
 
   function backToChat() {
@@ -119,7 +124,10 @@ Item {
     // retained chat locally without waiting for an HTTP response.
     pinnedSurface.unpin()
     const dismissed = Object.assign({}, root.locallyUnpinned)
-    dismissed[reference.id] = reference.viewUrl
+    // Suppress the revision the user escaped, including reconnect snapshots.
+    // A newer server update can present the widget again; the local escape must
+    // not permanently overrule later agent instructions for this conversation.
+    dismissed[reference.id] = {viewUrl: reference.viewUrl, revision: reference.revision}
     root.locallyUnpinned = dismissed
     Qt.callLater(function() { if (root.keyboardFocused) chat.focusComposer() })
   }

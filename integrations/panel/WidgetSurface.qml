@@ -31,6 +31,8 @@ FocusScope {
   property int retryDelay: 100
   property bool framePending: false
   property bool layoutPending: false
+  property bool layoutRetryNeeded: false
+  property int layoutRetryDelay: 250
   property var inputQueue: []
   property bool sendingInput: false
   property int viewGeneration: 0
@@ -45,6 +47,7 @@ FocusScope {
   implicitHeight: preferredHeight
   onViewUrlChanged: {
     error = ""; captured = false; framePending = false; layoutPending = false
+    layoutAgain = false; layoutRetryNeeded = false; layoutRetryDelay = 250
     popoutError = ""; popoutPending = false
     viewGeneration++
     refreshLayout(); refresh()
@@ -123,10 +126,19 @@ FocusScope {
     if (nativeRendering) { nativeLayout.restart(); return }
     if (!fitContent || !running || !viewUrl || width < 80) return
     if (layoutPending) { layoutAgain = true; return }
+    layoutRetryNeeded = false
     layoutPending = true
     request("/layout" + viewport(), null, function(result) {
       root.layoutPending = false
-      if (result) root.preferredHeight = Math.max(100 * root.unit, Math.min(420 * root.unit, result.height))
+      if (result) {
+        root.preferredHeight = Math.max(100 * root.unit, Math.min(420 * root.unit, result.height))
+        root.layoutRetryDelay = 250
+      } else {
+        // Frame capture can recover before measurement does. Retry measurement
+        // separately so its error and fallback height don't survive forever.
+        root.layoutRetryDelay = Math.min(5000, root.layoutRetryDelay * 2)
+        root.layoutRetryNeeded = true
+      }
       if (root.layoutAgain) { root.layoutAgain = false; root.refreshLayout() }
     })
   }
@@ -261,6 +273,11 @@ FocusScope {
     }
   }
   Timer { interval: root.retryDelay; repeat: true; running: !root.nativeRendering && root.running && root.viewUrl !== ""; onTriggered: root.refresh() }
+  Timer {
+    interval: root.layoutRetryDelay
+    running: root.layoutRetryNeeded && !root.nativeRendering && root.running && root.fitContent && root.viewUrl !== ""
+    onTriggered: root.refreshLayout()
+  }
   HoverHandler { id: hover }
   PointHandler {
     enabled: root.nativeRendering
