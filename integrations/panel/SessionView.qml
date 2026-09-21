@@ -41,6 +41,7 @@ Item {
   property var selectedMessage: null
   property var hoveredWidget: null
   property bool widgetsRunning: true
+  property bool nativeWidgets: false
   readonly property bool hasMessageSelection: selectedMessage !== null && selectedMessage.visible && selectedMessage.selectedText !== ""
   readonly property bool running: session && (session.status === "starting" || session.status === "running")
   readonly property int messageCount: messages.count
@@ -356,6 +357,7 @@ Item {
 
           WidgetSurface {
             id: widgetView
+            nativeRendering: root.nativeWidgets
             objectName: "inlineWidget"
             visible: bubble.widget !== null && bubble.widget.presentation.placement === "inline" && viewUrl !== ""
             width: parent.width

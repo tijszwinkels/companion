@@ -148,6 +148,7 @@ PanelWindow {
 
       Panel.PanelContent {
         id: content
+        nativeWidgets: Qt.application.arguments.indexOf("--companion-native-widgets") >= 0
         anchors.fill: parent
         anchors.margins: Math.max(1, Style.space(2))
         online: root.online

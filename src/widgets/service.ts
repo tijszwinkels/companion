@@ -45,6 +45,16 @@ export class WidgetService {
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly queued = new Map<string, number>();
   private readonly frames = new Map<string, Promise<Buffer>>();
+  // Native views report layout without asking the offscreen renderer to draw.
+  // Entries exist only for committed, open widgets and leave with their owner.
+  private readonly nativeViewports = new Map<
+    string,
+    {
+      widthCssPixels: number;
+      heightCssPixels: number;
+      textScale: number;
+    }
+  >();
   private server?: Server;
   private starting?: Promise<string>;
   private origin = '';
@@ -160,6 +170,7 @@ export class WidgetService {
     await this.renderer.discard(ids);
     for (const id of ids) {
       this.records.delete(id);
+      this.nativeViewports.delete(id);
     }
     this.loaded.delete(owner);
     const usedBundles = new Set([...this.records.values()].map((record) => record.bundle));
@@ -379,7 +390,7 @@ export class WidgetService {
           revision: record.revision,
           props: record.props,
           presentation: record.presentation,
-          lastViewport: this.renderer.dimensions(record.id),
+          lastViewport: this.nativeViewports.get(record.id) ?? this.renderer.dimensions(record.id),
           manifest: (await this.bundle(record)).manifest,
         };
       }
@@ -590,7 +601,7 @@ export class WidgetService {
       return;
     }
     const match =
-      /^\/view\/([0-9a-f]{64})(?:\/(state|action|frame|layout|input|present|popout))?$/.exec(
+      /^\/view\/([0-9a-f]{64})(?:\/(state|action|frame|layout|input|present|popout|viewport))?$/.exec(
         url.pathname,
       );
     const id = match ? this.capabilities.get(match[1]) : undefined;
@@ -623,6 +634,7 @@ export class WidgetService {
         height: await this.renderer.layout(record, bundle, this.viewport(url)),
       });
     } else if (request.method === 'GET' && action === 'frame') {
+      this.nativeViewports.delete(id);
       let pending = this.frames.get(id);
       if (!pending) {
         pending = this.frame(record, bundle, this.viewport(url));
@@ -635,7 +647,32 @@ export class WidgetService {
     } else {
       const body = await this.body(request);
       this.check(record.owner);
-      if (action === 'action') {
+      if (action === 'viewport') {
+        // The body may arrive after close/reopen. Never attach an old view's
+        // geometry to a successor that happens to retain the same widget ID.
+        if (this.capabilities.get(match[1]) !== id) {
+          throw Error('Widget view expired');
+        }
+        const { widthCssPixels, heightCssPixels, textScale } = body;
+        if (
+          typeof widthCssPixels !== 'number' ||
+          !Number.isInteger(widthCssPixels) ||
+          widthCssPixels < 1 ||
+          widthCssPixels > 32768 ||
+          typeof heightCssPixels !== 'number' ||
+          !Number.isInteger(heightCssPixels) ||
+          heightCssPixels < 1 ||
+          heightCssPixels > 32768 ||
+          typeof textScale !== 'number' ||
+          !Number.isFinite(textScale) ||
+          textScale < 0.5 ||
+          textScale > 3
+        ) {
+          throw Error('Invalid native widget viewport');
+        }
+        this.nativeViewports.set(id, { widthCssPixels, heightCssPixels, textScale });
+        this.json(response, { recorded: true });
+      } else if (action === 'action') {
         this.json(response, await this.command(record.owner, { ...body, method: 'call', id }));
       } else if (action === 'present') {
         this.json(response, await this.command(record.owner, { ...body, method: 'present', id }));
@@ -696,6 +733,7 @@ export class WidgetService {
       lease.release();
     }
     this.capabilities.clear();
+    this.nativeViewports.clear();
     this.owners.clear();
     await Promise.allSettled(this.queues.values());
     if (this.server) {

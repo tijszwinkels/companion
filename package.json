@@ -19,9 +19,13 @@
     "test:quick-tap": "/usr/bin/python test/live/nested-hyprland.py",
     "test:panel-focus": "/usr/bin/python test/live/nested-hyprland.py --focus",
     "omarchy:install": "tsx integrations/omarchy/install.ts",
-    "format": "prettier --write --ignore-unknown src test integrations widget-library package.json tsconfig.json .prettierrc.json",
-    "format:check": "prettier --check --ignore-unknown src test integrations widget-library package.json tsconfig.json .prettierrc.json",
-    "test:widgets": "tsx --test test/widgets/*.test.ts"
+    "format": "prettier --write --ignore-unknown src test integrations widget-library 'native/widget-renderer/*.ts' native/widget-renderer/README.md package.json tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check --ignore-unknown src test integrations widget-library 'native/widget-renderer/*.ts' native/widget-renderer/README.md package.json tsconfig.json .prettierrc.json",
+    "test:widgets": "tsx --test test/widgets/browser.test.ts",
+    "widgets:build": "tsx native/widget-renderer/build.ts --host",
+    "widgets:build-module": "tsx native/widget-renderer/build.ts",
+    "widgets:shell": "tsx native/widget-renderer/shell.ts",
+    "test:widgets-native": "tsx --test test/widgets/native.test.ts"
   },
   "keywords": [],
   "author": "",

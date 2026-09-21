@@ -5,6 +5,10 @@ themed utterance picker, Activity side panel, and Hyprland shortcuts. Companion 
 on this plugin. The [local protocol](../../src/desktop/README.md) can support other
 desktop adapters without changing the sensor pipeline or processors.
 
+An opt-in [native Chromium widget renderer](../../native/widget-renderer/README.md)
+uses a private WebEngine-enabled Quickshell build. Installing this adapter or
+restarting the listener alone does not switch the running shell to that host.
+
 The resident service also watches MPRIS player state through Quickshell's existing
 media service. Any player reporting Playing auto-pauses microphone listening;
 when none remain Playing, listening resumes unless manually paused. It sends only

@@ -2,6 +2,10 @@
 // code lives only in the opaque iframe and sees data/actions, never this host's
 // capability URL. Each message is tied to that iframe's actual window identity.
 const bootstrap = window.widgetBootstrap;
+// Both HTTP pop-outs and the native profile's private scheme use the same
+// viewer. Resolve its API against the actual document URL, never iframe input.
+const api = bootstrap.api ? location.href.replace(/\/$/, '') : null;
+let theme = bootstrap.theme;
 const frame = document.createElement('iframe');
 frame.setAttribute('sandbox', 'allow-scripts allow-forms');
 frame.setAttribute('referrerpolicy', 'no-referrer');
@@ -58,6 +62,8 @@ window.addEventListener('message', (event) => {
   const message = event.data;
   if (message.type === 'ready') {
     readyResolve();
+  } else if (message.type === 'geometry' && Number.isFinite(message.height)) {
+    window.widgetContentHeight = Math.max(0, Math.min(2200, message.height));
   } else if (message.type === 'result') {
     const pending = waiting.get(message.id);
     if (pending) {
@@ -88,9 +94,9 @@ window.addEventListener('message', (event) => {
         byte.toString(16).padStart(2, '0'),
       ).join(''),
     };
-    if (bootstrap.api) {
+    if (api) {
       liveActions++;
-      void fetch(bootstrap.api + '/action', {
+      void fetch(api + '/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
@@ -120,20 +126,27 @@ async function refresh() {
   }
   refreshing = true;
   try {
-    const response = await fetch(bootstrap.api + '/state');
+    const response = await fetch(api + '/state');
     if (!response.ok) {
       throw Error('Widget is unavailable');
     }
     const snapshot = await response.json();
     if (snapshot.revision !== revision) {
-      await update(snapshot.props, bootstrap.theme, snapshot.revision);
+      await update(snapshot.props, theme, snapshot.revision);
     }
   } finally {
     refreshing = false;
   }
 }
 
-window.widgetHost = { command, update, reply, takeRequests: () => requests.splice(0) };
+function setTheme(value) {
+  theme = value;
+  void command({ kind: 'theme', theme }).catch((error) => {
+    status.textContent = error.message;
+  });
+}
+
+window.widgetHost = { command, update, reply, setTheme, takeRequests: () => requests.splice(0) };
 void update(bootstrap.props, bootstrap.theme, revision)
   .then(() => {
     window.widgetReady = true;
@@ -141,8 +154,11 @@ void update(bootstrap.props, bootstrap.theme, revision)
   .catch((error) => {
     status.textContent = error.message;
   });
-if (bootstrap.api) {
+if (api) {
   setInterval(() => {
+    if (document.hidden) {
+      return;
+    }
     void refresh().catch((error) => {
       status.textContent = error.message;
     });

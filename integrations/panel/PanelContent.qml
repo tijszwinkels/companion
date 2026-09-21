@@ -22,6 +22,7 @@ Item {
   property color tooltipBorder: muted
   property real unit: 1
   property bool animationsEnabled: true
+  property bool nativeWidgets: false
   property string shortcutLabel: ""
   property string focusShortcut: ""
   property var history: []
@@ -451,6 +452,7 @@ Item {
       }
       WidgetSurface {
         id: pinnedSurface
+        nativeRendering: root.nativeWidgets
         objectName: "pinnedWidget"
         anchors.fill: parent
         anchors.topMargin: widgetControls.height + 6 * root.unit
@@ -514,6 +516,7 @@ Item {
 
     SessionView {
       id: chat
+      nativeWidgets: root.nativeWidgets
       objectName: "sessionView"
       visible: root.selectedSession !== null && !root.fullWidget
       widgetsRunning: root.online && root.animationsEnabled

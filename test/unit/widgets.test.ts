@@ -50,6 +50,76 @@ class ControlledRenderer extends WidgetRenderer {
   }
 }
 
+test('native viewport reports require an open view, survive renderer failure and leave on close', async (context) => {
+  const { service, send, owner, renderer } = await fixture(context);
+  const created = await send({ method: 'publish', widget: 'todo', props: { items: [] } });
+  const [{ reference }] = await service.restored(owner);
+  renderer.fail = true;
+  const report = (body: object) =>
+    fetch(reference.viewUrl + '/viewport', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const dimensions = { widthCssPixels: 640, heightCssPixels: 320, textScale: 1.25 };
+  const accepted = await report(dimensions);
+  assert.equal(accepted.status, 200);
+  await accepted.arrayBuffer();
+  assert.deepEqual((await send({ method: 'discover', id: created.id })).lastViewport, dimensions);
+  for (const body of [
+    { ...dimensions, widthCssPixels: 1.5 },
+    { ...dimensions, heightCssPixels: 32769 },
+    { ...dimensions, textScale: 0 },
+  ]) {
+    const response = await report(body);
+    assert.equal(response.status, 400);
+    await response.arrayBuffer();
+  }
+  await service.deactivate(owner);
+  assert.equal((service as any).nativeViewports.size, 0);
+  const stale = await report(dimensions);
+  assert.equal(stale.status, 404);
+  await stale.arrayBuffer();
+  const reopened = await service.restored(owner);
+  assert.notEqual(reopened[0].reference.viewUrl, reference.viewUrl);
+  const lease = await service.lease(owner, new AbortController().signal);
+  const inspection = await widgetTools(lease.endpoint, lease.token)[0].execute('inspect-reopened', {
+    id: created.id,
+  });
+  assert.equal(JSON.parse(inspection.content[0].text).lastViewport, null);
+});
+
+test('native viewport cannot attach a delayed old view report after reopen', async (context) => {
+  const { service, send, owner } = await fixture(context);
+  await send({ method: 'publish', widget: 'todo', props: { items: [] } });
+  const [{ reference }] = await service.restored(owner);
+  const entered = deferred();
+  const released = deferred();
+  const original = (service as any).body.bind(service);
+  (service as any).body = async (request: unknown) => {
+    const body = await original(request);
+    entered.resolve();
+    await released.promise;
+    return body;
+  };
+  const pending = fetch(reference.viewUrl + '/viewport', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ widthCssPixels: 640, heightCssPixels: 320, textScale: 1 }),
+  });
+  try {
+    await entered.promise;
+    await service.deactivate(owner);
+    await service.restored(owner);
+  } finally {
+    released.resolve();
+  }
+  const result = await pending;
+  assert.equal(result.status, 400);
+  assert.match(await result.text(), /view expired/);
+  assert.equal((service as any).nativeViewports.size, 0);
+});
+
 async function fixture(
   context: { after(fn: () => Promise<unknown>): void },
   options: {

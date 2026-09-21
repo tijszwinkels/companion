@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
 
-// The browser owns HTML, CSS, SVG and WebGL. This portable item owns only an
-// image and deliberate widget-local input. It cannot evaluate widget code.
+// The host owns sizing, lifecycle and controls. A prepared WebEngine host uses
+// direct rendering; portable hosts retain the captured-frame implementation.
 FocusScope {
   id: root
   property var reference: null
@@ -15,6 +15,7 @@ FocusScope {
   property real unit: 1
   property real textScale: 1
   property real pixelRatio: Screen.devicePixelRatio
+  property bool nativeRendering: false
   property bool running: visible && enabled
   property bool fitContent: true
   property real preferredHeight: 240 * unit
@@ -22,7 +23,8 @@ FocusScope {
   property string popoutError: ""
   property bool popoutPending: false
   property string summary: ""
-  property bool rendered: false
+  property bool captured: false
+  readonly property bool rendered: nativeRendering ? !!embedded.item && embedded.item.rendered : captured
   property bool layoutAgain: false
   property int frameNumber: 0
   property int retryDelay: 100
@@ -41,13 +43,14 @@ FocusScope {
   clip: true
   implicitHeight: preferredHeight
   onViewUrlChanged: {
-    error = ""; rendered = false; framePending = false; layoutPending = false
+    error = ""; captured = false; framePending = false; layoutPending = false
     popoutError = ""; popoutPending = false
     viewGeneration++
     refreshLayout(); refresh()
   }
   onReferenceChanged: refreshLayout()
   onWidthChanged: refreshLayout()
+  onHeightChanged: if (nativeRendering) refreshLayout()
   onTextScaleChanged: refreshLayout()
   onPixelRatioChanged: { refreshLayout(); refresh() }
   // Visibility controls admission and rendering, not completion of accepted
@@ -109,6 +112,7 @@ FocusScope {
   }
 
   function refreshLayout() {
+    if (nativeRendering) { nativeLayout.restart(); return }
     if (!fitContent || !running || !viewUrl || width < 80) return
     if (layoutPending) { layoutAgain = true; return }
     layoutPending = true
@@ -120,12 +124,14 @@ FocusScope {
   }
 
   function refresh() {
+    if (nativeRendering) return
     if (!running || !viewUrl || framePending || width < 80 || height < 60 || transport) return
     framePending = true
     picture.source = viewUrl + "/frame" + viewport() + "&frame=" + (++frameNumber)
   }
 
   function sendInput(event) {
+    if (nativeRendering) return
     if (!running || !visible || !enabled || !viewUrl) return
     // Coalesce pointer motion, but preserve press/release and text ordering.
     const tail = inputQueue.length ? inputQueue[inputQueue.length - 1] : null
@@ -215,13 +221,20 @@ FocusScope {
       event.accepted = true
     } else event.accepted = false
   }
-  Keys.onPressed: event => key(event, "keyDown")
-  Keys.onReleased: event => key(event, "keyUp")
+  Keys.onPressed: event => { if (!nativeRendering) key(event, "keyDown"); else event.accepted = false }
+  Keys.onReleased: event => { if (!nativeRendering) key(event, "keyUp"); else event.accepted = false }
+  Shortcut {
+    sequence: "Escape"
+    context: Qt.WindowShortcut
+    enabled: root.nativeRendering && root.running && root.activeFocus
+    onActivated: popoutButton.forceActiveFocus(Qt.TabFocusReason)
+  }
 
   Image {
     id: picture
     objectName: "widgetFrame"
     anchors.fill: parent
+    visible: !root.nativeRendering
     cache: false
     asynchronous: true
     retainWhileLoading: true
@@ -229,7 +242,7 @@ FocusScope {
     onStatusChanged: if (status === Image.Ready || status === Image.Error) {
       root.framePending = false
       if (status === Image.Ready) {
-        root.rendered = true
+        root.captured = true
         root.retryDelay = 100
         if (root.error.indexOf("Widget renderer unavailable") === 0) root.error = ""
       }
@@ -239,11 +252,17 @@ FocusScope {
       }
     }
   }
-  Timer { interval: root.retryDelay; repeat: true; running: root.running && root.viewUrl !== ""; onTriggered: root.refresh() }
+  Timer { interval: root.retryDelay; repeat: true; running: !root.nativeRendering && root.running && root.viewUrl !== ""; onTriggered: root.refresh() }
   HoverHandler { id: hover }
+  PointHandler {
+    enabled: root.nativeRendering
+    acceptedButtons: Qt.AllButtons
+    onActiveChanged: if (active) root.interactionStarted()
+  }
   MouseArea {
     id: pointer
     anchors.fill: parent
+    enabled: !root.nativeRendering
     acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
     preventStealing: true
     hoverEnabled: true
@@ -264,6 +283,38 @@ FocusScope {
       root.sendInput({type: "mouseWheel", x: wheel.x, y: wheel.y, deltaY: -(wheel.pixelDelta.y || wheel.angleDelta.y)})
       wheel.accepted = true
     }
+  }
+  Loader {
+    id: embedded
+    anchors.fill: parent
+    active: root.nativeRendering && root.viewUrl !== ""
+    source: active ? Qt.resolvedUrl("NativeWidgetView.qml") : ""
+    onLoaded: {
+      item.viewUrl = Qt.binding(function() { return root.viewUrl })
+      item.running = Qt.binding(function() { return root.running })
+      item.theme = Qt.binding(function() {
+        return {foreground: root.foreground.toString(), background: root.selection.toString(),
+          accent: root.accent.toString(), muted: root.muted.toString(), scale: root.textScale}
+      })
+    }
+    onStatusChanged: if (status === Loader.Error) root.error = "Native widget renderer could not load"
+  }
+  Timer {
+    id: nativeLayout
+    interval: 120
+    onTriggered: {
+      if (!root.nativeRendering || !root.running || root.width < 1 || root.height < 1) return
+      root.request("/viewport", {widthCssPixels: Math.round(root.width),
+        heightCssPixels: Math.round(root.height), textScale: Math.max(0.5, Math.min(3, root.textScale))}, null)
+    }
+  }
+  Connections {
+    target: embedded.item
+    function onMeasuredHeightChanged() {
+      if (root.fitContent) root.preferredHeight = Math.max(100 * root.unit, Math.min(420 * root.unit, embedded.item.measuredHeight))
+    }
+    function onErrorChanged() { root.error = embedded.item.error }
+    function onInteractionStarted() { root.interactionStarted() }
   }
   TextEdit { id: clipboard; objectName: "widgetClipboard"; visible: false; textFormat: TextEdit.PlainText }
   Button {

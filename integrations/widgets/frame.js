@@ -5,6 +5,12 @@ const root = document.getElementById('widget');
 const pendingActions = new Map();
 let nextAction = 0;
 let controller;
+function applyTheme(theme) {
+  for (const name of ['foreground', 'background', 'accent', 'muted']) {
+    document.documentElement.style.setProperty('--' + name, theme[name]);
+  }
+  document.documentElement.style.fontSize = `${16 * theme.scale}px`;
+}
 const api = {
   call(action, args = {}) {
     if (pendingActions.size >= 8) {
@@ -39,13 +45,13 @@ window.addEventListener('message', async (event) => {
   try {
     let result;
     if (message.kind === 'update') {
-      const theme = message.theme;
-      for (const name of ['foreground', 'background', 'accent', 'muted']) {
-        document.documentElement.style.setProperty('--' + name, theme[name]);
-      }
-      document.documentElement.style.fontSize = `${16 * theme.scale}px`;
+      applyTheme(message.theme);
       controller ??= implementation.mount(root, api);
       await controller.update(structuredClone(message.props));
+      result = true;
+    } else if (message.kind === 'theme') {
+      // Theme-only updates preserve drafts, selection and the current props.
+      applyTheme(message.theme);
       result = true;
     } else if (message.kind === 'reduce') {
       const action = implementation.actions?.[message.action];
@@ -77,5 +83,15 @@ window.addEventListener('message', async (event) => {
     );
   }
 });
-window.addEventListener('pagehide', () => controller?.dispose?.());
+const sizeObserver = new ResizeObserver(() => {
+  parent.postMessage(
+    { type: 'geometry', height: Math.ceil(root.getBoundingClientRect().height + 24) },
+    '*',
+  );
+});
+sizeObserver.observe(root);
+window.addEventListener('pagehide', () => {
+  sizeObserver.disconnect();
+  controller?.dispose?.();
+});
 parent.postMessage({ type: 'ready' }, '*');

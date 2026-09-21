@@ -75,6 +75,7 @@ const files = [
   'panel/PanelAction.qml',
   'panel/SessionView.qml',
   'panel/WidgetSurface.qml',
+  'panel/NativeWidgetView.qml',
   'panel/Markdown.mjs',
   'panel/vendor/markdown-it.mjs',
   'panel/vendor/markdown-it.LICENSE',
