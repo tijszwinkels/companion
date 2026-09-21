@@ -146,6 +146,49 @@ try {
       console.log(`PASS candidate ${text.length} characters, exact append, no deletion/Enter/Tab`);
     }
 
+    // Exercise the same separate `-k Return` process that the Enter intent uses.
+    // Its upstream physical code is Escape; verify the browser actually inserts
+    // one newline and retains focus, rather than inferring success from keysyms.
+    await focus(page, target.address);
+    await page.locator('textarea').fill('Existing draft: ');
+    await page.evaluate(() => {
+      window.events = [];
+    });
+    assert.equal(
+      await typeText(
+        'Submit this.',
+        target.address,
+        signal,
+        run,
+        () => true,
+        () => {},
+        true,
+      ),
+      true,
+    );
+    await page.waitForFunction(
+      () => document.querySelector('textarea').value === 'Existing draft: Submit this.\n',
+    );
+    assert.equal(
+      await page.evaluate(() => document.activeElement === document.querySelector('textarea')),
+      true,
+    );
+    const enterEvents = await page.evaluate(() =>
+      window.events.filter((event) => event.type === 'keydown' && event.key === 'Enter'),
+    );
+    assert.equal(enterEvents.length, 1);
+    assert.equal(
+      await page.evaluate(() =>
+        window.events.some(
+          (event) => event.key === 'Escape' || event.inputType?.startsWith('delete'),
+        ),
+      ),
+      false,
+    );
+    console.log(
+      `PASS explicit Enter: exact newline, retained focus; ${JSON.stringify(enterEvents)}`,
+    );
+
     // A second disposable window exercises the actual compositor focus guard.
     const other = await browser.newPage();
     await other.setContent('<title>Companion delivery other</title><textarea></textarea>');

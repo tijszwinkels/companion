@@ -36,6 +36,25 @@ original mapping. That preserves deliberate key chords and avoids changing a
 keymap while an explicitly pressed key is held. Companion's optional Return
 command remains separate from the literal text command.
 
+Retaining the upstream mapping also retains its physical-code mismatch:
+`wtype -k Return` sends keysym Return on evdev code 1 (physical Escape). That
+alone does not establish an incorrect browser action, but applications inspecting
+physical codes may distinguish it from a hardware Enter key. The browser
+regression therefore checks a successful candidate text-and-Enter invocation,
+requiring one newline, retained focus and no Escape/deletion event. It also checks
+that cancellation and a focus change suppress Enter. This patch does not remap
+explicit key commands or claim to fix all applications' shortcut handling.
+
+The integration run on 2026-09-21 in disposable nested Chromium 153.0.8010.36
+passed that positive Enter check: `key="Enter"`, `code="Escape"`, `keyCode=13`,
+exactly one newline and retained textarea focus. The physical mismatch remains,
+so this result does not establish behavior in applications that handle `code`
+differently. The same run reproduced stock corruption at both 1 and 50 ms, then
+passed candidate punctuation, accented/Greek text, printable ASCII in both
+orders, repeated keymap transitions, long text, focus and cancellation checks.
+It still reported the separate supplementary-Unicode limitation below. All input
+stayed in private test fields; this was not a live Mattermost test or activation.
+
 Supplementary Unicode remains a separate Chromium limitation: `🙂` still becomes
 U+F642 through its UTF-16 `KeyEvent` conversion. This patch does not claim to fix
 all browser Unicode input.
