@@ -4,3 +4,4 @@ companion.config.json
 /AGENTS.md
 /.worktrees/
 /native/widget-renderer/build/
+/native/window/build/

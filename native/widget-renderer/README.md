@@ -1,5 +1,9 @@
 # Direct Chromium widgets
 
+The [standalone Qt host](../window/README.md) now provides this renderer without
+a private Quickshell build. The host below remains an experimental integration
+probe; the distribution path is the standalone application.
+
 The native path embeds Qt WebEngine's Chromium renderer directly into the
 existing QtQuick conversation. Chromium handles drawing, animation, text
 selection, pointer input, keyboard input and explicit copy/paste. No PNG capture

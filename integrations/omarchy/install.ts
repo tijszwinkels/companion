@@ -52,6 +52,7 @@ await mkdir(destination, { recursive: true });
 const integrationSource = fileURLToPath(new URL('../', import.meta.url));
 const files = [
   'omarchy/plugin/Service.qml',
+  'omarchy/plugin/NativeBridge.qml',
   'panel/CollapsibleSection.qml',
   'panel/ActivityHistoryState.qml',
   'panel/ActivityHistoryView.qml',

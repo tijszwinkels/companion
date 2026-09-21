@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Companion
+Comment=Conversations and interactive widgets
+Exec=companion-ui
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+StartupWMClass=Companion

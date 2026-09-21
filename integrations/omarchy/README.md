@@ -5,7 +5,11 @@ themed utterance picker, Activity side panel, and Hyprland shortcuts. Companion 
 on this plugin. The [local protocol](../../src/desktop/README.md) can support other
 desktop adapters without changing the sensor pipeline or processors.
 
-An opt-in [native Chromium widget renderer](../../native/widget-renderer/README.md)
+The [standalone Qt host](../../native/window/README.md) displays conversations and
+embedded Chromium widgets without changing the installed Quickshell. This adapter
+automatically hands off the panel, shortcuts and theme when that host is running.
+
+An experimental [native Chromium widget renderer](../../native/widget-renderer/README.md)
 uses a private WebEngine-enabled Quickshell build. Installing this adapter or
 restarting the listener alone does not switch the running shell to that host.
 

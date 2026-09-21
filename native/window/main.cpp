@@ -1,0 +1,116 @@
+#include "connection.hpp"
+#include "host.hpp"
+#include "../widget-renderer/initialize.hpp"
+
+#include <QCommandLineParser>
+#include <QDir>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QJsonDocument>
+#include <QLockFile>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QTimer>
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
+#include <cstdio>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    if (qEnvironmentVariableIsSet("QTWEBENGINE_DISABLE_SANDBOX")
+        || qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS").contains("--no-sandbox")
+        || qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS").contains("--disable-web-security")) {
+        fprintf(stderr, "Companion widgets require Chromium sandboxing and web security.\n");
+        return 1;
+    }
+    registerWidgetScheme();
+    QtWebEngineQuick::initialize();
+    QGuiApplication app(argc, argv);
+    app.setOrganizationName("Companion");
+    app.setApplicationName("Companion");
+    app.setDesktopFileName("companion");
+    app.setQuitOnLastWindowClosed(false);
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Companion conversation window");
+    parser.addHelpOption();
+    parser.addOption({"socket", "Backend socket path", "path"});
+    parser.addOption({"control-socket", "UI control socket path", "path"});
+    parser.addOption({"presentation", "window, sidebar or dock", "mode"});
+    parser.addOption({"command", "Send show, hide, toggle or focus to the running UI", "action"});
+    parser.addOption({"hidden", "Start hidden until summoned or a conversation arrives"});
+    parser.process(app);
+
+    const auto runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    if (runtime.isEmpty()) {
+        fprintf(stderr, "XDG_RUNTIME_DIR is required.\n");
+        return 1;
+    }
+    const auto directory = runtime + "/companion";
+    const mode_t oldMask = umask(0077);
+    QDir().mkpath(directory);
+    umask(oldMask);
+    struct stat metadata {};
+    if (lstat(qPrintable(directory), &metadata) != 0 || !S_ISDIR(metadata.st_mode)
+        || metadata.st_uid != getuid() || (metadata.st_mode & 0077)) {
+        fprintf(stderr, "Companion runtime directory must be private and owned by this user.\n");
+        return 1;
+    }
+    const auto control = parser.isSet("control-socket") ? parser.value("control-socket") : directory + "/ui.sock";
+    const auto backend = parser.isSet("socket") ? parser.value("socket") : directory + "/control.sock";
+    const auto action = parser.value("command");
+    if (!action.isEmpty() && action != "show" && action != "hide" && action != "toggle" && action != "focus") {
+        fprintf(stderr, "Unknown UI command.\n");
+        return 1;
+    }
+    QLocalSocket existing;
+    existing.connectToServer(control);
+    if (existing.waitForConnected(200)) {
+        QJsonObject request{{"action", action.isEmpty() ? "show" : action}, {"activate", true}};
+        if (parser.isSet("presentation")) request = {{"action", "presentation"}, {"mode", parser.value("presentation")}};
+        existing.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
+        if (!existing.waitForBytesWritten(1000)) return 1;
+        QByteArray response;
+        while (existing.waitForReadyRead(1000)) {
+            response += existing.readAll();
+            if (response.contains("\"type\":\"ack\"")) return 0;
+            if (response.size() > 65536) break;
+        }
+        fprintf(stderr, "Running Companion UI did not acknowledge the command.\n");
+        return 1;
+    }
+    if (!action.isEmpty()) {
+        fprintf(stderr, "Companion UI is not running.\n");
+        return 1;
+    }
+
+    // Only the lock owner may remove a stale socket. It spans the whole host
+    // lifetime, so concurrent launchers cannot unlink a newly listening host.
+    QLockFile lock(control + ".lock");
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        fprintf(stderr, "Companion UI is already starting.\n");
+        return 1;
+    }
+    QLocalServer::removeServer(control);
+    WindowHost host;
+    DesktopConnection connection(backend);
+    QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty("WindowHost", &host);
+    engine.rootContext()->setContextProperty("DesktopConnection", &connection);
+    engine.addImportPath(QCoreApplication::applicationDirPath() + "/qml");
+    engine.addImportPath(QCoreApplication::applicationDirPath() + "/../lib/companion/qml");
+    const auto installed = QCoreApplication::applicationDirPath() + "/../share/companion/integrations/window/Main.qml";
+    const auto source = QFileInfo::exists(installed) ? installed : QStringLiteral(COMPANION_UI_SOURCE);
+    engine.load(QUrl::fromLocalFile(source));
+    if (engine.rootObjects().isEmpty()) return 1;
+    auto *body = qobject_cast<QQuickItem *>(engine.rootObjects().first());
+    if (!body || !host.listen(control)) return 1;
+    host.attach(body);
+    QSettings settings;
+    host.setPresentation(parser.isSet("presentation") ? parser.value("presentation")
+                                                    : settings.value("presentation", "window").toString());
+    if (!parser.isSet("hidden")) host.show(false);
+    connection.start();
+    return app.exec();
+}

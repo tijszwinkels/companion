@@ -9,5 +9,11 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["src", "test", "integrations/**/*.ts", "native/widget-renderer/*.ts"]
+  "include": [
+    "src",
+    "test",
+    "integrations/**/*.ts",
+    "native/widget-renderer/*.ts",
+    "native/window/*.ts"
+  ]
 }

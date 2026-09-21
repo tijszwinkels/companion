@@ -23,6 +23,11 @@ hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
 -- unless the Companion panel has focus. Qt owns that focus decision; when no
 -- panel is mapped, use the native dispatcher directly (also if the UI exits).
 local function panel_or_window(action, fallback)
+  local active = hl.get_active_window()
+  if active and active.class == "companion" then
+    hl.dispatch(hl.dsp.global("companion:" .. action))
+    return
+  end
   for _, layer in ipairs(hl.get_layers()) do
     if layer.namespace == "companion-panel" and layer.mapped then
       hl.dispatch(hl.dsp.global("companion:" .. action))
@@ -31,6 +36,11 @@ local function panel_or_window(action, fallback)
   end
   hl.dispatch(fallback)
 end
+
+-- Companion requests a modest ordinary window. Keep it floating initially and
+-- preserve the foreground application's focus when a new conversation appears.
+-- Users can still tile it through their usual window-manager command.
+hl.window_rule({ match = { class = "^companion$" }, float = true, center = true, no_initial_focus = true })
 
 hl.unbind("SUPER + ALT + TAB")
 hl.bind("SUPER + ALT + TAB", function()

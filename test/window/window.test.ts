@@ -1,0 +1,341 @@
+import assert from 'node:assert/strict';
+import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createConnection, createServer, type Socket } from 'node:net';
+import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import test from 'node:test';
+
+import { WidgetService } from '../../src/widgets/service.ts';
+import type { WidgetAttachment } from '../../src/widgets/types.ts';
+
+const execute = promisify(execFile);
+const build = resolve('native/window/build');
+
+async function fixture() {
+  const directory = await mkdtemp('/tmp/companion-window-test-');
+  const runtime = join(directory, 'runtime');
+  await mkdir(runtime, { mode: 0o700 });
+  return {
+    directory,
+    runtime,
+    env: {
+      PATH: process.env.PATH,
+      HOME: directory,
+      XDG_CONFIG_HOME: join(directory, 'config'),
+      XDG_CACHE_HOME: join(directory, 'cache'),
+      XDG_RUNTIME_DIR: runtime,
+      QT_QPA_PLATFORM: 'offscreen',
+      QT_QUICK_BACKEND: 'software',
+      QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu',
+      QML_IMPORT_PATH: join(build, 'qml'),
+      LD_LIBRARY_PATH: join(build, 'staged/usr/lib'),
+    },
+  };
+}
+
+async function until(condition: () => boolean, detail: () => string) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (condition()) {
+      return;
+    }
+    await delay(25);
+  }
+  assert.fail(detail());
+}
+
+test('prepared shortcuts preserve ordinary desktop actions and route the native window', async () => {
+  const result = await execute('lua', [
+    resolve('test/window/bindings.lua'),
+    resolve('integrations/omarchy/bindings.lua'),
+  ]);
+  assert.match(result.stdout, /BINDINGS_PASS/);
+});
+
+test('stock Quickshell bridge connects to the isolated native control socket', async () => {
+  const setup = await fixture();
+  const calls: any[] = [];
+  const peers: Socket[] = [];
+  const runtime = join(setup.runtime, 'companion');
+  await mkdir(runtime, { mode: 0o700 });
+  const server = createServer((socket) => {
+    peers.push(socket);
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        calls.push(JSON.parse(line));
+      }
+      if (calls.some((entry) => entry.action === 'theme')) {
+        socket.write(
+          JSON.stringify({ type: 'status', protocol: 1, opened: true, sessionId: 'synthetic' }) +
+            '\n',
+        );
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(join(runtime, 'ui.sock'), resolve));
+  const commons = join(setup.directory, 'Commons');
+  await mkdir(commons);
+  await writeFile(
+    join(commons, 'qmldir'),
+    'module qs.Commons\nsingleton Color 1.0 Color.qml\nsingleton Style 1.0 Style.qml\n',
+  );
+  await writeFile(
+    join(commons, 'Color.qml'),
+    `pragma Singleton
+import QtQuick
+QtObject {
+  property QtObject menu: QtObject {
+    property color background: "#123456"
+    property color text: "#ffffff"
+    property color selectedText: "#aabbcc"
+    property color selectedBackground: "#223344"
+  }
+  property QtObject tooltip: QtObject {
+    property color background: "#123456"
+    property color text: "#ffffff"
+    property color border: "#556677"
+  }
+}
+`,
+  );
+  await writeFile(
+    join(commons, 'Style.qml'),
+    `pragma Singleton
+import QtQuick
+QtObject {
+  property QtObject font: QtObject { property string menuFamily: "monospace" }
+  function space(value) { return value * 1.25 }
+}
+`,
+  );
+  const adapter = new URL('../../integrations/omarchy/plugin', import.meta.url).href;
+  const path = join(setup.directory, 'shell.qml');
+  await writeFile(
+    path,
+    `import QtQuick
+import Quickshell
+import "${adapter}" as Adapter
+Scope {
+  Adapter.NativeBridge {
+    onReadyChanged: if (ready && status.sessionId === "synthetic") {
+      console.log("NATIVE_BRIDGE_PASS")
+      Qt.quit()
+    }
+  }
+  Timer { interval: 4000; running: true; onTriggered: Qt.exit(1) }
+}
+`,
+  );
+  try {
+    const result = await execute('/usr/bin/quickshell', ['--path', path], {
+      env: setup.env,
+      timeout: 10000,
+      killSignal: 'SIGKILL',
+    });
+    assert.match(result.stdout + result.stderr, /NATIVE_BRIDGE_PASS/);
+    assert.equal(calls[0].action, 'bridge');
+    const theme = calls.find((entry) => entry.action === 'theme').values;
+    assert.equal(theme.background, '#123456');
+    assert.equal(theme.unit, 1.25);
+  } finally {
+    for (const peer of peers) {
+      peer.destroy();
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('Qt window connects, hands off ownership, reconnects and accepts a single-instance command', async () => {
+  const setup = await fixture();
+  const stage = join(setup.directory, 'stage');
+  await execute('cmake', ['--install', build, '--prefix', '/usr'], {
+    env: { ...process.env, DESTDIR: stage },
+    timeout: 15000,
+  });
+  const executable = join(stage, 'usr/bin/companion-ui');
+  const sockets: Socket[] = [];
+  const requests: any[] = [];
+  const backendPath = join(setup.directory, 'backend.sock');
+  const server = createServer((socket) => {
+    sockets.push(socket);
+    socket.on('error', (error: NodeJS.ErrnoException) => {
+      assert.equal(error.code, 'ECONNRESET', 'fixture permits forced Qt connection teardown');
+    });
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        requests.push(JSON.parse(line));
+      }
+    });
+    const state =
+      JSON.stringify({
+        type: 'state',
+        protocol: 1,
+        ready: true,
+        activitySessionId: 'test',
+        activityHistoryCount: 0,
+        sessions: [{ id: 'one', title: 'Synthetic session', status: 'idle', messages: [] }],
+      }) + '\n';
+    socket.write(state.slice(0, 40));
+    setTimeout(() => socket.write(state.slice(40)), 10);
+  });
+  await new Promise<void>((resolve) => server.listen(backendPath, resolve));
+  // Use installed resources and module lookup, without a QML path into the
+  // build tree. This is a staged installation only, never a live package install.
+  const env = { ...setup.env, QML_IMPORT_PATH: '' };
+  const child = spawn(executable, ['--socket', backendPath], { env });
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  let output = '';
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    output += chunk;
+  });
+  let bridge: Socket | undefined;
+  try {
+    await until(
+      () => requests.some((entry) => entry.action === 'panel-state' && entry.id === 'one'),
+      () => output,
+    );
+    const control = join(setup.runtime, 'companion/ui.sock');
+    assert.equal((await stat(control)).mode & 0o077, 0);
+    bridge = createConnection(control);
+    bridge.on('error', (error: NodeJS.ErrnoException) => {
+      assert.equal(error.code, 'ECONNRESET', 'oversized input is disconnected');
+    });
+    const statuses: any[] = [];
+    let buffer = '';
+    bridge.on('data', (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        statuses.push(JSON.parse(line));
+      }
+    });
+    await new Promise<void>((resolve) => bridge!.once('connect', resolve));
+    bridge.write(JSON.stringify({ action: 'bridge' }) + '\n');
+    await execute(executable, ['--command', 'hide'], {
+      env,
+      timeout: 5000,
+    });
+    await until(
+      () => statuses.some((entry) => entry.type === 'status' && entry.opened === false),
+      () => output,
+    );
+    assert.equal(requests.at(-1).id, '');
+    await execute(executable, ['--command', 'show'], {
+      env,
+      timeout: 5000,
+    });
+    await until(
+      () => requests.at(-1)?.id === 'one',
+      () => output,
+    );
+    assert.equal(sockets.length, 1, 'secondary invocation must not create another backend client');
+    sockets[0].destroy();
+    await until(
+      () => sockets.length === 2 && requests.at(-1)?.id === 'one',
+      () => output,
+    );
+    bridge.write('x'.repeat(65537));
+    await new Promise<void>((resolve) => bridge!.once('close', resolve));
+    assert.equal(child.exitCode, null);
+    assert.doesNotMatch(output, /ReferenceError|TypeError|Binding loop|Required property/);
+  } finally {
+    bridge?.destroy();
+    child.kill('SIGTERM');
+    await exited;
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('portable client handles ordered replies and reconnects', async () => {
+  const setup = await fixture();
+  try {
+    const result = await execute(
+      '/usr/lib/qt6/bin/qmltestrunner',
+      ['-input', resolve('test/window/tst_client.qml'), '-nocrashhandler'],
+      {
+        env: setup.env,
+        timeout: 20000,
+        killSignal: 'SIGKILL',
+      },
+    );
+    assert.match(result.stdout, /6 passed, 0 failed/);
+  } finally {
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('native UI preserves its QML body and Chromium view across presentation changes', async () => {
+  const setup = await fixture();
+  let reference: WidgetAttachment | undefined;
+  const service = new WidgetService(setup.directory, async (_, value) => {
+    reference = value;
+  });
+  try {
+    const lease = await service.lease(randomUUID(), new AbortController().signal);
+    const response = await fetch(lease.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+      body: JSON.stringify({
+        method: 'publish',
+        widget: 'todo',
+        requestId: 'native-window',
+        props: {
+          title: 'Standalone Qt',
+          items: [{ id: 'one', text: 'Retained browser', completed: false }],
+        },
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const template = await readFile(new URL('./host.qml.in', import.meta.url), 'utf8');
+    const path = join(setup.directory, 'tst_host.qml');
+    await writeFile(
+      path,
+      template
+        .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
+        .replace('@REFERENCE@', JSON.stringify(reference))
+        .replace('@CAPTURE@', join(setup.directory, 'window.png')),
+    );
+    try {
+      const result = await execute(
+        join(build, 'companion-window-tests'),
+        ['-input', path, '-nocrashhandler'],
+        {
+          env: setup.env,
+          timeout: 30000,
+          killSignal: 'SIGKILL',
+        },
+      );
+      assert.match(result.stdout, /3 passed, 0 failed/);
+      const artifacts = join(build, 'artifacts');
+      await mkdir(artifacts, { recursive: true });
+      await writeFile(
+        join(artifacts, 'window.png'),
+        await readFile(join(setup.directory, 'window.png')),
+      );
+    } catch (error) {
+      throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'));
+    }
+  } finally {
+    await service.close();
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});

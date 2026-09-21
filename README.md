@@ -258,6 +258,11 @@ queued follow-ups. Stopped/failed turns and reopening old conversations stay sil
 Use `--no-sounds` to start with these cues muted, or toggle them from the top bar
 microphone menu during a session. Preview mode is silent.
 
+The [standalone Qt window](native/window/README.md) reuses the conversation UI
+with embedded Chromium and Window/Sidebar/Dock presentation, using standard Qt
+packages. It is an opt-in development candidate; see its validation limits and
+coordinated activation instructions before trying it on the desktop.
+
 The optional [Omarchy adapter](integrations/omarchy/README.md) adds:
 
 - **Super+Alt+V**: hold to see recent utterances, select with **Up/Down**, and
