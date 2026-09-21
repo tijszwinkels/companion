@@ -13,6 +13,14 @@ Wayland and LayerShellQt. One persistent QML body moves between the two native
 surfaces, retaining drafts, selected tabs, zoom and browser documents. Closing
 the window hides it; the resident host can be summoned again.
 
+Super +/− uses Omarchy's ordinary Hyprland resize action in Window mode, for both
+floating and tiled windows. Qt follows the resulting compositor geometry. Only
+Sidebar/Dock route these keys to Companion's own width control. Asking Qt to
+resize an ordinary surface directly can change its content size while Hyprland
+keeps the outer window at the previous size. The shortcut regression executes
+the shipped Lua with inert compositor objects; live geometry still needs a
+coordinated check after updating the installed adapter's bindings.
+
 ## Build without activating
 
 Build dependencies: CMake, a C++17 compiler, Qt 6.8+ Quick, QuickControls2,

@@ -25,7 +25,14 @@ hl.bind("SUPER + ALT + C", hl.dsp.global("companion:panel"), {
 local function panel_or_window(action, fallback)
   local active = hl.get_active_window()
   if active and active.class == "companion" then
-    hl.dispatch(hl.dsp.global("companion:" .. action))
+    -- Hyprland owns ordinary window geometry, including floating windows.
+    -- Asking Qt to resize only its surface can leave the outer window at its
+    -- old size, stretching/clipping the conversation and embedded browser.
+    if action == "expand-width" or action == "shrink-width" then
+      hl.dispatch(fallback)
+    else
+      hl.dispatch(hl.dsp.global("companion:" .. action))
+    end
     return
   end
   for _, layer in ipairs(hl.get_layers()) do
