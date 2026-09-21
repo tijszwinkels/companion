@@ -35,6 +35,9 @@ on hover or keyboard focus and opens a dedicated Chromium window. Clicking the
 widget itself interacts with it. Press Escape from widget input to focus the
 host's pop-out button. Both views share the same saved state. Pop-outs close when
 the conversation or Companion closes; reopening restores the inline/pinned view.
+While Chromium starts, the arrow shows progress and rejects duplicate clicks.
+Launch failures remain visible through background refreshes until the next
+attempt or a different widget view is selected.
 
 ## Adding a widget
 
@@ -112,6 +115,17 @@ Theme variables are `--foreground`, `--background`, `--accent`, `--muted`.
 The root font size follows the reader's zoom; prefer `rem` and flexible layouts.
 An inline bubble measures its content and reserves 100–420 theme units; larger
 content scrolls inside the widget. A pinned widget receives its reserved viewport.
+The initial offscreen preview is 480 × 280 CSS pixels, **not** a guarantee of the
+sidebar's size. Layouts must adapt to sidebar width, text zoom and pop-out resizing.
+The host supplies 12 CSS pixels of padding on every side. Measure
+`root.getBoundingClientRect().width` for usable content width and
+`window.innerHeight` for viewport height. Prefer wrapping flex/grid layouts,
+`minmax(min(100%, 10rem), 1fr)` grid columns and SVG `viewBox` over fixed widths.
+Canvas/WebGL widgets should observe their container with `ResizeObserver`, resize
+their drawing buffer for `devicePixelRatio`, and disconnect the observer in
+`dispose`. Keep essential information visible in a small area and let overflow
+scroll when the user reserves less height.
+
 Self-contained HTML, CSS, inline SVG, canvas and WebGL are available. CDN imports,
 remote images, fonts, fetches and browser storage are unavailable. Bundle needed
 libraries locally; do not add network dependencies to a widget.

@@ -43,8 +43,8 @@ export function widgetTools(endpoint: string, token: string) {
       promptSnippet:
         'Find reusable interactive diagrams, comparisons, charts and lists for this conversation.',
       promptGuidelines: [
-        'Use a small informative widget when it makes an explanation or comparison clearer. Keep ordinary concise Markdown answers available; visuals should help, not decorate every answer.',
-        'Discover a widget and inspect its schema before publishing. Supply its props instead of repeating HTML or JavaScript. Existing widgets can be inspected by id, updated or called through their declared actions.',
+        'Proactively use a small informative widget when it makes a forecast, comparison, set of values or process easier to understand. Do not wait for the user to request HTML. Keep ordinary concise Markdown answers available; visuals should help, not decorate every answer.',
+        'Discover a widget and inspect its schema before publishing. If a keyword search is empty, list the library: a generic comparison or chart may fit. Supply props instead of repeating HTML or JavaScript. Existing widgets can be inspected by id, updated or called through their declared actions.',
       ],
       description:
         'List widget names, descriptions and actions. Use name to inspect a schema/example, or id to read an existing instance’s current props, revision and actions. Search with query. Bundles live in Companion’s widget-library directory.',
@@ -61,6 +61,8 @@ export function widgetTools(endpoint: string, token: string) {
       promptSnippet: 'Insert a reusable widget into your conversation using its name and props.',
       promptGuidelines: [
         'Prefer compact inline visuals. Pin a widget when useful for ongoing work, normally using 25 percent of the sidebar height. A 100 percent pinned widget hides chat and its input until the user returns to chat.',
+        'Design for changing space: width follows the sidebar, inline height fits content within 100–420 theme units, and pinned height is a percentage. The initial 480 × 280 CSS-pixel preview is not the user’s actual viewport. Text zoom and Chromium pop-out resizing also change the layout.',
+        'When authoring library widgets, use fluid CSS, wrapping flex/grid layouts, scalable SVG viewBox graphics and rem-based text. Read root.getBoundingClientRect() for actual available width in CSS pixels and window.innerHeight for viewport height; use ResizeObserver for canvas/WebGL resizing and disconnect it in dispose. The host adds 12 CSS pixels of padding on each side. Avoid fixed-width desktop layouts.',
       ],
       description:
         'Publish a widget from the library. Props follow its discovered schema. Defaults to an inline bubble. Optional pinned presentation reserves a percentage of this conversation’s sidebar height (default 25), and can replace the activity strip (default true). Only one widget is pinned per conversation. Returns a stable id and revision; keep these for later updates. Widgets remain interactive, have a text fallback and can be popped out by the user.',

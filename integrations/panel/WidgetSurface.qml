@@ -17,6 +17,8 @@ FocusScope {
   property bool fitContent: true
   property real preferredHeight: 240 * unit
   property string error: ""
+  property string popoutError: ""
+  property bool popoutPending: false
   property string summary: ""
   property bool rendered: false
   property bool layoutAgain: false
@@ -38,6 +40,7 @@ FocusScope {
   implicitHeight: preferredHeight
   onViewUrlChanged: {
     error = ""; rendered = false; framePending = false; layoutPending = false
+    popoutError = ""; popoutPending = false
     viewGeneration++
     refreshLayout(); refresh()
   }
@@ -152,7 +155,19 @@ FocusScope {
     })
   }
 
-  function popout() { request("/popout", {}, null) }
+  function popout() {
+    if (!running || !visible || !enabled || !viewUrl || popoutPending) return
+    const generation = viewGeneration
+    popoutPending = true
+    popoutError = ""
+    // Starting Chromium can take time. Keep one visible launch in flight and
+    // retain its error separately from successful background layout/input work.
+    requestAt(viewUrl, "/popout", {}, function(result, failure) {
+      if (root.viewGeneration !== generation) return
+      root.popoutPending = false
+      root.popoutError = failure
+    })
+  }
   function unpin() {
     request("/present", {presentation: {placement: "inline"}, requestId: "unpin-" + Date.now()}, null)
   }
@@ -162,7 +177,7 @@ FocusScope {
   }
   function key(event, phase) {
     if (event.key === Qt.Key_Escape && phase === "keyDown") {
-      popout.forceActiveFocus(Qt.TabFocusReason)
+      popoutButton.forceActiveFocus(Qt.TabFocusReason)
       event.accepted = true
       return
     }
@@ -248,28 +263,32 @@ FocusScope {
   }
   TextEdit { id: clipboard; objectName: "widgetClipboard"; visible: false; textFormat: TextEdit.PlainText }
   Button {
-    id: popout
+    id: popoutButton
     objectName: "widgetPopout"
     anchors.top: parent.top
     anchors.right: parent.right
     anchors.margins: 6 * root.unit
     width: 34 * root.unit
     height: width
-    text: "↗"
-    opacity: root.hovered || hovered || activeFocus ? 1 : 0
+    text: root.popoutPending ? "…" : "↗"
+    // Remain focusable while opening: Escape must still leave widget input.
+    // popout() rejects additional activations until the accepted launch ends.
+    enabled: root.running && root.viewUrl !== ""
+    opacity: root.popoutPending || root.hovered || hovered || activeFocus ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 140 } }
     onClicked: root.popout()
-    Accessible.name: "Open widget in Chromium"
+    Accessible.name: root.popoutPending ? "Opening widget in Chromium" : "Open widget in Chromium"
     background: Rectangle { color: root.selection; radius: 5 * root.unit; border.color: root.muted }
-    contentItem: Text { text: popout.text; color: root.foreground; font.pixelSize: 22 * root.unit; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+    contentItem: Text { text: popoutButton.text; color: root.foreground; font.pixelSize: 22 * root.unit; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
     ToolTip.visible: hovered
-    ToolTip.text: "Open in Chromium"
+    ToolTip.text: root.popoutPending ? "Opening in Chromium…" : "Open in Chromium"
   }
   Text {
+    objectName: "widgetStatus"
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: parent.bottom
-    text: root.error
+    text: root.popoutPending ? "Opening in Chromium…" : root.popoutError || root.error
     visible: text !== ""
     color: root.foreground
     style: Text.Outline

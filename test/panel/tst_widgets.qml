@@ -213,5 +213,73 @@ Item {
       widget.reference = invalid
       compare(widget.viewUrl, "")
     }
+
+    function test_slow_popout_shows_progress_and_accepts_only_one_click() {
+      const widget = createTemporaryObject(surfaceComponent, parent, {reference: reference(25, true)})
+      const calls = []
+      widget.transport = function(path, body, done) {
+        if (path === "/popout") calls.push(done)
+        else done({height: 170})
+      }
+      const button = findChild(widget, "widgetPopout")
+      const status = findChild(widget, "widgetStatus")
+      mouseMove(button)
+      mouseClick(button)
+      compare(calls.length, 1)
+      compare(button.text, "…")
+      compare(status.text, "Opening in Chromium…")
+      mouseClick(button)
+      widget.popout()
+      compare(calls.length, 1, "A slow first launch must not invite duplicate browser creation")
+      widget.forceActiveFocus()
+      keyClick(Qt.Key_Escape)
+      verify(button.activeFocus, "Escape must still leave widget input during browser startup")
+      widget.running = false
+      calls[0]({opened: true}, "")
+      compare(widget.popoutPending, false, "An accepted launch can complete while hidden")
+      compare(status.text, "")
+      widget.popout()
+      compare(calls.length, 1, "Hidden surfaces must not accept new launches")
+    }
+
+    function test_popout_error_survives_background_work_and_retry_clears_it() {
+      const widget = createTemporaryObject(surfaceComponent, parent, {reference: reference(25, true)})
+      const calls = []
+      widget.transport = function(path, body, done) {
+        if (path === "/popout") calls.push(done)
+        else done({height: 170})
+      }
+      widget.popout()
+      calls[0](null, "Chromium could not start")
+      widget.refreshLayout()
+      widget.sendInput({type: "text", text: "still interactive"})
+      compare(findChild(widget, "widgetStatus").text, "Chromium could not start")
+      widget.popout()
+      compare(widget.popoutError, "")
+      calls[1]({opened: true}, "")
+      compare(widget.popoutPending, false)
+      compare(findChild(widget, "widgetStatus").text, "")
+    }
+
+    function test_old_popout_completion_does_not_change_replacement_view() {
+      const widget = createTemporaryObject(surfaceComponent, parent, {reference: reference(25, true)})
+      const calls = []
+      widget.transport = function(path, body, done, url) {
+        if (path === "/popout") calls.push({done: done, url: url})
+        else done({height: 170})
+      }
+      widget.popout()
+      const replacement = reference(25, true)
+      replacement.viewUrl = replacement.viewUrl.replace("a".repeat(64), "b".repeat(64))
+      widget.reference = replacement
+      compare(widget.popoutPending, false)
+      widget.popout()
+      calls[0].done(null, "Old view expired")
+      compare(widget.popoutPending, true)
+      compare(widget.popoutError, "")
+      verify(calls[0].url !== calls[1].url)
+      calls[1].done({opened: true}, "")
+      compare(widget.popoutPending, false)
+    }
   }
 }
