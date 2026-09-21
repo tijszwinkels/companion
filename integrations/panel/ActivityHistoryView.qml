@@ -5,6 +5,7 @@ Item {
   id: root
   property var historyModel: null
   property bool available: false
+  property bool historyDeletionAvailable: false
   required property var intents
   required property bool online
   required property color foreground
@@ -24,7 +25,7 @@ Item {
     width: parent.width
     anchors.verticalCenter: parent.verticalCenter
     visible: root.count === 0
-    text: !root.available ? "Restart Companion to connect session history." : "Completed utterances will appear here.\nThis Companion run · all entries retained"
+    text: !root.available ? "Restart Companion to connect session history." : "Completed utterances will appear here.\nThis Companion run"
     textFormat: Text.PlainText
     color: root.muted
     font.family: root.fontFamily
@@ -57,6 +58,7 @@ Item {
       actualIntent: model.actualIntent
       intents: root.intents
       online: root.online
+      historyDeletionAvailable: root.historyDeletionAvailable
       foreground: root.foreground
       muted: root.muted
       accent: root.accent

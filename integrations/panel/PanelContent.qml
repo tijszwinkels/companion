@@ -28,6 +28,7 @@ Item {
   property var intents: []
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
+  property bool historyDeletionAvailable: false
   property var agentActions: ({})
   property var sessions: []
   property var unreadSessionIds: ({})
@@ -422,6 +423,7 @@ Item {
       intents: root.intents
       activityHistoryModel: root.activityHistoryModel
       activityHistoryAvailable: root.activityHistoryAvailable
+      historyDeletionAvailable: root.historyDeletionAvailable
       selection: root.selection
       shortcutLabel: root.shortcutLabel
       onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)

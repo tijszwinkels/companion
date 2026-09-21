@@ -23,6 +23,7 @@ Flickable {
   property var intents: []
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
+  property bool historyDeletionAvailable: false
   property string shortcutLabel: ""
   signal intentEnabledRequested(string name, bool enabled)
   signal historyActionRequested(string action, string id, var value)
@@ -114,6 +115,7 @@ Flickable {
         width: parent.width
         historyModel: root.activityHistoryModel
         available: root.activityHistoryAvailable
+        historyDeletionAvailable: root.historyDeletionAvailable
         intents: root.intents
         online: root.online
         foreground: root.foreground

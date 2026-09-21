@@ -9,6 +9,14 @@ export interface ActivityHistoryEntry extends HistoryEntry, IntentFeedback {
   revision: number;
 }
 
+/** No transcript remains in a removal marker; its position only protects paging. */
+export interface ActivityHistoryRemoval {
+  id: string;
+  sequence: number;
+  revision: number;
+  deleted: true;
+}
+
 /**
  * Completed observations from this listener run, retained until shutdown.
  * The database owns durable records; this small index owns the current-session
@@ -17,11 +25,13 @@ export interface ActivityHistoryEntry extends HistoryEntry, IntentFeedback {
  */
 export class ActivityHistory {
   readonly sessionId = randomUUID();
-  private readonly entries: ActivityHistoryEntry[] = [];
+  private readonly entries: (ActivityHistoryEntry | ActivityHistoryRemoval)[] = [];
   private readonly positions = new Map<string, number>();
   private revision = 0;
 
   get count(): number {
+    // A paging watermark, not the number of visible cards. Removing an entry
+    // never shifts a cursor or reuses a completion's sequence number.
     return this.entries.length;
   }
 
@@ -42,13 +52,30 @@ export class ActivityHistory {
     return completed;
   }
 
+  remove(id: string): ActivityHistoryRemoval | undefined {
+    const position = this.positions.get(id);
+    if (position === undefined) {
+      return undefined;
+    }
+    const removed: ActivityHistoryRemoval = {
+      id,
+      sequence: position + 1,
+      revision: ++this.revision,
+      deleted: true,
+    };
+    this.positions.delete(id);
+    this.entries[position] = removed;
+    return removed;
+  }
+
   page(after: number, through: number) {
     const end = Math.min(through, this.count);
-    const entries = this.entries.slice(after, Math.min(after + 50, end));
-    const cursor = after + entries.length;
+    const changes = this.entries.slice(after, Math.min(after + 50, end));
+    const cursor = after + changes.length;
     return {
       sessionId: this.sessionId,
-      entries,
+      entries: changes.filter((entry) => !('deleted' in entry)),
+      removed: changes.filter((entry) => 'deleted' in entry),
       next: cursor < end ? cursor : null,
       through: end,
     };

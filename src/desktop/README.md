@@ -81,6 +81,7 @@ Commands:
 {"action":"label-history","id":"utterance-uuid","correct":true}
 {"action":"label-history","id":"utterance-uuid","correct":false,"actualIntent":"START_CODING_AGENT_SESSION"}
 {"action":"start-history-agent","id":"utterance-uuid"}
+{"action":"delete-history","id":"utterance-uuid"}
 ```
 
 Replies are `{"type":"result","action":"paste","result":"sent"}` (or `skipped`, `preview`,
@@ -100,12 +101,15 @@ the cue. Failed or stopped turns emit no completion event.
 The Activity panel has a separate **current listener run** history. An utterance
 joins it only at the pipeline's `finished` callback, after its outcome is known.
 There is no 100-row cap here. The in-memory index lasts until listener shutdown;
-the permanent SQLite records and recordings keep their existing retention.
+SQLite records and recordings remain until explicitly deleted.
 Closing/reopening the panel or reconnecting its socket does not begin a new run.
 
-`activity-history` returns an object in `result`: `{sessionId, entries, next,
-through}`. It reads at most 50 entries per request in completion order; `after`
-is the number already read and `through` is the count captured at sync start.
+`activity-history` returns an object in `result`: `{sessionId, entries, removed,
+next, through}`. It reads at most 50 completion positions per request; `after`
+is the number already read and `through` is the watermark captured at sync start.
+Removed entries keep their positions, so `activityHistoryCount` remains a paging
+watermark rather than a visible-card count. `removed` contains content-free
+markers `{id, sequence, revision, deleted: true}`.
 `next: null` ends that sync. A new or changed card is independently published as
 `{type: "activity-entry", sessionId, entry}`. An entry contains the ordinary
 history fields plus `sequence`, `revision`, nullable boolean `correct`, and
@@ -120,6 +124,30 @@ instruction to run it. A null prediction cannot be labeled. Original prediction
 and outcome remain unchanged. Label correct sets actual intent to the prediction;
 label incorrect without a selection records null. Voice feedback updates these
 same rows and refreshes any corresponding current-run cards.
+
+`delete-history` deletes the selected SQLite utterance, its feedback and paste
+records, and its UUID-named PNG/WAV (including incomplete `.tmp` files). The
+Activity card offers a small cross on hover or keyboard focus when the snapshot
+advertises `historyDeletionAvailable: true`. Preview and older listeners do not
+offer it. Deletion is immediate, without a confirmation dialog or undo.
+
+Processing entries and entries with a pending paste cannot be deleted. While
+deletion is underway, new insert, label and history-agent operations on that row
+are rejected. Files are removed first, followed by one SQLite transaction for all
+three tables. This is not atomic across SQLite and the filesystem: on an error or
+crash some files may already be gone, but the row remains available for retry;
+missing files are tolerated. Date buckets are searched by UUID to handle a
+changed timezone. Other utterances and directories are preserved.
+
+Successful deletion publishes `{type: "history-deleted", id, sessionId, removed}`
+and refreshes recent history. `removed` is omitted for rows from an earlier run.
+Current-run clients retain removal markers across reconnects and ignore stale
+pages/feedback for those UUIDs. An open recovery picker removes the row too;
+if it was selected, the picker cancels instead of pasting a neighbouring row on
+shortcut release. Deletion does not erase independent agent conversations that
+already used that utterance, external copies, backups, or securely wipe SQLite's
+free pages/WAL. It removes the observation from active history and evaluation
+storage; it is not a secure-erasure operation.
 
 `start-history-agent` loads the selected utterance's saved PNG and opens a new
 coding session with that original observation. A missing/corrupt recording is an

@@ -14,15 +14,27 @@ import { frame } from './helpers.ts';
 import type { AgentSessions } from '../src/agents/sessions.ts';
 import type { AgentSession, PreviousSession } from '../src/agents/types.ts';
 import type { IntentState } from '../src/core/router.ts';
-import type { ActivityHistoryEntry } from '../src/desktop/activity-history.ts';
+import type {
+  ActivityHistoryEntry,
+  ActivityHistoryRemoval,
+} from '../src/desktop/activity-history.ts';
 import type { AgentActions } from '../src/agents/choice-intents.ts';
 
 export interface DesktopMessage {
   type: string;
   action?: string;
+  id?: string;
+  removed?: ActivityHistoryRemoval;
+  historyDeletionAvailable?: boolean;
   result?:
     | string
-    | { sessionId: string; entries: ActivityHistoryEntry[]; next: number | null; through: number };
+    | {
+        sessionId: string;
+        entries: ActivityHistoryEntry[];
+        removed: ActivityHistoryRemoval[];
+        next: number | null;
+        through: number;
+      };
   activitySessionId?: string;
   activityHistoryCount?: number;
   sessionId?: string;
@@ -100,7 +112,7 @@ export async function findArtifact(
 export async function desktopFixture(
   run: RunCommand,
   agents?: AgentSessions,
-  options: { mediaPause?: boolean; sounds?: boolean } = {},
+  options: { mediaPause?: boolean; sounds?: boolean; preview?: boolean } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-regression-'));
   const path = join(directory, 'control.sock');
@@ -132,6 +144,7 @@ export async function desktopFixture(
   await once(client, 'connect');
 
   return {
+    directory,
     client,
     socketPath: path,
     runtime,
