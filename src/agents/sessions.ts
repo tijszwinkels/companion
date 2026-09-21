@@ -7,6 +7,7 @@ import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
 import { SessionStore } from './session-store.ts';
+import { panelMessageLimit } from './transcript-limits.ts';
 import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
@@ -99,7 +100,7 @@ export class AgentSessions implements InspectableModule {
       (total, message) => total + message.text.length + message.input.length,
       0,
     );
-    if (messages.size > 800 || size > 256 * 1024) {
+    if (messages.size > panelMessageLimit || size > 256 * 1024) {
       throw Error('The panel transcript limit was reached');
     }
     // Reserve space across the atomic widget write. Concurrent streamed text
@@ -510,7 +511,7 @@ export class AgentSessions implements InspectableModule {
       (size, entry) => size + entry.text.length + entry.input.length,
       0,
     );
-    if (totalSize > 256 * 1024 || reserved.size > 800) {
+    if (totalSize > 256 * 1024 || reserved.size > panelMessageLimit) {
       throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
     }
 
@@ -622,7 +623,7 @@ export class AgentSessions implements InspectableModule {
           const index = view.messages.findIndex((entry) => entry.id === message.id);
           if (index >= 0) {
             view.messages[index] = message;
-          } else if (view.messages.length < 200) {
+          } else if (view.messages.length < panelMessageLimit) {
             view.messages.push(message);
           }
         }

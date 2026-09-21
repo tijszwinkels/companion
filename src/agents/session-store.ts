@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
+import { panelMessageLimit } from './transcript-limits.ts';
 
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
@@ -93,7 +94,7 @@ export class SessionStore {
       (session.profile !== undefined && !['coding', 'quickQuestion'].includes(session.profile)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
-      session.messages.length > 800
+      session.messages.length > panelMessageLimit
     ) {
       throw Error('Invalid saved conversation');
     }
