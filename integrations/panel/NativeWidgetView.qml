@@ -26,9 +26,9 @@ WebEngineView {
 
   visible: running
   zoomFactor: renderScale
-  // Filtering requires a Qt texture layer. Keep it opt-in: some Qt/backend
-  // combinations show clipping in this experimental path. Normal rendering
-  // and the unfiltered 2x comparison do not allocate this extra layer.
+  // The standalone host defaults to filtered rendering after a live comparison.
+  // Other modes skip this texture layer, allowing comparisons on backends where
+  // filtering clips content or costs too much compositing work.
   layer.enabled: renderingMode === "filtered"
   layer.smooth: true
   // Chromium's native clear color permits alpha 0 or 255 only; fractional

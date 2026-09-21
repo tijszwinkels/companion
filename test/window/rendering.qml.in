@@ -64,6 +64,10 @@ TestCase {
     const view = findChild(surface, "nativeWidgetBrowser")
     const frame = view.mainFrame.children[0]
     const baseline = viewport(view)
+    compare(CompanionWidgetRendering.mode, "filtered")
+    compare(view.renderScale, 2)
+    verify(view.layer.enabled)
+    const normalDpr = baseline.dpr / 2
     const originalWidth = surface.width
     const composer = findChild(body, "sessionComposer")
     composer.text = "Keep my conversation draft"
@@ -72,12 +76,12 @@ TestCase {
 
     // Exercise the actual diagnostic controls, including the return to normal.
     // QtTest sends input only to these disposable offscreen windows.
-    for (const mode of ["supersampled", "filtered", "normal", "supersampled"]) {
+    for (const mode of ["normal", "supersampled", "filtered", "normal", "supersampled"]) {
       mouseClick(findChild(body, "widgetRendering-" + mode))
       const factor = mode === "normal" ? 1 : 2
       tryVerify(function() {
         const current = viewport(view)
-        return Math.abs(current.dpr - baseline.dpr * factor) < 0.01
+        return Math.abs(current.dpr - normalDpr * factor) < 0.01
           && Math.abs(current.width - baseline.width) <= 1
           && Math.abs(view.width / factor - surface.width) < 0.01
       })
@@ -105,11 +109,11 @@ TestCase {
 
     // A mode change must preserve a focused widget input, not recreate its view.
     CompanionWidgetRendering.mode = "normal"
-    tryVerify(function() { return Math.abs(viewport(view).dpr - baseline.dpr) < 0.01 })
+    tryVerify(function() { return Math.abs(viewport(view).dpr - normalDpr) < 0.01 })
     keyClick(Qt.Key_B)
     tryVerify(function() { return evaluate(frame, "document.querySelector('input:not([type=checkbox])').value") === "draftab" })
     CompanionWidgetRendering.mode = "supersampled"
-    tryVerify(function() { return Math.abs(viewport(view).dpr - baseline.dpr * 2) < 0.01 })
+    tryVerify(function() { return Math.abs(viewport(view).dpr - normalDpr * 2) < 0.01 })
     const button = evaluate(frame, "(() => { const b = document.querySelector('button').getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()")
     mouseClick(surface, button.x, button.y)
     tryVerify(function() { return evaluate(frame, "document.querySelectorAll('input[type=checkbox]').length") === 2 })
@@ -134,7 +138,7 @@ TestCase {
     tryVerify(function() { return Math.abs(viewport(pinnedView).width - pinned.width) <= 1 })
     verify(findChild(body, "widgetBackToChat").visible)
     mouseClick(findChild(body, "widgetRendering-normal"))
-    tryVerify(function() { return Math.abs(viewport(pinnedView).dpr - baseline.dpr) < 0.01 })
+    tryVerify(function() { return Math.abs(viewport(pinnedView).dpr - normalDpr) < 0.01 })
     mouseClick(findChild(body, "widgetBackToChat"))
     backend.received({type: "agent-session", session: session("inline")})
     rendered("inlineWidget")

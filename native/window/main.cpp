@@ -43,6 +43,7 @@ int main(int argc, char **argv) {
     app.setDesktopFileName("companion");
     app.setQuitOnLastWindowClosed(false);
 
+    WidgetRendering widgetRendering;
     QCommandLineParser parser;
     parser.setApplicationDescription("Companion conversation window");
     parser.addHelpOption();
@@ -52,10 +53,9 @@ int main(int argc, char **argv) {
     parser.addOption({"command", "Send show, hide, toggle or focus to the running UI", "action"});
     parser.addOption({"hidden", "Start hidden until summoned or a conversation arrives"});
     parser.addOption({"render-diagnostics", "Log window, theme and widget rendering metrics when they change"});
-    parser.addOption({"widget-rendering", "Initial experimental widget rendering: normal, supersampled or filtered", "mode", "normal"});
+    parser.addOption({"widget-rendering", "Initial widget rendering: normal, supersampled or filtered", "mode", widgetRendering.mode()});
     parser.process(app);
 
-    WidgetRendering widgetRendering;
     if (!WidgetRendering::accepts(parser.value("widget-rendering"))) {
         fprintf(stderr, "Choose normal, supersampled or filtered for --widget-rendering.\n");
         return 1;

@@ -3,7 +3,7 @@
 #include <QObject>
 #include <QString>
 
-// Process-local diagnostic preference, shared by the trusted QML host and its
+// Process-local rendering preference, shared by the trusted QML host and its
 // native views. It is never exposed to widget JavaScript or saved in a session.
 class WidgetRendering : public QObject {
     Q_OBJECT
@@ -31,5 +31,5 @@ signals:
     void changed();
 
 private:
-    QString currentMode = "normal";
+    QString currentMode = "filtered";
 };

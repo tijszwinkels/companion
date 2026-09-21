@@ -16,7 +16,7 @@ public slots:
         host = std::make_unique<WindowHost>(nullptr, true);
         engine->rootContext()->setContextProperty("TestHost", host.get());
         engine->rootContext()->setContextProperty("CompanionRenderDiagnostics", qEnvironmentVariableIsSet("COMPANION_TEST_RENDER_DIAGNOSTICS"));
-        widgetRendering.setMode(qEnvironmentVariable("COMPANION_TEST_WIDGET_RENDERING", "normal"));
+        widgetRendering.setMode(qEnvironmentVariable("COMPANION_TEST_WIDGET_RENDERING", widgetRendering.mode()));
         engine->rootContext()->setContextProperty("CompanionWidgetRendering", &widgetRendering);
     }
 };

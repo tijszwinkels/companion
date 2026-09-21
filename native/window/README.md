@@ -65,10 +65,12 @@ a monitor move. This opt-in trace contains no conversation text, widget props or
 capability URLs. It measures reported rendering state, not the compositor's final
 buffer or perceived sharpness. It does not change scaling or restart the listener.
 
+Embedded widgets use **2× filtered** by default, with or without diagnostics,
+following a successful user comparison on the external monitor.
 With `--render-diagnostics`, the window also shows **Normal**, **2×** and
-**2× filtered (test)** buttons. They switch the existing embedded views in place,
-so the same widget can be compared on a real monitor. The default is Normal;
-the choice lasts only for this UI process. It does not change the ordinary Qt
+**2× filtered** buttons. They switch the existing embedded views in place,
+so the same widget can be compared on a real monitor. A changed selection
+lasts only for this UI process. It does not change the ordinary Qt
 text or the separate Chromium pop-out. The trace includes the chosen mode,
 internal view dimensions, displayed dimensions and browser pixel ratio.
 
@@ -76,12 +78,12 @@ Both 2× modes double the view dimensions and Chromium page zoom, then apply an
 inverse Qt transform to preserve the visible layout. This renders four times as
 many pixels. Filtered mode additionally uses a smooth Qt texture layer, which
 costs memory and compositing work and has shown clipping in offscreen tests.
-It is an experimental comparison, not a confirmed sharpness fix. Return to
-Normal if the result glitches. No renderer/profile reload is needed to switch;
+Live GPU cost and behavior across other displays/backends remain unmeasured.
+Return to Normal if the result glitches. No renderer/profile reload is needed to switch;
 widget state, browser inputs and conversation drafts remain in place.
 
-To choose an initial mode, add `--widget-rendering supersampled` or
-`--widget-rendering filtered`. An existing process rejects this startup option;
+To override the default, add `--widget-rendering normal` or
+`--widget-rendering supersampled`. An existing process rejects this startup option;
 use its diagnostic buttons or stop that UI process first. For the locally
 staged LayerShellQt build, the existing launch command enables all three buttons:
 
@@ -104,7 +106,8 @@ is being destroyed, after the derived profile's URL members have gone away.
 The native profile now removes and destroys its request handler before that
 teardown begins. Repeating the test against the previous handler reproduces
 the failure; the fixed handler also passes the existing native interaction and
-reopen checks. This is separate from the still-unconfirmed live text blur.
+reopen checks. This is separate from the original live text blur, whose exact
+cause remains unconfirmed.
 
 ## Coordinated desktop activation
 

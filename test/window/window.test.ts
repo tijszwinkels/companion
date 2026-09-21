@@ -425,8 +425,9 @@ test('translucent themes survive native widget creation, pinning, close and reop
         JSON.parse(line.slice(line.indexOf('COMPANION_RENDER ') + 'COMPANION_RENDER '.length)),
       );
     assert.ok(metrics.length > 0, 'embedded Chromium reports its viewport density');
-    assert.ok(metrics.every((entry) => entry.kind === 'widget' && entry.browserDpr === 1.25));
-    assert.ok(metrics.every((entry) => entry.width === entry.viewportWidth));
+    assert.ok(metrics.every((entry) => entry.kind === 'widget' && entry.browserDpr === 2.5));
+    assert.ok(metrics.every((entry) => entry.rendering === 'filtered' && entry.renderScale === 2));
+    assert.ok(metrics.every((entry) => Math.abs(entry.displayWidth - entry.viewportWidth) <= 1));
     assert.ok(metrics.every((entry) => entry.timeMs > 0 && !('viewUrl' in entry)));
   } catch (error) {
     throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {

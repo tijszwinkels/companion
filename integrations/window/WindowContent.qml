@@ -202,7 +202,7 @@ Item {
     anchors.margins: 6 * root.theme.unit
     spacing: 6 * root.theme.unit
     Repeater {
-      model: [{mode: "normal", label: "Normal"}, {mode: "supersampled", label: "2×"}, {mode: "filtered", label: "2× filtered (test)"}]
+      model: [{mode: "normal", label: "Normal"}, {mode: "supersampled", label: "2×"}, {mode: "filtered", label: "2× filtered"}]
       delegate: Panel.PanelAction {
         required property var modelData
         objectName: "widgetRendering-" + modelData.mode
