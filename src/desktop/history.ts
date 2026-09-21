@@ -43,7 +43,7 @@ export class UtteranceHistory {
 
     const version = this.database.prepare('PRAGMA user_version').get()?.user_version;
 
-    if (typeof version !== 'number' || version > 4) {
+    if (typeof version !== 'number' || version > 5) {
       throw Error('Unsupported Companion database schema version');
     }
 
@@ -92,6 +92,12 @@ export class UtteranceHistory {
       // version 0. Inspect each table instead of assuming version 0 is empty.
       const utteranceColumns = this.database.prepare('PRAGMA table_info(utterances)').all();
       const pasteColumns = this.database.prepare('PRAGMA table_info(paste_events)').all();
+
+      // Capture evidence for every attempted classification, not just examples
+      // labeled later. Legacy rows and shortcut-only routes remain NULL.
+      if (!utteranceColumns.some((column) => column.name === 'intent_request')) {
+        this.database.exec('ALTER TABLE utterances ADD COLUMN intent_request TEXT');
+      }
 
       // The filename already contains the utterance UUID. Retire earlier path
       // columns without touching recorded files or changing their identities.
@@ -183,7 +189,7 @@ export class UtteranceHistory {
       WHERE outcome = 'pending'`,
         )
         .run(Number(legacyPastes), Number(legacyPastes), Date.now());
-      this.database.exec('PRAGMA user_version = 4; COMMIT;');
+      this.database.exec('PRAGMA user_version = 5; COMMIT;');
     } catch (error) {
       this.database.exec('ROLLBACK');
       throw error;
@@ -248,6 +254,20 @@ export class UtteranceHistory {
 
     if (id) {
       this.db.prepare('UPDATE utterances SET recognized_intent = ? WHERE id = ?').run(intent, id);
+    }
+  }
+
+  /** The first prepared request is immutable, including after failures/feedback. */
+  saveIntentRequest(frameId: number, serializedRequest: string): void {
+    const id = this.frameEntries.get(frameId);
+    if (!id) {
+      throw Error('No active utterance for intent request recording');
+    }
+    const result = this.db
+      .prepare('UPDATE utterances SET intent_request = ? WHERE id = ? AND intent_request IS NULL')
+      .run(serializedRequest, id);
+    if (result.changes !== 1) {
+      throw Error('Intent request already recorded or utterance no longer exists');
     }
   }
 

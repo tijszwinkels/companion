@@ -274,7 +274,7 @@ test('migration removes old path columns while preserving recorded files, uttera
     await history.open();
     const database = new DatabaseSync(path, { readOnly: true });
     try {
-      assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 4);
+      assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 5);
       const row = database.prepare('SELECT * FROM utterances').get()!;
       assert.equal(row.transcript, 'Earlier speech');
       assert.equal('screenshot_path' in row, false);

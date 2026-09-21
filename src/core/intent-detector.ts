@@ -4,6 +4,8 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
 
 import type { Intent, UserSensorFrame } from './frame.ts';
 import type { Detector } from './router.ts';
+import type { Activity } from './activity.ts';
+import { snapshotIntentRequest } from './intent-request.ts';
 
 export interface LlmConfig {
   baseUrl: string;
@@ -66,6 +68,7 @@ export class IntentDetector implements Detector {
     private readonly config: LlmConfig,
     stream?: StreamFn,
     readonly id = 'detector',
+    private readonly activity: Activity = {},
   ) {
     this.model = {
       id: config.model,
@@ -121,6 +124,20 @@ export class IntentDetector implements Detector {
         tools: [],
       },
       streamFn: this.stream,
+      // Pi calls this after provider conversion, immediately before HTTP. Store
+      // exactly that payload, including dynamic instructions and adapter flags.
+      // Recording failures stop this request, like existing PNG/WAV failures.
+      onPayload: this.activity.intentRequested
+        ? (payload) => {
+            deadline.throwIfAborted();
+            const record = snapshotIntentRequest(
+              payload,
+              frame.screenshot.png,
+              this.config.baseUrl,
+            );
+            this.activity.intentRequested!(frame.id, record);
+          }
+        : undefined,
       shouldStopAfterTurn: () => true,
     });
 

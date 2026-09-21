@@ -241,7 +241,7 @@ for (const version of [0, 1, 2]) {
       const database = new DatabaseSync(path, { readOnly: true });
 
       try {
-        assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 4);
+        assert.equal(database.prepare('PRAGMA user_version').get()?.user_version, 5);
         assert.equal(
           database.prepare('SELECT count(*) AS count FROM intent_feedback').get()?.count,
           0,

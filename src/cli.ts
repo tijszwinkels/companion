@@ -150,7 +150,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
 
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
-    const detector = new IntentDetector(config.llm);
+    const detector = new IntentDetector(config.llm, undefined, 'detector', activity);
     const router = new UserSensorRouter({ detector }, log, activity);
     new SendTextToApplication(log, values.preview, command, activity).subscribe(router);
     new EnterTextToApplication(log, values.preview, command, activity).subscribe(router);

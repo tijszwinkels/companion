@@ -251,6 +251,72 @@ Version 4 removes the earlier screenshot/audio path columns. Files link to
 `utterances.id` through their UUID filenames; migration preserves the files,
 original utterances, and feedback. No file paths are stored in SQLite.
 
+Version 5 adds nullable `utterances.intent_request`, a versioned JSON snapshot of
+the actual intent-classification request. It belongs to the observation rather
+than `intent_feedback`, since examples must be recorded before anyone labels
+them. Opening an older database adds the column without inventing past prompts
+or changing existing recordings/labels. Older Companion builds that only
+understand schema version 4 will refuse the upgraded database.
+
+Pi's `onPayload` hook runs after provider conversion and before HTTP. We save the
+complete body there: exact system instruction text, enabled/dynamic intent
+entries, user-message JSON (including captured conversation context), content
+order, model, temperature, token limit and provider flags. The snapshot also
+records its format version, API, base URL and preparation time. Authentication
+headers and API keys are not captured. Normal UI history snapshots do not expose
+this potentially long JSON or its conversation excerpts.
+
+The PNG remains in its existing UUID-named file. Inside the recorded body, its
+`image_url.url` is replaced at that exact content position with:
+
+```json
+{
+  "artifact": "utterance-screenshot",
+  "mimeType": "image/png",
+  "sha256": "<SHA-256 of the captured PNG bytes>"
+}
+```
+
+This reference means the screenshot belonging to the same `utterances.id`, not
+a path or an arbitrary substring to replace in prompt text. Other image-part
+fields such as `detail` are preserved. No base64 copy of that image is stored in
+SQLite. To reconstruct the request, read that UUID's saved PNG and use
+`restoreIntentRequest(intentRequestJson, png)` from `src/core/intent-request.ts`.
+It returns the record with `body` restored to the original provider request,
+including the inline data URL in the original position. It validates the format
+and image checksum; a missing/changed recording must not be replaced with a new
+screenshot. Lookup is by UUID across recording date buckets if the machine's
+timezone has changed. The helper assembles data only and makes no model request.
+
+The snapshot is immutable once saved. Later streamed messages, changed prompts,
+choice sets, labels and reopened conversations cannot change it. Failed model
+requests and invalid model answers retain the prepared request. A snapshot is
+evidence of what was prepared for transport, not proof that a remote model
+received or processed it. A recording failure prevents HTTP and routing, as an
+existing PNG/WAV recording failure does. There is no added model call or retry.
+
+Legacy rows, shortcuts that bypass inference, and failures before payload
+preparation have `intent_request = NULL`. `--no-desktop` disables this storage
+along with the other observation records. Preview still records an inference
+request if it calls the detector, while an explicit prefix has no request to
+record. The snapshot shares its utterance's lifetime because it lives in the
+same row.
+
+For labeled evaluations, join the original observation with its current label:
+
+```sql
+SELECT u.id, u.observed_at, u.intent_request, u.recognized_intent,
+       f.correct, f.actual_intent
+FROM utterances AS u
+JOIN intent_feedback AS f ON f.id = u.id
+WHERE u.intent_request IS NOT NULL;
+```
+
+Use a left join to include unlabeled observations. `json_extract(intent_request,
+'$.body.messages[0].content')` returns the saved system prompt. Replaying the same
+request reproduces its inputs, not a promise of identical output from a changed
+model server or a nondeterministic inference engine.
+
 The sensor pipeline saves the exact captured PNG before intent routing, at
 `~/companion/data/YYYY-MM-DD/screenshots/<utterance-id>.png`. The day uses the
 observation's local date, not the later write time. Custom database paths use
