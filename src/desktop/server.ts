@@ -176,6 +176,7 @@ export class DesktopServer {
           action === 'set-intent-enabled' ||
           action === 'activity-history' ||
           action === 'label-history' ||
+          action === 'delete-history' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
           action === 'choose-agent' ||

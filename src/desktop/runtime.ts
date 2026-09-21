@@ -335,6 +335,7 @@ export class DesktopRuntime {
       history: this.ready ? this.history.snapshot() : [],
       activitySessionId: this.activityHistory.sessionId,
       activityHistoryCount: this.activityHistory.count,
+      historyDeletionAvailable: !this.options.preview,
       sessions: this.options.agents?.snapshot() ?? [],
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
@@ -418,6 +419,25 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+
+    if (request.action === 'delete-history') {
+      if (typeof request.id !== 'string') {
+        throw Error('Expected an utterance id');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      await this.history.delete(request.id);
+      const removed = this.activityHistory.remove(request.id);
+      this.server.publish({
+        type: 'history-deleted',
+        id: request.id,
+        sessionId: this.activityHistory.sessionId,
+        removed,
+      });
+      this.server.broadcast();
+      return 'deleted';
+    }
 
     if (request.action === 'activity-history') {
       if (

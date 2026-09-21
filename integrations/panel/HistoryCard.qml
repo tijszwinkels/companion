@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 Rectangle {
   id: root
@@ -11,6 +12,7 @@ Rectangle {
   required property string actualIntent
   required property var intents
   required property bool online
+  property bool historyDeletionAvailable: false
   required property color foreground
   required property color muted
   required property color accent
@@ -19,7 +21,7 @@ Rectangle {
   property real unit: 1
   property real textScale: unit
   property bool choosingIntent: false
-  readonly property bool actionsVisible: hover.hovered || choosingIntent
+  readonly property bool actionsVisible: hover.hovered || choosingIntent || deleteButton.activeFocus
   readonly property color tone: feedback === "correct" ? "#65d6a1" : feedback === "incorrect" ? "#f17f90" : accent
   signal actionRequested(string action, string id, var value)
 
@@ -76,8 +78,9 @@ Rectangle {
     width: parent.width - 28 * root.unit
     spacing: 10 * root.unit
 
-    Row {
-      spacing: 7 * root.unit
+    Item {
+      width: parent.width
+      height: Math.max(metadata.implicitHeight, 24 * root.unit)
       Rectangle {
         width: 4 * root.unit
         height: width
@@ -86,10 +89,47 @@ Rectangle {
         color: root.tone
       }
       Text {
+        id: metadata
+        x: 11 * root.unit
+        anchors.verticalCenter: parent.verticalCenter
+        width: parent.width - x - 30 * root.unit
         text: Qt.formatTime(new Date(root.observedAt), "HH:mm:ss") + (root.feedback ? "  ·  " + root.feedback : "")
+        elide: Text.ElideRight
         color: root.muted
         font.family: root.fontFamily
         font.pixelSize: 9 * root.textScale
+      }
+      ToolButton {
+        id: deleteButton
+        objectName: "history-action-delete-history"
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        width: 24 * root.unit
+        height: width
+        visible: root.historyDeletionAvailable
+        enabled: root.online
+        opacity: root.actionsVisible ? (enabled ? 1 : 0.4) : 0
+        hoverEnabled: true
+        Accessible.name: "Delete utterance and recordings"
+        ToolTip.visible: hovered
+        ToolTip.text: "Delete utterance, screenshot and audio"
+        ToolTip.delay: 500
+        contentItem: Text {
+          text: "×"
+          color: deleteButton.hovered ? "#f17f90" : root.muted
+          font.family: root.fontFamily
+          font.pixelSize: 18 * root.textScale
+          horizontalAlignment: Text.AlignHCenter
+          verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+          radius: 4 * root.unit
+          color: deleteButton.hovered || deleteButton.activeFocus ? root.selection : "transparent"
+        }
+        Behavior on opacity {
+          NumberAnimation { duration: 140 }
+        }
+        onClicked: root.actionRequested("delete-history", root.entryId, {})
       }
     }
 

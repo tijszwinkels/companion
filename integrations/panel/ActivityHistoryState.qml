@@ -8,11 +8,15 @@ QtObject {
   property bool available: false
   property bool loading: false
   property bool synced: false
+  // Keep content-free tombstones across reconnects. A page requested before
+  // deletion must not put the deleted transcript back into the list.
+  property var deletedIds: ({})
   property ListModel model: ListModel {}
   signal pageRequested(var request)
 
   function reset(id) {
     root.model.clear();
+    root.deletedIds = ({});
     root.sessionId = id;
     root.loading = false;
     root.synced = false;
@@ -44,6 +48,8 @@ QtObject {
   }
 
   function upsert(entry) {
+    if (root.deletedIds[entry.id])
+      return;
     const row = {
       entryId: entry.id,
       sequence: entry.sequence,
@@ -79,9 +85,23 @@ QtObject {
     root.upsert(entry);
   }
 
+  function remove(id, entry) {
+    if (id !== root.sessionId || !entry)
+      return;
+    root.deletedIds[entry.id] = true;
+    for (let index = 0; index < root.model.count; index++) {
+      if (root.model.get(index).entryId === entry.id) {
+        root.model.remove(index);
+        break;
+      }
+    }
+  }
+
   function page(result) {
     if (result.sessionId !== root.sessionId)
       return;
+    for (const entry of result.removed || [])
+      root.remove(result.sessionId, entry);
     for (const entry of result.entries)
       root.upsert(entry);
     if (result.next !== null) {

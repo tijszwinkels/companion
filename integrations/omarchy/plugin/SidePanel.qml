@@ -22,6 +22,7 @@ PanelWindow {
   property var intents: []
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
+  property bool historyDeletionAvailable: false
   property var agentActions: ({})
   property var sessions: []
   property var unreadSessionIds: ({})
@@ -158,6 +159,7 @@ PanelWindow {
         intents: root.intents
         activityHistoryModel: root.activityHistoryModel
         activityHistoryAvailable: root.activityHistoryAvailable
+        historyDeletionAvailable: root.historyDeletionAvailable
         agentActions: root.agentActions
         sessions: root.sessions
         unreadSessionIds: root.unreadSessionIds

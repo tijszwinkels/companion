@@ -20,6 +20,7 @@ Item {
   property bool soundsAvailable: false
   property int processing: 0
   property var history: []
+  property bool historyDeletionAvailable: false
   property var intents: []
   property var agentActions: ({})
   property string lastError: ""
@@ -176,6 +177,17 @@ Item {
     sidePanel.releaseForInsertion(address)
   }
 
+  function forgetUtterance(id) {
+    root.history = root.history.filter(row => row.id !== id)
+    const selected = root.rows[root.selectedIndex]
+    // A held recovery chord must never jump to another utterance on deletion.
+    // Preserve an unrelated selection; cancel if its selected row disappeared.
+    if (selected && selected.id === id) root.cancel()
+    root.rows = root.rows.filter(row => row.id !== id)
+    root.selectedIndex = selected ? Math.max(0, root.rows.findIndex(row => row.id === selected.id)) : 0
+    if (root.pendingHistoryInsert && root.pendingHistoryInsert.id === id) root.pendingHistoryInsert = null
+  }
+
   function chooseAgent(id, revision, index) {
     if (!root.online) {
       sidePanel.choiceSubmitted(id, revision, index, "Companion is disconnected.")
@@ -212,6 +224,7 @@ Item {
         root.soundsAvailable = typeof message.soundsEnabled === "boolean" && !message.preview
         root.processing = message.processing
         root.history = message.history
+        root.historyDeletionAvailable = message.historyDeletionAvailable === true
         // Speech/history snapshots must not rebuild chips underneath a held
         // mouse click or tooltip. Only changed routing state replaces the list.
         const intents = message.intents || []
@@ -223,6 +236,9 @@ Item {
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready
         if (root.online) activityHistory.observe(message.activitySessionId, message.activityHistoryCount)
+      } else if (message.type === "history-deleted") {
+        root.forgetUtterance(message.id)
+        activityHistory.remove(message.sessionId, message.removed)
       } else if (message.type === "activity-entry") {
         activityHistory.update(message.sessionId, message.entry)
       } else if (message.type === "agent-session") {
@@ -503,12 +519,13 @@ Item {
     intents: root.intents
     activityHistoryModel: activityHistory.model
     activityHistoryAvailable: activityHistory.available
+    historyDeletionAvailable: root.historyDeletionAvailable
     agentActions: root.agentActions
     sessions: agentSessions.sessions
     unreadSessionIds: agentSessions.unreadIds
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled) => root.send({action: "set-intent-enabled", name: name, enabled: enabled})

@@ -30,6 +30,7 @@ Item {
         selection: "#293a51"
         fontFamily: "sans-serif"
         activityHistoryAvailable: true
+        historyDeletionAvailable: true
         intents: [
           {
             name: "SEND_TEXT_TO_APPLICATION",
@@ -85,8 +86,11 @@ Item {
       verify(waitForRendering(host));
       const page = findChild(host, "fullActivityStatus");
       const history = findChild(host, "historySection");
-      page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, history.y));
-      verify(waitForRendering(host));
+      const position = Math.max(0, Math.min(page.contentHeight - page.height, history.y));
+      if (page.contentY !== position) {
+        page.contentY = position;
+        verify(waitForRendering(host));
+      }
     }
 
     function test_text_zoom_follows_activity_history_library_and_conversation() {
@@ -188,6 +192,65 @@ Item {
         next: null
       });
       compare(state.model.count, 0, "Old listener responses cannot populate the new run");
+    }
+
+    function test_deletion_reconnect_and_delayed_pages_cannot_restore_text() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      state.update("run", entry(1, null));
+      state.update("run", entry(2, null));
+      const removal = {id: "utterance-1", sequence: 1, revision: 3, deleted: true};
+      state.remove("old-run", removal);
+      compare(state.model.count, 2);
+      state.remove("run", removal);
+      compare(state.model.count, 1);
+      state.page({sessionId: "run", entries: [entry(1, null)], next: null});
+      state.update("run", entry(1, true, 2));
+      compare(state.model.count, 1, "Delayed pages and feedback cannot resurrect a deleted card");
+      state.disconnected();
+      state.observe("run", 2);
+      state.page({sessionId: "run", entries: [], removed: [{id: "utterance-2", sequence: 2, revision: 4, deleted: true}], next: null});
+      compare(state.model.count, 0, "Reconnect replays a deletion missed while offline");
+      state.observe("new-run", 1);
+      state.update("new-run", entry(1, null));
+      compare(state.model.count, 1, "Tombstones belong to one listener run");
+    }
+
+    function test_delete_cross_hover_click_and_offline_compatibility() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      state.update("run", entry(1, null));
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      const requests = [];
+      host.panel.historyActionRequested.connect((action, id) => requests.push({action: action, id: id}));
+      showHistory(host);
+      const card = findChild(host, "history-utterance-1");
+      const button = findChild(card, "history-action-delete-history");
+      mouseMove(host, 2, 2);
+      tryCompare(button, "opacity", 0);
+      mouseMove(card, 10, 10);
+      tryCompare(button, "opacity", 1);
+      mouseClick(button);
+      compare(requests.length, 1);
+      compare(requests[0].action, "delete-history");
+      compare(requests[0].id, "utterance-1");
+      compare(state.model.count, 1, "The card waits for confirmed server deletion");
+      host.panel.online = false;
+      compare(button.enabled, false);
+      mouseClick(button);
+      compare(requests.length, 1);
+      host.panel.online = true;
+      host.panel.historyDeletionAvailable = false;
+      compare(button.visible, false, "Older listeners and previews do not offer deletion");
+      host.panel.historyDeletionAvailable = true;
+      button.forceActiveFocus();
+      tryCompare(button, "opacity", 1);
+      keyClick(Qt.Key_Space);
+      compare(requests.length, 2, "Keyboard activation uses the same explicit row");
+      state.remove("run", {id: "utterance-1", sequence: 1, revision: 2, deleted: true});
+      compare(state.model.count, 0);
     }
 
     function test_hover_actions_and_correction_preserve_original_intent() {

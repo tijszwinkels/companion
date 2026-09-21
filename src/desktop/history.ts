@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
 import type { Screenshot, UserSensorFrame } from '../core/frame.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
-import { artifactPath, saveArtifact } from './artifacts.ts';
+import { artifactPath, removeArtifacts, saveArtifact } from './artifacts.ts';
 
 export interface IntentFeedback {
   correct: boolean | null;
@@ -32,6 +32,7 @@ export interface HistoryEntry {
 export class UtteranceHistory {
   private database?: DatabaseSync;
   private readonly frameEntries = new Map<number, string>();
+  private readonly deleting = new Set<string>();
 
   constructor(private readonly path: string) {}
 
@@ -223,6 +224,56 @@ export class UtteranceHistory {
       .get(id) as unknown as HistoryEntry | undefined;
   }
 
+  /**
+   * Remove a completed observation and its evaluation records. Files go first:
+   * a filesystem failure leaves the row available for an explicit retry. The
+   * SQLite transaction then removes dependants and the row together. Missing
+   * files are harmless, including after a partially completed earlier attempt.
+   */
+  async delete(id: string): Promise<void> {
+    this.assertNotDeleting(id);
+    const entry = this.find(id);
+    if (!entry) {
+      throw Error('Utterance not found');
+    }
+    const pendingPaste = this.db
+      .prepare("SELECT 1 FROM paste_events WHERE utterance_id = ? AND outcome = 'pending' LIMIT 1")
+      .get(id);
+    if (
+      this.activeFrameId(id) !== undefined ||
+      entry.outcome === 'processing' ||
+      entry.outcome === 'delivering' ||
+      pendingPaste
+    ) {
+      throw Error('Wait for this utterance to finish processing or pasting before deleting it');
+    }
+
+    // Claim the row before filesystem awaits. No paste, label or history-agent
+    // request may begin using it while its recordings are being removed.
+    this.deleting.add(id);
+    try {
+      await removeArtifacts(dirname(this.path), id);
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.prepare('DELETE FROM intent_feedback WHERE id = ?').run(id);
+        this.db.prepare('DELETE FROM paste_events WHERE utterance_id = ?').run(id);
+        this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id);
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    } finally {
+      this.deleting.delete(id);
+    }
+  }
+
+  private assertNotDeleting(id: string): void {
+    if (this.deleting.has(id)) {
+      throw Error('This utterance is being deleted');
+    }
+  }
+
   add(transcript: Transcript): void {
     if (!transcript.utterance.trim() || this.frameEntries.has(transcript.id)) {
       return;
@@ -337,6 +388,7 @@ export class UtteranceHistory {
 
   /** Explicit correction preserves the detected intent and delivery outcome. */
   label(id: string, correct: boolean, actualIntent: string | null = null): void {
+    this.assertNotDeleting(id);
     const entry = this.find(id);
     if (!entry?.intent) {
       throw Error('This utterance has no detected intent to label');
@@ -361,6 +413,7 @@ export class UtteranceHistory {
 
   /** Start a question from its original observation, not today's active screen. */
   async recordedFrame(id: string): Promise<UserSensorFrame> {
+    this.assertNotDeleting(id);
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -377,6 +430,12 @@ export class UtteranceHistory {
         throw Error('The original screenshot is unavailable for this utterance');
       }
       throw error;
+    }
+    // Reading the screenshot yields. Deletion may have begun or completed
+    // since the first lookup; do not start a new agent from that stale read.
+    this.assertNotDeleting(id);
+    if (!this.find(id)) {
+      throw Error('Utterance not found');
     }
     if (
       png.length < 24 ||
@@ -442,6 +501,7 @@ export class UtteranceHistory {
 
   /** Failed recovery is not evidence that the user successfully corrected intent. */
   beginPaste(utteranceId: string, targetAddress: string): string {
+    this.assertNotDeleting(utteranceId);
     const id = randomUUID();
     this.db
       .prepare(

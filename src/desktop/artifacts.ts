@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 /**
@@ -25,6 +25,38 @@ export async function saveArtifact(
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
+  }
+}
+
+/** Delete only this UUID's recordings, including incomplete atomic writes. */
+export async function removeArtifacts(directory: string, id: string): Promise<void> {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) {
+    throw Error('Invalid utterance id');
+  }
+
+  const data = join(directory, 'data');
+  const days = await readdir(data, { withFileTypes: true }).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  });
+
+  // Date buckets were named in the timezone used when recording. Search the
+  // bucket names, not every recorded file, so a timezone change cannot leave
+  // this observation behind. Never remove a directory or another UUID.
+  for (const day of days) {
+    if (!day.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(day.name)) {
+      continue;
+    }
+    for (const [kind, extension] of [
+      ['screenshots', 'png'],
+      ['audio', 'wav'],
+    ]) {
+      const path = join(data, day.name, kind, `${id}.${extension}`);
+      await rm(path, { force: true });
+      await rm(`${path}.tmp`, { force: true });
+    }
   }
 }
 
