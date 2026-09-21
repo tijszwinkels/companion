@@ -161,6 +161,15 @@ screen) and all available screen height. Switching tabs keeps the same size. Scr
 up stops following the stream until you return to the bottom. Conversation wheel
 and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
+Agents can also publish reusable **interactive widgets** from
+[`widget-library/`](widget-library/README.md): compact diagrams, comparisons,
+charts, to-do lists and WebGL views. The agent supplies props or calls a declared
+action instead of repeating the implementation. A hover arrow opens a dedicated
+Chromium window sharing the same saved state. Widgets may be pinned above the
+chat (normally 25% of sidebar height); at 100%, a host-owned **Back to chat**
+control restores the transcript and its unsent draft. Chromium and Bubblewrap
+are required for visuals; ordinary text conversations remain available.
+
 Activity shows floating labels for available voice prefixes. In Intentions,
 **Intent** cards use the accent color and **Shortcut** cards use amber. Each card
 is independently clickable: turning off recognition leaves that processor's
@@ -273,6 +282,11 @@ A distinct quiet two-note chime follows each successful agent turn, including
 queued follow-ups. Stopped/failed turns and reopening old conversations stay silent.
 Use `--no-sounds` to start with these cues muted, or toggle them from the top bar
 microphone menu during a session. Preview mode is silent.
+
+The [standalone Qt window](native/window/README.md) reuses the conversation UI
+with embedded Chromium and Window/Sidebar/Dock presentation, using standard Qt
+packages. It is an opt-in development candidate; see its validation limits and
+coordinated activation instructions before trying it on the desktop.
 
 The optional [Omarchy adapter](integrations/omarchy/README.md) adds:
 

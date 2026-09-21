@@ -8,6 +8,8 @@ local layers = {}
 local removed = {}
 
 hl = {
+  get_active_window = function() return nil end,
+  window_rule = function() end,
   dsp = {
     window = { resize = function(size)
       assert(size.y == 0 and size.relative, "Keep the native horizontal resize action")

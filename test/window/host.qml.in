@@ -1,0 +1,165 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+TestCase {
+  id: testCase
+  name: "StandaloneHost"
+  when: windowShown
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+  function state(surface) {
+    let result = null
+    surface.request("/state", null, function(value) { result = value })
+    tryVerify(function() { return result !== null })
+    return result
+  }
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    TestHost.show(true)
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [
+        {id: "one", title: "Window test", status: "idle", messages: [
+          {id: "visual", role: "assistant", kind: "widget", text: "Native checkbox", widget: @REFERENCE@,
+           toolName: "", input: "", state: "", screenshot: ""}
+        ]}
+      ]})
+    tryVerify(function() { return body.width > 0 && body.panel.selectedSession !== null })
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function cleanup() {
+    body.client.sessions.select("one")
+  }
+  function test_independent_intent_and_shortcut_controls() {
+    // Exercise the complete native host -> portable card -> socket path. A
+    // missing mode would make the backend switch both routes for either card.
+    const intent = {name: "SEND_TEXT_TO_APPLICATION", label: "Insert text",
+      prefixes: ["insert"], toggleable: true, enabled: true,
+      supportsInference: true, inferenceAvailable: true, prefixAvailable: true,
+      inferenceEnabled: true, shortcutEnabled: true}
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      sessions: body.client.sessions.sessions, intents: [Object.assign({}, intent)],
+      activitySessionId: "activity", activityHistoryCount: 0})
+    body.client.sessions.select("")
+    findChild(body, "listeningArea").expanded = false
+    findChild(body, "voiceSection").expanded = false
+    const page = findChild(body, "fullActivityStatus")
+    const section = findChild(body, "intentionsSection")
+    tryVerify(function() { return section.height > 0 })
+    page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, section.y))
+
+    for (const mode of ["inference", "shortcut"]) {
+      const card = findChild(body, (mode === "inference" ? "intent-" : "shortcut-") + intent.name)
+      verify(card !== null)
+      tryVerify(function() { return card.visible && card.height > 0 })
+      fakeBackend.sent = []
+      mouseClick(card, card.width / 2, card.height / 2)
+      tryVerify(function() { return fakeBackend.sent.some(message => message.action === "set-intent-enabled") })
+      const requests = fakeBackend.sent.filter(message => message.action === "set-intent-enabled")
+      compare(requests.length, 1)
+      compare(requests[0].name, intent.name)
+      compare(requests[0].enabled, false)
+      compare(requests[0].mode, mode)
+      // Only the server's updated snapshot changes the displayed state.
+      compare(card.routeEnabled, true)
+      intent[mode === "inference" ? "inferenceEnabled" : "shortcutEnabled"] = false
+      fakeBackend.received({type: "state", protocol: 1, ready: true,
+        sessions: body.client.sessions.sessions, intents: [Object.assign({}, intent)],
+        activitySessionId: "activity", activityHistoryCount: 0})
+      tryCompare(findChild(body, "intent-" + intent.name), "routeEnabled", false)
+      tryCompare(findChild(body, "shortcut-" + intent.name), "routeEnabled", mode === "inference")
+    }
+  }
+  function test_presentation_retains_draft_and_document() {
+    const composer = findChild(body, "sessionComposer")
+    verify(composer !== null)
+    composer.text = "Keep this unsent draft"
+    body.panel.zoomPercent = 120
+    const surface = findChild(body, "inlineWidget")
+    verify(surface !== null)
+    tryVerify(function() { return surface.nativeRendering && surface.children.length > 0 })
+    const view = findChild(body, "nativeWidgetBrowser")
+    verify(view !== null)
+    tryVerify(function() { return surface.rendered }, 10000, surface.error)
+    compare(surface.frameNumber, 0)
+    let marker = null
+    view.runJavaScript("window.retainedDocument = 'still here'", function(value) { marker = value })
+    tryVerify(function() { return marker === "still here" })
+    for (const mode of ["sidebar", "dock", "window", "sidebar", "window"]) {
+      TestHost.setPresentation(mode)
+      compare(TestHost.presentation, mode)
+      compare(findChild(body, "sessionComposer"), composer)
+      compare(composer.text, "Keep this unsent draft")
+      compare(body.panel.zoomPercent, 120)
+      compare(findChild(body, "nativeWidgetBrowser"), view)
+    }
+    TestHost.hide()
+    compare(composer.text, "Keep this unsent draft")
+    TestHost.show(true)
+    compare(composer.text, "Keep this unsent draft")
+    body.command({action: "theme", values: {background: "#ffffff", foreground: "#222222", selection: "#edf0f6", unit: 1.25}})
+    compare(composer.text, "Keep this unsent draft")
+    compare(body.theme.background, "#ffffff")
+    TestHost.resizeBy(-100)
+    compare(composer.text, "Keep this unsent draft")
+    marker = null
+    view.runJavaScript("window.retainedDocument", function(value) { marker = value })
+    tryVerify(function() { return marker === "still here" })
+    body.panel.zoomPercent = 100
+    body.command({action: "theme", values: {unit: 1}})
+    wait(250)
+    mouseClick(surface, 24, 56)
+    tryVerify(function() { return state(surface).props.items[0].completed === true }, 5000)
+    let captured = false
+    body.grabToImage(function(result) { captured = result.saveToFile("@CAPTURE@") })
+    tryVerify(function() { return captured })
+
+    // The shared Activity view must retain current master's deletion affordance
+    // when hosted in the standalone window, including failed request behavior.
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      sessions: body.client.sessions.sessions, historyDeletionAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 1})
+    compare(body.panel.historyDeletionAvailable, true)
+    body.client.sessions.select("")
+    fakeBackend.received({type: "activity-entry", sessionId: "activity", entry: {
+      id: "utterance", sequence: 1, revision: 1, utterance: "Synthetic history",
+      intent: "IGNORE", outcome: "ignored", observedAt: 1, correct: null, actualIntent: null}})
+    findChild(body, "listeningArea").expanded = false
+    const page = findChild(body, "fullActivityStatus")
+    const history = findChild(body, "historySection")
+    tryVerify(function() { return history.height > 0 })
+    page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, history.y))
+    tryVerify(function() { return findChild(body, "history-action-delete-history") !== null })
+    const button = findChild(body, "history-action-delete-history")
+    tryVerify(function() { return button.visible && button.enabled })
+    button.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "delete-history" && message.id === "utterance") })
+    compare(body.client.activity.model.count, 1, "Wait for confirmed deletion")
+    fakeBackend.received({type: "error", action: "delete-history", message: "Synthetic refusal"})
+    compare(body.panel.controlError, "Synthetic refusal")
+    compare(body.client.activity.model.count, 1)
+    fakeBackend.received({type: "history-deleted", sessionId: "activity", id: "utterance",
+      removed: {id: "utterance", sequence: 1, revision: 2, deleted: true}})
+    compare(body.client.activity.model.count, 0)
+  }
+}

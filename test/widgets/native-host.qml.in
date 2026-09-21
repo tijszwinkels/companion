@@ -1,0 +1,56 @@
+import Quickshell
+import QtQuick
+import "@PANEL@" as Panel
+
+FloatingWindow {
+  id: window
+  visible: true
+  implicitWidth: 480
+  implicitHeight: 320
+  color: "#17212d"
+  property bool checking: false
+  property int frames: 0
+  property int checks: 0
+  property var evidence: ({})
+  Panel.WidgetSurface {
+    id: widget
+    anchors.fill: parent
+    nativeRendering: Qt.application.arguments.indexOf("--companion-native-widgets") >= 0
+    reference: @REFERENCE@
+    foreground: "#e0e6f0"; muted: "#959faa"; accent: "#82aaff"; selection: "#17212d"
+    fitContent: false
+  }
+  function find(item) {
+    if (item.objectName === "nativeWidgetBrowser") return item
+    for (let child of item.children) {
+      const result = find(child)
+      if (result) return result
+    }
+    return null
+  }
+  Timer {
+    interval: 100
+    running: true
+    repeat: true
+    onTriggered: {
+      if (++window.checks > 150) { console.error("NATIVE_HOST_FAIL", widget.error); Qt.quit(); return }
+      if (!widget.rendered || window.checking) return
+      const browser = window.find(widget)
+      if (!browser || browser.mainFrame.children.length !== 1 || widget.frameNumber !== 0) return
+      window.checking = true
+      // Read the test document through Qt's frame API, not through widget code
+      // privileges. This exercises Chromium animation independently of captures.
+      browser.mainFrame.children[0].runJavaScript("(() => { if (!window.nativeTestFrames) { window.nativeTestFrames = 1; requestAnimationFrame(function tick() { window.nativeTestFrames++; requestAnimationFrame(tick); }); } const gl = document.createElement('canvas').getContext('webgl'); return {text: document.body.innerText, frames: window.nativeTestFrames, webgl: !!gl}; })()", function(result) {
+        window.checking = false
+        if (!result || result.text.indexOf("Embedded Chromium") < 0) return
+        if (result.frames < 4) return
+        window.evidence = result
+        window.checking = true
+        widget.grabToImage(function(image) {
+          if (image.saveToFile("@CAPTURE@")) console.log("NATIVE_HOST_PASS", JSON.stringify(window.evidence))
+          Qt.quit()
+        })
+      })
+    }
+  }
+}

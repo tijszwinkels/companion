@@ -7,6 +7,7 @@ import "Markdown.mjs" as Markdown
 // selection and expanded tool bubbles intact while text deltas update a row.
 Item {
   id: root
+  clip: true
   required property var session
   required property color foreground
   required property color muted
@@ -38,6 +39,9 @@ Item {
   property var pendingSubmission: null
   property string inputError: ""
   property var selectedMessage: null
+  property var hoveredWidget: null
+  property bool widgetsRunning: true
+  property bool nativeWidgets: false
   readonly property bool hasMessageSelection: selectedMessage !== null && selectedMessage.visible && selectedMessage.selectedText !== ""
   readonly property bool running: session && (session.status === "starting" || session.status === "running")
   readonly property int messageCount: messages.count
@@ -176,7 +180,8 @@ Item {
       const message = incoming[index]
       const row = {messageId: message.id, kind: message.kind, body: message.text,
         toolName: message.toolName, input: message.input, state: message.state,
-        screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || ""}
+        screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
+        widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
       if (index < messages.count) {
         messages.set(index, row)
       } else {
@@ -215,6 +220,7 @@ Item {
       target: null
       acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
       onWheel: event => {
+        if (root.hoveredWidget && root.hoveredWidget.hovered) { event.accepted = false; return }
         const pixels = event.pixelDelta.y || event.angleDelta.y / 120 * Qt.styleHints.wheelScrollLines * 24 * root.unit
         if (pixels === 0) {
           event.accepted = false
@@ -248,6 +254,8 @@ Item {
       required property string state
       required property bool screenshot
       required property string screenshotUrl
+      required property string widgetJson
+      readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
       property bool expanded: false
       objectName: "bubble-" + messageId
       width: transcript.width
@@ -347,12 +355,41 @@ Item {
             Accessible.onPressAction: if (thumbnail.status === Image.Ready) root.screenshotRequested(bubble.screenshotUrl, root.session.title)
           }
 
+          WidgetSurface {
+            id: widgetView
+            nativeRendering: root.nativeWidgets
+            objectName: "inlineWidget"
+            visible: bubble.widget !== null && bubble.widget.presentation.placement === "inline" && viewUrl !== ""
+            width: parent.width
+            height: visible ? preferredHeight : 0
+            reference: bubble.widget
+            summary: bubble.body
+            foreground: root.foreground
+            muted: root.muted
+            accent: root.accent
+            selection: root.selection
+            fontFamily: root.proseFontFamily
+            unit: root.unit
+            textScale: root.textScale
+            // ListView can retain offscreen delegates. Stop frame polling there
+            // and while the desktop panel is hidden, without losing widget state.
+            running: visible && root.widgetsRunning && bubble.y + bubble.height >= transcript.contentY
+              && bubble.y <= transcript.contentY + transcript.height
+            onInteractionStarted: root.clearMessageSelection()
+            onHoveredChanged: {
+              if (hovered) root.hoveredWidget = widgetView
+              else if (root.hoveredWidget === widgetView) root.hoveredWidget = null
+            }
+            Component.onDestruction: if (root.hoveredWidget === widgetView) root.hoveredWidget = null
+          }
+
           TextEdit {
             id: messageText
             objectName: "messageText"
             width: parent.width
             height: visible ? contentHeight : 0
-            visible: bubble.kind !== "tool" || bubble.expanded
+            visible: (bubble.kind !== "tool" || bubble.expanded)
+              && (!widgetView.visible || !widgetView.rendered || widgetView.error !== "")
             text: bubble.kind === "assistant" ? Markdown.render(bubble.body, root.textScale, root.selection.toString(), root.accent.toString())
               : bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
             textFormat: bubble.kind === "assistant" ? TextEdit.RichText : TextEdit.PlainText

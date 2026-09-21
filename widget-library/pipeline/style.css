@@ -1,0 +1,29 @@
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 12px;
+}
+button {
+  border: 1px solid var(--muted);
+  background: transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+input {
+  background: transparent;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  padding: 5px;
+}
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.steps button {
+  padding: 12px;
+}
+.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}

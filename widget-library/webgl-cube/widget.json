@@ -1,0 +1,62 @@
+{
+  "name": "webgl-cube",
+  "version": 1,
+  "description": "An interactive WebGL cube. Drag to rotate; its orientation is shared between views.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "maxLength": 100,
+        "default": "Drag to rotate"
+      },
+      "yaw": {
+        "type": "number",
+        "minimum": -36000,
+        "maximum": 36000,
+        "default": 25
+      },
+      "pitch": {
+        "type": "number",
+        "minimum": -36000,
+        "maximum": 36000,
+        "default": 20
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "actions": {
+    "set_rotation": {
+      "description": "Set cube yaw and pitch in degrees.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "yaw": {
+            "type": "number",
+            "minimum": -36000,
+            "maximum": 36000
+          },
+          "pitch": {
+            "type": "number",
+            "minimum": -36000,
+            "maximum": 36000
+          }
+        },
+        "required": ["yaw", "pitch"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  },
+  "example": {
+    "title": "A shared 3D view",
+    "yaw": 25,
+    "pitch": 20
+  }
+}

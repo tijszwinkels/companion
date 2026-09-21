@@ -1,0 +1,138 @@
+import QtQuick
+import QtTest
+import "@PANEL@" as Panel
+
+Item {
+  width: 600
+  height: 400
+  Panel.WidgetSurface {
+    id: widget
+    x: 20; y: 20; width: 480; height: 280
+    nativeRendering: true
+    reference: @REFERENCE@
+    foreground: "#e0e6f0"; muted: "#959faa"; accent: "#82aaff"; selection: "#17212d"
+    fitContent: false
+  }
+  Component {
+    id: panelComponent
+    Panel.PanelContent {
+      width: 600; height: 400
+      online: true; paused: false; speaking: false; processing: 0
+      animationsEnabled: true
+      nativeWidgets: true
+      foreground: "#e0e6f0"; muted: "#959faa"; accent: "#82aaff"; selection: "#17212d"
+      fontFamily: "sans-serif"
+    }
+  }
+  SignalSpy { id: interactions; target: widget; signalName: "interactionStarted" }
+  TestCase {
+    name: "CompanionEmbeddedChromium"
+    when: windowShown
+    function state() {
+      let value = null
+      widget.request("/state", null, function(result) { value = result })
+      tryVerify(function() { return value !== null })
+      return value
+    }
+    function evaluate(browser, expression) {
+      let finished = false
+      let value = null
+      browser.runJavaScript(expression, function(result) { value = result; finished = true })
+      tryVerify(function() { return finished })
+      return value
+    }
+    function test_direct_rendering_input_theme_resize_and_escape() {
+      const browser = findChild(widget, "nativeWidgetBrowser")
+      verify(browser !== null, widget.error)
+      tryVerify(function() { return widget.rendered }, 10000, widget.error + ": " + browser.error)
+      compare(widget.frameNumber, 0, "Native views must not capture PNG frames")
+      compare(findChild(widget, "widgetFrame").source.toString(), "")
+      compare(widget.error, "")
+      mouseMove(widget, 40, 60)
+      tryCompare(findChild(widget, "widgetPopout"), "opacity", 1)
+      mouseClick(widget, 24, 56)
+      verify(interactions.count > 0, "Native input must clear any selected transcript text")
+      tryVerify(function() { return state().props.items[0].completed === true }, 5000)
+      mouseClick(widget, 110, 98)
+      for (const letter of "native input") keyClick(letter)
+      widget.textScale = 1.25
+      widget.selection = "#e8eef5"
+      widget.foreground = "#1b2531"
+      widget.width = 360
+      tryCompare(browser, "width", 360)
+      wait(500)
+      compare(evaluate(browser, "window.innerWidth"), 360)
+      keyClick(Qt.Key_A, Qt.ControlModifier)
+      keyClick(Qt.Key_C, Qt.ControlModifier)
+      keyClick(Qt.Key_Backspace)
+      keyClick(Qt.Key_V, Qt.ControlModifier)
+      keyClick(Qt.Key_Return)
+      tryVerify(function() { return state().props.items.length === 2 }, 5000)
+      compare(state().props.items[1].text, "native input", "Theme/resize must preserve the focused draft and native copy/paste")
+      let saved = false
+      widget.grabToImage(function(result) { saved = result.saveToFile("@CAPTURE@") })
+      tryVerify(function() { return saved })
+      mouseClick(widget, 100, 20)
+      keyClick(Qt.Key_Escape)
+      verify(findChild(widget, "widgetPopout").activeFocus)
+      widget.running = false
+      compare(browser.visible, false)
+      tryVerify(function() { return evaluate(browser, "document.hidden") === true })
+      wait(250)
+      widget.running = true
+      tryVerify(function() { return widget.rendered })
+      compare(state().props.items.length, 2)
+      compare(widget.error, "")
+      compare(widget.frameNumber, 0)
+      widget.reference = @REPLACEMENT@
+      tryVerify(function() { return widget.rendered && state().props.title === "Replacement view" }, 10000)
+      compare(state().props.items.length, 0)
+      compare(widget.error, "")
+      const input = evaluate(browser.mainFrame.children[0], "(() => { const box = document.querySelector('input').getBoundingClientRect(); return {x: box.x + box.width / 2, y: box.y + box.height / 2}; })()")
+      mouseClick(widget, input.x, input.y)
+      for (const letter of "successor") keyClick(letter)
+      keyClick(Qt.Key_Return)
+      tryVerify(function() { return state().props.items.length === 1 }, 5000)
+      compare(state().props.items[0].text, "successor", "A replaced view must send input to its own capability")
+      compare(widget.frameNumber, 0)
+      for (let iteration = 0; iteration < 6; iteration++) {
+        browser.runJavaScript("document.body.innerText", function() {})
+        widget.reference = iteration % 2 ? @REPLACEMENT_STRESS@ : @ORIGINAL_STRESS@
+        tryVerify(function() { return widget.rendered }, 10000)
+        compare(widget.error, "")
+      }
+    }
+    function test_full_height_native_preserves_chat_escape_and_draft() {
+      widget.visible = false
+      const panel = createTemporaryObject(panelComponent, parent)
+      const reference = @ORIGINAL@
+      function conversation(reference) {
+        return {id: "native-session", title: "Native widgets", status: "idle", messages: [
+          {id: "native-message", kind: "assistant", text: "Saved fallback", input: "", toolName: "", state: "done", screenshot: false, widget: reference}
+        ]}
+      }
+      panel.sessions = [conversation(reference)]
+      panel.selectedSessionId = "native-session"
+      const chat = findChild(panel, "sessionView")
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Preserve this follow-up"
+      const pinned = JSON.parse(JSON.stringify(reference))
+      pinned.presentation = {placement: "pinned", heightPercent: 100, replaceActivity: true}
+      panel.sessions = [conversation(pinned)]
+      const surface = findChild(panel, "pinnedWidget")
+      tryVerify(function() { return surface.rendered }, 10000)
+      compare(surface.nativeRendering, true)
+      compare(chat.visible, false)
+      const browser = findChild(surface, "nativeWidgetBrowser")
+      mouseClick(browser, 40, 20)
+      keyClick(Qt.Key_Escape)
+      verify(findChild(surface, "widgetPopout").activeFocus)
+      mouseClick(findChild(panel, "widgetBackToChat"))
+      compare(chat.visible, true)
+      compare(composer.text, "Preserve this follow-up")
+      panel.focusComposer()
+      tryVerify(function() { return composer.activeFocus })
+      compare(surface.frameNumber, 0)
+    }
+  }
+}

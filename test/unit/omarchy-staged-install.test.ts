@@ -107,10 +107,12 @@ test('staged install preserves config and reloads only when Lua integration chan
   const revision = manifest.entryPoints.service.split('/')[0];
   for (const file of [
     'omarchy/plugin/Service.qml',
+    'omarchy/plugin/NativeBridge.qml',
     'omarchy/plugin/PlaybackState.qml',
     'omarchy/plugin/ScreenshotWindow.qml',
     'panel/ComposerFocus.qml',
     'panel/AgentChoices.qml',
+    'panel/WidgetSurface.qml',
     'panel/ActivityStrip.qml',
     'panel/Markdown.mjs',
     'panel/vendor/markdown-it.mjs',

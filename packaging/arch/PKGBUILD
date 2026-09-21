@@ -1,0 +1,23 @@
+# Produce companion-ui-0.1.0.tar.gz from the exact release commit, containing
+# the repository at its root. Replace SKIP with that archive's SHA-256 before
+# publishing this recipe; SKIP is only for locally generated development input.
+pkgname=companion-ui
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Companion Qt conversation window and embedded Chromium widgets'
+arch=('x86_64' 'aarch64')
+license=('ISC')
+depends=('qt6-base' 'qt6-declarative' 'qt6-webengine' 'layer-shell-qt')
+makedepends=('cmake' 'gcc' 'make')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cmake -S "$srcdir/native/window" -B "$srcdir/build" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
+  cmake --build "$srcdir/build" --parallel
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+}

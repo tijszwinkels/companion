@@ -1,3 +1,4 @@
+import type { WidgetAttachment } from '../widgets/types.ts';
 import type { Screenshot } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import type { AgentChoice, AgentChoiceSet } from './choices.ts';
@@ -13,6 +14,8 @@ export interface AgentMessage {
   screenshot: boolean;
   /** Local, private PNG attachment; omitted while saving or on older messages. */
   screenshotUrl?: string;
+  /** Validated reference; its private view URL is regenerated when reopening. */
+  widget?: WidgetAttachment;
 }
 
 /** Selects a model configuration for the whole conversation, including reopening. */
@@ -60,6 +63,7 @@ export interface AgentBackend extends InspectableModule {
       settings: AgentSettings;
       prompt: { text: string; screenshot?: Screenshot };
       resume: boolean;
+      widgets?: { endpoint: string; token: string };
     },
     signal: AbortSignal,
     emit: (message: AgentMessage) => void,

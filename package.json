@@ -19,8 +19,16 @@
     "test:quick-tap": "/usr/bin/python test/live/nested-hyprland.py",
     "test:panel-focus": "/usr/bin/python test/live/nested-hyprland.py --focus",
     "omarchy:install": "tsx integrations/omarchy/install.ts",
-    "format": "prettier --write --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json",
-    "format:check": "prettier --check --ignore-unknown src test integrations package.json tsconfig.json .prettierrc.json"
+    "format": "prettier --write --ignore-unknown src test integrations widget-library 'native/widget-renderer/*.ts' native/widget-renderer/README.md 'native/window/*.ts' native/window/README.md package.json tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check --ignore-unknown src test integrations widget-library 'native/widget-renderer/*.ts' native/widget-renderer/README.md 'native/window/*.ts' native/window/README.md package.json tsconfig.json .prettierrc.json",
+    "test:widgets": "tsx --test test/widgets/browser.test.ts",
+    "widgets:build": "tsx native/widget-renderer/build.ts --host",
+    "widgets:build-module": "tsx native/widget-renderer/build.ts",
+    "widgets:shell": "tsx native/widget-renderer/shell.ts",
+    "test:widgets-native": "tsx --test test/widgets/native.test.ts",
+    "ui:build": "tsx native/window/build.ts",
+    "ui": "native/window/build/companion-ui",
+    "test:window": "tsx --test test/window/*.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -29,6 +37,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
+    "ajv": "8.17.1",
     "onnxruntime-node": "1.30.0"
   },
   "devDependencies": {

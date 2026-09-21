@@ -50,9 +50,17 @@ export class PiBackend implements AgentBackend {
         fileURLToPath(new URL('./choice-tool.ts', import.meta.url)),
         '--extension',
         fileURLToPath(new URL('./session-name-tool.ts', import.meta.url)),
+        ...(request.widgets
+          ? ['--extension', fileURLToPath(new URL('./widget-tools.ts', import.meta.url))]
+          : []),
       ],
       {
         cwd: request.directory,
+        env: {
+          ...process.env,
+          COMPANION_WIDGET_ENDPOINT: request.widgets?.endpoint,
+          COMPANION_WIDGET_TOKEN: request.widgets?.token,
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       },

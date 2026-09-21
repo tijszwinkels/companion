@@ -1,0 +1,94 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+TestCase {
+  id: testCase
+  name: "TranslucentWidgetTheme"
+  when: windowShown
+  QtObject {
+    id: backend
+    property var requests: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { requests = requests.concat([message]); return true }
+  }
+  Component {
+    id: content
+    Native.WindowContent {
+      host: TestHost
+      transport: backend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+  property var reference: @REFERENCE@
+  function conversation(placement, height) {
+    const widget = Object.assign({}, reference, {presentation: {
+      placement: placement, heightPercent: height, replaceActivity: true}})
+    return {id: "theme", title: "Synthetic translucent widget", status: "idle", messages: [
+      {id: "visual", role: "assistant", kind: "widget", text: "Theme fixture", widget: widget,
+        toolName: "", input: "", state: "", screenshot: ""}
+    ]}
+  }
+  function evaluate(view, script) {
+    let done = false
+    let result = null
+    view.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done })
+    return result
+  }
+  function rendered(name) {
+    tryVerify(function() { return findChild(body, name) !== null })
+    const surface = findChild(body, name)
+    tryVerify(function() { return surface.rendered }, 10000, surface.error)
+    return findChild(surface, "nativeWidgetBrowser")
+  }
+  function initTestCase() {
+    body = content.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    TestHost.show(true)
+    // Exact native ARGB color recovered at the live SIGTRAP instruction.
+    body.command({action: "theme", values: {selection: "#14a9b1d6"}})
+    backend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "synthetic", activityHistoryCount: 0,
+      sessions: [conversation("inline", 30)]})
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function test_alpha_theme_pin_close_and_reopen() {
+    const inlineView = rendered("inlineWidget")
+    compare(inlineView.backgroundColor.a, 0)
+    tryVerify(function() {
+      return evaluate(inlineView.mainFrame.children[0],
+        "getComputedStyle(document.documentElement).backgroundColor") === "rgba(169, 177, 214, 0.08)"
+    })
+    for (const color of ["#80ff0000", "transparent", "#a9b1d6", "#14a9b1d6"]) {
+      body.command({action: "theme", values: {selection: color}})
+      wait(250)
+      compare(rendered("inlineWidget").backgroundColor.a, 0)
+    }
+    for (const height of [30, 100]) {
+      backend.received({type: "agent-session", session: conversation("pinned", height)})
+      compare(rendered("pinnedWidget").backgroundColor.a, 0)
+    }
+    mouseClick(findChild(body, "widgetBackToChat"))
+    backend.received({type: "agent-session", session: conversation("inline", 30)})
+    rendered("inlineWidget")
+    // Session removal destroys the native view; reopening initializes another
+    // browser with the same translucent theme and retained widget reference.
+    for (let iteration = 0; iteration < 3; iteration++) {
+      const previousCloses = backend.requests.filter(message => message.action === "close-agent").length
+      mouseClick(findChild(body, "dismissSession"))
+      compare(backend.requests.filter(message => message.action === "close-agent").length, previousCloses + 1)
+      backend.received({type: "agent-removed", id: "theme"})
+      wait(100)
+      compare(body.panel.selectedSession, null)
+      backend.received({type: "agent-restored", session: conversation("inline", 30)})
+      compare(rendered("inlineWidget").backgroundColor.a, 0)
+    }
+  }
+}

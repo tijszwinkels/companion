@@ -35,6 +35,13 @@ Item {
   property var pendingAgentInput: null
   property var pendingHistoryInsert: null
   property var pendingAgentChoice: null
+  property string lastApplication: ""
+  readonly property bool panelKeyboardFocused: native.ready ? native.status.active === true : sidePanel.keyboardFocused
+  readonly property string panelComposerId: native.ready ? native.status.composerFocusId || "" : sidePanel.composerFocusId
+  function isNativeWindow(window) {
+    return window && ((window.wayland && window.wayland.appId === "companion")
+      || window.lastIpcObject?.class === "companion")
+  }
   readonly property var transport: connection.item
   onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
   onOnlineChanged: {
@@ -51,6 +58,51 @@ Item {
     onPlayingChanged: root.reportMediaPlayback()
   }
 
+  NativeBridge {
+    id: native
+    onReadyChanged: {
+      // Hand off selection exactly once. Subsequent observer snapshots must
+      // never reclaim the native UI's voice destination or clear its focus.
+      root.panelOpened = false
+      root.pendingHistoryInsert = null
+      playback.resumePaused()
+      if (ready) {
+        root.send({action: "panel-state", id: "", composerFocused: false, keyboardFocused: false})
+        native.send({action: "claim"})
+      }
+    }
+    onEvent: message => {
+      if (message.type === "pause-media") playback.pausePlaying()
+      else if (message.type === "resume-media") playback.resumePaused()
+      else if (message.type === "restore-focus") root.finishFocusRestore(message.address)
+      else if (message.type === "history-paste") root.historyAction("paste", message.id, {})
+    }
+    onStatusChanged: root.finishNativeInsert()
+  }
+
+  Connections {
+    target: Hyprland
+    function onActiveToplevelChanged() {
+      const window = Hyprland.activeToplevel
+      if (root.isNativeWindow(window)) return
+      const address = window ? window.address : ""
+      if (address) root.lastApplication = address.startsWith("0x") ? address : "0x" + address
+      root.finishNativeInsert()
+    }
+  }
+
+  Timer {
+    id: insertDeadline
+    interval: 2000
+    onTriggered: {
+      if (root.pendingHistoryInsert && native.ready) {
+        root.pendingHistoryInsert = null
+        root.lastErrorAction = "paste"
+        root.lastError = "Paste skipped: application focus was not restored"
+      }
+    }
+  }
+
   function reportMediaPlayback() {
     if (root.mediaPauseAvailable) {
       root.send({action: "media-playback", playing: playback.playing})
@@ -60,7 +112,7 @@ Item {
   Panel.AgentSessionState {
     id: agentSessions
     panelVisible: root.panelOpened && sidePanel.visible
-    onRevealRequested: root.panelOpened = true
+    onRevealRequested: if (!native.ready) root.panelOpened = true
     onConversationIdChanged: Qt.callLater(root.reportPanelState)
     onPanelVisibleChanged: Qt.callLater(root.reportPanelState)
   }
@@ -71,6 +123,7 @@ Item {
   }
 
   function reportPanelState() {
+    if (native.ready) return
     // A retained selection without a displayed panel is not a voice target.
     const id = agentSessions.viewedId
     root.send({action: "panel-state", id: id,
@@ -82,22 +135,29 @@ Item {
     root.reportPanelState()
     // Coalesce transient focus changes while switching between conversation
     // tabs. Leaving the composer for another window or Activity restores media.
-    if (sidePanel.composerFocusId === "") playback.resumePaused()
+    if (root.panelComposerId === "") playback.resumePaused()
   }
 
   function togglePanel() {
     // The history picker and status panel have separate lifetimes. Dismissing
     // history here cancels it; opening the panel must never trigger a paste.
     root.cancel()
+    if (native.ready) { native.send({action: "toggle"}); return }
     root.panelOpened = !root.panelOpened
   }
 
   function closePanel() {
     root.pendingHistoryInsert = null
+    if (native.ready) native.send({action: "hide"})
     root.panelOpened = false
   }
 
   function toggleComposerFocus() {
+    if (native.ready) {
+      root.cancel()
+      native.send({action: "focus", address: root.lastApplication})
+      return
+    }
     if (!root.online || !agentSessions.conversationId) {
       root.panelOpened = true
       root.lastError = "Select an agent conversation before focusing its input."
@@ -166,7 +226,7 @@ Item {
       return
     }
     if (root.pendingHistoryInsert) return
-    const previous = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+    const previous = native.ready ? root.lastApplication : Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
     const address = previous && !previous.startsWith("0x") ? "0x" + previous : previous
     if (!/^0x[0-9a-f]+$/i.test(address)) {
       root.lastErrorAction = "paste"
@@ -174,7 +234,11 @@ Item {
       return
     }
     root.pendingHistoryInsert = {id: id, target: address}
-    sidePanel.releaseForInsertion(address)
+    if (native.ready) {
+      insertDeadline.restart()
+      native.send({action: "release-for-insertion", address: address})
+    }
+    else sidePanel.releaseForInsertion(address)
   }
 
   function forgetUtterance(id) {
@@ -288,7 +352,7 @@ Item {
     root.selectedIndex = 0
     const address = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
     root.targetAddress = address && !address.startsWith("0x") ? "0x" + address : address
-    root.targetComposerId = sidePanel.composerFocusId
+    root.targetComposerId = root.panelComposerId
     const monitor = Hyprland.focusedMonitor
     root.pickerScreen = Quickshell.screens.find(screen => screen.name === monitor?.name) || null
     root.lastError = ""
@@ -346,7 +410,8 @@ Item {
     appid: "companion"
     name: "next-tab"
     onPressed: {
-      if (sidePanel.keyboardFocused) sidePanel.nextTab()
+      if (native.ready && root.panelKeyboardFocused) native.send({action: "next-tab"})
+      else if (sidePanel.keyboardFocused) sidePanel.nextTab()
       else Hyprland.dispatch("hl.dsp.group.next()")
     }
   }
@@ -358,7 +423,8 @@ Item {
     appid: "companion"
     name: "expand-width"
     onPressed: {
-      if (sidePanel.keyboardFocused) sidePanel.resizeBy(100)
+      if (native.ready && root.panelKeyboardFocused) native.send({action: "resize", delta: 100})
+      else if (sidePanel.keyboardFocused) sidePanel.resizeBy(100)
       else Hyprland.dispatch("hl.dsp.window.resize({ x = -100, y = 0, relative = true })")
     }
   }
@@ -366,7 +432,8 @@ Item {
     appid: "companion"
     name: "shrink-width"
     onPressed: {
-      if (sidePanel.keyboardFocused) sidePanel.resizeBy(-100)
+      if (native.ready && root.panelKeyboardFocused) native.send({action: "resize", delta: -100})
+      else if (sidePanel.keyboardFocused) sidePanel.resizeBy(-100)
       else Hyprland.dispatch("hl.dsp.window.resize({ x = 100, y = 0, relative = true })")
     }
   }
@@ -415,12 +482,14 @@ Item {
         speaking: root.speaking, processing: root.processing,
         soundsEnabled: root.soundsEnabled, soundsAvailable: root.soundsAvailable,
         opened: root.opened, selectedIndex: root.selectedIndex,
-        panelOpened: root.panelOpened, panelVisible: sidePanel.visible,
-        selectedSessionId: agentSessions.conversationId,
+        panelOpened: native.ready ? native.status.opened : root.panelOpened,
+        panelVisible: native.ready ? native.status.opened : sidePanel.visible,
+        nativeWindow: native.ready,
+        selectedSessionId: native.ready ? native.status.sessionId : agentSessions.conversationId,
         panelMonitor: sidePanel.monitorName,
         panelWidth: sidePanel.width,
         activityHistoryCount: activityHistory.model.count,
-        composerFocusId: sidePanel.composerFocusId, composerFocusPhase: sidePanel.composerFocusPhase,
+        composerFocusId: root.panelComposerId, composerFocusPhase: sidePanel.composerFocusPhase,
         count: root.history.length, error: root.lastError })
     }
     function togglePause(): void { root.togglePause() }
@@ -439,6 +508,7 @@ Item {
     root.processing = 0
     root.history = []
     root.pendingHistoryInsert = null
+    insertDeadline.stop()
     activityHistory.disconnected()
     root.intents = []
     root.agentActions = ({})
@@ -509,7 +579,7 @@ Item {
   // and visibly reconnect when Companion starts again.
   SidePanel {
     id: sidePanel
-    opened: root.panelOpened
+    opened: root.panelOpened && !native.ready
     online: root.online
     paused: root.paused
     pauseReason: root.pauseReason
@@ -545,27 +615,55 @@ Item {
     onComposerFocusReleased: Qt.callLater(root.composerFocusChanged)
     onComposerFocusIdChanged: Qt.callLater(root.composerFocusChanged)
     onKeyboardFocusedChanged: Qt.callLater(root.reportPanelState)
-    onRestoreFocusRequested: address => {
-      const pending = root.pendingHistoryInsert
-      root.pendingHistoryInsert = null
-      if (pending) {
-        const active = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
-        const current = active && !active.startsWith("0x") ? "0x" + active : active
-        if (current !== pending.target) {
-          root.lastErrorAction = "paste"
-          root.lastError = "Paste skipped: focus changed"
-          return
-        }
-      }
-      root.restoreApplicationFocus(address)
-      if (pending && pending.target === address) {
-        // Report relinquished panel focus before queuing keyboard delivery.
-        // The backend rechecks both the ordinary window and this focus boundary.
-        Qt.callLater(function() {
-          root.reportPanelState()
-          root.send({action: "paste", id: pending.id, target: pending.target, composer: ""})
-        })
+    onRestoreFocusRequested: address => root.finishFocusRestore(address)
+  }
+
+  function finishFocusRestore(address) {
+    const pending = root.pendingHistoryInsert
+    if (pending) {
+      const active = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+      const current = active && !active.startsWith("0x") ? "0x" + active : active
+      if (current !== pending.target && !(native.ready && root.isNativeWindow(Hyprland.activeToplevel))) {
+        root.pendingHistoryInsert = null
+        root.lastErrorAction = "paste"
+        root.lastError = "Paste skipped: focus changed"
+        return
       }
     }
+    root.restoreApplicationFocus(address)
+    if (native.ready && pending && pending.target === address) {
+      root.pendingHistoryInsert = Object.assign({}, pending, {restoring: true})
+      root.finishNativeInsert()
+      return
+    }
+    root.pendingHistoryInsert = null
+    if (pending && pending.target === address) {
+      // Report relinquished panel focus before queuing keyboard delivery.
+      // The backend rechecks both the ordinary window and this focus boundary.
+      Qt.callLater(function() {
+        root.reportPanelState()
+        root.send({action: "paste", id: pending.id, target: pending.target, composer: ""})
+      })
+    }
+  }
+
+  function finishNativeInsert() {
+    const pending = root.pendingHistoryInsert
+    if (!native.ready || !pending || !pending.restoring || native.status.active) return
+    // Qt's focus-out can arrive before Hyprland's toplevel update. Wait for the
+    // compositor report instead of discarding a valid in-progress restoration.
+    if (root.isNativeWindow(Hyprland.activeToplevel)) return
+    const active = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
+    const current = active && !active.startsWith("0x") ? "0x" + active : active
+    root.pendingHistoryInsert = null
+    insertDeadline.stop()
+    if (current !== pending.target) {
+      root.lastError = "Paste skipped: focus changed"
+      root.lastErrorAction = "paste"
+      return
+    }
+    // The native client sends its final focus report and paste on one ordered
+    // backend connection. A bridge socket race must never revive composer focus.
+    native.send({action: "paste-after-release", id: pending.id, target: pending.target})
   }
 }

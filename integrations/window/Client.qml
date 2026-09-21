@@ -1,0 +1,164 @@
+import QtQuick
+import "../panel" as Panel
+
+// The native host consumes the same protocol as the shell adapter. All UI state
+// stays here across presentation changes; the backend remains authoritative.
+Item {
+  id: root
+  required property var transport
+  property bool online: false
+  property bool paused: false
+  property string pauseReason: ""
+  property bool speaking: false
+  property int processing: 0
+  property var history: []
+  property bool historyDeletionAvailable: false
+  property var intents: []
+  property var agentActions: ({})
+  property string error: ""
+  property string errorAction: ""
+  property var pendingInput: null
+  property var pendingChoice: null
+  property alias sessions: sessions
+  property alias activity: activity
+  property bool panelVisible: false
+  property bool keyboardFocused: false
+  property string composerFocusId: ""
+  signal revealRequested()
+  signal inputFinished(string id, string text, string error)
+  signal choiceFinished(string id, string revision, int index, string error)
+
+  onPanelVisibleChanged: Qt.callLater(reportPanel)
+  onKeyboardFocusedChanged: Qt.callLater(reportPanel)
+  onComposerFocusIdChanged: Qt.callLater(reportPanel)
+  onOnlineChanged: if (online) Qt.callLater(reportPanel)
+
+  Panel.AgentSessionState {
+    id: sessions
+    panelVisible: root.panelVisible
+    onRevealRequested: root.revealRequested()
+    onConversationIdChanged: Qt.callLater(root.reportPanel)
+  }
+  Panel.ActivityHistoryState {
+    id: activity
+    onPageRequested: request => root.send(request)
+  }
+
+  function send(request) {
+    return root.online && transport.send(request)
+  }
+
+  function reportPanel() {
+    const id = sessions.viewedId
+    root.send({action: "panel-state", id: id,
+      composerFocused: id !== "" && root.composerFocusId === id,
+      keyboardFocused: root.keyboardFocused})
+  }
+
+  function finishInput(error) {
+    const pending = root.pendingInput
+    root.pendingInput = null
+    if (pending) root.inputFinished(pending.id, pending.text, error)
+  }
+
+  function finishChoice(error) {
+    const pending = root.pendingChoice
+    root.pendingChoice = null
+    if (pending) root.choiceFinished(pending.id, pending.revision, pending.index, error)
+  }
+
+  function sendInput(id, text) {
+    // Protocol replies identify the action, not its request. Keep one pending
+    // input across all tabs so a late acknowledgement cannot clear another draft.
+    if (root.pendingInput) {
+      root.inputFinished(id, text, "Wait for the previous message to be confirmed.")
+      return
+    }
+    root.pendingInput = {id: id, text: text}
+    if (!root.send({action: "send-agent", id: id, text: text})) {
+      root.finishInput("Companion is disconnected; your draft is retained.")
+    }
+  }
+
+  function choose(id, revision, index) {
+    if (root.pendingChoice) {
+      root.choiceFinished(id, revision, index, "Wait for the previous choice to be confirmed.")
+      return
+    }
+    root.pendingChoice = {id: id, revision: revision, index: index}
+    root.reportPanel()
+    if (!root.send({action: "choose-agent", id: id, revision: revision, index: index})) {
+      root.finishChoice("Companion is disconnected.")
+    }
+  }
+
+  function disconnected() {
+    root.online = false
+    root.finishInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
+    root.finishChoice("Connection lost before confirmation. Check the conversation before choosing again.")
+    root.speaking = false
+    root.processing = 0
+    root.history = []
+    root.historyDeletionAvailable = false
+    root.intents = []
+    root.agentActions = ({})
+    activity.disconnected()
+  }
+
+  function receive(message) {
+    if (message.type === "state" && message.protocol === 1) {
+      root.paused = message.paused === true
+      root.pauseReason = message.pauseReason || ""
+      root.speaking = message.speaking === true
+      root.processing = message.processing || 0
+      root.history = message.history || []
+      root.historyDeletionAvailable = message.historyDeletionAvailable === true
+      const intents = message.intents || []
+      if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
+      const actions = message.agentActions || {}
+      if (JSON.stringify(actions) !== JSON.stringify(root.agentActions)) root.agentActions = actions
+      sessions.replace(message.sessions || [])
+      sessions.previousSessions = message.previousSessions || []
+      root.online = message.ready === true
+      if (root.online) activity.observe(message.activitySessionId, message.activityHistoryCount)
+    } else if (message.type === "agent-session") {
+      sessions.update(message.session)
+    } else if (message.type === "agent-actions") {
+      root.agentActions = message.actions || {}
+    } else if (message.type === "agent-history") {
+      sessions.previousSessions = message.sessions || []
+    } else if (message.type === "agent-restored") {
+      sessions.restore(message.session)
+    } else if (message.type === "agent-removed") {
+      sessions.remove(message.id)
+    } else if (message.type === "history-deleted") {
+      root.history = root.history.filter(row => row.id !== message.id)
+      // Apply the shared state's tombstone before a delayed history page can
+      // restore the card, matching the shell client's deletion lifecycle.
+      activity.remove(message.sessionId, message.removed)
+    } else if (message.type === "activity-entry") {
+      activity.update(message.sessionId, message.entry)
+    } else if (message.type === "result" || message.type === "error") {
+      const failure = message.type === "error" ? message.message : ""
+      if (message.action === "send-agent") root.finishInput(failure)
+      if (message.action === "choose-agent") root.finishChoice(failure)
+      if (message.action === "activity-history") {
+        if (failure) activity.loading = false
+        else activity.page(message.result)
+      }
+      if (failure || message.result === "skipped") {
+        root.error = failure || "Paste skipped: focus changed"
+        root.errorAction = message.action || ""
+      } else if (root.errorAction === message.action) {
+        root.error = ""
+        root.errorAction = ""
+      }
+    }
+  }
+
+  Connections {
+    target: root.transport
+    function onReceived(message) { root.receive(message) }
+    function onDisconnected() { root.disconnected() }
+  }
+}
