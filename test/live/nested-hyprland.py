@@ -16,7 +16,10 @@ import time
 repository = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser()
 parser.add_argument("--focus", action="store_true", help="Run the conversation focus regression")
+parser.add_argument("script", nargs="?", help="Run another isolated desktop regression")
 arguments = parser.parse_args()
+if arguments.focus and arguments.script:
+    parser.error("Choose either --focus or a test script")
 parent_runtime = os.environ["XDG_RUNTIME_DIR"]
 parent_display = os.environ["WAYLAND_DISPLAY"]
 
@@ -85,7 +88,9 @@ hl.config({
             else:
                 raise RuntimeError("Timed out waiting for the nested Wayland monitor")
 
-            test_script = "test/live/panel-focus.ts" if arguments.focus else "test/live/quick-tap.ts"
+            test_script = arguments.script or (
+                "test/live/panel-focus.ts" if arguments.focus else "test/live/quick-tap.ts"
+            )
             test_process = subprocess.Popen(
                 ["node", "--import", "tsx", test_script],
                 cwd=repository, env=environment, start_new_session=True,
