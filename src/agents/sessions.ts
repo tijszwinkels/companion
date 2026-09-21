@@ -99,7 +99,7 @@ export class AgentSessions implements InspectableModule {
       (total, message) => total + message.text.length + message.input.length,
       0,
     );
-    if (messages.size > 200 || size > 256 * 1024) {
+    if (messages.size > 800 || size > 256 * 1024) {
       throw Error('The panel transcript limit was reached');
     }
     // Reserve space across the atomic widget write. Concurrent streamed text
@@ -510,7 +510,7 @@ export class AgentSessions implements InspectableModule {
       (size, entry) => size + entry.text.length + entry.input.length,
       0,
     );
-    if (totalSize > 256 * 1024 || reserved.size > 200) {
+    if (totalSize > 256 * 1024 || reserved.size > 800) {
       throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
     }
 
