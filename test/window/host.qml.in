@@ -89,5 +89,34 @@ TestCase {
     let captured = false
     body.grabToImage(function(result) { captured = result.saveToFile("@CAPTURE@") })
     tryVerify(function() { return captured })
+
+    // The shared Activity view must retain current master's deletion affordance
+    // when hosted in the standalone window, including failed request behavior.
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      sessions: body.client.sessions.sessions, historyDeletionAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 1})
+    compare(body.panel.historyDeletionAvailable, true)
+    body.client.sessions.select("")
+    fakeBackend.received({type: "activity-entry", sessionId: "activity", entry: {
+      id: "utterance", sequence: 1, revision: 1, utterance: "Synthetic history",
+      intent: "IGNORE", outcome: "ignored", observedAt: 1, correct: null, actualIntent: null}})
+    findChild(body, "listeningArea").expanded = false
+    const page = findChild(body, "fullActivityStatus")
+    const history = findChild(body, "historySection")
+    tryVerify(function() { return history.height > 0 })
+    page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, history.y))
+    tryVerify(function() { return findChild(body, "history-action-delete-history") !== null })
+    const button = findChild(body, "history-action-delete-history")
+    tryVerify(function() { return button.visible && button.enabled })
+    button.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "delete-history" && message.id === "utterance") })
+    compare(body.client.activity.model.count, 1, "Wait for confirmed deletion")
+    fakeBackend.received({type: "error", action: "delete-history", message: "Synthetic refusal"})
+    compare(body.panel.controlError, "Synthetic refusal")
+    compare(body.client.activity.model.count, 1)
+    fakeBackend.received({type: "history-deleted", sessionId: "activity", id: "utterance",
+      removed: {id: "utterance", sequence: 1, revision: 2, deleted: true}})
+    compare(body.client.activity.model.count, 0)
   }
 }

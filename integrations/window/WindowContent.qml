@@ -224,6 +224,7 @@ Item {
     agentActions: client.agentActions
     activityHistoryModel: client.activity.model
     activityHistoryAvailable: client.activity.available
+    historyDeletionAvailable: client.historyDeletionAvailable
     sessions: client.sessions.sessions
     previousSessions: client.sessions.previousSessions
     unreadSessionIds: client.sessions.unreadIds

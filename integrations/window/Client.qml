@@ -12,6 +12,7 @@ Item {
   property bool speaking: false
   property int processing: 0
   property var history: []
+  property bool historyDeletionAvailable: false
   property var intents: []
   property var agentActions: ({})
   property string error: ""
@@ -98,6 +99,7 @@ Item {
     root.speaking = false
     root.processing = 0
     root.history = []
+    root.historyDeletionAvailable = false
     root.intents = []
     root.agentActions = ({})
     activity.disconnected()
@@ -110,6 +112,7 @@ Item {
       root.speaking = message.speaking === true
       root.processing = message.processing || 0
       root.history = message.history || []
+      root.historyDeletionAvailable = message.historyDeletionAvailable === true
       const intents = message.intents || []
       if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
       const actions = message.agentActions || {}
@@ -128,6 +131,11 @@ Item {
       sessions.restore(message.session)
     } else if (message.type === "agent-removed") {
       sessions.remove(message.id)
+    } else if (message.type === "history-deleted") {
+      root.history = root.history.filter(row => row.id !== message.id)
+      // Apply the shared state's tombstone before a delayed history page can
+      // restore the card, matching the shell client's deletion lifecycle.
+      activity.remove(message.sessionId, message.removed)
     } else if (message.type === "activity-entry") {
       activity.update(message.sessionId, message.entry)
     } else if (message.type === "result" || message.type === "error") {
