@@ -2,48 +2,85 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-/** Small, atomic preferences file beside the desktop database; no transcript data. */
+import type { IntentMode } from '../core/router.ts';
+
+export interface DisabledIntents {
+  inference: ReadonlySet<string>;
+  shortcut: ReadonlySet<string>;
+}
+
+function names(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((name) => typeof name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)) ||
+    value.includes('IGNORE')
+  ) {
+    throw Error('Invalid disabled intent preferences');
+  }
+  return value;
+}
+
+/** Small, atomic preferences file beside the database; no transcript data. */
 export class IntentPreferences {
-  private disabled = new Set<string>();
+  private disabled: DisabledIntents = { inference: new Set(), shortcut: new Set() };
   private writes = Promise.resolve();
 
   constructor(private readonly path: string) {}
 
-  async load(): Promise<ReadonlySet<string>> {
+  async load(): Promise<DisabledIntents> {
     try {
       const input: unknown = JSON.parse(await readFile(this.path, 'utf8'));
-      if (
-        !Array.isArray(input) ||
-        input.some(
-          (name) => typeof name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name),
-        ) ||
-        input.includes('IGNORE')
-      ) {
-        throw Error('Invalid disabled intent preferences');
+      if (Array.isArray(input)) {
+        // The old switch disabled both routes. Preserve that decision until
+        // the user changes either mode; only the next click rewrites the file.
+        const legacy = names(input);
+        this.disabled = { inference: new Set(legacy), shortcut: new Set(legacy) };
+      } else {
+        if (!input || typeof input !== 'object' || !('version' in input) || input.version !== 1) {
+          throw Error('Invalid disabled intent preferences');
+        }
+        const saved = input as { disabledInference?: unknown; disabledShortcuts?: unknown };
+        this.disabled = {
+          inference: new Set(names(saved.disabledInference)),
+          shortcut: new Set(names(saved.disabledShortcuts)),
+        };
       }
-      this.disabled = new Set(input);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw error;
       }
     }
-    return new Set(this.disabled);
+    return {
+      inference: new Set(this.disabled.inference),
+      shortcut: new Set(this.disabled.shortcut),
+    };
   }
 
-  /** Serialize clicks from multiple UIs; failed writes leave the prior state intact. */
-  setEnabled(name: string, enabled: boolean, apply: () => void): Promise<void> {
+  /** Serialize clicks; persist before applying and retain the other mode's state. */
+  setEnabled(name: string, enabled: boolean, apply: () => void, mode?: IntentMode): Promise<void> {
     const write = this.writes.then(async () => {
-      const next = new Set(this.disabled);
-      if (enabled) {
-        next.delete(name);
-      } else {
-        next.add(name);
+      const next = {
+        inference: new Set(this.disabled.inference),
+        shortcut: new Set(this.disabled.shortcut),
+      };
+      const modes: IntentMode[] = mode ? [mode] : ['inference', 'shortcut'];
+      for (const route of modes) {
+        if (enabled) {
+          next[route].delete(name);
+        } else {
+          next[route].add(name);
+        }
       }
 
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const temporary = `${this.path}.${randomUUID()}.tmp`;
       try {
-        await writeFile(temporary, JSON.stringify([...next].sort()) + '\n', { mode: 0o600 });
+        const saved = {
+          version: 1,
+          disabledInference: [...next.inference].sort(),
+          disabledShortcuts: [...next.shortcut].sort(),
+        };
+        await writeFile(temporary, JSON.stringify(saved) + '\n', { mode: 0o600 });
         await rename(temporary, this.path);
         this.disabled = next;
         apply();

@@ -153,6 +153,27 @@ Item {
       compare(tab.caption, "")
     }
 
+    function test_hover_shows_full_plain_title_and_yields_to_close_tip() {
+      const host = createTemporaryObject(panelComponent, scene)
+      const item = session("one", "completed", "")
+      item.title = "🌱 A complete session title <b>not markup</b>"
+      host.panel.sessions = [item]
+      const tab = findChild(host, "tab-one")
+      const tooltip = findChild(tab, "sessionTitleTooltip")
+      mouseMove(tab, tab.width / 2, tab.height - 12)
+      tryCompare(tooltip, "visible", true)
+      compare(tooltip.text, item.title)
+      compare(tooltip.contentItem.textFormat, Text.PlainText)
+      verify(tooltip.width <= 280 * tab.unit)
+      verify(tooltip.contentItem.height > 0)
+      const close = findChild(tab, "closeSessionTab")
+      tryVerify(function() { return close.opacity > 0.5 })
+      mouseMove(close, close.width / 2, close.height / 2)
+      tryCompare(tooltip, "visible", false)
+      mouseMove(host, host.width - 10, host.height - 10)
+      compare(tooltip.visible, false)
+    }
+
     function test_running_animation_stops_hidden_offline_and_on_completion() {
       const host = createTemporaryObject(panelComponent, scene)
       host.panel.sessions = [session("one", "starting", "")]

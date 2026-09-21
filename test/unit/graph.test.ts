@@ -20,6 +20,7 @@ import { Ignore } from '../../src/processors/ignore.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
+import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { LabelPreviousCorrect } from '../../src/processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from '../../src/processors/label-previous-incorrect.ts';
@@ -248,6 +249,7 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   new StartCodingAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new QuickQuestion({ sessions }, () => {}, false, activity).subscribe(router);
   new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
+  new CloseAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new LabelPreviousCorrect(() => {}, false, activity).subscribe(router);
   new LabelPreviousIncorrect(() => {}, false, activity).subscribe(router);
   assert.equal(send.dependencies.delivery, activity.delivery);
@@ -313,8 +315,8 @@ process.once('exit', () => {
       const graph = JSON.parse(stdout) as Graph;
       assert.deepEqual(graph, desktopGraph);
       assert.equal(graph.nodes[0].id, 'pipeline');
-      assert.equal(graph.nodes.length, 16);
-      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 8);
+      assert.equal(graph.nodes.length, 17);
+      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 9);
     } else {
       assert.ok(stdout.startsWith('flowchart LR\n'));
     }

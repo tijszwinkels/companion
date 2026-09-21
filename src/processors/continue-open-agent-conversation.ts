@@ -11,7 +11,7 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
   readonly id = 'continue-agent-conversation';
   readonly label = 'Continue the open agent conversation';
   readonly name = 'CONTINUE_OPEN_AGENT_CONVERSATION';
-  readonly prefixes = ['message coding agent'];
+  readonly prefixes = ['continue session'];
 
   // Exact user-supplied prompt, including its spacing. Use this strong default
   // only when the captured conversation's input field was actually focused.
@@ -53,7 +53,7 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
     // never fall through to keyboard typing, create a new chat, or pick another
     // tab if the originally captured one disappeared during transcription.
     if (!context?.agentSessionId) {
-      this.skip(frame.id, 'Open an agent conversation before saying "message coding agent"');
+      this.skip(frame.id, 'Open an agent conversation before saying "continue session"');
       return;
     }
     if (
@@ -78,7 +78,7 @@ export class ContinueOpenAgentConversation implements UserSensorProcessor {
     // does for typed input. Acceptance is independent of microphone pause.
     this.dependencies.sessions.followUp(context.agentSessionId, frame.utterance, signal);
     this.log('agent', `Continued question ${context.agentSessionId}`, frame.id);
-    this.activity.outcome?.(frame.id, 'started');
+    this.activity.outcome?.(frame.id, 'started', 'agent-session');
   }
 
   private skip(frameId: number, reason: string): void {

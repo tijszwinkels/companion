@@ -45,6 +45,9 @@ On connection and state changes, the server sends:
       "name": "SEND_TEXT_TO_APPLICATION",
       "label": "Type text",
       "enabled": true,
+      "supportsInference": true,
+      "inferenceEnabled": true,
+      "shortcutEnabled": true,
       "toggleable": true,
       "inferenceAvailable": true,
       "prefixes": ["insert"],
@@ -67,7 +70,7 @@ Commands:
 {"action":"toggle-pause"}
 {"action":"media-playback","playing":true}
 {"action":"toggle-sounds"}
-{"action":"set-intent-enabled","name":"SEND_TEXT_TO_APPLICATION","enabled":false}
+{"action":"set-intent-enabled","name":"SEND_TEXT_TO_APPLICATION","mode":"inference","enabled":false}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
 {"action":"close-agent","id":"question-uuid"}
@@ -163,20 +166,31 @@ underlying application while a layer owns its keys. Refocusing the panel or
 changing the ordinary target invalidates queued insertion. Copy is a local,
 plain-text clipboard action and does not create a delivery/feedback record.
 
-`intents` comes from the router's registered processors. `enabled` is the user's
-switch; the two availability flags describe current context eligibility for the
-LLM and for explicit prefixes, independently of that switch and microphone pause.
-A route is usable when enabled, context-eligible, and listening. `IGNORE` is the
-required no-action fallback and cannot be disabled. Older servers omit `intents`;
-adapters must show no controls until a server supplies registrations.
+`intents` comes from the router's registered processors. `supportsInference`
+identifies processors with an LLM instruction even when context makes them
+unavailable. `inferenceEnabled` and `shortcutEnabled` are independent saved
+switches; `inferenceAvailable` and `prefixAvailable` describe context eligibility.
+`prefixes` identifies the supported voice commands. Listening must also be active.
+`enabled` remains a compatibility summary: at least one supported route is enabled.
+`IGNORE` is required and cannot be disabled. The UI renders separate accent-colored
+Intent and amber Shortcut cards and greys out disabled/unavailable routes. If the
+server lacks these independent fields, the refreshed UI requests a listener restart.
 
-`set-intent-enabled` returns `intent-enabled` or `intent-disabled` after saving and
-broadcasting the new state. Unknown names, nonboolean values, and disabling
-`IGNORE` are rejected. Preferences live in `disabled-intents.json` beside the
-desktop database, with mode 0600 and atomic replacement. Writes are serialized
-across clients, and a failed save leaves the live switch unchanged. Desktop
-startup restores them before accepting sensor frames; `--no-desktop` does not
-load desktop preferences.
+`set-intent-enabled` accepts `mode: "inference"` or `mode: "shortcut"`. Omitting
+mode preserves the old combined toggle for older clients. Unknown/unsupported
+modes, unknown names, nonboolean values, and disabling `IGNORE` are rejected
+before any preference write. Success returns `intent-enabled` or `intent-disabled`
+after saving and broadcasting state. Each route owns its cancellation generation;
+one switch cannot cancel the other's work. Disabled prefixes remain reserved.
+
+Preferences stay in `disabled-intents.json` beside the database, mode 0600,
+with atomic replacement and serialized writes. The new shape is
+`{"version":1,"disabledInference":[],"disabledShortcuts":[]}`. Legacy name arrays
+load as disabled in both modes without an immediate rewrite; the next successful
+click saves the versioned format, retaining unknown module names. A failed save
+leaves the live switches unchanged. Desktop startup restores preferences before
+sensor frames; `--no-desktop` does not load them. Older listeners cannot read the
+new format; restore the previous preferences file if rolling back to an old build.
 
 The optional `agentActions` snapshot field describes the selected conversation's
 ephemeral composer controls. Changes also arrive as
@@ -270,6 +284,9 @@ Schema version 2 adds `delivery_started_at` to both tables, committed immediatel
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
 NULL, not an inferred label.
+The `closed` outcome records an explicit `close session` command after the tab
+has been saved and removed; it does not delete its conversation archive.
+
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
 the question's screenshot and conversation in its own session storage.
@@ -495,7 +512,7 @@ generation. `CONTINUE_OPEN_AGENT_CONVERSATION` is available whenever an agent
 conversation is selected in the visible sidebar. A focused composer retains the
 exact strong default instruction; an unfocused composer uses an instruction to
 judge whether the utterance belongs to that conversation. Activity, Previous
-sessions and hidden panels do not qualify. Explicit `message coding agent`
+sessions and hidden panels do not qualify. Explicit `continue session`
 continues to require a visible conversation, without requiring composer focus.
 
 The detector's user-message JSON includes `interaction.agentConversation`: the
@@ -529,3 +546,14 @@ request may include `composer` with its focus ID from shortcut press time.
 Agent controls remain usable while microphone
 capture is paused or a keyboard delivery is pending. Agent sessions belong to
 the application lifetime, independently of each bounded sensor job.
+
+### Destination feedback
+
+`Activity.outcome` optionally carries `agent-session` or `new-agent-session` as
+its third argument when a processor accepts speech. This does not alter the stored
+`started` outcome or signal completion of the agent turn. New coding/quick-question
+sessions play `agent-started`; accepted continuations and choices play `agent-sent`.
+Application typing/recovery retains `sent`. Completion retains `agent-completed`.
+Preview, rejected delivery, cancellation and close have no success sound. All cues
+share the existing mute/cancellation queue and are checked against real Silero VAD
+using synthetic audio. No speaker-to-microphone acoustic guarantee is implied.

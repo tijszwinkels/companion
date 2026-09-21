@@ -50,6 +50,33 @@ Rectangle {
 
   HoverHandler { id: hover }
 
+  // Show the complete title without changing the compact tab layout. Suppress
+  // this tip over the close button so the two explanations never overlap.
+  ToolTip {
+    id: titleTip
+    objectName: "sessionTitleTooltip"
+    visible: root.hovered && !closeMouse.containsMouse
+    delay: 400
+    text: root.title
+    padding: 8 * root.unit
+    width: Math.min(280 * root.unit, titleText.implicitWidth + 2 * padding)
+    background: Rectangle {
+      color: root.tooltipBackground
+      border.color: root.tooltipBorder
+      border.width: root.unit
+      radius: 4 * root.unit
+    }
+    contentItem: Text {
+      id: titleText
+      text: titleTip.text
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.tooltipForeground
+      font.family: root.fontFamily
+      font.pixelSize: 11 * root.unit
+    }
+  }
+
   Item {
     id: badge
     anchors.top: parent.top

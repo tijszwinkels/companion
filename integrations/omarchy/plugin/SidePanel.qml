@@ -37,7 +37,7 @@ PanelWindow {
   readonly property bool keyboardFocused: root.opened && content.keyboardFocused
 
   signal closeRequested()
-  signal intentEnabledRequested(string name, bool enabled)
+  signal intentEnabledRequested(string name, bool enabled, string mode)
   signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
   signal previousRequested()
@@ -180,7 +180,7 @@ PanelWindow {
         focusShortcut: "⌥⌘D"
         shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nIn panel: Ctrl + plus/minus · text size / Ctrl + 0 · reset\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
-        onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
+        onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
         onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)

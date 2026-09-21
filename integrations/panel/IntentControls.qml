@@ -16,12 +16,27 @@ Item {
   required property string fontFamily
   property real unit: 1
   property real textScale: unit
-  signal intentEnabledRequested(string name, bool enabled)
+  signal intentEnabledRequested(string name, bool enabled, string mode)
+
+  // Older listeners cannot honor independent switches; avoid silently changing
+  // both modes if this UI was refreshed before its backend was restarted.
+  readonly property bool separateModes: intents.length > 0 && intents.every(intent => intent.supportsInference !== undefined)
+  readonly property color shortcutColor: "#d8b77a"
+  readonly property var routes: {
+    const entries = [];
+    for (const intent of intents) {
+      if (intent.supportsInference === true || (!root.separateModes && intent.inferenceAvailable))
+        entries.push({intent: intent, mode: "inference"});
+      if (intent.prefixes.length)
+        entries.push({intent: intent, mode: "shortcut"});
+    }
+    return entries;
+  }
 
   readonly property var shortcuts: {
     const labels = [];
     for (const intent of intents) {
-      if (intent.enabled && intent.prefixAvailable) {
+      if ((intent.shortcutEnabled === undefined ? intent.enabled : intent.shortcutEnabled) && intent.prefixAvailable) {
         for (const prefix of intent.prefixes)
           labels.push({
             prefix: prefix,
@@ -98,7 +113,7 @@ Item {
       objectName: "intentionsSection"
       width: parent.width
       title: "Intentions"
-      detail: "Click to toggle"
+      detail: "Intent / Shortcut · click separately"
       foreground: root.foreground
       muted: root.muted
       accent: root.accent
@@ -112,24 +127,29 @@ Item {
         columnSpacing: 10 * root.unit
         rowSpacing: 10 * root.unit
         Repeater {
-          model: root.intents
+          model: root.routes
           Rectangle {
             id: chip
             required property int index
             required property var modelData
-            objectName: "intent-" + modelData.name
-            readonly property bool available: modelData.inferenceAvailable || modelData.prefixAvailable
-            readonly property bool active: root.online && !root.paused && modelData.enabled && available
-            readonly property string stateText: !modelData.enabled ? "Off" : !available ? "Needs conversation context" : !modelData.toggleable ? "Always on" : !modelData.inferenceAvailable ? "On · shortcut only" : modelData.prefixAvailable ? "On · intent + shortcut" : "On · intent"
+            readonly property var intent: modelData.intent
+            readonly property bool inference: modelData.mode === "inference"
+            readonly property bool routeEnabled: inference ? intent.inferenceEnabled === true : intent.shortcutEnabled === true
+            readonly property bool available: inference ? intent.inferenceAvailable : intent.prefixAvailable
+            readonly property bool active: root.online && !root.paused && routeEnabled && available
+            readonly property color routeColor: inference ? root.accent : root.shortcutColor
+            readonly property string modeLabel: inference ? "Intent" : "Shortcut"
+            readonly property string stateText: !routeEnabled ? "Off" : !available ? "Needs conversation context" : !intent.toggleable ? "Always on" : "On"
+            objectName: (inference ? "intent-" : "shortcut-") + intent.name
             Layout.fillWidth: true
-            Layout.columnSpan: index === root.intents.length - 1 && root.intents.length % 2 === 1 ? parent.columns : 1
+            Layout.columnSpan: index === root.routes.length - 1 && root.routes.length % 2 === 1 ? parent.columns : 1
             Layout.preferredWidth: 1
             Layout.minimumWidth: 0
             Layout.preferredHeight: Math.max(78 * root.unit, labels.height + 28 * root.unit)
             Layout.fillHeight: true
             radius: 10 * root.unit
-            color: active ? root.selection : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
-            border.color: mouse.containsMouse && modelData.toggleable ? root.accent : active ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
+            color: active ? Qt.rgba(routeColor.r, routeColor.g, routeColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
+            border.color: mouse.containsMouse && intent.toggleable ? routeColor : active ? Qt.rgba(routeColor.r, routeColor.g, routeColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
 
             Rectangle {
               anchors.right: parent.right
@@ -138,7 +158,7 @@ Item {
               width: 6 * root.unit
               height: width
               radius: width / 2
-              color: chip.active ? root.accent : root.muted
+              color: chip.active ? chip.routeColor : root.muted
               opacity: chip.active ? 1 : 0.4
             }
 
@@ -152,7 +172,7 @@ Item {
               Text {
                 id: intentLabel
                 width: parent.width
-                text: chip.modelData.label
+                text: chip.intent.label
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: chip.active ? root.foreground : root.muted
@@ -162,9 +182,9 @@ Item {
               Text {
                 id: stateLabel
                 width: parent.width
-                text: chip.stateText
+                text: chip.modeLabel + " · " + chip.stateText
                 wrapMode: Text.WordWrap
-                color: chip.active ? root.accent : root.muted
+                color: chip.active ? chip.routeColor : root.muted
                 font.family: root.fontFamily
                 font.pixelSize: 11 * root.textScale
               }
@@ -173,21 +193,21 @@ Item {
                 width: parent.width
                 spacing: 5 * root.unit
                 Repeater {
-                  model: chip.modelData.prefixes
+                  model: chip.inference ? [] : chip.intent.prefixes
                   Rectangle {
                     required property string modelData
                     width: Math.min(parent.width, prefixLabel.implicitWidth + 12 * root.unit)
                     height: prefixLabel.height + 8 * root.unit
                     radius: 4 * root.unit
-                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, chip.active ? 0.10 : 0.035)
+                    color: Qt.rgba(chip.routeColor.r, chip.routeColor.g, chip.routeColor.b, chip.active ? 0.10 : 0.035)
                     Text {
                       id: prefixLabel
                       anchors.centerIn: parent
                       width: Math.min(implicitWidth, parent.width - 12 * root.unit)
-                      text: modelData + (chip.modelData.acceptsEmptyPrefix ? "" : " …")
+                      text: modelData + (chip.intent.acceptsEmptyPrefix ? "" : " …")
                       textFormat: Text.PlainText
                       wrapMode: Text.Wrap
-                      color: chip.active ? root.accent : root.muted
+                      color: chip.active ? chip.routeColor : root.muted
                       font.family: root.fontFamily
                       font.pixelSize: 10 * root.textScale
                     }
@@ -198,17 +218,17 @@ Item {
             MouseArea {
               id: mouse
               anchors.fill: parent
-              enabled: root.online
+              enabled: root.online && root.separateModes
               hoverEnabled: true
-              cursorShape: chip.modelData.toggleable ? Qt.PointingHandCursor : Qt.ArrowCursor
-              onClicked: if (chip.modelData.toggleable)
-                root.intentEnabledRequested(chip.modelData.name, !chip.modelData.enabled)
+              cursorShape: chip.intent.toggleable ? Qt.PointingHandCursor : Qt.ArrowCursor
+              onClicked: if (chip.intent.toggleable)
+                root.intentEnabledRequested(chip.intent.name, !chip.routeEnabled, chip.modelData.mode)
             }
             ToolTip {
               id: intentTip
               visible: mouse.containsMouse
               delay: 400
-              text: chip.modelData.name + (chip.modelData.toggleable ? "" : "\nRequired no-action fallback")
+              text: chip.intent.name + (chip.intent.toggleable ? "" : "\nRequired no-action fallback")
               background: Rectangle {
                 color: root.selection
                 border.color: root.muted
@@ -222,18 +242,18 @@ Item {
               }
             }
             Accessible.role: Accessible.CheckBox
-            Accessible.name: chip.modelData.label + ": " + chip.stateText
-            Accessible.checkable: chip.modelData.toggleable
-            Accessible.checked: chip.modelData.enabled
-            Accessible.onToggleAction: if (root.online && chip.modelData.toggleable)
-              root.intentEnabledRequested(chip.modelData.name, !chip.modelData.enabled)
+            Accessible.name: chip.intent.label + ": " + chip.modeLabel + " · " + chip.stateText
+            Accessible.checkable: chip.intent.toggleable
+            Accessible.checked: chip.routeEnabled
+            Accessible.onToggleAction: if (root.online && root.separateModes && chip.intent.toggleable)
+              root.intentEnabledRequested(chip.intent.name, !chip.routeEnabled, chip.modelData.mode)
           }
         }
       }
       Text {
         width: parent.width
-        visible: root.intents.length === 0
-        text: "Restart Companion to load intent controls."
+        visible: !root.separateModes
+        text: "Restart Companion to load independent intent and shortcut controls."
         wrapMode: Text.WordWrap
         color: root.muted
         font.family: root.fontFamily

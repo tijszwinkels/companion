@@ -13,11 +13,17 @@ export interface Detector extends InspectableModule {
   detect(frame: UserSensorFrame, intents: readonly Intent[], signal: AbortSignal): Promise<string>;
 }
 
+export type IntentMode = 'inference' | 'shortcut';
+
 /** Portable UI data derived from the same registrations used for dispatch. */
 export interface IntentState {
   name: string;
   label: string;
+  /** Compatibility summary for older clients; each route has its own switch. */
   enabled: boolean;
+  supportsInference: boolean;
+  inferenceEnabled: boolean;
+  shortcutEnabled: boolean;
   toggleable: boolean;
   inferenceAvailable: boolean;
   prefixes: readonly string[];
@@ -33,7 +39,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
   private readonly prefixes: { prefix: string; processor: UserSensorProcessor }[] = [];
   // Disabling aborts pending delivery, and re-enabling starts a new generation.
   // An old model response cannot become actionable again after an off/on click.
-  private readonly intentControllers = new Map<string, AbortController>();
+  private readonly intentControllers = new Map<string, Record<IntentMode, AbortController>>();
   private readonly scopedSources: ScopedIntentSource[] = [];
 
   constructor(
@@ -49,7 +55,14 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     return [...this.registeredProcessors].map(([name, processor]) => ({
       name,
       label: processor.label,
-      enabled: !this.intentControllers.get(name)!.signal.aborted,
+      enabled:
+        (processor.instruction !== undefined &&
+          !this.intentControllers.get(name)!.inference.signal.aborted) ||
+        (this.prefixes.some((route) => route.processor === processor) &&
+          !this.intentControllers.get(name)!.shortcut.signal.aborted),
+      supportsInference: processor.instruction !== undefined,
+      inferenceEnabled: !this.intentControllers.get(name)!.inference.signal.aborted,
+      shortcutEnabled: !this.intentControllers.get(name)!.shortcut.signal.aborted,
       toggleable: name !== 'IGNORE',
       inferenceAvailable:
         processor.instruction !== undefined && (processor.availableForInference?.(context) ?? true),
@@ -76,23 +89,45 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     return this.scopedSources.flatMap((source) => source(context, this.reservedPrefixes()));
   }
 
-  setEnabled(name: string, enabled: boolean): void {
-    const controller = this.intentControllers.get(name);
-    if (!controller) {
+  /** Validate before persisting a UI request, so invalid clicks never reach disk. */
+  validateEnabled(name: string, enabled: boolean, mode?: IntentMode): void {
+    const processor = this.registeredProcessors.get(name);
+    if (!processor) {
       throw Error(`Unknown intent: ${name}`);
+    }
+    if (mode === 'inference' && processor.instruction === undefined) {
+      throw Error('This processor has no intent recognition');
+    }
+    if (mode === 'shortcut' && !this.prefixes.some((route) => route.processor === processor)) {
+      throw Error('This processor has no voice shortcut');
     }
     if (name === 'IGNORE' && !enabled) {
       throw Error('IGNORE is the required no-action fallback');
     }
-    if (enabled === !controller.signal.aborted) {
-      return;
+  }
+
+  /** Omitted mode retains the old combined control for older desktop clients. */
+  setEnabled(name: string, enabled: boolean, mode?: IntentMode): void {
+    this.validateEnabled(name, enabled, mode);
+    const controllers = this.intentControllers.get(name)!;
+    const modes: IntentMode[] = mode ? [mode] : ['inference', 'shortcut'];
+    let changed = false;
+
+    for (const route of modes) {
+      const controller = controllers[route];
+      if (enabled === !controller.signal.aborted) {
+        continue;
+      }
+      if (enabled) {
+        controllers[route] = new AbortController();
+      } else {
+        controller.abort(new IntentDisabledError());
+      }
+      changed = true;
     }
-    if (enabled) {
-      this.intentControllers.set(name, new AbortController());
-    } else {
-      controller.abort(new IntentDisabledError());
+    if (changed) {
+      this.emit('change');
     }
-    this.emit('change');
   }
 
   private skip(frame: UserSensorFrame, name: string, reason: string): string {
@@ -178,7 +213,10 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     }
 
     this.registeredProcessors.set(processor.name, processor);
-    this.intentControllers.set(processor.name, new AbortController());
+    this.intentControllers.set(processor.name, {
+      inference: new AbortController(),
+      shortcut: new AbortController(),
+    });
     for (const prefix of prefixes) {
       this.prefixes.push({ prefix, processor });
     }
@@ -200,7 +238,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         continue;
       }
 
-      const intentSignal = this.intentControllers.get(processor.name)!.signal;
+      const intentSignal = this.intentControllers.get(processor.name)!.shortcut.signal;
       if (intentSignal.aborted || processor.availableForPrefix?.(frame) === false) {
         // Consume a disabled explicit command instead of reinterpreting it as
         // dictation, or as a shorter prefix owned by another processor.
@@ -247,7 +285,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     for (const processor of this.registeredProcessors.values()) {
       if (
         processor.instruction !== undefined &&
-        !this.intentControllers.get(processor.name)!.signal.aborted &&
+        !this.intentControllers.get(processor.name)!.inference.signal.aborted &&
         (processor.availableForInference?.(frame) ?? true)
       ) {
         // Resolve once from the captured frame. Keep the result local instead
@@ -261,7 +299,10 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         }
 
         eligibleProcessors.set(processor.name, processor);
-        intentSignals.set(processor.name, this.intentControllers.get(processor.name)!.signal);
+        intentSignals.set(
+          processor.name,
+          this.intentControllers.get(processor.name)!.inference.signal,
+        );
         intents.push({ name: processor.name, instruction });
       }
     }

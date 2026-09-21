@@ -87,7 +87,7 @@ When an agent conversation is selected in the visible sidebar,
 field focused, the instruction defaults speech to that conversation unless the
 context strongly suggests another intention. Without input focus, the classifier
 uses the conversation context to judge whether the utterance is a follow-up;
-an open sidebar alone does not imply continuation. **“message coding agent …”**
+an open sidebar alone does not imply continuation. **“continue session …”**
 bypasses classification and sends directly to the visible, selected conversation,
 even when its input field is not focused.
 Both paths send the speech as a follow-up, without typing into the composer or
@@ -97,10 +97,18 @@ to the focused field, including the Companion composer when it owns focus.
 The selected conversation and focus are captured at speech end, before ASR.
 Switching tabs, closing the panel/session, changing composer focus, or losing the
 UI connection before dispatch skips the continuation instead of redirecting it.
-An explicit message shortcut without an open conversation is also skipped.
+An explicit continuation shortcut without an open conversation is also skipped.
+The prefix is now **“continue session …”**, replacing “message coding agent …”.
+
+Say **“close session”** to close the visibly selected conversation, even when its
+textbox is unfocused. This explicit-only command stops its current turn, cancels
+queued follow-ups, and saves the conversation in Previous sessions. It requires
+no text after the command and rechecks the captured selection before closing;
+a hidden panel, Activity, Previous sessions or a changed target cannot close a tab.
+
 Spoken and typed follow-ups received during an answer queue in that conversation
-and run in order after the current turn finishes. Bare prefixes without a
-following message do nothing.
+and run in order after the current turn finishes. Message prefixes without a
+following message do nothing; `close session` is a standalone command.
 
 Pi 0.85.1 or newer must be installed and authenticated. Companion uses real
 `pi --mode rpc` processes: questions include the captured PNG and window identity;
@@ -153,15 +161,24 @@ screen) and all available screen height. Switching tabs keeps the same size. Scr
 up stops following the stream until you return to the bottom. Conversation wheel
 and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
-Activity shows floating labels for the available voice prefixes and switches for
-every registered intent. Click an intent to disable or re-enable both its LLM and
-voice-prefix routes. Off and context-unavailable intents appear grey, with their
-state written beneath the label; hover to see the exact intent name. `IGNORE`
-always remains available as the no-action fallback. Switches are remembered
-across desktop-enabled restarts in `~/companion/disabled-intents.json`.
-Turning off an intent also
-invalidates its pending detection result and cancels pending delivery; it does
-not stop independent agent sessions that have already accepted a question.
+Activity shows floating labels for available voice prefixes. In Intentions,
+**Intent** cards use the accent color and **Shortcut** cards use amber. Each card
+is independently clickable: turning off recognition leaves that processor's
+explicit shortcut usable, and turning off its shortcut leaves recognition usable.
+Off and context-unavailable routes appear grey, with a written state beneath the
+label. `IGNORE` always remains available as the required no-action fallback.
+Switches persist in `~/companion/disabled-intents.json`; existing disabled intents
+migrate as disabled in both modes. A disabled prefix remains reserved and is
+skipped, never reinterpreted as dictation or another command. Conversation-owned
+choices and Stop keep their existing availability rules.
+
+Disabling a route invalidates its pending detection/delivery only, including an
+off/on cycle; it does not interrupt the other route or an independent agent turn
+that already accepted a question. An updated UI with an older listener shows a
+restart hint instead of offering controls the listener cannot honor.
+
+Hover a session tab to read its complete title. Hovering its close button instead
+shows the close explanation; the compact tab layout is unchanged.
 
 A compact Activity visualization stays above conversations and Previous sessions
 while their contents scroll. It shows the same microphone state, rising phrase,
@@ -242,8 +259,16 @@ Per-session speech routing remains for the next iteration.
 
 ## Desktop integration and history
 
-Companion plays a short cue when an utterance is accepted for processing, an
-ascending cue after actual delivery, and a descending cue for ignored speech.
+Companion plays a short cue when an utterance is accepted for processing.
+Destination feedback follows actual delivery or acceptance:
+
+- **Application:** the existing ascending two-note cue after typing completes.
+- **Existing agent conversation:** a higher descending two-note cue when a
+  follow-up or choice is accepted, including a message queued behind a running turn.
+- **New agent session:** a three-note rising cue, including local quick questions.
+
+Ignored speech retains its lower descending cue. Failed/skipped actions and
+closing a session do not play a delivery cue.
 A distinct quiet two-note chime follows each successful agent turn, including
 queued follow-ups. Stopped/failed turns and reopening old conversations stay silent.
 Use `--no-sounds` to start with these cues muted, or toggle them from the top bar

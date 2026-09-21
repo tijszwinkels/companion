@@ -2,18 +2,45 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { UtteranceDestination, UtteranceOutcome } from '../core/activity.ts';
 import type { Log } from '../core/frame.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
 import { command } from '../system/command.ts';
 
-export const soundCues = ['processing', 'sent', 'ignored', 'agent-completed'] as const;
+export const soundCues = [
+  'processing',
+  'sent',
+  'agent-sent',
+  'agent-started',
+  'ignored',
+  'agent-completed',
+] as const;
 export type SoundCue = (typeof soundCues)[number];
+
+/** Emit only after delivery/acceptance; classification and failed actions stay silent. */
+export function outcomeSound(
+  outcome: UtteranceOutcome,
+  destination?: UtteranceDestination,
+): SoundCue | undefined {
+  if (outcome === 'started') {
+    return destination === 'new-agent-session' ? 'agent-started' : 'agent-sent';
+  }
+  if (outcome === 'sent' || outcome === 'labeled') {
+    return 'sent';
+  }
+  if (outcome === 'ignored') {
+    return 'ignored';
+  }
+  return undefined;
+}
 
 /** Brief, quiet synthesized cues need no downloaded or licensed sound assets. */
 export function soundSamples(cue: SoundCue): Float32Array {
   const frequencies = {
     processing: [660],
     sent: [660, 880],
+    'agent-sent': [1046.5, 783.99],
+    'agent-started': [523.25, 659.25, 783.99],
     ignored: [440, 330],
     'agent-completed': [880, 1174.66],
   }[cue];

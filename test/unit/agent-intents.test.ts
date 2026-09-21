@@ -12,6 +12,7 @@ import { chatMessage, type AgentBackend } from '../../src/agents/types.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import type { UserSensorFrame } from '../../src/core/frame.ts';
+import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
@@ -315,7 +316,7 @@ test('visible continuation uses the exact focused or unfocused instruction and a
   assert.equal(setup.requests[1].prompt.screenshot, undefined);
 });
 
-test('message coding agent addresses an unfocused visible chat and never falls through without one', async (context) => {
+test('continue session addresses an unfocused visible chat and never falls through without one', async (context) => {
   const setup = await fixture(context);
   const router = new UserSensorRouter(
     { detector: testDetector({ detect: async () => assert.fail('Prefix reached inference') }) },
@@ -324,7 +325,7 @@ test('message coding agent addresses an unfocused visible chat and never falls t
   );
   setup.continuation.subscribe(router);
   await setup.select(setup.first, false);
-  const utterance = 'Message coding agent, explain that in more detail.';
+  const utterance = 'Continue session, explain that in more detail.';
   await router.route(
     { ...frame, utterance, interaction: setup.activity.interactionContext!() },
     signal(),
@@ -341,7 +342,7 @@ test('message coding agent addresses an unfocused visible chat and never falls t
   );
   assert.equal(setup.requests.length, 2);
   assert.equal(setup.outcomes.at(-1), 'skipped');
-  await router.route({ ...frame, utterance: 'message coding agent' }, signal());
+  await router.route({ ...frame, utterance: 'continue session' }, signal());
   assert.equal(setup.requests.length, 2);
 });
 
@@ -446,4 +447,98 @@ test('disconnecting an old panel cannot clear its replacement, and losing the ow
   replacement.destroy();
   await waitFor(() => setup.activity.interactionContext!().agentSessionId === '');
   assert.equal(setup.activity.interactionCurrent!(captured), false);
+});
+
+test('close session stops a running conversation and queued turns, retaining it in Previous sessions', async (context) => {
+  const setup = await fixture(context, async (request, signal) => {
+    if (request.resume) {
+      await stopped(signal);
+    }
+  });
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect() {
+          assert.fail('Close must bypass inference');
+        },
+      }),
+    },
+    () => {},
+    setup.feedback,
+  );
+  const close = new CloseAgentSession(
+    { sessions: setup.sessions },
+    () => {},
+    false,
+    setup.feedback,
+  );
+  close.subscribe(router);
+  await setup.select(setup.first, false);
+  setup.sessions.followUp(setup.first, 'Running follow-up', signal());
+  await waitFor(() => setup.requests.length === 2);
+  setup.sessions.followUp(setup.first, 'Queued follow-up', signal());
+  const captured = setup.activity.interactionContext!();
+  assert.equal(router.intentStates({ interaction: captured })[0].supportsInference, false);
+  await router.route({ ...frame, utterance: 'Close session.', interaction: captured }, signal());
+  assert.equal(setup.sessions.has(setup.first), false);
+  assert.equal(setup.requests.length, 2, 'Closing cannot start the queued successor');
+  assert.equal(setup.sessions.previousSnapshot()[0].id, setup.first);
+  assert.deepEqual(setup.outcomes, ['closed']);
+  await setup.sessions.reopen(setup.first);
+  assert.equal(setup.sessions.has(setup.first), true);
+  assert.equal(setup.requests.length, 2, 'Reopening does not launch a model');
+});
+
+test('close session rejects hidden/stale targets and extra text, honors preview and cancellation', async (context) => {
+  const setup = await fixture(context);
+  const close = new CloseAgentSession(
+    { sessions: setup.sessions },
+    () => {},
+    false,
+    setup.feedback,
+  );
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect() {
+          assert.fail('Invalid close commands must not fall through');
+        },
+      }),
+    },
+    () => {},
+    setup.feedback,
+  );
+  close.subscribe(router);
+  await setup.select(setup.first, true);
+  const captured = setup.activity.interactionContext!();
+  await setup.select('', false);
+  await setup.select(setup.first, true);
+  await router.route({ ...frame, utterance: 'close session', interaction: captured }, signal());
+  assert.equal(
+    setup.sessions.has(setup.first),
+    true,
+    'An A → hidden → A change invalidates capture',
+  );
+  for (const input of [
+    { ...frame, utterance: 'close session' },
+    {
+      ...frame,
+      utterance: 'close session and start another',
+      interaction: setup.activity.interactionContext!(),
+    },
+  ]) {
+    await router.route(input, signal());
+    assert.equal(setup.sessions.has(setup.first), true);
+  }
+  const current = { ...frame, utterance: '', interaction: setup.activity.interactionContext!() };
+  const preview = new CloseAgentSession(
+    { sessions: setup.sessions },
+    () => {},
+    true,
+    setup.feedback,
+  );
+  await preview.process(current, signal());
+  assert.equal(setup.outcomes.at(-1), 'preview');
+  await assert.rejects(close.process(current, AbortSignal.abort()));
+  assert.equal(setup.sessions.has(setup.first), true);
 });

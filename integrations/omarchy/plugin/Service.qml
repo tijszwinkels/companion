@@ -528,7 +528,7 @@ Item {
     controlError: ["close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
-    onIntentEnabledRequested: (name, enabled) => root.send({action: "set-intent-enabled", name: name, enabled: enabled})
+    onIntentEnabledRequested: (name, enabled, mode) => root.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})
     onHistoryActionRequested: (action, id, value) => root.historyAction(action, id, value)
     onSessionSelected: id => agentSessions.select(id)
     onPreviousRequested: agentSessions.showingPrevious = true

@@ -173,7 +173,10 @@ test('private socket switches the actual router, broadcasts state, rejects inval
       ),
     );
     const path = join(dirname(desktop.socketPath), 'disabled-intents.json');
-    assert.deepEqual(await new IntentPreferences(path).load(), new Set(['CUSTOM']));
+    assert.deepEqual(await new IntentPreferences(path).load(), {
+      inference: new Set(['CUSTOM']),
+      shortcut: new Set(['CUSTOM']),
+    });
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     for (const request of [
       { name: 'IGNORE', enabled: false },
@@ -183,10 +186,18 @@ test('private socket switches the actual router, broadcasts state, rejects inval
       desktop.send({ action: 'set-intent-enabled', ...request });
       assert.equal((await desktop.reply('set-intent-enabled')).type, 'error');
     }
-    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), ['CUSTOM']);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+      version: 1,
+      disabledInference: ['CUSTOM'],
+      disabledShortcuts: ['CUSTOM'],
+    });
     desktop.send({ action: 'set-intent-enabled', name: 'CUSTOM', enabled: true });
     assert.equal((await desktop.reply('set-intent-enabled')).result, 'intent-enabled');
-    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), []);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+      version: 1,
+      disabledInference: [],
+      disabledShortcuts: [],
+    });
   } finally {
     await desktop.close();
   }
@@ -211,10 +222,151 @@ test('preferences serialize writes, survive reload and reject malformed saved st
       }),
     ]);
     assert.deepEqual(applied, ['ONE off', 'TWO off', 'ONE on']);
-    assert.deepEqual(await new IntentPreferences(path).load(), new Set(['TWO']));
+    assert.deepEqual(await new IntentPreferences(path).load(), {
+      inference: new Set(['TWO']),
+      shortcut: new Set(['TWO']),
+    });
     await writeFile(path, '["IGNORE"]');
     await assert.rejects(new IntentPreferences(path).load(), /Invalid/);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('inference and shortcut switches independently select routes and cancel only their own delivery', async () => {
+  let offered: string[] = [];
+  const entered = deferred<void>();
+  let hold = false;
+  let deliverySignal: AbortSignal | undefined;
+  let delivered = 0;
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect(_frame, intents) {
+          offered = intents.map((intent) => intent.name);
+          return offered.includes('CUSTOM') ? 'CUSTOM' : 'IGNORE';
+        },
+      }),
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  router.register({
+    ...processor('CUSTOM', async (_frame, inputSignal) => {
+      delivered++;
+      if (hold) {
+        deliverySignal = inputSignal;
+        entered.resolve();
+        await stopped(inputSignal);
+      }
+    }),
+    prefixes: ['custom'],
+  });
+
+  router.setEnabled('CUSTOM', false, 'inference');
+  await router.route(frame, signal());
+  assert.deepEqual(offered, ['IGNORE']);
+  await router.route({ ...frame, utterance: 'custom payload' }, signal());
+  assert.equal(delivered, 1);
+  router.setEnabled('CUSTOM', true, 'inference');
+  router.setEnabled('CUSTOM', false, 'shortcut');
+  await router.route({ ...frame, utterance: 'custom payload' }, signal());
+  assert.equal(delivered, 1, 'Disabled shortcuts remain reserved, without falling through');
+  await router.route(frame, signal());
+  assert.deepEqual(offered, ['IGNORE', 'CUSTOM']);
+  assert.equal(delivered, 2);
+
+  router.setEnabled('CUSTOM', true, 'shortcut');
+  hold = true;
+  const pending = router.route({ ...frame, utterance: 'custom payload' }, signal());
+  const rejected = assert.rejects(pending, /abort/i);
+  await entered.promise;
+  router.setEnabled('CUSTOM', false, 'inference');
+  assert.equal(router.intentStates()[1].shortcutEnabled, true);
+  assert.equal(
+    deliverySignal?.aborted,
+    false,
+    'Disabling inference must not abort shortcut delivery',
+  );
+  router.setEnabled('CUSTOM', false, 'shortcut');
+  await rejected;
+});
+
+test('shortcut changes do not invalidate inference, but off/on inference cannot revive a result', async () => {
+  for (const disableMode of ['shortcut', 'inference'] as const) {
+    const entered = deferred<void>();
+    const answer = deferred<string>();
+    let delivered = 0;
+    const router = new UserSensorRouter(
+      {
+        detector: testDetector({
+          async detect() {
+            entered.resolve();
+            return answer.promise;
+          },
+        }),
+      },
+      () => {},
+    );
+    processor('IGNORE').subscribe(router);
+    router.register({
+      ...processor('CUSTOM', async () => {
+        delivered++;
+      }),
+      prefixes: ['custom'],
+    });
+    const pending = router.route(frame, signal());
+    await entered.promise;
+    router.setEnabled('CUSTOM', false, disableMode);
+    router.setEnabled('CUSTOM', true, disableMode);
+    answer.resolve('CUSTOM');
+    await pending;
+    assert.equal(delivered, disableMode === 'shortcut' ? 1 : 0);
+  }
+});
+
+test('socket mode controls migrate legacy choices, persist independently and reject unsupported modes', async () => {
+  const desktop = await desktopFixture(async () => assert.fail('No desktop command'));
+  const path = join(dirname(desktop.socketPath), 'disabled-intents.json');
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect() {
+          return 'IGNORE';
+        },
+      }),
+    },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  router.register({ ...processor('CUSTOM'), prefixes: ['custom'] });
+  router.register({ ...processor('SHORTCUT'), instruction: undefined, prefixes: ['shortcut'] });
+  try {
+    await writeFile(path, '["CUSTOM","UNKNOWN_OLD_MODULE"]');
+    await desktop.runtime.connectRouter(router);
+    assert.equal(router.intentStates()[1].inferenceEnabled, false);
+    assert.equal(router.intentStates()[1].shortcutEnabled, false);
+    assert.equal(await readFile(path, 'utf8'), '["CUSTOM","UNKNOWN_OLD_MODULE"]');
+
+    desktop.send({ action: 'set-intent-enabled', name: 'CUSTOM', enabled: true, mode: 'shortcut' });
+    assert.equal((await desktop.reply('set-intent-enabled')).type, 'result');
+    assert.equal(router.intentStates()[1].inferenceEnabled, false);
+    assert.equal(router.intentStates()[1].shortcutEnabled, true);
+    const saved = await new IntentPreferences(path).load();
+    assert.deepEqual([...saved.inference].sort(), ['CUSTOM', 'UNKNOWN_OLD_MODULE']);
+    assert.deepEqual([...saved.shortcut], ['UNKNOWN_OLD_MODULE']);
+    const before = await readFile(path, 'utf8');
+    for (const request of [
+      { name: 'SHORTCUT', mode: 'inference', enabled: false },
+      { name: 'IGNORE', mode: 'shortcut', enabled: true },
+      { name: 'CUSTOM', mode: 'both', enabled: false },
+      { name: 'CUSTOM', mode: null, enabled: false },
+    ]) {
+      desktop.send({ action: 'set-intent-enabled', ...request });
+      assert.equal((await desktop.reply('set-intent-enabled')).type, 'error');
+    }
+    assert.equal(await readFile(path, 'utf8'), before);
+  } finally {
+    await desktop.close();
   }
 });

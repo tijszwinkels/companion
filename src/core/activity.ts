@@ -6,12 +6,16 @@ export type UtteranceOutcome =
   | 'sent'
   | 'started'
   | 'labeled'
+  | 'closed'
   | 'ignored'
   | 'skipped'
   | 'preview'
   | 'error'
   | 'cancelled'
   | 'interrupted';
+
+/** Delivery feedback describes acceptance, not eventual agent-turn completion. */
+export type UtteranceDestination = 'application' | 'agent-session' | 'new-agent-session';
 
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {
@@ -47,6 +51,6 @@ export interface Activity {
   intentRecognized?(id: number, intent: string): void;
   /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
   labelPrevious?(id: number, correct: boolean): string | undefined;
-  outcome?(id: number, outcome: UtteranceOutcome): void;
+  outcome?(id: number, outcome: UtteranceOutcome, destination?: UtteranceDestination): void;
   finished?(id: number): void;
 }

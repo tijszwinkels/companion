@@ -36,6 +36,9 @@ Item {
             name: "SEND_TEXT_TO_APPLICATION",
             label: "Type text",
             enabled: true,
+            supportsInference: true,
+            inferenceEnabled: true,
+            shortcutEnabled: true,
             toggleable: true,
             inferenceAvailable: true,
             prefixAvailable: true,
@@ -45,6 +48,9 @@ Item {
             name: "START_CODING_AGENT_SESSION",
             label: "Ask a coding agent",
             enabled: true,
+            supportsInference: true,
+            inferenceEnabled: true,
+            shortcutEnabled: true,
             toggleable: true,
             inferenceAvailable: true,
             prefixAvailable: true,
@@ -54,6 +60,9 @@ Item {
             name: "IGNORE",
             label: "Ignore",
             enabled: true,
+            supportsInference: true,
+            inferenceEnabled: true,
+            shortcutEnabled: true,
             toggleable: false,
             inferenceAvailable: true,
             prefixAvailable: false,
@@ -319,7 +328,7 @@ Item {
       intentions.expanded = false;
       voice.expanded = false;
       compare(findChild(host, "intent-SEND_TEXT_TO_APPLICATION").active, true);
-      const prefix = findChild(findChild(host, "intent-SEND_TEXT_TO_APPLICATION"), "intentCardShortcuts");
+      const prefix = findChild(findChild(host, "shortcut-SEND_TEXT_TO_APPLICATION"), "intentCardShortcuts");
       verify(prefix.height > 0);
       compare(state.model.count, 130);
     }

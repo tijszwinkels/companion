@@ -231,7 +231,7 @@ for (const focused of [false, true]) {
     );
     new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
     new Ignore(() => {}).subscribe(router);
-    for (const utterance of ['Explain further', 'message coding agent: Then give an example']) {
+    for (const utterance of ['Explain further', 'continue session: Then give an example']) {
       await router.route(
         { ...frame, utterance, interaction: activity.interactionContext!() },
         signal(),

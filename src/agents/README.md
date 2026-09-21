@@ -49,7 +49,8 @@ No model call or desktop interaction was used for this check.
 
 Open tabs show an accent ring while starting/running, and a mint dot and subtle
 tint for an unread successful turn. The leading emoji stays above the short name;
-titles without an emoji keep their Q number. Ring animations stop while the panel
+titles without an emoji keep their Q number. Hovering the tab shows its full
+plain-text title; hovering the close button shows its separate explanation. Ring animations stop while the panel
 is hidden or offline. The existing close control and tab shortcuts are unchanged.
 
 A turn finishing in the visible selected conversation counts as read, without

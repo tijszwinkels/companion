@@ -165,7 +165,7 @@ test('sound cues are distinct and do not produce an utterance through the real V
     assert.notDeepEqual(soundSamples('sent'), soundSamples('agent-completed'));
 
     for (const cue of soundCues) {
-      for (const gain of [0.25, 1, 2]) {
+      for (const gain of [0.01, 0.1, 0.25, 1, 2]) {
         for (const offset of [0, 127, 511]) {
           detector.reset();
           const segmenter = new Segmenter();

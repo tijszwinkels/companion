@@ -52,7 +52,7 @@ Item {
   }
 
   signal closeRequested()
-  signal intentEnabledRequested(string name, bool enabled)
+  signal intentEnabledRequested(string name, bool enabled, string mode)
   signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
   signal previousRequested()
@@ -426,7 +426,7 @@ Item {
       historyDeletionAvailable: root.historyDeletionAvailable
       selection: root.selection
       shortcutLabel: root.shortcutLabel
-      onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
+      onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
       onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
     }
 

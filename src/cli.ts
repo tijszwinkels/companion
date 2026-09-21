@@ -9,6 +9,7 @@ import { SendTextToApplication } from './processors/send-text-to-application.ts'
 import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
 import { QuickQuestion } from './processors/quick-question.ts';
 import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
+import { CloseAgentSession } from './processors/close-agent-session.ts';
 import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts';
 import { AgentSessions } from './agents/sessions.ts';
@@ -78,7 +79,8 @@ Usage: npm start -- [options]
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
 "new session …" asks Pi using the coding model; "quick question …" uses local Qwen.
-"message coding agent …" continues the currently open agent conversation.
+"continue session …" continues the currently open agent conversation.
+"close session" closes the selected conversation, keeping it in Previous sessions.
 "label previous correct" / "label previous incorrect" records intent feedback.
 Other dictation never presses Enter. Start inside your Hyprland desktop session.`);
     return;
@@ -166,6 +168,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       activity,
     ).subscribe(router);
 
+    new CloseAgentSession({ sessions: agents }, log, values.preview, activity).subscribe(router);
+
     new LabelPreviousCorrect(log, values.preview, activity).subscribe(router);
     new LabelPreviousIncorrect(log, values.preview, activity).subscribe(router);
     new AgentChoiceIntents({ sessions: agents }, log, values.preview, activity).subscribe(router);
@@ -195,7 +199,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'registered',
-      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), CONTINUE_OPEN_AGENT_CONVERSATION (message coding agent / visible conversation), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), CONTINUE_OPEN_AGENT_CONVERSATION (continue session / visible conversation), CLOSE_AGENT_SESSION (close session), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
     );
 
     // Supplied text enters the same routing path but needs no audio resources.

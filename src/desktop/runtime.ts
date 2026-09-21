@@ -13,7 +13,7 @@ import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
 import { UtteranceHistory } from './history.ts';
 import { DesktopServer } from './server.ts';
-import { SoundFeedback } from './sounds.ts';
+import { SoundFeedback, outcomeSound } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import { IntentPreferences } from './intent-preferences.ts';
@@ -179,13 +179,14 @@ export class DesktopRuntime {
         }
         return target;
       },
-      outcome: (id, outcome) => {
+      outcome: (id, outcome, destination) => {
         this.history.setOutcome(id, outcome);
 
         // A predicted send is not a delivered utterance. Skips/errors have no
         // success cue, and preview mode must not imply that text was delivered.
-        if (outcome === 'sent' || outcome === 'ignored' || outcome === 'labeled') {
-          this.sounds.play(outcome === 'labeled' ? 'sent' : outcome);
+        const cue = outcomeSound(outcome, destination);
+        if (cue) {
+          this.sounds.play(cue);
         }
 
         this.server.broadcast();
@@ -213,8 +214,13 @@ export class DesktopRuntime {
       throw Error('Desktop router already connected');
     }
     const disabled = await this.intentPreferences.load();
-    for (const name of router.processors.keys()) {
-      router.setEnabled(name, !disabled.has(name));
+    for (const [name, registration] of router.processors) {
+      if (registration.llmEligible) {
+        router.setEnabled(name, !disabled.inference.has(name), 'inference');
+      }
+      if (registration.prefixes.length) {
+        router.setEnabled(name, !disabled.shortcut.has(name), 'shortcut');
+      }
     }
     this.router = router;
     this.routingRevision++;
@@ -493,20 +499,26 @@ export class DesktopRuntime {
       if (
         !this.router ||
         typeof request.name !== 'string' ||
-        typeof request.enabled !== 'boolean'
+        typeof request.enabled !== 'boolean' ||
+        (request.mode !== undefined && request.mode !== 'inference' && request.mode !== 'shortcut')
       ) {
         throw Error('Expected an intent name and boolean enabled state');
       }
       const router = this.router;
       const name = request.name;
       const enabled = request.enabled;
-      if (!router.processors.has(name) || (name === 'IGNORE' && !enabled)) {
-        throw Error('Unknown intent, or an attempt to disable the IGNORE fallback');
-      }
-      await this.intentPreferences.setEnabled(name, enabled, () =>
-        router.setEnabled(name, enabled),
+      const mode = request.mode;
+      router.validateEnabled(name, enabled, mode);
+      await this.intentPreferences.setEnabled(
+        name,
+        enabled,
+        () => router.setEnabled(name, enabled, mode),
+        mode,
       );
-      this.log('intent-control', `${name}: ${enabled ? 'enabled' : 'disabled'}`);
+      this.log(
+        'intent-control',
+        `${name} (${mode ?? 'both'}): ${enabled ? 'enabled' : 'disabled'}`,
+      );
       return enabled ? 'intent-enabled' : 'intent-disabled';
     }
 

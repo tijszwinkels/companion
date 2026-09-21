@@ -116,7 +116,7 @@ export class AgentChoiceIntents {
           choice.index,
           signal,
         );
-        this.activity.outcome?.(frame.id, 'started');
+        this.activity.outcome?.(frame.id, 'started', 'agent-session');
       },
     }));
 

@@ -25,7 +25,7 @@ Flickable {
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
   property string shortcutLabel: ""
-  signal intentEnabledRequested(string name, bool enabled)
+  signal intentEnabledRequested(string name, bool enabled, string mode)
   signal historyActionRequested(string action, string id, var value)
 
   contentWidth: width
@@ -95,7 +95,7 @@ Flickable {
       fontFamily: root.fontFamily
       unit: root.unit
       textScale: root.textScale
-      onIntentEnabledRequested: (name, enabled) => root.intentEnabledRequested(name, enabled)
+      onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
     }
 
     CollapsibleSection {

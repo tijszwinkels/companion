@@ -36,6 +36,6 @@ export class StartCodingAgentSession implements UserSensorProcessor {
 
     const id = this.dependencies.sessions.start(frame, signal, this.profile);
     this.log('agent', `Started question ${id}`, frame.id);
-    this.activity.outcome?.(frame.id, 'started');
+    this.activity.outcome?.(frame.id, 'started', 'new-agent-session');
   }
 }

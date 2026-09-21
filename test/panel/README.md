@@ -206,7 +206,7 @@ direct messages to an unfocused visible chat, and cancellation/preview/stale
 target handling. The pipeline test holds ASR open while the selected tab changes
 to verify that the original interaction snapshot survives. On a later desktop
 check, focus a composer and speak a follow-up without a prefix, then verify
-`message coding agent …` targets that same visible chat from another application's
+`continue session …` targets that same visible chat from another application's
 focus and `new session …` always creates a fresh coding tab. `quick question …`
 opens a local Qwen conversation, whose profile survives queued turns and reopening.
 These new voice paths

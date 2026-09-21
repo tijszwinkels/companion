@@ -12,9 +12,14 @@ Item {
       {name: "ENTER_TEXT_TO_APPLICATION", label: "Type text and Enter", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["enter"], prefixAvailable: true},
       {name: "IGNORE", label: "Ignore", enabled: true, toggleable: false, inferenceAvailable: true, prefixes: [], prefixAvailable: false},
       {name: "START_CODING_AGENT_SESSION", label: "Start a coding session", enabled: true, toggleable: true, inferenceAvailable: true, prefixes: ["new session"], prefixAvailable: true},
-      {name: "CONTINUE_OPEN_AGENT_CONVERSATION", label: "Continue the open agent conversation", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["message coding agent"], prefixAvailable: false},
+      {name: "CONTINUE_OPEN_AGENT_CONVERSATION", label: "Continue the open agent conversation", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["continue session"], prefixAvailable: false},
       {name: "QUICK_QUESTION", label: "Quick question", enabled: true, toggleable: true, inferenceAvailable: false, prefixes: ["quick question"], prefixAvailable: true}
-    ]
+    ].map(function(intent) {
+      intent.supportsInference = !["ENTER_TEXT_TO_APPLICATION", "QUICK_QUESTION"].includes(intent.name)
+      intent.inferenceEnabled = true
+      intent.shortcutEnabled = true
+      return intent
+    })
   }
   Component {
     id: viewComponent
@@ -45,12 +50,12 @@ Item {
       verify(waitForRendering(host))
     }
 
-    function test_click_requests_toggle_and_backend_ack_greys_intent_and_removes_shortcut() {
+    function test_intent_and_shortcut_clicks_request_independent_backend_acknowledgements() {
       const host = createTemporaryObject(viewComponent, scene)
       const panel = host.panel
       const controls = findChild(findChild(panel, "fullActivityStatus"), "intentControls")
       let request = null
-      panel.intentEnabledRequested.connect(function(name, enabled) { request = {name: name, enabled: enabled} })
+      panel.intentEnabledRequested.connect(function(name, enabled, mode) { request = {name: name, enabled: enabled, mode: mode} })
       const chip = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")
       showItem(host, chip)
       verify(chip.active)
@@ -58,16 +63,31 @@ Item {
       mouseClick(chip, chip.width / 2, chip.height / 2)
       compare(request.name, "SEND_TEXT_TO_APPLICATION")
       compare(request.enabled, false)
+      compare(request.mode, "inference")
       verify(chip.active, "Wait for the backend acknowledgement")
       const next = scene.inventory()
-      next[0].enabled = false
+      next[0].inferenceEnabled = false
       panel.intents = next
       const disabled = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")
       compare(disabled.active, false)
       compare(disabled.stateText, "Off")
+      compare(controls.shortcuts.length, 4, "Turning off recognition leaves the voice shortcut active")
+      const shortcut = findChild(controls, "shortcut-SEND_TEXT_TO_APPLICATION")
+      verify(shortcut.active)
+      verify(shortcut.routeColor !== disabled.routeColor)
+      showItem(host, shortcut)
+      mouseClick(shortcut, shortcut.width / 2, shortcut.height / 2)
+      compare(request.mode, "shortcut")
+      compare(request.enabled, false)
+      const shortcutOff = scene.inventory()
+      shortcutOff[0].shortcutEnabled = false
+      host.panel.intents = shortcutOff
       compare(controls.shortcuts.length, 3)
-      showItem(host, disabled)
-      mouseClick(disabled, disabled.width / 2, disabled.height / 2)
+      verify(findChild(controls, "intent-SEND_TEXT_TO_APPLICATION").active, "Recognition stays on")
+      host.panel.intents = next
+      const updated = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")
+      showItem(host, updated)
+      mouseClick(updated, updated.width / 2, updated.height / 2)
       compare(request.enabled, true)
     }
 
@@ -81,8 +101,8 @@ Item {
       next[4].prefixAvailable = true
       host.panel.intents = next
       chip = findChild(controls, "intent-CONTINUE_OPEN_AGENT_CONVERSATION")
-      compare(chip.active, true)
-      compare(chip.stateText, "On · shortcut only")
+      compare(chip.active, false, "The inference route still needs its own context")
+      compare(findChild(controls, "shortcut-CONTINUE_OPEN_AGENT_CONVERSATION").active, true)
       compare(controls.shortcuts.length, 5)
     }
 
@@ -99,6 +119,25 @@ Item {
       compare(findChild(controls, "intent-SEND_TEXT_TO_APPLICATION").active, false)
       compare(findChild(controls, "voice-insert").opacity, 0.45)
       host.panel.online = false
+      const chip = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")
+      showItem(host, chip)
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, 0)
+    }
+
+    function test_older_backend_cannot_accidentally_toggle_both_modes() {
+      const host = createTemporaryObject(viewComponent, scene)
+      const legacy = scene.inventory()
+      for (const intent of legacy) {
+        delete intent.supportsInference
+        delete intent.inferenceEnabled
+        delete intent.shortcutEnabled
+      }
+      host.panel.intents = legacy
+      const controls = findChild(host, "intentControls")
+      compare(controls.separateModes, false)
+      let requests = 0
+      host.panel.intentEnabledRequested.connect(function() { requests++ })
       const chip = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")
       showItem(host, chip)
       mouseClick(chip, chip.width / 2, chip.height / 2)
@@ -144,8 +183,8 @@ Item {
       verify(controls.y + controls.height + 20 * data.unit <= footer.y)
       verify(footer.y + footer.height <= page.contentHeight + 1)
       verify(footer.height >= 4 * 10 * data.unit, "Measure every line of real keyboard help")
-      for (const intent of scene.inventory()) {
-        const chip = findChild(controls, "intent-" + intent.name)
+      for (const route of controls.routes) {
+        const chip = findChild(controls, (route.mode === "inference" ? "intent-" : "shortcut-") + route.intent.name)
         const text = findChild(chip, "intentCardText")
         verify(text.height + 24 * data.unit <= chip.height, "Intent text fits its card")
       }
