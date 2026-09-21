@@ -48,6 +48,15 @@ CSS `#RRGGBBAA`. Tests cover initial creation, theme updates, pin/unpin and repe
 close/reopen, including the CSS tint/opacity. The synthetic crash child disables
 core files. This evidence does not establish live compositor/GPU behavior.
 
+For a coordinated scaling investigation, stop the existing UI process and start it with
+`npm run ui -- --presentation window --render-diagnostics`. Lines beginning with
+`COMPANION_RENDER` report changed window dimensions, screen/window pixel ratios,
+the Qt graphics API enum, theme colors/font/spacing, and Chromium viewport dimensions and
+pixel ratio. Timestamps allow comparison with a visible change after startup or
+a monitor move. This opt-in trace contains no conversation text, widget props or
+capability URLs. It measures reported rendering state, not the compositor's final
+buffer or perceived sharpness. It does not change scaling or restart the listener.
+
 ## Coordinated desktop activation
 
 Keep the branch's listener running. Install this revision's Omarchy adapter

@@ -18,6 +18,8 @@ WebEngineView {
   property bool checking: false
   property int generation: 0
   property var lifetime: ({active: true})
+  readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
+  property string previousRenderMetrics: ""
   signal interactionStarted()
 
   visible: running
@@ -106,13 +108,29 @@ WebEngineView {
       const update = theme !== browser.appliedTheme
         ? "window.widgetHost.setTheme(" + theme + ");" : ""
       browser.runJavaScript("(() => { if (!window.widgetReady) return null; " + update
-        + " return {height: window.widgetContentHeight || 240}; })()", function(result) {
+        + " return {height: window.widgetContentHeight || 240, dpr: devicePixelRatio, width: innerWidth, viewportHeight: innerHeight}; })()", function(result) {
         if (!lifetime.active) return
         browser.checking = false
         if (generation !== browser.generation || !result) return
         browser.rendered = true
         browser.appliedTheme = theme
         browser.measuredHeight = Math.max(0, Math.min(2200, Number(result.height) || 240))
+        if (browser.renderDiagnostics) {
+          // Only numeric viewport measurements cross into the diagnostic log.
+          // Content, capabilities and widget state remain outside this trace.
+          function number(value) { return typeof value === "number" && isFinite(value) ? value : 0 }
+          const point = browser.mapToItem(null, 0, 0)
+          const metrics = {kind: "widget", x: point.x, y: point.y,
+            width: browser.width, height: browser.height, browserDpr: number(result.dpr),
+            viewportWidth: number(result.width), viewportHeight: number(result.viewportHeight),
+            textScale: number(browser.theme.scale)}
+          const encoded = JSON.stringify(metrics)
+          if (encoded !== browser.previousRenderMetrics) {
+            browser.previousRenderMetrics = encoded
+            metrics.timeMs = Date.now()
+            console.info("COMPANION_RENDER " + JSON.stringify(metrics))
+          }
+        }
       })
     }
   }

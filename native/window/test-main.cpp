@@ -13,6 +13,7 @@ public slots:
     void qmlEngineAvailable(QQmlEngine *engine) {
         host = std::make_unique<WindowHost>(nullptr, true);
         engine->rootContext()->setContextProperty("TestHost", host.get());
+        engine->rootContext()->setContextProperty("CompanionRenderDiagnostics", qEnvironmentVariableIsSet("COMPANION_TEST_RENDER_DIAGNOSTICS"));
     }
 };
 

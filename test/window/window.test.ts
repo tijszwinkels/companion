@@ -192,8 +192,8 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
   await new Promise<void>((resolve) => server.listen(backendPath, resolve));
   // Use installed resources and module lookup, without a QML path into the
   // build tree. This is a staged installation only, never a live package install.
-  const env = { ...setup.env, QML_IMPORT_PATH: '' };
-  const child = spawn(executable, ['--socket', backendPath], { env });
+  const env = { ...setup.env, QML_IMPORT_PATH: '', QT_SCALE_FACTOR: '1.25' };
+  const child = spawn(executable, ['--socket', backendPath, '--render-diagnostics'], { env });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   let output = '';
   child.stdout.on('data', (chunk) => {
@@ -226,6 +226,29 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
     });
     await new Promise<void>((resolve) => bridge!.once('connect', resolve));
     bridge.write(JSON.stringify({ action: 'bridge' }) + '\n');
+    bridge.write(
+      JSON.stringify({ action: 'theme', values: { unit: 1.2, fontFamily: 'sans-serif' } }) + '\n',
+    );
+    await until(
+      () => output.includes('"themeUnit":1.2') && output.includes('"windowDpr":1.25'),
+      () => output,
+    );
+    const diagnosticLines = output
+      .split('\n')
+      .filter((line) => line.startsWith('COMPANION_RENDER '));
+    assert.ok(diagnosticLines.length > 0);
+    assert.ok(diagnosticLines.every((line) => !line.includes('Synthetic session')));
+    const metrics = JSON.parse(diagnosticLines.at(-1)!.slice('COMPANION_RENDER '.length));
+    assert.equal(metrics.kind, 'window');
+    assert.equal(metrics.fontFamily, 'sans-serif');
+    assert.equal(metrics.windowDpr, 1.25);
+    assert.equal(metrics.effectiveDpr, 1.25);
+    assert.equal(metrics.themeUnit, 1.2);
+    assert.ok(metrics.timeMs > 0);
+    await assert.rejects(
+      execute(executable, ['--render-diagnostics'], { env, timeout: 5000 }),
+      /Stop the existing UI process before starting with --render-diagnostics/,
+    );
     await execute(executable, ['--command', 'hide'], {
       env,
       timeout: 5000,
@@ -375,9 +398,23 @@ test('translucent themes survive native widget creation, pinning, close and reop
     const result = await execute(
       'prlimit',
       ['--core=0', '--', join(build, 'companion-window-tests'), '-input', path, '-nocrashhandler'],
-      { env: setup.env, timeout: 30000, killSignal: 'SIGKILL' },
+      {
+        env: { ...setup.env, QT_SCALE_FACTOR: '1.25', COMPANION_TEST_RENDER_DIAGNOSTICS: '1' },
+        timeout: 30000,
+        killSignal: 'SIGKILL',
+      },
     );
     assert.match(result.stdout, /3 passed, 0 failed/);
+    const metrics = result.stdout
+      .split('\n')
+      .filter((line) => line.includes('COMPANION_RENDER '))
+      .map((line) =>
+        JSON.parse(line.slice(line.indexOf('COMPANION_RENDER ') + 'COMPANION_RENDER '.length)),
+      );
+    assert.ok(metrics.length > 0, 'embedded Chromium reports its viewport density');
+    assert.ok(metrics.every((entry) => entry.kind === 'widget' && entry.browserDpr === 1.25));
+    assert.ok(metrics.every((entry) => entry.width === entry.viewportWidth));
+    assert.ok(metrics.every((entry) => entry.timeMs > 0 && !('viewUrl' in entry)));
   } catch (error) {
     throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
       cause: error,

@@ -3,13 +3,17 @@
 #include "../widget-renderer/initialize.hpp"
 
 #include <QCommandLineParser>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonDocument>
+#include <QJSValue>
 #include <QLockFile>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QScreen>
+#include <QSGRendererInterface>
 #include <QTimer>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #include <cstdio>
@@ -17,6 +21,13 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
+    // Qt can send piped output to journald. Keep an explicitly requested trace
+    // in this process's terminal even when the user captures it with tee.
+    for (int index = 1; index < argc; ++index) {
+        if (qstrcmp(argv[index], "--render-diagnostics") == 0) {
+            qputenv("QT_FORCE_STDERR_LOGGING", "1");
+        }
+    }
     if (qEnvironmentVariableIsSet("QTWEBENGINE_DISABLE_SANDBOX")
         || qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS").contains("--no-sandbox")
         || qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS").contains("--disable-web-security")) {
@@ -39,6 +50,7 @@ int main(int argc, char **argv) {
     parser.addOption({"presentation", "window, sidebar or dock", "mode"});
     parser.addOption({"command", "Send show, hide, toggle or focus to the running UI", "action"});
     parser.addOption({"hidden", "Start hidden until summoned or a conversation arrives"});
+    parser.addOption({"render-diagnostics", "Log window, theme and widget rendering metrics when they change"});
     parser.process(app);
 
     const auto runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
@@ -66,6 +78,10 @@ int main(int argc, char **argv) {
     QLocalSocket existing;
     existing.connectToServer(control);
     if (existing.waitForConnected(200)) {
+        if (parser.isSet("render-diagnostics")) {
+            fprintf(stderr, "Stop the existing UI process before starting with --render-diagnostics.\n");
+            return 1;
+        }
         QJsonObject request{{"action", action.isEmpty() ? "show" : action}, {"activate", true}};
         if (parser.isSet("presentation")) request = {{"action", "presentation"}, {"mode", parser.value("presentation")}};
         existing.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
@@ -98,6 +114,7 @@ int main(int argc, char **argv) {
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("WindowHost", &host);
     engine.rootContext()->setContextProperty("DesktopConnection", &connection);
+    engine.rootContext()->setContextProperty("CompanionRenderDiagnostics", parser.isSet("render-diagnostics"));
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/qml");
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/../lib/companion/qml");
     const auto installed = QCoreApplication::applicationDirPath() + "/../share/companion/integrations/window/Main.qml";
@@ -112,5 +129,43 @@ int main(int argc, char **argv) {
                                                     : settings.value("presentation", "window").toString());
     if (!parser.isSet("hidden")) host.show(false);
     connection.start();
+
+    // Opt-in, read-only sampling on the GUI thread. A short startup trace can
+    // distinguish late theme changes from a window/Chromium density mismatch.
+    // Log only rendering metadata, never session text, widget props or URLs.
+    // The timer dies before the engine/body when the event loop exits.
+    QTimer diagnostics;
+    QByteArray previousMetrics;
+    if (parser.isSet("render-diagnostics")) {
+        QObject::connect(&diagnostics, &QTimer::timeout, &app, [&] {
+            auto *window = body->window();
+            if (!window) return;
+            auto *screen = window->screen();
+            auto *renderer = window->rendererInterface();
+            const auto theme = body->property("theme").value<QJSValue>().toVariant().toMap();
+            QJsonObject metrics{
+                {"kind", "window"}, {"presentation", host.presentation()},
+                {"visible", window->isVisible()}, {"platform", QGuiApplication::platformName()},
+                {"x", window->x()}, {"y", window->y()},
+                {"width", window->width()}, {"height", window->height()},
+                {"windowDpr", window->devicePixelRatio()},
+                {"effectiveDpr", window->effectiveDevicePixelRatio()},
+                {"sceneGraphReady", window->isSceneGraphInitialized()},
+                {"screen", screen ? screen->name() : QString()},
+                {"screenDpr", screen ? screen->devicePixelRatio() : 0},
+                {"graphicsApi", renderer ? int(renderer->graphicsApi()) : 0},
+                {"themeUnit", theme.value("unit").toDouble()},
+                {"themeBackground", theme.value("background").toString()},
+                {"themeForeground", theme.value("foreground").toString()},
+                {"fontFamily", theme.value("fontFamily").toString()}
+            };
+            const auto encoded = QJsonDocument(metrics).toJson(QJsonDocument::Compact);
+            if (encoded == previousMetrics) return;
+            previousMetrics = encoded;
+            metrics["timeMs"] = QDateTime::currentMSecsSinceEpoch();
+            qInfo().noquote() << "COMPANION_RENDER" << QJsonDocument(metrics).toJson(QJsonDocument::Compact);
+        });
+        diagnostics.start(100);
+    }
     return app.exec();
 }
