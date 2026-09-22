@@ -2,12 +2,19 @@
 
 ## Panel history limit
 
-The panel retains up to 800 message bubbles per conversation, including tool
-calls. The separate text/input limit is 1,000,000 characters, measured as
-JavaScript UTF-16 code units across all bubbles. These are display-history
-limits, not the model's context size. Long conversations
-within these limits can be closed and reopened; exceeding either still fails
-the turn. Loading older display history on demand remains future work.
+The panel retains up to 800 message bubbles per conversation. Consecutive tool
+calls share one collapsed bubble without crossing intervening chat messages.
+The separate text/input limit is 1,000,000 JavaScript UTF-16 code units; tool
+details consume none of that budget. These are display-history limits, not the
+model's context size. Long conversations within these limits can be closed and
+reopened; exceeding either still fails the turn. Loading older ordinary chat
+history on demand remains future work.
+
+Tool inputs/results stay in private disk storage and are read on explicit
+expansion in pages of at most 8,192 UTF-16 units. Separate storage admission caps
+are 256 MiB of current tool text and 100,000 calls per conversation, with explicit
+failure rather than truncation. See [lazy tool transcript pages](../desktop/README.md#lazy-tool-transcript-pages)
+for transport ownership, streaming, legacy recovery and storage limitations.
 
 ## Model profiles
 

@@ -303,6 +303,7 @@ Item {
   function receive(line) {
     try {
       const message = JSON.parse(line)
+      if (message.action === "agent-tool-page") { sidePanel.toolPageReceived(message); return }
 
       if (message.type === "state" && message.protocol === 1) {
         root.paused = message.paused
@@ -641,6 +642,7 @@ Item {
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
+    onToolPageRequested: request => { root.reportPanelState(); root.send(request) }
     onChoiceRequested: (id, revision, index) => root.chooseAgent(id, revision, index)
     onStopRunRequested: (id, runId) => {
       root.reportPanelState()

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { legacyToolGroups, legacyToolSummary, legacyToolPage } from './legacy-tool-transcripts.ts';
+import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
 import { mkdir, readFile, readdir, rename, writeFile, access, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -6,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
+import { toolCallLimit, ToolTranscripts } from './tool-transcripts.ts';
 import { panelMessageLimit } from './transcript-limits.ts';
 
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -17,7 +21,10 @@ const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
  */
 export class SessionStore {
   private readonly writes = new Map<string, Promise<void>>();
-  constructor(private readonly directory: string) {}
+  readonly tools: ToolTranscripts;
+  constructor(private readonly directory: string) {
+    this.tools = new ToolTranscripts(directory);
+  }
 
   private path(id: string, extension: string): string {
     if (!sessionId.test(id)) {
@@ -47,12 +54,14 @@ export class SessionStore {
   async save(session: AgentSession): Promise<void> {
     // Capture one coherent view before yielding to filesystem operations. URLs
     // are derived when reading; the saved file cannot redirect image loading.
+    const hasLegacyTools = session.messages.some((message) => message.toolGroup?.legacy);
     const content = JSON.stringify(session, (key, value: unknown) =>
       [
         'screenshotUrl',
         'viewUrl',
         'choices',
         'runId',
+        'toolEpoch',
         'acceptsFollowUp',
         'completedTurnId',
       ].includes(key)
@@ -66,7 +75,31 @@ export class SessionStore {
       .catch(() => {})
       .then(async () => {
         await mkdir(this.directory, { recursive: true, mode: 0o700 });
-        await this.replace(this.path(session.id, 'json'), content + '\n');
+        let savedContent = content;
+        if (hasLegacyTools) {
+          // If migration failed, preserve the original inline records on disk.
+          // Read inside the serialized save queue, never retain them in a live
+          // session or overwrite the only copy with a body-free placeholder.
+          const original = JSON.parse(
+            await readFile(this.path(session.id, 'json'), 'utf8'),
+          ) as AgentSession;
+          const sources = legacyToolGroups(session.id, original.messages);
+          const captured = JSON.parse(content) as AgentSession;
+          captured.messages = captured.messages.flatMap((message) => {
+            if (!message.toolGroup?.legacy) return [message];
+            const entries = sources.get(message.id);
+            if (
+              !entries ||
+              legacyToolSummary(session.id, entries).toolGroup!.revision !==
+                message.toolGroup.revision
+            ) {
+              throw Error('Legacy tool archive changed; reopen before saving');
+            }
+            return entries;
+          });
+          savedContent = JSON.stringify(captured);
+        }
+        await this.replace(this.path(session.id, 'json'), savedContent + '\n');
       });
     this.writes.set(session.id, write);
     try {
@@ -94,7 +127,7 @@ export class SessionStore {
       (session.profile !== undefined && !['coding', 'quickQuestion'].includes(session.profile)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
-      session.messages.length > panelMessageLimit
+      session.messages.length > panelMessageLimit + toolCallLimit
     ) {
       throw Error('Invalid saved conversation');
     }
@@ -106,7 +139,7 @@ export class SessionStore {
     } catch {
       // A missing attachment must not prevent reopening the conversation.
     }
-    const messages = session.messages.map((message: AgentMessage): AgentMessage => {
+    let messages = session.messages.map((message: AgentMessage): AgentMessage => {
       if (
         !message ||
         typeof message.id !== 'string' ||
@@ -131,6 +164,29 @@ export class SessionStore {
         // after reopening a tab or restarting Companion.
         state: ['queued', 'running'].includes(message.state) ? 'error' : message.state,
       };
+      if (message.kind === 'tool' && message.toolGroup) {
+        const group = message.toolGroup;
+        if (
+          !sessionId.test(message.id) ||
+          !Number.isSafeInteger(group.count) ||
+          group.count < 1 ||
+          group.count > toolCallLimit ||
+          typeof group.revision !== 'string' ||
+          !sessionId.test(group.revision)
+        ) {
+          throw Error('Invalid saved tool group');
+        }
+        // Retain a content-free fallback so a missing detail database cannot
+        // hide ordinary answers, screenshots or widgets in this conversation.
+        return {
+          ...restored,
+          text: '',
+          input: '',
+          toolName: '',
+          screenshot: false,
+          toolGroup: { count: group.count, revision: group.revision },
+        };
+      }
       if (message.screenshot && message.kind === 'user' && screenshotUrl) {
         restored.screenshotUrl = screenshotUrl;
       }
@@ -143,6 +199,60 @@ export class SessionStore {
         }
       }
       return restored;
+    });
+    // Migrate legacy inline tools without rewriting the original archive. A
+    // later normal save persists compact groups; a failed migration leaves the
+    // original JSON intact and readable by the old version.
+    const grouped: AgentMessage[] = [];
+    const legacyGroups = legacyToolGroups(id, messages);
+    const legacyByFirst = new Map(
+      [...legacyGroups.values()].map((entries) => [entries[0].id, entries]),
+    );
+    for (let index = 0; index < messages.length; index++) {
+      const message = messages[index];
+      const entries = legacyByFirst.get(message.id);
+      if (!entries || message.kind !== 'tool' || message.toolGroup) {
+        grouped.push(message);
+        continue;
+      }
+      const fallback = legacyToolSummary(id, entries);
+      try {
+        const groupId = this.tools.groupFor(id, entries[0].id) ?? fallback.id;
+        let summary = fallback;
+        for (const entry of entries) {
+          summary = this.tools.put(id, entry, groupId);
+        }
+        grouped.push(summary);
+      } catch {
+        // Storage failure must not hide a legacy conversation. Its original
+        // JSON still owns every byte; expansion reads it only when requested.
+        grouped.push(fallback);
+      }
+      index += entries.length - 1;
+    }
+    if (grouped.length > panelMessageLimit) {
+      throw Error('Invalid saved conversation');
+    }
+    let toolRecoveryFailed = false;
+    if (grouped.some((message) => message.toolGroup && !message.toolGroup.legacy)) {
+      try {
+        this.tools.stop(id);
+      } catch {
+        toolRecoveryFailed = true;
+      }
+    }
+    messages = grouped.map((message) => {
+      if (!message.toolGroup || message.toolGroup.legacy) {
+        return message;
+      }
+      try {
+        const summary = this.tools.summary(id, message.id);
+        return toolRecoveryFailed ? { ...summary, state: 'error' as const } : summary;
+      } catch {
+        // Expansion reports the storage error; the surrounding chat stays
+        // readable. Keep the reference for recovery if its database returns.
+        return { ...message, toolGroup: { ...message.toolGroup, unavailable: true } };
+      }
     });
     if (session.status === 'starting' || session.status === 'running') {
       session.status = 'cancelled';
@@ -158,6 +268,19 @@ export class SessionStore {
       updatedAt: session.updatedAt,
       messages,
     };
+  }
+
+  legacyPage(request: ToolPageRequest): ToolPage {
+    // This fallback is only for existing legacy JSON when migration cannot
+    // write SQLite. Parsing is temporary; ordinary snapshots remain body-free.
+    const original = JSON.parse(
+      readFileSync(this.path(request.id, 'json'), 'utf8'),
+    ) as AgentSession;
+    const entries = legacyToolGroups(request.id, original.messages).get(request.groupId);
+    if (original.id !== request.id || !entries) {
+      throw Error('Legacy tool details are unavailable');
+    }
+    return legacyToolPage(request, entries);
   }
 
   async previous(log: Log): Promise<PreviousSession[]> {

@@ -211,3 +211,15 @@ focus and `new session â€¦` always creates a fresh coding tab. `quick question â
 opens a local Qwen conversation, whose profile survives queued turns and reopening.
 These new voice paths
 have not been exercised on the live compositor.
+
+Lazy-tool checks exercise collapsed-by-default groups, active group growth,
+explicit first-page requests, literal text, page replacement, Copy page and
+selection, streaming revision invalidation, collapse/re-expand, errors,
+disconnect/reconnect and close/reopen identity. Native Client replies are routed
+through the same portable component without retaining page bodies in session
+state. Backend fixtures verify 1,500 calls in one row, a <2 KB snapshot instead of
+
+> 1.5 MB of raw tool output, lossless multi-megabyte input/results, exact 1M/800
+> ordinary display budgets, legacy migration and private restart restoration,
+> late Pi events, storage failures, and correlated private-socket ownership checks.
+> These are synthetic offscreen/private-socket checks, not live desktop deployment.

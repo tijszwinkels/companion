@@ -69,7 +69,10 @@ call the classifier. Old design proposals contain historical prompt snapshots.
 Do not edit literal user-approved prompts as part of an unrelated refactor.
 The live panel transcript currently has limits of **800 bubbles** and
 **1,000,000 UTF-16 code units**, defined in `src/agents/transcript-limits.ts`.
-Grouped/lazy tool transcripts are separate work; they are not in this baseline.
+Consecutive tool calls share one collapsed bubble. Their inputs/results are
+stored separately and loaded only on expansion in bounded pages; they consume
+no panel text budget. See [lazy tool transcript pages](../src/desktop/README.md#lazy-tool-transcript-pages)
+for the protocol and separate storage limits.
 
 ## Validate without activating
 

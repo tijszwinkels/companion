@@ -169,12 +169,22 @@ export class DesktopServer {
           value && typeof value === 'object'
             ? (value as Record<string, unknown>).action
             : undefined;
+        // Echo only a short opaque correlation ID, including admission errors.
+        const requestId =
+          action === 'agent-tool-page' &&
+          value &&
+          typeof value === 'object' &&
+          typeof (value as Record<string, unknown>).requestId === 'string' &&
+          ((value as Record<string, unknown>).requestId as string).length <= 128
+            ? (value as Record<string, unknown>).requestId
+            : undefined;
         const control =
           action === 'toggle-pause' ||
           action === 'media-playback' ||
           action === 'toggle-sounds' ||
           action === 'set-intent-enabled' ||
           action === 'activity-history' ||
+          action === 'agent-tool-page' ||
           action === 'label-history' ||
           action === 'delete-history' ||
           action === 'stop-agent' ||
@@ -193,6 +203,7 @@ export class DesktopServer {
           this.send(socket, {
             type: 'error',
             action,
+            requestId,
             message: 'Previous request is still running',
           });
           continue;
@@ -207,10 +218,10 @@ export class DesktopServer {
         const request = Promise.resolve()
           .then(async () => {
             const result = await this.handle(value, clientId);
-            this.send(socket, { type: 'result', action, result });
+            this.send(socket, { type: 'result', action, requestId, result });
           })
           .catch((error) => {
-            this.send(socket, { type: 'error', action, message: String(error) });
+            this.send(socket, { type: 'error', action, requestId, message: String(error) });
           })
           .finally(() => {
             if (control) {

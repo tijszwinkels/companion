@@ -454,6 +454,36 @@ export class DesktopRuntime {
       return 'deleted';
     }
 
+    if (request.action === 'agent-tool-page') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.groupId !== 'string' ||
+        typeof request.epoch !== 'string' ||
+        typeof request.revision !== 'string' ||
+        (request.callRevision !== undefined &&
+          (typeof request.callRevision !== 'string' || request.callRevision.length > 36)) ||
+        typeof request.requestId !== 'string' ||
+        request.requestId.length > 128 ||
+        !Number.isSafeInteger(request.index) ||
+        !Number.isSafeInteger(request.offset)
+      ) {
+        throw Error('Expected a tool group, revision and page position');
+      }
+      if (clientId !== this.panelClient || request.id !== this.panelSession) {
+        throw Error('This conversation is no longer selected');
+      }
+      return this.options.agents.toolPage({
+        id: request.id,
+        groupId: request.groupId,
+        epoch: request.epoch,
+        revision: request.revision,
+        callRevision: request.callRevision as string | undefined,
+        index: request.index as number,
+        offset: request.offset as number,
+      });
+    }
+
     if (request.action === 'activity-history') {
       if (
         request.sessionId !== this.activityHistory.sessionId ||

@@ -12,6 +12,8 @@ export interface AgentMessage {
   input: string;
   state: 'queued' | 'running' | 'done' | 'error';
   screenshot: boolean;
+  /** Consecutive tool calls; full inputs/results are stored and paged separately. */
+  toolGroup?: { count: number; revision: string; legacy?: boolean; unavailable?: boolean };
   /** Local, private PNG attachment; omitted while saving or on older messages. */
   screenshotUrl?: string;
   /** Validated reference; its private view URL is regenerated when reopening. */
@@ -34,6 +36,8 @@ export interface AgentSession {
   /** Live affordances are deliberately not restored from saved transcripts. */
   choices?: AgentChoiceSet;
   runId?: string;
+  /** Fresh on reopening; rejects requests from a previous tab lifetime. */
+  toolEpoch?: string;
   acceptsFollowUp?: boolean;
   /** Latest successful turn in this process; snapshots recover missed UI updates. */
   completedTurnId?: string;

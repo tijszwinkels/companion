@@ -75,6 +75,7 @@ const files = [
   'panel/AgentChoices.qml',
   'panel/PanelAction.qml',
   'panel/SessionView.qml',
+  'panel/ToolDetails.qml',
   'panel/WidgetSurface.qml',
   'panel/NativeWidgetView.qml',
   'panel/Markdown.mjs',
