@@ -1,3 +1,7 @@
 // One display-history count for live updates, saved snapshots and recovery from
 // canonical widget state. This limit is independent of the model's context size.
 export const panelMessageLimit = 800;
+
+// Combined text and tool input, measured using JavaScript string length (UTF-16
+// code units). Share the budget between streamed messages and widget admission.
+export const panelTextLimit = 1_000_000;
