@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -272,21 +272,41 @@ test('legacy JSON is retained during migration, with original tool data and orde
   assert.deepEqual((await store.read(id)).messages, again.messages);
 });
 
-test('storage failures are explicit and do not prevent saving the ordinary conversation', async (context) => {
-  const setup = await fixture(context);
-  // A real filesystem obstacle, independent of tool-store implementation.
-  await writeFile(
-    join(setup.directory, '.companion-sessions', 'tool-transcripts.sqlite'),
-    'not a sqlite database',
-  );
-  assert.throws(() => setup.emit(tool('a', 'cannot persist')), /database/);
-  await setup.finish();
-  assert.equal(setup.sessions.snapshot()[0].status, 'error');
-  const saved = JSON.parse(
-    await readFile(join(setup.directory, '.companion-sessions', setup.id + '.json'), 'utf8'),
-  );
-  assert.equal(saved.messages[0].text, frame.utterance);
-});
+for (const kind of ['assistant', 'tool'] as const) {
+  test(`damaged tool storage ${kind === 'tool' ? 'fails a tool turn explicitly' : 'does not fail ordinary answers'}`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), 'companion-storage-failure-'));
+    const storage = join(directory, '.companion-sessions');
+    await mkdir(storage);
+    await writeFile(join(storage, 'tool-transcripts.sqlite'), 'not a sqlite database');
+    const sessions = new AgentSessions(
+      {
+        backend: {
+          id: 'storage-failure',
+          label: 'Storage failure fixture',
+          dependencies: {},
+          async run(_request, _signal, emit) {
+            emit(chatMessage('result', kind, 'Complete text'));
+          },
+        },
+      },
+      () => {},
+      directory,
+    );
+    context.after(async () => {
+      await sessions.close();
+      await rm(directory, { recursive: true, force: true });
+    });
+    const id = sessions.start(frame, signal());
+    await sessions.idle();
+    const view = sessions.snapshot()[0];
+    assert.equal(view.status, kind === 'tool' ? 'error' : 'completed');
+    if (kind === 'tool') assert.match(view.error, /database/);
+    else assert.equal(view.messages[1].text, 'Complete text');
+    const saved = JSON.parse(await readFile(join(storage, id + '.json'), 'utf8'));
+    assert.equal(saved.messages[0].text, frame.utterance);
+    assert.equal(saved.status, view.status);
+  });
+}
 
 test('private socket delivers correlated bounded pages only to the selected conversation owner', async (context) => {
   const setup = await fixture(context);

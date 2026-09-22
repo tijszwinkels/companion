@@ -492,12 +492,18 @@ export class AgentSessions implements InspectableModule {
       if (session.view.status !== 'completed' || session.controller.signal.aborted) {
         this.cancelPending(session);
       }
-      try {
-        this.store.tools.stop(session.view.id);
-      } catch (error) {
-        session.view.status = 'error';
-        session.view.error = `Could not finalize tool details: ${String(error)}`;
-        this.log('agent-history', session.view.error, frameId);
+      // Ordinary answers and archived terminal groups do not depend on a tool
+      // database write. Only interrupted live calls need their state finalized.
+      if (
+        session.view.messages.some((message) => message.toolGroup && message.state === 'running')
+      ) {
+        try {
+          this.store.tools.stop(session.view.id);
+        } catch (error) {
+          session.view.status = 'error';
+          session.view.error = `Could not finalize tool details: ${String(error)}`;
+          this.log('agent-history', session.view.error, frameId);
+        }
       }
       // A stopped partial answer/tool must not retain a running spinner.
       for (const message of session.view.messages) {
