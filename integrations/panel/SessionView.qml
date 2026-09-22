@@ -281,6 +281,25 @@ Item {
       width: transcript.width
       height: bubbleSurface.height
 
+      function toggleExpanded() {
+        // Qt can move the content origin when an offscreen delegate shrinks.
+        // Keep the visible message at the same viewport position in that case.
+        let anchor = null
+        if (expanded && toolCount > 0 && !root.followEnd && y + height <= transcript.contentY) {
+          let index = transcript.indexAt(0, transcript.contentY + 1)
+          if (index < 0) index = transcript.indexAt(0, transcript.contentY + transcript.spacing + 1)
+          anchor = transcript.itemAtIndex(index)
+        }
+        const anchorY = anchor ? anchor.y - transcript.contentY : 0
+        expanded = !expanded
+        if (anchor) {
+          // Settle the Column before ListView computes the new content origin.
+          contents.forceLayout()
+          transcript.forceLayout()
+          transcript.contentY = anchor.y - anchorY
+        }
+      }
+
       Rectangle {
         id: bubbleSurface
         // Keep a subtle 20px gutter opposite the sender, plus 8px for the
@@ -321,11 +340,11 @@ Item {
               anchors.fill: parent
               enabled: bubble.kind === "tool"
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-              onClicked: bubble.expanded = !bubble.expanded
+              onClicked: bubble.toggleExpanded()
             }
             Accessible.role: bubble.kind === "tool" ? Accessible.Button : Accessible.StaticText
             Accessible.name: text
-            Accessible.onPressAction: if (bubble.kind === "tool") bubble.expanded = !bubble.expanded
+            Accessible.onPressAction: if (bubble.kind === "tool") bubble.toggleExpanded()
           }
 
           Rectangle {
@@ -406,6 +425,10 @@ Item {
           Loader {
             width: parent.width
             active: bubble.expanded && bubble.toolCount > 0
+            // Unloading destroys the reader but can retain its previous size.
+            // Release both its height and the Column spacing when collapsed.
+            visible: active
+            height: active ? implicitHeight : 0
             sourceComponent: ToolDetails {
               reader: root
               sessionId: root.displayedId

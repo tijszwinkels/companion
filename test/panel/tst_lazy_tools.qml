@@ -134,6 +134,75 @@ Item {
       compare(findChild(bubble, "toolPageText").text, "fresh page")
     }
 
+    function test_collapse_reexpand_restores_bubble_and_transcript_geometry() {
+      const panel = setup()
+      const requests = []
+      panel.toolPageRequested.connect(request => requests.push(request))
+      const bubble = findChild(panel, "bubble-group")
+      const transcript = findChild(panel, "sessionTranscript")
+      verify(waitForRendering(bubble))
+      const collapsedHeight = bubble.height
+      const collapsedContentHeight = transcript.contentHeight
+
+      // Keep the header in the viewport so both disclosures are real clicks.
+      const page = "tool output line\n".repeat(12)
+      let expandedHeight = 0
+      for (let cycle = 0; cycle < 2; cycle++) {
+        click(bubble, 24, 14)
+        compare(bubble.expanded, true)
+        panel.toolPageReceived(response(requests[cycle], page))
+        tryVerify(() => bubble.height > collapsedHeight + 100)
+        tryCompare(transcript, "contentHeight", collapsedContentHeight + bubble.height - collapsedHeight)
+        if (cycle === 0) expandedHeight = bubble.height
+        else compare(bubble.height, expandedHeight, "Re-expansion must not accumulate space")
+
+        click(bubble, 24, 14)
+        compare(bubble.expanded, false)
+        compare(findChild(bubble, "toolDetails"), null)
+        tryCompare(bubble, "height", collapsedHeight)
+        tryCompare(transcript, "contentHeight", collapsedContentHeight)
+        tryCompare(transcript, "atYBeginning", true)
+      }
+    }
+
+    function test_collapse_above_viewport_preserves_reading_position() {
+      const panel = setup()
+      const chat = findChild(panel, "sessionView")
+      const transcript = findChild(panel, "sessionTranscript")
+      chat.followEnd = false
+      // Keep the first delegate alive while reading the following long answer.
+      transcript.cacheBuffer = 4000
+      const fixture = session(2, "r1")
+      fixture.messages.push({id: "answer", kind: "assistant", text: "Reading here.\n\n".repeat(100),
+        input: "", toolName: "", screenshot: false, state: "done"})
+      panel.sessions = [fixture]
+      transcript.positionViewAtBeginning()
+      const bubble = findChild(panel, "bubble-group")
+      const answer = findChild(panel, "bubble-answer")
+      const requests = []
+      panel.toolPageRequested.connect(request => requests.push(request))
+      verify(waitForRendering(bubble))
+      const collapsedHeight = bubble.height
+      const collapsedContentHeight = transcript.contentHeight
+      click(bubble, 24, 14)
+      panel.toolPageReceived(response(requests[0], "tool output line\n".repeat(12)))
+      tryVerify(() => bubble.height > collapsedHeight + 100)
+      tryCompare(transcript, "contentHeight", collapsedContentHeight + bubble.height - collapsedHeight)
+      transcript.contentY = answer.y + 150
+      verify(waitForRendering(answer))
+      const readingY = answer.mapToItem(transcript, 0, 0).y
+      verify(bubble.y + bubble.height < transcript.contentY)
+
+      // An offscreen header cannot receive a pointer click. Invoke the same
+      // disclosure action directly to exercise ListView's scroll anchoring.
+      bubble.toggleExpanded()
+      tryCompare(bubble, "height", collapsedHeight)
+      tryCompare(transcript, "contentHeight", collapsedContentHeight)
+      tryVerify(() => Math.abs(answer.mapToItem(transcript, 0, 0).y - readingY) < 1,
+        1000, "Collapsing an earlier group must keep the visible answer in place")
+      compare(chat.followEnd, false)
+    }
+
     function test_disconnect_errors_switch_remove_and_reopen_reject_late_responses() {
       const panel = setup()
       const requests = []
