@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -536,6 +537,45 @@ test('diagnostic rendering modes keep native widget layout and interaction at fr
     });
   } finally {
     await service.close();
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('native widget metadata callbacks tolerate removal of their QML context', async () => {
+  const setup = await fixture();
+  // This synthetic document delays metadata replies without using user widgets,
+  // a compositor, or the backend. The real native profile and browser still run.
+  const server = createHttpServer((_, response) => {
+    response.setHeader('Content-Type', 'text/html');
+    response.end(
+      '<html><body>Callback fixture<script>window.widgetReady = true; window.widgetContentHeight = 120; window.widgetHost = {setTheme() {}};</script></body></html>',
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const viewUrl = `http://127.0.0.1:${address.port}/view/${'a'.repeat(64)}`;
+    const template = await readFile(new URL('./callback-lifetime.qml.in', import.meta.url), 'utf8');
+    const path = join(setup.directory, 'tst_callback_lifetime.qml');
+    await writeFile(
+      path,
+      template
+        .replace('@PANEL@', new URL('../../integrations/panel', import.meta.url).href)
+        .replace('@VIEW_URL@', JSON.stringify(viewUrl)),
+    );
+    const result = await execute(
+      'prlimit',
+      ['--core=0', '--', join(build, 'companion-window-tests'), '-input', path, '-nocrashhandler'],
+      { env: setup.env, timeout: 30000, killSignal: 'SIGKILL' },
+    );
+    assert.match(result.stdout, /4 passed, 0 failed/);
+  } catch (error) {
+    throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
+      cause: error,
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(setup.directory, { recursive: true, force: true });
   }
 });

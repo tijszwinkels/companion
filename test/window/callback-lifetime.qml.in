@@ -1,0 +1,58 @@
+import QtQuick
+import QtTest
+import "@PANEL@" as Panel
+
+TestCase {
+  id: testCase
+  name: "WidgetCallbackLifetime"
+  when: windowShown
+  property string viewUrl: @VIEW_URL@
+  property var currentView: null
+  property var currentOwner: null
+
+  // The factory owns the creation context, while its browser lives under the
+  // host. Removing a delegate/Loader context can invalidate that context before
+  // Chromium finishes its asynchronous reply or Qt deletes the browser object.
+  Component {
+    id: factory
+    Item {
+      Component {
+        id: browserComponent
+        Panel.NativeWidgetView { width: 400; height: 240 }
+      }
+      function createBrowser() {
+        return browserComponent.createObject(TestHost.contentItem, {viewUrl: testCase.viewUrl})
+      }
+    }
+  }
+  function init() {
+    currentOwner = factory.createObject(testCase)
+    currentView = currentOwner.createBrowser()
+    TestHost.show(true)
+    tryVerify(function() { return currentView.rendered }, 10000)
+    // Queue the production metadata poll behind a slow renderer operation.
+    // No callback is registered for this test-only delay.
+    currentView.mainFrame.runJavaScript("{ const end = Date.now() + 800; while (Date.now() < end) {} }", 0, undefined)
+    tryVerify(function() { return currentView.checking }, 1000)
+  }
+  function cleanup() {
+    if (currentView) currentView.destroy()
+    if (currentOwner) currentOwner.destroy()
+    currentView = null
+    currentOwner = null
+    wait(50)
+  }
+  function test_context_removed_with_metadata_pending() {
+    currentOwner.destroy()
+    currentOwner = null
+    wait(1000)
+    // The process must survive Qt discarding the reply for its dead context.
+    verify(currentView !== null)
+  }
+  function test_browser_removed_with_metadata_pending() {
+    currentView.destroy()
+    currentView = null
+    wait(1000)
+    verify(currentOwner !== null)
+  }
+}

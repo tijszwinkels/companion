@@ -56,6 +56,21 @@ CSS `#RRGGBBAA`. Tests cover initial creation, theme updates, pin/unpin and repe
 close/reopen, including the CSS tint/opacity. The synthetic crash child disables
 core files. This evidence does not establish live compositor/GPU behavior.
 
+The callback-lifetime regression covers the 2026-09-22 SIGSEGV in
+`QJSEngine::create`, called with a null engine from WebEngine's JavaScript result
+conversion. Qt 6.11.2's view-level `runJavaScript` callback dereferences
+`qmlEngine(this)` before invoking our QML callback; the callback's own lifetime
+guard therefore cannot protect that conversion. Metadata polling now uses
+`mainFrame.runJavaScript` with the same main-world script, whose Qt callback
+checks for a surviving QML engine first. No browser permission or rendering-mode
+change is involved.
+
+The offscreen regression delays a real Chromium result, then removes either the
+browser or its creation context. The context-removal case segfaults with the old
+polling call and passes with the guarded frame call. It uses synthetic HTML and
+disables core files. This establishes the callback failure mechanism, not which
+particular desktop action removed the context in the live crash.
+
 For a coordinated scaling investigation, stop the existing UI process and start it with
 `npm run ui -- --presentation window --render-diagnostics`. Lines beginning with
 `COMPANION_RENDER` report changed window dimensions, screen/window pixel ratios,

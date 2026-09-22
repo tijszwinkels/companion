@@ -115,8 +115,12 @@ WebEngineView {
       const theme = JSON.stringify(browser.theme)
       const update = theme !== browser.appliedTheme
         ? "window.widgetHost.setTheme(" + theme + ");" : ""
-      browser.runJavaScript("(() => { if (!window.widgetReady) return null; " + update
-        + " return {height: window.widgetContentHeight || 240, dpr: devicePixelRatio, width: innerWidth, viewportHeight: innerHeight}; })()", function(result) {
+      // Qt 6.11's view-level callback converts the result through qmlEngine(this)
+      // without checking whether the creation context still exists. A delegate
+      // can lose that context while Chromium's reply is pending, before our
+      // lifetime check can run. The frame API guards that conversion in Qt.
+      browser.mainFrame.runJavaScript("(() => { if (!window.widgetReady) return null; " + update
+        + " return {height: window.widgetContentHeight || 240, dpr: devicePixelRatio, width: innerWidth, viewportHeight: innerHeight}; })()", 0, function(result) {
         if (!lifetime.active) return
         browser.checking = false
         if (generation !== browser.generation || !result) return
