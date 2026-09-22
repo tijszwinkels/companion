@@ -31,8 +31,9 @@ function receive(request) {
       id: request.id,
       success: true,
       data: {
-        model: { provider, id },
-        thinkingLevel: option('--thinking'),
+        model: { provider, id, reasoning: id !== 'non-reasoning' },
+        thinkingLevel:
+          id === 'non-reasoning' ? 'off' : id === 'wrong-thinking' ? 'low' : option('--thinking'),
         messageCount: existsSync('request.json') ? 2 : 0,
         sessionName,
       },

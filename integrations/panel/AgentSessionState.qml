@@ -10,6 +10,59 @@ QtObject {
   property string selectedId: ""
   readonly property string conversationId: !showingPrevious && sessions.some(entry => entry.id === selectedId) ? selectedId : ""
   property var knownIds: ({})
+  property string orderRevision: ""
+  property bool controlsAvailable: false
+  property var modelCatalog: ({models: []})
+  property bool modelsLoading: false
+  property string modelsError: ""
+  // A request in flight must not select a tab after the user changes pages or
+  // hides/reopens this UI. Each client instance has an independent token.
+  property string navigationToken: Date.now().toString() + "-" + Math.random().toString()
+  function invalidateNavigation() { navigationToken = Date.now().toString() + "-" + Math.random().toString() }
+  onSelectedIdChanged: invalidateNavigation()
+  onShowingPreviousChanged: invalidateNavigation()
+  onPanelVisibleChanged: invalidateNavigation()
+  signal controlRequested(var request)
+
+  function refreshModels() {
+    if (!root.controlsAvailable || root.modelsLoading) return
+    root.modelsLoading = true
+    root.modelsError = ""
+    root.controlRequested({action: "agent-models"})
+  }
+
+  function disconnectControls() {
+    root.controlsAvailable = false
+    root.modelsLoading = false
+    root.invalidateNavigation()
+  }
+
+  function controlReceived(message) {
+    if (message.type === "agent-order") {
+      const byId = {}
+      for (const entry of root.sessions) byId[entry.id] = entry
+      // Full membership must agree. A later snapshot repairs a protocol gap;
+      // never silently drop conversations on a malformed/incomplete event.
+      if (!Array.isArray(message.ids) || message.ids.length !== root.sessions.length
+        || new Set(message.ids).size !== message.ids.length || message.ids.some(id => !byId[id])) return
+      root.sessions = message.ids.map(id => byId[id])
+      root.orderRevision = message.revision
+    } else if (message.type === "agent-select") {
+      if (root.panelVisible && message.token === root.navigationToken
+        && message.orderRevision === root.orderRevision && root.sessions.some(entry => entry.id === message.id)) {
+        root.select(message.id)
+      }
+    } else if ((message.type === "result" || message.type === "error") && message.action === "agent-models") {
+      root.modelsLoading = false
+      root.modelsError = message.type === "error" ? message.message : ""
+      if (!root.modelsError) root.modelCatalog = message.result
+    }
+  }
+
+  function move(id, beforeId) {
+    if (!root.controlsAvailable || !root.orderRevision) return
+    root.controlRequested({action: "move-agent", id: id, beforeId: beforeId, revision: root.orderRevision})
+  }
   // Read/unread belongs to the displayed page, not keyboard/composer focus.
   // Retain it across socket reconnects, but never write it into transcripts.
   property bool panelVisible: false

@@ -63,6 +63,8 @@ export class DesktopRuntime {
   private panelSession = '';
   private panelClient = 0;
   private interactionRevision = 0;
+  private navigation?: { clientId: number; token: string };
+  private modelDiscovery?: Promise<unknown>;
   private readonly frameComposerRevisions = new Map<number, number>();
   private router?: UserSensorRouter;
   private pipeline?: Pick<SensorPipeline, 'submitText'>;
@@ -100,6 +102,10 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        if (this.navigation?.clientId === clientId) {
+          this.navigation = undefined;
+          this.server.broadcast();
+        }
         this.setPanelKeyboardFocus(false, clientId);
         if (this.mediaClients.delete(clientId)) {
           this.pause.setMediaPlaying(this.mediaClients.size > 0);
@@ -139,6 +145,7 @@ export class DesktopRuntime {
         context.revision === this.interactionRevision &&
         context.agentSessionId === this.panelSession &&
         this.options.agents?.has(context.agentSessionId) === true,
+      selectSession: (context, index) => this.selectSession(context, index),
       speechChanged: (speaking) => {
         const next = speaking && !this.pause.paused;
         if (this.speaking !== next) {
@@ -352,6 +359,8 @@ export class DesktopRuntime {
       historyDeletionAvailable: !this.options.preview,
       textInputAvailable: Boolean(this.pipeline),
       sessions: this.options.agents?.snapshot() ?? [],
+      sessionOrderRevision: this.options.agents?.order().revision ?? '',
+      sessionControlsAvailable: Boolean(this.options.agents),
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
       agentActions: this.agentActions(),
@@ -381,7 +390,16 @@ export class DesktopRuntime {
 
   private interactionContext(): InteractionContext {
     const id = this.options.agents?.has(this.panelSession) ? this.panelSession : '';
+    const order = this.options.agents?.order();
     return {
+      agentNavigation:
+        this.navigation && order
+          ? {
+              ...this.navigation,
+              ids: order.ids,
+              orderRevision: order.revision,
+            }
+          : undefined,
       agentSessionId: id,
       agentComposerFocused: Boolean(
         id && this.composerSession === id && this.composerClient === this.panelClient,
@@ -389,6 +407,32 @@ export class DesktopRuntime {
       revision: this.interactionRevision,
       ...this.options.agents?.interaction(id),
     };
+  }
+
+  private selectSession(context: InteractionContext, index: number): boolean {
+    const captured = context.agentNavigation;
+    const order = this.options.agents?.order();
+    if (
+      !captured ||
+      !this.navigation ||
+      !order ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index > 8 ||
+      captured.clientId !== this.navigation.clientId ||
+      captured.token !== this.navigation.token ||
+      captured.orderRevision !== order.revision ||
+      !captured.ids[index] ||
+      captured.ids[index] !== order.ids[index]
+    ) {
+      return false;
+    }
+    return this.server.publishTo(captured.clientId, {
+      type: 'agent-select',
+      id: captured.ids[index],
+      token: captured.token,
+      orderRevision: captured.orderRevision,
+    });
   }
 
   /** One ordered UI report binds the visible tab and keyboard focus together. */
@@ -581,6 +625,9 @@ export class DesktopRuntime {
     if (request.action === 'panel-state') {
       if (
         typeof request.id !== 'string' ||
+        (request.visible !== undefined && typeof request.visible !== 'boolean') ||
+        (request.navigationToken !== undefined &&
+          (typeof request.navigationToken !== 'string' || request.navigationToken.length > 128)) ||
         typeof request.composerFocused !== 'boolean' ||
         (request.keyboardFocused !== undefined && typeof request.keyboardFocused !== 'boolean') ||
         (!request.id && request.composerFocused) ||
@@ -588,11 +635,31 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected a visible agent session id (or empty id) and composerFocused');
       }
+      // New clients report Activity/Previous visibility too. Older adapters
+      // keep their existing conversation behavior, without voice navigation.
+      const previousNavigation = this.navigation;
+      if (
+        request.visible === true &&
+        typeof request.navigationToken === 'string' &&
+        request.navigationToken
+      ) {
+        this.navigation = { clientId, token: request.navigationToken };
+      } else if (this.navigation?.clientId === clientId) {
+        this.navigation = undefined;
+      }
       this.setPanelKeyboardFocus(
         request.keyboardFocused === true || request.composerFocused,
         clientId,
       );
       this.setPanelState(request.id, request.composerFocused, clientId);
+      if (
+        previousNavigation?.clientId !== this.navigation?.clientId ||
+        previousNavigation?.token !== this.navigation?.token
+      ) {
+        // Activity has no selected conversation, so its navigation availability
+        // can change without changing the existing conversation generation.
+        this.server.broadcast();
+      }
       return 'panel-recorded';
     }
 
@@ -681,6 +748,48 @@ export class DesktopRuntime {
       }
       this.options.agents.followUp(request.id, request.text, this.signal);
       return 'submitted';
+    }
+
+    if (request.action === 'agent-models') {
+      if (!this.options.agents) {
+        throw Error('Agent sessions are unavailable');
+      }
+      // Coalesce concurrent UI refreshes into one bounded Pi discovery process.
+      if (!this.modelDiscovery) {
+        this.modelDiscovery = this.options.agents.models(this.signal).finally(() => {
+          this.modelDiscovery = undefined;
+        });
+      }
+      return this.modelDiscovery;
+    }
+
+    if (request.action === 'set-agent-model') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.model !== 'string' ||
+        request.model.length > 300
+      ) {
+        throw Error('Expected a conversation and configured model identifier');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      await this.options.agents.setModel(request.id, request.model, this.signal);
+      return 'model-selected';
+    }
+
+    if (request.action === 'move-agent') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.beforeId !== 'string' ||
+        typeof request.revision !== 'string'
+      ) {
+        throw Error('Expected a conversation, insertion target and current order revision');
+      }
+      this.options.agents.move(request.id, request.beforeId, request.revision);
+      return 'moved';
     }
 
     if (

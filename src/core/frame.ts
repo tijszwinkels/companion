@@ -41,6 +41,13 @@ export interface UserSensorFrame {
 }
 
 export interface InteractionContext {
+  /** Visible order and owning UI captured before ASR; never resolve numbers late. */
+  readonly agentNavigation?: {
+    readonly clientId: number;
+    readonly token: string;
+    readonly ids: readonly string[];
+    readonly orderRevision: string;
+  };
   /** Empty when the panel is hidden or no agent conversation is selected. */
   readonly agentSessionId: string;
   readonly agentComposerFocused: boolean;

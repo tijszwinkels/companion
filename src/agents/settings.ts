@@ -28,23 +28,36 @@ export const defaultQuickQuestionSettings = {
 export async function loadAgentSettings(
   directory: string,
   profile: AgentProfile = 'coding',
+  initialize = true,
 ): Promise<AgentSettings> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, 'companion-agent.json');
 
-  try {
-    const defaults = { ...defaultAgentSettings, quickQuestion: defaultQuickQuestionSettings };
-    await writeFile(path, JSON.stringify(defaults, null, 2) + '\n', {
-      flag: 'wx',
-      mode: 0o600,
-    });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-      throw error;
+  if (initialize) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    try {
+      const defaults = { ...defaultAgentSettings, quickQuestion: defaultQuickQuestionSettings };
+      await writeFile(path, JSON.stringify(defaults, null, 2) + '\n', {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
     }
   }
 
-  const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    if (!initialize && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return profile === 'quickQuestion'
+        ? { ...defaultAgentSettings, ...defaultQuickQuestionSettings }
+        : { ...defaultAgentSettings };
+    }
+    throw error;
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw Error(`${path}: expected an object`);
   }

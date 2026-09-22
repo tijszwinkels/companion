@@ -42,6 +42,10 @@ Rectangle {
   readonly property bool hovered: hover.hovered
   signal selectedRequested()
   signal closeRequested()
+  property bool dragEnabled: false
+  signal dragMoved(real sceneX, real sceneY)
+  signal dragFinished()
+  signal dragCancelled()
   width: 48 * tabUnit
   height: 62 * tabUnit
   radius: 5 * tabUnit
@@ -163,10 +167,38 @@ Rectangle {
     font.pixelSize: 9 * root.tabUnit
   }
   MouseArea {
+    id: tabMouse
     anchors.fill: parent
     acceptedButtons: Qt.LeftButton | Qt.RightButton
     cursorShape: Qt.PointingHandCursor
+    property real pressY: 0
+    property bool moving: false
+    property bool moved: false
+    preventStealing: root.dragEnabled
+    onPressed: mouse => {
+      pressY = mapToItem(null, mouse.x, mouse.y).y
+      moving = false
+      moved = false
+    }
+    onPositionChanged: mouse => {
+      if (!pressed || !root.dragEnabled || !(pressedButtons & Qt.LeftButton)) return
+      const sceneY = mapToItem(null, mouse.x, mouse.y).y
+      if (Math.abs(sceneY - pressY) > 8 * root.unit) moving = true
+      if (moving) {
+        moved = true
+        root.dragMoved(mapToItem(null, mouse.x, mouse.y).x, sceneY)
+      }
+    }
+    onReleased: {
+      if (moving) root.dragFinished()
+      moving = false
+    }
+    onCanceled: {
+      moving = false
+      root.dragCancelled()
+    }
     onClicked: event => {
+      if (moved) return
       if (event.button === Qt.RightButton) {
         if (root.online) root.closeRequested()
       } else {

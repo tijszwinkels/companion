@@ -16,6 +16,7 @@ import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
+import { GoToSession } from '../../src/processors/go-to-session.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { desktopFixture, stopped, waitFor } from '../desktop-fixture.ts';
 import { deferred, frame, signal, testDetector, testSensors } from '../helpers.ts';
@@ -541,4 +542,141 @@ test('close session rejects hidden/stale targets and extra text, honors preview 
   assert.equal(setup.outcomes.at(-1), 'preview');
   await assert.rejects(close.process(current, AbortSignal.abort()));
   assert.equal(setup.sessions.has(setup.first), true);
+});
+
+test('go to session uses captured visible order and reserves invalid, disabled and stale commands', async (context) => {
+  const setup = await fixture(context);
+  for (let index = 1; index < 9; index++) {
+    setup.sessions.start({ ...frame, utterance: `Session ${index + 1}` }, signal());
+    await setup.sessions.idle();
+  }
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect() {
+          assert.fail('Navigation and invalid navigation must never become agent text');
+        },
+      }),
+    },
+    () => {},
+    setup.feedback,
+  );
+  const navigation = new GoToSession(() => {}, false, setup.feedback);
+  navigation.subscribe(router);
+  setup.continuation.subscribe(router);
+
+  async function visible(token: string, shown = true) {
+    setup.desktop.send({
+      action: 'panel-state',
+      id: '',
+      composerFocused: false,
+      visible: shown,
+      navigationToken: token,
+    });
+    await setup.desktop.reply('panel-state');
+    return setup.activity.interactionContext!();
+  }
+  const captured = await visible('first-page');
+  const numbers = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+  for (let index = 0; index < 9; index++) {
+    for (const number of [String(index + 1), numbers[index]]) {
+      await router.route(
+        { ...frame, utterance: `Go to session ${number}!`, interaction: captured },
+        signal(),
+      );
+      assert.equal(setup.outcomes.at(-1), 'selected');
+      await waitFor(() =>
+        setup.desktop.messages.some(
+          (message) =>
+            message.type === 'agent-select' && message.id === captured.agentNavigation!.ids[index],
+        ),
+      );
+    }
+  }
+  for (const utterance of [
+    'Go to session',
+    'Go to session 0',
+    'Go to session 10',
+    'Go to session zero',
+    'Go to session ten',
+    'Go to session 2 and explain',
+    'Go to session 1.5',
+  ]) {
+    await router.route({ ...frame, utterance, interaction: captured }, signal());
+    assert.equal(setup.outcomes.at(-1), 'skipped', utterance);
+  }
+  router.setEnabled(navigation.name, false, 'shortcut');
+  await router.route({ ...frame, utterance: 'Go to session 1', interaction: captured }, signal());
+  assert.equal(setup.outcomes.at(-1), 'skipped');
+  router.setEnabled(navigation.name, true, 'shortcut');
+  const order = setup.sessions.order();
+  setup.sessions.move(order.ids[1], order.ids[0], order.revision);
+  await router.route({ ...frame, utterance: 'Go to session two', interaction: captured }, signal());
+  assert.equal(
+    setup.outcomes.at(-1),
+    'skipped',
+    'Reordering must invalidate speech already captured',
+  );
+  const reordered = await visible('second-page');
+  assert.equal(reordered.agentNavigation!.ids[0], order.ids[1]);
+  await router.route(
+    { ...frame, utterance: 'Go to session one', interaction: reordered },
+    signal(),
+  );
+  assert.equal(setup.outcomes.at(-1), 'selected');
+  await visible('another-page');
+  await router.route(
+    { ...frame, utterance: 'Go to session one', interaction: reordered },
+    signal(),
+  );
+  assert.equal(setup.outcomes.at(-1), 'skipped', 'Changing pages invalidates captured navigation');
+  const hidden = await visible('hidden', false);
+  assert.equal(hidden.agentNavigation, undefined);
+  await router.route({ ...frame, utterance: 'Go to session one', interaction: hidden }, signal());
+  assert.equal(setup.outcomes.at(-1), 'skipped');
+  const beforeClose = await visible('before-close');
+  await setup.sessions.remove(beforeClose.agentNavigation!.ids[0]);
+  await router.route(
+    { ...frame, utterance: 'Go to session one', interaction: beforeClose },
+    signal(),
+  );
+  assert.equal(setup.outcomes.at(-1), 'skipped');
+  const shortList = await visible('short-list');
+  await router.route(
+    { ...frame, utterance: 'Go to session nine', interaction: shortList },
+    signal(),
+  );
+  assert.equal(
+    setup.outcomes.at(-1),
+    'skipped',
+    'Missing positions never select another conversation',
+  );
+});
+
+test('navigation is delivered only to the captured UI connection and disconnect invalidates it', async (context) => {
+  const setup = await fixture(context);
+  const observer = createConnection(setup.desktop.socketPath);
+  context.after(async () => {
+    observer.destroy();
+  });
+  let observed = '';
+  observer.on('data', (chunk) => {
+    observed += chunk.toString();
+  });
+  await once(observer, 'connect');
+  setup.desktop.send({
+    action: 'panel-state',
+    id: setup.first,
+    composerFocused: false,
+    visible: true,
+    navigationToken: 'owner',
+  });
+  await setup.desktop.reply('panel-state');
+  const captured = setup.activity.interactionContext!();
+  assert.equal(setup.activity.selectSession!(captured, 0), true);
+  await waitFor(() => setup.desktop.messages.some((message) => message.type === 'agent-select'));
+  assert.equal(observed.includes('agent-select'), false);
+  setup.desktop.client.destroy();
+  await waitFor(() => setup.activity.interactionContext!().agentNavigation === undefined);
+  assert.equal(setup.activity.selectSession!(captured, 0), false);
 });

@@ -7,6 +7,15 @@ or an active desktop. With Qt 6's declarative development tools installed:
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 ```
 
+Session-control checks send actual Qt mouse/key events through the shared panel:
+dragging and Alt+Shift+Up/Down retain the selected conversation, draft and tab/
+message delegates; divider drags enforce width limits without shrinking the larger
+tabs. Model-menu tests pin rows during a catalog update and cancel a choice when
+the conversation changes. Navigation tests reject stale order/UI tokens and
+hidden targets. The native-window suite additionally retains a Chromium document
+marker through moves, reconnects and test presentation changes. All catalogs,
+sessions and widget state are synthetic; live Wayland/input hardware is not covered.
+
 Dynamic-choice tests cover pinned choices above the composer, actual clicks with
 revision/index identity, retained freeform drafts, pending acknowledgements,
 label-only and described options, permanent-shortcut collisions, paused/offline

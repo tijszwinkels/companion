@@ -8,7 +8,7 @@ There is no port binding layer, scheduler, or separate list of diagram edges.
 ## Wiring
 
 This minimal example shows named dependencies from [the CLI](../src/cli.ts).
-The CLI registers additional agent, continuation, close and feedback processors;
+The CLI registers additional agent, continuation, close, navigation and feedback processors;
 the example is not the complete current intent list.
 
 ```ts
@@ -37,6 +37,15 @@ const graph = createGraph(pipeline);
 as a possible destination: messages go from the router into the selected
 processor. Registration does not deliver a message, and the router does not
 broadcast frames to every subscriber.
+
+The prefix-only `GoToSession` processor reserves `go to session` and has no LLM
+instruction. It parses one exact digit or number word from 1–9, then calls
+`Activity.selectSession(context, index)`. The desktop runtime validates the
+captured `InteractionContext.agentNavigation` client/token/order against current
+state before sending a targeted UI selection event. Invalid, disabled, hidden,
+out-of-range and stale commands are consumed instead of falling through to
+inference or conversation text. This uses the normal processor registration,
+shortcut preferences and sensor-frame capture path.
 
 The router still invokes its detector through an ordinary method call:
 

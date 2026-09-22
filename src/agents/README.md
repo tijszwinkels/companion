@@ -38,6 +38,35 @@ quick-question override also prevents a coding turn until it is corrected.
 `QUICK_QUESTION` and `START_CODING_AGENT_SESSION` have independent enable/disable
 controls; an existing disabled coding intent does not disable the new shortcut.
 
+The bottom model picker changes **this conversation's next turn**, through an
+optional persisted `AgentSession.modelOverride`. It does not change the profile,
+thinking setting, other conversations, the intent classifier or either default
+configuration. A running/starting turn retains its captured settings; queued turns
+use the choice present when each turn begins. The override survives closing,
+listener restart and reopening. “Use coding/quick-question default” clears it and
+resumes per-turn configuration loading. The `model` field still describes the
+current/last turn; it is deliberately separate from `modelOverride`.
+
+`AgentSessions.models()` asks the configured Pi executable for
+`get_available_models` using a bounded offline RPC process, without a prompt,
+session, extensions, tools or project resource loading. The UI receives only
+provider/model identifiers and the two configured profile defaults, never Pi's
+full provider objects or credentials. Pi's `enabledModels` is its keyboard cycling
+subset, not the catalog: the picker offers all models Pi reports available. Refresh
+reloads the catalog/config; selecting an override validates against a fresh
+catalog. An unavailable archived override remains visible. Pi's exact-model
+startup check fails visibly instead of choosing a fallback. The profile supplies
+thinking; Pi explicitly runs non-reasoning models with thinking `off`, which the
+startup check accepts. Other unexpected thinking changes still fail visibly.
+Model discovery alone never creates `companion-agent.json`.
+
+Active-session order is owned by `AgentSessions` for the listener lifetime. Moves
+reorder the existing run objects, preserving turns, queues, widgets and IDs. New
+and reopened tabs append; closing removes only that tab. Order survives client
+reconnects through snapshots. Restarting the listener retains the existing policy
+of placing saved conversations in Previous sessions; it does not reopen or replay
+them automatically, and their former open-tab order is not restored.
+
 ## Session names
 
 `companion_name_session` is a small native Pi extension tool that calls

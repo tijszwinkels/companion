@@ -43,6 +43,15 @@ Item {
     panelVisible: root.panelVisible
     onRevealRequested: root.revealRequested()
     onConversationIdChanged: Qt.callLater(root.reportPanel)
+    onNavigationTokenChanged: Qt.callLater(root.reportPanel)
+    onControlRequested: request => {
+      if (!root.send(request)) {
+        const failure = {type: "error", action: request.action, message: "Companion is disconnected."}
+        sessions.controlReceived(failure)
+        root.error = failure.message
+        root.errorAction = request.action
+      }
+    }
   }
   Panel.ActivityHistoryState {
     id: activity
@@ -57,7 +66,8 @@ Item {
     const id = sessions.viewedId
     root.send({action: "panel-state", id: id,
       composerFocused: id !== "" && root.composerFocusId === id,
-      keyboardFocused: root.keyboardFocused})
+      keyboardFocused: root.keyboardFocused,
+      visible: root.panelVisible, navigationToken: sessions.navigationToken})
   }
 
   function finishInput(error) {
@@ -113,6 +123,7 @@ Item {
   }
 
   function disconnected() {
+    sessions.disconnectControls()
     root.online = false
     root.textInputAvailable = false
     root.finishUtterance("Connection lost before confirmation. Check History before resending; your draft is retained.")
@@ -128,6 +139,7 @@ Item {
   }
 
   function receive(message) {
+    sessions.controlReceived(message)
     if (message.type === "state" && message.protocol === 1) {
       root.paused = message.paused === true
       root.pauseReason = message.pauseReason || ""
@@ -141,6 +153,8 @@ Item {
       const actions = message.agentActions || {}
       if (JSON.stringify(actions) !== JSON.stringify(root.agentActions)) root.agentActions = actions
       sessions.replace(message.sessions || [])
+      sessions.orderRevision = message.sessionOrderRevision || ""
+      sessions.controlsAvailable = message.sessionControlsAvailable === true
       sessions.previousSessions = message.previousSessions || []
       root.online = message.ready === true
       if (root.online) activity.observe(message.activitySessionId, message.activityHistoryCount)

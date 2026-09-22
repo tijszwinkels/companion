@@ -198,7 +198,13 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
   const server = createServer((socket) => {
     sockets.push(socket);
     socket.on('error', (error: NodeJS.ErrnoException) => {
-      assert.equal(error.code, 'ECONNRESET', 'fixture permits forced Qt connection teardown');
+      // This test deliberately tears down Qt's socket during reconnect. A
+      // concurrent snapshot write can observe EPIPE instead of ECONNRESET;
+      // both mean the same peer closure, while other socket errors still fail.
+      assert.ok(
+        error.code === 'ECONNRESET' || error.code === 'EPIPE',
+        `Unexpected error during forced Qt connection teardown: ${error.code}`,
+      );
     });
     let buffer = '';
     socket.on('data', (chunk) => {
@@ -396,7 +402,7 @@ test('native UI preserves its QML body and Chromium view across presentation cha
       template
         .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
         .replace('@REFERENCE@', JSON.stringify(reference))
-        .replace('@CAPTURE@', join(setup.directory, 'window.png')),
+        .replaceAll('@CAPTURE@', join(setup.directory, 'window.png')),
     );
     try {
       const result = await execute(
@@ -408,7 +414,7 @@ test('native UI preserves its QML body and Chromium view across presentation cha
           killSignal: 'SIGKILL',
         },
       );
-      assert.match(result.stdout, /6 passed, 0 failed/);
+      assert.match(result.stdout, /7 passed, 0 failed/);
       const artifacts = join(build, 'artifacts');
       await mkdir(artifacts, { recursive: true });
       await writeFile(

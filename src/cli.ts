@@ -8,6 +8,7 @@ import { EnterTextToApplication } from './processors/enter-text-to-application.t
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
 import { QuickQuestion } from './processors/quick-question.ts';
+import { GoToSession } from './processors/go-to-session.ts';
 import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
 import { CloseAgentSession } from './processors/close-agent-session.ts';
 import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
@@ -161,6 +162,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       router,
     );
     new QuickQuestion({ sessions: agents }, log, values.preview, activity).subscribe(router);
+    new GoToSession(log, values.preview, activity).subscribe(router);
     new ContinueOpenAgentConversation(
       { sessions: agents },
       log,

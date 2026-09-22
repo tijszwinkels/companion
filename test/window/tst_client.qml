@@ -70,7 +70,7 @@ TestCase {
     wait(0)
     backend.requests = []
     client.choose("a", "revision", 1)
-    compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true})
+    compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true, visible: true, navigationToken: client.sessions.navigationToken})
     compare(backend.requests[1], {action: "choose-agent", id: "a", revision: "revision", index: 1})
     backend.received({type: "result", action: "choose-agent"})
     compare(Array.from(choices.signalArguments[0]), ["a", "revision", 1, ""])

@@ -314,8 +314,9 @@ test('question handoff frees the router, preserves screenshot, and can be stoppe
   );
   await sessions.remove(id);
   assert.deepEqual(sessions.snapshot(), []);
-  assert.equal(events.at(-2)?.type, 'agent-removed');
-  assert.equal(events.at(-1)?.type, 'agent-history');
+  assert.equal(events.at(-3)?.type, 'agent-removed');
+  assert.equal(events.at(-2)?.type, 'agent-history');
+  assert.equal(events.at(-1)?.type, 'agent-order');
 });
 
 test('preview and pre-handoff cancellation never launch an agent', async (context) => {
@@ -566,4 +567,38 @@ test('composer focus changes block pending typing and suppress Enter even if act
     'Only text was typed; Return must not reach the previous application',
   );
   activity.finished?.(frame.id);
+});
+
+test('model switching accepts Pi disabling unsupported reasoning but rejects other thinking drift', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new PiBackend();
+  await backend.run(
+    {
+      id: 'non-reasoning',
+      directory,
+      settings: { ...settings, model: 'configured/non-reasoning', thinking: 'medium' },
+      prompt: { text: 'Synthetic answer' },
+      resume: false,
+    },
+    signal(),
+    () => {},
+  );
+  const captured = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+  assert.equal(captured.request.message, 'Synthetic answer');
+  await rm(join(directory, 'request.json'));
+  await assert.rejects(
+    backend.run(
+      {
+        id: 'wrong-thinking',
+        directory,
+        settings: { ...settings, model: 'configured/wrong-thinking', thinking: 'medium' },
+        prompt: { text: 'Must not send' },
+        resume: false,
+      },
+      signal(),
+      () => {},
+    ),
+    /expected configured\/wrong-thinking \(medium\)/,
+  );
+  await assert.rejects(readFile(join(directory, 'request.json')), { code: 'ENOENT' });
 });

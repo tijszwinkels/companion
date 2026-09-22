@@ -117,6 +117,15 @@ Item {
     onRevealRequested: if (!native.ready) root.panelOpened = true
     onConversationIdChanged: Qt.callLater(root.reportPanelState)
     onPanelVisibleChanged: Qt.callLater(root.reportPanelState)
+    onNavigationTokenChanged: Qt.callLater(root.reportPanelState)
+    onControlRequested: request => {
+      if (!root.send(request)) {
+        const failure = {type: "error", action: request.action, message: "Companion is disconnected."}
+        agentSessions.controlReceived(failure)
+        root.lastError = failure.message
+        root.lastErrorAction = request.action
+      }
+    }
   }
 
   Panel.ActivityHistoryState {
@@ -130,7 +139,8 @@ Item {
     const id = agentSessions.viewedId
     root.send({action: "panel-state", id: id,
       composerFocused: id !== "" && sidePanel.composerFocusId === id,
-      keyboardFocused: sidePanel.keyboardFocused})
+      keyboardFocused: sidePanel.keyboardFocused,
+      visible: agentSessions.panelVisible, navigationToken: agentSessions.navigationToken})
   }
 
   function composerFocusChanged() {
@@ -191,11 +201,12 @@ Item {
 
   function send(request) {
     if (!root.online) {
-      return
+      return false
     }
 
     transport.write(JSON.stringify(request) + "\n")
     transport.flush()
+    return true
   }
 
   function togglePause() {
@@ -303,6 +314,7 @@ Item {
   function receive(line) {
     try {
       const message = JSON.parse(line)
+      agentSessions.controlReceived(message)
       if (message.action === "agent-tool-page") { sidePanel.toolPageReceived(message); return }
 
       if (message.type === "state" && message.protocol === 1) {
@@ -322,6 +334,8 @@ Item {
         if (JSON.stringify(root.intents) !== JSON.stringify(intents)) root.intents = intents
         root.updateAgentActions(message.agentActions)
         agentSessions.replace(message.sessions || [])
+        agentSessions.orderRevision = message.sessionOrderRevision || ""
+        agentSessions.controlsAvailable = message.sessionControlsAvailable === true
         agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
@@ -541,6 +555,7 @@ Item {
     root.pendingHistoryInsert = null
     insertDeadline.stop()
     activityHistory.disconnected()
+    agentSessions.disconnectControls()
     root.intents = []
     root.agentActions = ({})
     root.cancel()
@@ -628,10 +643,11 @@ Item {
     }
     agentActions: root.agentActions
     sessions: agentSessions.sessions
+    sessionControls: agentSessions
     unreadSessionIds: agentSessions.unreadIds
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["set-agent-model", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled, mode) => root.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})

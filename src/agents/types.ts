@@ -30,6 +30,8 @@ export interface AgentSession {
   model: string;
   /** Older saved conversations omit this and retain the coding configuration. */
   profile?: AgentProfile;
+  /** Explicit conversation choice; absence reloads the profile default each turn. */
+  modelOverride?: string;
   error: string;
   messages: AgentMessage[];
   updatedAt: number;
@@ -47,6 +49,7 @@ export type PreviousSession = Omit<AgentSession, 'messages'>;
 
 /** Updates contain changed messages only; a reconnect snapshot contains them all. */
 export type SessionEvent =
+  | { type: 'agent-order'; ids: string[]; revision: string }
   | { type: 'agent-session'; session: AgentSession }
   | { type: 'agent-removed'; id: string }
   | { type: 'agent-restored'; session: AgentSession }
@@ -60,6 +63,8 @@ export interface AgentSettings {
 }
 
 export interface AgentBackend extends InspectableModule {
+  /** Discover authenticated/configured Pi models without starting a conversation. */
+  models?(settings: AgentSettings, directory: string, signal: AbortSignal): Promise<string[]>;
   run(
     request: {
       id: string;

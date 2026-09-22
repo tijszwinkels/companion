@@ -39,6 +39,8 @@ On connection and state changes, the server sends:
     }
   ],
   "sessions": [],
+  "sessionControlsAvailable": true,
+  "sessionOrderRevision": "opaque-order-revision",
   "previousSessions": [],
   "intents": [
     {
@@ -494,6 +496,51 @@ Streaming updates are coalesced every 40 ms; a terminal status flushes pending
 messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
 All messages share the ordered socket with snapshots. A newly seen session opens
 and selects its panel tab once; further updates and reconnects do not reopen it.
+
+### Model selection, ordering and spoken navigation
+
+`sessionControlsAvailable` advertises the new controls; older servers omit it and
+clients hide/disable them. `sessions` is in authoritative visible order. The client
+must preserve that order when applying incremental message updates. A move sends
+`{"action":"move-agent","id":"...","beforeId":"...","revision":"..."}`.
+An empty `beforeId` appends. Unknown IDs, self-targets and stale revisions fail
+without moving anything. The server publishes
+`{"type":"agent-order","ids":["..."],"revision":"..."}` after a move or
+membership change; apply it without reselecting a tab. The response is `moved`.
+Reconnect snapshots include the latest `sessionOrderRevision`. Order lasts for
+the listener process; new/reopened sessions append, and listener restart keeps
+saved conversations in Previous sessions as before.
+
+`{"action":"agent-models"}` returns `{models: string[], coding: string,
+quickQuestion: string}` from Pi availability and Companion profile settings.
+Concurrent refresh requests share discovery; timeout or malformed data returns an
+error. `{"action":"set-agent-model","id":"...","model":"provider/id"}`
+validates the available identifier, saves `modelOverride` with that conversation,
+and returns `model-selected`. Empty `model` clears the override. Preview returns
+`preview` without saving. The current/last turn's `model` is separate; overrides
+apply to later turns and retain profile thinking, with Pi's `off` adjustment for
+non-reasoning models. Errors are shown in the panel;
+clients do not optimistically change other conversations or write live config.
+
+New clients also include `visible` and `navigationToken` in `panel-state`.
+`visible: true` covers Activity and Previous as well as conversations; their `id`
+stays empty. Tokens are unique to the UI instance and change when selection,
+Previous visibility, panel visibility or connection changes. At speech end,
+`InteractionContext.agentNavigation` captures that client/token and the immutable
+ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
+“go to session 1” through “go to session 9”, also one through nine, with ordinary
+ASR casing/spacing/terminal punctuation. Invalid/missing/out-of-range suffixes and
+disabled shortcuts remain consumed, never passed to inference or conversation
+text. This processor has its own shortcut toggle and no inference toggle.
+
+Immediately before dispatch the runtime rechecks the client, token, membership
+and order revision. It sends only that connection
+`{"type":"agent-select","id":"...","token":"...","orderRevision":"..."}`.
+The UI rechecks visibility, token, revision and membership before selecting the
+conversation, preventing even a socket-delayed command from changing a newer
+selection. Successful dispatch records `selected`; this indicates delivery to
+the owning UI, not a separate UI acknowledgement. No panel is opened by a hidden
+target, and a disconnected client cannot retain navigation ownership.
 
 The optional `previousSessions` snapshot array and
 `{"type":"agent-history","sessions":[...]}` contain summaries only: the session

@@ -125,6 +125,10 @@ export class SessionStore {
       typeof session.error !== 'string' ||
       !statuses.includes(session.status) ||
       (session.profile !== undefined && !['coding', 'quickQuestion'].includes(session.profile)) ||
+      (session.modelOverride !== undefined &&
+        (typeof session.modelOverride !== 'string' ||
+          !session.modelOverride.includes('/') ||
+          session.modelOverride.length > 300)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
       session.messages.length > panelMessageLimit + toolCallLimit
@@ -264,6 +268,7 @@ export class SessionStore {
       status: session.status,
       model: session.model,
       ...(session.profile !== undefined ? { profile: session.profile } : {}),
+      ...(session.modelOverride !== undefined ? { modelOverride: session.modelOverride } : {}),
       error: session.error,
       updatedAt: session.updatedAt,
       messages,

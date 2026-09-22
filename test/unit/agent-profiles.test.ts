@@ -173,3 +173,71 @@ test('quick-question preview and cancellation never launch an agent', async (con
   await assert.rejects(preview.process(frame, AbortSignal.abort()));
   assert.deepEqual(sessions.snapshot(), []);
 });
+
+test('conversation model overrides preserve an active turn, queued profile thinking and archived identity', async (context) => {
+  const { directory, path } = await fixture(context);
+  const requests: Parameters<AgentBackend['run']>[0][] = [];
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const backend: AgentBackend = {
+    id: 'model-fixture',
+    label: 'Configured model fixture',
+    dependencies: {},
+    async models() {
+      return ['configured/alternate'];
+    },
+    async run(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        entered.resolve();
+        await finish.promise;
+      }
+    },
+  };
+  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  context.after(() => finish.resolve());
+  context.after(() => sessions.close());
+  // Discovery must not initialize or rewrite the user's configuration.
+  assert.deepEqual((await sessions.models(signal())).models, ['configured/alternate']);
+  await assert.rejects(readFile(path), { code: 'ENOENT' });
+  const id = sessions.start(frame, signal(), 'quickQuestion');
+  await entered.promise;
+  const configuration = await readFile(path, 'utf8');
+  const runId = sessions.snapshot()[0].runId;
+  sessions.followUp(id, 'Waiting turn', signal());
+  await assert.rejects(
+    sessions.setModel(id, 'invented/provider', signal()),
+    /available configured/,
+  );
+  await sessions.setModel(id, 'configured/alternate', signal());
+  assert.equal(sessions.snapshot()[0].runId, runId);
+  assert.equal(sessions.snapshot()[0].model, defaultQuickQuestionSettings.model);
+  assert.equal(requests.length, 1);
+  finish.resolve();
+  await sessions.idle();
+  assert.equal(requests[1].settings.model, 'configured/alternate');
+  assert.equal(requests[1].settings.thinking, 'off');
+  assert.equal(await readFile(path, 'utf8'), configuration);
+  await sessions.remove(id);
+  await sessions.close();
+
+  const restarted = new AgentSessions({ backend }, () => {}, directory);
+  context.after(() => restarted.close());
+  await restarted.loadPrevious();
+  await restarted.reopen(id);
+  assert.equal(restarted.snapshot()[0].profile, 'quickQuestion');
+  assert.equal(restarted.snapshot()[0].modelOverride, 'configured/alternate');
+  restarted.followUp(id, 'Resume chosen model', signal());
+  await restarted.idle();
+  assert.equal(requests.at(-1)?.settings.model, 'configured/alternate');
+  await restarted.setModel(id, '', signal());
+  restarted.followUp(id, 'Use quick-question profile again', signal());
+  await restarted.idle();
+  assert.equal(requests.at(-1)?.settings.model, defaultQuickQuestionSettings.model);
+  const coding = restarted.start(frame, signal());
+  await restarted.idle();
+  assert.equal(
+    restarted.snapshot().find((entry) => entry.id === coding)?.model,
+    defaultAgentSettings.model,
+  );
+});

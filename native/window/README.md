@@ -13,6 +13,15 @@ Wayland and LayerShellQt. One persistent QML body moves between the two native
 surfaces, retaining drafts, selected tabs, zoom and browser documents. Closing
 the window hides it; the resident host can be summoned again.
 
+The shared panel also provides per-conversation next-turn model selection, tab
+dragging and Alt+Shift+Up/Down reordering, and a draggable rail divider. These
+controls remain in the same QML body across Window/Sidebar/Dock. Open-tab order
+is owned by the listener and survives reconnects; rail width lasts for the UI
+process. “Go to session one” through nine follows that visible order and only
+selects the UI/order captured before transcription. See the
+[desktop contract](../../src/desktop/README.md#model-selection-ordering-and-spoken-navigation)
+for scope, persistence and stale-request handling.
+
 Super+Alt+D uses Hyprland's dismissible focus-grab protocol for Sidebar and Dock.
 The normal Qt activation request works for ordinary windows, but Hyprland does
 not apply it to layer surfaces. The grab keeps typing in the requested composer
@@ -60,6 +69,10 @@ desktop window, restart the listener, modify configuration or compile ASR.
 private socket, fragmented backend snapshots, reconnects, single-instance
 commands, bounded input, ordered choice/input acknowledgements, unread/reopen
 state, and draft/browser retention during surface changes. The reparenting test
+also exercises real Qt key/mouse events for reordering, divider resizing and
+model-menu selection, retaining the native browser and draft through moves and
+reconnects. These use synthetic socket state and model catalogs; no provider
+request, personal configuration or live conversation is used. The reparenting test
 injects ordinary offscreen surfaces for Sidebar/Dock; it does **not** prove the
 Wayland layer protocol, reserved workspace geometry, focus restoration, monitor
 hotplug or GPU/WebGL performance. These require a coordinated desktop check.

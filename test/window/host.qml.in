@@ -212,4 +212,95 @@ TestCase {
       removed: {id: "utterance", sequence: 1, revision: 2, deleted: true}})
     compare(body.client.activity.model.count, 0)
   }
+  function test_session_controls_preserve_native_document_across_moves_and_presentations() {
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    body.client.error = ""
+    body.client.errorAction = ""
+    body.command({action: "theme", values: {background: "#1a1b26", foreground: "#a9b1d6", selection: "#292e42"}})
+    let original = body.client.sessions.sessions.find(entry => entry.id === "one")
+    const second = {id: "two", title: "Second session", status: "running", model: "configured/local", profile: "quickQuestion", messages: []}
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      sessionControlsAvailable: true, sessionOrderRevision: "native-order",
+      sessions: [original, second], activitySessionId: "activity", activityHistoryCount: 0})
+    body.client.sessions.select("one")
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "agent-models") })
+    fakeBackend.received({type: "result", action: "agent-models", result: {
+      models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local"}})
+    const view = findChild(body, "nativeWidgetBrowser")
+    const composer = findChild(body, "sessionComposer")
+    verify(view !== null)
+    const surface = findChild(body, "inlineWidget")
+    tryVerify(function() { return surface.rendered }, 10000, surface.error)
+    let documentMarker = null
+    view.runJavaScript("window.sessionOrderMarker = 'retained document'", function(value) { documentMarker = value })
+    tryCompare(view, "visible", true)
+    tryVerify(function() { return documentMarker === "retained document" })
+    composer.text = "Draft retained across order changes"
+    body.panel.focusComposer()
+    fakeBackend.sent = []
+    keyClick(Qt.Key_Down, Qt.AltModifier | Qt.ShiftModifier)
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "move-agent") })
+    const move = fakeBackend.sent.find(message => message.action === "move-agent")
+    compare(move.id, "one")
+    compare(move.beforeId, "")
+    compare(move.revision, "native-order")
+    fakeBackend.received({type: "agent-order", ids: ["two", "one"], revision: "native-order-2"})
+    compare(findChild(body, "tab-one").number, 2)
+    compare(findChild(body, "nativeWidgetBrowser"), view)
+    compare(composer.text, "Draft retained across order changes")
+
+    const panel = body.panel
+    const divider = findChild(panel, "railDivider")
+    const start = divider.mapToItem(panel, 5, 260)
+    mousePress(panel, start.x, start.y, Qt.LeftButton)
+    mouseMove(panel, 160, start.y, 20)
+    mouseRelease(panel, 160, start.y, Qt.LeftButton)
+    compare(panel.railWidthUnits, 160)
+    for (const mode of ["sidebar", "dock", "window"]) {
+      TestHost.setPresentation(mode)
+      compare(panel.railWidthUnits, 160)
+      compare(findChild(body, "nativeWidgetBrowser"), view)
+      compare(composer.text, "Draft retained across order changes")
+    }
+    TestHost.show(true)
+    tryVerify(function() { return body.keyboardFocused })
+    const picker = findChild(body, "sessionModelPicker")
+    verify(picker.visible)
+    verify(picker.enabled, "model picker loading=" + body.client.sessions.modelsLoading)
+    verify(waitForRendering(picker))
+    mouseClick(picker, 25, 15)
+    tryVerify(function() { return picker.popup.visible }, 1000, "Model popup did not open")
+    keyClick(Qt.Key_Down)
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "set-agent-model") })
+    const choice = fakeBackend.sent.find(message => message.action === "set-agent-model")
+    compare(choice.id, "one")
+    compare(choice.model, "configured/alternate")
+    original = Object.assign({}, original, {modelOverride: choice.model})
+    fakeBackend.received({type: "agent-session", session: Object.assign({}, original, {messages: []})})
+    compare(picker.currentText, "configured/alternate")
+    let captured = false
+    body.grabToImage(function(result) { captured = result.saveToFile("@CAPTURE@") })
+    tryVerify(function() { return captured })
+    // A socket reconnect restores accepted order and keeps the same native view.
+    fakeBackend.disconnected()
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      sessionControlsAvailable: true, sessionOrderRevision: "native-order-2",
+      sessions: [second, original], activitySessionId: "activity", activityHistoryCount: 0})
+    compare(body.client.sessions.selectedId, "one")
+    compare(findChild(body, "nativeWidgetBrowser"), view)
+    compare(composer.text, "Draft retained across order changes")
+    documentMarker = null
+    view.runJavaScript("window.sessionOrderMarker", function(value) { documentMarker = value })
+    tryVerify(function() { return documentMarker === "retained document" })
+    const token = body.client.sessions.navigationToken
+    fakeBackend.received({type: "agent-select", id: "two", token: token, orderRevision: "native-order-2"})
+    compare(body.client.sessions.selectedId, "two")
+    fakeBackend.received({type: "agent-select", id: "one", token: token, orderRevision: "native-order-2"})
+    compare(body.client.sessions.selectedId, "two", "A stale UI token cannot change the new selection")
+    body.client.sessions.select("one")
+    panel.railWidthUnits = 80
+  }
+
 }

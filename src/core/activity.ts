@@ -7,6 +7,7 @@ export type UtteranceOutcome =
   | 'started'
   | 'labeled'
   | 'closed'
+  | 'selected'
   | 'ignored'
   | 'skipped'
   | 'preview'
@@ -31,6 +32,8 @@ export interface Activity {
   interactionContext?(): InteractionContext;
   /** Recheck that the captured target still represents the same interaction. */
   interactionCurrent?(context: InteractionContext): boolean;
+  /** Select a captured visible conversation only while its UI/order are current. */
+  selectSession?(context: InteractionContext, index: number): boolean;
 
   /** Live VAD state, independent of work already queued for transcription. */
   speechChanged?(speaking: boolean): void;

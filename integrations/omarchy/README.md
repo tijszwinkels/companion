@@ -59,6 +59,23 @@ needed to update this adapter.
   panel focus for these local shortcuts, with no hidden composer.
   Super+Alt+Tab keeps its original group-window action outside Companion; no
   desktop-wide numbered shortcuts are registered.
+- Drag a conversation tab, or use **Alt+Shift+Up/Down** while the panel is
+  focused, to move it. Activity and Previous stay fixed. Q1–Q9, Alt-number and
+  **“Go to session one”** (also digits 1–9) use this same order. Spoken navigation
+  works from any visible panel page, has its own shortcut toggle, and rejects
+  stale/invalid targets without sending text to an agent. Order survives UI
+  reconnects for this listener run; new/reopened tabs append.
+- Drag the divider beside the tab rail to widen it. The larger tab heights,
+  icons and text remain unchanged; captions use the extra width. The rail stays
+  between 80 and 280 theme units and leaves at least 320 units for the body where
+  the host is wide enough. Narrowing temporarily clamps the width. The preferred
+  width lasts for this UI process, including native presentation changes.
+- The bottom conversation model picker applies to **this session's next turn**.
+  It lists Pi's available configured models and can restore that conversation's
+  coding/quick-question default. Overrides survive closing and reopening, while
+  running turns and other sessions keep their models. Thinking follows the
+  conversation profile, or `off` for models without reasoning. The picker does
+  not edit profile or Pi configuration.
 - While the panel has keyboard focus, **Super+minus** widens it and
   **Super+equals** narrows it by 100 logical pixels. These are Omarchy's existing
   physical horizontal-resize keys (`code:20`/`code:21`); their original window

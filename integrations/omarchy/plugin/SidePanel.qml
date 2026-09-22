@@ -26,6 +26,7 @@ PanelWindow {
   property bool textInputAvailable: false
   property var agentActions: ({})
   property var sessions: []
+  property var sessionControls: null
   property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
@@ -171,6 +172,7 @@ PanelWindow {
         onUtteranceRequested: text => root.utteranceRequested(text)
         agentActions: root.agentActions
         sessions: root.sessions
+        sessionControls: root.sessionControls
         unreadSessionIds: root.unreadSessionIds
         previousSessions: root.previousSessions
         showingPrevious: root.showingPrevious

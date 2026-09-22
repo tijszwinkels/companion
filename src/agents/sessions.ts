@@ -38,6 +38,7 @@ interface RunningSession {
   busy: boolean;
   pending: AgentMessage[];
   widgetReservations: Map<string, AgentMessage>;
+  modelWrite?: Promise<void>;
 }
 
 const maxPendingFollowUps = 8;
@@ -59,6 +60,8 @@ export class AgentSessions implements InspectableModule {
   private readonly restoring = new Set<string>();
   private readonly store: SessionStore;
   private readonly widgets: WidgetService;
+  private orderRevision = randomUUID();
+  private readonly modelChanges = new Set<string>();
 
   constructor(
     readonly dependencies: { backend: AgentBackend },
@@ -145,6 +148,96 @@ export class AgentSessions implements InspectableModule {
       ...view,
       messages: [...view.messages],
     }));
+  }
+
+  /** The Map order is also the visible tab order. Moves retain every run object. */
+  order(): { ids: string[]; revision: string } {
+    return { ids: [...this.sessions.keys()], revision: this.orderRevision };
+  }
+
+  private publishOrder(): void {
+    this.orderRevision = randomUUID();
+    for (const listener of this.listeners) {
+      listener({ type: 'agent-order', ...this.order() });
+    }
+  }
+
+  move(id: string, beforeId: string, revision: string): void {
+    if (
+      this.closed ||
+      revision !== this.orderRevision ||
+      !this.sessions.has(id) ||
+      (beforeId !== '' && !this.sessions.has(beforeId)) ||
+      id === beforeId
+    ) {
+      throw Error('Session order changed; try moving the tab again');
+    }
+    const entries = [...this.sessions.entries()];
+    const moved = entries.find(([entryId]) => entryId === id)!;
+    const remaining = entries.filter(([entryId]) => entryId !== id);
+    const position = beforeId
+      ? remaining.findIndex(([entryId]) => entryId === beforeId)
+      : remaining.length;
+    remaining.splice(position, 0, moved);
+    this.sessions.clear();
+    for (const [entryId, session] of remaining) {
+      this.sessions.set(entryId, session);
+    }
+    this.publishOrder();
+  }
+
+  async models(
+    signal: AbortSignal,
+  ): Promise<{ models: string[]; coding: string; quickQuestion: string }> {
+    const coding = await loadAgentSettings(this.directory, 'coding', false);
+    const quickQuestion = await loadAgentSettings(this.directory, 'quickQuestion', false);
+    if (!this.dependencies.backend.models) {
+      throw Error('This agent backend does not support model selection');
+    }
+    const models = await this.dependencies.backend.models(coding, this.directory, signal);
+    return { models, coding: coding.model, quickQuestion: quickQuestion.model };
+  }
+
+  /** A choice affects only later turns of this conversation, including reopening. */
+  async setModel(id: string, model: string, signal: AbortSignal): Promise<void> {
+    const session = this.sessions.get(id);
+    if (this.closed || !session || session.closing || this.modelChanges.has(id)) {
+      throw Error('Conversation is unavailable or its model is already being changed');
+    }
+    this.modelChanges.add(id);
+    try {
+      if (model !== '' && !(await this.models(signal)).models.includes(model)) {
+        throw Error('Choose an available configured Pi model');
+      }
+      signal.throwIfAborted();
+      if (this.closed || this.sessions.get(id) !== session || session.closing) {
+        throw Error('Conversation closed while choosing its model');
+      }
+      const previousModel = session.view.modelOverride;
+      // Save alongside the transcript, using SessionStore's ordered writes.
+      // The current turn already holds a settings copy; it is never restarted.
+      if (model) {
+        session.view.modelOverride = model;
+      } else {
+        delete session.view.modelOverride;
+      }
+      this.flush(session);
+      session.modelWrite = this.store.save(session.view).catch((error) => {
+        if (previousModel === undefined) {
+          delete session.view.modelOverride;
+        } else {
+          session.view.modelOverride = previousModel;
+        }
+        this.flush(session);
+        throw error;
+      });
+      await session.modelWrite;
+    } finally {
+      if (session) {
+        session.modelWrite = undefined;
+      }
+      this.modelChanges.delete(id);
+    }
   }
 
   toolPage(request: ToolPageRequest): ToolPage {
@@ -286,6 +379,7 @@ export class AgentSessions implements InspectableModule {
     };
     this.sessions.set(id, session);
     this.flush(session);
+    this.publishOrder();
     session.done = this.drain(
       session,
       { text: frame.utterance, screenshot: frame.screenshot },
@@ -401,6 +495,12 @@ export class AgentSessions implements InspectableModule {
     let acceptingUpdates = true;
     let widgetLease: WidgetLease | undefined;
     try {
+      // A queued successor waits for an accepted model change to be durable.
+      // A failed choice rolls back first, then this turn uses the old setting.
+      if (session.modelWrite) {
+        await session.modelWrite.catch(() => {});
+      }
+      const modelOverride = session.view.modelOverride;
       if (prompt.screenshot) {
         const question = session.view.messages[0];
         question.screenshotUrl = await this.store.screenshot(
@@ -415,6 +515,9 @@ export class AgentSessions implements InspectableModule {
       await this.store.save(session.view);
       session.controller.signal.throwIfAborted();
       const settings = await loadAgentSettings(this.directory, session.view.profile);
+      if (modelOverride) {
+        settings.model = modelOverride;
+      }
       session.controller.signal.throwIfAborted();
       session.view.model = settings.model;
       session.view.status = 'running';
@@ -702,6 +805,7 @@ export class AgentSessions implements InspectableModule {
         listener({ type: 'agent-removed', id });
       }
       this.publishHistory();
+      this.publishOrder();
     } finally {
       session.closing = false;
       if (this.sessions.has(id)) {
@@ -778,6 +882,7 @@ export class AgentSessions implements InspectableModule {
         listener({ type: 'agent-restored', session: view });
       }
       this.publishHistory();
+      this.publishOrder();
     } finally {
       this.restoring.delete(id);
     }

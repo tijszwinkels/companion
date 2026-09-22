@@ -11,6 +11,7 @@ export class DesktopServer {
   private listening = false;
   private readonly lock: InstanceLock;
   private nextClientId = 0;
+  private readonly clientIds = new Map<number, Socket>();
 
   constructor(
     private readonly path: string,
@@ -107,6 +108,16 @@ export class DesktopServer {
     }
   }
 
+  /** Navigation belongs to the UI captured at speech end, not every observer. */
+  publishTo(clientId: number, message: unknown): boolean {
+    const socket = this.clientIds.get(clientId);
+    if (!socket || socket.destroyed) {
+      return false;
+    }
+    this.send(socket, message);
+    return !socket.destroyed;
+  }
+
   private send(socket: Socket, message: unknown): void {
     if (socket.destroyed) {
       return;
@@ -128,10 +139,12 @@ export class DesktopServer {
 
     this.clients.add(socket);
     const clientId = ++this.nextClientId;
+    this.clientIds.set(clientId, socket);
     socket.setEncoding('utf8');
     socket.on('error', () => socket.destroy());
     socket.once('close', () => {
       this.clients.delete(socket);
+      this.clientIds.delete(clientId);
       this.disconnected(clientId);
     });
     this.send(socket, { type: 'state', ...(this.snapshot() as object) });
@@ -185,6 +198,9 @@ export class DesktopServer {
           action === 'set-intent-enabled' ||
           action === 'activity-history' ||
           action === 'agent-tool-page' ||
+          action === 'agent-models' ||
+          action === 'set-agent-model' ||
+          action === 'move-agent' ||
           action === 'label-history' ||
           action === 'delete-history' ||
           action === 'stop-agent' ||

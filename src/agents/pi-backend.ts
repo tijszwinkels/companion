@@ -6,6 +6,8 @@ import { chatMessage, type AgentBackend } from './types.ts';
 import { object, PiTranscript } from './pi-transcript.ts';
 import { parseChoices, type AgentChoice } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
+import { piModels } from './pi-models.ts';
+import type { AgentSettings } from './types.ts';
 
 const systemInstruction = `You are answering a question in Companion, a desktop voice assistant.
 Answer the user's question directly, using Markdown where helpful. Use your tools when needed.
@@ -22,6 +24,10 @@ export class PiBackend implements AgentBackend {
   readonly id = 'pi-backend';
   readonly label = 'Headless Pi';
   readonly dependencies = {};
+
+  models(settings: AgentSettings, directory: string, signal: AbortSignal): Promise<string[]> {
+    return piModels(settings.executable, directory, signal);
+  }
 
   async run(
     request: Parameters<AgentBackend['run']>[0],
@@ -156,9 +162,13 @@ export class PiBackend implements AgentBackend {
         const state = object(event.data);
         const model = object(state.model);
         const actual = `${String(model.provider)}/${String(model.id)}`;
-        if (actual !== settings.model || state.thinkingLevel !== settings.thinking) {
+        // Pi explicitly disables thinking on non-reasoning models. Accept that
+        // documented adjustment when switching models, while still rejecting
+        // a different model or unexpected thinking on a reasoning-capable one.
+        const expectedThinking = model.reasoning === false ? 'off' : settings.thinking;
+        if (actual !== settings.model || state.thinkingLevel !== expectedThinking) {
           throw Error(
-            `Pi selected ${actual} (${String(state.thinkingLevel)}); expected ${settings.model} (${settings.thinking})`,
+            `Pi selected ${actual} (${String(state.thinkingLevel)}); expected ${settings.model} (${expectedThinking})`,
           );
         }
 

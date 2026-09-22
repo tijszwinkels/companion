@@ -34,11 +34,31 @@ Item {
   property bool textInputAvailable: false
   property var agentActions: ({})
   property var sessions: []
+  property var sessionControls: null
+  // Retained with this shared body across reconnects and Window/Sidebar/Dock.
+  // Store the preference in logical theme units; a narrow host only clamps the
+  // effective width, so growing it again restores the user's chosen width.
+  property real railWidthUnits: 80
+  readonly property real maximumRailWidth: Math.max(80 * unit, Math.min(280 * unit, width - 320 * unit))
+  readonly property real railWidth: Math.max(80 * unit, Math.min(railWidthUnits * unit, maximumRailWidth))
+  property string draggingSessionId: ""
+  property string dragBeforeId: ""
+  property bool dragDestinationValid: false
+  property real dragSceneX: 0
+  property real dragSceneY: 0
+  property string dragOrderRevision: ""
+  readonly property bool canMoveSessions: online && sessionControls !== null && sessionControls.controlsAvailable
   property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
   property string controlError: ""
   property string selectedSessionId: ""
+  onSelectedSessionIdChanged: { Qt.callLater(refreshModels); Qt.callLater(ensureSelectedVisible) }
+  onOnlineChanged: if (online) Qt.callLater(refreshModels)
+  onSessionControlsChanged: Qt.callLater(refreshModels)
+  function refreshModels() {
+    if (root.online && root.selectedSessionId && root.sessionControls) root.sessionControls.refreshModels()
+  }
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
   property var locallyUnpinned: ({})
   readonly property var pinnedMessage: selectedSession && selectedSession.messages.find(message =>
@@ -111,6 +131,18 @@ Item {
         sessionTabs.set(index, row)
       }
     }
+    Qt.callLater(ensureSelectedVisible)
+  }
+  function ensureSelectedVisible() {
+    if (root.draggingSessionId || root.showingPrevious) return
+    for (const tab of tabs.children) {
+      if (tab.tabId !== root.selectedSessionId) continue
+      if (tab.y < sessionList.contentY) sessionList.contentY = tab.y
+      else if (tab.y + tab.height > sessionList.contentY + sessionList.height) {
+        sessionList.contentY = Math.max(0, tab.y + tab.height - sessionList.height)
+      }
+      break
+    }
   }
   onSessionsChanged: {
     synchronizeTabs()
@@ -151,6 +183,72 @@ Item {
     Qt.callLater(function() {
       if (root.selectedSession && root.selectedSessionId === id && root.keyboardFocused) root.focusComposer()
     })
+  }
+
+  function moveSelected(direction) {
+    if (!root.canMoveSessions || root.showingPrevious) return
+    const index = root.sessions.findIndex(entry => entry.id === root.selectedSessionId)
+    const destination = index + direction
+    if (index < 0 || destination < 0 || destination >= root.sessions.length) return
+    const before = direction < 0 ? root.sessions[destination].id
+      : destination + 1 < root.sessions.length ? root.sessions[destination + 1].id : ""
+    root.sessionControls.move(root.selectedSessionId, before)
+  }
+
+  // The pointer moves independently of the delegates. Commit once on release,
+  // preserving selection and every session/widget object throughout the drag.
+  function updateDrag(id, sceneX, sceneY) {
+    if (!root.draggingSessionId && root.sessionControls) root.dragOrderRevision = root.sessionControls.orderRevision
+    root.draggingSessionId = id
+    root.dragSceneX = sceneX
+    root.dragSceneY = sceneY
+    const point = sessionList.mapFromItem(null, sceneX, sceneY)
+    root.dragDestinationValid = point.x >= 0 && point.x <= sessionList.width
+      && point.y >= 0 && point.y <= sessionList.height
+    root.dragBeforeId = ""
+    for (let index = 0; index < tabs.children.length; index++) {
+      const tab = tabs.children[index]
+      if (!tab.tabId || tab.tabId === id) continue
+      if (point.y + sessionList.contentY < tab.y + tab.height / 2) {
+        root.dragBeforeId = tab.tabId
+        break
+      }
+    }
+  }
+
+  Timer {
+    interval: 40
+    repeat: true
+    running: root.draggingSessionId !== "" && root.dragDestinationValid
+    onTriggered: {
+      const point = sessionList.mapFromItem(null, root.dragSceneX, root.dragSceneY)
+      const delta = point.y < 28 * root.unit ? -12 * root.unit
+        : point.y > sessionList.height - 28 * root.unit ? 12 * root.unit : 0
+      sessionList.contentY = Math.max(0, Math.min(Math.max(0, sessionList.contentHeight - sessionList.height), sessionList.contentY + delta))
+      root.updateDrag(root.draggingSessionId, root.dragSceneX, root.dragSceneY)
+    }
+  }
+
+  function finishDrag() {
+    if (root.dragDestinationValid && root.canMoveSessions && root.draggingSessionId
+      && root.dragOrderRevision === root.sessionControls.orderRevision) {
+      root.sessionControls.move(root.draggingSessionId, root.dragBeforeId)
+    }
+    root.draggingSessionId = ""
+    root.dragDestinationValid = false
+  }
+
+  Shortcut {
+    sequence: "Alt+Shift+Up"
+    context: Qt.WindowShortcut
+    enabled: root.visible && root.animationsEnabled && root.keyboardFocused && root.canMoveSessions
+    onActivated: root.moveSelected(-1)
+  }
+  Shortcut {
+    sequence: "Alt+Shift+Down"
+    context: Qt.WindowShortcut
+    enabled: root.visible && root.animationsEnabled && root.keyboardFocused && root.canMoveSessions
+    onActivated: root.moveSelected(1)
   }
 
   // Cycle Activity -> Q1 -> Q2 -> ... -> Activity. Previous sessions joins
@@ -217,7 +315,7 @@ Item {
   Flickable {
     id: rail
     objectName: "tabRail"
-    width: 64 * root.tabUnit
+    width: root.railWidth
     height: parent.height
     // Keep a full session tab between the fixed controls. On very short
     // surfaces the whole rail scrolls instead of overlapping those controls.
@@ -236,7 +334,7 @@ Item {
         anchors.top: parent.top
         anchors.topMargin: 20 * root.tabUnit
         anchors.horizontalCenter: parent.horizontalCenter
-        width: 48 * root.tabUnit
+        width: rail.width - 16 * root.tabUnit
         height: 64 * root.tabUnit
         color: !root.showingPrevious && root.selectedSession === null ? root.selection : "transparent"
 
@@ -291,6 +389,7 @@ Item {
       }
 
       Flickable {
+        id: sessionList
         objectName: "sessionTabList"
         anchors.fill: parent
         anchors.topMargin: 100 * root.tabUnit
@@ -298,6 +397,7 @@ Item {
         contentHeight: tabs.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        interactive: root.draggingSessionId === ""
 
         Column {
           id: tabs
@@ -311,6 +411,7 @@ Item {
               required property bool tabRunning
               required property int index
               objectName: "tab-" + tabId
+              width: rail.width - 16 * root.tabUnit
               anchors.horizontalCenter: parent.horizontalCenter
               title: tabTitle
               number: index + 1
@@ -328,10 +429,29 @@ Item {
               tooltipBorder: root.tooltipBorder
               fontFamily: root.fontFamily
               unit: root.unit
+              dragEnabled: root.canMoveSessions
+              opacity: root.draggingSessionId === tabId ? 0.55 : 1
+              onDragMoved: (sceneX, sceneY) => root.updateDrag(tabId, sceneX, sceneY)
+              onDragFinished: root.finishDrag()
+              onDragCancelled: { root.draggingSessionId = ""; root.dragDestinationValid = false }
+              Rectangle {
+                width: parent.width
+                height: 3 * root.unit
+                color: root.accent
+                visible: root.dragDestinationValid && root.dragBeforeId === tabId
+              }
               onSelectedRequested: root.sessionSelected(tabId)
               onCloseRequested: root.dismissSessionRequested(tabId)
             }
           }
+        }
+        Rectangle {
+          x: 8 * root.tabUnit
+          y: tabs.height
+          width: rail.width - 16 * root.tabUnit
+          height: 3 * root.unit
+          color: root.accent
+          visible: root.dragDestinationValid && root.dragBeforeId === ""
         }
       }
 
@@ -340,7 +460,7 @@ Item {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 12 * root.tabUnit
         x: 8 * root.tabUnit
-        width: 48 * root.tabUnit
+        width: rail.width - 16 * root.tabUnit
         height: 60 * root.tabUnit
         radius: 5 * root.tabUnit
         color: root.showingPrevious || previousMouse.containsMouse ? root.selection : "transparent"
@@ -369,6 +489,34 @@ Item {
     }
   }
 
+  // A generous hit target straddles the thin divider. Pointer coordinates are
+  // mapped to the stable root, so resizing cannot feed back into drag distance.
+  MouseArea {
+    id: railDivider
+    objectName: "railDivider"
+    x: rail.width - width / 2
+    width: 10 * root.unit
+    height: parent.height
+    z: 5
+    hoverEnabled: true
+    preventStealing: true
+    cursorShape: Qt.SplitHCursor
+    onPositionChanged: mouse => {
+      if (pressed) {
+        const point = mapToItem(root, mouse.x, mouse.y)
+        root.railWidthUnits = Math.max(80, Math.min(point.x, root.maximumRailWidth) / root.unit)
+      }
+    }
+    Rectangle {
+      anchors.horizontalCenter: parent.horizontalCenter
+      width: (railDivider.containsMouse || railDivider.pressed ? 3 : 1) * root.unit
+      height: parent.height
+      color: railDivider.containsMouse || railDivider.pressed ? root.accent : root.selection
+    }
+    Accessible.role: Accessible.Grip
+    Accessible.name: "Resize session rail"
+  }
+
   Item {
     id: body
     readonly property real contentTop: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
@@ -378,6 +526,7 @@ Item {
     anchors.top: parent.top
     anchors.bottom: parent.bottom
     anchors.margins: 20 * root.unit
+    anchors.bottomMargin: 20 * root.unit + (modelPicker.visible ? modelPicker.height : 0)
 
     Text {
       anchors.top: parent.top
@@ -591,5 +740,28 @@ Item {
       onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
     }
 
+  }
+
+  ModelPicker {
+    id: modelPicker
+    objectName: "sessionModelFooter"
+    visible: root.selectedSession !== null && root.sessionControls !== null && root.sessionControls.controlsAvailable
+    anchors.left: rail.right
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    anchors.leftMargin: 20 * root.unit
+    anchors.rightMargin: 20 * root.unit
+    session: root.selectedSession
+    catalog: root.sessionControls ? root.sessionControls.modelCatalog : ({models: []})
+    loading: root.sessionControls ? root.sessionControls.modelsLoading : false
+    error: root.sessionControls ? root.sessionControls.modelsError : ""
+    online: root.online
+    foreground: root.foreground
+    muted: root.muted
+    selection: root.selection
+    fontFamily: root.fontFamily
+    unit: root.unit
+    onRefreshRequested: root.refreshModels()
+    onModelRequested: (id, model) => root.sessionControls.controlRequested({action: "set-agent-model", id: id, model: model})
   }
 }

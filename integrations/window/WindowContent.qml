@@ -282,6 +282,7 @@ Item {
       root.host.notify({type: "activity-text", id: client.pendingUtteranceId, text: text})
     }
     sessions: client.sessions.sessions
+    sessionControls: client.sessions
     previousSessions: client.sessions.previousSessions
     unreadSessionIds: client.sessions.unreadIds
     selectedSessionId: client.sessions.selectedId
