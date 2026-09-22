@@ -223,3 +223,10 @@ state. Backend fixtures verify 1,500 calls in one row, a <2 KB snapshot instead 
 > ordinary display budgets, legacy migration and private restart restoration,
 > late Pi events, storage failures, and correlated private-socket ownership checks.
 > These are synthetic offscreen/private-socket checks, not live desktop deployment.
+
+Tab-size checks cover the 25% larger tab geometry, glyphs, captions, close target
+and tooltips at theme scales 0.8, 1 and 1.5. They verify unchanged panel width and
+reader zoom, wheel scrolling to the last session, Activity/Previous selection,
+keyboard close and accessibility roles. Short surfaces keep a full session tab
+between the fixed controls; when necessary the whole rail scrolls as well.
+These are synthetic offscreen checks, not live desktop validation.

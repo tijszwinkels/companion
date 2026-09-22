@@ -18,6 +18,8 @@ Rectangle {
   property color tooltipForeground: foreground
   property color tooltipBorder: muted
   property real unit: 1
+  // Tabs have their own scale; reader zoom never changes these controls.
+  readonly property real tabUnit: 1.25 * unit
   property bool online: true
   property bool running: false
   property bool unread: false
@@ -40,12 +42,12 @@ Rectangle {
   readonly property bool hovered: hover.hovered
   signal selectedRequested()
   signal closeRequested()
-  width: 48 * unit
-  height: 62 * unit
-  radius: 5 * unit
+  width: 48 * tabUnit
+  height: 62 * tabUnit
+  radius: 5 * tabUnit
   color: unread ? Qt.rgba(unreadColor.r, unreadColor.g, unreadColor.b, 0.12)
     : selected ? selection : hovered ? Qt.rgba(foreground.r, foreground.g, foreground.b, 0.06) : "transparent"
-  border.width: unread ? root.unit : 0
+  border.width: unread ? root.tabUnit : 0
   border.color: Qt.rgba(unreadColor.r, unreadColor.g, unreadColor.b, 0.25)
 
   HoverHandler { id: hover }
@@ -58,13 +60,13 @@ Rectangle {
     visible: root.hovered && !closeMouse.containsMouse
     delay: 400
     text: root.title
-    padding: 8 * root.unit
-    width: Math.min(280 * root.unit, titleText.implicitWidth + 2 * padding)
+    padding: 8 * root.tabUnit
+    width: Math.min(280 * root.tabUnit, titleText.implicitWidth + 2 * padding)
     background: Rectangle {
       color: root.tooltipBackground
       border.color: root.tooltipBorder
-      border.width: root.unit
-      radius: 4 * root.unit
+      border.width: root.tabUnit
+      radius: 4 * root.tabUnit
     }
     contentItem: Text {
       id: titleText
@@ -73,16 +75,16 @@ Rectangle {
       wrapMode: Text.Wrap
       color: root.tooltipForeground
       font.family: root.fontFamily
-      font.pixelSize: 11 * root.unit
+      font.pixelSize: 11 * root.tabUnit
     }
   }
 
   Item {
     id: badge
     anchors.top: parent.top
-    anchors.topMargin: 3 * root.unit
+    anchors.topMargin: 3 * root.tabUnit
     anchors.horizontalCenter: parent.horizontalCenter
-    width: 28 * root.unit
+    width: 28 * root.tabUnit
     height: width
 
     Shape {
@@ -94,13 +96,13 @@ Rectangle {
       // Rotate cached geometry rather than repainting a Canvas every frame.
       ShapePath {
         strokeColor: root.accent
-        strokeWidth: 1.5 * root.unit
+        strokeWidth: 1.5 * root.tabUnit
         capStyle: ShapePath.RoundCap
         fillColor: "transparent"
         PathAngleArc {
           centerX: badge.width / 2
           centerY: badge.height / 2
-          radiusX: badge.width / 2 - 2 * root.unit
+          radiusX: badge.width / 2 - 2 * root.tabUnit
           radiusY: radiusX
           startAngle: -90
           sweepAngle: 265
@@ -121,14 +123,14 @@ Rectangle {
       textFormat: Text.PlainText
       color: root.selected ? root.accent : root.foreground
       font.family: root.fontFamily
-      font.pixelSize: (root.hasEmoji ? 15 : 10) * root.unit
+      font.pixelSize: (root.hasEmoji ? 15 : 10) * root.tabUnit
     }
     Rectangle {
       objectName: "sessionUnreadDot"
       visible: root.unread
       anchors.right: parent.right
       anchors.bottom: parent.bottom
-      width: 7 * root.unit
+      width: 7 * root.tabUnit
       height: width
       radius: width / 2
       color: root.unreadColor
@@ -137,19 +139,19 @@ Rectangle {
   Text {
     visible: root.hasEmoji
     anchors.left: parent.left
-    anchors.leftMargin: 3 * root.unit
+    anchors.leftMargin: 3 * root.tabUnit
     anchors.top: parent.top
-    anchors.topMargin: 3 * root.unit
+    anchors.topMargin: 3 * root.tabUnit
     text: root.number
     color: root.muted
     font.family: root.fontFamily
-    font.pixelSize: 8 * root.unit
+    font.pixelSize: 8 * root.tabUnit
   }
   Text {
     objectName: "sessionCaption"
     anchors.fill: parent
-    anchors.margins: 3 * root.unit
-    anchors.topMargin: 33 * root.unit
+    anchors.margins: 3 * root.tabUnit
+    anchors.topMargin: 33 * root.tabUnit
     text: root.caption
     textFormat: Text.PlainText
     maximumLineCount: 2
@@ -158,7 +160,7 @@ Rectangle {
     horizontalAlignment: Text.AlignHCenter
     color: root.unread ? root.unreadColor : root.selected ? root.accent : root.muted
     font.family: root.fontFamily
-    font.pixelSize: 9 * root.unit
+    font.pixelSize: 9 * root.tabUnit
   }
   MouseArea {
     anchors.fill: parent
@@ -177,11 +179,11 @@ Rectangle {
     objectName: "closeSessionTab"
     anchors.right: parent.right
     anchors.top: parent.top
-    width: 22 * root.unit
+    width: 22 * root.tabUnit
     height: width
     radius: width / 2
     color: root.selection
-    border.width: closeMouse.containsMouse ? root.unit : 0
+    border.width: closeMouse.containsMouse ? root.tabUnit : 0
     border.color: root.accent
     opacity: root.hovered || activeFocus ? 1 : 0
     scale: 0.75 + 0.25 * opacity
@@ -194,7 +196,7 @@ Rectangle {
       text: "×"
       color: closeMouse.containsMouse ? root.accent : root.foreground
       font.family: root.fontFamily
-      font.pixelSize: 16 * root.unit
+      font.pixelSize: 16 * root.tabUnit
     }
     MouseArea {
       id: closeMouse
@@ -212,19 +214,19 @@ Rectangle {
       visible: closeMouse.containsMouse
       text: "Close session · saved in Previous sessions"
       delay: 400
-      padding: 8 * root.unit
+      padding: 8 * root.tabUnit
       background: Rectangle {
         color: root.tooltipBackground
         border.color: root.tooltipBorder
-        border.width: root.unit
-        radius: 4 * root.unit
+        border.width: root.tabUnit
+        radius: 4 * root.tabUnit
       }
       contentItem: Text {
         text: closeTip.text
         textFormat: Text.PlainText
         color: root.tooltipForeground
         font.family: root.fontFamily
-        font.pixelSize: 11 * root.unit
+        font.pixelSize: 11 * root.tabUnit
       }
     }
     Accessible.role: Accessible.Button

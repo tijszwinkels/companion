@@ -21,6 +21,7 @@ Item {
   property color tooltipForeground: foreground
   property color tooltipBorder: muted
   property real unit: 1
+  readonly property real tabUnit: 1.25 * unit
   property bool animationsEnabled: true
   property bool nativeWidgets: false
   property string shortcutLabel: ""
@@ -213,143 +214,159 @@ Item {
 
   // Activity remains the first tab. Questions get their own vertically stacked
   // tabs, scrollable independently of the conversation itself.
-  Rectangle {
+  Flickable {
     id: rail
-    width: 64 * root.unit
+    objectName: "tabRail"
+    width: 64 * root.tabUnit
     height: parent.height
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+    // Keep a full session tab between the fixed controls. On very short
+    // surfaces the whole rail scrolls instead of overlapping those controls.
+    contentHeight: Math.max(height, 244 * root.tabUnit)
+    interactive: contentHeight > height
+    clip: true
+    boundsBehavior: Flickable.StopAtBounds
 
     Rectangle {
-      objectName: "activityTab"
-      anchors.top: parent.top
-      anchors.topMargin: 20 * root.unit
-      anchors.horizontalCenter: parent.horizontalCenter
-      width: 48 * root.unit
-      height: 64 * root.unit
-      color: !root.showingPrevious && root.selectedSession === null ? root.selection : "transparent"
+      width: rail.width
+      height: rail.contentHeight
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
 
       Rectangle {
-        width: 2 * root.unit
-        height: parent.height
-        color: !root.showingPrevious && root.selectedSession === null ? root.accent : "transparent"
+        objectName: "activityTab"
+        anchors.top: parent.top
+        anchors.topMargin: 20 * root.tabUnit
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: 48 * root.tabUnit
+        height: 64 * root.tabUnit
+        color: !root.showingPrevious && root.selectedSession === null ? root.selection : "transparent"
+
+        Rectangle {
+          width: 2 * root.tabUnit
+          height: parent.height
+          color: !root.showingPrevious && root.selectedSession === null ? root.accent : "transparent"
+        }
+
+        Column {
+          anchors.centerIn: parent
+          spacing: 8 * root.tabUnit
+
+          Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            height: 20 * root.tabUnit
+            spacing: 3 * root.tabUnit
+
+            Repeater {
+              model: [8, 20, 14]
+              Rectangle {
+                objectName: "activityTabBar"
+                required property int modelData
+                anchors.verticalCenter: parent.verticalCenter
+                width: 3 * root.tabUnit
+                height: modelData * root.tabUnit
+                radius: root.tabUnit
+                color: root.accent
+              }
+            }
+          }
+
+          Text {
+            objectName: "activityTabLabel"
+            text: "Activity"
+            textFormat: Text.PlainText
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: 8 * root.tabUnit
+          }
+        }
+
+        Accessible.role: Accessible.PageTab
+        Accessible.name: "Activity"
+        Accessible.selected: !root.showingPrevious && root.selectedSession === null
+        Accessible.onPressAction: root.sessionSelected("")
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.sessionSelected("")
+        }
       }
 
-      Column {
-        anchors.centerIn: parent
-        spacing: 8 * root.unit
+      Flickable {
+        objectName: "sessionTabList"
+        anchors.fill: parent
+        anchors.topMargin: 100 * root.tabUnit
+        anchors.bottomMargin: 82 * root.tabUnit
+        contentHeight: tabs.height
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
 
-        Row {
-          anchors.horizontalCenter: parent.horizontalCenter
-          height: 20 * root.unit
-          spacing: 3 * root.unit
-
+        Column {
+          id: tabs
+          width: parent.width
+          spacing: 8 * root.tabUnit
           Repeater {
-            model: [8, 20, 14]
-            Rectangle {
-              required property int modelData
-              anchors.verticalCenter: parent.verticalCenter
-              width: 3 * root.unit
-              height: modelData * root.unit
-              radius: root.unit
-              color: root.accent
+            model: sessionTabs
+            SessionTab {
+              required property string tabId
+              required property string tabTitle
+              required property bool tabRunning
+              required property int index
+              objectName: "tab-" + tabId
+              anchors.horizontalCenter: parent.horizontalCenter
+              title: tabTitle
+              number: index + 1
+              selected: !root.showingPrevious && root.selectedSessionId === tabId
+              online: root.online
+              running: tabRunning
+              unread: root.unreadSessionIds[tabId] === true
+              animationsEnabled: root.animationsEnabled
+              foreground: root.foreground
+              muted: root.muted
+              accent: root.accent
+              selection: root.selection
+              tooltipBackground: root.tooltipBackground
+              tooltipForeground: root.tooltipForeground
+              tooltipBorder: root.tooltipBorder
+              fontFamily: root.fontFamily
+              unit: root.unit
+              onSelectedRequested: root.sessionSelected(tabId)
+              onCloseRequested: root.dismissSessionRequested(tabId)
             }
           }
         }
+      }
 
+      Rectangle {
+        objectName: "previousSessionsButton"
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 12 * root.tabUnit
+        x: 8 * root.tabUnit
+        width: 48 * root.tabUnit
+        height: 60 * root.tabUnit
+        radius: 5 * root.tabUnit
+        color: root.showingPrevious || previousMouse.containsMouse ? root.selection : "transparent"
         Text {
-          text: "Activity"
-          textFormat: Text.PlainText
-          color: root.accent
+          anchors.centerIn: parent
+          objectName: "previousSessionsLabel"
+          text: "◷\nPrevious\nsessions"
+          horizontalAlignment: Text.AlignHCenter
+          color: root.showingPrevious ? root.accent : root.muted
           font.family: root.fontFamily
-          font.pixelSize: 8 * root.unit
+          font.pixelSize: 9 * root.tabUnit
+          lineHeight: 1.2
         }
-      }
-
-      Accessible.role: Accessible.PageTab
-      Accessible.name: "Activity"
-      Accessible.selected: !root.showingPrevious && root.selectedSession === null
-      Accessible.onPressAction: root.sessionSelected("")
-      MouseArea {
-        anchors.fill: parent
-        cursorShape: Qt.PointingHandCursor
-        onClicked: root.sessionSelected("")
-      }
-    }
-
-    Flickable {
-      anchors.fill: parent
-      anchors.topMargin: 100 * root.unit
-      anchors.bottomMargin: 82 * root.unit
-      contentHeight: tabs.height
-      clip: true
-      boundsBehavior: Flickable.StopAtBounds
-
-      Column {
-        id: tabs
-        width: parent.width
-        spacing: 8 * root.unit
-        Repeater {
-          model: sessionTabs
-          SessionTab {
-            required property string tabId
-            required property string tabTitle
-            required property bool tabRunning
-            required property int index
-            objectName: "tab-" + tabId
-            anchors.horizontalCenter: parent.horizontalCenter
-            title: tabTitle
-            number: index + 1
-            selected: !root.showingPrevious && root.selectedSessionId === tabId
-            online: root.online
-            running: tabRunning
-            unread: root.unreadSessionIds[tabId] === true
-            animationsEnabled: root.animationsEnabled
-            foreground: root.foreground
-            muted: root.muted
-            accent: root.accent
-            selection: root.selection
-            tooltipBackground: root.tooltipBackground
-            tooltipForeground: root.tooltipForeground
-            tooltipBorder: root.tooltipBorder
-            fontFamily: root.fontFamily
-            unit: root.unit
-            onSelectedRequested: root.sessionSelected(tabId)
-            onCloseRequested: root.dismissSessionRequested(tabId)
-          }
+        MouseArea {
+          id: previousMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.previousRequested()
         }
+        Accessible.role: Accessible.PageTab
+        Accessible.name: "Previous sessions"
+        Accessible.selected: root.showingPrevious
+        Accessible.onPressAction: root.previousRequested()
       }
     }
-  }
-
-  Rectangle {
-    objectName: "previousSessionsButton"
-    anchors.bottom: parent.bottom
-    anchors.bottomMargin: 12 * root.unit
-    x: 8 * root.unit
-    width: 48 * root.unit
-    height: 60 * root.unit
-    radius: 5 * root.unit
-    color: root.showingPrevious || previousMouse.containsMouse ? root.selection : "transparent"
-    Text {
-      anchors.centerIn: parent
-      text: "◷\nPrevious\nsessions"
-      horizontalAlignment: Text.AlignHCenter
-      color: root.showingPrevious ? root.accent : root.muted
-      font.family: root.fontFamily
-      font.pixelSize: 9 * root.unit
-      lineHeight: 1.2
-    }
-    MouseArea {
-      id: previousMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: root.previousRequested()
-    }
-    Accessible.role: Accessible.PageTab
-    Accessible.name: "Previous sessions"
-    Accessible.selected: root.showingPrevious
-    Accessible.onPressAction: root.previousRequested()
   }
 
   Item {

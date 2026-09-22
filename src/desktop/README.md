@@ -467,6 +467,15 @@ Once provenance columns exist, subsequent opens leave new cancellations intact.
 
 ## Agent sessions
 
+The panel tab controls use a local 1.25× scale on top of the host theme. At the
+default theme scale the rail is 80 logical pixels wide, session tabs are
+60 × 77.5, Activity is 60 × 80 and Previous sessions is 60 × 75. Icons, labels,
+close controls and tab tooltips grow together. Overall panel width and reader
+zoom are unchanged; the conversation has 16 fewer logical pixels of width.
+Session tabs scroll independently. On surfaces shorter than 305 theme-scaled
+pixels, the whole rail can also scroll to keep its controls reachable without
+overlap.
+
 The optional `sessions` array in each state snapshot contains complete chat
 state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
 `updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,

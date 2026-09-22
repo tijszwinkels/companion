@@ -164,7 +164,7 @@ Item {
       tryCompare(tooltip, "visible", true)
       compare(tooltip.text, item.title)
       compare(tooltip.contentItem.textFormat, Text.PlainText)
-      verify(tooltip.width <= 280 * tab.unit)
+      verify(tooltip.width <= 350 * tab.unit)
       verify(tooltip.contentItem.height > 0)
       const close = findChild(tab, "closeSessionTab")
       tryVerify(function() { return close.opacity > 0.5 })
