@@ -63,7 +63,9 @@ conversion. Qt 6.11.2's view-level `runJavaScript` callback dereferences
 guard therefore cannot protect that conversion. Metadata polling now uses
 `mainFrame.runJavaScript` with the same main-world script, whose Qt callback
 checks for a surviving QML engine first. No browser permission or rendering-mode
-change is involved.
+change is involved. If the context has already disappeared, Qt warns and drops
+the result; that inert view stops polling until it is recreated. This prevents
+the crash but does not add recovery for an independently failed renderer.
 
 The offscreen regression delays a real Chromium result, then removes either the
 browser or its creation context. The context-removal case segfaults with the old

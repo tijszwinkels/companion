@@ -31,7 +31,8 @@ TestCase {
     TestHost.show(true)
     tryVerify(function() { return currentView.rendered }, 10000)
     // Queue the production metadata poll behind a slow renderer operation.
-    // No callback is registered for this test-only delay.
+    // No application callback is needed for this delay. Qt may still wrap the
+    // undefined QJSValue in its guarded reply handler during context removal.
     currentView.mainFrame.runJavaScript("{ const end = Date.now() + 800; while (Date.now() < end) {} }", 0, undefined)
     tryVerify(function() { return currentView.checking }, 1000)
   }
