@@ -167,6 +167,55 @@ Item {
       compare(findChild(panel, "toolDetails"), null)
     }
 
+    function test_sibling_growth_keeps_page_position_and_call_revision() {
+      const panel = setup()
+      const requests = []
+      panel.toolPageRequested.connect(request => requests.push(request))
+      click(findChild(panel, "bubble-group"), 24, 14)
+      let reply = response(requests[0], "page one", {index: 0, offset: 8192})
+      reply.result.callRevision = "finished-call"
+      reply.result.state = "error"
+      panel.toolPageReceived(reply)
+      verify(findChild(panel, "toolPageStatus").text.indexOf("failed or stopped") >= 0)
+      click(findChild(panel, "nextToolPage"))
+      compare(requests[1].callRevision, "finished-call")
+      reply = response(requests[1], "page two", {index: 0, offset: 16384})
+      reply.result.callRevision = "finished-call"
+      panel.toolPageReceived(reply)
+      panel.sessions = [session(3, "r2")]
+      compare(findChild(panel, "toolPageText").text, "page two")
+      compare(findChild(panel, "toolDetails").offset, 8192)
+      compare(requests.length, 2)
+      click(findChild(panel, "nextToolPage"))
+      compare(requests[2].offset, 16384)
+      compare(requests[2].callRevision, "finished-call")
+      compare(requests[2].revision, "r2")
+      reply = response(requests[2], "page three")
+      reply.result.callRevision = "finished-call"
+      panel.toolPageReceived(reply)
+      panel.sessions = [session(4, "r3")]
+      click(findChild(panel, "reloadToolDetails"))
+      compare(requests[3].index, 0)
+      compare(requests[3].offset, 16384, "Refresh stays at the current page")
+      compare(requests[3].callRevision, "", "Explicit refresh selects the latest call version")
+    }
+
+    function test_offline_expansion_and_running_page_status() {
+      const panel = setup()
+      panel.online = false
+      click(findChild(panel, "bubble-group"), 24, 14)
+      verify(findChild(panel, "toolDetails").error.indexOf("Disconnected") >= 0)
+      panel.online = true
+      const requests = []
+      panel.toolPageRequested.connect(request => requests.push(request))
+      click(findChild(panel, "reloadToolDetails"))
+      const reply = response(requests[0], "partial output")
+      reply.result.callRevision = "running-call"
+      reply.result.state = "running"
+      panel.toolPageReceived(reply)
+      verify(findChild(panel, "toolPageStatus").text.indexOf("running") >= 0)
+    }
+
     function test_native_client_forwards_correlated_success_and_failure_without_retaining_bodies() {
       const client = createTemporaryObject(clientComponent, parent)
       const replies = []

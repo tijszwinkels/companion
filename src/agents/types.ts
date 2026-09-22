@@ -13,7 +13,7 @@ export interface AgentMessage {
   state: 'queued' | 'running' | 'done' | 'error';
   screenshot: boolean;
   /** Consecutive tool calls; full inputs/results are stored and paged separately. */
-  toolGroup?: { count: number; revision: string };
+  toolGroup?: { count: number; revision: string; legacy?: boolean; unavailable?: boolean };
   /** Local, private PNG attachment; omitted while saving or on older messages. */
   screenshotUrl?: string;
   /** Validated reference; its private view URL is regenerated when reopening. */

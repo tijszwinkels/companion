@@ -452,6 +452,8 @@ export class DesktopRuntime {
         typeof request.groupId !== 'string' ||
         typeof request.epoch !== 'string' ||
         typeof request.revision !== 'string' ||
+        (request.callRevision !== undefined &&
+          (typeof request.callRevision !== 'string' || request.callRevision.length > 36)) ||
         typeof request.requestId !== 'string' ||
         request.requestId.length > 128 ||
         !Number.isSafeInteger(request.index) ||
@@ -467,6 +469,7 @@ export class DesktopRuntime {
         groupId: request.groupId,
         epoch: request.epoch,
         revision: request.revision,
+        callRevision: request.callRevision as string | undefined,
         index: request.index as number,
         offset: request.offset as number,
       });

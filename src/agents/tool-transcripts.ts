@@ -19,11 +19,13 @@ export interface ToolPageRequest {
   groupId: string;
   epoch: string;
   revision: string;
+  callRevision?: string;
   index: number;
   offset: number;
 }
 
 export interface ToolPage extends ToolPageRequest {
+  callRevision: string;
   text: string;
   state: AgentMessage['state'];
   next: { index: number; offset: number } | null;
@@ -31,8 +33,8 @@ export interface ToolPage extends ToolPageRequest {
 
 /**
  * Tool bodies live in private SQLite blobs, never in the session JSON or a
- * second in-memory transcript. Synchronous commits match the backend's emit
- * contract: a failed write fails the turn before acknowledging its output.
+ * second in-memory transcript. The session manager coalesces running partials;
+ * each actual write commits synchronously, and write failures fail its turn.
  * UTF-16LE preserves the exact JS strings (including NUL and lone surrogates).
  */
 export class ToolTranscripts {
@@ -52,6 +54,7 @@ export class ToolTranscripts {
         CREATE TABLE IF NOT EXISTS tools (
           owner TEXT NOT NULL, id TEXT NOT NULL, group_id TEXT NOT NULL,
           position INTEGER NOT NULL, state TEXT NOT NULL, body BLOB NOT NULL,
+          revision TEXT NOT NULL,
           PRIMARY KEY (owner, id), UNIQUE (owner, group_id, position)
         );
         CREATE TABLE IF NOT EXISTS tool_groups (
@@ -59,6 +62,17 @@ export class ToolTranscripts {
           PRIMARY KEY (owner, id)
         );
       `);
+        // Upgrade archives made by an earlier build of this feature without
+        // rewriting their bodies. New writes receive independent call revisions.
+        if (
+          !db
+            .prepare('PRAGMA table_info(tools)')
+            .all()
+            .some((column) => column.name === 'revision')
+        ) {
+          db.exec("ALTER TABLE tools ADD COLUMN revision TEXT NOT NULL DEFAULT ''");
+          db.prepare('UPDATE tools SET revision = ?').run(randomUUID());
+        }
         this.database = db;
       } catch (error) {
         db.close();
@@ -105,9 +119,17 @@ export class ToolTranscripts {
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(
-        `INSERT INTO tools VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (owner, id) DO UPDATE SET state = excluded.state, body = excluded.body`,
-      ).run(owner, message.id, groupId, Number(old?.position ?? count.count), message.state, body);
+        `INSERT INTO tools VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (owner, id) DO UPDATE SET state = excluded.state, body = excluded.body, revision = excluded.revision`,
+      ).run(
+        owner,
+        message.id,
+        groupId,
+        Number(old?.position ?? count.count),
+        message.state,
+        body,
+        randomUUID(),
+      );
       db.prepare('INSERT OR REPLACE INTO tool_groups VALUES (?, ?, ?)').run(
         owner,
         groupId,
@@ -161,9 +183,9 @@ export class ToolTranscripts {
         `UPDATE tool_groups SET revision = ? WHERE owner = ? AND id IN
         (SELECT group_id FROM tools WHERE owner = ? AND state = 'running')`,
       ).run(randomUUID(), owner, owner);
-      db.prepare("UPDATE tools SET state = 'error' WHERE owner = ? AND state = 'running'").run(
-        owner,
-      );
+      db.prepare(
+        "UPDATE tools SET state = 'error', revision = ? WHERE owner = ? AND state = 'running'",
+      ).run(randomUUID(), owner);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -173,9 +195,6 @@ export class ToolTranscripts {
 
   page(request: ToolPageRequest): ToolPage {
     const group = this.summary(request.id, request.groupId).toolGroup!;
-    if (request.revision !== group.revision) {
-      throw Error('Tool output changed; reload the group');
-    }
     if (
       !Number.isSafeInteger(request.index) ||
       request.index < 0 ||
@@ -188,12 +207,19 @@ export class ToolTranscripts {
     }
     const row = this.db()
       .prepare(
-        `SELECT state, length(body) / 2 AS units,
+        `SELECT state, revision, length(body) / 2 AS units,
       substr(body, ?, ?) AS part FROM tools WHERE owner = ? AND group_id = ? AND position = ?`,
       )
       .get(request.offset * 2 + 1, toolPageUnits * 2, request.id, request.groupId, request.index)!;
     if (!row || request.offset >= Number(row.units)) {
       throw Error('Invalid tool detail offset');
+    }
+    if (
+      request.callRevision
+        ? request.callRevision !== row.revision
+        : request.revision !== group.revision
+    ) {
+      throw Error('Tool output changed; reload this page');
     }
     let text = Buffer.from(row.part as Uint8Array).toString('utf16le');
     // Never split a surrogate pair at the outgoing page boundary.
@@ -208,7 +234,14 @@ export class ToolTranscripts {
         : request.index + 1 < group.count
           ? { index: request.index + 1, offset: 0 }
           : null;
-    return { ...request, text, state: row.state as AgentMessage['state'], next };
+    return {
+      ...request,
+      revision: group.revision,
+      callRevision: String(row.revision),
+      text,
+      state: row.state as AgentMessage['state'],
+      next,
+    };
   }
 
   close(): void {

@@ -2,7 +2,8 @@ import QtQuick
 import QtQuick.Controls
 
 // Created only on disclosure, destroyed on collapse. A page replaces the last
-// one; revising a group or losing the connection invalidates outstanding reads.
+// one. Group updates mark the page stale without moving the reader; per-call
+// revisions prevent mixing chunks of different outputs. Disconnect clears it.
 Column {
   id: root
   required property var reader
@@ -12,13 +13,16 @@ Column {
   required property string revision
   required property int count
   property string pending: ""
+  property string pendingCallRevision: ""
   property string body: ""
   property string error: ""
   property var next: null
   property int callIndex: 0
   property int offset: 0
   property bool loaded: false
-  property string state: ""
+  property string callState: ""
+  property string callRevision: ""
+  property bool outdated: false
   spacing: 8 * reader.unit
   objectName: "toolDetails"
 
@@ -27,18 +31,24 @@ Column {
     root.body = ""
     root.next = null
     root.loaded = false
+    root.callIndex = 0
+    root.offset = 0
+    root.callRevision = ""
+    root.outdated = false
     root.error = reason
     deadline.stop()
   }
 
-  function load(index, offset) {
-    if (!reader.online || root.pending) return
+  function load(index, offset, continuation) {
+    if (!reader.online) { root.error = "Disconnected. Reload after reconnecting."; return }
+    if (root.pending) return
     root.error = ""
     root.pending = Date.now().toString(36) + Math.random().toString(36)
+    root.pendingCallRevision = continuation || ""
     deadline.restart()
     reader.toolPageRequested({action: "agent-tool-page", requestId: root.pending,
       id: root.sessionId, epoch: root.epoch, groupId: root.groupId, revision: root.revision,
-      index: index, offset: offset})
+      index: index, offset: offset, callRevision: continuation || ""})
   }
 
   function receive(message) {
@@ -50,17 +60,25 @@ Column {
       return
     }
     const page = message.result
-    if (!page || page.id !== root.sessionId || page.epoch !== root.epoch || page.groupId !== root.groupId || page.revision !== root.revision) return
+    if (!page || page.id !== root.sessionId || page.epoch !== root.epoch || page.groupId !== root.groupId) return
+    if (page.revision !== root.revision && !root.pendingCallRevision) {
+      root.outdated = true
+      root.error = "Tool output changed. Refresh this page."
+      return
+    }
+    if (root.pendingCallRevision && page.callRevision !== root.pendingCallRevision) return
     root.body = page.text
     root.next = page.next
     root.callIndex = page.index
     root.offset = page.offset
-    root.state = page.state || "done"
+    root.callState = page.state || "done"
+    root.callRevision = page.callRevision || ""
+    root.outdated = page.revision !== root.revision
     root.loaded = true
   }
 
   onEpochChanged: invalidate("")
-  onRevisionChanged: invalidate("Tool output changed. Reload to read the current output.")
+  onRevisionChanged: if (root.loaded || root.pending) root.outdated = true
   onSessionIdChanged: invalidate("")
   onGroupIdChanged: invalidate("")
   Component.onCompleted: load(0, 0)
@@ -78,10 +96,12 @@ Column {
   }
 
   Text {
+    objectName: "toolPageStatus"
     width: parent.width
     text: root.pending ? "Loading tool details…" : root.error ||
+      (root.outdated ? "New tool output is available. Refresh this page to update it.\n" : "") +
       (root.loaded ? "Tool " + (root.callIndex + 1) + " of " + root.count +
-        (root.state === "running" ? " · running" : root.state === "error" ? " · failed or stopped" : "") +
+        (root.callState === "running" ? " · running" : root.callState === "error" ? " · failed or stopped" : "") +
         " · characters " + (root.offset + 1) + "–" + (root.offset + root.body.length) : "")
     textFormat: Text.PlainText
     wrapMode: Text.Wrap
@@ -113,7 +133,18 @@ Column {
     spacing: 8 * reader.unit
     PanelAction {
       objectName: "reloadToolDetails"
-      text: "Reload from start"
+      text: root.loaded ? "Refresh page" : "Load details"
+      enabled: reader.online && !root.pending
+      foreground: reader.foreground
+      selection: reader.selection
+      fontFamily: reader.fontFamily
+      unit: reader.unit
+      onTriggered: root.load(root.callIndex, root.offset)
+    }
+    PanelAction {
+      objectName: "restartToolDetails"
+      text: "From start"
+      visible: root.loaded && (root.callIndex > 0 || root.offset > 0)
       enabled: reader.online && !root.pending
       foreground: reader.foreground
       selection: reader.selection
@@ -130,7 +161,7 @@ Column {
       selection: reader.selection
       fontFamily: reader.fontFamily
       unit: reader.unit
-      onTriggered: root.load(root.next.index, root.next.offset)
+      onTriggered: root.load(root.next.index, root.next.offset, root.next.index === root.callIndex ? root.callRevision : "")
     }
     PanelAction {
       objectName: "copyToolPage"

@@ -27,6 +27,10 @@ interface RunningSession {
   controller: AbortController;
   done: Promise<void>;
   changed: Map<string, AgentMessage>;
+  // Only the latest cumulative partial per active call, bounded below. Terminal
+  // updates supersede it; flush/stop persist the last accepted partial.
+  pendingTools: Map<string, AgentMessage>;
+  toolError: string;
   timer?: ReturnType<typeof setTimeout>;
   // Closing blocks new turns until the archive write settles. Busy also covers
   // final persistence, when the displayed model status may already be terminal.
@@ -157,7 +161,9 @@ export class AgentSessions implements InspectableModule {
     ) {
       throw Error('Tool group is unavailable in this conversation');
     }
-    return this.store.tools.page(request);
+    return group.toolGroup?.legacy
+      ? this.store.legacyPage(request)
+      : this.store.tools.page(request);
   }
 
   has(id: string): boolean {
@@ -271,6 +277,8 @@ export class AgentSessions implements InspectableModule {
       controller: new AbortController(),
       done: Promise.resolve(),
       changed: new Map([[question.id, question]]),
+      pendingTools: new Map(),
+      toolError: '',
       closing: false,
       busy: true,
       pending: [],
@@ -327,6 +335,7 @@ export class AgentSessions implements InspectableModule {
     session.busy = true;
     session.view.status = 'starting';
     session.view.error = '';
+    session.toolError = '';
     delete session.view.choices;
     session.view.runId = randomUUID();
     session.view.acceptsFollowUp = false;
@@ -484,6 +493,11 @@ export class AgentSessions implements InspectableModule {
       }
     } finally {
       acceptingUpdates = false;
+      this.flushTools(session);
+      if (session.toolError) {
+        session.view.status = 'error';
+        session.view.error = session.toolError;
+      }
       widgetLease?.release();
       if (session.view.status !== 'completed') {
         delete session.view.choices;
@@ -551,12 +565,33 @@ export class AgentSessions implements InspectableModule {
     }
   }
 
-  private message(session: RunningSession, message: AgentMessage): void {
+  private message(session: RunningSession, message: AgentMessage, persistTool = false): void {
     if (message.kind === 'tool' && !message.toolGroup) {
+      const existingGroup = this.store.tools.groupFor(session.view.id, message.id);
+      if (!persistTool && existingGroup && message.state === 'running') {
+        // The RPC adapter emits cumulative partials. Do not rewrite a growing
+        // blob hundreds of times in one event-loop turn. The queue holds at
+        // most 16 MiB / 128 latest active partials, never completed tool history.
+        const pendingBytes = [...session.pendingTools.values()]
+          .filter((entry) => entry.id !== message.id)
+          .concat(message)
+          .reduce(
+            (size, entry) =>
+              size + 2 * (entry.text.length + entry.input.length + entry.toolName.length + 4),
+            0,
+          );
+        if (pendingBytes <= 16 * 1024 * 1024 && session.pendingTools.size < 128) {
+          session.pendingTools.set(message.id, message);
+          session.timer ??= setTimeout(() => this.flush(session), 40);
+          return;
+        }
+      }
       const last = session.view.messages.at(-1);
       const groupId =
-        this.store.tools.groupFor(session.view.id, message.id) ??
-        (last?.toolGroup ? last.id : randomUUID());
+        existingGroup ??
+        (last?.toolGroup && !last.toolGroup.legacy && !last.toolGroup.unavailable
+          ? last.id
+          : randomUUID());
       if (
         new Set([
           ...session.view.messages.map((entry) => entry.id),
@@ -566,7 +601,9 @@ export class AgentSessions implements InspectableModule {
       ) {
         throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
       }
+      const toolId = message.id;
       message = this.store.tools.put(session.view.id, message, groupId);
+      session.pendingTools.delete(toolId);
     }
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
     const reserved = new Map(session.view.messages.map((entry) => [entry.id, entry]));
@@ -594,12 +631,33 @@ export class AgentSessions implements InspectableModule {
 
     // Coalesce token bursts into at most 25 UI updates/second. Each update sends
     // only changed bubbles, not every previous tool result and completed answer.
-    session.timer ??= setTimeout(() => this.flush(session), 40);
+    if (!persistTool) {
+      session.timer ??= setTimeout(() => this.flush(session), 40);
+    }
+  }
+
+  private flushTools(session: RunningSession): void {
+    const pending = [...session.pendingTools.values()];
+    session.pendingTools.clear();
+    try {
+      for (const message of pending) {
+        this.message(session, message, true);
+      }
+    } catch (error) {
+      // A timer cannot throw back into Pi's emit callback. Abort the turn and
+      // retain an explicit storage failure through its cancellation cleanup.
+      session.toolError = `Could not save tool details: ${String(error)}`;
+      session.view.status = 'error';
+      session.view.error = session.toolError;
+      session.controller.abort();
+      this.log('agent-history', session.toolError);
+    }
   }
 
   private flush(session: RunningSession): void {
     clearTimeout(session.timer);
     session.timer = undefined;
+    this.flushTools(session);
     const event: SessionEvent = {
       type: 'agent-session',
       session: { ...session.view, messages: [...session.changed.values()] },
@@ -708,6 +766,8 @@ export class AgentSessions implements InspectableModule {
         controller: new AbortController(),
         done: Promise.resolve(),
         changed: new Map(),
+        pendingTools: new Map(),
+        toolError: '',
         closing: false,
         busy: false,
         pending: [],

@@ -431,7 +431,8 @@ for (const damage of ['missing', 'corrupt']) {
       assert.ok(screenshotUrl);
       assert.equal(view.messages[0].screenshotUrl, screenshotUrl);
       assert.equal(view.messages[1].id, original.groupId);
-      assert.equal(view.messages[1].state, 'error');
+      assert.equal(view.messages[1].toolGroup?.unavailable, true);
+      assert.equal(view.messages[1].state, 'done');
       assert.throws(() => restarted.toolPage(request(view)), /unavailable|database/);
       await restarted.remove(setup.id);
     } finally {
@@ -467,4 +468,202 @@ test('oversized tool storage updates fail before allocation and preserve the com
   );
   assert.deepEqual(request(setup.sessions.snapshot()[0]), before);
   assert.equal(readAll(setup.sessions, before)[0], body(tool('a', 'committed')));
+});
+
+test('legacy archives remain grouped and lazy through corrupt-store reopen, follow-up and save', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-legacy-corrupt-'));
+  const storage = join(directory, '.companion-sessions');
+  const store = new SessionStore(storage);
+  const id = randomUUID();
+  const first = tool('old-a', 'LEGACY_SECRET'.repeat(2000));
+  const second = tool('old-b', 'second result');
+  await store.save({
+    id,
+    title: 'Legacy',
+    model: 'fixture',
+    status: 'completed',
+    error: '',
+    updatedAt: 1,
+    messages: [
+      chatMessage('user', 'user', 'Question'),
+      first,
+      second,
+      chatMessage('answer', 'assistant', 'Ordinary answer'),
+    ],
+  });
+  await writeFile(join(storage, 'tool-transcripts.sqlite'), 'corrupt store');
+  const sessions = new AgentSessions(
+    {
+      backend: {
+        id: 'ordinary-follow-up',
+        label: 'Ordinary follow-up',
+        dependencies: {},
+        async run(_request, _signal, emit) {
+          emit(chatMessage('reply', 'assistant', 'Follow-up answer'));
+        },
+      },
+    },
+    () => {},
+    directory,
+  );
+  context.after(async () => {
+    store.tools.close();
+    await sessions.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await sessions.loadPrevious();
+  assert.equal(sessions.previousSnapshot().length, 1);
+  await sessions.reopen(id);
+  const view = sessions.snapshot()[0];
+  assert.equal(view.messages.length, 3);
+  assert.equal(view.messages[1].toolGroup?.count, 2);
+  assert.ok(!JSON.stringify(view).includes('LEGACY_SECRET'));
+  assert.deepEqual(readAll(sessions, request(view)), [body(first), body(second)]);
+  sessions.followUp(id, 'Continue', signal());
+  await sessions.idle();
+  assert.equal(sessions.snapshot()[0].status, 'completed');
+  await sessions.remove(id);
+  // The only original copy of tool text must survive saves during failed migration.
+  const saved = JSON.parse(await readFile(join(storage, id + '.json'), 'utf8'));
+  assert.equal(saved.messages.find((m: { id: string }) => m.id === first.id).text, first.text);
+  await sessions.reopen(id);
+  assert.deepEqual(readAll(sessions, request(sessions.snapshot()[0])), [body(first), body(second)]);
+  assert.ok(sessions.snapshot()[0].messages.some((m) => m.text === 'Follow-up answer'));
+});
+
+test('cumulative Pi bursts coalesce disk writes, preserve final text, and save the latest partial on stop', async (context) => {
+  const { PiTranscript } = await import('../../src/agents/pi-transcript.ts');
+  const setup = await fixture(context);
+  const transcript = new PiTranscript(setup.emit);
+  transcript.receive({
+    type: 'tool_execution_start',
+    toolCallId: 'stream',
+    toolName: 'read',
+    args: {},
+  });
+  const initial = request(setup.sessions.snapshot()[0]);
+  let text = '';
+  const started = performance.now();
+  for (let index = 0; index < 400; index++) {
+    text += 'x'.repeat(10485);
+    transcript.receive({
+      type: 'tool_execution_update',
+      toolCallId: 'stream',
+      partialResult: { content: [{ type: 'text', text }] },
+    });
+  }
+  // A structural negative control: old code rotates the persisted revision 400
+  // times here. Coalesced state has not written any of those superseded bodies.
+  assert.equal(setup.sessions.snapshot()[0].messages[1].toolGroup?.revision, initial.revision);
+  transcript.receive({
+    type: 'tool_execution_end',
+    toolCallId: 'stream',
+    result: { content: [{ type: 'text', text }] },
+  });
+  console.log(
+    `400 cumulative updates + final 8 MiB body: ${(performance.now() - started).toFixed(1)} ms`,
+  );
+  assert.equal(
+    readAll(setup.sessions, request(setup.sessions.snapshot()[0]))[0],
+    'read\n\n{}\n\n' + text,
+  );
+  setup.emit(tool('partial', 'start', 'running'));
+  setup.emit(tool('partial', 'latest accepted partial', 'running'));
+  await setup.sessions.stop(setup.id);
+  const calls = readAll(setup.sessions, request(setup.sessions.snapshot()[0]));
+  assert.equal(calls[1], body(tool('partial', 'latest accepted partial')));
+  assert.equal(setup.sessions.snapshot()[0].messages[1].state, 'error');
+});
+
+test('coalesced partials become readable on flush; a deferred write failure fails the turn', async (context) => {
+  const setup = await fixture(context);
+  setup.emit(tool('a', 'start', 'running'));
+  const before = request(setup.sessions.snapshot()[0]);
+  setup.emit(tool('a', 'fresh partial', 'running'));
+  await waitFor(
+    () => setup.sessions.snapshot()[0].messages[1].toolGroup?.revision !== before.revision,
+  );
+  assert.equal(
+    readAll(setup.sessions, request(setup.sessions.snapshot()[0]))[0],
+    body(tool('a', 'fresh partial')),
+  );
+  // Inject failure at the persistence boundary after queuing. This specifically
+  // exercises the timer-to-turn error path; corrupt-file tests above cover real I/O.
+  const database = (setup.sessions as unknown as { store: SessionStore }).store.tools;
+  const originalPut = database.put.bind(database);
+  database.put = () => {
+    throw Error('fixture disk write failed');
+  };
+  setup.emit(tool('a', 'cannot persist this partial', 'running'));
+  await setup.sessions.idle();
+  database.put = originalPut;
+  assert.equal(setup.sessions.snapshot()[0].status, 'error');
+  assert.match(setup.sessions.snapshot()[0].error, /fixture disk write failed/);
+});
+
+test('a finished call remains pageable as siblings arrive; changed call revisions reject mixed pages', async (context) => {
+  const setup = await fixture(context);
+  const message = tool('a', 'x'.repeat(toolPageUnits * 3));
+  setup.emit(message);
+  const first = setup.sessions.toolPage(request(setup.sessions.snapshot()[0]));
+  setup.emit(tool('b', 'sibling', 'running'));
+  const second = setup.sessions.toolPage({ ...first, ...first.next! });
+  assert.equal(second.index, 0);
+  assert.equal(second.offset, toolPageUnits);
+  assert.equal(second.callRevision, first.callRevision);
+  setup.emit(tool('a', 'replacement'.repeat(3000)));
+  assert.throws(() => setup.sessions.toolPage({ ...second, ...second.next! }), /changed/);
+});
+
+test('legacy fallback saves retain the grouped display limit after adding follow-ups', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-legacy-count-'));
+  const storage = join(directory, '.companion-sessions');
+  const store = new SessionStore(storage);
+  const id = randomUUID();
+  await store.save({
+    id,
+    title: 'Legacy',
+    model: 'fixture',
+    status: 'completed',
+    error: '',
+    updatedAt: 1,
+    messages: [
+      chatMessage('user', 'user', 'Question'),
+      ...Array.from({ length: 799 }, (_, index) => tool('old-' + index, 'text')),
+    ],
+  });
+  await writeFile(join(storage, 'tool-transcripts.sqlite'), 'corrupt store');
+  const sessions = new AgentSessions(
+    {
+      backend: {
+        id: 'fixture',
+        label: 'Fixture',
+        dependencies: {},
+        async run(_request, _signal, emit) {
+          emit(chatMessage('answer', 'assistant', 'Follow-up'));
+        },
+      },
+    },
+    () => {},
+    directory,
+  );
+  context.after(async () => {
+    store.tools.close();
+    await sessions.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await sessions.loadPrevious();
+  await sessions.reopen(id);
+  sessions.followUp(id, 'Continue', signal());
+  await sessions.idle();
+  await sessions.remove(id);
+  await sessions.reopen(id);
+  const view = sessions.snapshot()[0];
+  assert.equal(view.messages.length, 4);
+  assert.equal(view.messages[1].toolGroup?.count, 799);
+  assert.equal(view.messages[3].text, 'Follow-up');
+  assert.equal(
+    JSON.parse(await readFile(join(storage, id + '.json'), 'utf8')).messages.length,
+    802,
+  );
 });

@@ -588,7 +588,10 @@ The sending connection must own the selected conversation through `panel-state`.
 archives. IDs select existing session/group records, never files or URLs. The
 usual result/error envelope echoes the bounded `requestId`, including admission
 errors. The result echoes the group identity, revision and position and adds
-`{text, state, next}`. `next` is `{index, offset}` or null. Index selects a call;
+`{text, state, callRevision, next}`. Continuations within the same call send its
+`callRevision`; appending sibling calls does not expire that immutable version.
+Reading another call or explicitly refreshing uses the current group revision.
+`next` is `{index, offset}` or null. Index selects a call;
 offset counts UTF-16 units in its name, input and result, separated by blank lines.
 Each page contains at most 8,192 units (under 50 KiB even with worst-case JSON
 escaping), against the socket's existing 2 MiB write-backpressure threshold.
@@ -597,19 +600,27 @@ Replies go only to the requester, never through session broadcasts.
 
 The portable panel and native client create the details reader only on expansion.
 Next page replaces the current page; Copy page copies exactly the displayed text,
-and ordinary selection/Ctrl+C remain available. Reload from start returns to the
-first call. A group update expires its loaded page and offers explicit reload;
-it does not fetch repeatedly while tools stream. Collapse destroys the page.
+and ordinary selection/Ctrl+C remain available. Refresh page retains the current
+call and offset; From start returns to the first call. A group update marks the
+loaded page as an older snapshot and offers explicit refresh without clearing
+its text or losing the reader's position. It does not fetch repeatedly while
+tools stream. A changed call revision rejects continuation, preventing mixed
+chunks from different outputs. Collapse destroys the page.
 Disconnect, tab lifetime changes and removal invalidate pending requests; delayed
 responses cannot populate another conversation. Read errors and a 10-second UI
 request timeout offer retry within the expanded group. Tool text is always plain
 text, including anything that resembles HTML, a URL or a command.
 
-Full tool text is committed to `.companion-sessions/tool-transcripts.sqlite`,
+Full tool text is stored in `.companion-sessions/tool-transcripts.sqlite`,
 using a private directory (0700), database (0600), atomic SQLite transactions and
-UTF-16LE blobs. Session JSON remains an atomic, compact display snapshot; preserve
-both files when backing up or moving conversations. Legacy JSON tools migrate
+UTF-16LE blobs. Session JSON normally remains an atomic, compact display snapshot;
+preserve both files when backing up or moving conversations. Legacy JSON tools migrate
 when read, keeping their original archive untouched until the next normal save.
+If migration cannot write the database, legacy groups page their text from the
+existing JSON on explicit expansion. That fallback temporarily parses the old
+archive and preserves its inline tool records on later saves; it never keeps a
+body-filled live view or sends those bodies in ordinary snapshots. New tool
+history always uses SQLite. Raw legacy records do not each consume a display row.
 If the separate tool database is missing or damaged, compact archives still
 reopen their ordinary chat, screenshots and widgets. Their tool groups retain
 validated references and report detail-read errors; restoring the database can
@@ -622,8 +633,12 @@ Storage admission has separate resource limits: 256 MiB of current tool text and
 100,000 calls per conversation, excluding SQLite overhead. Exceeding either fails
 explicitly before replacing the last committed details; no text is cut to fit.
 The existing Pi RPC 8 MiB frame rejection also remains an explicit transport
-safeguard, not a panel-history cap. Database writes are synchronous to match the
-backend emit contract; slow storage can delay event handling. Tool records are
+safeguard, not a panel-history cap. Cumulative running updates are coalesced into
+our 40 ms flush, with at most 16 MiB / 128 latest active partials pending per
+conversation. Final results supersede pending partials; stop/completion flush
+accepted partials before marking calls terminal. Deferred write errors fail the
+turn explicitly. Actual writes remain synchronous, so slow storage can delay a
+flush, but bursts no longer write each superseded cumulative body. Tool records are
 retained on disk with archived conversations. This adds no automatic deletion or
 retention policy. Running the old listener against compact archives cannot show
 these details; downgrade requires the matching implementation or a legacy backup.

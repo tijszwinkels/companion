@@ -190,6 +190,7 @@ Item {
       const row = {messageId: message.id, kind: message.kind, body: message.text,
         toolName: message.toolName, input: message.input, state: message.state,
         toolCount: message.toolGroup ? message.toolGroup.count : 0,
+        toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
         toolRevision: message.toolGroup ? message.toolGroup.revision : "",
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
@@ -265,6 +266,7 @@ Item {
       required property string state
       required property bool screenshot
       required property string screenshotUrl
+      required property bool toolUnavailable
       required property int toolCount
       required property string toolRevision
       required property string widgetJson
@@ -306,7 +308,7 @@ Item {
             height: Math.max(implicitHeight, copyButton.height)
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
-              + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
+              + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
               : bubble.kind === "user" ? "You" + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText
