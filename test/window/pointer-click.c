@@ -1,6 +1,8 @@
 // Synthetic click client for the isolated Wayland test; never used by the UI.
 #include <assert.h>
 #include <string.h>
+#include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include "pointer.h"
@@ -26,12 +28,26 @@ int main(void) {
 
     struct zwlr_virtual_pointer_v1 *pointer =
         zwlr_virtual_pointer_manager_v1_create_virtual_pointer(manager, NULL);
-    // BTN_LEFT press/release at the cursor position chosen by the fixture.
-    zwlr_virtual_pointer_v1_button(pointer, 0, 272, 1);
-    zwlr_virtual_pointer_v1_frame(pointer);
-    zwlr_virtual_pointer_v1_button(pointer, 1, 272, 0);
-    zwlr_virtual_pointer_v1_frame(pointer);
     wl_display_roundtrip(display);
+    // Keep the device alive so Qt can bind the newly available wl_pointer
+    // before input arrives, and popups do not lose their seat between clicks.
+    puts("ready");
+    fflush(stdout);
+    while (getchar() == 'c') {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint32_t time = now.tv_sec * 1000u + now.tv_nsec / 1000000u;
+        // BTN_LEFT at the cursor position chosen by the fixture.
+        zwlr_virtual_pointer_v1_button(pointer, time++, 272, 1);
+        zwlr_virtual_pointer_v1_frame(pointer);
+        wl_display_roundtrip(display);
+        usleep(80000);
+        zwlr_virtual_pointer_v1_button(pointer, time + 80, 272, 0);
+        zwlr_virtual_pointer_v1_frame(pointer);
+        wl_display_roundtrip(display);
+        puts("clicked");
+        fflush(stdout);
+    }
 
     zwlr_virtual_pointer_v1_destroy(pointer);
     wl_display_roundtrip(display);

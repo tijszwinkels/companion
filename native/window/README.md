@@ -21,6 +21,11 @@ it. Toggling focus, hiding, changing presentation, losing the surface or timing
 out releases it. Window mode retains Qt's existing activation path. Compositors
 without this optional protocol retain click-to-focus and the existing timed
 failure message; no exclusive keyboard grab is substituted.
+An owned native popup may temporarily replace the layer grab. On dismissal,
+Companion reacquires only when keyboard focus returns to that same visible
+layer and stays there for 50 ms. That settling interval avoids reclaiming the
+brief parent activation during an outside popup dismissal; a focus change
+outside Companion ends the request instead.
 
 Super +/− uses Omarchy's ordinary Hyprland resize action in Window mode, for both
 floating and tiled windows. Qt follows the resulting compositor geometry. Only
@@ -60,7 +65,14 @@ hotplug or GPU/WebGL performance. These require a coordinated desktop check.
 The opt-in `test/window/layer-focus.ts` regression uses real native layer
 surfaces in an isolated Hyprland instance, a synthetic backend and disposable
 GTK application. It checks Dock/Sidebar focus, actual typed input, focus toggle,
-outside-click dismissal, media notifications and hide/reopen. It requires the
+inside composer/tab clicks, outside-click dismissal, media notifications and
+hide/reopen. The pointer stays resident so clients bind it before events arrive.
+A synthetic native WebEngine select also checks pointer/keyboard input and
+retained focus after its popup handoff. The headless select reported `:open=false`
+both with the grab and with it explicitly released; persistent popup-menu mouse
+selection therefore remains unverified. Wayland tracing did establish popup
+creation, replacement of the layer grab, dismissal and return to the parent.
+It requires the
 normal native build, system Python with GTK4/PyGObject, wtype, a C compiler and
 Wayland development tools. This command opens a nested test desktop; arrange
 that test window before running it on an interactive desktop:
