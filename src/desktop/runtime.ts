@@ -102,19 +102,28 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
-        if (this.navigation?.clientId === clientId) {
+        const navigationRemoved = this.navigation?.clientId === clientId;
+        if (navigationRemoved) {
           this.navigation = undefined;
-          this.server.broadcast();
         }
         this.setPanelKeyboardFocus(false, clientId);
         if (this.mediaClients.delete(clientId)) {
           this.pause.setMediaPlaying(this.mediaClients.size > 0);
         }
+
+        let stateBroadcast = false;
         if (clientId === this.panelClient) {
-          this.setPanelState('', false, clientId);
+          stateBroadcast = this.setPanelState('', false, clientId);
         }
         if (clientId === this.composerClient) {
           this.setComposerFocus('', 0);
+          this.server.broadcast();
+          stateBroadcast = true;
+        }
+
+        if (navigationRemoved && !stateBroadcast) {
+          // Activity/Previous owns navigation without a selected conversation.
+          // Otherwise the conversation cleanup already published this change.
           this.server.broadcast();
         }
       },
@@ -435,11 +444,11 @@ export class DesktopRuntime {
     });
   }
 
-  /** One ordered UI report binds the visible tab and keyboard focus together. */
-  private setPanelState(id: string, focused: boolean, clientId: number): void {
+  /** Bind tab/focus together; return whether the resulting snapshot was sent. */
+  private setPanelState(id: string, focused: boolean, clientId: number): boolean {
     // A stale/disconnecting observer must not clear another UI's selected tab.
     if (!id && clientId !== this.panelClient) {
-      return;
+      return false;
     }
     const previousRevision = this.interactionRevision;
     const owner = id ? clientId : 0;
@@ -453,7 +462,9 @@ export class DesktopRuntime {
     }
     if (this.interactionRevision !== previousRevision) {
       this.server.broadcast();
+      return true;
     }
+    return false;
   }
 
   private publishFeedback(id: string): void {
@@ -651,13 +662,11 @@ export class DesktopRuntime {
         request.keyboardFocused === true || request.composerFocused,
         clientId,
       );
-      this.setPanelState(request.id, request.composerFocused, clientId);
-      if (
-        previousNavigation?.clientId !== this.navigation?.clientId ||
-        previousNavigation?.token !== this.navigation?.token
-      ) {
-        // Activity has no selected conversation, so its navigation availability
-        // can change without changing the existing conversation generation.
+      const stateBroadcast = this.setPanelState(request.id, request.composerFocused, clientId);
+      if (previousNavigation?.clientId !== this.navigation?.clientId && !stateBroadcast) {
+        // Only navigation presence/ownership affects intent availability. The
+        // token is not in snapshots; updating it must not copy every transcript.
+        // Selection/focus changes already broadcast the updated navigation.
         this.server.broadcast();
       }
       return 'panel-recorded';

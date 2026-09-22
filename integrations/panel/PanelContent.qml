@@ -48,16 +48,21 @@ Item {
   property real dragSceneY: 0
   property string dragOrderRevision: ""
   readonly property bool canMoveSessions: online && sessionControls !== null && sessionControls.controlsAvailable
+  onCanMoveSessionsChanged: if (!canMoveSessions) cancelDrag()
   property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
   property string controlError: ""
   property string selectedSessionId: ""
-  onSelectedSessionIdChanged: { Qt.callLater(refreshModels); Qt.callLater(ensureSelectedVisible) }
-  onOnlineChanged: if (online) Qt.callLater(refreshModels)
-  onSessionControlsChanged: Qt.callLater(refreshModels)
+  onSelectedSessionIdChanged: Qt.callLater(ensureSelectedVisible)
+  readonly property bool modelsNeeded: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
+  onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
+  onSessionControlsChanged: Qt.callLater(ensureModels)
+  function ensureModels() {
+    if (root.modelsNeeded) root.sessionControls.ensureModels()
+  }
   function refreshModels() {
-    if (root.online && root.selectedSessionId && root.sessionControls) root.sessionControls.refreshModels()
+    if (root.modelsNeeded) root.sessionControls.refreshModels()
   }
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
   property var locallyUnpinned: ({})
@@ -145,6 +150,9 @@ Item {
     }
   }
   onSessionsChanged: {
+    // Removing a delegate during a grabbed pointer gesture emits neither
+    // release nor cancel. Membership, not the delegate, owns this cleanup.
+    if (root.draggingSessionId && !root.sessions.some(entry => entry.id === root.draggingSessionId)) cancelDrag()
     synchronizeTabs()
     const dismissed = Object.assign({}, root.locallyUnpinned)
     for (const id of Object.keys(dismissed)) {
@@ -197,9 +205,27 @@ Item {
 
   // The pointer moves independently of the delegates. Commit once on release,
   // preserving selection and every session/widget object throughout the drag.
-  function updateDrag(id, sceneX, sceneY) {
-    if (!root.draggingSessionId && root.sessionControls) root.dragOrderRevision = root.sessionControls.orderRevision
+  function beginDrag(id) {
+    cancelDrag()
+    if (!root.canMoveSessions || !root.sessions.some(entry => entry.id === id)) return
     root.draggingSessionId = id
+    // Capture once per physical gesture, never from a preceding drag or from
+    // the scroll timer. A membership/order change still invalidates this drop.
+    root.dragOrderRevision = root.sessionControls.orderRevision
+  }
+
+  function cancelDrag() {
+    root.draggingSessionId = ""
+    root.dragBeforeId = ""
+    root.dragDestinationValid = false
+    root.dragSceneX = 0
+    root.dragSceneY = 0
+    root.dragOrderRevision = ""
+    Qt.callLater(ensureSelectedVisible)
+  }
+
+  function updateDrag(id, sceneX, sceneY) {
+    if (!id || id !== root.draggingSessionId) return
     root.dragSceneX = sceneX
     root.dragSceneY = sceneY
     const point = sessionList.mapFromItem(null, sceneX, sceneY)
@@ -217,6 +243,7 @@ Item {
   }
 
   Timer {
+    objectName: "sessionDragScrollTimer"
     interval: 40
     repeat: true
     running: root.draggingSessionId !== "" && root.dragDestinationValid
@@ -234,8 +261,7 @@ Item {
       && root.dragOrderRevision === root.sessionControls.orderRevision) {
       root.sessionControls.move(root.draggingSessionId, root.dragBeforeId)
     }
-    root.draggingSessionId = ""
-    root.dragDestinationValid = false
+    cancelDrag()
   }
 
   Shortcut {
@@ -431,9 +457,10 @@ Item {
               unit: root.unit
               dragEnabled: root.canMoveSessions
               opacity: root.draggingSessionId === tabId ? 0.55 : 1
+              onDragStarted: root.beginDrag(tabId)
               onDragMoved: (sceneX, sceneY) => root.updateDrag(tabId, sceneX, sceneY)
               onDragFinished: root.finishDrag()
-              onDragCancelled: { root.draggingSessionId = ""; root.dragDestinationValid = false }
+              onDragCancelled: root.cancelDrag()
               Rectangle {
                 width: parent.width
                 height: 3 * root.unit
@@ -753,6 +780,7 @@ Item {
     anchors.rightMargin: 20 * root.unit
     session: root.selectedSession
     catalog: root.sessionControls ? root.sessionControls.modelCatalog : ({models: []})
+    catalogLoaded: root.sessionControls ? root.sessionControls.modelsLoaded : false
     loading: root.sessionControls ? root.sessionControls.modelsLoading : false
     error: root.sessionControls ? root.sessionControls.modelsError : ""
     online: root.online

@@ -14,16 +14,19 @@ Item {
       property alias panel: panel
       property alias state: state
       property var requests: []
+      property bool answerModels: true
+      property bool initiallySelected: true
+      property bool controlsEnabled: true
+      property var availableCatalog: ({models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local"})
       Panel.AgentSessionState {
         id: state
-        controlsAvailable: true
+        controlsAvailable: setup.controlsEnabled
         panelVisible: true
         orderRevision: "order-1"
-        modelCatalog: ({models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local"})
         onControlRequested: request => {
           setup.requests = setup.requests.concat([request])
           if (request.action === "agent-models") {
-            controlReceived({type: "result", action: request.action, result: modelCatalog})
+            if (setup.answerModels) controlReceived({type: "result", action: request.action, result: setup.availableCatalog})
           } else if (request.action === "move-agent") {
             const ids = sessions.map(entry => entry.id).filter(id => id !== request.id)
             ids.splice(request.beforeId ? ids.indexOf(request.beforeId) : ids.length, 0, request.id)
@@ -55,7 +58,7 @@ Item {
       }
       Component.onCompleted: {
         state.replace([entry("a"), entry("b"), entry("c")])
-        state.select("b")
+        state.select(initiallySelected ? "b" : "")
       }
       function entry(id) {
         return {id: id, title: "Session " + id, profile: "quickQuestion", status: "running", model: "configured/local",
@@ -66,6 +69,134 @@ Item {
   TestCase {
     name: "SessionControls"
     when: windowShown
+    function test_removed_drag_source_data() {
+      return [{tag: "close", reconnect: false}, {tag: "reconnect snapshot", reconnect: true}]
+    }
+    function test_removed_drag_source(data) {
+      const setup = createTemporaryObject(fixture, parent)
+      const panel = setup.panel
+      const entries = []
+      for (let index = 0; index < 12; index++) entries.push(setup.entry("s" + index))
+      setup.state.replace(entries)
+      setup.state.select("s0")
+      setup.height = 500
+      verify(waitForRendering(panel))
+      const list = findChild(panel, "sessionTabList")
+      const source = findChild(panel, "tab-s1")
+      mousePress(source, 20, 40, Qt.LeftButton)
+      mouseMove(source, 20, -20, 20)
+      compare(panel.draggingSessionId, "s1")
+      verify(panel.dragDestinationValid)
+
+      // A destroyed delegate cannot emit release/cancel. Both incremental
+      // close and a reconnect snapshot must cancel the parent-owned gesture.
+      if (data.reconnect) setup.state.replace(entries.filter(entry => entry.id !== "s1"))
+      else setup.state.remove("s1")
+      setup.state.orderRevision = "after-removal"
+      wait(50)
+      mouseRelease(panel, 60, 200, Qt.LeftButton)
+      compare(panel.draggingSessionId, "")
+      compare(panel.dragBeforeId, "")
+      compare(panel.dragOrderRevision, "")
+      compare(panel.dragSceneX, 0)
+      compare(panel.dragSceneY, 0)
+      verify(!panel.dragDestinationValid)
+      verify(!findChild(panel, "sessionDragScrollTimer").running)
+      verify(list.interactive)
+
+      mouseWheel(list, 30, 100, 0, -240)
+      tryVerify(() => list.contentY > 0)
+      list.cancelFlick()
+      list.contentY = 0
+      setup.state.select("s11")
+      const last = findChild(panel, "tab-s11")
+      tryVerify(() => last.y + last.height <= list.contentY + list.height)
+      setup.state.select("s0")
+      tryCompare(list, "contentY", 0)
+
+      // The very next physical drag must capture the new membership revision.
+      const first = findChild(panel, "tab-s0")
+      mouseDrag(first, 20, 40, 0, 175, Qt.LeftButton)
+      tryCompare(first, "number", 3)
+      const moves = setup.requests.filter(request => request.action === "move-agent")
+      compare(moves.length, 1)
+      compare(moves[0].revision, "after-removal")
+      compare(setup.state.selectedId, "s0")
+    }
+    function modelRequests(setup) {
+      return setup.requests.filter(request => request.action === "agent-models").length
+    }
+    function test_model_catalog_reused_across_selection_and_reconnect() {
+      const setup = createTemporaryObject(fixture, parent, {controlsEnabled: false})
+      verify(waitForRendering(setup.panel))
+      compare(modelRequests(setup), 0)
+      // Capabilities can arrive after the connection and selected tab.
+      setup.controlsEnabled = true
+      tryCompare(setup.state, "modelsLoading", false)
+      tryVerify(() => modelRequests(setup) === 1)
+      for (const id of ["a", "c", "b", "a", "c"]) {
+        setup.state.select(id)
+        wait(20)
+      }
+      compare(modelRequests(setup), 1)
+
+      setup.state.disconnectControls()
+      setup.panel.online = false
+      setup.answerModels = false
+      setup.panel.online = true
+      setup.state.controlsAvailable = true
+      tryVerify(() => modelRequests(setup) === 2)
+      verify(setup.state.modelsLoading)
+      const picker = findChild(setup.panel, "sessionModelPicker")
+      verify(picker.enabled, "Cached rows remain usable during reconnect discovery")
+      setup.state.select("a")
+      wait(20)
+      compare(modelRequests(setup), 2)
+    }
+    function test_model_initial_need_and_unknown_catalog() {
+      const setup = createTemporaryObject(fixture, parent, {initiallySelected: false, answerModels: false})
+      verify(waitForRendering(setup.panel))
+      compare(modelRequests(setup), 0)
+      setup.state.update(Object.assign({}, setup.state.sessions[1], {modelOverride: "configured/alternate", messages: []}))
+      setup.state.select("b")
+      tryVerify(() => modelRequests(setup) === 1)
+      const picker = findChild(setup.panel, "sessionModelPicker")
+      compare(picker.currentText, "configured/alternate", "Unknown availability is not unavailability")
+      verify(!picker.enabled)
+      setup.state.controlReceived({type: "error", action: "agent-models", message: "Fixture discovery failed"})
+      for (const id of ["a", "c", "b"]) {
+        setup.state.select(id)
+        wait(20)
+      }
+      compare(modelRequests(setup), 1, "Selection does not retry failed discovery")
+      compare(picker.currentText, "configured/alternate")
+      const refresh = findChild(setup.panel, "refreshSessionModels")
+      mouseClick(refresh, refresh.width / 2, refresh.height / 2)
+      compare(modelRequests(setup), 2)
+      setup.state.controlReceived({type: "result", action: "agent-models", result: {models: []}})
+      compare(picker.currentText, "configured/alternate (unavailable)")
+    }
+    function test_cached_picker_usable_while_refresh_pins_rows() {
+      const setup = createTemporaryObject(fixture, parent)
+      const picker = findChild(setup.panel, "sessionModelPicker")
+      verify(waitForRendering(picker))
+      tryVerify(() => modelRequests(setup) === 1)
+      setup.answerModels = false
+      const refresh = findChild(setup.panel, "refreshSessionModels")
+      mouseClick(refresh, refresh.width / 2, refresh.height / 2)
+      compare(modelRequests(setup), 2)
+      verify(setup.state.modelsLoading)
+      verify(picker.enabled)
+      mouseClick(picker, 35, 15)
+      verify(picker.popup.visible)
+      setup.state.controlReceived({type: "result", action: "agent-models", result: {models: ["configured/new-row", "configured/alternate"]}})
+      keyClick(Qt.Key_Down)
+      keyClick(Qt.Key_Return)
+      const choice = setup.requests.filter(request => request.action === "set-agent-model")[0]
+      compare(choice.id, "b")
+      compare(choice.model, "configured/alternate")
+      compare(modelRequests(setup), 2)
+    }
     function test_keyboard_and_drag_preserve_selected_conversation_draft_and_delegate() {
       const setup = createTemporaryObject(fixture, parent)
       const panel = setup.panel

@@ -13,6 +13,10 @@ QtObject {
   property string orderRevision: ""
   property bool controlsAvailable: false
   property var modelCatalog: ({models: []})
+  // Keep the last successful catalog across reconnects. Track discovery for
+  // this connection separately: a failure should not retry on every tab switch.
+  property bool modelsLoaded: false
+  property bool modelsRequested: false
   property bool modelsLoading: false
   property string modelsError: ""
   // A request in flight must not select a tab after the user changes pages or
@@ -24,8 +28,13 @@ QtObject {
   onPanelVisibleChanged: invalidateNavigation()
   signal controlRequested(var request)
 
+  function ensureModels() {
+    if (!root.modelsRequested) root.refreshModels()
+  }
+
   function refreshModels() {
     if (!root.controlsAvailable || root.modelsLoading) return
+    root.modelsRequested = true
     root.modelsLoading = true
     root.modelsError = ""
     root.controlRequested({action: "agent-models"})
@@ -34,6 +43,7 @@ QtObject {
   function disconnectControls() {
     root.controlsAvailable = false
     root.modelsLoading = false
+    root.modelsRequested = false
     root.invalidateNavigation()
   }
 
@@ -55,7 +65,10 @@ QtObject {
     } else if ((message.type === "result" || message.type === "error") && message.action === "agent-models") {
       root.modelsLoading = false
       root.modelsError = message.type === "error" ? message.message : ""
-      if (!root.modelsError) root.modelCatalog = message.result
+      if (!root.modelsError) {
+        root.modelCatalog = message.result
+        root.modelsLoaded = true
+      }
     }
   }
 

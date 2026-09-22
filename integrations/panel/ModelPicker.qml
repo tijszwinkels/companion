@@ -7,6 +7,7 @@ Item {
   id: root
   property var session: null
   property var catalog: ({models: []})
+  property bool catalogLoaded: false
   property bool loading: false
   property string error: ""
   property bool online: false
@@ -31,7 +32,8 @@ Item {
     const entries = [{label: "Use " + (profile === "quickQuestion" ? "quick-question" : "coding") + " default · " + defaultModel, value: ""}]
     for (const model of catalog.models || []) entries.push({label: model, value: model})
     if (session && session.modelOverride && !entries.some(entry => entry.value === session.modelOverride)) {
-      entries.push({label: session.modelOverride + " (unavailable)", value: session.modelOverride})
+      const availability = root.catalogLoaded ? " (unavailable)" : ""
+      entries.push({label: session.modelOverride + availability, value: session.modelOverride})
     }
     return entries
   }
@@ -51,7 +53,9 @@ Item {
     y: 20 * root.unit
     width: Math.max(0, parent.width - refresh.width - 8 * root.unit)
     height: 32 * root.unit
-    enabled: root.online && root.session !== null && !root.loading
+    // Refreshing must not interrupt a choice from the retained catalog. The
+    // server revalidates submitted identifiers against current Pi availability.
+    enabled: root.online && root.session !== null && (!root.loading || root.catalogLoaded)
     model: popup.visible ? root.popupOptions : root.options
     textRole: "label"
     valueRole: "value"

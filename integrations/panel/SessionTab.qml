@@ -43,6 +43,7 @@ Rectangle {
   signal selectedRequested()
   signal closeRequested()
   property bool dragEnabled: false
+  signal dragStarted()
   signal dragMoved(real sceneX, real sceneY)
   signal dragFinished()
   signal dragCancelled()
@@ -183,7 +184,10 @@ Rectangle {
     onPositionChanged: mouse => {
       if (!pressed || !root.dragEnabled || !(pressedButtons & Qt.LeftButton)) return
       const sceneY = mapToItem(null, mouse.x, mouse.y).y
-      if (Math.abs(sceneY - pressY) > 8 * root.unit) moving = true
+      if (!moving && Math.abs(sceneY - pressY) > 8 * root.unit) {
+        moving = true
+        root.dragStarted()
+      }
       if (moving) {
         moved = true
         root.dragMoved(mapToItem(null, mouse.x, mouse.y).x, sceneY)

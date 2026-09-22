@@ -510,11 +510,18 @@ membership change; apply it without reselecting a tab. The response is `moved`.
 Reconnect snapshots include the latest `sessionOrderRevision`. Order lasts for
 the listener process; new/reopened sessions append, and listener restart keeps
 saved conversations in Previous sessions as before.
+If a dragged conversation disappears, the client cancels the gesture and restores
+rail scrolling. Each new drag captures its own order revision.
 
 `{"action":"agent-models"}` returns `{models: string[], coding: string,
 quickQuestion: string}` from Pi availability and Companion profile settings.
 Concurrent refresh requests share discovery; timeout or malformed data returns an
-error. `{"action":"set-agent-model","id":"...","model":"provider/id"}`
+error. Clients discover on the first conversation needing the catalog in each
+connection and on explicit refresh, then reuse it across tab changes. Failed
+discovery requires explicit refresh or reconnect to retry. A cached catalog stays
+usable during refresh; an override is only labelled unavailable after a successful
+catalog excludes it. Open menus pin their rows and conversation until selection
+or cancellation. `{"action":"set-agent-model","id":"...","model":"provider/id"}`
 validates the available identifier, saves `modelOverride` with that conversation,
 and returns `model-selected`. Empty `model` clears the override. Preview returns
 `preview` without saving. The current/last turn's `model` is separate; overrides
@@ -525,7 +532,9 @@ clients do not optimistically change other conversations or write live config.
 New clients also include `visible` and `navigationToken` in `panel-state`.
 `visible: true` covers Activity and Previous as well as conversations; their `id`
 stays empty. Tokens are unique to the UI instance and change when selection,
-Previous visibility, panel visibility or connection changes. At speech end,
+Previous visibility, panel visibility or connection changes. Token-only reports
+update routing without sending a full snapshot. Selection or navigation
+availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
 ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
 “go to session 1” through “go to session 9”, also one through nine, with ordinary
