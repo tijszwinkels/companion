@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
-import { ToolTranscripts } from './tool-transcripts.ts';
+import { toolCallLimit, ToolTranscripts } from './tool-transcripts.ts';
 import { panelMessageLimit } from './transcript-limits.ts';
 
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -137,8 +137,27 @@ export class SessionStore {
         state: ['queued', 'running'].includes(message.state) ? 'error' : message.state,
       };
       if (message.kind === 'tool' && message.toolGroup) {
-        // Trust only the archive's group ID; derive revision/count from disk.
-        return this.tools.summary(id, message.id);
+        const group = message.toolGroup;
+        if (
+          !sessionId.test(message.id) ||
+          !Number.isSafeInteger(group.count) ||
+          group.count < 1 ||
+          group.count > toolCallLimit ||
+          typeof group.revision !== 'string' ||
+          !sessionId.test(group.revision)
+        ) {
+          throw Error('Invalid saved tool group');
+        }
+        // Retain a content-free fallback so a missing detail database cannot
+        // hide ordinary answers, screenshots or widgets in this conversation.
+        return {
+          ...restored,
+          text: '',
+          input: '',
+          toolName: '',
+          screenshot: false,
+          toolGroup: { count: group.count, revision: group.revision },
+        };
       }
       if (message.screenshot && message.kind === 'user' && screenshotUrl) {
         restored.screenshotUrl = screenshotUrl;
@@ -173,10 +192,27 @@ export class SessionStore {
         grouped[position] = summary;
       }
     }
-    this.tools.stop(id);
-    messages = grouped.map((message) =>
-      message.toolGroup ? this.tools.summary(id, message.id) : message,
-    );
+    let toolRecoveryFailed = false;
+    if (grouped.some((message) => message.toolGroup)) {
+      try {
+        this.tools.stop(id);
+      } catch {
+        toolRecoveryFailed = true;
+      }
+    }
+    messages = grouped.map((message) => {
+      if (!message.toolGroup) {
+        return message;
+      }
+      try {
+        const summary = this.tools.summary(id, message.id);
+        return toolRecoveryFailed ? { ...summary, state: 'error' as const } : summary;
+      } catch {
+        // Expansion reports the storage error; the surrounding chat stays
+        // readable. Keep the reference for recovery if its database returns.
+        return { ...message, state: 'error' as const };
+      }
+    });
     if (session.status === 'starting' || session.status === 'running') {
       session.status = 'cancelled';
       session.error = 'Companion stopped before this answer finished.';

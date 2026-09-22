@@ -7,7 +7,11 @@ import test from 'node:test';
 
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
-import { toolPageUnits, type ToolPageRequest } from '../../src/agents/tool-transcripts.ts';
+import {
+  toolPageUnits,
+  toolStorageBytes,
+  type ToolPageRequest,
+} from '../../src/agents/tool-transcripts.ts';
 import {
   chatMessage,
   type AgentBackend,
@@ -373,4 +377,74 @@ test('tools share the 800-row limit but do not reduce ordinary 1M-unit text allo
   await setup.sessions.remove(setup.id);
   await setup.sessions.reopen(setup.id);
   assert.deepEqual(setup.sessions.snapshot()[0].messages, view.messages);
+});
+
+for (const damage of ['missing', 'corrupt']) {
+  test(`${damage} tool database preserves archive discovery, ordinary chat and the recoverable reference`, async (context) => {
+    const setup = await fixture(context);
+    setup.emit(tool('a', 'Recoverable tool details'));
+    setup.emit(chatMessage('answer', 'assistant', 'Ordinary answer'));
+    await setup.finish();
+    const original = request(setup.sessions.snapshot()[0]);
+    const screenshotUrl = setup.sessions.snapshot()[0].messages[0].screenshotUrl;
+    await setup.sessions.remove(setup.id);
+    await setup.sessions.close();
+    const path = join(setup.directory, '.companion-sessions', 'tool-transcripts.sqlite');
+    const database = await readFile(path);
+    if (damage === 'missing') await rm(path);
+    else await writeFile(path, 'damaged database');
+    const backend: AgentBackend = {
+      id: 'unused',
+      label: 'Unused',
+      dependencies: {},
+      async run() {
+        assert.fail('Do not resume while reopening');
+      },
+    };
+    const restarted = new AgentSessions({ backend }, () => {}, setup.directory);
+    try {
+      await restarted.loadPrevious();
+      assert.equal(restarted.previousSnapshot().length, 1);
+      await restarted.reopen(setup.id);
+      const view = restarted.snapshot()[0];
+      assert.equal(view.messages[2].text, 'Ordinary answer');
+      assert.ok(screenshotUrl);
+      assert.equal(view.messages[0].screenshotUrl, screenshotUrl);
+      assert.equal(view.messages[1].id, original.groupId);
+      assert.equal(view.messages[1].state, 'error');
+      assert.throws(() => restarted.toolPage(request(view)), /unavailable|database/);
+      await restarted.remove(setup.id);
+    } finally {
+      await restarted.close();
+    }
+    // Closing with unavailable details must preserve their IDs. Restoring the
+    // original private database makes the complete text readable again.
+    await writeFile(path, database, { mode: 0o600 });
+    const recovered = new AgentSessions({ backend }, () => {}, setup.directory);
+    try {
+      await recovered.loadPrevious();
+      await recovered.reopen(setup.id);
+      assert.ok(
+        recovered
+          .toolPage(request(recovered.snapshot()[0]))
+          .text.includes('Recoverable tool details'),
+      );
+    } finally {
+      await recovered.close();
+    }
+  });
+}
+
+test('oversized tool storage updates fail before allocation and preserve the committed version', async (context) => {
+  const setup = await fixture(context);
+  setup.emit(tool('a', 'committed'));
+  const before = request(setup.sessions.snapshot()[0]);
+  // A JS repeated string stays a rope until materialized. Admission should use
+  // its length before allocating a hundreds-of-megabytes UTF-16 buffer.
+  assert.throws(
+    () => setup.emit(tool('a', 'x'.repeat(toolStorageBytes / 2))),
+    /storage limit \(256 MiB/,
+  );
+  assert.deepEqual(request(setup.sessions.snapshot()[0]), before);
+  assert.equal(readAll(setup.sessions, before)[0], body(tool('a', 'committed')));
 });

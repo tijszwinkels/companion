@@ -125,6 +125,9 @@ export class ToolTranscripts {
     if (!uuid.test(owner) || !uuid.test(groupId)) {
       throw Error('Invalid tool group');
     }
+    if (!this.database && !existsSync(join(this.directory, 'tool-transcripts.sqlite'))) {
+      throw Error('Tool details are unavailable');
+    }
     const db = this.db();
     const group = db
       .prepare('SELECT revision FROM tool_groups WHERE owner = ? AND id = ?')

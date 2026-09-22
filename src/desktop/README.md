@@ -610,7 +610,11 @@ using a private directory (0700), database (0600), atomic SQLite transactions an
 UTF-16LE blobs. Session JSON remains an atomic, compact display snapshot; preserve
 both files when backing up or moving conversations. Legacy JSON tools migrate
 when read, keeping their original archive untouched until the next normal save.
-Legacy truncation already performed by older versions cannot be reconstructed.
+If the separate tool database is missing or damaged, compact archives still
+reopen their ordinary chat, screenshots and widgets. Their tool groups retain
+validated references and report detail-read errors; restoring the database can
+recover those contents. Legacy truncation already performed by older versions
+cannot be reconstructed.
 The Pi adapter no longer applies its old 16 KiB display truncation, and drops
 completed calls from its active-input map. Pi's own model history is independent.
 
