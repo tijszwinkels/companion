@@ -164,7 +164,23 @@ its browser views. No widget runs in the listener or native Pi extension.
 
 ## Renderer and limits
 
-This implementation uses the installed Chromium and Bubblewrap on Linux, with
+### Standalone native UI
+
+The [standalone Qt host](../native/window/README.md) embeds Chromium through Qt
+WebEngine in Window, Sidebar and Dock. It draws and handles input directly;
+inline views do not use the PNG/input-forwarding loop described below. Filtered
+2× rendering is the default; the native host guide documents overrides, build
+dependencies, focus behavior and known rendering limits. Widget tools, retained
+bundles, state, actions and the separate Chromium pop-out remain shared.
+
+Native embedding runs inside the Companion UI host and uses the
+[native profile/module](../native/widget-renderer/README.md). It does not inherit
+the capture browser's whole-process Bubblewrap network namespace. Do not apply
+the capture-path isolation or frame-rate claims to this renderer.
+
+### Portable capture and pop-out
+
+The stock Quickshell panel uses the installed Chromium and Bubblewrap on Linux, with
 QtQuick displaying captured PNG frames. The installed Quickshell constructs its
 application with an empty argument list; importing QtWebEngine there aborts.
 No Quickshell replacement or system configuration change is required.
@@ -198,6 +214,12 @@ bridge; the text fallback and actual Chromium window remain useful for those
 workflows. File/network/browser integrations are outside the widget contract.
 
 ## Validation
+
+For native UI behavior, use the build and `npm run test:window` workflow in the
+[native host guide](../native/window/README.md). The commands below describe the
+portable capture/browser suite and shared panel tests; they do not by themselves
+validate native embedding. Review readiness and exclusions are recorded in the
+feature ledger, separately from a test suite's passing result.
 
 Run `npm test`, `npm run check`, `npm run format:check`, and `npm run test:widgets`.
 The latter requires `/usr/lib/chromium/chromium`, `bwrap`, and Qt's

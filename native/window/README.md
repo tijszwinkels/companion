@@ -41,6 +41,8 @@ Build dependencies: CMake, a C++17 compiler, Qt 6.8+ Quick, QuickControls2,
 WebEngineQuick, Network, QuickTest, and LayerShellQt 6.6+ development files.
 Sidebar builds also require Qt WaylandClient, its protocol scanner and the Qt
 Gui private development headers (matching the Qt version being built against).
+Rebuild the native UI after a Qt upgrade: the Sidebar/Dock build is tied to those
+private headers and the matching runtime libraries.
 QuickTest is only needed when `BUILD_TESTING` is enabled. Runtime packages on
 Arch are `qt6-base`, `qt6-declarative`, `qt6-webengine`, `qt6-wayland`, `layer-shell-qt`.
 

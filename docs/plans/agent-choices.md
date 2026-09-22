@@ -1,7 +1,11 @@
 # Agent choices and voice shortcuts
 
-Requested by @tijs on 2026-09-19 for the next work session. This is the agreed
-feature brief; implementation is deferred until that session.
+Historical design brief. Choices are implemented; the current tool, routing and
+lifetime contracts are in [the agent guide](../../src/agents/README.md#conversation-choices).
+The open design questions below record the proposal, not unfinished requirements.
+
+Requested by @tijs on 2026-09-19 for the next work session. At that time this was
+the agreed feature brief, with implementation deferred to that session.
 
 ## User experience
 

@@ -7,7 +7,9 @@ There is no port binding layer, scheduler, or separate list of diagram edges.
 
 ## Wiring
 
-The wiring in [the CLI](../src/cli.ts) now has named dependencies:
+This minimal example shows named dependencies from [the CLI](../src/cli.ts).
+The CLI registers additional agent, continuation, close and feedback processors;
+the example is not the complete current intent list.
 
 ```ts
 const detector = new IntentDetector(config.llm);
@@ -47,6 +49,16 @@ The pipeline likewise calls `this.dependencies.screen.capture(...)`,
 `this.dependencies.router.route(...)`. The inspector follows these same named
 properties. `ActiveWindowSensor` gives the existing capture function an object
 identity; the capture algorithm is unchanged.
+
+`SensorPipeline.submit(samples, signal)` and `submitText(text, signal, target?)`
+share one bounded FIFO: one active job and two waiting jobs. Both capture the
+screen and interaction context on admission; only audio invokes transcription.
+Typed input accepts nonblank text up to 4000 UTF-16 code units. An optional target
+address must match the captured window. Admission returns `false` for cancellation
+or a full queue; accepted work reports its later processing outcome separately.
+The desktop's `submit-utterance` action uses this path after restoring application
+focus. It records the utterance and PNG, with no WAV. See the
+[desktop contract](../src/desktop/README.md) for capabilities and acknowledgements.
 
 ## Contextual intent instructions
 

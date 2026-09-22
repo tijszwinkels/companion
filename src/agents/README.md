@@ -79,8 +79,8 @@ running rings but need a listener restart for unread completion tracking.
 
 `PiBackend` starts each turn with the native Pi extension `choice-tool.ts` using
 `--extension`. Pi 0.85.1 supports this in RPC mode; no MCP service, global plugin
-installation, or separate socket is needed. Existing system and intent prompt
-text remains unchanged. The tool description, Pi `promptSnippet` and one
+installation, or separate socket is needed. The choice integration does not edit
+the base agent system instruction or permanent intent wording. The tool description, Pi `promptSnippet` and one
 tool-specific `promptGuidelines` entry teach the model how to offer choices.
 
 The `companion_choices` tool accepts these equivalent presentation forms:
@@ -158,26 +158,24 @@ the same live server receives the current choices in its snapshot.
 
 ## Verification and limits
 
+### Widgets
+
+The Pi backend also loads `widget-tools.ts` when the turn has a widget lease.
+`companion_widgets`, `companion_widget`, `companion_widget_update`,
+`companion_widget_call` and `companion_widget_present` discover, publish, mutate
+and place reusable widgets. See [the widget guide](../../widget-library/README.md)
+for schemas, retained bundles, durable state and renderer limits. Widgets and
+their fallback text participate in the shared transcript bounds; tool output is
+not an unlimited extra transcript store.
+
 ### Try it in the desktop sidebar
 
-Both the listener and the installed sidebar must contain this feature. Running
-`npm start` from a feature checkout does not update the installed QML. Older
-sidebars ignore choice updates even when Pi successfully calls the tool.
-
-Save any unsent composer drafts before refreshing the sidebar, and stop the
-existing Companion listener in its terminal. From this checkout, inside the
-desktop session, run:
-
-```sh
-npm run asr:build
-npm run omarchy:install
-npm start
-```
-
-The first command builds master's speech-recognition helper for this checkout;
-it is needed once per checkout or after changing the helper. The installer
-refreshes the sidebar; it does not start the listener. An unchanged bindings
-file needs only the plugin rescan, with no Hyprland reload.
+The listener, UI and installed Omarchy bridge must contain the intended feature.
+`npm start` does not update installed QML or reload a running native UI. See
+[the development guide](../../docs/development.md#updating-what-actually-runs)
+for component-specific activation, and [the native host guide](../../native/window/README.md)
+for standalone build dependencies. Save unsent drafts before stopping a UI.
+An older sidebar can ignore choice updates even when Pi successfully calls the tool.
 
 Open an agent conversation and send this concrete test request:
 
@@ -215,9 +213,10 @@ Installed Pi 0.85.1 registered the native extension in an isolated offline start
 probe without sending a model request. A second probe confirmed that Pi's assembled
 system prompt contains the tool name, snippet and guideline. A later read-only
 inspection of the user's running feature backend found three successful choice
-tool calls; the installed older sidebar could not render them. The complete
-model-to-panel click/voice loop and native compositor interaction have not yet
-been verified for this feature.
+tool calls; the installed older sidebar could not render them. These were initial
+branch observations, not a current installation check. Later user feedback
+reported working choices; current deployment/review evidence lives in the feature
+ledger. Automated tests do not prove every live voice or compositor interaction.
 No choices are inferred from arbitrary bracketed answer text; the model must use
 the tool. The existing headless-backend restriction on unrelated interactive Pi
 dialogs remains in effect.

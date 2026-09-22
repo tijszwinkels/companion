@@ -1,6 +1,11 @@
 # Selected conversation context: discussion proposal
 
-Status: approved by @tijs and implemented on `design/conversation-context`, rebased
+Historical approved proposal and prompt snapshot. The feature is integrated;
+later intent wording and registrations can differ from the full prompts below.
+Use `src/core/intent-detector.ts` and the current processors for today's assembly,
+or the [stored intent request](../src/desktop/README.md) for an exact past request.
+
+Original handoff: approved by @tijs and implemented on `design/conversation-context`, rebased
 onto master `0b44f08` to include the Astra/Qwen model profiles. The reviewed design
 and exact prompts follow. Validation uses
 injected backends and a local fixture endpoint; no live model calls.

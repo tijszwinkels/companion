@@ -50,9 +50,9 @@ needed to update this adapter.
   Other keyboard output waits its turn and checks focus again before typing.
 - **Super+Alt+P** pauses or resumes listening, including when the panel is closed.
   It uses the same pause control as the top-bar menu and toggles once per press.
-- **Super+Alt+D** focuses the selected conversation's input, opening the panel
-  if hidden. Press it again to return to the previous application. Select a
-  conversation first; Activity and Previous sessions have no composer to focus.
+- **Super+Alt+D** focuses the visible conversation or Activity input, opening the
+  panel if hidden. From Previous sessions it selects Activity. Press it again to
+  return to the previous application.
 - With the panel focused, **Alt+1** through **Alt+9** select the corresponding
   Q1–Q9 tabs and retain drafts. **Super+Alt+0** (or **Alt+0**) selects Activity;
   **Super+Alt+Tab** cycles Activity → conversations → Activity. Activity retains
@@ -73,8 +73,10 @@ needed to update this adapter.
   while processing, and neutral when paused. Speech takes priority over an
   earlier utterance still processing. The dimmed icon means Companion is not running.
   Pause and sound controls remain responsive during manual recovery.
-- An ascending two-note cue confirms successful delivery; a descending cue
-  means ignored. A single note means accepted for processing. `--no-sounds`
+- Application delivery uses an ascending two-note cue; a new agent session uses
+  a three-note rise, and a continuation/choice uses a higher descending pair.
+  Ignored input uses a low descending pair; a successful agent turn has its own
+  completion cue. A single note means accepted for processing. `--no-sounds`
   starts with them muted; the menu can enable them for the current session.
   Muting also stops playing and queued cues. Preview mode is silent and does not type.
 
@@ -91,22 +93,30 @@ Failed, skipped, cancelled, or interrupted processing shows the outcome in red
 alongside any detected intent. Preview prefixes the intent with **PREVIEW** to
 make clear that no keyboard input was sent.
 
-Activity also shows floating voice-prefix labels and clickable intent switches,
-derived from the live router. Disabled intents turn grey and their voice labels
-disappear; context-unavailable intents say so and can still be switched on/off.
-Hover an intent to see its exact identifier. `IGNORE` is the always-on fallback.
-Switches are saved by Companion and restored on its next desktop-enabled start.
-Paused/offline labels are dimmed. A backend predating these controls asks for a
-restart instead of displaying switches that would not affect routing.
+Activity shows floating voice-prefix labels and separate clickable **Intent**
+(accent) and **Shortcut** (amber) cards derived from the live router. Each route
+can be disabled independently. Off or context-unavailable cards turn grey and
+explain their state; cards retain their prefix text, while floating labels show
+available shortcuts. A disabled prefix stays reserved rather than falling
+through to another route. Hover a card for its identifier. `IGNORE` is the
+always-on fallback. Switches persist in `~/companion/disabled-intents.json`.
+Paused/offline labels are dimmed; older backends show a restart hint.
 
 The Activity page starts with the listening area. Its shortcut labels, intention cards,
 and keyboard help occupy one measured vertical column. The page scrolls on small
-displays; keyboard help reserves its actual wrapped height instead of overlapping
+displays above the fixed bottom input; keyboard help reserves its wrapped height instead of overlapping
 the switches. Intention cards use “intent” and “shortcut” for their routing modes
 and show their spoken prefixes, including when switched off. Standalone commands
 have no trailing ellipsis. Listening, History, Voice shortcuts, and Intentions
 can each be collapsed by clicking the section header; their state lasts for the
 current UI lifetime.
+
+The bottom Activity input sends text through the same capture, intent/prefix
+routing and history pipeline as speech, without ASR or a WAV recording. Enter
+or Send submits; Shift+Enter adds a newline. It restores the previous application
+before capturing and retains the draft on focus, connection or admission failure.
+It also works with listening paused. Update the listener, UI and installed adapter
+together for this capability; a listener restart alone cannot update the bridge.
 
 History sits below Intentions. Completed utterances fade into cards, newest first,
 with the original detected intent in a smaller corner label. It retains every
@@ -116,7 +126,10 @@ separate 100-entry view spanning restarts. A listener restart begins a fresh
 Activity history; saved database rows, recordings and feedback remain on disk.
 
 Hover a card for **Copy**, **Insert**, **New coding session**, **Label correct**,
-and **Label incorrect**. Copy keeps the text literal. Insert releases panel focus
+**Label incorrect**, and the delete **×**. Deletion removes its SQLite row,
+dependent feedback/paste records and UUID-named PNG/WAV artifacts; active processing
+or pasting prevents deletion. The card disappears after backend confirmation.
+Copy keeps the text literal. Insert releases panel focus
 to the active ordinary application, checks focus through the delivery queue, and
 never presses Enter. New coding session uses the original saved screenshot and
 utterance, with an error if that screenshot is unavailable. Correct labels tint
@@ -138,16 +151,16 @@ phrase replaces an older result. Pausing shows **Paused** while any pending
 phrase finishes; a disconnected Companion shows **Not running** and reconnects
 through the existing service.
 
-**Super+Alt+D** also pauses currently playing media when it focuses a conversation
+**Super+Alt+D** also pauses currently playing media when it focuses an Activity or conversation
 input. This uses MPRIS Pause on players that support it. Companion resumes listening
 when all players report that playback has stopped, unless you manually paused
 listening. Leaving the input (by toggling focus back, clicking elsewhere, closing
-the panel, or selecting Activity) resumes only players Companion paused for that
+the panel) resumes only players Companion paused for that
 interaction. Players that were already paused, were stopped/closed, or resumed
 independently are left alone. Ordinary textbox clicks do not initiate media
-pausing, and switching directly between conversation inputs keeps media paused.
+pausing, and switching directly between focused inputs keeps media paused.
 
-The default is the rightmost external monitor (by its logical right edge), with
+For the Quickshell-hosted panel, the default is the rightmost external monitor (by its logical right edge), with
 built-in eDP/LVDS/DSI displays as the fallback. A single monitor always works.
 Monitor changes are observed while the panel is open. Every tab, including
 Activity, starts at 600 logical pixels of width at the default theme scale and
@@ -196,8 +209,10 @@ panel cancels any held history selection without pasting. Rapid toggles reverse
 the 180 ms slide animation.
 
 The reusable QtQuick body lives in [`../panel`](../panel). It accepts state and
-theme values and emits a close request. The Omarchy adapter alone owns the
-Wayland windows, monitor choice, shortcut, and theme bindings. Future desktop
+theme values and emits a close request. For the Quickshell panel, the adapter owns
+the Wayland windows and monitor choice. With the standalone host running, that
+host owns the conversation surfaces and the adapter bridges shortcuts, theme,
+media and focus restoration through `NativeBridge.qml`. Future desktop
 adapters can reuse that body or consume the same desktop state protocol. See
 [quick questions](../../README.md#quick-questions) for Pi setup and session limits.
 

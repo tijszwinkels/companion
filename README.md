@@ -5,6 +5,10 @@ one intent, and routes the sensor frame to a subscribed processor. Explicit
 command prefixes skip intent inference.
 The previous experiment lives in `../companion_spike`.
 
+Developing Companion, including from a Companion agent session? Start with
+[the development guide](docs/development.md) for the source map, configuration,
+tests, documentation and the separate backend/UI/adapter update steps.
+
 ## Run
 
 From a terminal inside the Hyprland desktop session:
@@ -156,8 +160,10 @@ frames. With the conversation focused, **Ctrl++** (or **Ctrl+=**) and **Ctrl+-**
 zoom the transcript and composer from 80% to 200%; **Ctrl+0** resets to 100%.
 Zoom follows you between tabs for the lifetime of the panel. Links remain
 clickable; raw HTML is literal text and Markdown images display their alt text.
-All tabs, including Activity, use 600 logical pixels of width (capped to the
-screen) and all available screen height. Switching tabs keeps the same size. Scrolling
+The Quickshell panel starts at 600 logical pixels wide (capped to the screen).
+The [standalone Qt host](native/window/README.md) instead provides a remembered
+ordinary window, Sidebar and Dock, with embedded widgets using filtered 2×
+rendering by default. Switching tabs keeps the host's size. Scrolling
 up stops following the stream until you return to the bottom. Conversation wheel
 and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
@@ -212,10 +218,10 @@ agent questions running; stopping Companion cancels its agents and the tool
 subprocesses in their owned process groups. Supplied-text/file modes wait for accepted questions to
 finish. CLI logs include completed answers when no panel is attached.
 
-Each tab has a composer. Click it to type a follow-up, press **Enter** to send,
+Each conversation tab has a composer. Click it to type a follow-up, press **Enter** to send,
 or **Shift+Enter** for a newline. **Super+Alt+D** opens the panel and focuses the
-selected conversation's input; press it again to return to your previous
-application. A follow-up resumes the same Pi conversation,
+visible Activity or conversation input; press it again to return to your previous
+application. A conversation follow-up resumes the same Pi conversation,
 including the original screenshot; it does not capture another screenshot.
 While the panel has keyboard focus, **Alt+1** through **Alt+9** select Q1–Q9 in
 the current tab order and focus that conversation's composer, keeping its draft.
@@ -249,9 +255,10 @@ Opening the panel alone does not take focus from the application.
 Focus changes between a composer and the underlying
 application invalidate pending keyboard delivery, even when Hyprland's
 `activewindow` still names that same underlying window. Enter rechecks this guard
-after typing. These guards are covered offline; real compositor focus and
-dictation into the composer still need desktop validation before claiming them
-verified on this installation.
+after typing. Offscreen checks cover these guards; the native host's
+[isolated layer-focus regression](native/window/README.md#build-without-activating)
+also exercises Dock/Sidebar typing and focus restoration. This does not establish
+every live desktop, monitor or widget-popup interaction.
 
 Click the screenshot in the first question to open a separate, themed viewer on
 that display. It starts fitted to the available space. Scroll or use **+ / −** to
