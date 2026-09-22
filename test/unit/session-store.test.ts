@@ -155,8 +155,10 @@ test('close and restart keep history dormant; reopen restores the same UUID and 
   const events: SessionEvent[] = [];
   restarted.subscribe((event) => events.push(event));
   await restarted.reopen(id);
-  const { completedTurnId: _completion, ...saved } = before;
-  assert.deepEqual(restarted.snapshot()[0], saved);
+  const { completedTurnId: _completion, toolEpoch: oldEpoch, ...saved } = before;
+  const { toolEpoch: newEpoch, ...reopened } = restarted.snapshot()[0];
+  assert.notEqual(newEpoch, oldEpoch);
+  assert.deepEqual(reopened, saved);
   assert.equal(requests.length, 1);
   assert.equal(events[0].type, 'agent-restored');
   assert.deepEqual(restarted.previousSnapshot(), []);

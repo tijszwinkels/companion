@@ -57,6 +57,8 @@ Item {
     && composer.text.trim().length > 0 && composer.text.length <= 4000
   readonly property string composerFocusId: online && composerReachable && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
+  signal toolPageRequested(var request)
+  signal toolPageReceived(var message)
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
@@ -187,6 +189,8 @@ Item {
       const message = incoming[index]
       const row = {messageId: message.id, kind: message.kind, body: message.text,
         toolName: message.toolName, input: message.input, state: message.state,
+        toolCount: message.toolGroup ? message.toolGroup.count : 0,
+        toolRevision: message.toolGroup ? message.toolGroup.revision : "",
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
       if (index < messages.count) {
@@ -261,9 +265,16 @@ Item {
       required property string state
       required property bool screenshot
       required property string screenshotUrl
+      required property int toolCount
+      required property string toolRevision
       required property string widgetJson
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
       property bool expanded: false
+      property string ownerId: root.displayedId
+      property string toolEpoch: root.session ? root.session.toolEpoch || "" : ""
+      onMessageIdChanged: expanded = false
+      onOwnerIdChanged: expanded = false
+      onToolEpochChanged: expanded = false
       objectName: "bubble-" + messageId
       width: transcript.width
       height: bubbleSurface.height
@@ -294,7 +305,7 @@ Item {
             width: parent.width - copyButton.width - 8 * root.unit
             height: Math.max(implicitHeight, copyButton.height)
             verticalAlignment: Text.AlignVCenter
-            text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + bubble.toolName
+            text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
               : bubble.kind === "user" ? "You" + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
@@ -390,12 +401,25 @@ Item {
             Component.onDestruction: if (root.hoveredWidget === widgetView) root.hoveredWidget = null
           }
 
+          Loader {
+            width: parent.width
+            active: bubble.expanded && bubble.toolCount > 0
+            sourceComponent: ToolDetails {
+              reader: root
+              sessionId: root.displayedId
+              epoch: root.session ? root.session.toolEpoch || "" : ""
+              groupId: bubble.messageId
+              revision: bubble.toolRevision
+              count: bubble.toolCount
+            }
+          }
+
           TextEdit {
             id: messageText
             objectName: "messageText"
             width: parent.width
             height: visible ? contentHeight : 0
-            visible: (bubble.kind !== "tool" || bubble.expanded)
+            visible: !bubble.toolCount && (bubble.kind !== "tool" || bubble.expanded)
               && (!widgetView.visible || !widgetView.rendered || widgetView.error !== "")
             text: bubble.kind === "assistant" ? Markdown.render(bubble.body, root.textScale, root.selection.toString(), root.accent.toString())
               : bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body
@@ -431,7 +455,7 @@ Item {
           radius: 4 * root.unit
           color: root.selection
           opacity: messageHover.hovered || copyMouse.containsMouse || copied.running ? 1 : 0
-          visible: messageText.text !== ""
+          visible: !bubble.toolCount && messageText.text !== ""
           Behavior on opacity { NumberAnimation { duration: 120 } }
           function activate() {
             const source = bubble.kind === "tool" ? bubble.input + (bubble.body ? "\n\n" + bubble.body : "") : bubble.body

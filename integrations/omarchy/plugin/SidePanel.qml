@@ -47,6 +47,8 @@ PanelWindow {
   signal sendSessionRequested(string id, string text)
   signal composerFocusRequested()
   signal composerFocusReleased()
+  signal toolPageRequested(var request)
+  function toolPageReceived(message) { content.toolPageReceived(message) }
   signal choiceRequested(string id, string revision, int index)
   signal stopRunRequested(string id, string runId)
   signal restoreFocusRequested(string address)
@@ -193,6 +195,7 @@ PanelWindow {
         onStopSessionRequested: id => root.stopSessionRequested(id)
         onDismissSessionRequested: id => root.dismissSessionRequested(id)
         onSendSessionRequested: (id, text) => root.sendSessionRequested(id, text)
+        onToolPageRequested: request => root.toolPageRequested(request)
         onChoiceRequested: (id, revision, index) => root.choiceRequested(id, revision, index)
         onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
       }

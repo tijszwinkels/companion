@@ -21,8 +21,9 @@ function contentText(content: unknown): string {
 /**
  * Pi 0.85 RPC sends deltas without a cumulative message. Assemble text by
  * content index and reconcile with message_end, which is authoritative.
- * Thinking events are not part of the displayed answer. Tool output is plain
- * text, bounded here because shell commands can produce arbitrarily much data.
+ * Thinking events are not part of the displayed answer. Tool text is delivered
+ * intact to the disk-backed transcript. Retain inputs only while their calls
+ * are active, and never retain cumulative tool results in this adapter.
  */
 export class PiTranscript {
   private nextId = 0;
@@ -78,7 +79,7 @@ export class PiTranscript {
     if (event.type === 'tool_execution_start' && typeof event.toolCallId === 'string') {
       const tool = chatMessage(`tool-${event.toolCallId}`, 'tool', '');
       tool.toolName = String(event.toolName || 'Tool');
-      tool.input = JSON.stringify(event.args ?? {}, null, 2).slice(0, 16384);
+      tool.input = JSON.stringify(event.args ?? {}, null, 2);
       tool.state = 'running';
       this.tools.set(event.toolCallId, tool);
       this.emit({ ...tool });
@@ -92,12 +93,12 @@ export class PiTranscript {
 
       const result = object(event.result ?? event.partialResult);
       const text = contentText(result.content);
-      tool.text =
-        text.length > 16384 ? text.slice(0, 16384) + '\n[Output truncated in panel]' : text;
+
       if (event.type === 'tool_execution_end') {
         tool.state = event.isError === true ? 'error' : 'done';
+        this.tools.delete(String(event.toolCallId));
       }
-      this.emit({ ...tool });
+      this.emit({ ...tool, text });
     }
   }
 }

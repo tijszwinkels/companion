@@ -22,8 +22,8 @@ for (const size of [262_145, 999_999, 1_000_000, 1_000_001]) {
             (total, message) => total + message.text.length + message.input.length,
             0,
           );
-        // Split the budget across tool input and output to protect both fields.
-        const message = chatMessage('large-tool', 'tool', 'x'.repeat(size - userSize - 100));
+        // Ordinary display text/input still shares the exact 1M-unit budget.
+        const message = chatMessage('large-answer', 'assistant', 'x'.repeat(size - userSize - 100));
         message.input = 'i'.repeat(100);
         emit(message);
       },
@@ -45,7 +45,7 @@ for (const size of [262_145, 999_999, 1_000_000, 1_000_001]) {
         );
       } else {
         assert.match(view.error, /panel transcript limit/);
-        assert.ok(!view.messages.some((message) => message.id === 'large-tool'));
+        assert.ok(!view.messages.some((message) => message.id.endsWith(':large-answer')));
       }
 
       await sessions.remove(id);

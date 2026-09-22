@@ -166,6 +166,7 @@ Item {
     composerFocusId: root.composerId
     onRevealRequested: root.host.show(false)
     onInputFinished: (id, text, error) => panel.submitted(id, text, error)
+    onToolPageReceived: message => panel.toolPageReceived(message)
     onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
     onOnlineChanged: root.publish()
   }
@@ -274,6 +275,7 @@ Item {
     onDismissSessionRequested: id => client.send({action: "close-agent", id: id})
     onStopSessionRequested: id => client.send({action: "stop-agent", id: id})
     onSendSessionRequested: (id, text) => client.sendInput(id, text)
+    onToolPageRequested: request => { client.reportPanel(); client.send(request) }
     onChoiceRequested: (id, revision, index) => client.choose(id, revision, index)
     onStopRunRequested: (id, runId) => {
       client.reportPanel()

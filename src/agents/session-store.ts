@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
+import { ToolTranscripts } from './tool-transcripts.ts';
 import { panelMessageLimit } from './transcript-limits.ts';
 
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -17,7 +18,10 @@ const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
  */
 export class SessionStore {
   private readonly writes = new Map<string, Promise<void>>();
-  constructor(private readonly directory: string) {}
+  readonly tools: ToolTranscripts;
+  constructor(private readonly directory: string) {
+    this.tools = new ToolTranscripts(directory);
+  }
 
   private path(id: string, extension: string): string {
     if (!sessionId.test(id)) {
@@ -53,6 +57,7 @@ export class SessionStore {
         'viewUrl',
         'choices',
         'runId',
+        'toolEpoch',
         'acceptsFollowUp',
         'completedTurnId',
       ].includes(key)
@@ -106,7 +111,7 @@ export class SessionStore {
     } catch {
       // A missing attachment must not prevent reopening the conversation.
     }
-    const messages = session.messages.map((message: AgentMessage): AgentMessage => {
+    let messages = session.messages.map((message: AgentMessage): AgentMessage => {
       if (
         !message ||
         typeof message.id !== 'string' ||
@@ -131,6 +136,10 @@ export class SessionStore {
         // after reopening a tab or restarting Companion.
         state: ['queued', 'running'].includes(message.state) ? 'error' : message.state,
       };
+      if (message.kind === 'tool' && message.toolGroup) {
+        // Trust only the archive's group ID; derive revision/count from disk.
+        return this.tools.summary(id, message.id);
+      }
       if (message.screenshot && message.kind === 'user' && screenshotUrl) {
         restored.screenshotUrl = screenshotUrl;
       }
@@ -144,6 +153,30 @@ export class SessionStore {
       }
       return restored;
     });
+    // Migrate legacy inline tools without rewriting the original archive. A
+    // later normal save persists compact groups; a failed migration leaves the
+    // original JSON intact and readable by the old version.
+    const grouped: AgentMessage[] = [];
+    for (const message of messages) {
+      if (message.kind !== 'tool' || message.toolGroup) {
+        grouped.push(message);
+        continue;
+      }
+      const last = grouped.at(-1);
+      const groupId =
+        this.tools.groupFor(id, message.id) ?? (last?.toolGroup ? last.id : randomUUID());
+      const summary = this.tools.put(id, message, groupId);
+      const position = grouped.findIndex((entry) => entry.id === groupId);
+      if (position < 0) {
+        grouped.push(summary);
+      } else {
+        grouped[position] = summary;
+      }
+    }
+    this.tools.stop(id);
+    messages = grouped.map((message) =>
+      message.toolGroup ? this.tools.summary(id, message.id) : message,
+    );
     if (session.status === 'starting' || session.status === 'running') {
       session.status = 'cancelled';
       session.error = 'Companion stopped before this answer finished.';

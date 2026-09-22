@@ -6,6 +6,7 @@ import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import { agentDirectory, loadAgentSettings } from './settings.ts';
+import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
 import { SessionStore } from './session-store.ts';
 import { panelMessageLimit, panelTextLimit } from './transcript-limits.ts';
 import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
@@ -142,6 +143,23 @@ export class AgentSessions implements InspectableModule {
     }));
   }
 
+  toolPage(request: ToolPageRequest): ToolPage {
+    const session = this.sessions.get(request.id);
+    const group = session?.view.messages.find(
+      (message) => message.id === request.groupId && message.toolGroup,
+    );
+    if (
+      this.closed ||
+      !session ||
+      session.closing ||
+      !group ||
+      request.epoch !== session.view.toolEpoch
+    ) {
+      throw Error('Tool group is unavailable in this conversation');
+    }
+    return this.store.tools.page(request);
+  }
+
   has(id: string): boolean {
     return this.sessions.has(id);
   }
@@ -241,6 +259,7 @@ export class AgentSessions implements InspectableModule {
         id,
         title: frame.utterance.slice(0, 80),
         status: 'starting',
+        toolEpoch: randomUUID(),
         model: '',
         profile,
         error: '',
@@ -408,7 +427,16 @@ export class AgentSessions implements InspectableModule {
           widgets: widgetLease,
         },
         session.controller.signal,
-        (message) => this.message(session, { ...message, id: `${turnId}:${message.id}` }),
+        (message) => {
+          if (
+            acceptingUpdates &&
+            !session.closing &&
+            !session.controller.signal.aborted &&
+            !this.closed
+          ) {
+            this.message(session, { ...message, id: `${turnId}:${message.id}` });
+          }
+        },
         (options) => {
           if (
             !acceptingUpdates ||
@@ -464,10 +492,27 @@ export class AgentSessions implements InspectableModule {
       if (session.view.status !== 'completed' || session.controller.signal.aborted) {
         this.cancelPending(session);
       }
+      try {
+        this.store.tools.stop(session.view.id);
+      } catch (error) {
+        session.view.status = 'error';
+        session.view.error = `Could not finalize tool details: ${String(error)}`;
+        this.log('agent-history', session.view.error, frameId);
+      }
       // A stopped partial answer/tool must not retain a running spinner.
       for (const message of session.view.messages) {
         if (message.state === 'running') {
-          const finished = { ...message, state: 'error' as const };
+          let finished = { ...message, state: 'error' as const } as AgentMessage;
+          if (message.toolGroup) {
+            try {
+              finished = {
+                ...this.store.tools.summary(session.view.id, message.id),
+                state: 'error',
+              };
+            } catch {
+              /* Keep the visible error if storage failed. */
+            }
+          }
           const index = session.view.messages.indexOf(message);
           session.view.messages[index] = finished;
           session.changed.set(finished.id, finished);
@@ -501,6 +546,22 @@ export class AgentSessions implements InspectableModule {
   }
 
   private message(session: RunningSession, message: AgentMessage): void {
+    if (message.kind === 'tool' && !message.toolGroup) {
+      const last = session.view.messages.at(-1);
+      const groupId =
+        this.store.tools.groupFor(session.view.id, message.id) ??
+        (last?.toolGroup ? last.id : randomUUID());
+      if (
+        new Set([
+          ...session.view.messages.map((entry) => entry.id),
+          ...session.widgetReservations.keys(),
+          groupId,
+        ]).size > panelMessageLimit
+      ) {
+        throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
+      }
+      message = this.store.tools.put(session.view.id, message, groupId);
+    }
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
     const reserved = new Map(session.view.messages.map((entry) => [entry.id, entry]));
     for (const [id, entry] of session.widgetReservations) {
@@ -635,6 +696,7 @@ export class AgentSessions implements InspectableModule {
         throw Error('Agent sessions are shutting down');
       }
       view.acceptsFollowUp = true;
+      view.toolEpoch = randomUUID();
       this.sessions.set(id, {
         view,
         controller: new AbortController(),
@@ -671,5 +733,6 @@ export class AgentSessions implements InspectableModule {
     await this.idle();
     await this.widgets.close();
     this.listeners.clear();
+    this.store.tools.close();
   }
 }
