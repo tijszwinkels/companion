@@ -36,6 +36,7 @@ Item {
   function releaseFocus(restore) {
     focusDeadline.stop()
     root.focusPending = false
+    host.releaseFocus()
     panel.releaseComposerFocus()
     if (restore && root.previousWindow) {
       // The bridge validates this compositor-supplied address again. It owns
@@ -139,6 +140,7 @@ Item {
     }
     function onBridgeChanged() { client.reportPanel(); root.publish() }
     function onSurfaceChanged() { Qt.callLater(root.publish) }
+    function onFocusCleared() { root.releaseFocus(false) }
   }
 
   Timer {
@@ -151,8 +153,7 @@ Item {
     id: focusDeadline
     interval: 1500
     onTriggered: {
-      root.focusPending = false
-      root.previousWindow = ""
+      root.releaseFocus(false)
       client.error = "Could not focus Companion. Click the conversation input to continue."
       client.errorAction = "focus-agent"
     }

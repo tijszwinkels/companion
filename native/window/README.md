@@ -13,6 +13,15 @@ Wayland and LayerShellQt. One persistent QML body moves between the two native
 surfaces, retaining drafts, selected tabs, zoom and browser documents. Closing
 the window hides it; the resident host can be summoned again.
 
+Super+Alt+D uses Hyprland's dismissible focus-grab protocol for Sidebar and Dock.
+The normal Qt activation request works for ordinary windows, but Hyprland does
+not apply it to layer surfaces. The grab keeps typing in the requested composer
+while the pointer remains over another application; an outside click dismisses
+it. Toggling focus, hiding, changing presentation, losing the surface or timing
+out releases it. Window mode retains Qt's existing activation path. Compositors
+without this optional protocol retain click-to-focus and the existing timed
+failure message; no exclusive keyboard grab is substituted.
+
 Super +/− uses Omarchy's ordinary Hyprland resize action in Window mode, for both
 floating and tiled windows. Qt follows the resulting compositor geometry. Only
 Sidebar/Dock route these keys to Companion's own width control. Asking Qt to
@@ -25,8 +34,10 @@ coordinated check after updating the installed adapter's bindings.
 
 Build dependencies: CMake, a C++17 compiler, Qt 6.8+ Quick, QuickControls2,
 WebEngineQuick, Network, QuickTest, and LayerShellQt 6.6+ development files.
+Sidebar builds also require Qt WaylandClient, its protocol scanner and the Qt
+Gui private development headers (matching the Qt version being built against).
 QuickTest is only needed when `BUILD_TESTING` is enabled. Runtime packages on
-Arch are `qt6-base`, `qt6-declarative`, `qt6-webengine`, `layer-shell-qt`.
+Arch are `qt6-base`, `qt6-declarative`, `qt6-webengine`, `qt6-wayland`, `layer-shell-qt`.
 
 ```sh
 npm run ui:build
@@ -45,6 +56,35 @@ state, and draft/browser retention during surface changes. The reparenting test
 injects ordinary offscreen surfaces for Sidebar/Dock; it does **not** prove the
 Wayland layer protocol, reserved workspace geometry, focus restoration, monitor
 hotplug or GPU/WebGL performance. These require a coordinated desktop check.
+
+The opt-in `test/window/layer-focus.ts` regression uses real native layer
+surfaces in an isolated Hyprland instance, a synthetic backend and disposable
+GTK application. It checks Dock/Sidebar focus, actual typed input, focus toggle,
+outside-click dismissal, media notifications and hide/reopen. It requires the
+normal native build, system Python with GTK4/PyGObject, wtype, a C compiler and
+Wayland development tools. This command opens a nested test desktop; arrange
+that test window before running it on an interactive desktop:
+
+```sh
+python test/live/nested-hyprland.py test/window/layer-focus.ts
+```
+
+Set `COMPANION_TEST_UI` to a baseline native executable to compare builds. On
+2026-09-22 the baseline failed to focus Dock; the fixed build passed both layer
+modes, including actual input and outside-click dismissal. That execution used
+a separate headless Sway parent and stock nested Hyprland, with no connection to
+the user's compositor. Sway's advertised xdg-shell version was raised from 5 to
+6 only in that disposable parent to satisfy Aquamarine's version requirement;
+the child Hyprland and its focus-grab implementation were unchanged. This does
+not establish live monitor/hotplug, GPU or physical-keyboard behavior. Ordinary
+window activation in that synthetic environment lacked a usable activation
+token, so it is not claimed as new window-mode coverage.
+
+The vendored focus protocol is unmodified from
+[hyprland-protocols cc9a8fd](https://github.com/hyprwm/hyprland-protocols/blob/cc9a8fd253bdc00f48a967ecf4828211ef08751f/protocols/hyprland-focus-grab-v1.xml).
+Its BSD license is retained in the XML and installed with the binary. The
+test-only pointer protocol retains its MIT license from
+[wlr-protocols b010a03](https://github.com/swaywm/wlr-protocols/blob/b010a03648b88d143236de193bddbfea0c08bc84/unstable/wlr-virtual-pointer-unstable-v1.xml).
 
 The translucent-theme regression covers the live crash reported on 2026-09-21
 while closing a weather widget. Its core stopped at Chromium's native

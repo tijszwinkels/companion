@@ -7,6 +7,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QSettings>
+#include "layer-focus.hpp"
 
 // Owns two native surfaces and one persistent QML body. Reparenting the body
 // preserves tab state, text selection, composer drafts and browser documents.
@@ -36,6 +37,7 @@ public:
     Q_INVOKABLE void show(bool activate = false);
     Q_INVOKABLE void hide();
     Q_INVOKABLE void activate();
+    Q_INVOKABLE void releaseFocus();
     Q_INVOKABLE void setPresentation(const QString &mode);
     Q_INVOKABLE void resizeBy(int logicalPixels);
     Q_INVOKABLE void publish(const QJsonObject &status);
@@ -47,6 +49,7 @@ signals:
     void bridgeChanged();
     void errorChanged();
     void command(const QJsonObject &message);
+    void focusCleared();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -59,6 +62,7 @@ private:
     void setError(const QString &message);
     QQuickWindow ordinary;
     QQuickWindow sidebar;
+    LayerFocus layerFocus;
     QPointer<QQuickItem> body;
     QLocalServer server;
     QHash<QLocalSocket *, QByteArray> clients;

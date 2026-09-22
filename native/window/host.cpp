@@ -5,12 +5,14 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QPlatformSurfaceEvent>
 #include <algorithm>
 #ifdef COMPANION_LAYER_SHELL
 #include <LayerShellQt/Window>
 #endif
 
 WindowHost::WindowHost(QObject *parent, bool testSurfaces) : QObject(parent), testSurfaces(testSurfaces) {
+    connect(&layerFocus, &LayerFocus::cleared, this, &WindowHost::focusCleared);
     ordinary.setTitle("Companion");
     ordinary.setMinimumSize(QSize(360, 420));
     ordinary.resize(settings.value("window/width", 620).toInt(),
@@ -87,8 +89,12 @@ void WindowHost::show(bool focus) {
     if (focus) activate();
 }
 
-void WindowHost::hide() { window()->hide(); }
-void WindowHost::activate() { window()->requestActivate(); }
+void WindowHost::hide() { releaseFocus(); window()->hide(); }
+void WindowHost::activate() {
+    if (mode != "window" && !testSurfaces) layerFocus.acquire(window());
+    window()->requestActivate();
+}
+void WindowHost::releaseFocus() { layerFocus.release(); }
 
 void WindowHost::setError(const QString &message) {
     failure = message;
@@ -114,6 +120,7 @@ void WindowHost::setPresentation(const QString &value) {
     const bool focused = active();
     QPointer<QQuickItem> focusItem = window()->activeFocusItem();
     changingSurface = true;
+    releaseFocus();
     window()->hide();
     mode = value;
     settings.setValue("presentation", mode);
@@ -179,7 +186,12 @@ void WindowHost::resizeBy(int delta) {
 }
 
 bool WindowHost::eventFilter(QObject *object, QEvent *event) {
+    if (object == &sidebar && event->type() == QEvent::PlatformSurface
+        && static_cast<QPlatformSurfaceEvent *>(event)->surfaceEventType() == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
+        releaseFocus();
+    }
     if ((object == &ordinary || object == &sidebar) && event->type() == QEvent::Close) {
+        releaseFocus();
         static_cast<QCloseEvent *>(event)->ignore();
         static_cast<QWindow *>(object)->hide();
         return true;
