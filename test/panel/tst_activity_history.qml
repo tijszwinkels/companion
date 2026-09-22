@@ -95,7 +95,7 @@ Item {
       verify(waitForRendering(host));
       const page = findChild(host, "fullActivityStatus");
       const history = findChild(host, "historySection");
-      const position = Math.max(0, Math.min(page.contentHeight - page.height, history.y));
+      const position = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, history.y));
       if (page.contentY !== position) {
         page.contentY = position;
         verify(waitForRendering(host));

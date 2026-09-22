@@ -19,11 +19,12 @@ type CaptureResult = (
   { screenshot: Screenshot; error?: never } | { error: unknown; screenshot?: never }
 ) & { application?: Screenshot['window'] };
 
-/** Audio plus the already-running capture for a future sensor frame. */
+/** Spoken or typed input plus the already-running capture for a future frame. */
 interface Job {
   id: number;
   observedAt: number;
-  samples: Float32Array;
+  samples?: Float32Array;
+  text?: string;
   capture: Promise<CaptureResult>;
   signal: AbortSignal;
   interaction?: InteractionContext;
@@ -50,6 +51,22 @@ export class SensorPipeline implements InspectableModule {
 
   /** Accept ownership of a complete utterance without blocking microphone input. */
   submit(samples: Float32Array, signal = this.signal): boolean {
+    return this.enqueue({ samples }, signal);
+  }
+
+  /** Typed observations share speech ordering, capture, history and routing. */
+  submitText(text: string, signal = this.signal, target?: string): boolean {
+    if (!text.trim() || text.length > 4000) {
+      throw Error('Enter between 1 and 4000 characters');
+    }
+    return this.enqueue({ text }, signal, target);
+  }
+
+  private enqueue(
+    input: { samples: Float32Array; text?: never } | { text: string; samples?: never },
+    signal: AbortSignal,
+    target?: string,
+  ): boolean {
     if (signal.aborted || this.signal.aborted) {
       return false;
     }
@@ -76,7 +93,10 @@ export class SensorPipeline implements InspectableModule {
         application = window;
       })
       .then(
-        (screenshot) => {
+        (screenshot): CaptureResult => {
+          if (target && screenshot.window.address !== target) {
+            return { error: Error('Application focus changed before capture'), application };
+          }
           this.log(
             'screen',
             `${JSON.stringify(screenshot.window.app)} ${screenshot.width}x${screenshot.height}`,
@@ -87,8 +107,12 @@ export class SensorPipeline implements InspectableModule {
         (error) => ({ error, application }),
       );
 
-    this.pending.push({ id, observedAt, samples, capture, signal: jobSignal, interaction });
-    this.log('queued', `${(samples.length / 16000).toFixed(2)} s audio`, id);
+    this.pending.push({ id, observedAt, ...input, capture, signal: jobSignal, interaction });
+    this.log(
+      'queued',
+      input.samples ? `${(input.samples.length / 16000).toFixed(2)} s audio` : 'Typed utterance',
+      id,
+    );
 
     // At most one worker runs; it preserves speech order through ASR and routing.
     this.worker ??= this.drain().finally(() => {
@@ -110,15 +134,19 @@ export class SensorPipeline implements InspectableModule {
 
       try {
         job.signal.throwIfAborted();
-        this.log('transcribe', 'Recognizing speech', job.id);
+        if (job.samples) {
+          this.log('transcribe', 'Recognizing speech', job.id);
+        }
         const started = performance.now();
 
         // Capture is already in progress. Await both halves of the same frame;
         // a new screenshot taken after transcription could show another app.
         const [utterance, capture] = await Promise.all([
-          this.dependencies.transcriber.transcribe(job.samples, job.signal, (diagnostic) => {
-            this.log('asr', JSON.stringify(diagnostic), job.id);
-          }),
+          job.samples
+            ? this.dependencies.transcriber.transcribe(job.samples, job.signal, (diagnostic) => {
+                this.log('asr', JSON.stringify(diagnostic), job.id);
+              })
+            : job.text!,
           job.capture,
         ]);
 
@@ -147,7 +175,9 @@ export class SensorPipeline implements InspectableModule {
         // result after cancellation. One failed write must not discard the
         // other recording. Await both before reporting a failure or clearing
         // this job's samples in finally; Promise.all would return too early.
-        const audioWrite = this.activity.audioCaptured?.(job.id, job.samples);
+        const audioWrite = job.samples
+          ? this.activity.audioCaptured?.(job.id, job.samples)
+          : undefined;
         const screenshotWrite = capture.screenshot
           ? this.activity.screenshotCaptured?.(job.id, capture.screenshot)
           : undefined;
@@ -192,7 +222,7 @@ export class SensorPipeline implements InspectableModule {
         }
       } finally {
         // This job owns the audio buffer; no later processor needs raw samples.
-        job.samples.fill(0);
+        job.samples?.fill(0);
 
         await job.capture; // Settle capture before shutdown releases the job.
         this.activity.finished?.(job.id);

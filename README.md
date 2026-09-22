@@ -170,6 +170,15 @@ chat (normally 25% of sidebar height); at 100%, a host-owned **Back to chat**
 control restores the transcript and its unsent draft. Chromium and Bubblewrap
 are required for visuals; ordinary text conversations remain available.
 
+Activity has a text box pinned at the bottom. **Enter** or **Send** submits what
+you would otherwise say; **Shift+Enter** adds a line. **Super+Alt+D** focuses this
+input on Activity and the conversation input on agent tabs. Text restores focus
+to your previous application, captures its screenshot, and joins the same intent
+and shortcut queue as speech, with the same history and feedback. It works while
+the microphone is paused. The draft stays until admission is confirmed; a lost
+connection never automatically resends it. Text input needs the updated listener,
+UI and Omarchy adapter. No audio recording is created for typed input.
+
 Activity shows floating labels for available voice prefixes. In Intentions,
 **Intent** cards use the accent color and **Shortcut** cards use amber. Each card
 is independently clickable: turning off recognition leaves that processor's
@@ -212,8 +221,8 @@ While the panel has keyboard focus, **Alt+1** through **Alt+9** select Q1–Q9 i
 the current tab order and focus that conversation's composer, keeping its draft.
 **Super+Alt+0** (or **Alt+0**) selects Activity; **Super+Alt+Tab** cycles
 Activity → conversations → Activity. These shortcuts work only while Companion
-has keyboard focus. Activity keeps that focus for tab navigation, with no hidden
-text input. Outside Companion, Super+Alt+Tab retains Omarchy's group navigation.
+has keyboard focus. Activity keeps its own visible text input and tab navigation; it never focuses
+a hidden agent composer. Outside Companion, Super+Alt+Tab retains Omarchy's group navigation.
 Select message text and press **Ctrl+C** to copy the selection. Hover over a
 message for its **Copy** button, which copies the whole message (including the
 original Markdown for agent answers) without changing your selection or draft.

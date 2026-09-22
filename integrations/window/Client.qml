@@ -13,6 +13,9 @@ Item {
   property int processing: 0
   property var history: []
   property bool historyDeletionAvailable: false
+  property bool textInputAvailable: false
+  property string pendingUtterance: ""
+  property string pendingUtteranceId: ""
   property var intents: []
   property var agentActions: ({})
   property string error: ""
@@ -24,6 +27,7 @@ Item {
   property bool panelVisible: false
   property bool keyboardFocused: false
   property string composerFocusId: ""
+  signal utteranceFinished(string text, string error)
   signal revealRequested()
   signal inputFinished(string id, string text, string error)
   signal choiceFinished(string id, string revision, int index, string error)
@@ -67,6 +71,21 @@ Item {
     if (pending) root.choiceFinished(pending.id, pending.revision, pending.index, error)
   }
 
+  function finishUtterance(error) {
+    const text = root.pendingUtterance
+    root.pendingUtterance = ""
+    root.pendingUtteranceId = ""
+    if (text !== "") root.utteranceFinished(text, error)
+  }
+
+  function sendUtterance(target) {
+    if (root.pendingUtterance === "") return
+    root.reportPanel()
+    if (!root.send({action: "submit-utterance", text: root.pendingUtterance, target: target})) {
+      root.finishUtterance("Companion is disconnected; your draft is retained.")
+    }
+  }
+
   function sendInput(id, text) {
     // Protocol replies identify the action, not its request. Keep one pending
     // input across all tabs so a late acknowledgement cannot clear another draft.
@@ -94,6 +113,8 @@ Item {
 
   function disconnected() {
     root.online = false
+    root.textInputAvailable = false
+    root.finishUtterance("Connection lost before confirmation. Check History before resending; your draft is retained.")
     root.finishInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
     root.finishChoice("Connection lost before confirmation. Check the conversation before choosing again.")
     root.speaking = false
@@ -113,6 +134,7 @@ Item {
       root.processing = message.processing || 0
       root.history = message.history || []
       root.historyDeletionAvailable = message.historyDeletionAvailable === true
+      root.textInputAvailable = message.textInputAvailable === true
       const intents = message.intents || []
       if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
       const actions = message.agentActions || {}
@@ -141,6 +163,7 @@ Item {
     } else if (message.type === "result" || message.type === "error") {
       const failure = message.type === "error" ? message.message : ""
       if (message.action === "send-agent") root.finishInput(failure)
+      if (message.action === "submit-utterance") root.finishUtterance(failure)
       if (message.action === "choose-agent") root.finishChoice(failure)
       if (message.action === "activity-history") {
         if (failure) activity.loading = false

@@ -187,6 +187,10 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       activity,
     );
 
+    if (values.text === undefined) {
+      desktop?.connectPipeline(pipeline);
+    }
+
     // Export the same wiring as normal execution, before acquiring any audio,
     // screen, native VAD, or desktop resources. stdout contains only the graph.
     if (values.graph) {

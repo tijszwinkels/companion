@@ -21,6 +21,8 @@ Item {
   property int processing: 0
   property var history: []
   property bool historyDeletionAvailable: false
+  property bool textInputAvailable: false
+  property string pendingUtterance: ""
   property var intents: []
   property var agentActions: ({})
   property string lastError: ""
@@ -37,6 +39,7 @@ Item {
   property var pendingAgentChoice: null
   property string lastApplication: ""
   readonly property bool panelKeyboardFocused: native.ready ? native.status.active === true : sidePanel.keyboardFocused
+  readonly property bool panelInputFocused: native.ready ? native.status.inputFocused === true || root.panelComposerId !== "" : sidePanel.inputFocused
   readonly property string panelComposerId: native.ready ? native.status.composerFocusId || "" : sidePanel.composerFocusId
   function isNativeWindow(window) {
     return window && ((window.wayland && window.wayland.appId === "companion")
@@ -76,6 +79,7 @@ Item {
       else if (message.type === "resume-media") playback.resumePaused()
       else if (message.type === "restore-focus") root.finishFocusRestore(message.address)
       else if (message.type === "history-paste") root.historyAction("paste", message.id, {})
+      else if (message.type === "activity-text") root.historyAction("submit-utterance", message.id, {text: message.text})
     }
     onStatusChanged: root.finishNativeInsert()
   }
@@ -95,10 +99,8 @@ Item {
     id: insertDeadline
     interval: 2000
     onTriggered: {
-      if (root.pendingHistoryInsert && native.ready) {
-        root.pendingHistoryInsert = null
-        root.lastErrorAction = "paste"
-        root.lastError = "Paste skipped: application focus was not restored"
+      if (root.pendingHistoryInsert) {
+        root.failInsertion("Application focus was not restored; try again.")
       }
     }
   }
@@ -135,7 +137,7 @@ Item {
     root.reportPanelState()
     // Coalesce transient focus changes while switching between conversation
     // tabs. Leaving the composer for another window or Activity restores media.
-    if (root.panelComposerId === "") playback.resumePaused()
+    if (!root.panelInputFocused) playback.resumePaused()
   }
 
   function togglePanel() {
@@ -158,13 +160,14 @@ Item {
       native.send({action: "focus", address: root.lastApplication})
       return
     }
-    if (!root.online || !agentSessions.conversationId) {
+    if (!root.online) {
       root.panelOpened = true
-      root.lastError = "Select an agent conversation before focusing its input."
+      root.lastError = "Companion is disconnected."
       root.lastErrorAction = "focus-agent"
       return
     }
     root.cancel()
+    if (agentSessions.showingPrevious) agentSessions.select("")
     const previous = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
     const address = previous && !previous.startsWith("0x") ? "0x" + previous : previous
     root.panelOpened = true
@@ -219,25 +222,47 @@ Item {
     }
   }
 
+  function finishUtterance(error) {
+    const text = root.pendingUtterance
+    root.pendingUtterance = ""
+    if (text !== "") sidePanel.utteranceSubmitted(text, error)
+  }
+
+  function insertionError(request, error) {
+    if (request.action === "submit-utterance") {
+      if (native.ready) native.send({action: "utterance-failed", id: request.id, text: request.text, error: error})
+      else root.finishUtterance(error)
+    }
+    root.lastErrorAction = request.action
+    root.lastError = error
+  }
+
+  function failInsertion(error) {
+    const pending = root.pendingHistoryInsert
+    root.pendingHistoryInsert = null
+    insertDeadline.stop()
+    if (pending) root.insertionError(pending, error)
+  }
+
   function historyAction(action, id, value) {
-    if (!root.online) return
-    if (action !== "paste") {
+    if (action !== "paste" && action !== "submit-utterance") {
       root.send(Object.assign({action: action, id: id}, value))
       return
     }
-    if (root.pendingHistoryInsert) return
+    const request = Object.assign({action: action, id: id}, value)
+    if (!root.online || root.pendingHistoryInsert) {
+      root.insertionError(request, root.online ? "Wait for the previous insertion." : "Companion is disconnected; your draft is retained.")
+      return
+    }
     const previous = native.ready ? root.lastApplication : Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
     const address = previous && !previous.startsWith("0x") ? "0x" + previous : previous
     if (!/^0x[0-9a-f]+$/i.test(address)) {
-      root.lastErrorAction = "paste"
-      root.lastError = "Select an application window before inserting."
+      root.insertionError(request, "Select an application window before sending.")
       return
     }
-    root.pendingHistoryInsert = {id: id, target: address}
-    if (native.ready) {
-      insertDeadline.restart()
-      native.send({action: "release-for-insertion", address: address})
-    }
+    root.pendingHistoryInsert = Object.assign(request, {target: address})
+    insertDeadline.restart()
+    if (native.ready) native.send({action: "release-for-insertion", address: address})
     else sidePanel.releaseForInsertion(address)
   }
 
@@ -289,6 +314,7 @@ Item {
         root.processing = message.processing
         root.history = message.history
         root.historyDeletionAvailable = message.historyDeletionAvailable === true
+        root.textInputAvailable = message.textInputAvailable === true
         // Speech/history snapshots must not rebuild chips underneath a held
         // mouse click or tooltip. Only changed routing state replaces the list.
         const intents = message.intents || []
@@ -318,12 +344,14 @@ Item {
       } else if (message.type === "error") {
         if (message.action === "activity-history") activityHistory.loading = false
         if (message.action === "send-agent") root.finishAgentInput(message.message)
+        if (message.action === "submit-utterance") root.finishUtterance(message.message)
         if (message.action === "choose-agent") root.finishAgentChoice(message.message)
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
         if (message.action === "activity-history") activityHistory.page(message.result)
         if (message.action === "send-agent") root.finishAgentInput("")
+        if (message.action === "submit-utterance") root.finishUtterance("")
         if (message.action === "choose-agent") root.finishAgentChoice("")
         if (message.result === "skipped") {
           root.lastError = "Paste skipped: focus changed"
@@ -399,7 +427,7 @@ Item {
   GlobalShortcut {
     appid: "companion"
     name: "focus"
-    description: "Toggle focus in the Companion conversation input"
+    description: "Toggle focus in the Companion input"
     onPressed: root.toggleComposerFocus()
   }
 
@@ -502,6 +530,8 @@ Item {
 
   function connectionLost() {
     root.finishAgentInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
+    root.finishUtterance("Connection lost before confirmation. Check History before resending; your draft is retained.")
+    root.textInputAvailable = false
     root.finishAgentChoice("Connection lost before confirmation. Check the conversation before choosing again.")
     root.online = false
     root.speaking = false
@@ -590,6 +620,11 @@ Item {
     activityHistoryModel: activityHistory.model
     activityHistoryAvailable: activityHistory.available
     historyDeletionAvailable: root.historyDeletionAvailable
+    textInputAvailable: root.textInputAvailable
+    onUtteranceRequested: text => {
+      root.pendingUtterance = text
+      root.historyAction("submit-utterance", "", {text: text})
+    }
     agentActions: root.agentActions
     sessions: agentSessions.sessions
     unreadSessionIds: agentSessions.unreadIds
@@ -614,6 +649,7 @@ Item {
     onComposerFocusRequested: playback.pausePlaying()
     onComposerFocusReleased: Qt.callLater(root.composerFocusChanged)
     onComposerFocusIdChanged: Qt.callLater(root.composerFocusChanged)
+    onInputFocusedChanged: Qt.callLater(root.composerFocusChanged)
     onKeyboardFocusedChanged: Qt.callLater(root.reportPanelState)
     onRestoreFocusRequested: address => root.finishFocusRestore(address)
   }
@@ -624,9 +660,7 @@ Item {
       const active = Hyprland.activeToplevel ? Hyprland.activeToplevel.address : ""
       const current = active && !active.startsWith("0x") ? "0x" + active : active
       if (current !== pending.target && !(native.ready && root.isNativeWindow(Hyprland.activeToplevel))) {
-        root.pendingHistoryInsert = null
-        root.lastErrorAction = "paste"
-        root.lastError = "Paste skipped: focus changed"
+        root.failInsertion("Focus changed before sending; try again.")
         return
       }
     }
@@ -637,12 +671,13 @@ Item {
       return
     }
     root.pendingHistoryInsert = null
+    insertDeadline.stop()
     if (pending && pending.target === address) {
       // Report relinquished panel focus before queuing keyboard delivery.
       // The backend rechecks both the ordinary window and this focus boundary.
       Qt.callLater(function() {
         root.reportPanelState()
-        root.send({action: "paste", id: pending.id, target: pending.target, composer: ""})
+        root.send({action: pending.action, id: pending.id, text: pending.text, target: pending.target, composer: ""})
       })
     }
   }
@@ -658,12 +693,12 @@ Item {
     root.pendingHistoryInsert = null
     insertDeadline.stop()
     if (current !== pending.target) {
-      root.lastError = "Paste skipped: focus changed"
-      root.lastErrorAction = "paste"
+      root.insertionError(pending, "Focus changed before sending; try again.")
       return
     }
     // The native client sends its final focus report and paste on one ordered
     // backend connection. A bridge socket race must never revive composer focus.
-    native.send({action: "paste-after-release", id: pending.id, target: pending.target})
+    native.send({action: pending.action === "submit-utterance" ? "utterance-after-release" : "paste-after-release",
+      id: pending.id, text: pending.text, target: pending.target})
   }
 }

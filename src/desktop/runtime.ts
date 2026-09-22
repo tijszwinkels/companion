@@ -16,6 +16,7 @@ import { DesktopServer } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
+import type { SensorPipeline } from '../core/pipeline.ts';
 import { IntentPreferences } from './intent-preferences.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
@@ -64,6 +65,7 @@ export class DesktopRuntime {
   private interactionRevision = 0;
   private readonly frameComposerRevisions = new Map<number, number>();
   private router?: UserSensorRouter;
+  private pipeline?: Pick<SensorPipeline, 'submitText'>;
   private readonly intentPreferences: IntentPreferences;
   private lastAgentActions?: AgentActions;
   private routingRevision = 0;
@@ -327,6 +329,12 @@ export class DesktopRuntime {
     this.server.broadcast();
   };
 
+  /** Attach the live queue after CLI routing and sensors have been constructed. */
+  connectPipeline(pipeline: Pick<SensorPipeline, 'submitText'>): void {
+    this.pipeline = pipeline;
+    this.server.broadcast();
+  }
+
   private snapshot(): object {
     return {
       protocol: 1,
@@ -342,6 +350,7 @@ export class DesktopRuntime {
       activitySessionId: this.activityHistory.sessionId,
       activityHistoryCount: this.activityHistory.count,
       historyDeletionAvailable: !this.options.preview,
+      textInputAvailable: Boolean(this.pipeline),
       sessions: this.options.agents?.snapshot() ?? [],
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
@@ -609,6 +618,27 @@ export class DesktopRuntime {
         throw Error('This agent run is no longer current');
       }
       return 'stopped';
+    }
+
+    if (request.action === 'submit-utterance') {
+      if (typeof request.text !== 'string' || !request.text.trim() || request.text.length > 4000) {
+        throw Error('Enter between 1 and 4000 characters');
+      }
+      if (typeof request.target !== 'string' || !/^0x[0-9a-f]+$/i.test(request.target)) {
+        throw Error('Select an application window before sending');
+      }
+      if (this.panelKeyboardFocused) {
+        throw Error('Release Companion keyboard focus before sending');
+      }
+      if (!this.pipeline) {
+        throw Error('Text input is not ready yet');
+      }
+      // Explicit text works while the microphone is paused. It joins the same
+      // bounded FIFO; capture and delivery still reject a changed application.
+      if (!this.pipeline.submitText(request.text, this.signal, request.target)) {
+        throw Error('The utterance queue is full or stopping; try again shortly');
+      }
+      return 'queued';
     }
 
     if (request.action === 'send-agent') {

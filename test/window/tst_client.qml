@@ -14,6 +14,7 @@ TestCase {
     function send(message) { requests = requests.concat([message]); return connected }
   }
   Native.Client { id: client; transport: backend }
+  SignalSpy { id: utterances; target: client; signalName: "utteranceFinished" }
   SignalSpy { id: inputs; target: client; signalName: "inputFinished" }
   SignalSpy { id: choices; target: client; signalName: "choiceFinished" }
   SignalSpy { id: reveals; target: client; signalName: "revealRequested" }
@@ -39,7 +40,27 @@ TestCase {
     client.composerFocusId = ""
     backend.connected = true
     backend.requests = []
-    inputs.clear(); choices.clear(); reveals.clear()
+    inputs.clear(); choices.clear(); reveals.clear(); utterances.clear()
+  }
+  function test_activity_text_orders_focus_before_submission_and_does_not_replay() {
+    snapshot([])
+    client.pendingUtterance = "new session inspect this"
+    client.keyboardFocused = false
+    client.sendUtterance("0x123")
+    compare(backend.requests[backend.requests.length - 2].action, "panel-state")
+    compare(backend.requests[backend.requests.length - 2].keyboardFocused, false)
+    compare(backend.requests[backend.requests.length - 1], {
+      action: "submit-utterance", text: "new session inspect this", target: "0x123"})
+    backend.received({type: "result", action: "submit-utterance", result: "queued"})
+    compare(Array.from(utterances.signalArguments[0]), ["new session inspect this", ""])
+    client.pendingUtterance = "another message"
+    backend.disconnected()
+    compare(utterances.count, 2)
+    verify(utterances.signalArguments[1][1].indexOf("Check History") >= 0)
+    backend.requests = []
+    snapshot([])
+    wait(0)
+    verify(!backend.requests.some(request => request.action === "submit-utterance"))
   }
   function test_ordered_choice_and_visible_owner() {
     snapshot([session("a")])

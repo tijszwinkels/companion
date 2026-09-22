@@ -179,6 +179,7 @@ export class DesktopServer {
           action === 'delete-history' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
+          action === 'submit-utterance' ||
           action === 'choose-agent' ||
           action === 'stop-agent-run' ||
           action === 'composer-focus' ||

@@ -30,6 +30,7 @@ Item {
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
+  property bool textInputAvailable: false
   property var agentActions: ({})
   property var sessions: []
   property var unreadSessionIds: ({})
@@ -43,6 +44,7 @@ Item {
     message.widget && message.widget.viewUrl && message.widget.presentation.placement === "pinned"
       && !root.isLocallyUnpinned(message.widget)) || null
   readonly property bool fullWidget: pinnedMessage !== null && pinnedMessage.widget.presentation.heightPercent === 100
+  readonly property bool inputFocused: root.keyboardFocused && (root.composerFocusId !== "" || activityView.inputFocused)
   readonly property string composerFocusId: fullWidget ? "" : chat.composerFocusId
   onFullWidgetChanged: if (fullWidget) chat.releaseComposerFocus()
   readonly property bool keyboardFocused: root.Window.window !== null && root.Window.window.active
@@ -51,13 +53,14 @@ Item {
   property alias zoomPercent: chat.zoomPercent
   readonly property bool pageZoomEnabled: root.visible && root.animationsEnabled && root.keyboardFocused && (root.selectedSession === null || root.fullWidget)
 
-  // Activity needs window focus for tab navigation, but has no text cursor or
-  // dictation destination. Clear the hidden composer when leaving a conversation.
+  // Activity has its own explicit text submission, never an agent composer
+  // or an automatic dictation destination. Clear the hidden composer when leaving a conversation.
   onSelectedSessionChanged: if (selectedSession === null) {
     chat.releaseComposerFocus()
     if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
   }
 
+  signal utteranceRequested(string text)
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal historyActionRequested(string action, string id, var value)
@@ -71,10 +74,17 @@ Item {
   signal choiceRequested(string id, string revision, int index)
   signal stopRunRequested(string id, string runId)
 
+  function utteranceSubmitted(text, error) { activityView.utteranceSubmitted(text, error) }
   function submitted(id, text, error) { chat.submitted(id, text, error) }
   function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
-  function focusComposer() { if (!root.fullWidget) chat.focusComposer() }
-  function releaseComposerFocus() { chat.releaseComposerFocus() }
+  function focusComposer() {
+    if (activityView.visible) activityView.focusInput()
+    else if (!root.fullWidget) chat.focusComposer()
+  }
+  function releaseComposerFocus() {
+    chat.releaseComposerFocus()
+    activityView.releaseInputFocus()
+  }
 
   // Preserve each tab's animation and hover state while tokens stream. Using
   // the sessions array directly as a Repeater model recreates every delegate.
@@ -501,6 +511,9 @@ Item {
     }
 
     ActivityView {
+      id: activityView
+      textInputAvailable: root.textInputAvailable
+      onUtteranceRequested: text => root.utteranceRequested(text)
       objectName: "fullActivityStatus"
       visible: !root.showingPrevious && root.selectedSession === null
       anchors.fill: parent

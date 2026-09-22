@@ -101,6 +101,18 @@ triggers the `agent-completed` chime through the same sounds toggle. Reconnectin
 restoring a tab, and receiving another completed-status snapshot do not replay
 the cue. Failed or stopped turns emit no completion event.
 
+The state snapshot advertises `textInputAvailable` once the live pipeline is
+attached. Activity can submit `{"action":"submit-utterance","text":"new session explain this","target":"0x123"}`
+after releasing panel focus and restoring the compositor-confirmed application.
+Text must contain 1–4000 characters (whitespace-only is rejected); `target` must
+match the captured screenshot. The action returns `queued` after bounded FIFO
+admission, not after processing. History reports the eventual result. Text and
+speech share IDs, ordering, shortcuts, inference, screenshots and persistence;
+typed input bypasses ASR and creates no WAV. Explicit text remains available while
+the microphone is paused. The UI retains drafts on rejection/disconnection and
+does not replay unconfirmed submissions. Its native bridge handoff carries an
+opaque request ID so a delayed focus reply cannot submit a replacement draft.
+
 The Activity panel has a separate **current listener run** history. An utterance
 joins it only at the pipeline's `finished` callback, after its outcome is known.
 There is no 100-row cap here. The in-memory index lasts until listener shutdown;

@@ -49,6 +49,45 @@ TestCase {
   function cleanup() {
     body.client.sessions.select("one")
   }
+  function test_activity_shortcut_focus_and_typed_submission() {
+    body.client.sessions.select("")
+    TestHost.show(true)
+    body.command({action: "focus", address: "0x123"})
+    const input = findChild(body, "activityTextInput")
+    tryVerify(function() { return input.activeFocus && body.inputFocused })
+    compare(body.composerId, "", "Activity input must not become an agent voice target")
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", true)
+
+    // A real Enter reaches the native handoff. This isolated host has no bridge,
+    // so the draft must remain and report the missing handoff, not disappear.
+    body.client.textInputAvailable = true
+    input.text = "new session inspect this"
+    keyClick(Qt.Key_Return)
+    compare(input.text, "new session inspect this")
+    const activity = findChild(body, "fullActivityStatus")
+    verify(activity.inputError.indexOf("Omarchy bridge") >= 0)
+
+    // Simulate a completed focus handoff after hiding the test host. A stale
+    // handoff cannot submit even if the next draft happens to contain equal text.
+    body.client.pendingUtterance = input.text
+    body.client.pendingUtteranceId = "current"
+    TestHost.hide()
+    tryCompare(body, "keyboardFocused", false)
+    fakeBackend.sent = []
+    body.command({action: "utterance-after-release", id: "old", text: input.text, target: "0x123"})
+    verify(!fakeBackend.sent.some(message => message.action === "submit-utterance"))
+    body.command({action: "utterance-after-release", id: "current", text: input.text, target: "0x123"})
+    const requests = fakeBackend.sent.filter(message => message.action === "panel-state" || message.action === "submit-utterance")
+    compare(requests[requests.length - 2].action, "panel-state")
+    compare(requests[requests.length - 2].keyboardFocused, false)
+    compare(requests[requests.length - 1].text, input.text)
+    fakeBackend.received({type: "result", action: "submit-utterance", result: "queued"})
+    input.text = ""
+    TestHost.show(true)
+  }
   function test_presentation_error_clears_when_current_mode_is_requested() {
     TestHost.setPresentation("window")
     TestHost.setPresentation("unknown-mode")
@@ -76,7 +115,7 @@ TestCase {
     const page = findChild(body, "fullActivityStatus")
     const section = findChild(body, "intentionsSection")
     tryVerify(function() { return section.height > 0 })
-    page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, section.y))
+    page.contentY = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, section.y))
 
     for (const mode of ["inference", "shortcut"]) {
       const card = findChild(body, (mode === "inference" ? "intent-" : "shortcut-") + intent.name)
@@ -158,7 +197,7 @@ TestCase {
     const page = findChild(body, "fullActivityStatus")
     const history = findChild(body, "historySection")
     tryVerify(function() { return history.height > 0 })
-    page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, history.y))
+    page.contentY = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, history.y))
     tryVerify(function() { return findChild(body, "history-action-delete-history") !== null })
     const button = findChild(body, "history-action-delete-history")
     tryVerify(function() { return button.visible && button.enabled })

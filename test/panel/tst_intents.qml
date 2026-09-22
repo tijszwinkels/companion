@@ -46,7 +46,7 @@ Item {
     function showItem(host, item) {
       const page = findChild(host, "fullActivityStatus")
       const position = item.mapToItem(page.contentItem, 0, 0)
-      page.contentY = Math.max(0, Math.min(page.contentHeight - page.height, position.y + item.height - page.height + 16))
+      page.contentY = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, position.y + item.height - page.viewportHeight + 16))
       verify(waitForRendering(host))
     }
 
@@ -153,7 +153,7 @@ Item {
       host.height = 400
       const page = findChild(host, "fullActivityStatus")
       const controls = findChild(page, "intentControls")
-      tryVerify(function() { return page.contentHeight > page.height })
+      tryVerify(function() { return page.contentHeight > page.viewportHeight })
       verify(page.clip)
       const textChip = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")
       verify(textChip.width <= controls.width)
@@ -178,7 +178,10 @@ Item {
       const stage = findChild(page, "listeningArea")
       const controls = findChild(page, "intentControls")
       const footer = findChild(page, "activityKeyboardHelp")
+      const input = findChild(page, "activityTextArea")
       compare(stage.y, 0)
+      compare(input.y + input.height, page.height)
+      verify(page.viewportHeight + 12 * data.unit <= input.y)
       verify(stage.y + stage.height + 20 * data.unit <= controls.y)
       verify(controls.y + controls.height + 20 * data.unit <= footer.y)
       verify(footer.y + footer.height <= page.contentHeight + 1)

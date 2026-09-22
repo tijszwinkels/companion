@@ -361,7 +361,7 @@ test('portable client handles ordered replies and reconnects', async () => {
         killSignal: 'SIGKILL',
       },
     );
-    assert.match(result.stdout, /7 passed, 0 failed/);
+    assert.match(result.stdout, /8 passed, 0 failed/);
   } finally {
     await rm(setup.directory, { recursive: true, force: true });
   }
@@ -408,7 +408,7 @@ test('native UI preserves its QML body and Chromium view across presentation cha
           killSignal: 'SIGKILL',
         },
       );
-      assert.match(result.stdout, /5 passed, 0 failed/);
+      assert.match(result.stdout, /6 passed, 0 failed/);
       const artifacts = join(build, 'artifacts');
       await mkdir(artifacts, { recursive: true });
       await writeFile(

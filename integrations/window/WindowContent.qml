@@ -12,9 +12,11 @@ Item {
     tooltipForeground: "#a9b1d6", tooltipBorder: "#737b9c", fontFamily: "monospace", unit: 1})
   property string previousWindow: ""
   property bool focusPending: false
+  property int utteranceSequence: 0
   property string screenshotSource: ""
   property alias client: client
   property alias panel: panel
+  readonly property bool inputFocused: host.opened && panel.inputFocused
   readonly property string composerId: host.opened ? panel.composerFocusId : ""
   readonly property bool keyboardFocused: host.opened && host.active
   readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
@@ -22,13 +24,13 @@ Item {
   height: parent ? parent.height : 780
   Keys.onEscapePressed: {
     if (root.screenshotSource !== "") root.screenshotSource = ""
-    else if (root.composerId !== "") root.releaseFocus(true)
+    else if (root.inputFocused) root.releaseFocus(true)
     else root.host.hide()
   }
 
   function publish() {
     host.publish({opened: host.opened, active: root.keyboardFocused,
-      composerFocusId: root.composerId, sessionId: client.sessions.conversationId,
+      composerFocusId: root.composerId, inputFocused: root.inputFocused, sessionId: client.sessions.conversationId,
       presentation: host.presentation, sidebarAvailable: host.sidebarAvailable,
       online: client.online, width: root.width, height: root.height})
   }
@@ -47,16 +49,17 @@ Item {
   }
 
   function focusComposer(address) {
-    if (root.composerId !== "" || root.focusPending) {
+    if (root.inputFocused || root.focusPending) {
       root.releaseFocus(true)
       return
     }
-    if (!client.online || !client.sessions.conversationId) {
+    if (!client.online) {
       host.show(true)
-      client.error = "Select an agent conversation before focusing its input."
+      client.error = "Companion is disconnected."
       client.errorAction = "focus-agent"
       return
     }
+    if (client.sessions.showingPrevious) client.sessions.select("")
     root.previousWindow = /^0x[0-9a-f]+$/i.test(address || "") ? address : ""
     root.focusPending = true
     focusDeadline.restart()
@@ -70,7 +73,7 @@ Item {
       focusDeadline.stop()
       root.focusPending = false
       panel.focusComposer()
-      if (root.composerId !== "") host.notify({type: "pause-media"})
+      if (root.inputFocused) host.notify({type: "pause-media"})
     }
   }
 
@@ -105,6 +108,14 @@ Item {
     } else if (message.action === "release-for-insertion") {
       root.previousWindow = message.address || ""
       root.releaseFocus(true)
+    } else if (message.action === "utterance-failed") {
+      if (message.id === client.pendingUtteranceId && message.text === client.pendingUtterance) client.finishUtterance(message.error)
+    } else if (message.action === "utterance-after-release") {
+      if (message.id !== client.pendingUtteranceId || message.text !== client.pendingUtterance || client.pendingUtterance === "") return
+      if (!root.keyboardFocused && client.sessions.conversationId === "" && !client.sessions.showingPrevious) {
+        utteranceDeadline.stop()
+        client.sendUtterance(message.target)
+      } else client.finishUtterance("Focus changed before sending; your draft is retained.")
     } else if (message.action === "paste-after-release") {
       if (!root.keyboardFocused && /^0x[0-9a-f]+$/i.test(message.target || "")) {
         client.reportPanel()
@@ -113,10 +124,11 @@ Item {
     }
   }
 
-  onComposerIdChanged: {
+  onComposerIdChanged: Qt.callLater(root.publish)
+  onInputFocusedChanged: {
     // A native surface move briefly loses focus. Allow that move to settle,
     // but still release our media pause if the compositor denies reactivation.
-    if (root.composerId === "") mediaRelease.restart()
+    if (!root.inputFocused) mediaRelease.restart()
     else mediaRelease.stop()
     Qt.callLater(root.publish)
   }
@@ -144,9 +156,15 @@ Item {
   }
 
   Timer {
+    id: utteranceDeadline
+    interval: 3000
+    onTriggered: client.finishUtterance("Application focus was not restored; your draft is retained.")
+  }
+
+  Timer {
     id: mediaRelease
     interval: 250
-    onTriggered: if (root.composerId === "") root.host.notify({type: "resume-media"})
+    onTriggered: if (!root.inputFocused) root.host.notify({type: "resume-media"})
   }
 
   Timer {
@@ -154,7 +172,7 @@ Item {
     interval: 1500
     onTriggered: {
       root.releaseFocus(false)
-      client.error = "Could not focus Companion. Click the conversation input to continue."
+      client.error = "Could not focus Companion. Click the input to continue."
       client.errorAction = "focus-agent"
     }
   }
@@ -166,6 +184,7 @@ Item {
     keyboardFocused: root.keyboardFocused
     composerFocusId: root.composerId
     onRevealRequested: root.host.show(false)
+    onUtteranceFinished: (text, error) => { utteranceDeadline.stop(); panel.utteranceSubmitted(text, error) }
     onInputFinished: (id, text, error) => panel.submitted(id, text, error)
     onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
     onOnlineChanged: root.publish()
@@ -250,6 +269,17 @@ Item {
     activityHistoryModel: client.activity.model
     activityHistoryAvailable: client.activity.available
     historyDeletionAvailable: client.historyDeletionAvailable
+    textInputAvailable: client.textInputAvailable
+    onUtteranceRequested: text => {
+      client.pendingUtterance = text
+      client.pendingUtteranceId = Date.now().toString() + "-" + (++root.utteranceSequence)
+      if (!root.host.bridgeConnected) {
+        client.finishUtterance("Sending text requires the Omarchy bridge to restore application focus.")
+        return
+      }
+      utteranceDeadline.restart()
+      root.host.notify({type: "activity-text", id: client.pendingUtteranceId, text: text})
+    }
     sessions: client.sessions.sessions
     previousSessions: client.sessions.previousSessions
     unreadSessionIds: client.sessions.unreadIds
@@ -267,7 +297,7 @@ Item {
     unit: root.theme.unit
     animationsEnabled: root.host.opened
     focusShortcut: "⌥⌘D"
-    shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nAlt + 1–9 · conversations / Ctrl + plus/minus · text size"
+    shortcutLabel: "Super + Alt + C · panel / D · input focus\nAlt + 1–9 · conversations / Ctrl + plus/minus · text size"
     onCloseRequested: root.host.hide()
     onSessionSelected: id => client.sessions.select(id)
     onPreviousRequested: client.sessions.showingPrevious = true

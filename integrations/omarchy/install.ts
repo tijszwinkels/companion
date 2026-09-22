@@ -164,5 +164,5 @@ console.log(
   'Inside the focused panel: Super+Alt+0 selects Activity, Super+Alt+Tab cycles tabs, Alt+1–9 selects conversations.',
 );
 console.log(
-  'Super+Alt+D toggles focus between the conversation input and the previous application.',
+  'Super+Alt+D toggles focus between the current Companion input and the previous application.',
 );

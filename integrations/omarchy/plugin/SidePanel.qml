@@ -23,6 +23,7 @@ PanelWindow {
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
+  property bool textInputAvailable: false
   property var agentActions: ({})
   property var sessions: []
   property var unreadSessionIds: ({})
@@ -32,10 +33,12 @@ PanelWindow {
   property url screenshotSource: ""
   property string screenshotTitle: ""
   property string selectedSessionId: ""
+  readonly property bool inputFocused: root.opened && content.inputFocused
   readonly property string composerFocusId: root.opened ? content.composerFocusId : ""
   readonly property string composerFocusPhase: focusControl.phase
   readonly property bool keyboardFocused: root.opened && content.keyboardFocused
 
+  signal utteranceRequested(string text)
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal historyActionRequested(string action, string id, var value)
@@ -55,11 +58,12 @@ PanelWindow {
   onSelectedSessionIdChanged: screenshotSource = ""
   onShowingPreviousChanged: screenshotSource = ""
 
+  function utteranceSubmitted(text, error) { content.utteranceSubmitted(text, error) }
   function submitted(id, text, error) { content.submitted(id, text, error) }
   function choiceSubmitted(id, revision, index, error) { content.choiceSubmitted(id, revision, index, error) }
   function toggleComposerFocus(address) {
     root.screenshotSource = ""
-    focusControl.toggle(address, root.composerFocusId !== "")
+    focusControl.toggle(address, root.inputFocused)
   }
   function nextTab() { content.nextTab() }
   function resizeBy(logicalPixels) { surface.resizeBy(logicalPixels) }
@@ -161,6 +165,8 @@ PanelWindow {
         activityHistoryModel: root.activityHistoryModel
         activityHistoryAvailable: root.activityHistoryAvailable
         historyDeletionAvailable: root.historyDeletionAvailable
+        textInputAvailable: root.textInputAvailable
+        onUtteranceRequested: text => root.utteranceRequested(text)
         agentActions: root.agentActions
         sessions: root.sessions
         unreadSessionIds: root.unreadSessionIds
@@ -179,7 +185,7 @@ PanelWindow {
         unit: Style.space(100) / 100
         animationsEnabled: root.opened && root.visible
         focusShortcut: "⌥⌘D"
-        shortcutLabel: "Super + Alt + C · panel / D · conversation focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nIn panel: Ctrl + plus/minus · text size / Ctrl + 0 · reset\nSuper + Alt + P · pause/resume"
+        shortcutLabel: "Super + Alt + C · panel / D · input focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nIn panel: Ctrl + plus/minus · text size / Ctrl + 0 · reset\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
         onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
