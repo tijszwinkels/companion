@@ -282,13 +282,15 @@ Item {
       height: bubbleSurface.height
 
       function toggleExpanded() {
-        // Qt can move the content origin when an offscreen delegate shrinks.
-        // Keep the visible message at the same viewport position in that case.
+        // Keep the visible answer in place when a group above or crossing the
+        // viewport's top edge shrinks. Never anchor to the shrinking group.
         let anchor = null
-        if (expanded && toolCount > 0 && !root.followEnd && y + height <= transcript.contentY) {
-          let index = transcript.indexAt(0, transcript.contentY + 1)
-          if (index < 0) index = transcript.indexAt(0, transcript.contentY + transcript.spacing + 1)
+        if (expanded && toolCount > 0 && !root.followEnd && y < transcript.contentY) {
+          const anchorTop = Math.max(transcript.contentY, y + height)
+          let index = transcript.indexAt(0, anchorTop + 1)
+          if (index < 0) index = transcript.indexAt(0, anchorTop + transcript.spacing + 1)
           anchor = transcript.itemAtIndex(index)
+          if (anchor && anchor.y >= transcript.contentY + transcript.height) anchor = null
         }
         const anchorY = anchor ? anchor.y - transcript.contentY : 0
         expanded = !expanded
@@ -296,7 +298,9 @@ Item {
           // Settle the Column before ListView computes the new content origin.
           contents.forceLayout()
           transcript.forceLayout()
-          transcript.contentY = anchor.y - anchorY
+          const beginning = transcript.originY
+          const end = beginning + Math.max(0, transcript.contentHeight - transcript.height)
+          transcript.contentY = Math.max(beginning, Math.min(end, anchor.y - anchorY))
         }
       }
 

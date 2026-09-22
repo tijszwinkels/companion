@@ -165,7 +165,16 @@ Item {
       }
     }
 
-    function test_collapse_above_viewport_preserves_reading_position() {
+    function test_collapse_above_viewport_preserves_reading_position_data() {
+      return [
+        {tag: "offscreen", offset: 150, preceding: false},
+        {tag: "spacing", offset: -6, preceding: false},
+        {tag: "straddling", offset: -190, preceding: true},
+        {tag: "straddling_at_beginning", offset: -190, preceding: false}
+      ]
+    }
+
+    function test_collapse_above_viewport_preserves_reading_position(data) {
       const panel = setup()
       const chat = findChild(panel, "sessionView")
       const transcript = findChild(panel, "sessionTranscript")
@@ -173,6 +182,10 @@ Item {
       // Keep the first delegate alive while reading the following long answer.
       transcript.cacheBuffer = 4000
       const fixture = session(2, "r1")
+      if (data.preceding) {
+        fixture.messages.unshift({id: "earlier", kind: "assistant", text: "Earlier answer.\n".repeat(30),
+          input: "", toolName: "", screenshot: false, state: "done"})
+      }
       fixture.messages.push({id: "answer", kind: "assistant", text: "Reading here.\n\n".repeat(100),
         input: "", toolName: "", screenshot: false, state: "done"})
       panel.sessions = [fixture]
@@ -184,22 +197,31 @@ Item {
       verify(waitForRendering(bubble))
       const collapsedHeight = bubble.height
       const collapsedContentHeight = transcript.contentHeight
+      transcript.contentY = bubble.y
       click(bubble, 24, 14)
       panel.toolPageReceived(response(requests[0], "tool output line\n".repeat(12)))
       tryVerify(() => bubble.height > collapsedHeight + 100)
       tryCompare(transcript, "contentHeight", collapsedContentHeight + bubble.height - collapsedHeight)
-      transcript.contentY = answer.y + 150
+      transcript.contentY = answer.y + data.offset
       verify(waitForRendering(answer))
       const readingY = answer.mapToItem(transcript, 0, 0).y
-      verify(bubble.y + bubble.height < transcript.contentY)
+      verify(bubble.y < transcript.contentY)
+      if (data.offset === -190) verify(bubble.y + bubble.height > transcript.contentY)
+      else verify(bubble.y + bubble.height < transcript.contentY)
 
       // An offscreen header cannot receive a pointer click. Invoke the same
       // disclosure action directly to exercise ListView's scroll anchoring.
       bubble.toggleExpanded()
       tryCompare(bubble, "height", collapsedHeight)
       tryCompare(transcript, "contentHeight", collapsedContentHeight)
-      tryVerify(() => Math.abs(answer.mapToItem(transcript, 0, 0).y - readingY) < 1,
+      // At the start of a conversation the original offset may require blank
+      // space above the first row. Clamp there, keeping the answer visible.
+      const expectedY = data.tag === "straddling_at_beginning"
+        ? collapsedHeight + transcript.spacing : readingY
+      tryVerify(() => Math.abs(answer.mapToItem(transcript, 0, 0).y - expectedY) < 1,
         1000, "Collapsing an earlier group must keep the visible answer in place")
+      verify(transcript.contentY >= transcript.originY)
+      verify(transcript.contentY <= transcript.originY + Math.max(0, transcript.contentHeight - transcript.height))
       compare(chat.followEnd, false)
     }
 
