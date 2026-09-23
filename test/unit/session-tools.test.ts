@@ -632,7 +632,20 @@ test('a lease released while a request body is arriving performs no action', asy
   const service = new SessionToolService(host);
   context.after(() => service.close());
 
+  // Test-only barrier: resolve once the server has authenticated a request
+  // and started reading its body, so the release below cannot happen first.
+  let bodyEntered = deferred<void>();
+  const internals = service as unknown as {
+    body(request: unknown): Promise<Record<string, unknown>>;
+  };
+  const readBody = internals.body.bind(service);
+  internals.body = (request) => {
+    bodyEntered.resolve();
+    return readBody(request);
+  };
+
   for (const method of ['close', 'reopen', 'list']) {
+    bodyEntered = deferred<void>();
     const lease = await service.lease(randomUUID(), 0, signal());
     const url = new URL(lease.endpoint);
     const { status, body } = await new Promise<{ status: number; body: string }>(
@@ -659,10 +672,10 @@ test('a lease released while a request body is arriving performs no action', asy
         // Authenticate with the headers alone, then end the turn before the
         // body arrives, as a stopped turn with an in-flight tool call would.
         request.flushHeaders();
-        setTimeout(() => {
+        void bodyEntered.promise.then(() => {
           lease.release();
           request.end(JSON.stringify({ method, requestId: randomUUID(), id: randomUUID() }));
-        }, 50);
+        });
       },
     );
     assert.equal(status, 403, `${method} after release`);

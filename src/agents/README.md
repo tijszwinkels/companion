@@ -203,8 +203,11 @@ loopback HTTP endpoint with a random bearer token per agent turn. The token
 names the calling conversation, so a tool cannot claim another sender. It
 expires when the turn ends or is stopped. Authority is checked again after a
 request body arrives and at each action's commit point; a reopen also rechecks
-it after reading the archive. A request still in flight when its turn ends
-therefore changes nothing and fails with `expired`. Targets are Companion session UUIDs
+it after reading the archive. A request that has not reached its commit point
+when its turn ends therefore changes nothing and fails with `expired`. Actions
+already committed stay committed: an accepted send remains queued or running,
+and a draft already forwarded to the panel reports `unconfirmed` because the
+panel may have inserted it. Targets are Companion session UUIDs
 from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 
 | Tool                       | Parameters                                                                                      | Effect                                                                                          |
