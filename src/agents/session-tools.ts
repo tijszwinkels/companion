@@ -105,6 +105,24 @@ export function sessionTools(endpoint: string, token: string) {
       method: 'reopen',
     },
     {
+      name: 'companion_session_close',
+      label: 'Close Companion session',
+      promptSnippet:
+        'Close a Companion conversation tab, including your own once your answer is finished.',
+      promptGuidelines: [
+        'Use companion_session_close only when the user asks to close conversations, or asks you to close your own conversation when you are done.',
+      ],
+      description:
+        'Close an open conversation tab. Its history, profile and model are saved to Previous sessions and it can ' +
+        'be reopened later. Closing your own conversation (self in companion_sessions) happens after your current ' +
+        'turn finishes successfully (outcome "closing-after-turn"); it is cancelled if the turn fails or stops, or ' +
+        'if another message is queued for your conversation. Finish your answer normally after calling it. ' +
+        'Another conversation must be idle: a running or queued one is refused as busy rather than stopped. A ' +
+        'saved conversation returns "already-closed".',
+      parameters: Type.Object({ id: sessionId }),
+      method: 'close',
+    },
+    {
       name: 'companion_session_send',
       label: 'Send to Companion session',
       promptSnippet:

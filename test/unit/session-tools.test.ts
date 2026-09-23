@@ -507,3 +507,99 @@ test('Pi loads the session tools extension only with a turn lease', async (conte
   const withLease = await argv();
   assert.equal(withLease[withLease.indexOf(extension) - 1], '--extension');
 });
+
+test('agents close idle conversations but never stop another conversation’s work', async (context) => {
+  const { sessions, runs, events, script, view } = await fixture(context);
+  const idle = sessions.start({ ...frame, utterance: 'Finished work' }, signal());
+  await sessions.idle();
+  const history = view(idle).messages.map((message) => message.text);
+  const release = deferred<void>();
+  const running = sessions.start({ ...frame, utterance: 'Still running' }, signal());
+  script(running, async () => {
+    await release.promise;
+  });
+
+  const results: Record<string, unknown>[] = [];
+  const errors: string[] = [];
+  const requester = sessions.start(frame, signal());
+  script(requester, async (run) => {
+    results.push(await call(run, 'companion_session_close', { id: idle }));
+    results.push(await call(run, 'companion_session_close', { id: idle }));
+    errors.push(await refusal(run, 'companion_session_close', { id: running }));
+    errors.push(await refusal(run, 'companion_session_close', { id: randomUUID() }));
+  });
+  await waitFor(() => errors.length === 2);
+
+  assert.equal(results[0].outcome, 'closed');
+  assert.equal(results[1].outcome, 'already-closed');
+  assert.match(errors[0], /left open\. \[busy\]$/);
+  assert.match(errors[1], /\[unknown-session\]$/);
+  assert.ok(events.some((event) => event.type === 'agent-removed' && event.id === idle));
+  assert.equal(sessions.has(idle), false);
+  assert.ok(sessions.previousSnapshot().some((entry) => entry.id === idle));
+  // The busy conversation kept running; it was neither stopped nor closed.
+  assert.equal(view(running).status, 'running');
+  release.resolve();
+  await sessions.idle();
+  assert.equal(view(running).status, 'completed');
+
+  // Closing saved the history, so reopening restores it unchanged.
+  await sessions.reopen(idle);
+  assert.deepEqual(
+    view(idle).messages.map((message) => message.text),
+    history,
+  );
+  assert.equal(runs.filter((run) => run.id === idle).length, 1);
+});
+
+test('an agent closes its own conversation only after its turn completes with nothing queued', async (context) => {
+  const { sessions, events, script } = await fixture(context);
+  const outcomes: Record<string, unknown>[] = [];
+
+  // Closes once the answer is saved; the answer remains in its history.
+  const finishing = sessions.start({ ...frame, utterance: 'Close when done' }, signal());
+  script(finishing, async (run) => {
+    outcomes.push(await call(run, 'companion_session_close', { id: finishing }));
+    assert.equal(sessions.has(finishing), true, 'The tab stays open during the turn');
+  });
+  await sessions.idle();
+  await waitFor(() => !sessions.has(finishing));
+  assert.equal(outcomes[0].outcome, 'closing-after-turn');
+  assert.ok(events.some((event) => event.type === 'agent-removed' && event.id === finishing));
+  await sessions.reopen(finishing);
+  assert.ok(
+    sessions
+      .snapshot()
+      .find((session) => session.id === finishing)!
+      .messages.some((message) => message.kind === 'assistant'),
+  );
+
+  // A message queued during the turn cancels the close and still runs.
+  const continued = sessions.start({ ...frame, utterance: 'Close unless asked more' }, signal());
+  script(continued, async (run) => {
+    await call(run, 'companion_session_close', { id: continued });
+    sessions.followUp(continued, 'One more thing', signal());
+  });
+  await sessions.idle();
+  await sessions.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sessions.has(continued), true);
+  assert.equal(
+    sessions
+      .snapshot()
+      .find((session) => session.id === continued)!
+      .messages.filter((message) => message.kind === 'user').length,
+    2,
+  );
+
+  // A failed turn keeps its tab so the user can see the error.
+  const failing = sessions.start({ ...frame, utterance: 'Close then fail' }, signal());
+  script(failing, async (run) => {
+    await call(run, 'companion_session_close', { id: failing });
+    throw Error('Synthetic failure');
+  });
+  await sessions.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sessions.has(failing), true);
+  assert.equal(sessions.snapshot().find((session) => session.id === failing)!.status, 'error');
+});

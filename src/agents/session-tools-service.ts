@@ -10,7 +10,7 @@ import type { AgentDraftOutcome, AgentMessageOrigin, AgentProfile } from './type
  */
 export const maxAgentDepth = 3;
 
-/** Start/reopen/send/draft calls admitted per agent turn, including failures. */
+/** Start/reopen/close/send/draft calls admitted per agent turn, including failures. */
 export const maxLifecycleActionsPerTurn = 6;
 
 const sessionIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
@@ -81,6 +81,13 @@ export interface SessionToolHost {
     outcome: 'reopened' | 'already-open';
     session: SessionToolSummary;
     messages: number;
+  }>;
+  close(
+    id: string,
+    sender: string,
+  ): Promise<{
+    outcome: 'closed' | 'closing-after-turn' | 'already-closed';
+    session: SessionToolSummary;
   }>;
   send(
     id: string,
@@ -276,7 +283,13 @@ export class SessionToolService {
     if (method === 'list') {
       return this.list(lease, command);
     }
-    if (method !== 'start' && method !== 'reopen' && method !== 'send' && method !== 'draft') {
+    if (
+      method !== 'start' &&
+      method !== 'reopen' &&
+      method !== 'close' &&
+      method !== 'send' &&
+      method !== 'draft'
+    ) {
       throw new SessionToolError('invalid', 'Unknown session tool method', 400);
     }
 
@@ -312,14 +325,14 @@ export class SessionToolService {
 
   private async act(
     lease: Lease,
-    method: 'start' | 'reopen' | 'send' | 'draft',
+    method: 'start' | 'reopen' | 'close' | 'send' | 'draft',
     command: Record<string, unknown>,
   ): Promise<ToolReply> {
     // Validate before consuming the turn's action budget, so a malformed call
     // can be corrected without exhausting it.
     const focus = optionalBoolean(command.focus, 'focus') ?? false;
     const id = method === 'start' ? '' : sessionId(command.id);
-    const text = method === 'reopen' ? '' : messageText(command.text);
+    const text = method === 'reopen' || method === 'close' ? '' : messageText(command.text);
 
     if (lease.actions >= maxLifecycleActionsPerTurn) {
       throw new SessionToolError(
@@ -332,6 +345,13 @@ export class SessionToolService {
 
     if (method === 'reopen') {
       const result = await this.host.reopen(id, focus);
+      return { status: 200, body: { ...result } };
+    }
+
+    // Closing never delivers content or starts a turn, so it has no depth or
+    // duplicate-content check. The host defers closing the caller's own tab.
+    if (method === 'close') {
+      const result = await this.host.close(id, lease.owner);
       return { status: 200, body: { ...result } };
     }
 

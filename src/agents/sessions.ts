@@ -55,6 +55,11 @@ interface RunningSession {
    * human message, otherwise its origin's depth. Session tools extend it.
    */
   depth: number;
+  /**
+   * The conversation's own agent asked to close it (companion_session_close).
+   * It closes only after the requesting turn completes with nothing queued.
+   */
+  closeAfterTurn: boolean;
 }
 
 const maxPendingFollowUps = 8;
@@ -114,6 +119,7 @@ export class AgentSessions implements InspectableModule {
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
       start: (request, signal) => this.startFromAgent(request, signal),
       reopen: (id, focus) => this.reopenFromAgent(id, focus),
+      close: (id, sender) => this.closeFromAgent(id, sender),
       send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
       draft: (request, signal) => this.draftFromAgent(request, signal),
     });
@@ -436,6 +442,7 @@ export class AgentSessions implements InspectableModule {
       pending: [],
       widgetReservations: new Map(),
       depth: request.origin?.depth ?? 0,
+      closeAfterTurn: false,
     };
     this.sessions.set(id, session);
     this.flush(session);
@@ -537,6 +544,8 @@ export class AgentSessions implements InspectableModule {
           session.view.status !== 'completed' ||
           session.view.error
         ) {
+          // A failed or stopped turn keeps its tab so the user can see why.
+          session.closeAfterTurn = false;
           this.cancelPending(session);
           delete session.view.choices;
           return;
@@ -546,6 +555,8 @@ export class AgentSessions implements InspectableModule {
         if (!next) {
           return;
         }
+        // Someone continued the conversation; closing would hide that work.
+        session.closeAfterTurn = false;
         this.prepareFollowUp(session, next);
         prompt = { text: promptText(next.text, next.origin) };
         resume = true;
@@ -555,7 +566,34 @@ export class AgentSessions implements InspectableModule {
       session.busy = false;
       session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
+      if (session.closeAfterTurn) {
+        session.closeAfterTurn = false;
+        this.closeWhenSettled(session);
+      }
     }
+  }
+
+  /**
+   * A self-close runs after this drain has settled: `remove` awaits the
+   * session's `done`, which is still this drain while the finally block runs.
+   * A follow-up accepted in between keeps the conversation open.
+   */
+  private closeWhenSettled(session: RunningSession): void {
+    const id = session.view.id;
+    setImmediate(() => {
+      if (
+        this.closed ||
+        this.sessions.get(id) !== session ||
+        session.busy ||
+        session.closing ||
+        session.pending.length > 0
+      ) {
+        return;
+      }
+      void this.remove(id).catch((error) => {
+        this.log('agent', `Could not close conversation ${id}: ${String(error)}`);
+      });
+    });
   }
 
   private async run(
@@ -969,6 +1007,7 @@ export class AgentSessions implements InspectableModule {
         pending: [],
         widgetReservations: new Map(),
         depth: 0,
+        closeAfterTurn: false,
       });
       this.previous.delete(id);
       for (const listener of this.listeners) {
@@ -1087,6 +1126,40 @@ export class AgentSessions implements InspectableModule {
     await this.reopen(id, focus);
     const view = this.sessions.get(id)!.view;
     return { outcome: 'reopened', session: this.summary(view), messages: view.messages.length };
+  }
+
+  private async closeFromAgent(
+    id: string,
+    sender: string,
+  ): Promise<{
+    outcome: 'closed' | 'closing-after-turn' | 'already-closed';
+    session: SessionToolSummary;
+  }> {
+    const session = this.sessions.get(id);
+    if (!session) {
+      const saved = this.previous.get(id);
+      if (saved) {
+        return { outcome: 'already-closed', session: this.summary(saved) };
+      }
+      throw this.notOpen(id);
+    }
+
+    // Closing now would stop the calling turn from inside its own tool call.
+    if (id === sender) {
+      session.closeAfterTurn = true;
+      return { outcome: 'closing-after-turn', session: this.summary(session.view) };
+    }
+
+    // Closing stops a running turn and cancels queued messages. An agent must
+    // not discard another conversation's work; the user can still do so.
+    if (session.busy || session.pending.length > 0 || session.closing) {
+      throw new SessionToolError(
+        'busy',
+        'That conversation is running, closing or has queued messages, so it was left open.',
+      );
+    }
+    await this.remove(id);
+    return { outcome: 'closed', session: this.summary(session.view) };
   }
 
   private sendFromAgent(

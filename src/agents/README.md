@@ -195,8 +195,8 @@ the same live server receives the current choices in its snapshot.
 ## Session lifecycle tools
 
 `PiBackend` loads `session-tools.ts` for every turn that received a session tool
-lease. The native Pi tools start conversations, reopen saved ones, and send or
-draft messages for other conversations. They reuse `AgentSessions` creation,
+lease. The native Pi tools start conversations, reopen and close them, and send
+or draft messages for other conversations. They reuse `AgentSessions` creation,
 reopening and follow-up FIFO logic; they do not add another session store or
 load Pi session files. `SessionToolService` (`session-tools-service.ts`) is a
 loopback HTTP endpoint with a random bearer token per agent turn. The token
@@ -204,13 +204,14 @@ names the calling conversation, so a tool cannot claim another sender. It
 expires when the turn ends or is stopped. Targets are Companion session UUIDs
 from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 
-| Tool                       | Parameters                                                                                      | Effect                                                                                       |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `companion_sessions`       | `query?` (≤100), `limit?` (1–50, default 20)                                                    | Lists open tabs and matching saved conversations. No transcripts or drafts.                  |
-| `companion_session_start`  | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `model?` provider/id, `focus?` (false)   | Opens a tab whose agent immediately answers `text`.                                          |
-| `companion_session_reopen` | `id`, `focus?` (false)                                                                          | Reopens a saved conversation with its ID, transcript, profile and model. Starts no turn.     |
-| `companion_session_send`   | `id`, `text` (1–4000)                                                                           | Follow-up to another open tab; starts its turn or queues behind earlier messages.            |
-| `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false) | Places unsent text in that tab's input for the user to review. Never submits or runs a turn. |
+| Tool                       | Parameters                                                                                      | Effect                                                                                          |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `companion_sessions`       | `query?` (≤100), `limit?` (1–50, default 20)                                                    | Lists open tabs and matching saved conversations. No transcripts or drafts.                     |
+| `companion_session_start`  | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `model?` provider/id, `focus?` (false)   | Opens a tab whose agent immediately answers `text`.                                             |
+| `companion_session_reopen` | `id`, `focus?` (false)                                                                          | Reopens a saved conversation with its ID, transcript, profile and model. Starts no turn.        |
+| `companion_session_close`  | `id`                                                                                            | Closes an open tab, saving it to Previous sessions; the caller's own tab closes after its turn. |
+| `companion_session_send`   | `id`, `text` (1–4000)                                                                           | Follow-up to another open tab; starts its turn or queues behind earlier messages.               |
+| `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false) | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.    |
 
 Examples of tool arguments:
 
@@ -220,6 +221,7 @@ Examples of tool arguments:
 {"text":"Review src/auth for token expiry bugs and summarise them.","profile":"coding"}
 {"text":"What is the weather in Utrecht?","profile":"quickQuestion","model":"pillar-vllm/qwen3.8-128k"}
 {"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"}
+{"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","focus":true}
 {"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","text":"The migration is merged; please rerun your checks."}
 {"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","text":"Could you also cover the logout path?","ifDraftExists":"reject"}
 ```
@@ -238,7 +240,8 @@ Summaries contain `id`, `title`, `status`, `profile`, `model`, optional
 | `self-target`             | `companion_session_send` to the calling conversation.                                                     |
 | `loop-limit`              | The turn is already three agent-to-agent hops from a human message.                                       |
 | `duplicate`               | Identical content to the same destination already delivered (or possibly delivered) in this turn.         |
-| `limit`                   | More than six start/reopen/send/draft actions, or 32 calls, in one turn.                                  |
+| `limit`                   | More than six start/reopen/close/send/draft actions, or 32 calls, in one turn.                            |
+| `busy`                    | Close refused: another conversation is running, closing or has queued messages; nothing was stopped.      |
 | `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                 |
 | `expired`                 | The calling turn ended; its lease is gone.                                                                |
 | `rejected`                | An existing lifecycle limit: 12 tabs, 4 running agents, 8 queued messages, or a stopping/closing tab.     |
@@ -277,6 +280,15 @@ composer shows **Drafted by agent · title — review before sending** until the
 text is cleared or sent. Drafts in hidden tabs wait in that tab. The user's own
 text is never replaced, and nothing is submitted.
 
+**Closing.** `companion_session_close` saves the tab to Previous sessions exactly
+like the close button, with outcome `closed`; a saved ID returns `already-closed`.
+It refuses a running or queued conversation as `busy` instead of stopping it: an
+agent must not discard another conversation's work. An agent closing its own tab
+gets `closing-after-turn`. Closing inside its own tool call would stop that turn,
+so the tab closes after the turn completes and its answer is saved. A failed or
+stopped turn, or any message queued before it finishes, cancels the close. The
+answer then remains readable after reopening from Previous sessions.
+
 **Focus.** Starting or reopening opens the tab in the background by default. It
 appears in the rail and runs, but the selection and panel visibility do not
 change (`openInBackground`, `agent-restored` with `reveal: false`). `focus: true`
@@ -294,11 +306,11 @@ that sees a background tab for the first time applies it too.
 Automated coverage: `test/unit/session-tools.test.ts` drives the real extension
 tools through leases issued to a scripted backend: create/reopen identity and
 history, profile/model preservation, bad/saved/self/stale targets, busy FIFO
-ordering, loop limits, receipts and duplicates, draft outcomes and provenance
-validation. `session-drafts-desktop.test.ts` covers the socket protocol, and
+ordering, loop limits, receipts and duplicates, draft outcomes, provenance
+validation, and closing other/own conversations. `session-drafts-desktop.test.ts` covers the socket protocol, and
 `test/panel/tst_session_drafts.qml` and `test/window/tst_client.qml` cover the UI.
 An isolated offline startup of installed Pi 0.86.1 registered and activated all
-five tools and included their guidelines in the system prompt; it made no model
+six tools and included their guidelines in the system prompt; it made no model
 request, and no live agent has yet called these tools in a real Companion.
 
 ## Verification and limits
