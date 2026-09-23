@@ -13,6 +13,7 @@ import { command } from '../system/command.ts';
 import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
 import { UtteranceHistory } from './history.ts';
+import { saveEmptyAudioClip } from './empty-audio-clips.ts';
 import { DesktopServer } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
@@ -201,6 +202,7 @@ export class DesktopRuntime {
       },
       screenshotCaptured: (id, screenshot) => this.history.saveScreenshot(id, screenshot),
       audioCaptured: (id, samples) => this.history.saveAudio(id, samples),
+      emptyAudioCaptured: (clip) => saveEmptyAudioClip(dirname(options.database), clip),
       intentRequested: (id, request) => this.history.saveIntentRequest(id, request),
       intentRecognized: (id, intent) => {
         this.history.setIntent(id, intent);

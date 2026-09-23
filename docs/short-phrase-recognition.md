@@ -55,8 +55,9 @@ Cold VAD replay rejected three saved segments; saved audio lacks the preceding
 recurrent VAD context, so that cannot classify their original capture. None of
 these facts identifies the cause of every historical missed attempt. Rejected VAD
 bursts and empty ASR outputs had no retained recording, and no specific failed
-phrase/time was supplied during this investigation. Private recordings and text
-are not fixtures or part of this report.
+phrase/time was supplied during that investigation. Private recordings and text
+are not fixtures or part of this report. The later empty-clip retention described
+below changes future diagnostics; it cannot recover those historical samples.
 
 ## Diagnostic stages
 
@@ -74,6 +75,7 @@ transcript logging is unchanged; keep the complete CLI log private.
 | `audio-end` | `eof`, `cancelled` or `failed`; cancellation discards an unfinished candidate. Capture/framing errors still propagate with their existing error detail. |
 | `asr` / `silence` | Pre-ASR energy filter rejected the buffer. Includes whole-buffer and strongest-window RMS. No request was sent. |
 | `asr` / `empty` or `punctuation` | The worker answered, but its result supplied no usable words. |
+| `asr-recorded` | An eligible empty ASR result was saved as a WAV/metadata pair; links the job ID to the clip UUID. |
 | `asr` / `text` | Usable text, character count and ASR operation time, excluding screen capture. |
 | `asr` / `error` | Worker startup, transport, native inference, timeout or cancellation failed. The accompanying existing error supplies the fixed description; no native stderr is forwarded. |
 | `error` / `transcription`, `capture`, `recording`, `routing` | Identifies the pipeline stage that failed. Errors in later stages are not speech-recognition failures. |
@@ -136,3 +138,15 @@ loosened. It adds no ending-silence latency, retries, native model instances or
 additional queue. Capture summaries add approximately twelve short lines per
 minute while listening. The running listener was not restarted or modified;
 integration requires the owner to start the updated source normally.
+
+## Retaining future empty attempts
+
+As of the empty-clip retention change, the desktop saves confirmed `asr/empty`
+results that meet the existing duration and energy floors in a separate
+`asr-empty/YYYY-MM-DD/<uuid>/` directory outside the successful recordings
+under `data/`. This preserves the complete segment
+and numeric diagnostics without creating a transcript-history row or saving a
+screenshot. Silence, punctuation-only output and ASR errors do not qualify.
+The helper reports empty text, not raw token counts. See the
+[storage contract](../src/desktop/README.md) for thresholds, cancellation, retention
+and the `--no-desktop` opt-out. Recognition and routing behavior are unchanged.

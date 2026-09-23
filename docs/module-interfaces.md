@@ -69,6 +69,12 @@ The desktop's `submit-utterance` action uses this path after restoring applicati
 focus. It records the utterance and PNG, with no WAV. See the
 [desktop contract](../src/desktop/README.md) for capabilities and acknowledgements.
 
+Confirmed empty ASR results that meet the existing duration/energy floors call
+`Activity.emptyAudioCaptured` when available. This observer saves a separate
+WAV/metadata pair and returns its UUID for the job log. The pipeline awaits it
+before clearing samples; empty results still skip transcript history and routing.
+See the desktop contract for thresholds, storage paths and retention.
+
 ## Contextual intent instructions
 
 Permanent processors register with `router.register(this)`. Their `instruction`

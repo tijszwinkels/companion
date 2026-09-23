@@ -1,5 +1,6 @@
 import type { DeliveryControl } from './delivery-control.ts';
 import type { InteractionContext, Screenshot } from './frame.ts';
+import type { TranscriptionDiagnostic } from '../sensors/audio/transcriber.ts';
 
 /** Results describe actual delivery, rather than just the model's chosen intent. */
 export type UtteranceOutcome =
@@ -26,6 +27,14 @@ export interface Transcript {
   application?: { address: string; app: string; title: string };
 }
 
+/** A failed recognition attempt, without a transcript or associated screenshot. */
+export interface EmptyAudioClip {
+  id: number;
+  observedAt: number;
+  samples: Float32Array;
+  diagnostic: TranscriptionDiagnostic;
+}
+
 /** Optional feedback keeps the sensor pipeline independent of desktop services. */
 export interface Activity {
   /** Copy interaction state and bounded conversation text at speech end. */
@@ -49,6 +58,8 @@ export interface Activity {
   screenshotCaptured?(id: number, screenshot: Screenshot): Promise<void>;
   /** Persist the ASR input before the pipeline clears its owned sample buffer. */
   audioCaptured?(id: number, samples: Float32Array): Promise<void>;
+  /** Save qualified empty ASR input; return its UUID after both files are published. */
+  emptyAudioCaptured?(clip: EmptyAudioClip): Promise<string>;
   /** Persist the finalized model request before transport; absent for shortcuts. */
   intentRequested?(id: number, serializedRequest: string): void;
   intentRecognized?(id: number, intent: string): void;

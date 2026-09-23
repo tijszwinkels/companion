@@ -1,6 +1,6 @@
 /** Prerecorded, local-only capture → Silero → Parakeet → inert routing regression. */
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,8 @@ import { listen } from '../../src/sensors/audio/listener.ts';
 import { encodeWav } from '../../src/sensors/audio/segmenter.ts';
 import { Transcriber, type TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
+import { recordingDate } from '../../src/desktop/artifacts.ts';
+import { saveEmptyAudioClip } from '../../src/desktop/empty-audio-clips.ts';
 import { processor, screenshot, testDetector, testSensors } from '../helpers.ts';
 
 const config = await loadConfig();
@@ -88,6 +90,7 @@ try {
     const delivered: string[] = [];
     const captured: Float32Array[] = [];
     const vadReports: unknown[] = [];
+    let retainedEmpty = 0;
     const router = new UserSensorRouter(
       { detector: testDetector({ detect: async () => 'IGNORE' }) },
       () => {},
@@ -115,6 +118,18 @@ try {
         audioCaptured: async (_id, samples) => {
           captured.push(samples.slice());
         },
+        emptyAudioCaptured: async (clip) => {
+          const id = await saveEmptyAudioClip(directory, clip);
+          const saved = join(directory, 'asr-empty', recordingDate(clip.observedAt), id);
+
+          // Exercise real empty-result persistence only with this public fixture.
+          // The pipeline must still own intact samples until publication finishes.
+          assert.deepEqual(await readFile(join(saved, 'audio.wav')), encodeWav(clip.samples));
+          const metadata = JSON.parse(await readFile(join(saved, 'metadata.json'), 'utf8'));
+          assert.deepEqual(metadata.diagnostic, clip.diagnostic);
+          retainedEmpty++;
+          return id;
+        },
       },
     );
 
@@ -130,8 +145,17 @@ try {
       { file: path },
     );
     await pipeline.idle();
-    console.log(JSON.stringify({ name: entry.name, vad: vadReports, asr: diagnostics, delivered }));
+    console.log(
+      JSON.stringify({
+        name: entry.name,
+        vad: vadReports,
+        asr: diagnostics,
+        delivered,
+        retainedEmpty,
+      }),
+    );
     assert.equal(pipeline.failures, 0, entry.name);
+    assert.equal(retainedEmpty, diagnostics.filter((report) => report.outcome === 'empty').length);
     if (!entry.allowEmpty || delivered.length) {
       assert.equal(words(delivered.join(' ')), entry.expected, entry.name);
     }

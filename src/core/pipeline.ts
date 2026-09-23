@@ -4,7 +4,9 @@ import type { Activity } from './activity.ts';
 import { failureOutcome } from './delivery-error.ts';
 import type { InspectableModule } from './module.ts';
 import type { ScreenSensor } from '../sensors/screen/sensor.ts';
-import type { SpeechTranscriber } from '../sensors/audio/transcriber.ts';
+import type { SpeechTranscriber, TranscriptionDiagnostic } from '../sensors/audio/transcriber.ts';
+import { VAD_SETTINGS } from '../sensors/audio/segmenter.ts';
+import { MIN_SPEECH_WINDOW_RMS } from '../sensors/audio/levels.ts';
 
 /** The exact objects used for capture, transcription, and dispatch. */
 export type PipelineDependencies = {
@@ -138,12 +140,14 @@ export class SensorPipeline implements InspectableModule {
           this.log('transcribe', 'Recognizing speech', job.id);
         }
         const started = performance.now();
+        let transcription: TranscriptionDiagnostic | undefined;
 
         // Capture is already in progress. Await both halves of the same frame;
         // a new screenshot taken after transcription could show another app.
         const [utterance, capture] = await Promise.all([
           job.samples
             ? this.dependencies.transcriber.transcribe(job.samples, job.signal, (diagnostic) => {
+                transcription = diagnostic;
                 this.log('asr', JSON.stringify(diagnostic), job.id);
               })
             : job.text!,
@@ -157,6 +161,31 @@ export class SensorPipeline implements InspectableModule {
         );
 
         if (!utterance.trim()) {
+          // Live candidates already passed VAD's voiced-duration gate. Reuse
+          // its duration floor and the ASR energy floor for direct callers too.
+          // Only a confirmed empty decoder response qualifies: silence,
+          // punctuation, transport failures and untranscribed jobs do not.
+          if (
+            job.samples &&
+            transcription?.outcome === 'empty' &&
+            transcription.audioMs >= VAD_SETTINGS.minSpeechMs &&
+            transcription.speechWindowRms >= MIN_SPEECH_WINDOW_RMS &&
+            this.activity.emptyAudioCaptured
+          ) {
+            stage = 'recording';
+
+            // Like successful transcript recordings, a completed ASR result
+            // remains useful after cancellation. Await storage before finally
+            // clears this job's samples or shutdown releases desktop services.
+            const clipId = await this.activity.emptyAudioCaptured({
+              id: job.id,
+              observedAt: job.observedAt,
+              samples: job.samples,
+              diagnostic: transcription,
+            });
+            this.log('asr-recorded', `Empty transcript audio saved (${clipId})`, job.id);
+          }
+
           this.log('filtered', 'No speech text', job.id);
           continue;
         }

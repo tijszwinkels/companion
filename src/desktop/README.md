@@ -401,10 +401,35 @@ the screenshot to be saved, and a screenshot failure still allows the audio to b
 saved. Storage failure leaves the transcript available and prevents the action.
 Successful writes survive later delivery failures and `IGNORE` decisions.
 
-Older records and supplied `--text` input have no audio. The storage boundary
-remains a nonempty transcript: failed/empty transcription, untranscribed cancelled
-jobs, and overload drops create no recording or history row. `--no-desktop`
-disables both audio and screenshot persistence.
+Older records and supplied `--text` input have no audio. Transcript history still
+requires nonempty text. Empty ASR results have a separate diagnostic recording:
+`~/companion/asr-empty/YYYY-MM-DD/<clip-uuid>/audio.wav` and `metadata.json`.
+This separate top-level `asr-empty/` tree stays outside successful recordings in
+`data/`. The date uses the observation time; custom database paths use their parent
+as the storage root. No empty history row, screenshot, application context, or intent
+is saved.
+
+Only a confirmed ASR `empty` outcome qualifies, with at least 128 ms of input and
+strongest-128-ms-window RMS at or above 0.0005. Live audio has already passed the
+VAD requirement of 128 ms of voiced frames. These are the existing speech gates;
+they do not establish that the sound is intelligible. Silence rejection,
+punctuation-only output, worker errors, untranscribed cancelled jobs and overload
+drops do not create these clips. The helper exposes empty **text**, so this does
+not distinguish zero raw tokens from special-token-only output.
+
+Each clip keeps the complete 16 kHz mono PCM16 segment, using the ASR conversion.
+Metadata version 1 contains its UUID, pipeline frame ID, observation timestamp,
+sample rate/channel count, and the numeric transcription diagnostic. An
+`asr-recorded` log links the job ID to the saved UUID. The private directory (0700)
+and files (0600) are published together by renaming a temporary directory after
+both writes finish; readers must ignore `.tmp` directories. Writes are not fsynced.
+The pipeline awaits storage before clearing samples, including when cancellation
+arrives after ASR completes. Storage failures report the `recording` error stage.
+
+These diagnostic clips survive restart and remain until explicitly removed from
+the filesystem; they are not listed or deleted through transcript history. Remove
+the clip's UUID directory to remove both files. `--no-desktop` disables their
+persistence along with ordinary audio and screenshot persistence.
 File replay with `--wav` uses the same recording behavior as microphone input;
 use `--no-desktop` for a replay that should not enter the permanent history.
 

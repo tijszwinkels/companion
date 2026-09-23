@@ -67,10 +67,15 @@ export function artifactPath(
   observedAt: number,
   kind: 'screenshots' | 'audio',
 ): string {
+  const extension = kind === 'screenshots' ? 'png' : 'wav';
+  return join(directory, 'data', recordingDate(observedAt), kind, `${id}.${extension}`);
+}
+
+/** Observation dates, rather than write times, determine all recording buckets. */
+export function recordingDate(observedAt: number): string {
   const date = new Date(observedAt);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  const extension = kind === 'screenshots' ? 'png' : 'wav';
-  return join(directory, 'data', `${year}-${month}-${day}`, kind, `${id}.${extension}`);
+  return `${year}-${month}-${day}`;
 }
