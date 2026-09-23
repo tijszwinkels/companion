@@ -362,6 +362,11 @@ request if it calls the detector, while an explicit prefix has no request to
 record. The snapshot shares its utterance's lifetime because it lives in the
 same row.
 
+For a read-only exporter and exact-request model-comparison CLI, see
+[intent evals](../../docs/intent-evals.md). It changes only the model ID, freezes
+explicit labels and requires `--send` before sending recordings to configured
+endpoints. It never runs detected actions or restarts Companion.
+
 For labeled evaluations, join the original observation with its current label:
 
 ```sql
