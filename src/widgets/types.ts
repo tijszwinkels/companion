@@ -57,6 +57,16 @@ export interface WidgetLease {
   release(): void;
 }
 
+/**
+ * Companion's effective text scale is the theme unit (0.5–3) multiplied by the
+ * reader zoom (80–200%). Views and viewport reports accept that whole product,
+ * so the captured sidebar, native view and pop-out agree at the extremes.
+ * `integrations/panel/WidgetSurface.qml` and `integrations/widgets/host.js`
+ * repeat these bounds because they cannot import TypeScript.
+ */
+export const minimumTextScale = 0.4;
+export const maximumTextScale = 6;
+
 export interface WidgetViewport {
   width: number;
   height: number;

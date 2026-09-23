@@ -124,8 +124,9 @@ belongs in props, not module globals or DOM storage. Use `textContent` for data.
 Theme variables are `--foreground`, `--background`, `--accent`, `--muted`.
 
 The root font size is `16px × textScale`, where `textScale` is Companion's text
-size (Ctrl+plus/minus reader zoom times the theme unit). It changes live in
-inline, pinned and pop-out views without reloading or resetting drafts. This is
+size: Ctrl+plus/minus reader zoom (80–200%) times the theme unit (0.5–3), so
+0.4–6. It changes live in inline, pinned and pop-out views without reloading or
+resetting drafts. This is
 host behavior, so already published bundles follow it too. Size text in
 `rem`/`em` so headings and labels keep their proportions. A widget's own
 typography prop should multiply `rem` sizes (for example
@@ -137,7 +138,9 @@ capture density and native supersampling are applied separately, not twice.
 
 An inline bubble measures its content and reserves between 100 theme units and
 420 text-scaled units (never less than 420 theme units); content taller than that
-scrolls inside the widget. A pinned widget receives its reserved viewport.
+scrolls inside the widget. Text that wraps more at a larger size can grow faster
+than the bound, so something that fit at 100% may scroll when enlarged. A pinned
+widget receives its reserved viewport.
 The initial offscreen preview is 480 × 280 CSS pixels, **not** a guarantee of the
 sidebar's size. Layouts must adapt to sidebar width, text zoom and pop-out resizing.
 The host supplies 12 CSS pixels of padding on every side. Measure

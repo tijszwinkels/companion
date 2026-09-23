@@ -66,10 +66,22 @@ test('native viewport reports require an open view, survive renderer failure and
   assert.equal(accepted.status, 200);
   await accepted.arrayBuffer();
   assert.deepEqual((await send({ method: 'discover', id: created.id })).lastViewport, dimensions);
+  // Theme unit 0.5–3 × reader zoom 80–200% spans text scales 0.4–6.
+  for (const textScale of [0.4, 6]) {
+    const boundary = await report({ ...dimensions, textScale });
+    assert.equal(boundary.status, 200);
+    await boundary.arrayBuffer();
+    assert.equal(
+      (await send({ method: 'discover', id: created.id })).lastViewport.textScale,
+      textScale,
+    );
+  }
   for (const body of [
     { ...dimensions, widthCssPixels: 1.5 },
     { ...dimensions, heightCssPixels: 32769 },
     { ...dimensions, textScale: 0 },
+    { ...dimensions, textScale: 0.39 },
+    { ...dimensions, textScale: 6.01 },
   ]) {
     const response = await report(body);
     assert.equal(response.status, 400);

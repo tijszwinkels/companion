@@ -14,6 +14,10 @@ FocusScope {
   property string fontFamily: "sans-serif"
   property real unit: 1
   property real textScale: 1
+  // Companion's effective text-scale range (theme unit 0.5–3 × reader zoom
+  // 80–200%); see src/widgets/types.ts. The native view receives textScale
+  // unclamped, so reports stay within the same range rather than a narrower one.
+  readonly property real reportedTextScale: Math.max(0.4, Math.min(6, textScale))
   property real pixelRatio: Screen.devicePixelRatio
   property bool nativeRendering: false
   readonly property int nativeRenderScale: typeof CompanionWidgetRendering !== "undefined" ? CompanionWidgetRendering.renderScale : 1
@@ -21,10 +25,11 @@ FocusScope {
   property bool fitContent: true
   property real preferredHeight: 240 * unit
   // Inline widgets fit their measured content between these bounds. The upper
-  // bound grows with Companion's text size, so content that fit before the
-  // reader enlarged text still fits afterwards instead of scrolling inside a
-  // clipped bubble. It never falls below the 100% bound, because px-sized
-  // content (canvas, fixed SVG) does not shrink when text becomes smaller.
+  // bound grows in proportion to Companion's text size, so enlarged text gets
+  // proportionally more room before it scrolls inside the bubble. Wrapping at
+  // a fixed width can grow height faster than that, so this is not a promise
+  // that everything which fit at 100% still fits. It never falls below the
+  // 100% bound, because px-sized content (canvas, fixed SVG) does not shrink.
   readonly property real minimumFitHeight: 100 * unit
   readonly property real maximumFitHeight: 420 * Math.max(unit, textScale)
   // Last content height reported by the page, in CSS (= QML logical) pixels;
@@ -66,7 +71,9 @@ FocusScope {
   onReferenceChanged: refreshLayout()
   onWidthChanged: refreshLayout()
   onHeightChanged: if (nativeRendering) refreshLayout()
-  onTextScaleChanged: refreshLayout()
+  // Re-measure from the derived value: a textScale handler can run before this
+  // binding updates and would request layout at the previous scale.
+  onReportedTextScaleChanged: refreshLayout()
   // Content whose height ignores text size keeps its measurement; apply the new
   // bound to it now rather than waiting for a layout change that may not come.
   onMaximumFitHeightChanged: fitMeasuredHeight()
@@ -123,7 +130,7 @@ FocusScope {
     }
     return "?width=" + Math.round(Math.max(80, Math.min(1600, width)))
       + "&height=" + Math.round(Math.max(60, Math.min(2200, height)))
-      + "&scale=" + Math.max(0.5, Math.min(3, textScale))
+      + "&scale=" + reportedTextScale
       + "&pixelRatio=" + Math.max(1, Math.min(3, pixelRatio))
       + "&foreground=" + color(foreground) + "&background=" + color(selection)
       + "&accent=" + color(accent) + "&muted=" + color(muted)
@@ -356,7 +363,7 @@ FocusScope {
     onTriggered: {
       if (!root.nativeRendering || !root.running || root.width < 1 || root.height < 1) return
       root.request("/viewport", {widthCssPixels: Math.round(root.width),
-        heightCssPixels: Math.round(root.height), textScale: Math.max(0.5, Math.min(3, root.textScale))}, null)
+        heightCssPixels: Math.round(root.height), textScale: root.reportedTextScale}, null)
     }
   }
   Connections {

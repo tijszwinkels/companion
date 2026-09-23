@@ -10,6 +10,9 @@ let theme = bootstrap.theme;
 // including text scale. Without one (the Chromium pop-out), refresh() follows
 // the text scale the service last received from the sidebar view.
 let hostOwnsTheme = false;
+// Companion's effective text-scale range; see src/widgets/types.ts.
+const minimumTextScale = 0.4;
+const maximumTextScale = 6;
 const frame = document.createElement('iframe');
 frame.setAttribute('sandbox', 'allow-scripts allow-forms');
 frame.setAttribute('referrerpolicy', 'no-referrer');
@@ -152,7 +155,11 @@ async function refresh() {
 // Returns the sidebar's text scale when this view should adopt it, else null:
 // when a host owns the theme, the value is unknown or invalid, or it is current.
 function followedTextScale(value) {
-  if (hostOwnsTheme || typeof value !== 'number' || !(value >= 0.5 && value <= 3)) {
+  if (
+    hostOwnsTheme ||
+    typeof value !== 'number' ||
+    !(value >= minimumTextScale && value <= maximumTextScale)
+  ) {
     return null;
   }
   return value === theme.scale ? null : value;

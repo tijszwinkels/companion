@@ -190,8 +190,10 @@ Item {
       const widget = fixture.widget
       compare(widget.preferredHeight, 300)
 
-      // Doubling Companion's text size re-measures the same view. Text that fit
-      // at 100% must still fit rather than stop at the former 420-unit bound.
+      // Doubling Companion's text size re-measures the same view. Content that
+      // grows in proportion must get proportionally more room rather than stop
+      // at the former 420-unit bound. (Real wrapping can grow faster; see the
+      // bound's comment in WidgetSurface.qml.)
       widget.textScale = 2
       compare(fixture.layouts[fixture.layouts.length - 1], 2)
       compare(widget.preferredHeight, 600)
@@ -204,6 +206,19 @@ Item {
       widget.textScale = 1.25 * 1.6
       compare(widget.maximumFitHeight, 840)
       compare(widget.preferredHeight, 600)
+    }
+
+    function test_reported_text_scale_covers_theme_unit_times_zoom() {
+      const widget = createTemporaryObject(surfaceComponent, parent, {reference: reference(25, true)})
+      // Theme unit 1.6 × 200% zoom and 0.5 × 80% zoom lie outside the former
+      // 0.5–3 report range; the sidebar must report what the native view shows.
+      const cases = [{textScale: 3.2, reported: 3.2}, {textScale: 0.4, reported: 0.4},
+        {textScale: 6, reported: 6}, {textScale: 7, reported: 6}, {textScale: 0.3, reported: 0.4}]
+      for (const item of cases) {
+        widget.textScale = item.textScale
+        compare(widget.reportedTextScale, item.reported)
+        verify(widget.viewport().indexOf("&scale=" + item.reported + "&") >= 0, widget.viewport())
+      }
     }
 
     function test_px_content_refits_without_shrinking_below_default_bound() {

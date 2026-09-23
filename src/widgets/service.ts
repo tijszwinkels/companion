@@ -10,6 +10,8 @@ import {
   attachment,
   boundedJson,
   defaultPresentation,
+  maximumTextScale,
+  minimumTextScale,
   object,
   presentation,
   type JsonObject,
@@ -542,8 +544,8 @@ export class WidgetService {
       result.height < 60 ||
       result.height > 2200 ||
       !Number.isFinite(result.scale) ||
-      result.scale < 0.5 ||
-      result.scale > 3 ||
+      result.scale < minimumTextScale ||
+      result.scale > maximumTextScale ||
       !Number.isFinite(result.pixelRatio) ||
       result.pixelRatio < 1 ||
       result.pixelRatio > 3
@@ -669,8 +671,8 @@ export class WidgetService {
           heightCssPixels > 32768 ||
           typeof textScale !== 'number' ||
           !Number.isFinite(textScale) ||
-          textScale < 0.5 ||
-          textScale > 3
+          textScale < minimumTextScale ||
+          textScale > maximumTextScale
         ) {
           throw Error('Invalid native widget viewport');
         }

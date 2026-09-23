@@ -625,6 +625,25 @@ test('Companion text scale reaches captured and pop-out views live without compo
     assert.equal(native.status, 200);
     await waitForRoot(24);
 
+    // Theme unit × reader zoom spans 0.4–6. Scales beyond the former 0.5–3
+    // report range must reach the pop-out unchanged, not clamped.
+    const reportNative = async (textScale: number) => {
+      const response = await fetch(url + '/viewport', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ widthCssPixels: 480, heightCssPixels: 280, textScale }),
+      });
+      assert.equal(response.status, 200);
+      await response.arrayBuffer();
+    };
+    await reportNative(1.6 * 2);
+    await waitForRoot(51.2);
+    await reportNative(0.5 * 0.8);
+    await waitForRoot(6.4);
+    assert.ok((await layout(6, 1)) > largeHeight, 'The captured sidebar accepts scale 6');
+    await reportNative(1.5);
+    await waitForRoot(24);
+
     // A per-widget typography change composes with, and does not reset, the
     // global text scale.
     const current = (await (await fetch(url + '/state')).json()) as any;
