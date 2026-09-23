@@ -17,6 +17,8 @@ Item {
   required property color accent
   required property color selection
   required property string fontFamily
+  // Hosts supply their surface color for compositing translucent menu colors.
+  property color background: tooltipBackground
   property color tooltipBackground: selection
   property color tooltipForeground: foreground
   property color tooltipBorder: muted
@@ -784,6 +786,7 @@ Item {
     loading: root.sessionControls ? root.sessionControls.modelsLoading : false
     error: root.sessionControls ? root.sessionControls.modelsError : ""
     online: root.online
+    background: root.background
     foreground: root.foreground
     muted: root.muted
     selection: root.selection

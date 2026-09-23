@@ -288,6 +288,7 @@ Item {
     selectedSessionId: client.sessions.selectedId
     showingPrevious: client.sessions.showingPrevious
     controlError: root.client.error
+    background: root.theme.background
     foreground: root.theme.foreground
     muted: root.theme.muted
     accent: root.theme.accent

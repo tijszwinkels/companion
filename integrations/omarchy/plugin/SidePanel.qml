@@ -178,6 +178,7 @@ PanelWindow {
         showingPrevious: root.showingPrevious
         controlError: root.controlError
         selectedSessionId: root.selectedSessionId
+        background: Color.menu.background
         foreground: Color.menu.text
         muted: Qt.rgba(Color.menu.text.r, Color.menu.text.g, Color.menu.text.b, 0.65)
         accent: Color.menu.selectedText

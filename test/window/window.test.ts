@@ -421,6 +421,10 @@ test('native UI preserves its QML body and Chromium view across presentation cha
         join(artifacts, 'window.png'),
         await readFile(join(setup.directory, 'window.png')),
       );
+      await writeFile(
+        join(artifacts, 'window-model-menu.png'),
+        await readFile(join(setup.directory, 'window.png.menu.png')),
+      );
     } catch (error) {
       throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'));
     }

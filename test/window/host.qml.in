@@ -268,9 +268,26 @@ TestCase {
     const picker = findChild(body, "sessionModelPicker")
     verify(picker.visible)
     verify(picker.enabled, "model picker loading=" + body.client.sessions.modelsLoading)
+    // The live adapter sends a translucent foreground overlay for selection.
+    // Exercise it through the host theme boundary, not just the picker alone.
+    body.command({action: "theme", values: {selection: "#14a9b1d6"}})
     verify(waitForRendering(picker))
+    const fieldPoint = picker.mapToItem(body, 6, picker.height - 6)
+    const fieldColor = grabImage(body).pixel(Math.round(fieldPoint.x), Math.round(fieldPoint.y))
     mouseClick(picker, 25, 15)
     tryVerify(function() { return picker.popup.visible }, 1000, "Model popup did not open")
+    verify(waitForRendering(picker.popup.background))
+    const menuRow = picker.popup.contentItem.itemAtIndex(1)
+    verify(menuRow !== null)
+    const menuPoint = menuRow.mapToItem(body, 6, menuRow.height - 6)
+    const menuImage = grabImage(body)
+    const menuColor = menuImage.pixel(Math.round(menuPoint.x), Math.round(menuPoint.y))
+    fuzzyCompare(menuColor.r, fieldColor.r, 1 / 255 + 0.0001)
+    fuzzyCompare(menuColor.g, fieldColor.g, 1 / 255 + 0.0001)
+    fuzzyCompare(menuColor.b, fieldColor.b, 1 / 255 + 0.0001)
+    // The popup lives in the window overlay, outside body's item subtree.
+    // QtTest's window capture includes it; body.grabToImage() would omit it.
+    menuImage.save("@CAPTURE@.menu.png")
     keyClick(Qt.Key_Down)
     keyClick(Qt.Key_Return)
     tryVerify(function() { return fakeBackend.sent.some(message => message.action === "set-agent-model") })

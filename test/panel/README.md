@@ -22,6 +22,10 @@ sessions and widget state are synthetic; live Wayland/input hardware is not cove
 
 Model-picker appearance checks sample rendered field and popup pixels at normal
 and enlarged theme scales, including a theme change while the menu is open.
+Both opaque and translucent selection colors are covered: the Omarchy default
+is pale foreground at 8% opacity, which must be blended over the panel surface
+before making the popup opaque. The menu's rendered pixels are compared with
+the field's rendered pixels, including a switch to a light background while open.
 Run `tst_model_picker.qml` with `QT_QUICK_CONTROLS_STYLE=Fusion` as well as the
 default style: setting only the ComboBox palette previously left a pale native
 field behind the panel's light text. The picker now uses explicit themed Basic

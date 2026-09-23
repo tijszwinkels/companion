@@ -12,12 +12,16 @@ Item {
   property bool loading: false
   property string error: ""
   property bool online: false
+  required property color background
   required property color foreground
   required property color muted
   required property color selection
   required property string fontFamily
   property real unit: 1
-  readonly property color popupColor: Qt.rgba(selection.r, selection.g, selection.b, 1)
+  // Omarchy's selection can be pale foreground at only 8% opacity. Flatten it
+  // over the panel surface; dropping its alpha would turn the popup pale too.
+  // Keep menus opaque so underlying conversation content cannot bleed through.
+  readonly property color popupColor: Qt.tint(Qt.rgba(background.r, background.g, background.b, 1), selection)
   signal refreshRequested()
   signal modelRequested(string id, string model)
   readonly property string sessionId: session ? session.id : ""
