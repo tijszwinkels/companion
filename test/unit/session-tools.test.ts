@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { PiBackend } from '../../src/agents/pi-backend.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
+import {
+  SessionToolService,
+  type SessionToolHost,
+} from '../../src/agents/session-tools-service.ts';
 import { defaultAgentSettings } from '../../src/agents/settings.ts';
 import { sessionTools } from '../../src/agents/session-tools.ts';
 import {
@@ -229,6 +234,8 @@ test('reopening a saved conversation keeps its identity, history and settings wi
   );
   assert.equal(reopened.profile, 'quickQuestion');
   assert.equal(reopened.modelOverride, 'configured/one');
+  // A client that misses agent-restored must not select it from a snapshot.
+  assert.equal(reopened.openInBackground, true);
   const restored = events.find((event) => event.type === 'agent-restored');
   assert.ok(restored && restored.type === 'agent-restored');
   assert.equal(restored.reveal, false);
@@ -602,4 +609,98 @@ test('an agent closes its own conversation only after its turn completes with no
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sessions.has(failing), true);
   assert.equal(sessions.snapshot().find((session) => session.id === failing)!.status, 'error');
+});
+
+test('a lease released while a request body is arriving performs no action', async (context) => {
+  const performed: string[] = [];
+  const unexpected = (name: string) => async () => {
+    performed.push(name);
+    throw Error(`${name} must not run`);
+  };
+  const host = {
+    title: () => 'Sender',
+    directory: () => ({ open: [], previous: [], previousMatches: 0 }),
+    start: unexpected('start'),
+    reopen: unexpected('reopen'),
+    close: unexpected('close'),
+    send: () => {
+      performed.push('send');
+      throw Error('send must not run');
+    },
+    draft: unexpected('draft'),
+  } as unknown as SessionToolHost;
+  const service = new SessionToolService(host);
+  context.after(() => service.close());
+
+  for (const method of ['close', 'reopen', 'list']) {
+    const lease = await service.lease(randomUUID(), 0, signal());
+    const url = new URL(lease.endpoint);
+    const { status, body } = await new Promise<{ status: number; body: string }>(
+      (resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: url.hostname,
+            port: url.port,
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${lease.token}`,
+            },
+          },
+          (response) => {
+            let received = '';
+            response.setEncoding('utf8');
+            response.on('data', (chunk: string) => (received += chunk));
+            response.on('end', () => resolve({ status: response.statusCode!, body: received }));
+          },
+        );
+        request.on('error', reject);
+        // Authenticate with the headers alone, then end the turn before the
+        // body arrives, as a stopped turn with an in-flight tool call would.
+        request.flushHeaders();
+        setTimeout(() => {
+          lease.release();
+          request.end(JSON.stringify({ method, requestId: randomUUID(), id: randomUUID() }));
+        }, 50);
+      },
+    );
+    assert.equal(status, 403, `${method} after release`);
+    assert.match(body, /"code":"expired"/);
+  }
+  assert.deepEqual(performed, []);
+});
+
+test('a reopen whose turn ends while its archive is read leaves it saved and closed', async (context) => {
+  const { sessions } = await fixture(context);
+  const saved = sessions.start(frame, signal());
+  await sessions.idle();
+  await sessions.remove(saved);
+
+  const turn = new AbortController();
+  const reopening = sessions.reopen(saved, false, turn.signal);
+  turn.abort();
+  await assert.rejects(reopening, /turn has ended/);
+  assert.equal(sessions.has(saved), false);
+  assert.ok(sessions.previousSnapshot().some((entry) => entry.id === saved));
+});
+
+test('Stop after the turn settles cancels a pending self-close', async (context) => {
+  const { sessions, script } = await fixture(context);
+  const id = sessions.start({ ...frame, utterance: 'Close later' }, signal());
+  script(id, async (run) => {
+    await call(run, 'companion_session_close', { id });
+  });
+  await sessions.idle();
+  // The deferred close is scheduled but has not run yet.
+  assert.equal(sessions.has(id), true);
+  await sessions.stop(id);
+  // A wrongly surviving close runs remove(), which saves before removing.
+  // Allow ample time for that asynchronous removal to become observable.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(sessions.has(id), true);
+  assert.equal(
+    sessions.previousSnapshot().some((entry) => entry.id === id),
+    false,
+  );
 });

@@ -118,8 +118,8 @@ export class AgentSessions implements InspectableModule {
       title: (id) => this.sessions.get(id)?.view.title,
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
       start: (request, signal) => this.startFromAgent(request, signal),
-      reopen: (id, focus) => this.reopenFromAgent(id, focus),
-      close: (id, sender) => this.closeFromAgent(id, sender),
+      reopen: (id, focus, signal) => this.reopenFromAgent(id, focus, signal),
+      close: (id, sender, signal) => this.closeFromAgent(id, sender, signal),
       send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
       draft: (request, signal) => this.draftFromAgent(request, signal),
     });
@@ -580,10 +580,15 @@ export class AgentSessions implements InspectableModule {
    */
   private closeWhenSettled(session: RunningSession): void {
     const id = session.view.id;
+    // The finished turn's controller identifies this request. Stop aborts it
+    // and a new follow-up replaces it; either cancels the pending close.
+    const requestingTurn = session.controller;
     setImmediate(() => {
       if (
         this.closed ||
         this.sessions.get(id) !== session ||
+        session.controller !== requestingTurn ||
+        requestingTurn.signal.aborted ||
         session.busy ||
         session.closing ||
         session.pending.length > 0
@@ -957,8 +962,12 @@ export class AgentSessions implements InspectableModule {
     }
   }
 
-  /** `reveal: false` adds the tab without selecting it or showing the panel. */
-  async reopen(id: string, reveal = true): Promise<void> {
+  /**
+   * `reveal: false` adds the tab without selecting it or showing the panel.
+   * An agent tool passes its turn signal: if that turn ends while the archive
+   * is being read, nothing is reopened.
+   */
+  async reopen(id: string, reveal = true, signal?: AbortSignal): Promise<void> {
     if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
       throw Error('Previous session is unavailable');
     }
@@ -989,12 +998,23 @@ export class AgentSessions implements InspectableModule {
       } catch (error) {
         this.log('agent-widget', `Could not restore visuals: ${String(error)}`);
       }
-      if (this.closed) {
+      if (this.closed || signal?.aborted) {
         await this.widgets.deactivate(id);
-        throw Error('Agent sessions are shutting down');
+        throw this.closed
+          ? Error('Agent sessions are shutting down')
+          : new SessionToolError(
+              'expired',
+              'This agent turn has ended; the conversation was not reopened',
+              403,
+            );
       }
       view.acceptsFollowUp = true;
       view.toolEpoch = randomUUID();
+      // Snapshots must also keep a quiet reopen out of focus: a client can
+      // miss the agent-restored event and first see this tab on reconnect.
+      if (!reveal) {
+        view.openInBackground = true;
+      }
       this.sessions.set(id, {
         view,
         controller: new AbortController(),
@@ -1107,6 +1127,7 @@ export class AgentSessions implements InspectableModule {
   private async reopenFromAgent(
     id: string,
     focus: boolean,
+    signal: AbortSignal,
   ): Promise<{
     outcome: 'reopened' | 'already-open';
     session: SessionToolSummary;
@@ -1123,7 +1144,7 @@ export class AgentSessions implements InspectableModule {
     if (!this.previous.has(id)) {
       throw this.notOpen(id);
     }
-    await this.reopen(id, focus);
+    await this.reopen(id, focus, signal);
     const view = this.sessions.get(id)!.view;
     return { outcome: 'reopened', session: this.summary(view), messages: view.messages.length };
   }
@@ -1131,6 +1152,7 @@ export class AgentSessions implements InspectableModule {
   private async closeFromAgent(
     id: string,
     sender: string,
+    signal: AbortSignal,
   ): Promise<{
     outcome: 'closed' | 'closing-after-turn' | 'already-closed';
     session: SessionToolSummary;
@@ -1158,6 +1180,7 @@ export class AgentSessions implements InspectableModule {
         'That conversation is running, closing or has queued messages, so it was left open.',
       );
     }
+    signal.throwIfAborted();
     await this.remove(id);
     return { outcome: 'closed', session: this.summary(session.view) };
   }
@@ -1193,6 +1216,7 @@ export class AgentSessions implements InspectableModule {
     if (session.closing || this.closed) {
       return { outcome: 'unavailable', reason: 'The conversation is closing.' };
     }
+    signal.throwIfAborted();
     if (!this.draftHost) {
       return { outcome: 'offline', reason: '' };
     }

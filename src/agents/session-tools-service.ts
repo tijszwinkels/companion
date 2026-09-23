@@ -77,6 +77,7 @@ export interface SessionToolHost {
   reopen(
     id: string,
     focus: boolean,
+    signal: AbortSignal,
   ): Promise<{
     outcome: 'reopened' | 'already-open';
     session: SessionToolSummary;
@@ -85,6 +86,7 @@ export interface SessionToolHost {
   close(
     id: string,
     sender: string,
+    signal: AbortSignal,
   ): Promise<{
     outcome: 'closed' | 'closing-after-turn' | 'already-closed';
     session: SessionToolSummary;
@@ -117,6 +119,7 @@ interface ToolReply {
  * of the prompt that started the turn; the tool cannot claim another sender.
  */
 interface Lease {
+  token: string;
   owner: string;
   depth: number;
   signal: AbortSignal;
@@ -162,6 +165,7 @@ export class SessionToolService {
     };
 
     this.leases.set(token, {
+      token,
       owner,
       depth,
       signal: AbortSignal.any([signal, controller.signal]),
@@ -225,6 +229,16 @@ export class SessionToolService {
     if (error instanceof SessionToolError) {
       return { status: error.status, body: { error: error.message, code: error.code } };
     }
+    // A host observed the turn's cancellation across one of its own awaits.
+    if (error instanceof Error && error.name === 'AbortError') {
+      return {
+        status: 403,
+        body: {
+          error: 'This agent turn has ended; the action was not performed',
+          code: 'expired',
+        },
+      };
+    }
     // Ordinary lifecycle errors (queue full, capacity, closing) keep their
     // existing user-facing wording and are reported as explicit refusals.
     const message = error instanceof Error ? error.message : String(error);
@@ -275,7 +289,21 @@ export class SessionToolService {
     }
 
     const command = await this.body(request);
+    // Authority is checked again after the body arrives: the turn may have
+    // ended while an authenticated request was still being received.
+    this.assertLive(lease);
     this.reply(response, await this.dispatch(lease, command));
+  }
+
+  /** Refuse work for a lease that was released or whose turn was cancelled. */
+  private assertLive(lease: Lease): void {
+    if (lease.signal.aborted || !this.leases.has(lease.token)) {
+      throw new SessionToolError(
+        'expired',
+        'This agent turn has ended; session tools are no longer available',
+        403,
+      );
+    }
   }
 
   private async dispatch(lease: Lease, command: Record<string, unknown>): Promise<ToolReply> {
@@ -334,6 +362,9 @@ export class SessionToolService {
     const id = method === 'start' ? '' : sessionId(command.id);
     const text = method === 'reopen' || method === 'close' ? '' : messageText(command.text);
 
+    // Commit point for every mutating method; hosts recheck the lease signal
+    // across their own awaits before changing any conversation.
+    this.assertLive(lease);
     if (lease.actions >= maxLifecycleActionsPerTurn) {
       throw new SessionToolError(
         'limit',
@@ -344,14 +375,14 @@ export class SessionToolService {
     lease.actions++;
 
     if (method === 'reopen') {
-      const result = await this.host.reopen(id, focus);
+      const result = await this.host.reopen(id, focus, lease.signal);
       return { status: 200, body: { ...result } };
     }
 
     // Closing never delivers content or starts a turn, so it has no depth or
     // duplicate-content check. The host defers closing the caller's own tab.
     if (method === 'close') {
-      const result = await this.host.close(id, lease.owner);
+      const result = await this.host.close(id, lease.owner, lease.signal);
       return { status: 200, body: { ...result } };
     }
 

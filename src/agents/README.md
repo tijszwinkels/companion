@@ -201,7 +201,10 @@ reopening and follow-up FIFO logic; they do not add another session store or
 load Pi session files. `SessionToolService` (`session-tools-service.ts`) is a
 loopback HTTP endpoint with a random bearer token per agent turn. The token
 names the calling conversation, so a tool cannot claim another sender. It
-expires when the turn ends or is stopped. Targets are Companion session UUIDs
+expires when the turn ends or is stopped. Authority is checked again after a
+request body arrives and at each action's commit point; a reopen also rechecks
+it after reading the archive. A request still in flight when its turn ends
+therefore changes nothing and fails with `expired`. Targets are Companion session UUIDs
 from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 
 | Tool                       | Parameters                                                                                      | Effect                                                                                          |
@@ -286,12 +289,15 @@ It refuses a running or queued conversation as `busy` instead of stopping it: an
 agent must not discard another conversation's work. An agent closing its own tab
 gets `closing-after-turn`. Closing inside its own tool call would stop that turn,
 so the tab closes after the turn completes and its answer is saved. A failed or
-stopped turn, or any message queued before it finishes, cancels the close. The
+stopped turn, any message queued before it finishes, or Stop pressed after the
+turn settled but before the deferred close ran, cancels the close. The
 answer then remains readable after reopening from Previous sessions.
 
 **Focus.** Starting or reopening opens the tab in the background by default. It
 appears in the rail and runs, but the selection and panel visibility do not
-change (`openInBackground`, `agent-restored` with `reveal: false`). `focus: true`
+change (`openInBackground`, `agent-restored` with `reveal: false`). A quiet
+reopen also sets `openInBackground`, so a client that missed the event does not
+select it from its next snapshot. `focus: true`
 selects it and reveals the panel. A focused draft selects its tab only after a
 confirmed insertion. Sends never change focus; completion shows the unread dot.
 
@@ -302,6 +308,12 @@ its first message. The draft host is the panel owning visible navigation, or
 the most recent draft-capable panel report, so two simultaneously open panels
 do not share drafts. `openInBackground` is a live flag; a restarted UI instance
 that sees a background tab for the first time applies it too.
+
+**Update the listener and UI together.** Only drafts are negotiated
+(`draftHost`). A UI older than these tools still works with a new listener, but
+it ignores `openInBackground`, `reveal: false` and `origin`. It selects and
+reveals agent-opened or quietly reopened tabs, and shows agent-written messages
+as **You**. Never deploy only the listener while agents use these tools.
 
 Automated coverage: `test/unit/session-tools.test.ts` drives the real extension
 tools through leases issued to a scripted backend: create/reopen identity and
