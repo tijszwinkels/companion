@@ -485,10 +485,9 @@ export class SessionToolService {
     if (caller.delivered.has(deliveryKey)) {
       throw new SessionToolError(
         'duplicate',
-        'This exact content was already delivered to that destination ' +
-          (caller.kind === 'internal'
-            ? 'in this turn. '
-            : 'within the duplicate-protection window. ') +
+        (caller.kind === 'internal'
+          ? 'This exact content was already delivered to that destination in this turn. '
+          : 'This exact content may already have been delivered to that destination within the duplicate-protection window. ') +
           'Do not resend it; inspect the destination with companion_sessions instead.',
       );
     }

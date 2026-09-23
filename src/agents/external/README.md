@@ -159,12 +159,15 @@ without a retrievable receipt. There is no exactly-once guarantee across restart
 lost transport after mutation transmission returns exit 5. Discovery-only
 failure reports exit 3 and confirms that no mutation was sent. A definite server
 capacity refusal reports exit 4; dropped transport without a reply remains
-conservatively uncertain. An observed full connection closure or the server
-deadline cancels pending admission: model discovery/reopening check the
-signal before committing; a forwarded draft can already exist and reports
-`unconfirmed`. A peer write-side EOF is not reliable evidence of cancellation;
-it can be a legitimate half-close, so the server may keep admitting work until
-closure is observed or the deadline expires. Once a start/send has been accepted, its turn or FIFO entry belongs
+conservatively uncertain. Client disconnect or CLI interruption does **not**
+request cancellation of admission: the server cannot distinguish it from a valid
+write-side half-close, and may still perform the action. Retrieve its receipt
+with the exact `--request-id` instead of assuming it was cancelled.
+
+The server deadline (or listener shutdown) aborts pending admission. Model
+discovery/reopening check the signal before committing; a forwarded draft can
+already exist and reports `unconfirmed`. Once a start/send has been accepted,
+its turn or FIFO entry belongs
 to the session and is **not** cancelled by client disconnect. Close may already
 have saved/removed the tab. Cancellation never promises rollback. Stopping an
 accepted provider turn remains the user's existing Companion UI control.

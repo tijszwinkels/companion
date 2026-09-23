@@ -394,6 +394,9 @@ test('cancelled model discovery cannot create a session; accepted work outlives 
   discovery.resolve();
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(f.sessions.snapshot().length, 0);
+  const duplicate = await f.call('start', { text: 'Never created', model: 'test/model' });
+  assert.equal(duplicate.code, 'duplicate');
+  assert.match(String(duplicate.error), /may already have been delivered/);
 
   const socket = connect(f.path);
   await once(socket, 'connect');
