@@ -155,6 +155,11 @@ scroll when the user reserves less height.
 Self-contained HTML, CSS, inline SVG, canvas and WebGL are available. CDN imports,
 remote images, fonts, fetches and browser storage are unavailable. Bundle needed
 libraries locally; do not add network dependencies to a widget.
+Embed photos and other raster images as `data:` URLs, for example
+`data:image/jpeg;base64,…` in an `<img>` source, CSS `url()` or canvas image.
+Size and compress them for the widget: `widget.js` is limited to 1 MiB and
+`style.css` to 32 KiB. Every network image URL, including localhost, and `blob:`
+images are blocked.
 
 ## State, errors and cancellation
 
@@ -209,7 +214,9 @@ are not mounted. The explicit pop-out receives only the Wayland display socket.
 There is no TCP debugging port. Browser automation uses anonymous pipes. The
 opaque sandbox iframe has no host credentials or application APIs; its only
 bridge accepts declared widget actions. CSP blocks network content, nesting,
-workers and form navigation. Browser permissions, file choosers and downloads
+workers and form navigation. The iframe inherits the trusted host document's CSP
+in addition to its own, so a resource type is only usable when both policies
+allow it; both permit `data:` images and nothing else for images. Browser permissions, file choosers and downloads
 are denied. The trusted pop-out host's capability-scoped state/action requests
 are fulfilled through the private pipe; Chromium itself has no network access.
 There is no fallback that disables these protections.

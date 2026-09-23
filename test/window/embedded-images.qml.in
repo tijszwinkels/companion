@@ -1,0 +1,69 @@
+import QtQuick
+import QtTest
+import "@PANEL@" as Panel
+
+TestCase {
+  id: testCase
+  name: "WidgetEmbeddedImages"
+  when: windowShown
+  property var view: null
+
+  Component {
+    id: browserComponent
+    Panel.NativeWidgetView { width: 400; height: 240 }
+  }
+
+  // The probe widget reports through the production action broker; the test
+  // server exposes that report here. QML XMLHttpRequest is asynchronous, so
+  // tryVerify keeps processing events while at most one poll is in flight.
+  function report() {
+    let result = null
+    let pending = false
+    tryVerify(function() {
+      if (!pending) {
+        pending = true
+        const request = new XMLHttpRequest()
+        request.onreadystatechange = function() {
+          if (request.readyState === XMLHttpRequest.DONE) {
+            const value = request.status === 200 ? JSON.parse(request.responseText) : null
+            result = value && value.report ? value.report : null
+            pending = false
+          }
+        }
+        request.open("GET", @REPORT_URL@)
+        request.send()
+      }
+      return result !== null
+    }, 15000)
+    return result
+  }
+
+  function cleanupTestCase() {
+    TestHost.hide()
+    if (view) view.destroy()
+    view = null
+    // Let WebEngine retire the page before the test process exits.
+    wait(250)
+  }
+
+  function test_embedded_images_decode_and_network_images_stay_blocked() {
+    view = browserComponent.createObject(TestHost.contentItem, {viewUrl: @VIEW_URL@})
+    TestHost.show(true)
+    tryVerify(function() { return view.rendered }, 10000)
+    const result = report()
+    compare(view.error, "")
+    compare(JSON.stringify(result.png), JSON.stringify({loaded: true, width: 2}))
+    compare(JSON.stringify(result.jpeg), JSON.stringify({loaded: true, width: 2}))
+    compare(JSON.stringify(result.remote), JSON.stringify({loaded: false, width: 0}))
+    compare(JSON.stringify(result.local), JSON.stringify({loaded: false, width: 0}))
+    verify(result.violations.some(function(violation) {
+      return violation.directive === "img-src" && violation.uri === "https://example.invalid/blocked-image.png"
+    }), JSON.stringify(result.violations))
+    verify(result.violations.some(function(violation) {
+      return violation.directive === "img-src" && violation.uri.endsWith("/blocked-image.png")
+        && violation.uri.startsWith("http://127.0.0.1:")
+    }), JSON.stringify(result.violations))
+    verify(!result.violations.some(function(violation) { return violation.uri === "data" }),
+      JSON.stringify(result.violations))
+  }
+}

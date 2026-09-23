@@ -9,6 +9,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
+import { defaultViewport, widgetDocument } from '../../src/widgets/document.ts';
+import { WidgetRegistry } from '../../src/widgets/registry.ts';
 import { WidgetService } from '../../src/widgets/service.ts';
 import type { WidgetAttachment } from '../../src/widgets/types.ts';
 
@@ -580,6 +582,139 @@ test('native widget metadata callbacks tolerate removal of their QML context', a
       { env: setup.env, timeout: 30000, killSignal: 'SIGKILL' },
     );
     assert.match(result.stdout, /4 passed, 0 failed/);
+  } catch (error) {
+    throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
+      cause: error,
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('native widget profile decodes embedded images and never fetches network images', async () => {
+  const setup = await fixture();
+  const original = await new WidgetRegistry(join(setup.directory, 'bundles')).load('comparison');
+  // The probe runs in the real nested widget documents inside the production
+  // WebEngine profile and request interceptor. It reports through the normal
+  // action broker because the opaque iframe is unreachable from QML.
+  const probe = {
+    ...original,
+    javascript: `
+      const violations = [];
+      document.addEventListener('securitypolicyviolation', (event) => {
+        violations.push({ directive: event.effectiveDirective, uri: event.blockedURI });
+      });
+
+      function load(source) {
+        return new Promise((resolve) => {
+          const image = new Image();
+          image.onload = () => resolve({ loaded: true, width: image.naturalWidth });
+          image.onerror = () => resolve({ loaded: false, width: image.naturalWidth });
+          image.src = source;
+          document.body.append(image);
+        });
+      }
+
+      async function measure(localImage) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 2;
+        canvas.height = 2;
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#823dc4';
+        context.fillRect(0, 0, 2, 2);
+
+        const png = await load(canvas.toDataURL('image/png'));
+        const jpeg = await load(canvas.toDataURL('image/jpeg'));
+        const remote = await load('https://example.invalid/blocked-image.png');
+        const local = await load(localImage);
+
+        // Violation events are dispatched asynchronously after the error.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { png, jpeg, remote, local, violations };
+      }
+
+      export const actions = {};
+      export function describe() {
+        return 'Embedded image probe';
+      }
+      export function mount(root, api) {
+        let reported = false;
+        return {
+          async update(props) {
+            if (reported) {
+              return;
+            }
+            reported = true;
+            await api.call('report', await measure(props.localImage));
+          },
+        };
+      }
+    `,
+  };
+
+  let report: unknown = null;
+  let networkImageRequests = 0;
+  const token = 'b'.repeat(64);
+  const server = createHttpServer((request, response) => {
+    void (async () => {
+      const path = request.url ?? '';
+      if (path === '/view/' + token && request.method === 'GET') {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        response.end(
+          await widgetDocument(
+            probe,
+            { name: 'comparison', props: { localImage }, revision: 1 },
+            defaultViewport,
+            viewUrl,
+          ),
+        );
+      } else if (path === '/view/' + token + '/state') {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ revision: 1, props: { localImage }, textScale: null }));
+      } else if (path === '/view/' + token + '/action' && request.method === 'POST') {
+        let body = '';
+        for await (const chunk of request) {
+          body += chunk;
+        }
+        report = JSON.parse(body).args;
+        response.setHeader('Content-Type', 'application/json');
+        response.end('{}');
+      } else if (path === '/report') {
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ report }));
+      } else {
+        // Anything else, including the blocked image below, must never arrive.
+        networkImageRequests++;
+        response.statusCode = 404;
+        response.end();
+      }
+    })();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const origin = `http://127.0.0.1:${address.port}`;
+  const viewUrl = `${origin}/view/${token}`;
+  const localImage = `${origin}/blocked-image.png`;
+
+  try {
+    const template = await readFile(new URL('./embedded-images.qml.in', import.meta.url), 'utf8');
+    const path = join(setup.directory, 'tst_embedded_images.qml');
+    await writeFile(
+      path,
+      template
+        .replace('@PANEL@', new URL('../../integrations/panel', import.meta.url).href)
+        .replace('@VIEW_URL@', JSON.stringify(viewUrl))
+        .replace('@REPORT_URL@', JSON.stringify(origin + '/report')),
+    );
+    const result = await execute(
+      join(build, 'companion-window-tests'),
+      ['-input', path, '-nocrashhandler'],
+      { env: setup.env, timeout: 30000, killSignal: 'SIGKILL' },
+    );
+    assert.match(result.stdout, /3 passed, 0 failed/);
+    assert.equal(networkImageRequests, 0);
   } catch (error) {
     throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'), {
       cause: error,
