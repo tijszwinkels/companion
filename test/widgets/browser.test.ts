@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { captureBrowser, control, controlProbe } from './controls.ts';
+
 import { Chromium } from '../../src/widgets/chromium.ts';
 import { defaultViewport, widgetDocument } from '../../src/widgets/document.ts';
 import { WidgetRegistry } from '../../src/widgets/registry.ts';
@@ -100,9 +102,15 @@ test('real widget publication, direct input, actions, pin transactions and reope
   const directory = await mkdtemp('/tmp/companion-widget-test-');
   const owner = randomUUID();
   const changes = new Map<string, WidgetAttachment>();
-  let service = new WidgetService(directory, async (record, reference) => {
-    changes.set(record.id, reference);
-  });
+  const renderer = new WidgetRenderer();
+  let service = new WidgetService(
+    directory,
+    async (record, reference) => {
+      changes.set(record.id, reference);
+    },
+    undefined,
+    renderer,
+  );
   try {
     const controller = new AbortController();
     const lease = await service.lease(owner, controller.signal);
@@ -145,9 +153,15 @@ test('real widget publication, direct input, actions, pin transactions and reope
       });
       assert.equal(response.status, 200, await response.text());
     };
-    // Coordinates refer to the rendered checkbox, not a DOM script click.
-    await input({ type: 'mousePressed', x: 24, y: 63, button: 'left', buttons: 1 });
-    await input({ type: 'mouseReleased', x: 24, y: 63, button: 'left', buttons: 0 });
+    const checkbox = await control(captureBrowser(renderer), 'input[type=checkbox]');
+    await input({ type: 'mousePressed', x: checkbox.x, y: checkbox.y, button: 'left', buttons: 1 });
+    await input({
+      type: 'mouseReleased',
+      x: checkbox.x,
+      y: checkbox.y,
+      button: 'left',
+      buttons: 0,
+    });
     await (await fetch(reference.viewUrl + '/frame')).arrayBuffer();
     assert.equal((await state()).props.items[0].completed, true);
     const added = await command({
@@ -380,17 +394,18 @@ test('the pop-out viewer transport shares changes with the inline view in a seco
     assert.equal(await page.evaluate('window.widgetReady === true'), true);
     const shot = await page.call('Page.captureScreenshot', { format: 'png' });
     await writeFile('/tmp/companion-widget-popout.png', Buffer.from(String(shot.data), 'base64'));
+    const checkbox = await control(browser, 'input[type=checkbox]');
     await page.call('Input.dispatchMouseEvent', {
       type: 'mousePressed',
-      x: 24,
-      y: 56,
+      x: checkbox.x,
+      y: checkbox.y,
       button: 'left',
       clickCount: 1,
     });
     await page.call('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
-      x: 24,
-      y: 56,
+      x: checkbox.x,
+      y: checkbox.y,
       button: 'left',
       clickCount: 1,
     });
@@ -682,9 +697,22 @@ test('portable QtQuick displays real Chromium frames and forwards only widget-lo
   const { fileURLToPath } = await import('node:url');
   const directory = await mkdtemp('/tmp/companion-widget-qml-');
   let reference: WidgetAttachment | undefined;
-  const service = new WidgetService(directory, async (_, value) => {
-    reference = value;
-  });
+  const renderer = new WidgetRenderer();
+  const forwardedInput: object[] = [];
+  const sendInput = renderer.input.bind(renderer);
+  renderer.input = (...args) => {
+    forwardedInput.push(args[2]);
+    return sendInput(...args);
+  };
+  const probe = await controlProbe(renderer);
+  const service = new WidgetService(
+    directory,
+    async (_, value) => {
+      reference = value;
+    },
+    undefined,
+    renderer,
+  );
   try {
     const lease = await service.lease(randomUUID(), new AbortController().signal);
     const response = await fetch(lease.endpoint, {
@@ -704,7 +732,8 @@ test('portable QtQuick displays real Chromium frames and forwards only widget-lo
     const template = await readFile(new URL('./panel.qml.in', import.meta.url), 'utf8');
     const source = template
       .replace('@PANEL@', new URL('../../integrations/panel', import.meta.url).href)
-      .replace('@REFERENCE@', '(' + JSON.stringify(reference) + ')');
+      .replace('@REFERENCE@', '(' + JSON.stringify(reference) + ')')
+      .replace('@CONTROLS@', JSON.stringify(probe.url));
     const path = join(directory, 'tst_surface.qml');
     await writeFile(path, source);
     try {
@@ -714,9 +743,16 @@ test('portable QtQuick displays real Chromium frames and forwards only widget-lo
       });
       assert.match(result.stdout, /3 passed, 0 failed/);
     } catch (error) {
-      throw Error(String((error as any).stdout) + '\n' + String((error as any).stderr));
+      throw Error(
+        String((error as any).stdout) +
+          '\n' +
+          String((error as any).stderr) +
+          '\nForwarded input: ' +
+          JSON.stringify(forwardedInput),
+      );
     }
   } finally {
+    await probe.close();
     await service.close();
     await rm(directory, { recursive: true, force: true });
   }

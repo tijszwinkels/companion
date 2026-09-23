@@ -31,7 +31,7 @@ h2 {
   overflow-wrap: anywhere;
 }
 .progress {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--foreground) 85%, var(--background));
   font-size: calc(1rem * var(--todo-text-scale, 0.9));
 }
 .progress-track {
@@ -68,7 +68,7 @@ form input {
   background: transparent;
 }
 form input::placeholder {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--foreground) 85%, var(--background));
   opacity: 1;
 }
 button {
@@ -76,7 +76,7 @@ button {
   border: 0;
   border-radius: 3px;
   background: transparent;
-  color: var(--coral);
+  color: var(--foreground);
   font-size: calc(1.82rem * var(--todo-text-scale, 0.9));
   line-height: 1;
   padding: 0.15rem 0.55rem;
@@ -92,7 +92,7 @@ input:disabled {
 }
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid var(--coral);
+  outline: 2px solid var(--foreground);
   outline-offset: 3px;
 }
 .todos {
@@ -104,7 +104,6 @@ input:focus-visible {
   gap: 0.7rem;
   padding: 0.8rem 0.15rem;
   border-bottom: 1px solid var(--line);
-  cursor: pointer;
 }
 .todo-row:last-child {
   border-bottom: 0;
@@ -143,13 +142,13 @@ input:focus-visible {
   width: 1.2rem;
   height: 1.2rem;
   margin: 0.2rem 0 0;
-  border: 1.5px solid var(--muted);
+  border: 1.5px solid var(--foreground);
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
 }
 .check-circle:checked {
-  border-color: var(--coral);
+  border-color: var(--foreground);
   background: var(--coral);
 }
 .check-circle:checked::after {
@@ -162,15 +161,15 @@ input:focus-visible {
 }
 .completed {
   text-decoration: line-through;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--foreground) 85%, var(--background));
 }
 .empty {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--foreground) 85%, var(--background));
   font-size: calc(1.05rem * var(--todo-text-scale, 0.9));
   margin: 1rem 0;
 }
 .message {
-  color: var(--coral);
+  color: var(--foreground);
   font-size: calc(1rem * var(--todo-text-scale, 0.9));
   overflow-wrap: anywhere;
 }
@@ -186,4 +185,14 @@ input:focus-visible {
   .progress-fill {
     transition: none;
   }
+}
+
+.edit-notice {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+.edit-notice:empty {
+  display: none;
 }
