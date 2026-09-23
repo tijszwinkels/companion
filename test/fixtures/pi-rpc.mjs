@@ -48,7 +48,13 @@ function receive(request) {
   promptText = request.message;
   writeFileSync(
     'request.json',
-    JSON.stringify({ request, argv: process.argv.slice(2), pid: process.pid }),
+    JSON.stringify({
+      request,
+      argv: process.argv.slice(2),
+      pid: process.pid,
+      internalAgent: process.env.COMPANION_INTERNAL_AGENT,
+      externalSocketExported: process.env.COMPANION_EXTERNAL_SOCKET !== undefined,
+    }),
   );
   if (request.message.startsWith('inherited-pipe')) {
     // Model a tool that starts its own process group while retaining Pi's

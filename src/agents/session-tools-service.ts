@@ -394,8 +394,9 @@ export class SessionToolService {
         return {
           status: 409,
           body: {
-            code: 'rejected',
-            error: 'Session action refused; check capacity and session state.',
+            code: 'unconfirmed',
+            error:
+              'Session outcome could not be confirmed; inspect the destination before another mutation.',
           },
         };
       }
@@ -528,9 +529,13 @@ export class SessionToolService {
       }
       throw new SessionToolError(result.outcome, draftFailure(result));
     } catch (error) {
-      // A draft's uncertain outcome must keep its reservation. Every other
-      // thrown path happened before the host accepted the content.
-      if (!(error instanceof SessionToolError && error.code === 'unconfirmed')) {
+      // Keep uncertain drafts and unexpected external host failures reserved:
+      // the host might have changed state before throwing. Only a known refusal
+      // releases external content for a new attempt. Internal behavior is retained.
+      const uncertain =
+        (error instanceof SessionToolError && error.code === 'unconfirmed') ||
+        (caller.kind === 'external' && !(error instanceof SessionToolError));
+      if (!uncertain) {
         caller.delivered.delete(deliveryKey);
       }
       throw error;

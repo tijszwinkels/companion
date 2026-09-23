@@ -401,13 +401,19 @@ export class AgentSessions implements InspectableModule {
   ): string {
     signal.throwIfAborted();
     if (this.closed) {
-      throw Error('Agent sessions are shutting down');
+      throw new SessionToolError('rejected', 'Agent sessions are shutting down');
     }
     if (this.sessions.size + this.restoring.size >= 12) {
-      throw Error('Close a question tab before starting another (12 tabs maximum)');
+      throw new SessionToolError(
+        'rejected',
+        'Close a question tab before starting another (12 tabs maximum)',
+      );
     }
     if (this.activeRuns() >= 4) {
-      throw Error('Four questions are already running; stop one or wait for an answer');
+      throw new SessionToolError(
+        'rejected',
+        'Four questions are already running; stop one or wait for an answer',
+      );
     }
 
     const id = randomUUID();
@@ -470,19 +476,28 @@ export class AgentSessions implements InspectableModule {
     signal.throwIfAborted();
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing) {
-      throw Error('Question session is unavailable');
+      throw new SessionToolError('rejected', 'Question session is unavailable');
     }
     if (session.busy && session.controller.signal.aborted) {
-      throw Error('Wait for this question to stop before sending a follow-up');
+      throw new SessionToolError(
+        'rejected',
+        'Wait for this question to stop before sending a follow-up',
+      );
     }
     if (!text.trim() || text.length > 4000) {
-      throw Error('A follow-up requires 1–4000 characters');
+      throw new SessionToolError('rejected', 'A follow-up requires 1–4000 characters');
     }
     if (session.pending.length >= maxPendingFollowUps) {
-      throw Error(`This conversation already has ${maxPendingFollowUps} queued messages`);
+      throw new SessionToolError(
+        'rejected',
+        `This conversation already has ${maxPendingFollowUps} queued messages`,
+      );
     }
     if (!session.busy && this.activeRuns() >= 4) {
-      throw Error('Four questions are already running; stop one or wait for an answer');
+      throw new SessionToolError(
+        'rejected',
+        'Four questions are already running; stop one or wait for an answer',
+      );
     }
 
     const message = chatMessage(`user-${randomUUID()}`, 'user', text);
@@ -969,16 +984,19 @@ export class AgentSessions implements InspectableModule {
    */
   async reopen(id: string, reveal = true, signal?: AbortSignal): Promise<void> {
     if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
-      throw Error('Previous session is unavailable');
+      throw new SessionToolError('rejected', 'Previous session is unavailable');
     }
     if (this.sessions.size + this.restoring.size >= 12) {
-      throw Error('Close a question tab before reopening another (12 tabs maximum)');
+      throw new SessionToolError(
+        'rejected',
+        'Close a question tab before reopening another (12 tabs maximum)',
+      );
     }
     this.restoring.add(id);
     try {
       const view = await this.store.read(id);
       if (this.closed) {
-        throw Error('Agent sessions are shutting down');
+        throw new SessionToolError('rejected', 'Agent sessions are shutting down');
       }
       // Canonical widget state repairs a display snapshot interrupted after a
       // widget commit. Missing bundles leave the saved text readable instead.

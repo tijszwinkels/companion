@@ -487,6 +487,15 @@ test('archived agent provenance is validated when a conversation is read', async
 });
 
 test('Pi loads the session tools extension only with a turn lease', async (context) => {
+  const previousExternalSocket = process.env.COMPANION_EXTERNAL_SOCKET;
+  process.env.COMPANION_EXTERNAL_SOCKET = '/synthetic/should-not-be-inherited.sock';
+  context.after(() => {
+    if (previousExternalSocket === undefined) {
+      delete process.env.COMPANION_EXTERNAL_SOCKET;
+    } else {
+      process.env.COMPANION_EXTERNAL_SOCKET = previousExternalSocket;
+    }
+  });
   const directory = await mkdtemp(join(tmpdir(), 'companion-session-tools-pi-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const executable = join(directory, 'fixture-pi');
@@ -505,6 +514,13 @@ test('Pi loads the session tools extension only with a turn lease', async (conte
 
   await new PiBackend().run(request, signal(), () => {});
   assert.equal((await argv()).includes(extension), false);
+  const environment = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+  assert.equal(
+    environment.internalAgent,
+    '1',
+    'Even a turn without a lease must use the internal API',
+  );
+  assert.equal(environment.externalSocketExported, false);
 
   await new PiBackend().run(
     {

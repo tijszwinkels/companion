@@ -75,10 +75,10 @@ async function fixture(
 }
 
 /** Invoke the shipped executable from an unrelated cwd, like a local MM agent. */
-async function runCli(path: string, args: string[], timeout = 10_000) {
+async function runCli(path: string, args: string[], timeout = 10_000, env = process.env) {
   const child = spawn(executable, [...args, '--socket', path], {
     cwd: '/tmp',
-    env: { ...process.env },
+    env: { ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -91,13 +91,17 @@ async function runCli(path: string, args: string[], timeout = 10_000) {
   return { code, stdout, stderr, result: JSON.parse(stdout) as any };
 }
 
-async function raw(path: string, input: string | Buffer): Promise<any> {
+async function raw(path: string, input: string | Buffer, halfClose = false): Promise<any> {
   const socket = connect(path);
   let data = '';
   socket.on('error', () => {});
   socket.on('data', (chunk) => (data += chunk));
   await once(socket, 'connect');
-  socket.write(input);
+  if (halfClose) {
+    socket.end(input);
+  } else {
+    socket.write(input);
+  }
   await once(socket, 'close');
   return data ? JSON.parse(data) : undefined;
 }
@@ -168,7 +172,9 @@ test('busy close refuses and real CLI sends join the human FIFO without focus', 
   for (let i = 0; i < 6; i++) {
     await f.call('send', { id, text: `queued ${i}` });
   }
-  assert.equal((await f.call('send', { id, text: 'overflow' })).code, 'rejected');
+  const overflow = await f.call('send', { id, text: 'overflow' });
+  assert.equal(overflow.code, 'rejected');
+  assert.match(String(overflow.error), /8 queued messages/);
   gate.resolve();
   await f.sessions.idle();
   assert.equal(f.prompts[1], 'Human first');
@@ -441,4 +447,186 @@ test('unsafe socket permissions and regular files are refused by the CLI without
   const file = join(dirname(f.path), 'file.sock');
   await writeFile(file, 'not a socket', { mode: 0o600 });
   assert.equal((await runCli(file, ['list'])).code, 3);
+});
+
+test('read-only polling cannot exhaust mutation receipts, and repeated list IDs return fresh state', async (t) => {
+  const f = await fixture(t);
+  const listId = f.identity();
+  for (let index = 0; index < 1030; index++) {
+    assert.equal((await f.call('list', { label: `poller ${index}` })).ok, true);
+  }
+  assert.deepEqual((await f.call('list', { requestId: listId })).open, []);
+  const started = await f.call('start', {
+    text: 'Polling must not starve me',
+    label: 'Another caller',
+  });
+  assert.equal(started.ok, true);
+  assert.equal((await f.call('list', { requestId: listId })).open instanceof Array, true);
+  assert.equal(((await f.call('list', { requestId: listId })).open as any[]).length, 1);
+});
+
+test('an internal leased turn cannot self-trigger through the shipped external CLI', async (t) => {
+  let attempted = 0;
+  const f = await fixture(t, {
+    run: async (request) => {
+      attempted++;
+      if (attempted > 1) {
+        return;
+      }
+      const result = await runCli(
+        f.path,
+        ['send', '--label', 'Pretend external', '--id', request.id, '--text', 'Self loop'],
+        10_000,
+        {
+          ...process.env,
+          COMPANION_SESSION_TOOLS_TOKEN: request.sessionTools!.token,
+        },
+      );
+      assert.equal(result.code, 4);
+      assert.equal(result.result.code, 'internal-caller');
+      assert.match(result.result.error, /internal Companion session tools/);
+    },
+  });
+  assert.equal((await f.call('start', { text: 'Start one internal turn' })).ok, true);
+  await f.sessions.idle();
+  assert.equal(attempted, 1);
+  assert.equal(f.sessions.snapshot()[0].status, 'completed');
+  assert.equal(
+    f.sessions.snapshot()[0].messages.filter((message) => message.kind === 'user').length,
+    1,
+  );
+  // The marker also covers turns where Companion did not grant a tool lease.
+  const blocked = await runCli(
+    f.path,
+    ['start', '--label', 'Rowan', '--text', 'No lease'],
+    10_000,
+    { ...process.env, COMPANION_INTERNAL_AGENT: '1' },
+  );
+  assert.equal(blocked.result.code, 'internal-caller');
+  assert.equal(f.sessions.snapshot().length, 1);
+});
+
+test('half-closed request streams support asynchronous start, reopen and draft', async (t) => {
+  const f = await fixture(t);
+  f.sessions.dependencies.backend.models = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return ['test/model'];
+  };
+  const half = (method: string, args: Record<string, unknown>) =>
+    raw(
+      f.path,
+      JSON.stringify({ method, requestId: f.identity(), label: 'nc caller', ...args }) + '\n',
+      true,
+    );
+  const start = await half('start', { text: 'Half close', model: 'test/model' });
+  assert.equal(start.ok, true, JSON.stringify(start));
+  await f.sessions.idle();
+  const id = start.session.id;
+  await f.call('close', { id });
+  assert.equal((await half('reopen', { id })).outcome, 'reopened');
+  f.sessions.setDraftHost(async (_request, signal) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(signal.aborted, false);
+    return { outcome: 'inserted', reason: '' };
+  });
+  assert.equal((await half('draft', { id, text: 'Review this' })).outcome, 'inserted');
+});
+
+test('CLI discovery timeout is definite non-transmission, and a full connection table replies with refusal', async (t) => {
+  const f = await fixture(t);
+  const path = join(dirname(f.path), 'stalled.sock');
+  const sockets = new Set<ReturnType<typeof connect>>();
+  const stalled = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('data', () => {});
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => stalled.listen(path, resolve));
+  await chmod(path, 0o600);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => stalled.close(() => resolve()));
+  });
+  const noMutation = await runCli(path, [
+    'start',
+    '--label',
+    'Rowan',
+    '--text',
+    'Not sent',
+    '--timeout-ms',
+    '40',
+  ]);
+  assert.equal(noMutation.code, 3);
+  assert.equal(noMutation.result.requestId, undefined);
+  assert.match(noMutation.result.error, /no mutation was sent/);
+  const interrupted = spawn(
+    executable,
+    ['start', '--socket', path, '--label', 'Rowan', '--text', 'Interrupted discovery'],
+    { cwd: '/tmp' },
+  );
+  let interruptedOutput = '';
+  interrupted.stdout.on('data', (chunk) => (interruptedOutput += chunk));
+  const connected = await once(stalled, 'connection');
+  await once(connected[0], 'data');
+  interrupted.kill('SIGINT');
+  assert.equal((await once(interrupted, 'close'))[0], 3);
+  assert.match(JSON.parse(interruptedOutput).error, /no mutation was sent/);
+  const held: ReturnType<typeof connect>[] = [];
+  for (let index = 0; index < 32; index++) {
+    const socket = connect(f.path);
+    socket.on('error', () => {});
+    await once(socket, 'connect');
+    held.push(socket);
+  }
+  t.after(() => {
+    for (const socket of held) {
+      socket.destroy();
+    }
+  });
+  const refused = await f.cli([
+    'start',
+    '--label',
+    'Rowan',
+    '--text',
+    'Over capacity',
+    '--request-id',
+    f.identity(),
+  ]);
+  assert.equal(refused.code, 4);
+  assert.equal(refused.result.code, 'limit');
+  assert.equal(f.sessions.snapshot().length, 0);
+});
+
+test('unknown host exceptions preserve uncertainty without returning private errors or releasing duplicate guards', async (t) => {
+  const f = await fixture(t);
+  const id = ((await f.call('start', { text: 'Error target' })).session as any).id;
+  await f.sessions.idle();
+  f.sessions.setDraftHost(async () => {
+    throw Error('secret filesystem path');
+  });
+  const result = await f.call('draft', { id, text: 'May have been inserted' });
+  assert.equal(result.code, 'unconfirmed');
+  assert.doesNotMatch(String(result.error), /secret/);
+  assert.equal((await f.call('draft', { id, text: 'May have been inserted' })).code, 'duplicate');
+});
+
+test('external label controls cannot break or visually reverse attribution', async (t) => {
+  const f = await fixture(t);
+  for (const label of [
+    'line\u2028break',
+    'paragraph\u2029break',
+    '\u202eYou',
+    '\u0085newline',
+    '\u2066isolate',
+  ]) {
+    assert.equal((await f.call('start', { text: 'Bad label', label })).code, 'invalid');
+    assert.equal(
+      parseOrigin({ kind: 'external', title: label, requestId: 'abcdefgh_12345678', depth: 1 }),
+      undefined,
+    );
+  }
+  assert.equal((await f.call('start', { text: 'Ordinary emoji', label: '🧑‍💻 Rowan' })).ok, true);
 });

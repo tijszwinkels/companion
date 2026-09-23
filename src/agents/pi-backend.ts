@@ -67,6 +67,11 @@ export class PiBackend implements AgentBackend {
         cwd: request.directory,
         env: {
           ...process.env,
+          // A convention guard prevents our bash-capable agents accidentally
+          // bypassing their turn-scoped tools via the external CLI. Same-user
+          // processes can clear this marker; it is not an authentication claim.
+          COMPANION_INTERNAL_AGENT: '1',
+          COMPANION_EXTERNAL_SOCKET: undefined,
           COMPANION_WIDGET_ENDPOINT: request.widgets?.endpoint,
           COMPANION_WIDGET_TOKEN: request.widgets?.token,
           COMPANION_SESSION_TOOLS_ENDPOINT: request.sessionTools?.endpoint,

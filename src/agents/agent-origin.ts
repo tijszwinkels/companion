@@ -39,10 +39,7 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
   const origin = value as Record<string, unknown>;
   if (
     origin.kind === 'external' &&
-    typeof origin.title === 'string' &&
-    origin.title.length > 0 &&
-    origin.title.length <= 80 &&
-    !/[\u0000-\u001f\u007f]/.test(origin.title) &&
+    validExternalLabel(origin.title) &&
     typeof origin.requestId === 'string' &&
     /^[a-zA-Z0-9_-]{16,128}$/.test(origin.requestId) &&
     origin.depth === 1 &&
@@ -69,4 +66,14 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
     title: origin.title,
     depth: origin.depth,
   };
+}
+
+/** Keep unverified labels readable without forbidding ordinary Unicode/emoji. */
+export function validExternalLabel(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    value.length <= 80 &&
+    !/[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value)
+  );
 }

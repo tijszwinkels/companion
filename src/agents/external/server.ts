@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { SessionToolService, type ToolReply } from '../session-tools-service.ts';
+import { validExternalLabel } from '../agent-origin.ts';
 import { SocketOwnership } from './paths.ts';
 
 export const maximumRequestBytes = 32 * 1024;
@@ -33,6 +34,7 @@ export class ExternalSessionServer {
   private readonly ownership: SocketOwnership;
   private server?: Server;
   private readonly sockets = new Set<Socket>();
+  private readonly refusals = new Set<Socket>();
   private readonly controllers = new Set<AbortController>();
   private readonly receipts = new Map<string, Receipt>();
   private readonly deliveries = new Set<string>();
@@ -57,6 +59,9 @@ export class ExternalSessionServer {
     await this.ownership.acquire();
     try {
       this.server = createServer({ allowHalfOpen: true }, (socket) => this.accept(socket));
+      // Eight extra slots may drain a refusal reply; the kernel/Node drops
+      // further connections without allocating application request buffers.
+      this.server.maxConnections = 40;
       await new Promise<void>((resolve, reject) => {
         this.server!.once('error', reject);
         this.server!.listen(this.ownership.bindPath, resolve);
@@ -69,8 +74,30 @@ export class ExternalSessionServer {
   }
 
   private accept(socket: Socket): void {
-    if (this.closing || this.sockets.size >= 32) {
+    if (this.closing) {
       socket.destroy();
+      return;
+    }
+    if (this.sockets.size >= 32) {
+      // Keep the read side open briefly while flushing the refusal. Destroying
+      // immediately can reset the socket while the client's request is in flight,
+      // hiding the definite refusal behind an ambiguous EPIPE.
+      this.refusals.add(socket);
+      const deadline = setTimeout(() => socket.destroy(), 1000);
+      socket.on('error', () => {});
+      socket.once('close', () => {
+        clearTimeout(deadline);
+        this.refusals.delete(socket);
+      });
+      socket.once('end', () => socket.destroy());
+      socket.resume();
+      socket.end(
+        JSON.stringify({
+          ok: false,
+          code: 'limit',
+          error: 'External connection capacity reached',
+        }) + '\n',
+      );
       return;
     }
     this.sockets.add(socket);
@@ -126,7 +153,8 @@ export class ExternalSessionServer {
         });
     });
     socket.on('end', () => {
-      controller.abort();
+      // EOF on the request side is not cancellation: nc/socat-style clients
+      // legitimately half-close after sending, while still awaiting the reply.
       if (!dispatched) {
         socket.destroy();
       }
@@ -167,14 +195,7 @@ export class ExternalSessionServer {
       };
     }
     const { requestId, label } = command;
-    if (
-      typeof requestId !== 'string' ||
-      requestId.length > 128 ||
-      typeof label !== 'string' ||
-      !label.trim() ||
-      label.length > 80 ||
-      /[\x00-\x1f\x7f]/.test(label)
-    ) {
+    if (typeof requestId !== 'string' || requestId.length > 128 || !validExternalLabel(label)) {
       return invalid('invalid', 'Supply a requestId and a single-line label of 1–80 characters');
     }
     const parts = requestId.split('_');
@@ -199,6 +220,21 @@ export class ExternalSessionServer {
       }
       return previous.reply;
     }
+    if (command.method === 'list') {
+      // Polls must return fresh state and cannot occupy the mutation receipt
+      // budget. A received list never changes sessions or needs replay protection.
+      const result = await this.service.external(
+        {
+          kind: 'external',
+          label,
+          requestId,
+          signal: controller.signal,
+          delivered: this.deliveries,
+        },
+        command,
+      );
+      return { ...result, body: { ...result.body, requestId } };
+    }
     for (const [id, receipt] of this.receipts) {
       if (receipt.expires <= now) {
         this.receipts.delete(id);
@@ -212,7 +248,7 @@ export class ExternalSessionServer {
       this.actions = 0;
       this.deliveries.clear();
     }
-    if (command.method !== 'list' && this.actions++ >= 60) {
+    if (this.actions++ >= 60) {
       return invalid('limit', 'External mutation limit reached (60 per minute across all labels)');
     }
     this.controllers.add(controller);
@@ -255,7 +291,7 @@ export class ExternalSessionServer {
     for (const controller of this.controllers) {
       controller.abort();
     }
-    for (const socket of this.sockets) {
+    for (const socket of [...this.sockets, ...this.refusals]) {
       socket.destroy();
     }
     if (this.server?.listening) {

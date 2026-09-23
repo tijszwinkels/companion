@@ -27,6 +27,7 @@ another mutation. Restarted listeners and expired IDs refuse replay.`;
 
 let requestId: string | undefined;
 let method: string | undefined;
+let mutationExchange = false;
 const controller = new AbortController();
 const stop = () => controller.abort();
 process.once('SIGINT', stop);
@@ -53,6 +54,20 @@ try {
   });
   if (values.help) {
     console.log(help);
+  } else if (
+    process.env.COMPANION_INTERNAL_AGENT !== undefined ||
+    process.env.COMPANION_SESSION_TOOLS_TOKEN !== undefined ||
+    process.env.COMPANION_WIDGET_TOKEN !== undefined
+  ) {
+    console.log(
+      JSON.stringify({
+        ok: false,
+        code: 'internal-caller',
+        error:
+          'Use the internal Companion session tools in a Companion agent turn; the external CLI would bypass its turn guards.',
+      }),
+    );
+    process.exitCode = 4;
   } else {
     method = positionals[0];
     if (
@@ -96,6 +111,7 @@ try {
       if (method !== 'list') {
         console.error(JSON.stringify({ requestId }));
       }
+      mutationExchange = method !== 'list';
       result = await requestExternal(path, command, controller.signal, timeout);
     }
     console.log(JSON.stringify(result));
@@ -103,12 +119,17 @@ try {
   }
 } catch (error) {
   const transport = error instanceof ExternalTransportError;
-  const ambiguous = transport && error.ambiguous && method !== 'list' && method !== 'info';
+  const ambiguous = transport && error.ambiguous && mutationExchange;
   console.log(
     JSON.stringify({
       ok: false,
       code: ambiguous ? 'unconfirmed' : transport ? 'unavailable' : 'usage',
-      error: error instanceof Error ? error.message.slice(0, 600) : 'Request failed',
+      error:
+        transport && !mutationExchange
+          ? 'Discovery/read connection unavailable; no mutation was sent'
+          : error instanceof Error
+            ? error.message.slice(0, 600)
+            : 'Request failed',
       requestId,
     }),
   );
