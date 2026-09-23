@@ -54,13 +54,21 @@ Item {
   property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
+  onShowingPreviousChanged: if (showingPrevious) clearPendingOrigin()
   property string controlError: ""
   property string selectedSessionId: ""
-  // A source conversation may have been closed. Its restored tab arrives in a
-  // later snapshot, so retain the requested ID until it becomes selectable.
+  // An archived sender is selected by the normal restore event, not by tab
+  // membership: a quiet background reopen must never take over the user's view.
   property string pendingOriginId: ""
   property string pendingOriginGroupId: ""
-  onSelectedSessionIdChanged: Qt.callLater(ensureSelectedVisible)
+  onSelectedSessionIdChanged: {
+    if (root.pendingOriginId && root.selectedSessionId !== root.pendingOriginId) clearPendingOrigin()
+    Qt.callLater(ensureSelectedVisible)
+  }
+  function clearPendingOrigin() {
+    root.pendingOriginId = ""
+    root.pendingOriginGroupId = ""
+  }
   readonly property bool modelsNeeded: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
   onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
   onSessionControlsChanged: Qt.callLater(ensureModels)
@@ -104,6 +112,9 @@ Item {
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
+  onSessionSelected: id => {
+    if (id !== root.pendingOriginId) clearPendingOrigin()
+  }
   signal previousRequested()
   signal reopenSessionRequested(string id)
   signal screenshotRequested(url source, string title)
@@ -182,9 +193,6 @@ Item {
       if (!stillPinned) delete dismissed[id]
     }
     root.locallyUnpinned = dismissed
-    if (root.pendingOriginId && root.sessions.some(entry => entry.id === root.pendingOriginId)) {
-      root.sessionSelected(root.pendingOriginId)
-    }
   }
 
   function isLocallyUnpinned(reference) {
@@ -220,8 +228,7 @@ Item {
   }
 
   function selectConversation(id) {
-    root.pendingOriginId = ""
-    root.pendingOriginGroupId = ""
+    root.clearPendingOrigin()
     root.sessionSelected(id)
     Qt.callLater(function() {
       if (root.selectedSession && root.selectedSessionId === id && root.keyboardFocused) root.focusComposer()

@@ -100,22 +100,47 @@ Item {
 
     function test_agent_heading_reopens_archived_source() {
       const panel = createTemporaryObject(panelComponent, parent)
+      const state = createTemporaryObject(stateComponent, parent)
+      panel.sessions = Qt.binding(function() { return state.sessions })
+      panel.selectedSessionId = Qt.binding(function() { return state.selectedId })
       const incoming = message("agent-message", "user", "Please check this")
       incoming.origin = {kind: "agent", sessionId: "archived", title: "Archived", depth: 1}
-      panel.sessions = [session([incoming])]
+      state.replace([session([incoming])])
+      state.select("question-1")
       panel.previousSessions = [{id: "archived", title: "Archived"}]
-      panel.selectedSessionId = "question-1"
       let reopened = ""
-      let selected = ""
       panel.reopenSessionRequested.connect(function(id) { reopened = id })
-      panel.sessionSelected.connect(function(id) { selected = id; panel.selectedSessionId = id })
+      panel.sessionSelected.connect(function(id) { state.select(id) })
       tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
       const heading = findChild(findChild(panel, "bubble-agent-message"), "messageHeading")
       mouseClick(heading, 18, 10)
       compare(reopened, "archived")
-      compare(selected, "")
-      panel.sessions = [session([incoming]), Object.assign({}, session([]), {id: "archived", title: "Archived"})]
-      compare(selected, "archived")
+      compare(state.selectedId, "question-1")
+      state.restore(Object.assign({}, session([]), {id: "archived", title: "Archived"}))
+      compare(state.selectedId, "archived")
+    }
+
+    function test_failed_origin_reopen_cannot_steal_a_later_background_tab() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const state = createTemporaryObject(stateComponent, parent)
+      panel.sessions = Qt.binding(function() { return state.sessions })
+      panel.selectedSessionId = Qt.binding(function() { return state.selectedId })
+      const incoming = message("agent-message", "user", "Check this")
+      incoming.origin = {kind: "agent", sessionId: "archived", title: "Archived", depth: 1}
+      state.replace([session([incoming]), Object.assign({}, session([]), {id: "other"})])
+      state.select("question-1")
+      panel.previousSessions = [{id: "archived", title: "Archived"}]
+      panel.sessionSelected.connect(function(id) { state.select(id) })
+      let reopens = 0
+      panel.reopenSessionRequested.connect(function() { reopens++ })
+      tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
+      const heading = findChild(findChild(panel, "bubble-agent-message"), "messageHeading")
+      mouseClick(heading, 18, 10)
+      compare(reopens, 1)
+      // Simulate refusal; the user switches tabs before another agent reopens it quietly.
+      state.select("other")
+      state.restore(Object.assign({}, session([]), {id: "archived"}), false)
+      compare(state.selectedId, "other")
     }
 
     function test_tool_disclosure_survives_streaming_updates() {
