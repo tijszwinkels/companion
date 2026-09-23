@@ -545,21 +545,31 @@ saved conversations in Previous sessions as before.
 If a dragged conversation disappears, the client cancels the gesture and restores
 rail scrolling. Each new drag captures its own order revision.
 
-`{"action":"agent-models"}` returns `{models: string[], coding: string,
-quickQuestion: string}` from Pi availability and Companion profile settings.
-Concurrent refresh requests share discovery; timeout or malformed data returns an
-error. Clients discover on the first conversation needing the catalog in each
-connection and on explicit refresh, then reuse it across tab changes. Failed
-discovery requires explicit refresh or reconnect to retry. A cached catalog stays
-usable during refresh; an override is only labelled unavailable after a successful
-catalog excludes it. Open menus pin their rows and conversation until selection
-or cancellation. `{"action":"set-agent-model","id":"...","model":"provider/id"}`
-validates the available identifier, saves `modelOverride` with that conversation,
-and returns `model-selected`. Empty `model` clears the override. Preview returns
-`preview` without saving. The current/last turn's `model` is separate; overrides
-apply to later turns and retain profile thinking, with Pi's `off` adjustment for
-non-reasoning models. Errors are shown in the panel;
-clients do not optimistically change other conversations or write live config.
+`{"action":"agent-models"}` returns `{models: string[], pinned: string[],
+thinkingLevels: {[model: string]: string[]}, coding: string, quickQuestion: string,
+codingThinking: string, quickQuestionThinking: string}` from Pi availability,
+Pi-resolved scopes and Companion profile settings. Concurrent refresh requests
+share discovery; timeout or malformed data returns an error. Clients discover on
+the first conversation needing the catalogue in each connection and on explicit
+refresh, then reuse it across tab changes. Failed discovery requires explicit
+refresh or reconnect to retry. A cached catalogue stays usable during refresh.
+The UI initially shows pinned models, profile default and any selected override;
+Show all models exposes the remaining catalogue without changing Pi's pins.
+Only an override excluded from the full successful catalogue is unavailable.
+Both menus pin rows and conversation until selection or cancellation.
+
+`{"action":"set-agent-model","id":"...","model":"provider/id"}` validates the
+available identifier, saves `modelOverride`, and returns `model-selected`.
+`{"action":"set-agent-thinking","id":"...","thinking":"high"}` validates an
+available level for that conversation's selected model, saves `thinkingOverride`,
+and returns `thinking-selected`. Empty `model` or `thinking` clears only that
+override. Preview returns `preview` without saving. Model/effort changes share a
+per-conversation write guard; queued turns wait for accepted writes or rollback.
+Current turns retain captured settings. Future turns inherit any unset preference
+from the profile, with Pi's model-specific effort adjustment; the requested effort
+survives model changes. Errors are shown in the panel; clients do not write global
+configuration or change another conversation. Older catalogues without supported
+effort metadata leave the effort selector disabled.
 
 New clients also include `visible` and `navigationToken` in `panel-state`.
 `visible: true` covers Activity and Previous as well as conversations; their `id`

@@ -921,6 +921,21 @@ export class DesktopRuntime {
       return 'model-selected';
     }
 
+    if (request.action === 'set-agent-thinking') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.thinking !== 'string'
+      ) {
+        throw Error('Expected a conversation and effort level');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      await this.options.agents.setThinking(request.id, request.thinking, this.signal);
+      return 'thinking-selected';
+    }
+
     if (request.action === 'move-agent') {
       if (
         !this.options.agents ||

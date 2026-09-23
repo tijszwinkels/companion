@@ -56,7 +56,14 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
     label: 'Session tools fixture',
     dependencies: {},
     async models() {
-      return ['configured/one', 'configured/two'];
+      const models = ['configured/one', 'configured/two'];
+      return {
+        models,
+        pinned: models,
+        thinkingLevels: Object.fromEntries(
+          models.map((model) => [model, ['off', 'minimal', 'low', 'medium', 'high']]),
+        ),
+      };
     },
     async run(request, _signal, emit) {
       const run: RecordedRun = {

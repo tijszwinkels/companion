@@ -184,7 +184,14 @@ test('conversation model overrides preserve an active turn, queued profile think
     label: 'Configured model fixture',
     dependencies: {},
     async models() {
-      return ['configured/alternate'];
+      const models = ['configured/alternate'];
+      return {
+        models,
+        pinned: models,
+        thinkingLevels: Object.fromEntries(
+          models.map((model) => [model, ['off', 'minimal', 'low', 'medium', 'high']]),
+        ),
+      };
     },
     async run(request) {
       requests.push(request);
@@ -240,4 +247,114 @@ test('conversation model overrides preserve an active turn, queued profile think
     restarted.snapshot().find((entry) => entry.id === coding)?.model,
     defaultAgentSettings.model,
   );
+});
+
+test('effort is conversation-local, captured per turn and durable independently of the model', async (context) => {
+  const { directory, path } = await fixture(context);
+  const requests: Parameters<AgentBackend['run']>[0][] = [];
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const backend: AgentBackend = {
+    id: 'effort-fixture',
+    label: 'Effort fixture',
+    dependencies: {},
+    async models() {
+      return {
+        models: ['configured/reasoning', 'configured/plain'],
+        pinned: ['configured/reasoning'],
+        thinkingLevels: {
+          'configured/reasoning': ['minimal', 'low', 'medium', 'high'],
+          'configured/plain': ['off'],
+        },
+      };
+    },
+    async run(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        entered.resolve();
+        await finish.promise;
+      }
+    },
+  };
+  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  context.after(() => finish.resolve());
+  context.after(() => sessions.close());
+  const id = sessions.start(frame, signal(), 'quickQuestion');
+  await entered.promise;
+  const config = await readFile(path, 'utf8');
+  await sessions.setModel(id, 'configured/reasoning', signal());
+  await sessions.setThinking(id, 'high', signal());
+  await assert.rejects(sessions.setThinking(id, 'off', signal()), /supported by this model/);
+  await assert.rejects(sessions.setThinking(id, 'ultra', signal()), /supported effort/);
+  sessions.followUp(id, 'Queued with new effort', signal());
+  assert.equal(requests[0].settings.thinking, 'off');
+  assert.equal(requests.length, 1);
+  finish.resolve();
+  await sessions.idle();
+  assert.equal(requests[1].settings.model, 'configured/reasoning');
+  assert.equal(requests[1].settings.thinking, 'high');
+  await sessions.remove(id);
+  await sessions.reopen(id);
+  assert.equal(sessions.snapshot()[0].thinkingOverride, 'high');
+  // The saved preference survives a model whose only supported effort is off.
+  // The real Pi adapter clamps it; switching back must not lose the preference.
+  await sessions.setModel(id, 'configured/plain', signal());
+  assert.equal(sessions.snapshot()[0].thinkingOverride, 'high');
+  await sessions.setModel(id, 'configured/reasoning', signal());
+  sessions.followUp(id, 'Retained high', signal());
+  await sessions.idle();
+  assert.equal(requests.at(-1)?.settings.thinking, 'high');
+  await sessions.setThinking(id, '', signal());
+  sessions.followUp(id, 'Profile default effort', signal());
+  await sessions.idle();
+  assert.equal(requests.at(-1)?.settings.thinking, 'off');
+  assert.equal(requests.at(-1)?.settings.model, 'configured/reasoning');
+  assert.equal(sessions.snapshot()[0].thinkingOverride, undefined);
+  const other = sessions.start(frame, signal());
+  await sessions.idle();
+  assert.equal(requests.at(-1)?.settings.thinking, 'medium');
+  assert.equal(
+    sessions.snapshot().find((session) => session.id === other)?.thinkingOverride,
+    undefined,
+  );
+  assert.equal(await readFile(path, 'utf8'), config);
+  // Damaged effort metadata must not be restored as an arbitrary CLI argument.
+  const store = new SessionStore(directory);
+  await store.save({ ...sessions.snapshot()[0], thinkingOverride: 'ultra' as never });
+  await assert.rejects(store.read(id), /Invalid saved conversation/);
+});
+
+test('effort discovery cannot change a closed conversation or race a simultaneous model choice', async (context) => {
+  const { directory } = await fixture(context);
+  const entered = deferred<void>();
+  const catalog = deferred<void>();
+  const backend: AgentBackend = {
+    id: 'delayed-catalog',
+    label: 'Delayed catalog',
+    dependencies: {},
+    async run() {},
+    async models() {
+      entered.resolve();
+      await catalog.promise;
+      return {
+        models: [defaultAgentSettings.model],
+        pinned: [],
+        thinkingLevels: { [defaultAgentSettings.model]: ['medium', 'high'] },
+      };
+    },
+  };
+  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  context.after(() => catalog.resolve());
+  context.after(() => sessions.close());
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+  const changing = sessions.setThinking(id, 'high', signal());
+  const rejected = assert.rejects(changing, /Conversation closed/);
+  await entered.promise;
+  await assert.rejects(sessions.setModel(id, '', signal()), /already being changed/);
+  await sessions.remove(id);
+  catalog.resolve();
+  await rejected;
+  await sessions.reopen(id);
+  assert.equal(sessions.snapshot()[0].thinkingOverride, undefined);
 });

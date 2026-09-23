@@ -31,9 +31,24 @@ function receive(request) {
       id: request.id,
       success: true,
       data: {
-        model: { provider, id, reasoning: id !== 'non-reasoning' },
+        model: {
+          provider,
+          id,
+          reasoning: id !== 'non-reasoning',
+          ...(id === 'requires-thinking'
+            ? { thinkingLevelMap: { off: null, xhigh: 'xhigh', max: 'max' } }
+            : {}),
+        },
         thinkingLevel:
-          id === 'non-reasoning' ? 'off' : id === 'wrong-thinking' ? 'low' : option('--thinking'),
+          id === 'non-reasoning'
+            ? 'off'
+            : id === 'wrong-thinking'
+              ? 'low'
+              : id === 'requires-thinking' && option('--thinking') === 'off'
+                ? 'minimal'
+                : id === 'limited-thinking' && ['xhigh', 'max'].includes(option('--thinking'))
+                  ? 'high'
+                  : option('--thinking'),
         messageCount: existsSync('request.json') ? 2 : 0,
         sessionName,
       },

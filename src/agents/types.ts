@@ -49,6 +49,8 @@ export interface AgentSession {
   profile?: AgentProfile;
   /** Explicit conversation choice; absence reloads the profile default each turn. */
   modelOverride?: string;
+  /** Requested effort for subsequent turns; Pi adapts it to the chosen model. */
+  thinkingOverride?: AgentSettings['thinking'];
   error: string;
   messages: AgentMessage[];
   updatedAt: number;
@@ -78,15 +80,36 @@ export type SessionEvent =
   | { type: 'agent-turn-completed'; id: string; turnId: string }
   | { type: 'agent-history'; sessions: PreviousSession[] };
 
+export const agentThinkingLevels = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+
 export interface AgentSettings {
   executable: string;
   model: string;
-  thinking: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  thinking: (typeof agentThinkingLevels)[number];
+}
+
+/** Safe metadata only: never expose provider credentials or endpoints to clients. */
+export interface AgentModelCatalog {
+  models: string[];
+  pinned: string[];
+  thinkingLevels: Record<string, AgentSettings['thinking'][]>;
 }
 
 export interface AgentBackend extends InspectableModule {
   /** Discover authenticated/configured Pi models without starting a conversation. */
-  models?(settings: AgentSettings, directory: string, signal: AbortSignal): Promise<string[]>;
+  models?(
+    settings: AgentSettings,
+    directory: string,
+    signal: AbortSignal,
+  ): Promise<AgentModelCatalog>;
   run(
     request: {
       id: string;

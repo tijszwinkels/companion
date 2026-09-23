@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import type { AgentProfile, AgentSettings } from './types.ts';
+import { agentThinkingLevels, type AgentProfile, type AgentSettings } from './types.ts';
 
 export function agentDirectory(): string {
   return join(homedir(), 'companion', 'agents');
@@ -98,14 +98,13 @@ export async function loadAgentSettings(
 
 function validateSettings(settings: Record<string, unknown>, path: string): AgentSettings {
   const keys = ['executable', 'model', 'thinking'];
-  const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
   for (const key of keys) {
     if (typeof settings[key] !== 'string' || !settings[key].trim()) {
       throw Error(`${path}: ${key} must be a nonempty string`);
     }
   }
-  if (!levels.includes(settings.thinking as string)) {
+  if (!agentThinkingLevels.includes(settings.thinking as AgentSettings['thinking'])) {
     throw Error(`${path}: unsupported thinking level`);
   }
   if (!(settings.model as string).includes('/')) {
