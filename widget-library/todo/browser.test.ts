@@ -26,6 +26,7 @@ async function fixture() {
     window.fail = false;
     window.delay = false;
     window.commitThenFail = false;
+    window.delayReply = false;
     window.pending = Promise.resolve();
     const api = {call(action,args) {
       calls.push({action,args});
@@ -34,6 +35,7 @@ async function fixture() {
         if(window.fail) throw Error('Synthetic failure');
         window.props = widget.actions[action](structuredClone(props),args,{requestId:'new-'+calls.length}).props;
         refresh();
+        if(window.delayReply) await new Promise(resolve => {window.reply=resolve});
         if(window.commitThenFail) throw Error('Synthetic lost acknowledgement');
       })();
     }};
@@ -296,6 +298,81 @@ test('reorder, removal, pending completion and ambiguous add failures retain use
     );
     assert.match(String(await page.evaluate(message)), /Check the list before adding it again/);
     assert.equal(await page.evaluate('calls.filter(call=>call.action==="add_item").length'), 1);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('completion acknowledgement reconciles a newer saved value without pending flicker', async () => {
+  const { browser, page } = await fixture();
+  try {
+    await page.evaluate('delayReply=true');
+    await click(page, '.check-circle');
+    await waitFor(page, 'typeof reply === "function"');
+    assert.equal(await page.evaluate('props.items[0].completed'), true);
+
+    // Another writer commits before the viewer finishes the action round trip.
+    // The host delivers these props while the checkbox is still disabled.
+    await page.evaluate('props.items[0].completed=false; refresh()');
+    assert.equal(await page.evaluate("document.querySelector('.check-circle').checked"), true);
+    await page.evaluate('reply()');
+    await settle(page);
+
+    assert.equal(await page.evaluate('props.items[0].completed'), false);
+    assert.equal(await page.evaluate("document.querySelector('.check-circle').checked"), false);
+    assert.equal(await page.evaluate("document.querySelector('.check-circle').disabled"), false);
+    assert.equal(
+      await page.evaluate("document.querySelector('.check-circle').getAttribute('aria-label')"),
+      'Complete: First task',
+    );
+    assert.equal(
+      await page.evaluate("document.querySelector('.item-text').classList.contains('completed')"),
+      false,
+    );
+    assert.equal(
+      await page.evaluate("document.querySelector('.progress').textContent"),
+      '0 / 2 done',
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test('restoring an orphaned editor retains the draft and restores the Cancel action', async () => {
+  const { browser, page } = await fixture();
+  try {
+    await click(page, '.item-text');
+    await type(page, 'Keep this draft');
+    await page.evaluate('props.items=[]; refresh()');
+    assert.equal(
+      await page.evaluate("document.querySelector('.item-editor button[type=button]').textContent"),
+      'Dismiss',
+    );
+    assert.equal(
+      await page.evaluate("document.querySelector('.item-editor button[type=submit]').disabled"),
+      true,
+    );
+
+    await page.evaluate(
+      'props.items=[{id:"a",text:"Restored saved text",completed:false}]; refresh()',
+    );
+    assert.equal(
+      await page.evaluate("document.querySelector('.item-editor input').value"),
+      'Keep this draft',
+    );
+    assert.match(String(await page.evaluate(notice)), /Restored saved text/);
+    assert.equal(
+      await page.evaluate("document.querySelector('.item-editor button[type=button]').textContent"),
+      'Cancel',
+    );
+    assert.equal(
+      await page.evaluate("document.querySelector('.item-editor button[type=submit]').disabled"),
+      false,
+    );
+    await click(page, '.item-editor button[type=button]');
+    assert.equal(await page.evaluate("document.querySelector('.item-editor').hidden"), true);
+    assert.equal(await page.evaluate('props.items[0].text'), 'Restored saved text');
+    assert.equal(await page.evaluate('calls.length'), 0);
   } finally {
     await browser.close();
   }

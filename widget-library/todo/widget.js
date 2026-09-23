@@ -189,11 +189,11 @@ export function mount(root, api) {
               confirmedText = null;
             }
             save.disabled = saving || current.removed;
+            cancel.textContent = current.removed ? 'Dismiss' : 'Cancel';
             save.textContent = confirmedText === null ? 'Save' : 'Replace saved text';
             if (current.removed) {
               notice.textContent =
                 'This item was removed. Your draft is kept here; copy it before dismissing.';
-              cancel.textContent = 'Dismiss';
             } else if (changed && !editor.hidden) {
               notice.textContent =
                 (editError ? editError + ' ' : '') +
@@ -203,7 +203,6 @@ export function mount(root, api) {
                   : 'Press Replace saved text to replace that value with your draft, or Cancel to keep it.');
             } else {
               notice.textContent = editError;
-              cancel.textContent = 'Cancel';
             }
           };
           const closeEditor = () => {
@@ -307,10 +306,12 @@ export function mount(root, api) {
             void api
               .call('set_completed', { itemId: current.item.id, completed: checkbox.checked })
               .catch(() => {
-                checkbox.checked = Boolean(current.item.completed);
                 message.textContent = 'Could not save that change. Please try again.';
               })
               .finally(() => {
+                // The viewer may deliver another writer's saved value before
+                // this acknowledgement. Reconcile it when pending ends.
+                checkbox.checked = Boolean(current.item.completed);
                 checkbox.disabled = false;
               });
           };
