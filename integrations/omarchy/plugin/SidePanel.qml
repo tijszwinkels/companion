@@ -63,6 +63,7 @@ PanelWindow {
 
   function utteranceSubmitted(text, error) { content.utteranceSubmitted(text, error) }
   function submitted(id, text, error) { content.submitted(id, text, error) }
+  function applyDraft(request) { return content.applyDraft(request) }
   function choiceSubmitted(id, revision, index, error) { content.choiceSubmitted(id, revision, index, error) }
   function toggleComposerFocus(address) {
     root.screenshotSource = ""

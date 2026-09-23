@@ -18,6 +18,7 @@ TestCase {
   SignalSpy { id: inputs; target: client; signalName: "inputFinished" }
   SignalSpy { id: choices; target: client; signalName: "choiceFinished" }
   SignalSpy { id: reveals; target: client; signalName: "revealRequested" }
+  SignalSpy { id: drafts; target: client; signalName: "draftRequested" }
 
   function session(id, turn) {
     return {id: id, title: id, status: "idle", completedTurnId: turn || "", messages: []}
@@ -70,7 +71,7 @@ TestCase {
     wait(0)
     backend.requests = []
     client.choose("a", "revision", 1)
-    compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true, visible: true, navigationToken: client.sessions.navigationToken})
+    compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true, visible: true, navigationToken: client.sessions.navigationToken, draftHost: true})
     compare(backend.requests[1], {action: "choose-agent", id: "a", revision: "revision", index: 1})
     backend.received({type: "result", action: "choose-agent"})
     compare(Array.from(choices.signalArguments[0]), ["a", "revision", 1, ""])
@@ -116,6 +117,27 @@ TestCase {
     backend.received({type: "agent-restored", session: session("b", "turn")})
     compare(client.sessions.conversationId, "b")
     verify(!client.sessions.unreadIds.b)
+  }
+  function test_agent_draft_is_delegated_and_answered_without_revealing() {
+    snapshot([session("a")])
+    compare(client.sessions.conversationId, "a")
+    backend.requests = []
+    drafts.clear()
+    reveals.clear()
+    const request = {type: "agent-draft", requestId: "draft-1", id: "a", text: "Proposal",
+      ifDraftExists: "reject", focus: false, source: {sessionId: "b", title: "Sender"}}
+    backend.received(request)
+    compare(drafts.count, 1)
+    compare(drafts.signalArguments[0][0].text, "Proposal")
+    compare(reveals.count, 0)
+    client.answerDraft("draft-1", {outcome: "conflict", reason: ""})
+    compare(backend.requests[0], {action: "agent-draft-result", requestId: "draft-1", outcome: "conflict", reason: ""})
+
+    // An agent reopening a saved conversation quietly does not select it.
+    backend.received({type: "agent-restored", session: session("c"), reveal: false})
+    compare(client.sessions.sessions.length, 2)
+    compare(client.sessions.conversationId, "a")
+    compare(reveals.count, 0)
   }
   function test_history_deletion_survives_delayed_pages_and_reconnect() {
     const entry = {id: "utterance", sequence: 1, revision: 1,

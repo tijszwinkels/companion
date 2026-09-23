@@ -12,10 +12,21 @@ import { panelMessageLimit, panelTextLimit } from './transcript-limits.ts';
 import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
+import { promptText } from './agent-origin.ts';
+import {
+  SessionToolError,
+  SessionToolService,
+  type OpenSessionToolSummary,
+  type SessionDirectory,
+  type SessionToolSummary,
+} from './session-tools-service.ts';
 import {
   chatMessage,
   type AgentBackend,
+  type AgentDraftHost,
+  type AgentDraftOutcome,
   type AgentMessage,
+  type AgentMessageOrigin,
   type AgentProfile,
   type AgentSession,
   type SessionEvent,
@@ -39,6 +50,16 @@ interface RunningSession {
   pending: AgentMessage[];
   widgetReservations: Map<string, AgentMessage>;
   modelWrite?: Promise<void>;
+  /**
+   * Agent-to-agent hops behind the prompt of the current/last turn: 0 for a
+   * human message, otherwise its origin's depth. Session tools extend it.
+   */
+  depth: number;
+  /**
+   * The conversation's own agent asked to close it (companion_session_close).
+   * It closes only after the requesting turn completes with nothing queued.
+   */
+  closeAfterTurn: boolean;
 }
 
 const maxPendingFollowUps = 8;
@@ -62,6 +83,9 @@ export class AgentSessions implements InspectableModule {
   private readonly widgets: WidgetService;
   private orderRevision = randomUUID();
   private readonly modelChanges = new Set<string>();
+  private readonly sessionTools: SessionToolService;
+  // The desktop runtime owns UI connections and therefore unsent drafts.
+  private draftHost?: AgentDraftHost;
 
   constructor(
     readonly dependencies: { backend: AgentBackend },
@@ -90,6 +114,20 @@ export class AgentSessions implements InspectableModule {
       undefined,
       (records) => this.validateWidgetChanges(records),
     );
+    this.sessionTools = new SessionToolService({
+      title: (id) => this.sessions.get(id)?.view.title,
+      directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
+      start: (request, signal) => this.startFromAgent(request, signal),
+      reopen: (id, focus, signal) => this.reopenFromAgent(id, focus, signal),
+      close: (id, sender, signal) => this.closeFromAgent(id, sender, signal),
+      send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
+      draft: (request, signal) => this.draftFromAgent(request, signal),
+    });
+  }
+
+  /** Install (or clear) the UI connection that can hold composer drafts. */
+  setDraftHost(host: AgentDraftHost | undefined): void {
+    this.draftHost = host;
   }
 
   private validateWidgetChanges(records: WidgetRecord[]): () => void {
@@ -339,6 +377,28 @@ export class AgentSessions implements InspectableModule {
   }
 
   start(frame: UserSensorFrame, signal: AbortSignal, profile: AgentProfile = 'coding'): string {
+    return this.create(
+      { text: frame.utterance, screenshot: frame.screenshot, frameId: frame.id, profile },
+      signal,
+    );
+  }
+
+  /**
+   * Speech, history recovery and agent tools share one creation path, so tab
+   * and concurrency limits apply equally. Only a sensor frame has a screenshot.
+   */
+  private create(
+    request: {
+      text: string;
+      screenshot?: UserSensorFrame['screenshot'];
+      frameId?: number;
+      profile: AgentProfile;
+      modelOverride?: string;
+      origin?: AgentMessageOrigin;
+      openInBackground?: boolean;
+    },
+    signal: AbortSignal,
+  ): string {
     signal.throwIfAborted();
     if (this.closed) {
       throw Error('Agent sessions are shutting down');
@@ -351,21 +411,26 @@ export class AgentSessions implements InspectableModule {
     }
 
     const id = randomUUID();
-    const question = chatMessage('user', 'user', frame.utterance);
-    question.screenshot = true;
+    const question = chatMessage('user', 'user', request.text);
+    question.screenshot = request.screenshot !== undefined;
+    if (request.origin) {
+      question.origin = request.origin;
+    }
     const session: RunningSession = {
       view: {
         id,
-        title: frame.utterance.slice(0, 80),
+        title: request.text.slice(0, 80),
         status: 'starting',
         toolEpoch: randomUUID(),
         model: '',
-        profile,
+        profile: request.profile,
+        ...(request.modelOverride ? { modelOverride: request.modelOverride } : {}),
         error: '',
         messages: [question],
         updatedAt: Date.now(),
         runId: randomUUID(),
         acceptsFollowUp: false,
+        ...(request.openInBackground ? { openInBackground: true } : {}),
       },
       controller: new AbortController(),
       done: Promise.resolve(),
@@ -376,21 +441,32 @@ export class AgentSessions implements InspectableModule {
       busy: true,
       pending: [],
       widgetReservations: new Map(),
+      depth: request.origin?.depth ?? 0,
+      closeAfterTurn: false,
     };
     this.sessions.set(id, session);
     this.flush(session);
     this.publishOrder();
     session.done = this.drain(
       session,
-      { text: frame.utterance, screenshot: frame.screenshot },
+      { text: promptText(request.text, request.origin), screenshot: request.screenshot },
       false,
-      frame.id,
+      request.frameId,
     );
     return id;
   }
 
-  /** Spoken and typed follow-ups share one FIFO, owned by their captured tab. */
-  followUp(id: string, text: string, signal: AbortSignal): void {
+  /**
+   * Spoken and typed follow-ups share one FIFO, owned by their captured tab.
+   * Agent messages join the same FIFO with their origin; they never interrupt
+   * a running turn or overtake earlier queued messages.
+   */
+  followUp(
+    id: string,
+    text: string,
+    signal: AbortSignal,
+    origin?: AgentMessageOrigin,
+  ): { outcome: 'started' | 'queued'; queuePosition: number } {
     signal.throwIfAborted();
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing) {
@@ -411,20 +487,25 @@ export class AgentSessions implements InspectableModule {
 
     const message = chatMessage(`user-${randomUUID()}`, 'user', text);
     message.state = session.busy ? 'queued' : 'done';
+    if (origin) {
+      message.origin = origin;
+    }
     this.message(session, message);
     delete session.view.choices;
     if (session.busy) {
       session.pending.push(message);
       this.flush(session);
-      return;
+      return { outcome: 'queued', queuePosition: session.pending.length };
     }
 
     this.prepareFollowUp(session, message);
-    session.done = this.drain(session, { text }, true);
+    session.done = this.drain(session, { text: promptText(text, origin) }, true);
+    return { outcome: 'started', queuePosition: 0 };
   }
 
   private prepareFollowUp(session: RunningSession, message: AgentMessage): void {
     this.message(session, { ...message, state: 'done' });
+    session.depth = message.origin?.depth ?? 0;
     session.controller = new AbortController();
     session.busy = true;
     session.view.status = 'starting';
@@ -463,6 +544,8 @@ export class AgentSessions implements InspectableModule {
           session.view.status !== 'completed' ||
           session.view.error
         ) {
+          // A failed or stopped turn keeps its tab so the user can see why.
+          session.closeAfterTurn = false;
           this.cancelPending(session);
           delete session.view.choices;
           return;
@@ -472,8 +555,10 @@ export class AgentSessions implements InspectableModule {
         if (!next) {
           return;
         }
+        // Someone continued the conversation; closing would hide that work.
+        session.closeAfterTurn = false;
         this.prepareFollowUp(session, next);
-        prompt = { text: next.text };
+        prompt = { text: promptText(next.text, next.origin) };
         resume = true;
         frameId = undefined;
       }
@@ -481,7 +566,39 @@ export class AgentSessions implements InspectableModule {
       session.busy = false;
       session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
+      if (session.closeAfterTurn) {
+        session.closeAfterTurn = false;
+        this.closeWhenSettled(session);
+      }
     }
+  }
+
+  /**
+   * A self-close runs after this drain has settled: `remove` awaits the
+   * session's `done`, which is still this drain while the finally block runs.
+   * A follow-up accepted in between keeps the conversation open.
+   */
+  private closeWhenSettled(session: RunningSession): void {
+    const id = session.view.id;
+    // The finished turn's controller identifies this request. Stop aborts it
+    // and a new follow-up replaces it; either cancels the pending close.
+    const requestingTurn = session.controller;
+    setImmediate(() => {
+      if (
+        this.closed ||
+        this.sessions.get(id) !== session ||
+        session.controller !== requestingTurn ||
+        requestingTurn.signal.aborted ||
+        session.busy ||
+        session.closing ||
+        session.pending.length > 0
+      ) {
+        return;
+      }
+      void this.remove(id).catch((error) => {
+        this.log('agent', `Could not close conversation ${id}: ${String(error)}`);
+      });
+    });
   }
 
   private async run(
@@ -494,6 +611,7 @@ export class AgentSessions implements InspectableModule {
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
     let widgetLease: WidgetLease | undefined;
+    let sessionToolLease: { endpoint: string; token: string; release(): void } | undefined;
     try {
       // A queued successor waits for an accepted model change to be durable.
       // A failed choice rolls back first, then this turn uses the old setting.
@@ -529,6 +647,18 @@ export class AgentSessions implements InspectableModule {
         // A damaged visual cache must not block an ordinary answer/follow-up.
         this.log('agent-widget', `Widget tools unavailable: ${String(error)}`, frameId);
       }
+      try {
+        // Authority lasts exactly this turn and names this conversation as
+        // the sender; queued successors receive a fresh lease and depth.
+        sessionToolLease = await this.sessionTools.lease(
+          session.view.id,
+          session.depth,
+          session.controller.signal,
+        );
+      } catch (error) {
+        session.controller.signal.throwIfAborted();
+        this.log('agent-session-tools', `Session tools unavailable: ${String(error)}`, frameId);
+      }
       await this.dependencies.backend.run(
         {
           id: session.view.id,
@@ -537,6 +667,9 @@ export class AgentSessions implements InspectableModule {
           prompt,
           resume,
           widgets: widgetLease,
+          sessionTools: sessionToolLease
+            ? { endpoint: sessionToolLease.endpoint, token: sessionToolLease.token }
+            : undefined,
         },
         session.controller.signal,
         (message) => {
@@ -602,6 +735,7 @@ export class AgentSessions implements InspectableModule {
         session.view.error = session.toolError;
       }
       widgetLease?.release();
+      sessionToolLease?.release();
       if (session.view.status !== 'completed') {
         delete session.view.choices;
       }
@@ -828,7 +962,12 @@ export class AgentSessions implements InspectableModule {
     }
   }
 
-  async reopen(id: string): Promise<void> {
+  /**
+   * `reveal: false` adds the tab without selecting it or showing the panel.
+   * An agent tool passes its turn signal: if that turn ends while the archive
+   * is being read, nothing is reopened.
+   */
+  async reopen(id: string, reveal = true, signal?: AbortSignal): Promise<void> {
     if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
       throw Error('Previous session is unavailable');
     }
@@ -859,12 +998,23 @@ export class AgentSessions implements InspectableModule {
       } catch (error) {
         this.log('agent-widget', `Could not restore visuals: ${String(error)}`);
       }
-      if (this.closed) {
+      if (this.closed || signal?.aborted) {
         await this.widgets.deactivate(id);
-        throw Error('Agent sessions are shutting down');
+        throw this.closed
+          ? Error('Agent sessions are shutting down')
+          : new SessionToolError(
+              'expired',
+              'This agent turn has ended; the conversation was not reopened',
+              403,
+            );
       }
       view.acceptsFollowUp = true;
       view.toolEpoch = randomUUID();
+      // Snapshots must also keep a quiet reopen out of focus: a client can
+      // miss the agent-restored event and first see this tab on reconnect.
+      if (!reveal) {
+        view.openInBackground = true;
+      }
       this.sessions.set(id, {
         view,
         controller: new AbortController(),
@@ -876,16 +1026,210 @@ export class AgentSessions implements InspectableModule {
         busy: false,
         pending: [],
         widgetReservations: new Map(),
+        depth: 0,
+        closeAfterTurn: false,
       });
       this.previous.delete(id);
       for (const listener of this.listeners) {
-        listener({ type: 'agent-restored', session: view });
+        listener({ type: 'agent-restored', session: view, ...(reveal ? {} : { reveal: false }) });
       }
       this.publishHistory();
       this.publishOrder();
     } finally {
       this.restoring.delete(id);
     }
+  }
+
+  private summary(view: PreviousSession): SessionToolSummary {
+    return {
+      id: view.id,
+      title: view.title,
+      status: view.status,
+      profile: view.profile ?? 'coding',
+      model: view.modelOverride ?? view.model,
+      ...(view.modelOverride ? { modelOverride: view.modelOverride } : {}),
+      updatedAt: view.updatedAt,
+    };
+  }
+
+  /**
+   * Discoverable targets for session tools: every open tab in visible order,
+   * and bounded saved summaries. Transcripts and drafts are never included.
+   */
+  private sessionDirectory(sender: string, query: string, limit: number): SessionDirectory {
+    const open: OpenSessionToolSummary[] = [];
+    for (const session of this.sessions.values()) {
+      open.push({
+        ...this.summary(session.view),
+        busy: session.busy,
+        queuedMessages: session.pending.length,
+        self: session.view.id === sender,
+      });
+    }
+
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const matches = this.previousSnapshot().filter(
+      (entry) => !normalizedQuery || entry.title.toLocaleLowerCase().includes(normalizedQuery),
+    );
+    return {
+      open,
+      previous: matches.slice(0, limit).map((entry) => this.summary(entry)),
+      previousMatches: matches.length,
+    };
+  }
+
+  /** Explain a target that is not an open tab, without revealing anything else. */
+  private notOpen(id: string): SessionToolError {
+    if (this.previous.has(id) || this.restoring.has(id)) {
+      return new SessionToolError(
+        'not-open',
+        'That conversation is saved but not open. Reopen it with companion_session_reopen first.',
+      );
+    }
+    return new SessionToolError(
+      'unknown-session',
+      'No Companion conversation has that id. Use an id returned by companion_sessions.',
+      404,
+    );
+  }
+
+  private async startFromAgent(
+    request: {
+      text: string;
+      profile: AgentProfile;
+      model: string;
+      focus: boolean;
+      origin: AgentMessageOrigin;
+    },
+    signal: AbortSignal,
+  ): Promise<SessionToolSummary> {
+    // Validate against a fresh catalog, as the model picker does. There is
+    // deliberately no fallback: an unavailable request fails before creation.
+    if (request.model && !(await this.models(signal)).models.includes(request.model)) {
+      throw new SessionToolError(
+        'unavailable-model',
+        `Model ${request.model} is not available in Pi. Omit model to use the ${request.profile} default.`,
+      );
+    }
+    const id = this.create(
+      {
+        text: request.text,
+        profile: request.profile,
+        modelOverride: request.model || undefined,
+        origin: request.origin,
+        openInBackground: !request.focus,
+      },
+      signal,
+    );
+    return this.summary(this.sessions.get(id)!.view);
+  }
+
+  private async reopenFromAgent(
+    id: string,
+    focus: boolean,
+    signal: AbortSignal,
+  ): Promise<{
+    outcome: 'reopened' | 'already-open';
+    session: SessionToolSummary;
+    messages: number;
+  }> {
+    const open = this.sessions.get(id);
+    if (open) {
+      return {
+        outcome: 'already-open',
+        session: this.summary(open.view),
+        messages: open.view.messages.length,
+      };
+    }
+    if (!this.previous.has(id)) {
+      throw this.notOpen(id);
+    }
+    await this.reopen(id, focus, signal);
+    const view = this.sessions.get(id)!.view;
+    return { outcome: 'reopened', session: this.summary(view), messages: view.messages.length };
+  }
+
+  private async closeFromAgent(
+    id: string,
+    sender: string,
+    signal: AbortSignal,
+  ): Promise<{
+    outcome: 'closed' | 'closing-after-turn' | 'already-closed';
+    session: SessionToolSummary;
+  }> {
+    const session = this.sessions.get(id);
+    if (!session) {
+      const saved = this.previous.get(id);
+      if (saved) {
+        return { outcome: 'already-closed', session: this.summary(saved) };
+      }
+      throw this.notOpen(id);
+    }
+
+    // Closing now would stop the calling turn from inside its own tool call.
+    if (id === sender) {
+      session.closeAfterTurn = true;
+      return { outcome: 'closing-after-turn', session: this.summary(session.view) };
+    }
+
+    // Closing stops a running turn and cancels queued messages. An agent must
+    // not discard another conversation's work; the user can still do so.
+    if (session.busy || session.pending.length > 0 || session.closing) {
+      throw new SessionToolError(
+        'busy',
+        'That conversation is running, closing or has queued messages, so it was left open.',
+      );
+    }
+    signal.throwIfAborted();
+    await this.remove(id);
+    return { outcome: 'closed', session: this.summary(session.view) };
+  }
+
+  private sendFromAgent(
+    id: string,
+    text: string,
+    origin: AgentMessageOrigin,
+    signal: AbortSignal,
+  ): { outcome: 'started' | 'queued'; queuePosition: number; session: SessionToolSummary } {
+    const session = this.sessions.get(id);
+    if (!session) {
+      throw this.notOpen(id);
+    }
+    const result = this.followUp(id, text, signal, origin);
+    return { ...result, session: this.summary(session.view) };
+  }
+
+  private async draftFromAgent(
+    request: {
+      id: string;
+      text: string;
+      ifDraftExists: 'reject' | 'append';
+      focus: boolean;
+      origin: AgentMessageOrigin;
+    },
+    signal: AbortSignal,
+  ): Promise<AgentDraftOutcome> {
+    const session = this.sessions.get(request.id);
+    if (!session) {
+      throw this.notOpen(request.id);
+    }
+    if (session.closing || this.closed) {
+      return { outcome: 'unavailable', reason: 'The conversation is closing.' };
+    }
+    signal.throwIfAborted();
+    if (!this.draftHost) {
+      return { outcome: 'offline', reason: '' };
+    }
+    return this.draftHost(
+      {
+        sessionId: request.id,
+        text: request.text,
+        ifDraftExists: request.ifDraftExists,
+        focus: request.focus,
+        source: { sessionId: request.origin.sessionId, title: request.origin.title },
+      },
+      signal,
+    );
   }
 
   async idle(): Promise<void> {
@@ -902,6 +1246,7 @@ export class AgentSessions implements InspectableModule {
       this.cancelPending(session);
     }
     await this.idle();
+    await this.sessionTools.close();
     await this.widgets.close();
     this.listeners.clear();
     this.store.tools.close();

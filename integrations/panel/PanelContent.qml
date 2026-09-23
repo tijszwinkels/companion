@@ -106,6 +106,13 @@ Item {
 
   function utteranceSubmitted(text, error) { activityView.utteranceSubmitted(text, error) }
   function submitted(id, text, error) { chat.submitted(id, text, error) }
+  // Returns {outcome, reason}. A closed or unknown tab never receives text.
+  function applyDraft(request) {
+    if (!root.sessions.some(entry => entry.id === request.id)) {
+      return {outcome: "unavailable", reason: "The conversation is not open in this panel."}
+    }
+    return chat.applyDraft(request)
+  }
   function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
   function focusComposer() {
     if (activityView.visible) activityView.focusInput()

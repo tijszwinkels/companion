@@ -124,7 +124,9 @@ QtObject {
     for (const entry of entries) {
       if (!root.knownIds[entry.id]) {
         root.knownIds[entry.id] = true
-        newest = entry.id
+        // An agent tool opened this tab without asking for focus. Show it in
+        // the rail, but never move the user's selection or reveal the panel.
+        if (entry.openInBackground !== true) newest = entry.id
       }
     }
     if (newest) {
@@ -168,11 +170,21 @@ QtObject {
     root.observeCompletions([patch])
   }
 
-  function restore(session) {
+  // `reveal: false` comes from an agent reopening a saved conversation without
+  // focus. Older listeners omit it, which keeps the existing select-and-reveal.
+  function restore(session, reveal) {
     root.forget(session.id)
     root.sessions = root.sessions.filter(entry => entry.id !== session.id).concat([session])
     root.knownIds[session.id] = true
+    if (reveal === false) return
     root.select(session.id)
+    root.revealRequested()
+  }
+
+  // An explicitly focused agent draft selects its conversation like a click.
+  function reveal(id) {
+    if (!root.sessions.some(entry => entry.id === id)) return
+    root.select(id)
     root.revealRequested()
   }
 
