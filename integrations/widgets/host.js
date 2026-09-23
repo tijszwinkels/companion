@@ -6,6 +6,10 @@ const bootstrap = window.widgetBootstrap;
 // viewer. Resolve its API against the actual document URL, never iframe input.
 const api = bootstrap.api ? location.href.replace(/\/$/, '') : null;
 let theme = bootstrap.theme;
+// An embedding Companion host that calls setTheme owns the whole theme,
+// including text scale. Without one (the Chromium pop-out), refresh() follows
+// the text scale the service last received from the sidebar view.
+let hostOwnsTheme = false;
 const frame = document.createElement('iframe');
 frame.setAttribute('sandbox', 'allow-scripts allow-forms');
 frame.setAttribute('referrerpolicy', 'no-referrer');
@@ -131,19 +135,39 @@ async function refresh() {
       throw Error('Widget is unavailable');
     }
     const snapshot = await response.json();
+    const sidebarScale = followedTextScale(snapshot.textScale);
     if (snapshot.revision !== revision) {
+      if (sidebarScale !== null) {
+        theme = { ...theme, scale: sidebarScale };
+      }
       await update(snapshot.props, theme, snapshot.revision);
+    } else if (sidebarScale !== null) {
+      applyTheme({ ...theme, scale: sidebarScale });
     }
   } finally {
     refreshing = false;
   }
 }
 
-function setTheme(value) {
+// Returns the sidebar's text scale when this view should adopt it, else null:
+// when a host owns the theme, the value is unknown or invalid, or it is current.
+function followedTextScale(value) {
+  if (hostOwnsTheme || typeof value !== 'number' || !(value >= 0.5 && value <= 3)) {
+    return null;
+  }
+  return value === theme.scale ? null : value;
+}
+
+function applyTheme(value) {
   theme = value;
   void command({ kind: 'theme', theme }).catch((error) => {
     status.textContent = error.message;
   });
+}
+
+function setTheme(value) {
+  hostOwnsTheme = true;
+  applyTheme(value);
 }
 
 window.widgetHost = { command, update, reply, setTheme, takeRequests: () => requests.splice(0) };

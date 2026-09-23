@@ -390,7 +390,7 @@ export class WidgetService {
           revision: record.revision,
           props: record.props,
           presentation: record.presentation,
-          lastViewport: this.nativeViewports.get(record.id) ?? this.renderer.dimensions(record.id),
+          lastViewport: this.lastViewport(record.id),
           manifest: (await this.bundle(record)).manifest,
         };
       }
@@ -624,10 +624,14 @@ export class WidgetService {
       });
       response.end(await widgetDocument(bundle, record, defaultViewport, viewUrl));
     } else if (request.method === 'GET' && action === 'state') {
+      // A Chromium pop-out has no Companion host to theme it. It follows the
+      // text scale of the sidebar view instead, as reported by the latest
+      // native viewport or captured layout; null before any sidebar layout.
       this.json(response, {
         revision: record.revision,
         props: record.props,
         presentation: record.presentation,
+        textScale: this.lastViewport(id)?.textScale ?? null,
       });
     } else if (request.method === 'GET' && action === 'layout') {
       this.json(response, {
@@ -698,6 +702,11 @@ export class WidgetService {
         throw Error('Unknown widget operation');
       }
     }
+  }
+
+  /** Most recent sidebar geometry, from whichever renderer displays the widget. */
+  private lastViewport(id: string) {
+    return this.nativeViewports.get(id) ?? this.renderer.dimensions(id);
   }
 
   private async frame(

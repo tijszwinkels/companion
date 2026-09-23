@@ -41,7 +41,9 @@ selected.
 Widgets accept clicks and keyboard input directly. The top-right arrow fades in
 on hover or keyboard focus and opens a dedicated Chromium window. Clicking the
 widget itself interacts with it. Press Escape from widget input to focus the
-host's pop-out button. Both views share the same saved state. Pop-outs close when
+host's pop-out button. Both views share the same saved state and the pop-out
+follows the text size last reported by the sidebar view; Chromium's own
+Ctrl+plus/minus zoom multiplies with it inside that window. Pop-outs close when
 the conversation or Companion closes; reopening restores the inline/pinned view.
 While Chromium starts, the arrow shows progress and rejects duplicate clicks.
 Launch failures remain visible through background refreshes until the next
@@ -120,9 +122,22 @@ resources when the view closes. Browser surfaces may be evicted; durable state
 belongs in props, not module globals or DOM storage. Use `textContent` for data.
 
 Theme variables are `--foreground`, `--background`, `--accent`, `--muted`.
-The root font size follows the reader's zoom; prefer `rem` and flexible layouts.
-An inline bubble measures its content and reserves 100–420 theme units; larger
-content scrolls inside the widget. A pinned widget receives its reserved viewport.
+
+The root font size is `16px × textScale`, where `textScale` is Companion's text
+size (Ctrl+plus/minus reader zoom times the theme unit). It changes live in
+inline, pinned and pop-out views without reloading or resetting drafts. This is
+host behavior, so already published bundles follow it too. Size text in
+`rem`/`em` so headings and labels keep their proportions. A widget's own
+typography prop should multiply `rem` sizes (for example
+`calc(1.5rem * var(--my-scale))`) so both settings compose.
+Hardcoded `px` text, `px`-based layout, and text drawn in canvas or fixed-size
+SVG do not follow the setting; nor does the host's 12px padding. Text scaling
+never changes CSS pixel geometry, `window.innerWidth` or `devicePixelRatio`:
+capture density and native supersampling are applied separately, not twice.
+
+An inline bubble measures its content and reserves between 100 theme units and
+420 text-scaled units (never less than 420 theme units); content taller than that
+scrolls inside the widget. A pinned widget receives its reserved viewport.
 The initial offscreen preview is 480 × 280 CSS pixels, **not** a guarantee of the
 sidebar's size. Layouts must adapt to sidebar width, text zoom and pop-out resizing.
 The host supplies 12 CSS pixels of padding on every side. Measure

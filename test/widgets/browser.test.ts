@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -427,6 +427,229 @@ test('the pop-out viewer transport shares changes with the inline view in a seco
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(revision, expected, String(await page.evaluate('document.body.innerText')));
+  } finally {
+    await browser.close();
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A synthetic widget with rem-based heading/body text, a per-widget typography
+// prop and one hardcoded px label. Library widgets follow the same rem pattern.
+async function writeTypographyWidget(library: string): Promise<void> {
+  const directory = join(library, 'typography');
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, 'widget.json'),
+    JSON.stringify({
+      name: 'typography',
+      version: 1,
+      description: 'Synthetic heading, body and fixed label for text scaling checks.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', maxLength: 100 },
+          body: { type: 'string', maxLength: 2000 },
+          textScale: { type: 'number', minimum: 0.75, maximum: 1.5, default: 1 },
+        },
+        required: ['title', 'body'],
+        additionalProperties: false,
+      },
+      actions: {},
+      example: { title: 'Heading', body: 'Body' },
+    }),
+  );
+  await writeFile(
+    join(directory, 'widget.js'),
+    `export function describe(props) { return props.title + ': ' + props.body; }
+export const actions = {};
+export function mount(root) {
+  return {
+    update(props) {
+      root.style.setProperty('--widget-text-scale', String(props.textScale));
+      const heading = document.createElement('h2');
+      heading.textContent = props.title;
+      const body = document.createElement('p');
+      body.textContent = props.body;
+      const fixed = document.createElement('small');
+      fixed.textContent = 'fixed';
+      root.replaceChildren(heading, body, fixed);
+    },
+  };
+}
+`,
+  );
+  await writeFile(
+    join(directory, 'style.css'),
+    `h2 { font-size: calc(1.5rem * var(--widget-text-scale)); margin: 0; }
+p { font-size: calc(1rem * var(--widget-text-scale)); margin: 0; }
+small { font-size: 12px; }
+`,
+  );
+}
+
+test('Companion text scale reaches captured and pop-out views live without compounding density', async () => {
+  const directory = await mkdtemp('/tmp/companion-widget-text-scale-');
+  const library = join(directory, 'library');
+  await writeTypographyWidget(library);
+  let view: WidgetAttachment | undefined;
+  const service = new WidgetService(
+    directory,
+    async (_, reference) => {
+      view = reference;
+    },
+    library,
+  );
+  const browser = new Chromium();
+  try {
+    const lease = await service.lease(randomUUID(), new AbortController().signal);
+    const command = async (body: object) => {
+      const response = await fetch(lease.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      return (await response.json()) as any;
+    };
+    const created = await command({
+      method: 'publish',
+      widget: 'typography',
+      props: {
+        title: 'Scaled heading',
+        body: 'Body text that wraps across several lines at larger sizes. '.repeat(4),
+        textScale: 1.25,
+      },
+      requestId: 'typography',
+    });
+    const url = view!.viewUrl!;
+
+    // Captured sidebar layout: larger text reflows taller at the same width,
+    // while capture density alone changes neither layout nor text size.
+    const layout = async (scale: number, pixelRatio: number) => {
+      const response = await fetch(
+        url + `/layout?width=480&height=280&scale=${scale}&pixelRatio=${pixelRatio}`,
+      );
+      assert.equal(response.status, 200);
+      return ((await response.json()) as { height: number }).height;
+    };
+    const normalHeight = await layout(1, 1);
+    const largeHeight = await layout(2, 1);
+    assert.ok(largeHeight > normalHeight * 1.5, `${normalHeight} → ${largeHeight}`);
+    assert.equal(await layout(2, 3), largeHeight, 'Capture density must not scale text again');
+    assert.equal(await layout(1, 2), normalHeight);
+
+    // Open the viewer as the Chromium pop-out does: no host calls setTheme.
+    const page = await browser.page(
+      (candidate) => candidate === url || candidate.startsWith(url + '/'),
+    );
+    await page.call('Emulation.setDeviceMetricsOverride', {
+      width: 480,
+      height: 280,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.call('Page.navigate', { url });
+    for (
+      let attempt = 0;
+      attempt < 40 && !(await page.evaluate('window.widgetReady === true'));
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(await page.evaluate('window.widgetReady === true'), true);
+
+    // The widget runs in a sandboxed, out-of-process iframe. Attach to it
+    // directly to read computed sizes in CSS pixels.
+    const targets = (await browser.call('Target.getTargets')).targetInfos as any[];
+    const frameTarget = targets.find((target) => target.type === 'iframe');
+    assert.ok(frameTarget, 'The widget iframe must be inspectable');
+    const frameSession = String(
+      (
+        await browser.call('Target.attachToTarget', {
+          targetId: frameTarget.targetId,
+          flatten: true,
+        })
+      ).sessionId,
+    );
+    const fontSizes = async () => {
+      const reply = await browser.call(
+        'Runtime.evaluate',
+        {
+          expression: `(() => {
+            const size = (selector) => parseFloat(getComputedStyle(document.querySelector(selector)).fontSize);
+            return {root: size(':root'), heading: size('h2'), body: size('p'), fixed: size('small')};
+          })()`,
+          returnByValue: true,
+        },
+        frameSession,
+      );
+      return (reply.result as any).value as {
+        root: number;
+        heading: number;
+        body: number;
+        fixed: number;
+      };
+    };
+    const waitForRoot = async (root: number) => {
+      let sizes = await fontSizes();
+      for (let attempt = 0; attempt < 80 && sizes.root !== root; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        sizes = await fontSizes();
+      }
+      assert.equal(sizes.root, root, JSON.stringify(sizes));
+      return sizes;
+    };
+
+    // The last sidebar layout used scale 2. The pop-out adopts it; heading/body
+    // proportions and the per-widget 1.25 multiplier are preserved. Hardcoded
+    // px text is a documented limitation and stays unchanged.
+    assert.equal(((await (await fetch(url + '/state')).json()) as any).textScale, 1);
+    await layout(2, 1);
+    let sizes = await waitForRoot(32);
+    assert.equal(sizes.body, 32 * 1.25);
+    assert.equal(sizes.heading, 32 * 1.25 * 1.5);
+    assert.equal(sizes.fixed, 12);
+    const popoutHeight = async () => Number(await page.evaluate('window.widgetContentHeight'));
+    for (let attempt = 0; attempt < 40 && (await popoutHeight()) !== largeHeight; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(await popoutHeight(), largeHeight, 'Pop-out reflows like the sidebar');
+
+    // A native sidebar reports its scale through /viewport. Follow live changes.
+    const native = await fetch(url + '/viewport', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ widthCssPixels: 480, heightCssPixels: 280, textScale: 1.5 }),
+    });
+    assert.equal(native.status, 200);
+    await waitForRoot(24);
+
+    // A per-widget typography change composes with, and does not reset, the
+    // global text scale.
+    const current = (await (await fetch(url + '/state')).json()) as any;
+    await command({
+      method: 'update',
+      id: created.id,
+      revision: current.revision,
+      props: { ...current.props, textScale: 0.75 },
+      requestId: 'typography-scale',
+    });
+    for (let attempt = 0; attempt < 80 && sizes.body !== 24 * 0.75; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      sizes = await fontSizes();
+    }
+    assert.deepEqual(sizes, { root: 24, heading: 24 * 0.75 * 1.5, body: 24 * 0.75, fixed: 12 });
+
+    // An embedding host that themes the view owns its scale; the reported
+    // sidebar value must not fight it.
+    await page.evaluate(
+      `window.widgetHost.setTheme({...window.widgetBootstrap.theme, scale: 1.1})`,
+    );
+    await waitForRoot(17.6);
+    await layout(2.5, 1);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    assert.equal((await fontSizes()).root, 17.6);
   } finally {
     await browser.close();
     await service.close();

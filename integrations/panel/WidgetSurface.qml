@@ -20,6 +20,16 @@ FocusScope {
   property bool running: visible && enabled
   property bool fitContent: true
   property real preferredHeight: 240 * unit
+  // Inline widgets fit their measured content between these bounds. The upper
+  // bound grows with Companion's text size, so content that fit before the
+  // reader enlarged text still fits afterwards instead of scrolling inside a
+  // clipped bubble. It never falls below the 100% bound, because px-sized
+  // content (canvas, fixed SVG) does not shrink when text becomes smaller.
+  readonly property real minimumFitHeight: 100 * unit
+  readonly property real maximumFitHeight: 420 * Math.max(unit, textScale)
+  // Last content height reported by the page, in CSS (= QML logical) pixels;
+  // 0 until this view has been measured.
+  property real measuredContentHeight: 0
   property string error: ""
   property string popoutError: ""
   property bool popoutPending: false
@@ -49,6 +59,7 @@ FocusScope {
     error = ""; captured = false; framePending = false; layoutPending = false
     layoutAgain = false; layoutRetryNeeded = false; layoutRetryDelay = 250
     popoutError = ""; popoutPending = false
+    measuredContentHeight = 0
     viewGeneration++
     refreshLayout(); refresh()
   }
@@ -56,6 +67,9 @@ FocusScope {
   onWidthChanged: refreshLayout()
   onHeightChanged: if (nativeRendering) refreshLayout()
   onTextScaleChanged: refreshLayout()
+  // Content whose height ignores text size keeps its measurement; apply the new
+  // bound to it now rather than waiting for a layout change that may not come.
+  onMaximumFitHeightChanged: fitMeasuredHeight()
   onPixelRatioChanged: { refreshLayout(); refresh() }
   // Visibility controls admission and rendering, not completion of accepted
   // gestures. Closing a conversation separately revokes its service capability.
@@ -122,6 +136,11 @@ FocusScope {
       + "," + Math.round(value.b * 255) + "," + value.a + ")"
   }
 
+  function fitMeasuredHeight() {
+    if (!fitContent || measuredContentHeight <= 0) return
+    preferredHeight = Math.max(minimumFitHeight, Math.min(maximumFitHeight, measuredContentHeight))
+  }
+
   function refreshLayout() {
     if (nativeRendering) { nativeLayout.restart(); return }
     if (!fitContent || !running || !viewUrl || width < 80) return
@@ -131,7 +150,8 @@ FocusScope {
     request("/layout" + viewport(), null, function(result) {
       root.layoutPending = false
       if (result) {
-        root.preferredHeight = Math.max(100 * root.unit, Math.min(420 * root.unit, result.height))
+        root.measuredContentHeight = result.height
+        root.fitMeasuredHeight()
         root.layoutRetryDelay = 250
       } else {
         // Frame capture can recover before measurement does. Retry measurement
@@ -342,7 +362,8 @@ FocusScope {
   Connections {
     target: embedded.item
     function onMeasuredHeightChanged() {
-      if (root.fitContent) root.preferredHeight = Math.max(100 * root.unit, Math.min(420 * root.unit, embedded.item.measuredHeight))
+      root.measuredContentHeight = embedded.item.measuredHeight
+      root.fitMeasuredHeight()
     }
     function onErrorChanged() { root.error = embedded.item.error }
     function onInteractionStarted() { root.interactionStarted() }

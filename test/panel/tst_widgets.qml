@@ -170,6 +170,58 @@ Item {
       compare(attempts, 2, "A successful retry stops layout polling")
     }
 
+    // Synthetic content: text whose measured height follows the requested text
+    // scale, plus px-sized content that ignores it. Both use CSS pixels.
+    function scaledLayoutSurface(textHeight, fixedHeight) {
+      const widget = createTemporaryObject(surfaceComponent, parent, {reference: reference(25, true)})
+      const layouts = []
+      widget.transport = function(path, body, done) {
+        if (path.indexOf("/layout") !== 0) { if (done) done({}); return }
+        const scale = Number(/[?&]scale=([0-9.]+)/.exec(path)[1])
+        layouts.push(scale)
+        done({height: textHeight * scale + fixedHeight})
+      }
+      widget.refreshLayout()
+      return {widget: widget, layouts: layouts}
+    }
+
+    function test_inline_height_bound_follows_live_text_scale() {
+      const fixture = scaledLayoutSurface(300, 0)
+      const widget = fixture.widget
+      compare(widget.preferredHeight, 300)
+
+      // Doubling Companion's text size re-measures the same view. Text that fit
+      // at 100% must still fit rather than stop at the former 420-unit bound.
+      widget.textScale = 2
+      compare(fixture.layouts[fixture.layouts.length - 1], 2)
+      compare(widget.preferredHeight, 600)
+      widget.textScale = 1.25
+      compare(widget.preferredHeight, 375)
+
+      // Theme units and reader zoom arrive already multiplied in textScale;
+      // the bound must not multiply by unit a second time.
+      widget.unit = 1.25
+      widget.textScale = 1.25 * 1.6
+      compare(widget.maximumFitHeight, 840)
+      compare(widget.preferredHeight, 600)
+    }
+
+    function test_px_content_refits_without_shrinking_below_default_bound() {
+      const fixture = scaledLayoutSurface(0, 500)
+      const widget = fixture.widget
+      compare(widget.preferredHeight, 420)
+      // The measurement does not change, yet the larger bound reveals more of it.
+      widget.transport = function(path, body, done) { }
+      widget.textScale = 1.5
+      compare(widget.preferredHeight, 500)
+      widget.textScale = 0.8
+      compare(widget.preferredHeight, 420, "Smaller text must not clip px content that fit before")
+      widget.fitContent = false
+      widget.preferredHeight = 260
+      widget.textScale = 2
+      compare(widget.preferredHeight, 260, "A reserved (pinned) height is not content-fitted")
+    }
+
     function test_offline_escape_applies_to_the_observed_revision_only() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.selectedSessionId = "session"

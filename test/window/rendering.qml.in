@@ -123,11 +123,23 @@ TestCase {
       compare(findChild(body, "nativeWidgetBrowser"), view)
       compare(evaluate(view, "window.retainedMarker"), "same document")
     }
+    const rootFontSize = "getComputedStyle(document.documentElement).fontSize"
+    compare(evaluate(frame, rootFontSize), "16px")
+    const normalHeight = surface.preferredHeight
     body.panel.zoomPercent = 120
     body.command({action: "theme", values: {selection: "#14a9b1d6"}})
     tryVerify(function() { return view.theme.scale === 1.2 })
     compare(view.backgroundColor.a, 0)
     compare(composer.text, "Keep my conversation draft")
+    // Companion's text size reaches the live document only as its root font
+    // size. The 2× render scale and 1.25 display density stay in Chromium's
+    // zoom/DPR, so CSS text is not scaled twice and the viewport keeps its
+    // logical width. The inline bubble grows to the reflowed content height.
+    tryVerify(function() { return evaluate(frame, rootFontSize) === "19.2px" })
+    compare(view.renderScale, 2)
+    compare(viewport(view).width, baseline.width)
+    tryVerify(function() { return surface.preferredHeight > normalHeight })
+    compare(surface.preferredHeight, Math.min(surface.maximumFitHeight, view.measuredHeight))
 
     // Pinning creates another view which must inherit the chosen density;
     // returning to chat and reopening must retain a usable escape/control row.
@@ -136,6 +148,7 @@ TestCase {
     const pinnedView = findChild(pinned, "nativeWidgetBrowser")
     compare(pinnedView.renderScale, 2)
     tryVerify(function() { return Math.abs(viewport(pinnedView).width - pinned.width) <= 1 })
+    tryVerify(function() { return evaluate(pinnedView.mainFrame.children[0], rootFontSize) === "19.2px" })
     verify(findChild(body, "widgetBackToChat").visible)
     mouseClick(findChild(body, "widgetRendering-normal"))
     tryVerify(function() { return Math.abs(viewport(pinnedView).dpr - normalDpr) < 0.01 })
