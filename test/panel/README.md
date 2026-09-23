@@ -20,6 +20,13 @@ hidden targets. The native-window suite additionally retains a Chromium document
 marker through moves, reconnects and test presentation changes. All catalogs,
 sessions and widget state are synthetic; live Wayland/input hardware is not covered.
 
+Model-picker appearance checks sample rendered field and popup pixels at normal
+and enlarged theme scales, including a theme change while the menu is open.
+Run `tst_model_picker.qml` with `QT_QUICK_CONTROLS_STYLE=Fusion` as well as the
+default style: setting only the ComboBox palette previously left a pale native
+field behind the panel's light text. The picker now uses explicit themed Basic
+control visuals while retaining ComboBox keyboard and popup behavior.
+
 Dynamic-choice tests cover pinned choices above the composer, actual clicks with
 revision/index identity, retained freeform drafts, pending acknowledgements,
 label-only and described options, permanent-shortcut collisions, paused/offline

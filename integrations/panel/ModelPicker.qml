@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.Basic as Basic
 
 // The selected conversation owns this override. Profile defaults and the
 // model actually running remain distinct, especially while a turn is active.
@@ -16,6 +17,7 @@ Item {
   required property color selection
   required property string fontFamily
   property real unit: 1
+  readonly property color popupColor: Qt.rgba(selection.r, selection.g, selection.b, 1)
   signal refreshRequested()
   signal modelRequested(string id, string model)
   readonly property string sessionId: session ? session.id : ""
@@ -47,7 +49,10 @@ Item {
     font.pixelSize: 10 * root.unit
     elide: Text.ElideRight
   }
-  ComboBox {
+  // Draw the panel theme directly: platform styles can derive a light gradient
+  // from the palette, making the field inconsistent with the surrounding UI.
+  // Keep ComboBox's built-in popup placement, keyboard input and accessibility.
+  Basic.ComboBox {
     id: chooser
     objectName: "sessionModelPicker"
     y: 20 * root.unit
@@ -61,11 +66,68 @@ Item {
     valueRole: "value"
     currentIndex: Math.max(0, (popup.visible ? root.popupOptions : root.options).findIndex(entry => entry.value === (root.session && root.session.modelOverride || "")))
     font.family: root.fontFamily
-    font.pixelSize: 10 * root.unit
+    font.pixelSize: 12 * root.unit
+    leftPadding: 10 * root.unit
+    rightPadding: 30 * root.unit
     palette.text: root.foreground
     palette.buttonText: root.foreground
     palette.button: root.selection
     palette.base: root.selection
+    palette.window: root.popupColor
+    palette.mid: root.muted
+    palette.highlight: root.foreground
+    palette.highlightedText: root.foreground
+    background: Rectangle {
+      color: root.selection
+      radius: 4 * root.unit
+      border.width: root.unit
+      border.color: chooser.visualFocus || chooser.hovered ? root.foreground : root.muted
+    }
+    contentItem: Text {
+      text: chooser.displayText
+      textFormat: Text.PlainText
+      color: chooser.enabled ? root.foreground : root.muted
+      font: chooser.font
+      verticalAlignment: Text.AlignVCenter
+      elide: Text.ElideRight
+    }
+    indicator: Text {
+      x: chooser.width - width - 10 * root.unit
+      y: (chooser.height - height) / 2
+      text: "▾"
+      color: chooser.enabled ? root.foreground : root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 14 * root.unit
+    }
+    delegate: Basic.ItemDelegate {
+      id: option
+      required property var model
+      required property int index
+      width: ListView.view.width
+      height: 36 * root.unit
+      padding: 10 * root.unit
+      text: model[chooser.textRole]
+      highlighted: chooser.highlightedIndex === index
+      hoverEnabled: true
+      contentItem: Text {
+        text: option.text
+        textFormat: Text.PlainText
+        color: root.foreground
+        font: chooser.font
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
+      }
+      background: Rectangle {
+        color: option.highlighted || option.hovered ? Qt.lighter(root.popupColor, 1.35) : root.popupColor
+      }
+    }
+    popup.background: Rectangle {
+      // Menus need an opaque surface even when the panel theme is translucent.
+      color: root.popupColor
+      border.color: root.muted
+      border.width: root.unit
+      radius: 4 * root.unit
+    }
     onActivated: index => {
       const destination = root.choosingFromPopup ? root.popupSessionId : root.sessionId
       const choices = root.choosingFromPopup ? root.popupOptions : root.options
