@@ -267,7 +267,12 @@ with `origin: {kind: "agent", sessionId, title, depth}`. The panel labels it
 reopening. Pi receives the text after a header beginning
 `[Companion agent message] Written by the agent of another Companion
 conversation, "<title>" (session <id>), not typed by the user.` Human messages
-are sent unchanged. Agent-started conversations have no screenshot.
+are sent unchanged. Agent-started conversations have no screenshot. Clicking
+an attributed bubble's heading selects its sender's open conversation, or
+requests reopening it from Previous sessions if archived. It does not send a
+message. The provenance stores the sender session ID, not an outgoing tool-call
+anchor, so navigation opens the conversation rather than scrolling to the
+specific sending tool call.
 
 **Ordering and busy targets.** Sends use the same FIFO as typed and spoken
 follow-ups: they never interrupt a running turn, never overtake earlier queued

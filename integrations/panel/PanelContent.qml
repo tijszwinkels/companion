@@ -56,6 +56,9 @@ Item {
   property bool showingPrevious: false
   property string controlError: ""
   property string selectedSessionId: ""
+  // A source conversation may have been closed. Its restored tab arrives in a
+  // later snapshot, so retain the requested ID until it becomes selectable.
+  property string pendingOriginId: ""
   onSelectedSessionIdChanged: Qt.callLater(ensureSelectedVisible)
   readonly property bool modelsNeeded: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
   onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
@@ -171,6 +174,11 @@ Item {
       if (!stillPinned) delete dismissed[id]
     }
     root.locallyUnpinned = dismissed
+    if (root.pendingOriginId && root.sessions.some(entry => entry.id === root.pendingOriginId)) {
+      const id = root.pendingOriginId
+      root.pendingOriginId = ""
+      root.sessionSelected(id)
+    }
   }
 
   function isLocallyUnpinned(reference) {
@@ -195,7 +203,18 @@ Item {
   }
   Component.onCompleted: synchronizeTabs()
 
+  function openOrigin(id) {
+    if (!id || !root.online) return
+    if (root.sessions.some(entry => entry.id === id)) {
+      root.selectConversation(id)
+    } else if (root.previousSessions.some(entry => entry.id === id)) {
+      root.pendingOriginId = id
+      root.reopenSessionRequested(id)
+    }
+  }
+
   function selectConversation(id) {
+    root.pendingOriginId = ""
     root.sessionSelected(id)
     Qt.callLater(function() {
       if (root.selectedSession && root.selectedSessionId === id && root.keyboardFocused) root.focusComposer()
@@ -768,6 +787,7 @@ Item {
       fontFamily: root.fontFamily
       unit: root.unit
       onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
+      onOriginRequested: id => root.openOrigin(id)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)

@@ -70,6 +70,7 @@ Item {
   signal choiceRequested(string id, string revision, int index)
   signal stopRunRequested(string id, string runId)
   signal screenshotRequested(url source, string title)
+  signal originRequested(string sessionId)
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
 
@@ -245,6 +246,7 @@ Item {
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
         fromAgent: message.origin !== undefined && message.origin !== null,
         originTitle: message.origin ? message.origin.title || "" : "",
+        originSessionId: message.origin ? message.origin.sessionId || "" : "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
       if (index < messages.count) {
         messages.set(index, row)
@@ -325,6 +327,7 @@ Item {
       // Written by another conversation's agent through session tools.
       required property bool fromAgent
       required property string originTitle
+      required property string originSessionId
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
       property bool expanded: false
       property string ownerId: root.displayedId
@@ -382,6 +385,7 @@ Item {
 
           Text {
             id: heading
+            objectName: "messageHeading"
             width: parent.width - copyButton.width - 8 * root.unit
             height: Math.max(implicitHeight, copyButton.height)
             verticalAlignment: Text.AlignVCenter
@@ -392,19 +396,30 @@ Item {
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
-            color: bubble.state === "error" ? "#ef5350" : root.muted
+            color: bubble.fromAgent && bubble.originSessionId ? root.accent
+              : bubble.state === "error" ? "#ef5350" : root.muted
+            font.underline: bubble.fromAgent && bubble.originSessionId && headingMouse.containsMouse
             font.family: root.fontFamily
             font.pixelSize: 10 * root.unit
 
             MouseArea {
               anchors.fill: parent
-              enabled: bubble.kind === "tool"
+              id: headingMouse
+              hoverEnabled: true
+              enabled: bubble.kind === "tool" || (bubble.fromAgent && bubble.originSessionId !== "")
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-              onClicked: bubble.toggleExpanded()
+              onClicked: {
+                if (bubble.kind === "tool") bubble.toggleExpanded()
+                else root.originRequested(bubble.originSessionId)
+              }
             }
-            Accessible.role: bubble.kind === "tool" ? Accessible.Button : Accessible.StaticText
-            Accessible.name: text
-            Accessible.onPressAction: if (bubble.kind === "tool") bubble.toggleExpanded()
+            Accessible.role: headingMouse.enabled ? Accessible.Button : Accessible.StaticText
+            Accessible.name: bubble.fromAgent && bubble.originSessionId
+              ? "Open source conversation: " + bubble.originTitle : text
+            Accessible.onPressAction: {
+              if (bubble.kind === "tool") bubble.toggleExpanded()
+              else if (bubble.fromAgent && bubble.originSessionId) root.originRequested(bubble.originSessionId)
+            }
           }
 
           Rectangle {

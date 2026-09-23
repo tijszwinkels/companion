@@ -75,6 +75,44 @@ Item {
       compare(question.getText(0, question.length), "**literal**")
     }
 
+    function test_agent_heading_opens_source_tab_without_sending_a_message() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const incoming = message("agent-message", "user", "Please check this")
+      incoming.origin = {kind: "agent", sessionId: "source", title: "Source", depth: 1}
+      panel.sessions = [session([incoming]), Object.assign({}, session([]), {id: "source", title: "Source"})]
+      panel.selectedSessionId = "question-1"
+      let selected = ""
+      let sends = 0
+      panel.sessionSelected.connect(function(id) { selected = id; panel.selectedSessionId = id })
+      panel.sendSessionRequested.connect(function() { sends++ })
+      tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
+      const heading = findChild(findChild(panel, "bubble-agent-message"), "messageHeading")
+      verify(heading !== null)
+      mouseClick(heading, 18, 10)
+      compare(selected, "source")
+      compare(sends, 0)
+    }
+
+    function test_agent_heading_reopens_archived_source() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const incoming = message("agent-message", "user", "Please check this")
+      incoming.origin = {kind: "agent", sessionId: "archived", title: "Archived", depth: 1}
+      panel.sessions = [session([incoming])]
+      panel.previousSessions = [{id: "archived", title: "Archived"}]
+      panel.selectedSessionId = "question-1"
+      let reopened = ""
+      let selected = ""
+      panel.reopenSessionRequested.connect(function(id) { reopened = id })
+      panel.sessionSelected.connect(function(id) { selected = id; panel.selectedSessionId = id })
+      tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
+      const heading = findChild(findChild(panel, "bubble-agent-message"), "messageHeading")
+      mouseClick(heading, 18, 10)
+      compare(reopened, "archived")
+      compare(selected, "")
+      panel.sessions = [session([incoming]), Object.assign({}, session([]), {id: "archived", title: "Archived"})]
+      compare(selected, "archived")
+    }
+
     function test_tool_disclosure_survives_streaming_updates() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.sessions = [session([message("tool", "tool", "partial output")])]
