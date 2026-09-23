@@ -11,6 +11,7 @@ Item {
   property bool catalogLoaded: false
   property bool loading: false
   property string error: ""
+  readonly property string statusText: error || catalog.warning || ""
   property bool online: false
   required property color background
   required property color foreground
@@ -58,7 +59,7 @@ Item {
   readonly property bool stacked: width < 380 * unit
   readonly property real effortWidth: 172 * unit
   readonly property real controlsBottom: Math.max(chooser.y + chooser.height, effort.y + effort.height)
-  height: controlsBottom + (error ? 62 : 38) * unit
+  height: controlsBottom + (statusText ? 62 : 38) * unit
 
   // Match Pi's ordered adjustment for display only; launch validation uses Pi's
   // own helper. Keep the requested override so switching back can restore it.
@@ -212,7 +213,7 @@ Item {
     width: root.stacked ? root.width : root.effortWidth
     entries: root.thinkingOptions
     selectedValue: root.session && root.session.thinkingOverride ? root.adaptedThinking(root.session.thinkingOverride) : ""
-    enabled: root.online && root.session !== null && root.supportedLevels.length > 0 && (!root.loading || root.catalogLoaded)
+    enabled: root.online && root.session !== null && (root.supportedLevels.length > 0 || (root.catalog.thinkingLevels !== undefined && !!root.session.thinkingOverride)) && (!root.loading || root.catalogLoaded)
     onChosen: (id, value) => root.thinkingRequested(id, value)
     Accessible.name: "Effort for this conversation's next turn"
     ToolTip.visible: hovered
@@ -225,7 +226,7 @@ Item {
     objectName: "showAllSessionModels"
     y: root.controlsBottom + 6 * root.unit
     text: root.showAllModels ? "Pinned models only" : "Show all models"
-    enabled: root.online && root.catalogLoaded
+    enabled: root.online && root.catalogLoaded && root.catalog.pinned !== undefined
     foreground: root.foreground
     selection: root.selection
     fontFamily: root.fontFamily
@@ -252,14 +253,14 @@ Item {
   Text {
     y: allModels.y + allModels.height + 2 * root.unit
     width: parent.width
-    visible: root.error !== ""
-    text: root.error
+    visible: root.statusText !== ""
+    text: root.statusText
     color: root.muted
     elide: Text.ElideRight
     font.family: root.fontFamily
     font.pixelSize: 10 * root.unit
     ToolTip.visible: errorHover.hovered
-    ToolTip.text: root.error
+    ToolTip.text: root.statusText
     HoverHandler { id: errorHover }
   }
 }

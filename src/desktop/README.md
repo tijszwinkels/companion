@@ -545,11 +545,13 @@ saved conversations in Previous sessions as before.
 If a dragged conversation disappears, the client cancels the gesture and restores
 rail scrolling. Each new drag captures its own order revision.
 
-`{"action":"agent-models"}` returns `{models: string[], pinned: string[],
+`{"action":"agent-models"}` returns `{models: string[], pinned?: string[], warning?: string,
 thinkingLevels: {[model: string]: string[]}, coding: string, quickQuestion: string,
 codingThinking: string, quickQuestionThinking: string}` from Pi availability,
 Pi-resolved scopes and Companion profile settings. Concurrent refresh requests
-share discovery; timeout or malformed data returns an error. Clients discover on
+share discovery; timeout or malformed data returns an error. Failure of the optional pins helper preserves the full catalogue, omits
+`pinned` and includes a fixed `warning`; clients show all models with that notice.
+An empty resolved scope instead returns `pinned: []`. Clients discover on
 the first conversation needing the catalogue in each connection and on explicit
 refresh, then reuse it across tab changes. Failed discovery requires explicit
 refresh or reconnect to retry. A cached catalogue stays usable during refresh.
@@ -565,6 +567,8 @@ available level for that conversation's selected model, saves `thinkingOverride`
 and returns `thinking-selected`. Empty `model` or `thinking` clears only that
 override. Preview returns `preview` without saving. Model/effort changes share a
 per-conversation write guard; queued turns wait for accepted writes or rollback.
+During validation a turn still captures the old preferences. Rollback is also
+queued to disk so a concurrent transcript save cannot retain a rejected choice.
 Current turns retain captured settings. Future turns inherit any unset preference
 from the profile, with Pi's model-specific effort adjustment; the requested effort
 survives model changes. Errors are shown in the panel; clients do not write global

@@ -99,7 +99,9 @@ export interface AgentSettings {
 /** Safe metadata only: never expose provider credentials or endpoints to clients. */
 export interface AgentModelCatalog {
   models: string[];
-  pinned: string[];
+  /** Absent when scope metadata failed; the full catalogue remains usable. */
+  pinned?: string[];
+  warning?: string;
   thinkingLevels: Record<string, AgentSettings['thinking'][]>;
 }
 

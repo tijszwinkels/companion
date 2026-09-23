@@ -17,6 +17,7 @@ export async function piModels(
   signal: AbortSignal,
 ): Promise<AgentModelCatalog> {
   signal.throwIfAborted();
+  const extension = fileURLToPath(new URL('./model-pins-extension.ts', import.meta.url));
   const child = spawn(
     executable,
     [
@@ -26,7 +27,7 @@ export async function piModels(
       '--no-session',
       '--no-extensions',
       '--extension',
-      fileURLToPath(new URL('./model-pins-extension.ts', import.meta.url)),
+      extension,
       '--no-skills',
       '--no-prompt-templates',
       '--no-themes',
@@ -34,7 +35,11 @@ export async function piModels(
       '--no-tools',
       '--no-approve',
     ],
-    { cwd: directory, stdio: ['pipe', 'pipe', 'ignore', 'pipe'] },
+    {
+      cwd: directory,
+      stdio: ['pipe', 'pipe', 'ignore', 'pipe'],
+      env: { ...process.env, COMPANION_MODEL_PINS_FD: '3' },
+    },
   );
   const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
   // The stdio tuple above always creates these two pipes; the extra metadata
@@ -50,29 +55,59 @@ export async function piModels(
     return await new Promise<AgentModelCatalog>((resolve, reject) => {
       let catalog: Omit<AgentModelCatalog, 'pinned'> | undefined;
       let pins: string[] | undefined;
+      let pinsUnavailable = false;
       const complete = () => {
-        if (catalog && pins) {
+        if (catalog && (pins || pinsUnavailable)) {
           const available = catalog;
           resolve({
             ...available,
-            pinned: [...new Set(pins)].filter((id) => available.models.includes(id)),
+            ...(pinsUnavailable
+              ? { warning: 'Pi pinned models unavailable; showing all models.' }
+              : { pinned: [...new Set(pins)].filter((id) => available.models.includes(id)) }),
           });
         }
       };
+      // A wrapper may close our extra descriptor, or Pi may reject the helper.
+      // Optional scope metadata must never disable the working RPC catalogue.
+      const unavailablePins = () => {
+        pinsUnavailable = true;
+        complete();
+      };
       abort = () => reject(signal.reason);
       signal.addEventListener('abort', abort, { once: true });
-      timer = setTimeout(() => reject(Error('Pi model discovery timed out')), 10000);
+      timer = setTimeout(() => {
+        if (catalog) {
+          unavailablePins();
+        } else {
+          reject(Error('Pi model discovery timed out'));
+        }
+      }, 10000);
       child.once('error', () => reject(Error('Could not start Pi model discovery')));
-      child.once('exit', () => reject(Error('Pi exited before returning available models')));
+      child.once('exit', () => {
+        if (catalog) {
+          unavailablePins();
+        } else {
+          reject(Error('Pi exited before returning available models'));
+        }
+      });
       input.on('error', () => reject(Error('Pi model discovery connection closed')));
       const metadata = child.stdio[3] as Readable;
       let metadataBuffer = '';
       metadata.setEncoding('utf8');
-      metadata.on('error', () => reject(Error('Pi pinned model discovery connection closed')));
+      metadata.on('error', unavailablePins);
+      metadata.on('end', () => {
+        if (!pins) {
+          unavailablePins();
+        }
+      });
       metadata.on('data', (chunk: string) => {
+        if (pinsUnavailable) {
+          return;
+        }
         metadataBuffer += chunk;
         if (Buffer.byteLength(metadataBuffer) > 128 * 1024) {
-          reject(Error('Pi pinned model discovery exceeded its response limit'));
+          metadataBuffer = '';
+          unavailablePins();
           return;
         }
         if (!metadataBuffer.includes('\n')) {
@@ -90,7 +125,7 @@ export async function piModels(
           pins = response.pinned;
           complete();
         } catch {
-          reject(Error('Pi returned invalid pinned model data'));
+          unavailablePins();
         }
       });
       output.setEncoding('utf8');
@@ -107,6 +142,10 @@ export async function piModels(
           buffer = buffer.slice(newline + 1);
           try {
             const response = JSON.parse(line);
+            if (response.type === 'extension_error' && response.extensionPath === extension) {
+              unavailablePins();
+              continue;
+            }
             if (response.type !== 'response' || response.id !== 'companion-models') {
               continue;
             }

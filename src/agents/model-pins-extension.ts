@@ -3,7 +3,7 @@
  * Pi resolves its global enabledModels, globs and effort suffixes itself.
  * Emit just its scoped identifiers; no tools, prompts or settings writes.
  */
-import { writeSync } from 'node:fs';
+import { fstatSync, writeSync } from 'node:fs';
 
 export default function modelPinsExtension(pi: {
   on(
@@ -19,6 +19,13 @@ export default function modelPinsExtension(pi: {
   pi.on('session_start', (_event, context) => {
     // Pi redirects extension stdout to stderr in RPC mode. A separate inherited
     // pipe keeps this bounded metadata distinct from both RPC and diagnostic logs.
+    if (process.env.COMPANION_MODEL_PINS_FD !== '3') {
+      throw Error('Missing Companion model metadata pipe');
+    }
+    const descriptor = fstatSync(3);
+    if (!descriptor.isFIFO() && !descriptor.isSocket()) {
+      throw Error('Companion model metadata descriptor is not a pipe');
+    }
     writeSync(
       3,
       JSON.stringify({

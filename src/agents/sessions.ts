@@ -233,6 +233,9 @@ export class AgentSessions implements InspectableModule {
       throw Error('This agent backend does not support model selection');
     }
     const catalog = await this.dependencies.backend.models(coding, this.directory, signal);
+    if (catalog.warning) {
+      this.log('agent-models', catalog.warning);
+    }
     return {
       ...catalog,
       coding: coding.model,
@@ -300,9 +303,20 @@ export class AgentSessions implements InspectableModule {
       // clamps it to that model, so switching back restores the user's choice.
       Object.assign(session.view, changes);
       this.flush(session);
-      session.modelWrite = this.store.save(session.view).catch((error) => {
+      session.modelWrite = this.store.save(session.view).catch(async (error) => {
         Object.assign(session.view, previous);
         this.flush(session);
+        // A turn may have queued another snapshot while this write was pending.
+        // Repair after those ordered writes too, so a rejected preference cannot
+        // survive on disk while the live view correctly shows the old setting.
+        try {
+          await this.store.save(session.view);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            'Could not save or restore conversation model/effort',
+          );
+        }
         throw error;
       });
       await session.modelWrite;

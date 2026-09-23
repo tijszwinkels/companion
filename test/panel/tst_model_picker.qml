@@ -102,6 +102,27 @@ Item {
       compare(choices.length, 1)
     }
 
+    function test_missing_model_still_allows_clearing_effort_and_pins_failure_keeps_catalogue() {
+      const setup = createTemporaryObject(fixture, parent)
+      const picker = setup.picker
+      picker.session = {id: "synthetic", modelOverride: "gone/model", thinkingOverride: "high"}
+      picker.catalog = {models: ["configured/other"], coding: "configured/other", codingThinking: "off", thinkingLevels: {}, warning: "Pi pinned models unavailable; showing all models."}
+      const effort = findChild(setup, "sessionThinkingPicker")
+      verify(effort.enabled)
+      let choices = []
+      picker.thinkingRequested.connect((id, value) => { choices.push(value) })
+      verify(waitForRendering(effort))
+      compare(effort.currentText, "high")
+      mouseClick(effort, 25, effort.height / 2)
+      keyClick(Qt.Key_Home)
+      keyClick(Qt.Key_Return)
+      compare(choices.length, 1)
+      compare(choices[0], "")
+      const model = findChild(setup, "sessionModelPicker")
+      compare(model.count, 3, "Failure of optional pins retains the usable full catalogue")
+      verify(picker.statusText.indexOf("showing all models") >= 0)
+    }
+
     function test_effort_fields_remain_inside_narrow_zoomed_footer() {
       const setup = createTemporaryObject(fixture, parent)
       setup.width = 340

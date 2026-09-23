@@ -109,7 +109,7 @@ setInterval(() => {}, 1000);
   assert.throws(() => process.kill(oversizedPid, 0), { code: 'ESRCH' });
 });
 
-test('Pi discovery waits for fragmented pin metadata after the full catalog, and rejects malformed pins', async (context) => {
+test('Pi discovery waits for fragmented pin metadata after the full catalog, and preserves the catalogue with malformed pins', async (context) => {
   const directory = await mkdtemp(join(tmpdir(), 'companion-pins-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const executable = join(directory, 'pi-fixture');
@@ -136,8 +136,37 @@ setInterval(() => {}, 1000);
     source(JSON.stringify({ type: 'companion-model-pins', pinned: [{ id: 'one' }] })),
     { mode: 0o700 },
   );
-  await assert.rejects(
-    piModels(executable, directory, new AbortController().signal),
-    /invalid pinned model data/,
-  );
+  const malformed = await piModels(executable, directory, new AbortController().signal);
+  assert.deepEqual(malformed.models, ['configured/one']);
+  assert.equal(malformed.pinned, undefined);
+  assert.match(malformed.warning!, /pinned models unavailable/);
+});
+
+test('closed metadata descriptors and explicit helper errors retain a usable catalogue', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-pins-fallback-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, 'pi-fixture');
+  for (const mode of ['closed', 'extension-error', 'exit']) {
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+if (${JSON.stringify(mode)} === 'closed') fs.closeSync(3);
+process.stdin.once('data', data => {
+  const request = JSON.parse(data.toString());
+  if (${JSON.stringify(mode)} === 'extension-error') process.stdout.write(JSON.stringify({type:'extension_error', extensionPath:process.argv[process.argv.indexOf('--extension')+1], event:'session_start', error:'synthetic failure'})+'\\n');
+  process.stdout.write(JSON.stringify({type:'response', id:request.id, success:true, data:{models:[{provider:'configured', id:'one'}]}})+'\\n', () => {
+    if (${JSON.stringify(mode)} === 'exit') process.exit(0);
+  });
+});
+setInterval(() => {}, 1000);
+`,
+      { mode: 0o700 },
+    );
+    const result = await piModels(executable, directory, AbortSignal.timeout(1500));
+    assert.deepEqual(result.models, ['configured/one']);
+    assert.deepEqual(result.thinkingLevels['configured/one'], ['off']);
+    assert.equal(result.pinned, undefined);
+    assert.match(result.warning!, /showing all models/);
+  }
 });

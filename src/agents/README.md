@@ -42,7 +42,9 @@ The bottom model and effort pickers change **this conversation's next turn**,
 through optional persisted `AgentSession.modelOverride` and `thinkingOverride`.
 They do not change the profile, other conversations, the intent classifier or
 configuration files. A running/starting turn retains its captured settings;
-queued turns use the choices present when each turn begins. Both overrides survive
+queued turns use the choices present when each turn begins. A turn starting
+while a choice is still being validated uses the previous preference; accepted
+saves and their rollback complete before queued successors start. Both overrides survive
 closing, listener restart and reopening. Each “Use profile default” choice clears
 only its own override and resumes per-turn configuration loading. The `model`
 field still describes the current/last turn; it is separate from `modelOverride`.
@@ -68,7 +70,12 @@ saved session, tools or automatic resource/extension loading. One explicitly
 loaded metadata-only extension reads Pi's resolved `ctx.scopedModels` on startup,
 so Pi itself handles global scope patterns and effort suffixes. Discovery retains
 `--no-approve`: project-local settings/resources are ignored, as before. It reports
-only IDs over a separate inherited pipe and registers no tool or prompt. The UI
+only IDs over a separate inherited pipe and registers no tool or prompt. If that
+optional helper fails or its pipe is lost, the full catalogue and effort levels
+remain usable with a visible pins-unavailable notice; an actual empty scope still
+shows the short pinned menu. A missing helper response falls back at the existing
+10-second discovery deadline. The helper checks its marker and pipe type before
+writing, so a wrapper cannot redirect its metadata into an ordinary file. The UI
 receives identifiers, pins, supported effort levels and profile defaults, never
 Pi's full provider objects or credentials. Extension-only model registrations
 remain excluded. Selecting an explicit override validates against fresh metadata.

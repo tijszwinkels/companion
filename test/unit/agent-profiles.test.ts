@@ -358,3 +358,83 @@ test('effort discovery cannot change a closed conversation or race a simultaneou
   await sessions.reopen(id);
   assert.equal(sessions.snapshot()[0].thinkingOverride, undefined);
 });
+
+test('a failed effort write rolls back snapshots already queued by a completing turn', async (context) => {
+  const { directory } = await fixture(context);
+  const entered = deferred<void>();
+  const finish = deferred<void>();
+  const pendingWrite = deferred<void>();
+  const failWrite = deferred<void>();
+  const finalSave = deferred<void>();
+  const backend: AgentBackend = {
+    id: 'rollback-fixture',
+    label: 'Rollback fixture',
+    dependencies: {},
+    async models() {
+      return {
+        models: [defaultAgentSettings.model],
+        pinned: [],
+        thinkingLevels: { [defaultAgentSettings.model]: ['medium', 'high'] },
+      };
+    },
+    async run() {
+      entered.resolve();
+      await finish.promise;
+    },
+  };
+  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const replace = SessionStore.prototype['replace'];
+  const save = SessionStore.prototype.save;
+  let intercepted = false;
+  // Fault the filesystem replacement, keeping the real ordered save queue.
+  // The running turn captures its final snapshot before the failure resolves.
+  context.mock.method(
+    SessionStore.prototype as unknown as { replace: typeof replace },
+    'replace',
+    async function (this: SessionStore, path: string, content: string | Buffer) {
+      if (
+        !intercepted &&
+        typeof content === 'string' &&
+        JSON.parse(content).thinkingOverride === 'high'
+      ) {
+        intercepted = true;
+        pendingWrite.resolve();
+        await failWrite.promise;
+        throw Error('Synthetic transient write failure');
+      }
+      return replace.call(this, path, content);
+    },
+  );
+  context.mock.method(
+    SessionStore.prototype,
+    'save',
+    function (this: SessionStore, session: Parameters<SessionStore['save']>[0]) {
+      const result = save.call(this, session);
+      if (session.status === 'completed' && session.thinkingOverride === 'high')
+        finalSave.resolve();
+      return result;
+    },
+  );
+  context.after(async () => {
+    failWrite.resolve();
+    finish.resolve();
+    await sessions.close();
+  });
+  const id = sessions.start(frame, signal());
+  await entered.promise;
+  const change = assert.rejects(
+    sessions.setThinking(id, 'high', signal()),
+    /Synthetic transient write failure/,
+  );
+  await pendingWrite.promise;
+  finish.resolve();
+  await finalSave.promise;
+  failWrite.resolve();
+  await change;
+  await sessions.idle();
+  assert.equal(sessions.snapshot()[0].thinkingOverride, undefined);
+  // Read the durable snapshot before close() has another chance to save it.
+  const stored = await new SessionStore(join(directory, '.companion-sessions')).read(id);
+  assert.equal(stored.thinkingOverride, undefined);
+  assert.equal(stored.status, 'completed');
+});
