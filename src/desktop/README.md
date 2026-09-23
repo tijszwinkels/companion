@@ -402,9 +402,11 @@ Successful writes survive later delivery failures and `IGNORE` decisions.
 
 Older records and supplied `--text` input have no audio. Transcript history still
 requires nonempty text. Empty ASR results have a separate diagnostic recording:
-`~/companion/data/YYYY-MM-DD/asr-empty/<clip-uuid>/audio.wav` and `metadata.json`.
-The date uses the observation time; custom database paths use their parent as the
-data root. No empty history row, screenshot, application context, or intent is saved.
+`~/companion/asr-empty/YYYY-MM-DD/<clip-uuid>/audio.wav` and `metadata.json`.
+This separate top-level `asr-empty/` tree stays outside successful recordings in
+`data/`. The date uses the observation time; custom database paths use their parent
+as the storage root. No empty history row, screenshot, application context, or intent
+is saved.
 
 Only a confirmed ASR `empty` outcome qualifies, with at least 128 ms of input and
 strongest-128-ms-window RMS at or above 0.0005. Live audio has already passed the

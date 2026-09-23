@@ -13,7 +13,7 @@ import { listen } from '../../src/sensors/audio/listener.ts';
 import { encodeWav } from '../../src/sensors/audio/segmenter.ts';
 import { Transcriber, type TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
-import { artifactDayDirectory } from '../../src/desktop/artifacts.ts';
+import { recordingDate } from '../../src/desktop/artifacts.ts';
 import { saveEmptyAudioClip } from '../../src/desktop/empty-audio-clips.ts';
 import { processor, screenshot, testDetector, testSensors } from '../helpers.ts';
 
@@ -120,7 +120,7 @@ try {
         },
         emptyAudioCaptured: async (clip) => {
           const id = await saveEmptyAudioClip(directory, clip);
-          const saved = join(artifactDayDirectory(directory, clip.observedAt), 'asr-empty', id);
+          const saved = join(directory, 'asr-empty', recordingDate(clip.observedAt), id);
 
           // Exercise real empty-result persistence only with this public fixture.
           // The pipeline must still own intact samples until publication finishes.

@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
-import { artifactDayDirectory } from '../../src/desktop/artifacts.ts';
+import { recordingDate } from '../../src/desktop/artifacts.ts';
 import { saveEmptyAudioClip } from '../../src/desktop/empty-audio-clips.ts';
 import { encodeWav } from '../../src/sensors/audio/segmenter.ts';
 import type { TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
@@ -47,7 +47,7 @@ test('empty ASR clips publish private PCM16 audio and matching metadata in the o
       samples,
       diagnostic: report,
     });
-    const parent = join(directory, 'data/2026-09-23/asr-empty');
+    const parent = join(directory, 'asr-empty/2026-09-23');
     const clipDirectory = join(parent, id);
     assert.match(id, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
     assert.deepEqual(await readdir(parent), [id], 'No unpublished temporary directory remains');
@@ -101,22 +101,19 @@ test('pipeline saves eligible empty audio through the desktop even when screen c
   try {
     pipeline.submit(samples);
     await pipeline.idle();
-    const days = await readdir(join(fixture.directory, 'data'));
+    const days = await readdir(join(fixture.directory, 'asr-empty'));
     assert.equal(days.length, 1);
-    const parent = join(fixture.directory, 'data', days[0], 'asr-empty');
+    const parent = join(fixture.directory, 'asr-empty', days[0]);
     const ids = await readdir(parent);
     assert.equal(ids.length, 1);
     const metadata = JSON.parse(await readFile(join(parent, ids[0], 'metadata.json'), 'utf8'));
     assert.equal(metadata.id, ids[0]);
     assert.equal(metadata.frameId, 1);
     assert.equal(metadata.diagnostic.outcome, 'empty');
-    assert.equal(
-      parent,
-      join(artifactDayDirectory(fixture.directory, metadata.observedAt), 'asr-empty'),
-    );
+    assert.equal(parent, join(fixture.directory, 'asr-empty', recordingDate(metadata.observedAt)));
     assert.deepEqual(await readFile(join(parent, ids[0], 'audio.wav')), expected);
     assert.deepEqual(savedLogs, [`Empty transcript audio saved (${ids[0]})`]);
-    assert.deepEqual(await readdir(join(fixture.directory, 'data', days[0])), ['asr-empty']);
+    await assert.rejects(readdir(join(fixture.directory, 'data')), { code: 'ENOENT' });
     assert.deepEqual(fixture.database.prepare('SELECT id FROM utterances').all(), []);
     assert.ok(samples.every((sample) => sample === 0));
     assert.equal(pipeline.failures, 0);

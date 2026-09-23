@@ -4,10 +4,10 @@ import { join } from 'node:path';
 
 import type { EmptyAudioClip } from '../core/activity.ts';
 import { encodeWav, SAMPLE_RATE } from '../sensors/audio/segmenter.ts';
-import { artifactDayDirectory } from './artifacts.ts';
+import { recordingDate } from './artifacts.ts';
 
 /**
- * Retain an eligible empty ASR attempt independently of transcript history.
+ * Retain an eligible empty ASR attempt outside the successful recordings tree.
  * The pipeline owns the samples until this promise settles. A directory rename
  * publishes the WAV and its numeric metadata together; an interrupted write
  * can leave a .tmp directory, which readers must ignore. These clips contain
@@ -15,7 +15,7 @@ import { artifactDayDirectory } from './artifacts.ts';
  */
 export async function saveEmptyAudioClip(directory: string, clip: EmptyAudioClip): Promise<string> {
   const id = randomUUID();
-  const parent = join(artifactDayDirectory(directory, clip.observedAt), 'asr-empty');
+  const parent = join(directory, 'asr-empty', recordingDate(clip.observedAt));
   const destination = join(parent, id);
   const temporary = `${destination}.tmp`;
 

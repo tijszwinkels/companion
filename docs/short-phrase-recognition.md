@@ -143,7 +143,8 @@ integration requires the owner to start the updated source normally.
 
 As of the empty-clip retention change, the desktop saves confirmed `asr/empty`
 results that meet the existing duration and energy floors in a separate
-`data/YYYY-MM-DD/asr-empty/<uuid>/` directory. This preserves the complete segment
+`asr-empty/YYYY-MM-DD/<uuid>/` directory outside the successful recordings
+under `data/`. This preserves the complete segment
 and numeric diagnostics without creating a transcript-history row or saving a
 screenshot. Silence, punctuation-only output and ASR errors do not qualify.
 The helper reports empty text, not raw token counts. See the
