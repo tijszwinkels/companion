@@ -63,6 +63,7 @@ export interface SessionDirectory {
  */
 export interface SessionToolHost {
   title(id: string): string | undefined;
+  sourceGroupId?(sender: string, toolCallId: string): string | undefined;
   directory(sender: string, query: string, limit: number): SessionDirectory;
   start(
     request: {
@@ -336,7 +337,7 @@ export class SessionToolService {
       throw new SessionToolError('limit', 'Too many session tool calls in this turn', 429);
     }
 
-    const reply = this.act(lease, method, command).catch((error) => this.failure(error));
+    const reply = this.act(lease, method, command, requestId).catch((error) => this.failure(error));
     lease.receipts.set(receiptKey, reply);
     return reply;
   }
@@ -355,6 +356,7 @@ export class SessionToolService {
     lease: Lease,
     method: 'start' | 'reopen' | 'close' | 'send' | 'draft',
     command: Record<string, unknown>,
+    toolCallId: string,
   ): Promise<ToolReply> {
     // Validate before consuming the turn's action budget, so a malformed call
     // can be corrected without exhausting it.
@@ -415,6 +417,10 @@ export class SessionToolService {
       title: [...senderTitle].slice(0, 80).join(''),
       depth,
     };
+    const sourceGroupId = this.host.sourceGroupId?.(lease.owner, toolCallId);
+    if (sourceGroupId) {
+      origin.sourceGroupId = sourceGroupId;
+    }
 
     // Reserve the content before awaiting, so parallel identical calls in one
     // turn cannot both deliver. Only a definite non-delivery releases it.

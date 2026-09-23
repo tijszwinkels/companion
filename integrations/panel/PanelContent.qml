@@ -59,6 +59,7 @@ Item {
   // A source conversation may have been closed. Its restored tab arrives in a
   // later snapshot, so retain the requested ID until it becomes selectable.
   property string pendingOriginId: ""
+  property string pendingOriginGroupId: ""
   onSelectedSessionIdChanged: Qt.callLater(ensureSelectedVisible)
   readonly property bool modelsNeeded: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
   onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
@@ -86,9 +87,16 @@ Item {
 
   // Activity has its own explicit text submission, never an agent composer
   // or an automatic dictation destination. Clear the hidden composer when leaving a conversation.
-  onSelectedSessionChanged: if (selectedSession === null) {
-    chat.releaseComposerFocus()
-    if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
+  onSelectedSessionChanged: {
+    if (selectedSession === null) {
+      chat.releaseComposerFocus()
+      if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
+    } else if (selectedSession.id === root.pendingOriginId) {
+      const groupId = root.pendingOriginGroupId
+      root.pendingOriginId = ""
+      root.pendingOriginGroupId = ""
+      if (groupId) Qt.callLater(function() { chat.jumpToToolGroup(groupId) })
+    }
   }
 
   signal utteranceRequested(string text)
@@ -175,9 +183,7 @@ Item {
     }
     root.locallyUnpinned = dismissed
     if (root.pendingOriginId && root.sessions.some(entry => entry.id === root.pendingOriginId)) {
-      const id = root.pendingOriginId
-      root.pendingOriginId = ""
-      root.sessionSelected(id)
+      root.sessionSelected(root.pendingOriginId)
     }
   }
 
@@ -203,18 +209,19 @@ Item {
   }
   Component.onCompleted: synchronizeTabs()
 
-  function openOrigin(id) {
+  function openOrigin(id, groupId) {
     if (!id || !root.online) return
-    if (root.sessions.some(entry => entry.id === id)) {
-      root.selectConversation(id)
-    } else if (root.previousSessions.some(entry => entry.id === id)) {
+    if (root.sessions.some(entry => entry.id === id) || root.previousSessions.some(entry => entry.id === id)) {
       root.pendingOriginId = id
-      root.reopenSessionRequested(id)
+      root.pendingOriginGroupId = groupId
+      if (root.sessions.some(entry => entry.id === id)) root.sessionSelected(id)
+      else root.reopenSessionRequested(id)
     }
   }
 
   function selectConversation(id) {
     root.pendingOriginId = ""
+    root.pendingOriginGroupId = ""
     root.sessionSelected(id)
     Qt.callLater(function() {
       if (root.selectedSession && root.selectedSessionId === id && root.keyboardFocused) root.focusComposer()
@@ -787,7 +794,7 @@ Item {
       fontFamily: root.fontFamily
       unit: root.unit
       onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
-      onOriginRequested: id => root.openOrigin(id)
+      onOriginRequested: (id, groupId) => root.openOrigin(id, groupId)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)

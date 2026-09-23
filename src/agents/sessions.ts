@@ -116,6 +116,7 @@ export class AgentSessions implements InspectableModule {
     );
     this.sessionTools = new SessionToolService({
       title: (id) => this.sessions.get(id)?.view.title,
+      sourceGroupId: (sender, toolCallId) => this.store.tools.groupForCall(sender, toolCallId),
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
       start: (request, signal) => this.startFromAgent(request, signal),
       reopen: (id, focus, signal) => this.reopenFromAgent(id, focus, signal),

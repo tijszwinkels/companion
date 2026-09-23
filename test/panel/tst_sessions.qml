@@ -78,8 +78,11 @@ Item {
     function test_agent_heading_opens_source_tab_without_sending_a_message() {
       const panel = createTemporaryObject(panelComponent, parent)
       const incoming = message("agent-message", "user", "Please check this")
-      incoming.origin = {kind: "agent", sessionId: "source", title: "Source", depth: 1}
-      panel.sessions = [session([incoming]), Object.assign({}, session([]), {id: "source", title: "Source"})]
+      incoming.origin = {kind: "agent", sessionId: "source", title: "Source", depth: 1,
+        sourceGroupId: "source-group"}
+      const group = message("source-group", "tool", "")
+      group.toolGroup = {count: 1, revision: "fixture"}
+      panel.sessions = [session([incoming]), Object.assign({}, session([group]), {id: "source", title: "Source"})]
       panel.selectedSessionId = "question-1"
       let selected = ""
       let sends = 0
@@ -90,6 +93,8 @@ Item {
       verify(heading !== null)
       mouseClick(heading, 18, 10)
       compare(selected, "source")
+      tryVerify(function() { return findChild(panel, "bubble-source-group") !== null })
+      tryCompare(findChild(panel, "bubble-source-group"), "expanded", true)
       compare(sends, 0)
     }
 

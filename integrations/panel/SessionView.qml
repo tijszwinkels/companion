@@ -70,7 +70,7 @@ Item {
   signal choiceRequested(string id, string revision, int index)
   signal stopRunRequested(string id, string runId)
   signal screenshotRequested(url source, string title)
-  signal originRequested(string sessionId)
+  signal originRequested(string sessionId, string groupId)
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
 
@@ -223,6 +223,24 @@ Item {
     }
   }
 
+  // The sender's tool call may be one of several in a collapsed group. Bring
+  // that group into view and expose its calls without changing the composer.
+  function jumpToToolGroup(groupId) {
+    const sessionId = root.displayedId
+    if (!sessionId || !groupId) return
+    for (let index = 0; index < messages.count; index++) {
+      if (messages.get(index).messageId !== groupId) continue
+      root.followEnd = false
+      transcript.positionViewAtIndex(index, ListView.Center)
+      const bubble = transcript.itemAtIndex(index)
+      if (bubble && bubble.toolCount) bubble.expanded = true
+      Qt.callLater(function() {
+        if (root.displayedId === sessionId) transcript.positionViewAtIndex(index, ListView.Center)
+      })
+      break
+    }
+  }
+
   function synchronize() {
     const id = root.session ? root.session.id : ""
     if (id !== root.displayedId) {
@@ -247,6 +265,7 @@ Item {
         fromAgent: message.origin !== undefined && message.origin !== null,
         originTitle: message.origin ? message.origin.title || "" : "",
         originSessionId: message.origin ? message.origin.sessionId || "" : "",
+        originGroupId: message.origin ? message.origin.sourceGroupId || "" : "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
       if (index < messages.count) {
         messages.set(index, row)
@@ -328,6 +347,7 @@ Item {
       required property bool fromAgent
       required property string originTitle
       required property string originSessionId
+      required property string originGroupId
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
       property bool expanded: false
       property string ownerId: root.displayedId
@@ -410,7 +430,7 @@ Item {
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
               onClicked: {
                 if (bubble.kind === "tool") bubble.toggleExpanded()
-                else root.originRequested(bubble.originSessionId)
+                else root.originRequested(bubble.originSessionId, bubble.originGroupId)
               }
             }
             Accessible.role: headingMouse.enabled ? Accessible.Button : Accessible.StaticText
@@ -418,7 +438,7 @@ Item {
               ? "Open source conversation: " + bubble.originTitle : text
             Accessible.onPressAction: {
               if (bubble.kind === "tool") bubble.toggleExpanded()
-              else if (bubble.fromAgent && bubble.originSessionId) root.originRequested(bubble.originSessionId)
+              else if (bubble.fromAgent && bubble.originSessionId) root.originRequested(bubble.originSessionId, bubble.originGroupId)
             }
           }
 

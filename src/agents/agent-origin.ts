@@ -41,10 +41,15 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
   ) {
     return undefined;
   }
+  const sourceGroupId =
+    typeof origin.sourceGroupId === 'string' && sessionIdPattern.test(origin.sourceGroupId)
+      ? origin.sourceGroupId
+      : undefined;
   return {
     kind: 'agent',
     sessionId: origin.sessionId,
     title: origin.title,
     depth: origin.depth,
+    ...(sourceGroupId ? { sourceGroupId } : {}),
   };
 }

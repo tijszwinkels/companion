@@ -18,6 +18,7 @@ import { defaultAgentSettings } from '../../src/agents/settings.ts';
 import { sessionTools } from '../../src/agents/session-tools.ts';
 import {
   chatMessage,
+  type AgentMessage,
   type AgentBackend,
   type AgentDraftOutcome,
   type AgentDraftRequest,
@@ -34,6 +35,7 @@ interface RecordedRun {
   model: string;
   screenshot: boolean;
   sessionTools?: { endpoint: string; token: string };
+  emit: (message: AgentMessage) => void;
 }
 
 type TurnScript = (run: RecordedRun) => Promise<void>;
@@ -66,6 +68,7 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
         model: request.settings.model,
         screenshot: request.prompt.screenshot !== undefined,
         sessionTools: request.sessionTools,
+        emit,
       };
       runs.push(run);
       const script = scripts.get(request.id)?.shift();
@@ -129,6 +132,34 @@ async function refusal(
   }
   assert.fail(`${name} unexpectedly succeeded`);
 }
+
+test('agent provenance points to the sender tool group when the call was retained', async (context) => {
+  const { sessions, script, view, directory } = await fixture(context);
+  const sender = sessions.start(frame, signal());
+  const callId = randomUUID();
+  let destination = '';
+  let lookup: string | undefined;
+  script(sender, async (run) => {
+    const outbound = chatMessage(`tool-${callId}`, 'tool', '');
+    outbound.toolName = 'companion_session_start';
+    outbound.state = 'running';
+    run.emit(outbound);
+    lookup = new SessionStore(join(directory, '.companion-sessions')).tools.groupForCall(
+      sender,
+      callId,
+    );
+    const result = await call(run, 'companion_session_start', { text: 'Follow up' }, callId);
+    destination = (result.session as { id: string }).id;
+  });
+  await sessions.idle();
+  assert.ok(lookup, 'tool call must be stored before delivery');
+  const origin = view(destination).messages[0].origin;
+  assert.ok(origin?.sourceGroupId);
+  assert.ok(view(sender).messages.some((message) => message.id === origin.sourceGroupId));
+  await sessions.remove(destination);
+  await sessions.reopen(destination);
+  assert.equal(view(destination).messages[0].origin?.sourceGroupId, origin.sourceGroupId);
+});
 
 test('an agent starts a labelled background session that keeps its profile and model', async (context) => {
   const { sessions, runs, script, view } = await fixture(context);
@@ -460,11 +491,21 @@ test('archived agent provenance is validated when a conversation is read', async
   const id = randomUUID();
   const valid = {
     ...chatMessage('valid', 'user', 'From an agent'),
-    origin: { kind: 'agent' as const, sessionId: randomUUID(), title: 'Sender', depth: 2 },
+    origin: {
+      kind: 'agent' as const,
+      sessionId: randomUUID(),
+      title: 'Sender',
+      depth: 2,
+      sourceGroupId: randomUUID(),
+    },
   };
   const forged = {
     ...chatMessage('forged', 'user', 'Not really'),
     origin: { kind: 'agent' as const, sessionId: '../../x', title: 'Sender', depth: 1 },
+  };
+  const malformedAnchor = {
+    ...chatMessage('malformed-anchor', 'user', 'From an agent'),
+    origin: { ...valid.origin, sourceGroupId: '../../x' },
   };
   const assistant = { ...chatMessage('assistant', 'assistant', 'Answer'), origin: valid.origin };
   await store.save({
@@ -474,13 +515,19 @@ test('archived agent provenance is validated when a conversation is read', async
     model: 'configured/one',
     error: '',
     updatedAt: 1,
-    messages: [valid, forged, assistant],
+    messages: [valid, forged, malformedAnchor, assistant],
   });
 
   const read = await store.read(id);
   assert.deepEqual(read.messages[0].origin, valid.origin);
   assert.equal(read.messages[1].origin, undefined);
-  assert.equal(read.messages[2].origin, undefined);
+  assert.deepEqual(read.messages[2].origin, {
+    kind: 'agent',
+    sessionId: valid.origin.sessionId,
+    title: valid.origin.title,
+    depth: valid.origin.depth,
+  });
+  assert.equal(read.messages[3].origin, undefined);
 });
 
 test('Pi loads the session tools extension only with a turn lease', async (context) => {
