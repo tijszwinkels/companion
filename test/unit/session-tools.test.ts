@@ -1,0 +1,509 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { AgentSessions } from '../../src/agents/sessions.ts';
+import { PiBackend } from '../../src/agents/pi-backend.ts';
+import { SessionStore } from '../../src/agents/session-store.ts';
+import { defaultAgentSettings } from '../../src/agents/settings.ts';
+import { sessionTools } from '../../src/agents/session-tools.ts';
+import {
+  chatMessage,
+  type AgentBackend,
+  type AgentDraftOutcome,
+  type AgentDraftRequest,
+  type SessionEvent,
+} from '../../src/agents/types.ts';
+import { deferred, frame, signal } from '../helpers.ts';
+import { waitFor } from '../desktop-fixture.ts';
+
+/** One recorded backend invocation, including its session tool lease. */
+interface RecordedRun {
+  id: string;
+  text: string;
+  resume: boolean;
+  model: string;
+  screenshot: boolean;
+  sessionTools?: { endpoint: string; token: string };
+}
+
+type TurnScript = (run: RecordedRun) => Promise<void>;
+
+/**
+ * Synthetic conversations only. A turn runs its scripted handler, which can
+ * call the real Pi extension tools through the lease Companion supplied.
+ */
+async function fixture(context: { after(callback: () => Promise<unknown>): void }) {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-session-tools-'));
+  // Create the profile file up front; concurrent first turns must not race to
+  // create it in a fresh directory.
+  await writeFile(join(directory, 'companion-agent.json'), JSON.stringify(defaultAgentSettings));
+
+  const runs: RecordedRun[] = [];
+  const scripts = new Map<string, TurnScript[]>();
+  const events: SessionEvent[] = [];
+  const backend: AgentBackend = {
+    id: 'session-tools-fixture',
+    label: 'Session tools fixture',
+    dependencies: {},
+    async models() {
+      return ['configured/one', 'configured/two'];
+    },
+    async run(request, _signal, emit) {
+      const run: RecordedRun = {
+        id: request.id,
+        text: request.prompt.text,
+        resume: request.resume,
+        model: request.settings.model,
+        screenshot: request.prompt.screenshot !== undefined,
+        sessionTools: request.sessionTools,
+      };
+      runs.push(run);
+      const script = scripts.get(request.id)?.shift();
+      if (script) {
+        await script(run);
+      }
+      emit(chatMessage(`answer-${runs.length}`, 'assistant', `Answer ${runs.length}`));
+    },
+  };
+  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  sessions.subscribe((event) => events.push(event));
+  context.after(async () => {
+    await sessions.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  return {
+    directory,
+    sessions,
+    runs,
+    events,
+    /** Queue handlers for the next turns of one conversation, in order. */
+    script(id: string, ...turns: TurnScript[]) {
+      scripts.set(id, [...(scripts.get(id) ?? []), ...turns]);
+    },
+    view(id: string) {
+      const view = sessions.snapshot().find((session) => session.id === id);
+      assert.ok(view, `Expected open session ${id}`);
+      return view;
+    },
+  };
+}
+
+/** Invoke a tool exactly as Pi does, with a Pi-style tool-call identity. */
+async function call(
+  run: RecordedRun,
+  name: string,
+  parameters: Record<string, unknown>,
+  callId: string = randomUUID(),
+): Promise<Record<string, unknown>> {
+  assert.ok(run.sessionTools, 'The turn must receive a session tool lease');
+  const tool = sessionTools(run.sessionTools.endpoint, run.sessionTools.token).find(
+    (definition) => definition.name === name,
+  );
+  assert.ok(tool, `Unknown tool ${name}`);
+  const result = await tool.execute(callId, parameters);
+  return result.details;
+}
+
+/** Return the thrown tool error, whose message ends with its stable code. */
+async function refusal(
+  run: RecordedRun,
+  name: string,
+  parameters: Record<string, unknown>,
+  callId?: string,
+): Promise<string> {
+  try {
+    await call(run, name, parameters, callId);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  assert.fail(`${name} unexpectedly succeeded`);
+}
+
+test('an agent starts a labelled background session that keeps its profile and model', async (context) => {
+  const { sessions, runs, script, view } = await fixture(context);
+  const started: Record<string, unknown>[] = [];
+  const requester = sessions.start(frame, signal());
+  script(requester, async (run) => {
+    started.push(
+      await call(run, 'companion_session_start', {
+        text: 'Investigate the flaky order test',
+        profile: 'quickQuestion',
+        model: 'configured/two',
+      }),
+    );
+    started.push(await call(run, 'companion_session_start', { text: 'Visible', focus: true }));
+    assert.match(
+      await refusal(run, 'companion_session_start', { text: 'Other', model: 'missing/model' }),
+      /not available in Pi.*\[unavailable-model\]$/,
+    );
+  });
+  await sessions.idle();
+
+  const created = (started[0].session as { id: string }).id;
+  const session = view(created);
+  assert.equal(started[0].outcome, 'started');
+  assert.equal(session.profile, 'quickQuestion');
+  assert.equal(session.modelOverride, 'configured/two');
+  assert.equal(session.openInBackground, true);
+  assert.equal(view((started[1].session as { id: string }).id).openInBackground, undefined);
+
+  // The display keeps the plain text with structured provenance; the user did
+  // not write it, and it has no screenshot of the user's desktop.
+  const question = session.messages[0];
+  assert.equal(question.kind, 'user');
+  assert.equal(question.text, 'Investigate the flaky order test');
+  assert.equal(question.screenshot, false);
+  assert.deepEqual(question.origin, {
+    kind: 'agent',
+    sessionId: requester,
+    title: frame.utterance,
+    depth: 1,
+  });
+
+  // Pi receives an explicit header naming the sending conversation.
+  const createdRun = runs.find((run) => run.id === created)!;
+  assert.equal(createdRun.resume, false);
+  assert.equal(createdRun.model, 'configured/two');
+  assert.equal(createdRun.screenshot, false);
+  assert.match(createdRun.text, /^\[Companion agent message\] Written by the agent of another/);
+  assert.ok(createdRun.text.includes(`(session ${requester}), not typed by the user`));
+  assert.ok(createdRun.text.endsWith('\n\nInvestigate the flaky order test'));
+
+  // Provenance, profile and model survive closing and reopening; the live-only
+  // background flag is not archived.
+  await sessions.remove(created);
+  await sessions.reopen(created);
+  const reopened = view(created);
+  assert.deepEqual(reopened.messages[0].origin, question.origin);
+  assert.equal(reopened.profile, 'quickQuestion');
+  assert.equal(reopened.modelOverride, 'configured/two');
+  assert.equal(reopened.openInBackground, undefined);
+});
+
+test('reopening a saved conversation keeps its identity, history and settings without focus', async (context) => {
+  const { sessions, runs, events, script, view } = await fixture(context);
+  const saved = sessions.start(
+    { ...frame, utterance: 'Saved question' },
+    signal(),
+    'quickQuestion',
+  );
+  await sessions.idle();
+  await sessions.setModel(saved, 'configured/one', signal());
+  const history = view(saved).messages.map((message) => [message.id, message.kind, message.text]);
+  await sessions.remove(saved);
+  const runsBeforeReopen = runs.length;
+
+  const results: Record<string, unknown>[] = [];
+  const errors: string[] = [];
+  const requester = sessions.start(frame, signal());
+  script(requester, async (run) => {
+    const listed = await call(run, 'companion_sessions', { query: 'saved' });
+    assert.deepEqual(
+      (listed.previous as { id: string }[]).map((entry) => entry.id),
+      [saved],
+    );
+    assert.equal(listed.self, requester);
+    results.push(await call(run, 'companion_session_reopen', { id: saved }));
+    results.push(await call(run, 'companion_session_reopen', { id: saved }));
+    errors.push(await refusal(run, 'companion_session_reopen', { id: randomUUID() }));
+    errors.push(await refusal(run, 'companion_session_reopen', { id: '../../etc/passwd' }));
+  });
+  await sessions.idle();
+
+  assert.equal(results[0].outcome, 'reopened');
+  assert.equal(results[0].messages, history.length);
+  assert.equal(results[1].outcome, 'already-open');
+  assert.match(errors[0], /No Companion conversation has that id.*\[unknown-session\]$/);
+  assert.match(errors[1], /session UUID from companion_sessions \[invalid\]$/);
+
+  const reopened = view(saved);
+  assert.deepEqual(
+    reopened.messages.map((message) => [message.id, message.kind, message.text]),
+    history,
+  );
+  assert.equal(reopened.profile, 'quickQuestion');
+  assert.equal(reopened.modelOverride, 'configured/one');
+  const restored = events.find((event) => event.type === 'agent-restored');
+  assert.ok(restored && restored.type === 'agent-restored');
+  assert.equal(restored.reveal, false);
+  // Reopening only restores the tab. It never starts a turn in that session.
+  assert.equal(
+    runs.slice(runsBeforeReopen).some((run) => run.id === saved),
+    false,
+  );
+});
+
+test('bad, saved, self and stale targets fail with explicit outcomes', async (context) => {
+  const { sessions, script } = await fixture(context);
+  const saved = sessions.start(frame, signal());
+  await sessions.idle();
+  await sessions.remove(saved);
+
+  const errors: string[] = [];
+  let lease: RecordedRun | undefined;
+  const requester = sessions.start(frame, signal());
+  script(requester, async (run) => {
+    lease = run;
+    errors.push(await refusal(run, 'companion_session_send', { id: randomUUID(), text: 'Hi' }));
+    errors.push(await refusal(run, 'companion_session_send', { id: saved, text: 'Hi' }));
+    errors.push(await refusal(run, 'companion_session_send', { id: requester, text: 'Hi' }));
+    errors.push(await refusal(run, 'companion_session_send', { id: saved, text: '   ' }));
+    errors.push(await refusal(run, 'companion_session_draft', { id: saved, text: 'Hi' }));
+  });
+  await sessions.idle();
+
+  assert.match(errors[0], /\[unknown-session\]$/);
+  assert.match(errors[1], /saved but not open.*companion_session_reopen first.*\[not-open\]$/);
+  assert.match(errors[2], /own conversation \[self-target\]$/);
+  assert.match(errors[3], /1–4000 characters \[invalid\]$/);
+  assert.match(errors[4], /\[not-open\]$/);
+
+  // The lease belonged to one turn. Reusing it afterwards is refused.
+  assert.match(
+    await refusal(lease!, 'companion_sessions', {}),
+    /agent turn has ended.*\[expired\]$/,
+  );
+});
+
+test('messages to a busy target join its FIFO queue behind earlier user messages', async (context) => {
+  const { sessions, runs, script, view } = await fixture(context);
+  const release = deferred<void>();
+  const target = sessions.start({ ...frame, utterance: 'Long task' }, signal());
+  script(target, async () => {
+    await release.promise;
+  });
+  sessions.followUp(target, 'Human first', signal());
+
+  let sent: Record<string, unknown> | undefined;
+  const requester = sessions.start(frame, signal());
+  script(requester, async (run) => {
+    sent = await call(run, 'companion_session_send', { id: target, text: 'Agent second' });
+  });
+  // idle() would also wait for the deliberately blocked target turn.
+  await waitFor(() => sent !== undefined);
+  sessions.followUp(target, 'Human third', signal());
+
+  // The agent's message waits in order; it never interrupts the running turn.
+  assert.equal(sent!.outcome, 'queued');
+  assert.equal(sent!.queuePosition, 2);
+  assert.equal(view(target).status, 'running');
+  release.resolve();
+  await sessions.idle();
+
+  const prompts = runs.filter((run) => run.id === target).map((run) => run.text);
+  assert.equal(prompts.length, 4);
+  assert.equal(prompts[0], 'Long task');
+  assert.equal(prompts[1], 'Human first');
+  assert.match(prompts[2], /^\[Companion agent message\][^]*\n\nAgent second$/);
+  assert.equal(prompts[3], 'Human third');
+
+  const labelled = view(target).messages.filter((message) => message.kind === 'user');
+  assert.deepEqual(
+    labelled.map((message) => [message.text, message.origin?.sessionId ?? 'user']),
+    [
+      ['Long task', 'user'],
+      ['Human first', 'user'],
+      ['Agent second', requester],
+      ['Human third', 'user'],
+    ],
+  );
+});
+
+test('agent-to-agent chains stop at the loop limit', async (context) => {
+  const { sessions, runs, script } = await fixture(context);
+  const first = sessions.start({ ...frame, utterance: 'Human request' }, signal());
+  const second = sessions.start({ ...frame, utterance: 'Other human request' }, signal());
+  await sessions.idle();
+
+  let blocked = '';
+  let blockedStart = '';
+  // Each turn answers the other conversation, as a naive agent might do.
+  script(first, async (run) => {
+    await call(run, 'companion_session_send', { id: second, text: 'Ping 1' });
+  });
+  script(second, async (run) => {
+    await call(run, 'companion_session_send', { id: first, text: 'Pong 2' });
+  });
+  script(first, async (run) => {
+    await call(run, 'companion_session_send', { id: second, text: 'Ping 3' });
+  });
+  script(second, async (run) => {
+    blocked = await refusal(run, 'companion_session_send', { id: first, text: 'Pong 4' });
+    blockedStart = await refusal(run, 'companion_session_start', { text: 'Escape hatch' });
+  });
+  sessions.followUp(first, 'Please coordinate', signal());
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await sessions.idle();
+  }
+
+  assert.match(blocked, /prevent a feedback loop.*\[loop-limit\]$/);
+  assert.match(blockedStart, /\[loop-limit\]$/);
+  // 2 initial turns + the human follow-up + three agent messages.
+  assert.equal(runs.length, 6);
+  assert.equal(sessions.snapshot().length, 2);
+});
+
+test('repeated tool calls and identical content are delivered once per turn', async (context) => {
+  const { sessions, runs, script, view } = await fixture(context);
+  const target = sessions.start(frame, signal());
+  await sessions.idle();
+
+  const replies: Record<string, unknown>[] = [];
+  const errors: string[] = [];
+  const requester = sessions.start(frame, signal());
+  script(requester, async (run) => {
+    const callId = randomUUID();
+    // Pi repeating one tool call gets the original reply, not a second send.
+    replies.push(await call(run, 'companion_session_send', { id: target, text: 'Once' }, callId));
+    replies.push(await call(run, 'companion_session_send', { id: target, text: 'Once' }, callId));
+    errors.push(await refusal(run, 'companion_session_send', { id: target, text: 'Once' }));
+    replies.push(await call(run, 'companion_session_send', { id: target, text: 'Different' }));
+    // Remaining budget: 6 actions per turn, including refusals.
+    await call(run, 'companion_session_reopen', { id: target });
+    await call(run, 'companion_session_reopen', { id: target });
+    await call(run, 'companion_session_reopen', { id: target });
+    errors.push(await refusal(run, 'companion_session_reopen', { id: target }));
+  });
+  await sessions.idle();
+
+  assert.deepEqual(replies[0], replies[1]);
+  assert.match(errors[0], /already delivered.*\[duplicate\]$/);
+  assert.match(errors[1], /at most 6 session actions \[limit\]$/);
+  const received = view(target)
+    .messages.filter((message) => message.origin)
+    .map((message) => message.text);
+  assert.deepEqual(received, ['Once', 'Different']);
+  assert.equal(runs.filter((run) => run.id === target).length, 3);
+});
+
+test('drafts never start turns, retain conflicting user text and report uncertain outcomes', async (context) => {
+  const { sessions, runs, script, view } = await fixture(context);
+  const target = sessions.start(frame, signal());
+  await sessions.idle();
+  const targetMessages = view(target).messages.length;
+  const targetRuns = runs.filter((run) => run.id === target).length;
+
+  const requests: AgentDraftRequest[] = [];
+  const outcomes: AgentDraftOutcome[] = [
+    { outcome: 'conflict', reason: '' },
+    { outcome: 'inserted', reason: '' },
+    { outcome: 'unconfirmed', reason: 'The panel did not confirm the draft within 5 seconds.' },
+  ];
+  const errors: string[] = [];
+  const replies: Record<string, unknown>[] = [];
+  const requester = sessions.start({ ...frame, utterance: '📝 Drafting helper' }, signal());
+  script(requester, async (run) => {
+    errors.push(await refusal(run, 'companion_session_draft', { id: target, text: 'Offline' }));
+    sessions.setDraftHost(async (request) => {
+      requests.push(request);
+      return outcomes.shift()!;
+    });
+    errors.push(await refusal(run, 'companion_session_draft', { id: target, text: 'Proposal' }));
+    // A confirmed conflict changed nothing, so an identical retry is allowed.
+    replies.push(
+      await call(run, 'companion_session_draft', {
+        id: target,
+        text: 'Proposal',
+        ifDraftExists: 'append',
+        focus: true,
+      }),
+    );
+    errors.push(await refusal(run, 'companion_session_draft', { id: target, text: 'Maybe' }));
+    // After an uncertain outcome the same content is not delivered again.
+    errors.push(await refusal(run, 'companion_session_draft', { id: target, text: 'Maybe' }));
+    // A draft in the caller's own composer is not a feedback loop.
+    outcomes.push({ outcome: 'inserted', reason: '' });
+    replies.push(await call(run, 'companion_session_draft', { id: requester, text: 'Note' }));
+  });
+  await sessions.idle();
+
+  assert.match(errors[0], /no Companion panel is connected.*\[offline\]$/);
+  assert.match(errors[1], /already has unsent text there, which was left unchanged.*\[conflict\]$/);
+  assert.match(errors[2], /may or may not have been inserted.*Do not resend.*\[unconfirmed\]$/);
+  assert.match(errors[3], /\[duplicate\]$/);
+  assert.equal(replies[0].outcome, 'inserted');
+  assert.equal(replies[1].outcome, 'inserted');
+
+  assert.deepEqual(requests[0], {
+    sessionId: target,
+    text: 'Proposal',
+    ifDraftExists: 'reject',
+    focus: false,
+    source: { sessionId: requester, title: '📝 Drafting helper' },
+  });
+  assert.equal(requests[1].ifDraftExists, 'append');
+  assert.equal(requests[1].focus, true);
+
+  // Nothing was submitted to the target conversation.
+  assert.equal(view(target).messages.length, targetMessages);
+  assert.equal(runs.filter((run) => run.id === target).length, targetRuns);
+});
+
+test('archived agent provenance is validated when a conversation is read', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-origin-store-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new SessionStore(directory);
+  context.after(() => store.tools.close());
+  const id = randomUUID();
+  const valid = {
+    ...chatMessage('valid', 'user', 'From an agent'),
+    origin: { kind: 'agent' as const, sessionId: randomUUID(), title: 'Sender', depth: 2 },
+  };
+  const forged = {
+    ...chatMessage('forged', 'user', 'Not really'),
+    origin: { kind: 'agent' as const, sessionId: '../../x', title: 'Sender', depth: 1 },
+  };
+  const assistant = { ...chatMessage('assistant', 'assistant', 'Answer'), origin: valid.origin };
+  await store.save({
+    id,
+    title: 'Stored',
+    status: 'completed',
+    model: 'configured/one',
+    error: '',
+    updatedAt: 1,
+    messages: [valid, forged, assistant],
+  });
+
+  const read = await store.read(id);
+  assert.deepEqual(read.messages[0].origin, valid.origin);
+  assert.equal(read.messages[1].origin, undefined);
+  assert.equal(read.messages[2].origin, undefined);
+});
+
+test('Pi loads the session tools extension only with a turn lease', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-session-tools-pi-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, 'fixture-pi');
+  await copyFile(fileURLToPath(new URL('../fixtures/pi-rpc.mjs', import.meta.url)), executable);
+  await chmod(executable, 0o700);
+  const request = {
+    id: 'session-tools',
+    directory,
+    settings: { ...defaultAgentSettings, executable },
+    prompt: { text: 'plain' },
+    resume: false,
+  };
+  const extension = fileURLToPath(new URL('../../src/agents/session-tools.ts', import.meta.url));
+  const argv = async () =>
+    JSON.parse(await readFile(join(directory, 'request.json'), 'utf8')).argv as string[];
+
+  await new PiBackend().run(request, signal(), () => {});
+  assert.equal((await argv()).includes(extension), false);
+
+  await new PiBackend().run(
+    {
+      ...request,
+      sessionTools: { endpoint: 'http://127.0.0.1:1/session', token: 'a'.repeat(64) },
+    },
+    signal(),
+    () => {},
+  );
+  const withLease = await argv();
+  assert.equal(withLease[withLease.indexOf(extension) - 1], '--extension');
+});

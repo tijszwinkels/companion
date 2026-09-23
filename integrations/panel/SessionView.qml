@@ -43,6 +43,11 @@ Item {
   property string displayedId: ""
   property bool followEnd: true
   property var drafts: ({})
+  // Conversation id -> title of the agent conversation that drafted its unsent
+  // text. Cleared when that composer becomes empty or its message is sent.
+  property var draftSources: ({})
+  readonly property string displayedDraftSource: composer.text !== "" && root.draftSources[root.displayedId] !== undefined
+    ? root.draftSources[root.displayedId] : ""
   property var pendingSubmission: null
   property string inputError: ""
   property var selectedMessage: null
@@ -145,9 +150,54 @@ Item {
     root.pendingSubmission = null
     root.inputError = error || ""
     if (!error) {
-      if (root.drafts[id] === text) delete root.drafts[id]
+      if (root.drafts[id] === text) {
+        delete root.drafts[id]
+        root.forgetDraftSource(id)
+      }
       if (root.displayedId === id && composer.text === text) composer.text = ""
     }
+  }
+
+  function forgetDraftSource(id) {
+    if (root.draftSources[id] === undefined) return
+    const sources = Object.assign({}, root.draftSources)
+    delete sources[id]
+    root.draftSources = sources
+  }
+
+  // An agent proposes unsent text. It never submits, and never replaces or
+  // edits text the user already wrote: that is a conflict unless the agent
+  // explicitly asked to append below it. Returns the outcome the listener
+  // reports back to the agent. Runs synchronously in the UI event loop, so no
+  // keystroke can interleave between reading and writing the composer.
+  function applyDraft(request) {
+    const id = request.id
+    if (root.pendingSubmission && root.pendingSubmission.id === id) {
+      return {outcome: "conflict", reason: "A message from that conversation's input is still being sent."}
+    }
+
+    const displayed = root.displayedId === id
+    const current = displayed ? composer.text : (root.drafts[id] || "")
+    let next = request.text
+    let outcome = "inserted"
+    if (current.trim() !== "") {
+      if (request.ifDraftExists !== "append") return {outcome: "conflict", reason: ""}
+      next = current + (current.endsWith("\n") ? "\n" : "\n\n") + request.text
+      outcome = "appended"
+    }
+    if (next.length > 4000) {
+      return {outcome: "conflict", reason: "The combined draft would exceed 4000 characters."}
+    }
+
+    const title = request.source && typeof request.source.title === "string" ? request.source.title : ""
+    root.draftSources = Object.assign({}, root.draftSources, {[id]: title || "another conversation"})
+    if (displayed) {
+      composer.text = next
+      composer.cursorPosition = composer.length
+    } else {
+      root.drafts[id] = next
+    }
+    return {outcome: outcome, reason: ""}
   }
 
   function choiceSubmitted(id, revision, index, error) {
@@ -193,6 +243,8 @@ Item {
         toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
         toolRevision: message.toolGroup ? message.toolGroup.revision : "",
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
+        fromAgent: message.origin !== undefined && message.origin !== null,
+        originTitle: message.origin ? message.origin.title || "" : "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
       if (index < messages.count) {
         messages.set(index, row)
@@ -270,6 +322,9 @@ Item {
       required property int toolCount
       required property string toolRevision
       required property string widgetJson
+      // Written by another conversation's agent through session tools.
+      required property bool fromAgent
+      required property string originTitle
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
       property bool expanded: false
       property string ownerId: root.displayedId
@@ -332,7 +387,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? "You" + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
+              : bubble.kind === "user" ? (bubble.fromAgent ? "Agent · " + (bubble.originTitle || "another conversation") : "You")
+                + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
@@ -586,6 +642,7 @@ Item {
         }
         onTextChanged: {
           if (root.displayedId) root.drafts[root.displayedId] = text
+          if (text === "") root.forgetDraftSource(root.displayedId)
         }
         onSelectedTextChanged: if (selectedText !== "") root.clearMessageSelection()
         TapHandler { onPressedChanged: if (pressed) root.clearMessageSelection() }
@@ -599,6 +656,18 @@ Item {
         Keys.onEnterPressed: event => root.enterPressed(event)
         Accessible.name: "Message to the selected agent session"
       }
+    }
+
+    Text {
+      objectName: "agentDraftSource"
+      width: parent.width
+      visible: root.displayedDraftSource !== ""
+      text: "Drafted by agent · " + root.displayedDraftSource + " — review before sending"
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 11 * root.unit
     }
 
     Text {

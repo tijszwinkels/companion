@@ -82,6 +82,7 @@ Commands:
 {"action":"stop-agent-run","id":"question-uuid","runId":"running-turn-uuid"}
 {"action":"composer-focus","id":"question-uuid"}
 {"action":"panel-state","id":"question-uuid","composerFocused":true}
+{"action":"agent-draft-result","requestId":"draft-request-uuid","outcome":"inserted","reason":""}
 {"action":"activity-history","sessionId":"listener-run-uuid","after":0,"through":1}
 {"action":"label-history","id":"utterance-uuid","correct":true}
 {"action":"label-history","id":"utterance-uuid","correct":false,"actualIntent":"START_CODING_AGENT_SESSION"}
@@ -496,6 +497,12 @@ Streaming updates are coalesced every 40 ms; a terminal status flushes pending
 messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
 All messages share the ordered socket with snapshots. A newly seen session opens
 and selects its panel tab once; further updates and reconnects do not reopen it.
+Exception: a live-only `openInBackground: true` marks a tab an agent tool opened
+without requesting focus. Clients add it to the rail without selecting it or
+revealing the panel. A user message may carry `origin: {kind: "agent",
+sessionId, title, depth}`; it was written by another conversation's agent and is
+labelled with that title instead of **You**. See [session lifecycle
+tools](../agents/README.md#session-lifecycle-tools).
 
 ### Model selection, ordering and spoken navigation
 
@@ -557,7 +564,9 @@ metadata above without `messages`. They are sorted by latest turn first and must
 not automatically open tabs or invoke a model. `reopen-agent` emits
 `{"type":"agent-restored","session":{...}}` with the complete transcript, then an
 updated history list. Replace that session, select it explicitly even if its ID
-was seen before, and reveal the panel. It returns `reopened`. Closing first stops
+was seen before, and reveal the panel. It returns `reopened`. When an agent tool
+reopens a conversation without focus, the event has `reveal: false`: add or
+replace the tab without selecting it or revealing the panel. Closing first stops
 the agent and saves its final state; a failed save keeps the tab open and returns
 an error. Failed reopen keeps the history entry available for retry. Adapters
 must show control errors in the panel as well as retaining drafts.
@@ -623,6 +632,43 @@ request may include `composer` with its focus ID from shortcut press time.
 Agent controls remain usable while microphone
 capture is paused or a keyboard delivery is pending. Agent sessions belong to
 the application lifetime, independently of each bounded sensor job.
+
+### Agent drafts
+
+Unsent composer text belongs to a UI instance, not the listener. A client that
+can hold agent drafts adds `draftHost: true` to every `panel-state` report;
+older clients omit it and never receive drafts. For `companion_session_draft`,
+the listener picks one draft host: the client owning visible navigation, else
+the one with the most recent report. It sends only that client:
+
+```json
+{
+  "type": "agent-draft",
+  "requestId": "draft-request-uuid",
+  "id": "question-uuid",
+  "text": "Could you also cover the logout path?",
+  "ifDraftExists": "reject",
+  "focus": false,
+  "source": { "sessionId": "sender-uuid", "title": "🔐 Auth review" }
+}
+```
+
+The client applies it synchronously and answers with `agent-draft-result`:
+`inserted` (the composer was empty or whitespace), `appended` (only with
+`ifDraftExists: "append"`, below existing text after a blank line), `conflict`
+(existing text kept unchanged, a send from that composer is awaiting its reply,
+or the result would exceed 4000 characters), or `unavailable` (no such open tab).
+An optional `reason` (≤300 characters) is passed to the agent. The listener
+accepts an answer only from the asked client, only once, and returns
+`draft-recorded`. After 5 seconds, disconnection or the end of the agent turn,
+the outcome is `unconfirmed`; a later answer is refused as expired. No draft
+host means `offline`. Drafts never submit text, start a turn or reorder a queue.
+
+Draft text replaces the composer only when that tab is displayed; otherwise it
+waits in that tab's saved draft. The composer shows **Drafted by agent · title —
+review before sending** until it is cleared or sent. `focus: true` selects the
+tab and reveals the panel after a confirmed insertion; otherwise selection and
+keyboard focus do not change.
 
 ### Destination feedback
 

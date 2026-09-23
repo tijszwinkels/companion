@@ -188,6 +188,12 @@ Item {
     onInputFinished: (id, text, error) => panel.submitted(id, text, error)
     onToolPageReceived: message => panel.toolPageReceived(message)
     onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
+    onDraftRequested: message => {
+      const result = panel.applyDraft(message)
+      client.answerDraft(message.requestId, result)
+      const changed = result.outcome === "inserted" || result.outcome === "appended"
+      if (changed && message.focus === true) client.sessions.reveal(message.id)
+    }
     onOnlineChanged: root.publish()
   }
 

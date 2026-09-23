@@ -11,6 +11,7 @@ import type { Log } from '../core/frame.ts';
 import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
 import { toolCallLimit, ToolTranscripts } from './tool-transcripts.ts';
 import { panelMessageLimit } from './transcript-limits.ts';
+import { parseOrigin } from './agent-origin.ts';
 
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
@@ -64,6 +65,7 @@ export class SessionStore {
         'toolEpoch',
         'acceptsFollowUp',
         'completedTurnId',
+        'openInBackground',
       ].includes(key)
         ? undefined
         : value,
@@ -193,6 +195,13 @@ export class SessionStore {
       }
       if (message.screenshot && message.kind === 'user' && screenshotUrl) {
         restored.screenshotUrl = screenshotUrl;
+      }
+
+      // Agent provenance must survive reopening; an invalid label is dropped
+      // rather than shown, and the text remains an ordinary saved message.
+      const origin = message.kind === 'user' ? parseOrigin(message.origin) : undefined;
+      if (origin) {
+        restored.origin = origin;
       }
 
       if (message.widget && message.kind === 'assistant') {

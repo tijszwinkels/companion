@@ -192,6 +192,115 @@ and shutdown. They are transient: archived/restarted/reopened conversations reta
 their transcripts but do not restore actionable choices. A transport reconnect to
 the same live server receives the current choices in its snapshot.
 
+## Session lifecycle tools
+
+`PiBackend` loads `session-tools.ts` for every turn that received a session tool
+lease. The native Pi tools start conversations, reopen saved ones, and send or
+draft messages for other conversations. They reuse `AgentSessions` creation,
+reopening and follow-up FIFO logic; they do not add another session store or
+load Pi session files. `SessionToolService` (`session-tools-service.ts`) is a
+loopback HTTP endpoint with a random bearer token per agent turn. The token
+names the calling conversation, so a tool cannot claim another sender. It
+expires when the turn ends or is stopped. Targets are Companion session UUIDs
+from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
+
+| Tool                       | Parameters                                                                                      | Effect                                                                                       |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `companion_sessions`       | `query?` (≤100), `limit?` (1–50, default 20)                                                    | Lists open tabs and matching saved conversations. No transcripts or drafts.                  |
+| `companion_session_start`  | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `model?` provider/id, `focus?` (false)   | Opens a tab whose agent immediately answers `text`.                                          |
+| `companion_session_reopen` | `id`, `focus?` (false)                                                                          | Reopens a saved conversation with its ID, transcript, profile and model. Starts no turn.     |
+| `companion_session_send`   | `id`, `text` (1–4000)                                                                           | Follow-up to another open tab; starts its turn or queues behind earlier messages.            |
+| `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false) | Places unsent text in that tab's input for the user to review. Never submits or runs a turn. |
+
+Examples of tool arguments:
+
+```json
+{}
+{"query":"login","limit":5}
+{"text":"Review src/auth for token expiry bugs and summarise them.","profile":"coding"}
+{"text":"What is the weather in Utrecht?","profile":"quickQuestion","model":"pillar-vllm/qwen3.8-128k"}
+{"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"}
+{"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","text":"The migration is merged; please rerun your checks."}
+{"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","text":"Could you also cover the logout path?","ifDraftExists":"reject"}
+```
+
+A successful call returns JSON, for example `{"outcome":"queued","queuePosition":2,
+"session":{...}}` or `{"outcome":"reopened","messages":14,"session":{...}}`.
+Summaries contain `id`, `title`, `status`, `profile`, `model`, optional
+`modelOverride` and `updatedAt`; open entries add `busy`, `queuedMessages` and
+`self`. A refusal is a failed tool result whose message ends with a stable code:
+
+| Code                      | Meaning                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `invalid`                 | Malformed ID, empty/oversized text, or unsupported option.                                                |
+| `unknown-session`         | No open or saved conversation has that ID.                                                                |
+| `not-open`                | Saved but closed; reopen it first. Sends/drafts never reopen implicitly.                                  |
+| `self-target`             | `companion_session_send` to the calling conversation.                                                     |
+| `loop-limit`              | The turn is already three agent-to-agent hops from a human message.                                       |
+| `duplicate`               | Identical content to the same destination already delivered (or possibly delivered) in this turn.         |
+| `limit`                   | More than six start/reopen/send/draft actions, or 32 calls, in one turn.                                  |
+| `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                 |
+| `expired`                 | The calling turn ended; its lease is gone.                                                                |
+| `rejected`                | An existing lifecycle limit: 12 tabs, 4 running agents, 8 queued messages, or a stopping/closing tab.     |
+| `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or 4000 chars. |
+| `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                          |
+| `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                 |
+
+**Attribution.** A sent or starting message is stored as a `user`-kind bubble
+with `origin: {kind: "agent", sessionId, title, depth}`. The panel labels it
+**Agent · title** instead of **You**, and the label survives closing and
+reopening. Pi receives the text after a header beginning
+`[Companion agent message] Written by the agent of another Companion
+conversation, "<title>" (session <id>), not typed by the user.` Human messages
+are sent unchanged. Agent-started conversations have no screenshot.
+
+**Ordering and busy targets.** Sends use the same FIFO as typed and spoken
+follow-ups: they never interrupt a running turn, never overtake earlier queued
+messages, and are cancelled with the rest of the queue by Stop or a failed turn.
+The existing limits of eight queued messages and four running agents apply.
+Each queued turn gets a fresh lease and inherits its own message's depth.
+
+**Loops and duplicates.** Depth is 0 for a human-originated turn and origin
+depth + 1 for an agent message. Start and send are refused beyond depth 3,
+which allows "A asks B, B answers A, A follows up" and stops further ping-pong.
+Drafts wait for the user and do not extend the chain. Pi's tool-call ID is a
+receipt: repeating a call returns the first reply without acting again. Identical
+text to the same destination is refused for the rest of that turn, including
+after an `unconfirmed` draft. A definite refusal releases that content for retry.
+
+**Drafts.** Only a UI owns unsent composer text, so the listener forwards a draft
+to exactly one draft-capable panel and waits for its answer (see the
+[desktop protocol](../desktop/README.md#agent-drafts)). The panel inserts text
+only into an empty composer, or appends below existing text when asked. It
+reports a conflict while that composer's own send is awaiting confirmation. The
+composer shows **Drafted by agent · title — review before sending** until the
+text is cleared or sent. Drafts in hidden tabs wait in that tab. The user's own
+text is never replaced, and nothing is submitted.
+
+**Focus.** Starting or reopening opens the tab in the background by default. It
+appears in the rail and runs, but the selection and panel visibility do not
+change (`openInBackground`, `agent-restored` with `reveal: false`). `focus: true`
+selects it and reveals the panel. A focused draft selects its tab only after a
+confirmed insertion. Sends never change focus; completion shows the unread dot.
+
+Limitations: the tools cannot read another conversation's transcript; a
+receiving agent answers in its own tab or, if asked, sends a reply back. There
+is no empty-conversation-with-draft mode: a new conversation always starts with
+its first message. The draft host is the panel owning visible navigation, or
+the most recent draft-capable panel report, so two simultaneously open panels
+do not share drafts. `openInBackground` is a live flag; a restarted UI instance
+that sees a background tab for the first time applies it too.
+
+Automated coverage: `test/unit/session-tools.test.ts` drives the real extension
+tools through leases issued to a scripted backend: create/reopen identity and
+history, profile/model preservation, bad/saved/self/stale targets, busy FIFO
+ordering, loop limits, receipts and duplicates, draft outcomes and provenance
+validation. `session-drafts-desktop.test.ts` covers the socket protocol, and
+`test/panel/tst_session_drafts.qml` and `test/window/tst_client.qml` cover the UI.
+An isolated offline startup of installed Pi 0.86.1 registered and activated all
+five tools and included their guidelines in the system prompt; it made no model
+request, and no live agent has yet called these tools in a real Companion.
+
 ## Verification and limits
 
 ### Widgets

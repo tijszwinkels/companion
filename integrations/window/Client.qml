@@ -32,6 +32,9 @@ Item {
   signal inputFinished(string id, string text, string error)
   signal toolPageReceived(var message)
   signal choiceFinished(string id, string revision, int index, string error)
+  // An agent asked this panel to place unsent text in a composer. The host
+  // applies it and must answer with answerDraft(); nothing is ever submitted.
+  signal draftRequested(var message)
 
   onPanelVisibleChanged: Qt.callLater(reportPanel)
   onKeyboardFocusedChanged: Qt.callLater(reportPanel)
@@ -67,7 +70,13 @@ Item {
     root.send({action: "panel-state", id: id,
       composerFocused: id !== "" && root.composerFocusId === id,
       keyboardFocused: root.keyboardFocused,
-      visible: root.panelVisible, navigationToken: sessions.navigationToken})
+      visible: root.panelVisible, navigationToken: sessions.navigationToken,
+      draftHost: true})
+  }
+
+  function answerDraft(requestId, result) {
+    root.send({action: "agent-draft-result", requestId: requestId,
+      outcome: result.outcome, reason: result.reason || ""})
   }
 
   function finishInput(error) {
@@ -165,7 +174,9 @@ Item {
     } else if (message.type === "agent-history") {
       sessions.previousSessions = message.sessions || []
     } else if (message.type === "agent-restored") {
-      sessions.restore(message.session)
+      sessions.restore(message.session, message.reveal)
+    } else if (message.type === "agent-draft") {
+      root.draftRequested(message)
     } else if (message.type === "agent-removed") {
       sessions.remove(message.id)
     } else if (message.type === "history-deleted") {

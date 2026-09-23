@@ -140,7 +140,20 @@ Item {
     root.send({action: "panel-state", id: id,
       composerFocused: id !== "" && sidePanel.composerFocusId === id,
       keyboardFocused: sidePanel.keyboardFocused,
-      visible: agentSessions.panelVisible, navigationToken: agentSessions.navigationToken})
+      visible: agentSessions.panelVisible, navigationToken: agentSessions.navigationToken,
+      draftHost: true})
+  }
+
+  // The listener only asks the panel that advertised draftHost. Apply the text
+  // to that conversation's composer and always answer with the real outcome.
+  function applyAgentDraft(message) {
+    const result = native.ready
+      ? {outcome: "unavailable", reason: "Another Companion window holds this panel's drafts."}
+      : sidePanel.applyDraft(message)
+    root.send({action: "agent-draft-result", requestId: message.requestId,
+      outcome: result.outcome, reason: result.reason || ""})
+    const changed = result.outcome === "inserted" || result.outcome === "appended"
+    if (changed && message.focus === true) agentSessions.reveal(message.id)
   }
 
   function composerFocusChanged() {
@@ -353,7 +366,9 @@ Item {
       } else if (message.type === "agent-history") {
         agentSessions.previousSessions = message.sessions || []
       } else if (message.type === "agent-restored") {
-        agentSessions.restore(message.session)
+        agentSessions.restore(message.session, message.reveal)
+      } else if (message.type === "agent-draft") {
+        root.applyAgentDraft(message)
       } else if (message.type === "agent-removed") {
         agentSessions.remove(message.id)
       } else if (message.type === "error") {

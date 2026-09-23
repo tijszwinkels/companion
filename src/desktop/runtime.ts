@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -21,6 +22,10 @@ import { IntentPreferences } from './intent-preferences.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
 import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
+import type { AgentDraftOutcome, AgentDraftRequest } from '../agents/types.ts';
+
+/** A connected panel must confirm a forwarded draft within this time. */
+const draftConfirmationMilliseconds = 5000;
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -76,6 +81,14 @@ export class DesktopRuntime {
     routingRevision: number;
     actions: AgentActions;
   };
+  // Panels that hold composer drafts, by client, with the sequence of their
+  // latest panel report. The most recently active panel receives a draft.
+  private readonly draftHosts = new Map<number, number>();
+  private draftReportSequence = 0;
+  private readonly pendingDrafts = new Map<
+    string,
+    { clientId: number; finish(outcome: AgentDraftOutcome): void }
+  >();
 
   constructor(
     private readonly pause: PauseControl,
@@ -102,6 +115,8 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        this.draftHosts.delete(clientId);
+        this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
         const navigationRemoved = this.navigation?.clientId === clientId;
         if (navigationRemoved) {
           this.navigation = undefined;
@@ -128,6 +143,7 @@ export class DesktopRuntime {
         }
       },
     );
+    options.agents?.setDraftHost((request, signal) => this.requestDraft(request, signal));
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
@@ -481,6 +497,91 @@ export class DesktopRuntime {
     });
   }
 
+  /**
+   * Prefer the panel that currently owns visible navigation; otherwise the
+   * draft-capable panel that reported most recently. Each UI instance keeps its
+   * own drafts, so exactly one panel is asked and must answer.
+   */
+  private draftClient(): number | undefined {
+    const visible = this.navigation?.clientId;
+    if (visible !== undefined && this.draftHosts.has(visible)) {
+      return visible;
+    }
+    let newest: number | undefined;
+    let newestSequence = -1;
+    for (const [clientId, sequence] of this.draftHosts) {
+      if (sequence > newestSequence) {
+        newest = clientId;
+        newestSequence = sequence;
+      }
+    }
+    return newest;
+  }
+
+  /**
+   * Forward an agent's draft to one panel and wait for its explicit answer.
+   * Once sent, timeout, disconnect or turn cancellation are `unconfirmed`: the
+   * panel may already have applied it. Never retried automatically.
+   */
+  private requestDraft(
+    request: AgentDraftRequest,
+    signal: AbortSignal,
+  ): Promise<AgentDraftOutcome> {
+    const clientId = this.draftClient();
+    if (clientId === undefined || signal.aborted) {
+      return Promise.resolve({ outcome: 'offline', reason: '' });
+    }
+
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const finish = (outcome: AgentDraftOutcome) => {
+        if (!this.pendingDrafts.delete(requestId)) {
+          return;
+        }
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancelled);
+        resolve(outcome);
+      };
+      const timer = setTimeout(
+        () =>
+          finish({
+            outcome: 'unconfirmed',
+            reason: 'The panel did not confirm the draft within 5 seconds.',
+          }),
+        draftConfirmationMilliseconds,
+      );
+      const cancelled = () =>
+        finish({
+          outcome: 'unconfirmed',
+          reason: 'The agent turn ended before the panel confirmed the draft.',
+        });
+
+      this.pendingDrafts.set(requestId, { clientId, finish });
+      signal.addEventListener('abort', cancelled, { once: true });
+
+      const sent = this.server.publishTo(clientId, {
+        type: 'agent-draft',
+        requestId,
+        id: request.sessionId,
+        text: request.text,
+        ifDraftExists: request.ifDraftExists,
+        focus: request.focus,
+        source: request.source,
+      });
+      if (!sent) {
+        finish({ outcome: 'offline', reason: 'The panel disconnected.' });
+      }
+    });
+  }
+
+  private abandonDrafts(clientId: number | undefined, reason: string): void {
+    for (const pending of [...this.pendingDrafts.values()]) {
+      if (clientId === undefined || pending.clientId === clientId) {
+        pending.finish({ outcome: 'unconfirmed', reason });
+      }
+    }
+  }
+
   private async handle(value: unknown, clientId: number): Promise<unknown> {
     this.signal.throwIfAborted();
 
@@ -633,9 +734,33 @@ export class DesktopRuntime {
       return 'media-recorded';
     }
 
+    if (request.action === 'agent-draft-result') {
+      const outcomes = ['inserted', 'appended', 'conflict', 'unavailable'];
+      if (
+        typeof request.requestId !== 'string' ||
+        typeof request.outcome !== 'string' ||
+        !outcomes.includes(request.outcome) ||
+        (request.reason !== undefined &&
+          (typeof request.reason !== 'string' || request.reason.length > 300))
+      ) {
+        throw Error('Expected a draft request id and outcome');
+      }
+      // Only the panel that was asked can answer; a late answer is refused.
+      const pending = this.pendingDrafts.get(request.requestId);
+      if (!pending || pending.clientId !== clientId) {
+        throw Error('This draft request has expired');
+      }
+      pending.finish({
+        outcome: request.outcome as AgentDraftOutcome['outcome'],
+        reason: (request.reason as string | undefined) ?? '',
+      });
+      return 'draft-recorded';
+    }
+
     if (request.action === 'panel-state') {
       if (
         typeof request.id !== 'string' ||
+        (request.draftHost !== undefined && typeof request.draftHost !== 'boolean') ||
         (request.visible !== undefined && typeof request.visible !== 'boolean') ||
         (request.navigationToken !== undefined &&
           (typeof request.navigationToken !== 'string' || request.navigationToken.length > 128)) ||
@@ -657,6 +782,12 @@ export class DesktopRuntime {
         this.navigation = { clientId, token: request.navigationToken };
       } else if (this.navigation?.clientId === clientId) {
         this.navigation = undefined;
+      }
+      // Only UIs that implement agent-draft advertise it; older ones omit it.
+      if (request.draftHost === true) {
+        this.draftHosts.set(clientId, ++this.draftReportSequence);
+      } else {
+        this.draftHosts.delete(clientId);
       }
       this.setPanelKeyboardFocus(
         request.keyboardFocused === true || request.composerFocused,
@@ -918,6 +1049,8 @@ export class DesktopRuntime {
   async close(): Promise<void> {
     this.router?.off('change', this.routingChanged);
     this.unsubscribeAgents?.();
+    this.options.agents?.setDraftHost(undefined);
+    this.abandonDrafts(undefined, 'Companion is shutting down.');
     this.ready = false;
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);

@@ -210,6 +210,7 @@ export class DesktopServer {
           action === 'stop-agent-run' ||
           action === 'composer-focus' ||
           action === 'panel-state' ||
+          action === 'agent-draft-result' ||
           action === 'reopen-agent' ||
           action === 'close-agent';
 
