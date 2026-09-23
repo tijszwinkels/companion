@@ -1,7 +1,7 @@
 import { AsrWorker } from './asr-worker.ts';
 import { encodePcm16 } from './segmenter.ts';
 import type { InspectableModule } from '../../core/module.ts';
-import { audioLevels, type AudioLevels } from './levels.ts';
+import { audioLevels, MIN_SPEECH_WINDOW_RMS, type AudioLevels } from './levels.ts';
 
 /** Numeric, bounded evidence only: no samples, transcript, or model paths. */
 export interface TranscriptionDiagnostic extends AudioLevels {
@@ -83,7 +83,7 @@ export class Transcriber implements SpeechTranscriber {
       // Endpoint silence must not dilute a short word below the silence floor.
       // Keep the same threshold, applied to a speech-sized window, and send
       // exactly the captured audio to Parakeet when it passes this guard.
-      if (levels.speechWindowRms < 0.0005) {
+      if (levels.speechWindowRms < MIN_SPEECH_WINDOW_RMS) {
         report('silence');
         return '';
       }

@@ -1,5 +1,8 @@
 import { SAMPLE_RATE } from './segmenter.ts';
 
+/** Shared silence floor for inference and retention of empty ASR attempts. */
+export const MIN_SPEECH_WINDOW_RMS = 0.0005;
+
 export interface AudioLevels {
   rms: number;
   peak: number;
