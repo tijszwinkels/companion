@@ -219,6 +219,12 @@ from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 | `companion_session_send`   | `id`, `text` (1–4000)                                                                           | Follow-up to another open tab; starts its turn or queues behind earlier messages.               |
 | `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false) | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.    |
 
+`companion_sessions` matches titles only. Its prompt guidelines also tell the
+agent how to search contents: grep `.companion-sessions/*.json` in the agent
+working directory (`~/companion/agents` by default). Each archive's file name is
+the conversation ID. Pi's own session directory can also contain sessions that
+Companion did not create; those IDs are refused as `unknown-session`.
+
 Examples of tool arguments:
 
 ```json

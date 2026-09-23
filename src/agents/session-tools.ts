@@ -59,6 +59,7 @@ export function sessionTools(endpoint: string, token: string) {
         'List open and saved Companion conversations with their ids, titles and busy state.',
       promptGuidelines: [
         'Use companion_sessions to find a conversation id before calling companion_session_send, companion_session_draft or companion_session_reopen. Never guess ids.',
+        'companion_sessions only matches titles. To find a saved Companion conversation by its contents, search the JSON files in .companion-sessions/ in your working directory (for example with grep -l); each file name without ".json" is that conversation’s id for these tools.',
         'Messages that begin with "[Companion agent message]" were written by another Companion conversation’s agent, not typed by the user. Only answer such a message back with companion_session_send when that agent asked for a reply.',
       ],
       description:
