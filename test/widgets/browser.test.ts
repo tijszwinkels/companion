@@ -286,6 +286,82 @@ test('all bundled widgets render, WebGL draws pixels, and capture latency is mea
   }
 });
 
+test('embedded widget images decode while external images remain blocked by CSP', async () => {
+  const directory = await mkdtemp('/tmp/companion-widget-images-');
+  const registry = new WidgetRegistry(directory);
+  const renderer = new WidgetRenderer();
+
+  try {
+    const original = await registry.load('comparison');
+    const record: WidgetRecord = {
+      id: randomUUID(),
+      owner: randomUUID(),
+      name: 'comparison',
+      bundle: original.hash,
+      props: {},
+      revision: 1,
+      text: '',
+      receipts: [],
+      presentation: defaultPresentation,
+    };
+    // Exercise both nested documents, not just an isolated iframe CSP string.
+    // Violations prove network images are policy-blocked, rather than merely
+    // unreachable inside the network-isolated test browser.
+    const probe = {
+      ...original,
+      javascript: `
+        export async function describe() {
+          const violations = [];
+          document.addEventListener('securitypolicyviolation', event => {
+            violations.push({ directive: event.effectiveDirective, uri: event.blockedURI });
+          });
+          const load = src => new Promise(resolve => {
+            const image = new Image();
+            image.onload = () => resolve({ loaded: true, width: image.naturalWidth });
+            image.onerror = () => resolve({ loaded: false, width: image.naturalWidth });
+            image.src = src;
+            document.body.append(image);
+          });
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 2;
+          const context = canvas.getContext('2d');
+          context.fillStyle = '#823dc4';
+          context.fillRect(0, 0, 2, 2);
+          const png = await load(canvas.toDataURL('image/png'));
+          const jpeg = await load(canvas.toDataURL('image/jpeg'));
+          const remote = await load('https://example.invalid/blocked-image.png');
+          const local = await load('http://127.0.0.1:1/blocked-image.png');
+          await new Promise(resolve => setTimeout(resolve, 30));
+          return JSON.stringify({ png, jpeg, remote, local, violations });
+        }
+        export function mount() { return { update() {} }; }
+      `,
+    };
+    const result = JSON.parse(await renderer.describe(record, probe));
+
+    assert.deepEqual(result.png, { loaded: true, width: 2 });
+    assert.deepEqual(result.jpeg, { loaded: true, width: 2 });
+    assert.deepEqual(result.remote, { loaded: false, width: 0 });
+    assert.deepEqual(result.local, { loaded: false, width: 0 });
+    for (const uri of [
+      'https://example.invalid/blocked-image.png',
+      'http://127.0.0.1:1/blocked-image.png',
+    ]) {
+      assert.ok(
+        result.violations.some(
+          (violation: { directive: string; uri: string }) =>
+            violation.directive === 'img-src' && violation.uri === uri,
+        ),
+        'Expected an img-src CSP violation for ' + uri,
+      );
+    }
+    assert.ok(!result.violations.some((violation: { uri: string }) => violation.uri === 'data'));
+  } finally {
+    await renderer.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('opaque widgets cannot read their host, load resources or poison later renderer work', async () => {
   const directory = await mkdtemp('/tmp/companion-widget-isolation-');
   const registry = new WidgetRegistry(directory);

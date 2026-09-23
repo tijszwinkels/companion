@@ -48,5 +48,7 @@ export async function widgetDocument(
     api,
   };
   const code = `window.widgetBootstrap=${expressionValue(bootstrap)};\n${host}`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src data:; style-src 'unsafe-inline'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"><title>Companion widget</title><style>html,body,iframe{margin:0;width:100%;height:100%;border:0;overflow:hidden} .error:empty{display:none}.error{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#782a2a;color:white;font:14px sans-serif}</style></head><body><script src="${dataScript(code)}"></script></body></html>`;
+  // The srcdoc iframe inherits this policy in addition to its own. Permit
+  // bundled image data here too; either policy still blocks network images.
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src data:; style-src 'unsafe-inline'; img-src data:; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"><title>Companion widget</title><style>html,body,iframe{margin:0;width:100%;height:100%;border:0;overflow:hidden} .error:empty{display:none}.error{position:fixed;bottom:0;left:0;right:0;padding:8px;background:#782a2a;color:white;font:14px sans-serif}</style></head><body><script src="${dataScript(code)}"></script></body></html>`;
 }
