@@ -13,6 +13,8 @@ import { ContinueOpenAgentConversation } from './processors/continue-open-agent-
 import { CloseAgentSession } from './processors/close-agent-session.ts';
 import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts';
+import { ExternalSessionServer } from './agents/external/server.ts';
+import { externalSocketPath } from './agents/external/paths.ts';
 import { AgentSessions } from './agents/sessions.ts';
 import { PiBackend } from './agents/pi-backend.ts';
 import { AgentChoiceIntents } from './agents/choice-intents.ts';
@@ -58,6 +60,8 @@ async function main(): Promise<void> {
       seconds: { type: 'string' },
       'no-sounds': { type: 'boolean', default: false },
       'no-desktop': { type: 'boolean', default: false },
+      'external-sessions': { type: 'boolean', default: false },
+      'external-socket': { type: 'string' },
       paused: { type: 'boolean', default: false },
     },
   });
@@ -75,6 +79,8 @@ Usage: npm start -- [options]
   --graph format     Print pipeline connections as json or mermaid, then exit
   --no-sounds        Start with audible feedback muted
   --no-desktop       Disable history, sounds, and desktop control
+  --external-sessions Enable the same-user Unix session API (off by default)
+  --external-socket PATH Override its private socket path; requires --external-sessions
   --paused           Start paused; resume through the desktop control
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
@@ -101,6 +107,16 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     throw Error('--text requires 1–4000 characters');
   }
 
+  if (values['external-socket'] && !values['external-sessions']) {
+    throw Error('--external-socket requires --external-sessions');
+  }
+  if (
+    values['external-sessions'] &&
+    (values.preview || values.graph || values.text !== undefined || values.wav)
+  ) {
+    throw Error('--external-sessions requires ordinary listener mode');
+  }
+
   const seconds = values.seconds === undefined ? undefined : Number(values.seconds);
   if (seconds !== undefined && (!Number.isFinite(seconds) || seconds <= 0)) {
     throw Error('--seconds must be positive');
@@ -124,6 +140,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let transcriber: Transcriber | undefined;
   let pipeline: SensorPipeline | undefined;
   let desktop: DesktopRuntime | undefined;
+  let external: ExternalSessionServer | undefined;
   const pause = new PauseControl();
 
   if (values.paused) {
@@ -148,6 +165,18 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         agents,
       });
       await desktop.start();
+    }
+
+    if (values['external-sessions']) {
+      if (!desktop) {
+        await agents.loadPrevious();
+      }
+      external = new ExternalSessionServer(
+        agents.sessionTools,
+        externalSocketPath(values['external-socket']),
+      );
+      await external.start();
+      log('external', 'Same-user session API enabled');
     }
 
     const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
@@ -299,6 +328,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     await pipeline?.idle();
     await transcriber?.close();
+    await external?.close();
     await agents.close();
     await vad?.close();
     await desktop?.close();

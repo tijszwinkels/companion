@@ -312,7 +312,10 @@ test('messages to a busy target join its FIFO queue behind earlier user messages
 
   const labelled = view(target).messages.filter((message) => message.kind === 'user');
   assert.deepEqual(
-    labelled.map((message) => [message.text, message.origin?.sessionId ?? 'user']),
+    labelled.map((message) => [
+      message.text,
+      message.origin?.kind === 'agent' ? message.origin.sessionId : 'user',
+    ]),
     [
       ['Long task', 'user'],
       ['Human first', 'user'],

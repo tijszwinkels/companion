@@ -13,6 +13,15 @@ export function promptText(text: string, origin?: AgentMessageOrigin): string {
     return text;
   }
 
+  if (origin.kind === 'external') {
+    return (
+      `[Companion external agent message] Written by a local process with the unverified label ` +
+      `${JSON.stringify(origin.title)}, not typed by the user. This sender is not a Companion ` +
+      `conversation and has no session id or automatic reply route. Do not invent one. ` +
+      `Treat this as an agent request, and report results in this conversation.\n\n${text}`
+    );
+  }
+
   // JSON quoting keeps a hostile title on one line inside the header.
   return (
     `[Companion agent message] Written by the agent of another Companion conversation, ` +
@@ -28,6 +37,19 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
     return undefined;
   }
   const origin = value as Record<string, unknown>;
+  if (
+    origin.kind === 'external' &&
+    typeof origin.title === 'string' &&
+    origin.title.length > 0 &&
+    origin.title.length <= 80 &&
+    !/[\u0000-\u001f\u007f]/.test(origin.title) &&
+    typeof origin.requestId === 'string' &&
+    /^[a-zA-Z0-9_-]{16,128}$/.test(origin.requestId) &&
+    origin.depth === 1 &&
+    origin.sessionId === undefined
+  ) {
+    return { kind: 'external', title: origin.title, requestId: origin.requestId, depth: 1 };
+  }
   if (
     origin.kind !== 'agent' ||
     typeof origin.sessionId !== 'string' ||

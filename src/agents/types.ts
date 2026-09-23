@@ -9,7 +9,17 @@ import type { AgentChoice, AgentChoiceSet } from './choices.ts';
  * receives an explicit header. `depth` counts agent-to-agent hops since the last
  * human-originated turn and bounds feedback loops between conversations.
  */
-export interface AgentMessageOrigin {
+export type AgentMessageOrigin = InternalAgentOrigin | ExternalAgentOrigin;
+
+/** Local same-user caller. Its label is supplied, never authenticated. */
+export interface ExternalAgentOrigin {
+  kind: 'external';
+  title: string;
+  requestId: string;
+  depth: number;
+}
+
+export interface InternalAgentOrigin {
   kind: 'agent';
   /** Sender conversation ID. It may since have been closed or renamed. */
   sessionId: string;
@@ -122,7 +132,7 @@ export interface AgentDraftRequest {
   ifDraftExists: 'reject' | 'append';
   /** Select the target and reveal the panel only when explicitly requested. */
   focus: boolean;
-  source: { sessionId: string; title: string };
+  source: { sessionId: string; title: string } | { kind: 'external'; title: string };
 }
 
 /**

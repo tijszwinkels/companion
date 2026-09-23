@@ -190,7 +190,7 @@ Item {
     }
 
     const title = request.source && typeof request.source.title === "string" ? request.source.title : ""
-    root.draftSources = Object.assign({}, root.draftSources, {[id]: title || "another conversation"})
+    root.draftSources = Object.assign({}, root.draftSources, {[id]: (request.source && request.source.kind === "external" ? "external (unverified) · " : "") + (title || "another conversation")})
     if (displayed) {
       composer.text = next
       composer.cursorPosition = composer.length
@@ -243,6 +243,7 @@ Item {
         toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
         toolRevision: message.toolGroup ? message.toolGroup.revision : "",
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
+        fromExternal: message.origin ? message.origin.kind === "external" : false,
         fromAgent: message.origin !== undefined && message.origin !== null,
         originTitle: message.origin ? message.origin.title || "" : "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
@@ -323,6 +324,7 @@ Item {
       required property string toolRevision
       required property string widgetJson
       // Written by another conversation's agent through session tools.
+      required property bool fromExternal
       required property bool fromAgent
       required property string originTitle
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
@@ -387,7 +389,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? (bubble.fromAgent ? "Agent · " + (bubble.originTitle || "another conversation") : "You")
+              : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText

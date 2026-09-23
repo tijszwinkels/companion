@@ -83,7 +83,7 @@ export class AgentSessions implements InspectableModule {
   private readonly widgets: WidgetService;
   private orderRevision = randomUUID();
   private readonly modelChanges = new Set<string>();
-  private readonly sessionTools: SessionToolService;
+  readonly sessionTools: SessionToolService;
   // The desktop runtime owns UI connections and therefore unsent drafts.
   private draftHost?: AgentDraftHost;
 
@@ -1056,7 +1056,11 @@ export class AgentSessions implements InspectableModule {
    * Discoverable targets for session tools: every open tab in visible order,
    * and bounded saved summaries. Transcripts and drafts are never included.
    */
-  private sessionDirectory(sender: string, query: string, limit: number): SessionDirectory {
+  private sessionDirectory(
+    sender: string | undefined,
+    query: string,
+    limit: number,
+  ): SessionDirectory {
     const open: OpenSessionToolSummary[] = [];
     for (const session of this.sessions.values()) {
       open.push({
@@ -1151,7 +1155,7 @@ export class AgentSessions implements InspectableModule {
 
   private async closeFromAgent(
     id: string,
-    sender: string,
+    sender: string | undefined,
     signal: AbortSignal,
   ): Promise<{
     outcome: 'closed' | 'closing-after-turn' | 'already-closed';
@@ -1226,7 +1230,10 @@ export class AgentSessions implements InspectableModule {
         text: request.text,
         ifDraftExists: request.ifDraftExists,
         focus: request.focus,
-        source: { sessionId: request.origin.sessionId, title: request.origin.title },
+        source:
+          request.origin.kind === 'external'
+            ? { kind: 'external', title: request.origin.title }
+            : { sessionId: request.origin.sessionId, title: request.origin.title },
       },
       signal,
     );

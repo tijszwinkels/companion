@@ -790,3 +790,14 @@ flush, but bursts no longer write each superseded cumulative body. Tool records 
 retained on disk with archived conversations. This adds no automatic deletion or
 retention policy. Running the old listener against compact archives cannot show
 these details; downgrade requires the matching implementation or a legacy backup.
+
+### External session message and draft sources
+
+The optional [external local API](../agents/external/README.md) shares session
+lifecycle and the existing draft protocol. Messages may additionally carry
+`origin: {kind: "external", title, requestId, depth: 1}`. Draft `source` may be
+`{kind: "external", title}` without `sessionId`. The shared panel labels these
+sources **external (unverified)**, retains existing composer text by default,
+and preserves the existing no-focus/explicit-focus behavior. Internal sources
+and turn leases keep their current shape and semantics. Update the listener and
+shared UI together to display the explicit external attribution.
