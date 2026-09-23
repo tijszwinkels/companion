@@ -1,47 +1,189 @@
+* {
+  box-sizing: border-box;
+}
+[hidden] {
+  display: none !important;
+}
+.todo-card {
+  --coral: #dc7664;
+  --line: color-mix(in srgb, var(--foreground) 14%, transparent);
+  width: 100%;
+  min-width: 0;
+  color: var(--foreground);
+  font:
+    calc(1.204rem * var(--todo-text-scale, 0.9))/1.4 system-ui,
+    sans-serif;
+}
+.todo-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
 h2 {
-  font-size: 1.05rem;
-  margin: 0 0 12px;
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: calc(2.05rem * var(--todo-text-scale, 0.9));
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.progress {
+  color: var(--muted);
+  font-size: calc(1rem * var(--todo-text-scale, 0.9));
+}
+.progress-track {
+  height: 3px;
+  margin: 0.85rem 0 1rem;
+  background: var(--line);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--coral);
+  transition: width 180ms ease;
+}
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+form {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--foreground) 3%, transparent);
+  margin-bottom: 0.5rem;
+}
+form input {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+  padding: 0.3rem;
+  border: 0;
+  background: transparent;
+}
+form input::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }
 button {
-  border: 1px solid var(--muted);
+  flex: none;
+  border: 0;
+  border-radius: 3px;
   background: transparent;
-  border-radius: 6px;
-  padding: 4px 8px;
+  color: var(--coral);
+  font-size: calc(1.82rem * var(--todo-text-scale, 0.9));
+  line-height: 1;
+  padding: 0.15rem 0.55rem;
+  cursor: pointer;
 }
-input {
-  background: transparent;
-  border: 1px solid var(--muted);
-  border-radius: 4px;
-  padding: 5px;
+button:hover {
+  background: color-mix(in srgb, var(--coral) 12%, transparent);
+}
+button:disabled,
+input:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--coral);
+  outline-offset: 3px;
 }
 .todos {
   display: grid;
-  gap: 9px;
-  margin-bottom: 14px;
 }
-label {
+.todo-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.8rem 0.15rem;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
 }
-label span {
+.todo-row:last-child {
+  border-bottom: 0;
+}
+.todo-row:hover {
+  background: color-mix(in srgb, var(--foreground) 3%, transparent);
+}
+.item-text {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   overflow-wrap: anywhere;
 }
-input[type='checkbox'] {
-  accent-color: var(--accent);
-  width: 18px;
-  height: 18px;
-  flex: none;
+.item-editor {
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.item-editor input {
+  flex: 1 1 100%;
+}
+.item-editor button {
+  font: inherit;
+  font-size: 0.85em;
+  padding: 0.3rem;
+}
+.check-circle {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  flex: 0 0 1.2rem;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin: 0.2rem 0 0;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.check-circle:checked {
+  border-color: var(--coral);
+  background: var(--coral);
+}
+.check-circle:checked::after {
+  content: '';
+  width: 0.5rem;
+  height: 0.25rem;
+  border-left: 2px solid #202028;
+  border-bottom: 2px solid #202028;
+  transform: translateY(-0.06rem) rotate(-45deg);
 }
 .completed {
   text-decoration: line-through;
   color: var(--muted);
 }
-form {
-  display: flex;
-  gap: 8px;
+.empty {
+  color: var(--muted);
+  font-size: calc(1.05rem * var(--todo-text-scale, 0.9));
+  margin: 1rem 0;
 }
-form input {
-  min-width: 0;
-  flex: 1;
+.message {
+  color: var(--coral);
+  font-size: calc(1rem * var(--todo-text-scale, 0.9));
+  overflow-wrap: anywhere;
+}
+.message:empty {
+  display: none;
+}
+@media (max-width: 320px) {
+  h2 {
+    font-size: calc(1.75rem * var(--todo-text-scale, 0.9));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill {
+    transition: none;
+  }
 }
