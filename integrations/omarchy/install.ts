@@ -73,6 +73,7 @@ const files = [
   'panel/PhraseActivity.qml',
   'panel/AgentSessionState.qml',
   'panel/AgentChoices.qml',
+  'panel/ModelPicker.qml',
   'panel/PanelAction.qml',
   'panel/SessionView.qml',
   'panel/ToolDetails.qml',

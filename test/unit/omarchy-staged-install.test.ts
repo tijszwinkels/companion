@@ -160,6 +160,24 @@ test('staged install preserves config and reloads only when Lua integration chan
   assert.equal(await readFile(installedBindings, 'utf8'), sourceBindings);
 });
 
+test('staged install includes every shared panel QML component', async (context) => {
+  const setup = await fixture(context);
+  await setup.install();
+
+  const manifest = JSON.parse(await readFile(join(setup.destination, 'manifest.json'), 'utf8'));
+  const revision = manifest.entryPoints.service.split('/')[0];
+
+  // Check the installed bundle against the source directory, not another copy
+  // of the installer's file list. A missing local type prevents the entire
+  // service from loading, including shortcuts used by the standalone UI.
+  const sourceFiles = await readdir(join(checkout, 'integrations/panel'));
+  const installedFiles = await readdir(join(setup.destination, revision, 'panel'));
+  const sourceComponents = sourceFiles.filter((file) => file.endsWith('.qml')).sort();
+  const installedComponents = installedFiles.filter((file) => file.endsWith('.qml')).sort();
+
+  assert.deepEqual(installedComponents, sourceComponents, 'Stage every shared panel QML type');
+});
+
 test('staged install rejects a conflicting focus shortcut before writing config', async (context) => {
   const setup = await fixture(context);
   const beforeBindings = await readFile(setup.bindingsPath, 'utf8');
