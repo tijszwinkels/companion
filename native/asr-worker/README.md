@@ -78,8 +78,13 @@ This interrupts even synchronous native inference or model loading. No late text
 is returned to the pipeline. Pause keeps an **idle** model resident but cancels
 an active request. Shutdown cancels outstanding work and releases the process.
 
-There is no automatic retry and no audio replay. A later utterance can create one
-replacement after the previous process has closed. Repeated failures consume one
+Failed, timed-out and cancelled requests are never retried or replayed. The one
+exception is a successful but **empty** result: the transcriber sends the same
+samples once more, with 250 ms of digital silence on each side, to the same worker
+within the same operation timeout. Punctuation-only results, quiet input below the
+retry floor, and input that padding would push past 31 seconds are not retried. See
+[empty-result retry](../../docs/short-phrase-recognition.md#empty-result-retry).
+A later utterance can create one replacement after the previous process has closed. Repeated failures consume one
 attempt per new utterance, never a background restart loop. An idle worker exit is
 noticed by the next call. The bounded pipeline remains the only utterance queue.
 
@@ -102,7 +107,8 @@ The executable accepts `--model DIRECTORY`. After loading, stdout emits:
 Each stdin request consists of a little-endian unsigned 32-bit sample count,
 followed by that many signed little-endian 16-bit PCM samples (16 kHz, mono).
 The helper checks `1 <= count <= 496000` before allocating. Only one request may
-be outstanding. No request IDs, retry protocol or cancellation messages are needed:
+be outstanding. The empty-result retry is an ordinary second request after the
+first response. No request IDs, retry protocol or cancellation messages are needed:
 cancellation destroys the process, so its response cannot be mistaken for a later
 utterance's result.
 

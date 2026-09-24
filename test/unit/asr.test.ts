@@ -17,18 +17,34 @@ import { processor, screenshot, signal, testDetector, testSensors } from '../hel
 
 interface Plan {
   start?: string;
+  /** Action for every request, unless `requests` scripts that request index. */
   request?: string;
+  requests?: (string | undefined)[];
 }
 
 interface WorkerEvent {
   event: 'start' | 'request';
   pid: number;
+  /** Request framing only: counts and a hash, never samples. */
+  samples?: number;
+  leadingZeros?: number;
+  trailingZeros?: number;
+  hash?: string;
 }
 
-/** A real child process makes pipe handling and reaping part of the assertion. */
-async function fixture(context: TestContext, plans: Plan[] = [{}], text = 'Dublin.') {
+/**
+ * A real child process makes pipe handling and reaping part of the assertion.
+ * `texts` scripts consecutive responses within one worker process; `text`
+ * answers every other request.
+ */
+async function fixture(
+  context: TestContext,
+  plans: Plan[] = [{}],
+  text = 'Dublin.',
+  texts?: string[],
+) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-asr-test-'));
-  await writeFile(join(directory, 'worker.json'), JSON.stringify({ plans, text }));
+  await writeFile(join(directory, 'worker.json'), JSON.stringify({ plans, text, texts }));
   const config = {
     workerBinary: fileURLToPath(new URL('../fixtures/asr-worker.cjs', import.meta.url)),
     modelDir: directory,
@@ -164,6 +180,288 @@ test('diagnostics distinguish quiet input, empty output, punctuation and worker 
   );
   assert.ok(diagnostics.every((entry) => entry.elapsedMs >= 0));
   assert.equal(JSON.stringify(diagnostics).includes('secret-transcript'), false);
+});
+
+// Empty-result recovery: one padded retry on the same worker, and only after a
+// first pass that returned no text at all.
+const RETRY_PADDING_SAMPLES = 4000;
+
+async function requests(worker: Awaited<ReturnType<typeof fixture>>): Promise<WorkerEvent[]> {
+  return (await worker.events()).filter((event) => event.event === 'request');
+}
+
+test('a first-pass result sends exactly one request and reports no retry', async (context) => {
+  const worker = await fixture(context);
+  const diagnostics: TranscriptionDiagnostic[] = [];
+
+  assert.equal(
+    await worker.transcriber.transcribe(speech(), signal(), (entry) => diagnostics.push(entry)),
+    'Dublin.',
+  );
+
+  const sent = await requests(worker);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].samples, speech().length);
+  assert.equal(sent[0].leadingZeros, 0, 'Normal requests are not padded');
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].outcome, 'text');
+  assert.equal('emptyRetry' in diagnostics[0], false);
+  assert.equal('retryMs' in diagnostics[0], false);
+});
+
+test('an empty first pass is retried once with padding around unchanged samples', async (context) => {
+  const worker = await fixture(context, [{}], 'unused', ['', ' Dublin. ']);
+  const diagnostics: TranscriptionDiagnostic[] = [];
+  const samples = speech();
+  const original = samples.slice();
+
+  assert.equal(
+    await worker.transcriber.transcribe(samples, signal(), (entry) => diagnostics.push(entry)),
+    'Dublin.',
+  );
+
+  assert.deepEqual(samples, original, 'The caller keeps its original, unpadded samples');
+  const [first, retry, ...rest] = await requests(worker);
+  assert.deepEqual(rest, []);
+  assert.equal(first.samples, samples.length);
+  assert.equal(first.leadingZeros, 0);
+  assert.equal(retry.pid, first.pid, 'The retry reuses the resident worker');
+  assert.equal(retry.samples, samples.length + 2 * RETRY_PADDING_SAMPLES);
+  assert.equal(retry.leadingZeros, RETRY_PADDING_SAMPLES);
+  assert.equal(retry.trailingZeros, RETRY_PADDING_SAMPLES);
+  assert.equal(retry.hash, first.hash, 'The retry carries the same encoded samples');
+
+  assert.equal(diagnostics.length, 1, 'One report per operation');
+  assert.equal(diagnostics[0].outcome, 'text');
+  assert.equal(diagnostics[0].emptyRetry, 'recovered');
+  assert.equal(diagnostics[0].characters, 'Dublin.'.length);
+  assert.equal(diagnostics[0].audioMs, samples.length / 16, 'Audio length excludes padding');
+  assert.ok(diagnostics[0].retryMs! >= 0);
+  assert.ok(diagnostics[0].elapsedMs >= diagnostics[0].retryMs!);
+  assert.equal(JSON.stringify(diagnostics).includes('Dublin'), false);
+});
+
+for (const [retryText, outcome] of [
+  ['', 'empty'],
+  ['  ', 'empty'],
+  ['…', 'punctuation'],
+] as const) {
+  test(`a retry returning ${JSON.stringify(retryText)} stays unusable and is not retried again`, async (context) => {
+    const worker = await fixture(context, [{}], 'Dublin.', ['', retryText]);
+    const diagnostics: TranscriptionDiagnostic[] = [];
+
+    assert.equal(
+      await worker.transcriber.transcribe(speech(), signal(), (entry) => diagnostics.push(entry)),
+      '',
+    );
+
+    assert.equal((await requests(worker)).length, 2);
+    assert.deepEqual(
+      diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+      [[outcome, outcome]],
+    );
+
+    // The next utterance starts a fresh first pass on the same worker.
+    assert.equal(await worker.transcriber.transcribe(speech(), signal()), 'Dublin.');
+    assert.equal((await requests(worker)).length, 3);
+    assert.equal((await worker.events()).filter((item) => item.event === 'start').length, 1);
+  });
+}
+
+test('punctuation, silence and quiet input never send a retry', async (context) => {
+  const diagnostics: TranscriptionDiagnostic[] = [];
+  const observe = (entry: TranscriptionDiagnostic) => diagnostics.push(entry);
+  const punctuation = await fixture(context, [{}], 'Dublin.', ['...', 'Dublin.']);
+  const silence = await fixture(context, [{}], '');
+  const quiet = await fixture(context, [{}], 'Dublin.', ['', 'Dublin.']);
+
+  assert.equal(await punctuation.transcriber.transcribe(speech(), signal(), observe), '');
+  assert.equal((await requests(punctuation)).length, 1);
+
+  assert.equal(
+    await silence.transcriber.transcribe(new Float32Array(16000), signal(), observe),
+    '',
+  );
+  assert.deepEqual(await silence.events(), []);
+
+  // Strongest-window RMS 0.004: above the 0.0005 silence floor, below the
+  // 0.005 retry floor where public quiet phrases mostly retried to wrong words.
+  const quietSpeech = new Float32Array(16000).fill(0.004);
+  assert.equal(await quiet.transcriber.transcribe(quietSpeech, signal(), observe), '');
+  assert.equal((await requests(quiet)).length, 1);
+
+  assert.deepEqual(
+    diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+    [
+      ['punctuation', undefined],
+      ['silence', undefined],
+      ['empty', 'quiet'],
+    ],
+  );
+  assert.equal(diagnostics[2].retryMs, undefined);
+});
+
+test('the retry is skipped when padding would exceed the 31-second request bound', async (context) => {
+  const worker = await fixture(context, [{}], '', []);
+  const diagnostics: TranscriptionDiagnostic[] = [];
+  const observe = (entry: TranscriptionDiagnostic) => diagnostics.push(entry);
+  const limit = 16000 * 31;
+
+  // Exactly at the bound once padded: retried. One sample longer: skipped.
+  // At the input bound itself: skipped, with the original request unchanged.
+  for (const length of [
+    limit - 2 * RETRY_PADDING_SAMPLES,
+    limit - 2 * RETRY_PADDING_SAMPLES + 1,
+    limit,
+  ]) {
+    assert.equal(
+      await worker.transcriber.transcribe(new Float32Array(length).fill(0.1), signal(), observe),
+      '',
+    );
+  }
+
+  assert.deepEqual(
+    (await requests(worker)).map((event) => event.samples),
+    [limit - 2 * RETRY_PADDING_SAMPLES, limit, limit - 2 * RETRY_PADDING_SAMPLES + 1, limit],
+  );
+  assert.deepEqual(
+    diagnostics.map((entry) => entry.emptyRetry),
+    ['empty', 'too-long', 'too-long'],
+  );
+});
+
+test('a first-pass worker error is not retried', async (context) => {
+  const worker = await fixture(context, [{ request: 'inference-error' }, {}]);
+  const diagnostics: TranscriptionDiagnostic[] = [];
+
+  await assert.rejects(
+    worker.transcriber.transcribe(speech(), signal(), (entry) => diagnostics.push(entry)),
+    /ASR worker/,
+  );
+
+  const sent = await requests(worker);
+  assert.equal(sent.length, 1);
+  assertReaped(sent[0].pid);
+  assert.deepEqual(
+    diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+    [['error', undefined]],
+  );
+});
+
+test('a retry failure rejects without a hidden restart; the next utterance recovers', async (context) => {
+  const worker = await fixture(
+    context,
+    [{ requests: [undefined, 'inference-error'] }, {}],
+    'Dublin.',
+    [''],
+  );
+  const diagnostics: TranscriptionDiagnostic[] = [];
+
+  await assert.rejects(
+    worker.transcriber.transcribe(speech(), signal(), (entry) => diagnostics.push(entry)),
+    (error: Error) => {
+      assert.match(error.message, /ASR worker/);
+      assert.equal(error.message.includes('secret-transcript'), false);
+      return true;
+    },
+  );
+
+  const sent = await requests(worker);
+  assert.equal(sent.length, 2);
+  assertReaped(sent[1].pid);
+  assert.equal((await worker.events()).filter((item) => item.event === 'start').length, 1);
+  assert.deepEqual(
+    diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+    [['error', 'error']],
+  );
+  assert.ok(diagnostics[0].retryMs! >= 0);
+
+  // Only a later utterance starts a replacement. Its operation begins with a
+  // fresh unpadded first pass (scripted empty again), then its own one retry.
+  assert.equal(await worker.transcriber.transcribe(speech(), signal()), 'Dublin.');
+  const events = await worker.events();
+  const starts = events.filter((item) => item.event === 'start');
+  assert.equal(starts.length, 2);
+  const replacement = (await requests(worker)).filter((item) => item.pid === starts[1].pid);
+  assert.deepEqual(
+    replacement.map((item) => item.leadingZeros),
+    [0, RETRY_PADDING_SAMPLES],
+  );
+});
+
+test('cancellation during the first pass sends no retry', async (context) => {
+  const worker = await fixture(context, [{ requests: ['delay'] }, {}], 'Dublin.', ['']);
+  const diagnostics: TranscriptionDiagnostic[] = [];
+  const controller = new AbortController();
+
+  const operation = worker.transcriber.transcribe(speech(), controller.signal, (entry) =>
+    diagnostics.push(entry),
+  );
+  const rejected = assert.rejects(operation, /abort/i);
+  const first = await worker.waitFor('request');
+  controller.abort();
+  await rejected;
+
+  // Give a (wrong) retry the chance to reach the reaped worker.
+  await delay(200);
+  assertReaped(first.pid);
+  assert.equal((await requests(worker)).length, 1);
+  assert.deepEqual(
+    diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+    [['error', undefined]],
+  );
+});
+
+for (const reason of ['cancel', 'close'] as const) {
+  test(`${reason} during the retry rejects and reaps the worker`, async (context) => {
+    const worker = await fixture(context, [{ requests: [undefined, 'hang'] }, {}], 'Dublin.', ['']);
+    const diagnostics: TranscriptionDiagnostic[] = [];
+    const controller = new AbortController();
+
+    const operation = worker.transcriber.transcribe(speech(), controller.signal, (entry) =>
+      diagnostics.push(entry),
+    );
+    const rejected = assert.rejects(operation, /abort|closed/i);
+    const retry = await worker.waitFor('request', 2);
+    if (reason === 'cancel') {
+      controller.abort();
+    } else {
+      await worker.transcriber.close();
+    }
+    await rejected;
+
+    assertReaped(retry.pid);
+    assert.equal((await requests(worker)).length, 2);
+    assert.deepEqual(
+      diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+      [['error', 'error']],
+    );
+  });
+}
+
+test('the retry shares the operation timeout instead of receiving a new one', async (context) => {
+  // The first pass takes 150 ms, then the retry hangs. A fresh retry timeout
+  // would settle no earlier than 150 + 400 ms after the call.
+  const worker = await fixture(context, [{ requests: ['delay', 'hang'] }, {}], 'Dublin.', ['']);
+  await worker.transcriber.start(signal());
+  worker.config.timeoutMs = 400;
+  const diagnostics: TranscriptionDiagnostic[] = [];
+
+  const started = performance.now();
+  await assert.rejects(
+    worker.transcriber.transcribe(speech(), signal(), (entry) => diagnostics.push(entry)),
+    /timed out/,
+  );
+  const elapsed = performance.now() - started;
+
+  assert.ok(elapsed < 540, `Timed out after ${Math.round(elapsed)} ms`);
+  const sent = await requests(worker);
+  assert.equal(sent.length, 2);
+  assertReaped(sent[1].pid);
+  assert.deepEqual(
+    diagnostics.map((entry) => [entry.outcome, entry.emptyRetry]),
+    [['error', 'error']],
+  );
 });
 
 test('a throwing diagnostic observer cannot replace ASR results or worker errors', async (context) => {
@@ -346,6 +644,91 @@ test('pause cancels real worker and pending frames; resume routes only new audio
   assert.deepEqual(delivered, [3]);
   assert.equal(pipeline.failures, 0);
 });
+
+for (const retryText of ['', 'Dublin.']) {
+  const recovered = retryText !== '';
+
+  test(`pipeline ${recovered ? 'routes recovered text' : 'retains the original clip'} after an empty first pass`, async (context) => {
+    const worker = await fixture(context, [{}], 'unused', ['', retryText]);
+    const delivered: string[] = [];
+    const logged: { stage: string; detail: string }[] = [];
+    const recordings: {
+      kind: string;
+      samples: Float32Array;
+      copy: Float32Array;
+      clip?: unknown;
+    }[] = [];
+    const router = new UserSensorRouter(
+      { detector: testDetector({ detect: async () => 'IGNORE' }) },
+      () => {},
+    );
+    processor('IGNORE', async (frame) => {
+      delivered.push(frame.utterance);
+    }).subscribe(router);
+
+    const pipeline = new SensorPipeline(
+      {
+        ...testSensors({
+          capture: async () => screenshot,
+          transcribe: async () => assert.fail('Replaced by the real transcriber'),
+        }),
+        transcriber: worker.transcriber,
+        router,
+      },
+      (stage, detail) => {
+        logged.push({ stage, detail });
+      },
+      signal(),
+      {
+        audioCaptured: async (_id, samples) => {
+          recordings.push({ kind: 'audio', samples, copy: samples.slice() });
+        },
+        emptyAudioCaptured: async (clip) => {
+          recordings.push({
+            kind: 'empty',
+            samples: clip.samples,
+            copy: clip.samples.slice(),
+            clip,
+          });
+          return 'synthetic-clip';
+        },
+      },
+    );
+
+    // 250 ms: long enough for the empty-clip duration floor of 128 ms.
+    const samples = new Float32Array(4000).fill(0.1);
+    const original = samples.slice();
+    pipeline.submit(samples);
+    await pipeline.idle();
+
+    // Either way, storage receives the pipeline's own unpadded sample buffer
+    // with its original contents; the pipeline clears it only afterwards.
+    assert.equal(recordings.length, 1);
+    assert.equal(recordings[0].kind, recovered ? 'audio' : 'empty');
+    assert.equal(recordings[0].samples, samples);
+    assert.deepEqual(recordings[0].copy, original);
+    assert.ok(samples.every((sample) => sample === 0));
+
+    const asr = logged
+      .filter((entry) => entry.stage === 'asr')
+      .map((entry) => JSON.parse(entry.detail));
+    assert.equal(asr.length, 1);
+    assert.equal(asr[0].outcome, recovered ? 'text' : 'empty');
+    assert.equal(asr[0].emptyRetry, recovered ? 'recovered' : 'empty');
+    assert.deepEqual(delivered, recovered ? ['Dublin.'] : []);
+    assert.equal(
+      logged.some((entry) => entry.stage === 'asr-recorded'),
+      !recovered,
+      'Only a final empty result is retained as an empty clip',
+    );
+    if (!recovered) {
+      const clip = recordings[0].clip as { diagnostic: TranscriptionDiagnostic };
+      assert.equal(clip.diagnostic.emptyRetry, 'empty');
+    }
+    assert.equal(pipeline.failures, 0);
+    assert.equal((await requests(worker)).length, 2);
+  });
+}
 
 test('old Voxtype binary config is rejected with migration instructions', async (context) => {
   const worker = await fixture(context);

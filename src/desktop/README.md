@@ -409,13 +409,21 @@ This separate top-level `asr-empty/` tree stays outside successful recordings in
 as the storage root. No empty history row, screenshot, application context, or intent
 is saved.
 
-Only a confirmed ASR `empty` outcome qualifies, with at least 128 ms of input and
+Only a confirmed final ASR `empty` outcome qualifies, with at least 128 ms of input and
 strongest-128-ms-window RMS at or above 0.0005. Live audio has already passed the
 VAD requirement of 128 ms of voiced frames. These are the existing speech gates;
 they do not establish that the sound is intelligible. Silence rejection,
 punctuation-only output, worker errors, untranscribed cancelled jobs and overload
 drops do not create these clips. The helper exposes empty **text**, so this does
 not distinguish zero raw tokens from special-token-only output.
+
+The transcriber may retry an empty first pass once with padding
+([details](../../docs/short-phrase-recognition.md#empty-result-retry)). Retention uses
+the final outcome: a recovered transcript follows the ordinary transcript path, and
+its WAV is the original, unpadded segment. A clip is retained when the retry is still
+empty or was skipped; its diagnostic `emptyRetry` field records which. A retry that
+returns punctuation or fails is not retained, matching those first-pass outcomes.
+The saved audio is always the captured segment, never the padded retry input.
 
 Each clip keeps the complete 16 kHz mono PCM16 segment, using the ASR conversion.
 Metadata version 1 contains its UUID, pipeline frame ID, observation timestamp,

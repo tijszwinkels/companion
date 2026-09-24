@@ -582,7 +582,8 @@ and a 30-second segment limit. Audio startup loads one persistent
 Parakeet worker before capture. Successful utterances reuse it. Pause keeps an idle
 model warm; cancellation during ASR kills the worker, and the next utterance loads
 a replacement. Shutdown closes it. Failures are never replayed and the transcriber
-has no additional queue. [Protocol, recovery and measured latency](native/asr-worker/README.md).
+has no additional queue. An empty result from clearly audible input gets one padded
+retry on the same worker ([details](docs/short-phrase-recognition.md#empty-result-retry)). [Protocol, recovery and measured latency](native/asr-worker/README.md).
 
 The pre-ASR digital-silence guard measures the strongest 128 ms audio window at
 the existing RMS floor of 0.0005. Averaging over a whole utterance could otherwise
