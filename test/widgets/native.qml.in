@@ -41,6 +41,18 @@ Item {
       tryVerify(function() { return finished })
       return value
     }
+    function clickControl(browser, selector) {
+      let point = evaluate(browser.mainFrame.children[0], "(() => { const b = document.querySelector(" + JSON.stringify(selector) + ").getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()")
+      // Inline editing can extend below a short viewport after zoom. Scroll
+      // through real Qt wheel events before targeting the rendered button.
+      for (let attempt = 0; (point.y < 0 || point.y >= widget.height) && attempt < 5; attempt++) {
+        mouseWheel(widget, widget.width / 2, widget.height / 2, 0, point.y < 0 ? 120 : -120)
+        wait(100)
+        point = evaluate(browser.mainFrame.children[0], "(() => { const b = document.querySelector(" + JSON.stringify(selector) + ").getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()")
+      }
+      verify(point.y >= 0 && point.y < widget.height, "Control must be visible before Qt input")
+      mouseClick(widget, point.x, point.y)
+    }
     function test_direct_rendering_input_theme_resize_and_escape() {
       const browser = findChild(widget, "nativeWidgetBrowser")
       verify(browser !== null, widget.error)
@@ -50,10 +62,10 @@ Item {
       compare(widget.error, "")
       mouseMove(widget, 40, 60)
       tryCompare(findChild(widget, "widgetPopout"), "opacity", 1)
-      mouseClick(widget, 24, 56)
+      clickControl(browser, "input[type=checkbox]")
       verify(interactions.count > 0, "Native input must clear any selected transcript text")
       tryVerify(function() { return state().props.items[0].completed === true }, 5000)
-      mouseClick(widget, 110, 98)
+      clickControl(browser, "input:not([type=checkbox])")
       for (const letter of "native input") keyClick(letter)
       widget.textScale = 1.25
       widget.selection = "#e8eef5"
@@ -72,9 +84,16 @@ Item {
       let saved = false
       widget.grabToImage(function(result) { saved = result.saveToFile("@CAPTURE@") })
       tryVerify(function() { return saved })
-      mouseClick(widget, 100, 20)
+      clickControl(browser, ".item-text")
+      for (const letter of "retained edit") keyClick(letter)
       keyClick(Qt.Key_Escape)
       verify(findChild(widget, "widgetPopout").activeFocus)
+      const frame = browser.mainFrame.children[0]
+      compare(evaluate(frame, "document.querySelector('.item-editor input').value"), "retained edit")
+      compare(evaluate(frame, "document.querySelector('.item-editor').hidden"), false)
+      clickControl(browser, ".item-editor button[type=button]")
+      tryVerify(function() { return evaluate(frame, "document.querySelector('.item-editor').hidden") === true })
+      compare(state().props.items[0].text, "Direct Chromium")
       widget.running = false
       compare(browser.visible, false)
       tryVerify(function() { return evaluate(browser, "document.hidden") === true })

@@ -177,7 +177,12 @@ TestCase {
     body.panel.zoomPercent = 100
     body.command({action: "theme", values: {unit: 1}})
     wait(250)
-    mouseClick(surface, 24, 56)
+    // Read the rendered control after theme/zoom/resize, then keep the actual
+    // Qt pointer path (including WebEngine's render-scale transform).
+    let checkbox = null
+    view.mainFrame.children[0].runJavaScript("(() => { const b = document.querySelector('input[type=checkbox]').getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()", function(value) { checkbox = value })
+    tryVerify(function() { return checkbox !== null })
+    mouseClick(surface, checkbox.x, checkbox.y)
     tryVerify(function() { return state(surface).props.items[0].completed === true }, 5000)
     let captured = false
     body.grabToImage(function(result) { captured = result.saveToFile("@CAPTURE@") })

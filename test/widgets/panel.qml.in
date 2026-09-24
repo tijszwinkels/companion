@@ -16,19 +16,36 @@ Item {
   TestCase {
     name: "CompanionRealWidgetSurface"
     when: windowShown
+    function control(selector) {
+      let value = null
+      const request = new XMLHttpRequest()
+      request.open("GET", @CONTROLS@ + "?selector=" + encodeURIComponent(selector))
+      request.onreadystatechange = function() {
+        if (request.readyState === XMLHttpRequest.DONE && request.status === 200)
+          value = JSON.parse(request.responseText)
+      }
+      request.send()
+      tryVerify(function() { return value !== null })
+      return value
+    }
+    function clickControl(selector) {
+      const point = control(selector)
+      verify(point.visible)
+      mouseClick(widget, point.x, point.y)
+    }
     function test_real_frame_click_keyboard_zoom_and_snapshot() {
       const frame = findChild(widget, "widgetFrame")
       tryCompare(frame, "status", Image.Ready, 10000)
       compare(frame.sourceSize.width, 960)
       compare(frame.sourceSize.height, 560)
       compare(widget.error, "")
-      mouseClick(widget, 24, 56)
+      clickControl("input[type=checkbox]")
       let state = null
       tryVerify(function() {
         widget.request("/state", null, function(value) { state = value })
         return state && state.props.items[0].completed === true
       }, 5000)
-      mouseClick(widget, 110, 98)
+      clickControl("input:not([type=checkbox])")
       for (const letter of "typed inside qt") keyClick(letter)
       keyClick(Qt.Key_A, Qt.ControlModifier)
       keyClick(Qt.Key_C, Qt.ControlModifier)
@@ -42,6 +59,14 @@ Item {
         return state && state.props.items.length === 2
       }, 5000)
       compare(state.props.items[1].text, "typed inside qt")
+      // Escape is routed by the real portable host, leaving the browser's
+      // focused input and its draft intact. Native coverage also opens an edit
+      // and checks the explicit Cancel button through Qt pointer input.
+      for (const letter of "retained draft") keyClick(letter)
+      tryVerify(function() { return control("input:not([type=checkbox])").value === "retained draft" })
+      keyClick(Qt.Key_Escape)
+      verify(findChild(widget, "widgetPopout").activeFocus)
+      compare(control("input:not([type=checkbox])").value, "retained draft")
       widget.textScale = 1.25
       widget.selection = "#e8eef5"
       widget.foreground = "#1b2531"
