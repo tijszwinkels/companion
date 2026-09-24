@@ -27,7 +27,7 @@
 import { performance } from 'node:perf_hooks';
 
 import { fingerprint, loadDataset, restoreExample, type EvalExample } from '../../dataset.ts';
-import { describeRequestError } from '../../errors.ts';
+import { describeRequestError, SafeEvalError } from '../../errors.ts';
 import { runBounded } from '../../pool.ts';
 import { complete, validateTargets, type EvalTarget } from '../../transport.ts';
 import type { IntentRequestRecord } from '../../../core/intent-request.ts';
@@ -41,6 +41,7 @@ import {
 import {
   diagnosticIntentSelection,
   parseExperimentResponse,
+  PERCENTAGE_REASONS,
   type InvalidReason,
   type ResponseExpectation,
   type TextRoute,
@@ -53,12 +54,14 @@ import {
 } from './fixed-routes.ts';
 import {
   buildFixedRouteRequest,
+  PERCENTAGES_VARIANT_ID,
   promptFingerprint,
   transformRecordedRequest,
   UnsupportedExampleError,
   validateOutputTokens,
   VARIANT_ID,
   type UnsupportedReason,
+  type VariantId,
 } from './prompt.ts';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -70,6 +73,12 @@ export interface ExperimentSource {
   mode: ExperimentMode;
   /** `dataset.json` from an exact-replay export, or a fixed-route fixture file. */
   datasetPath: string;
+  /**
+   * Prompt/contract variant; defaults to json-cleanup-v1. The percentages
+   * variant is inferred-only: fixed shortcut routes do not classify, so no
+   * per-intent percentages are requested or accepted for them.
+   */
+  variant?: VariantId;
 }
 
 /** One example's request, prepared just before sending; the model is set per target. */
@@ -96,6 +105,7 @@ interface PlannedExample {
 
 export interface ExperimentPlan {
   mode: ExperimentMode;
+  variant: VariantId;
   datasetHash: string;
   outputTokens: number;
   /** Recorded max_tokens values and their counts (inferred only). */
@@ -145,6 +155,16 @@ export interface ExperimentResult {
   inputTokens: number | null;
   outputTokens: number | null;
   estimatedCost: number | null;
+  /**
+   * json-cleanup-percentages-v1 only (absent in v1 rows). SELF-REPORTED
+   * integer percentages from a fully contract-valid response, null otherwise:
+   * the chosen intent's value, the labeled intent's value, and whether another
+   * intent shares the chosen intent's (highest) value. Not calibrated
+   * probabilities; invalid distributions stay private.
+   */
+  chosenPercentage?: number | null;
+  expectedPercentage?: number | null;
+  chosenTied?: boolean | null;
 }
 
 /** Private per-request record for human review of cleanup quality. */
@@ -160,6 +180,8 @@ export interface PrivateOutput {
   invalidResponseText: string | null;
   /** Full literal-check outcome, including which private literals failed. */
   literalCheck: LiteralCheckOutcome;
+  /** Percentages variant only: the full validated distribution of a valid response. */
+  percentages?: Readonly<Record<string, number>> | null;
 }
 
 interface BatchTiming {
@@ -206,9 +228,10 @@ async function prepareInferred(
   datasetPath: string,
   example: EvalExample,
   outputTokens: number,
+  variant: VariantId,
 ): Promise<PreparedRequest & { recordedOutputTokens: number; textIntents: string[] }> {
   const record = await restoreExample(datasetPath, example);
-  const transformed = transformRecordedRequest(record, outputTokens);
+  const transformed = transformRecordedRequest(record, outputTokens, variant);
 
   const { model: _recordedModel, ...recordedInputs } = record.body;
   const { model: _variantModel, ...variantInputs } = transformed.body;
@@ -217,7 +240,11 @@ async function prepareInferred(
     body: transformed.body,
     inputHash: fingerprint(recordedInputs),
     variantInputHash: fingerprint(variantInputs),
-    expectation: { allowedIntents: transformed.allowedIntents, fixedRoute: null },
+    expectation: {
+      allowedIntents: transformed.allowedIntents,
+      fixedRoute: null,
+      ...(variant === PERCENTAGES_VARIANT_ID ? { percentages: true } : {}),
+    },
     spokenText: recordedUtterance(record),
     recordedOutputTokens: transformed.recordedOutputTokens,
     textIntents: transformed.textIntents,
@@ -261,6 +288,15 @@ export async function planExperiment(
 ): Promise<ExperimentPlan> {
   validateOutputTokens(outputTokens);
 
+  const variant = source.variant ?? VARIANT_ID;
+  if (variant === PERCENTAGES_VARIANT_ID && source.mode !== 'inferred') {
+    // Shortcuts fix the action without classification: there is nothing to
+    // estimate, and no percentage may ever influence a fixed route.
+    throw new SafeEvalError(
+      `${PERCENTAGES_VARIANT_ID} applies only to inferred --dataset runs; fixed-route shortcuts stay on ${VARIANT_ID}`,
+    );
+  }
+
   const supported: PlannedExample[] = [];
   const unsupported: { id: string; reason: UnsupportedReason }[] = [];
   const routeCounts: Record<string, number> = Object.create(null);
@@ -272,7 +308,7 @@ export async function planExperiment(
     for (const example of dataset.examples) {
       signal.throwIfAborted();
       try {
-        const prepared = await prepareInferred(source.datasetPath, example, outputTokens);
+        const prepared = await prepareInferred(source.datasetPath, example, outputTokens, variant);
         increment(recordedOutputTokens, String(prepared.recordedOutputTokens));
         for (const name of prepared.textIntents) {
           increment(routeCounts, name);
@@ -290,12 +326,13 @@ export async function planExperiment(
         expected: example.expected,
         originalPrediction: example.originalPrediction,
         fixedRoute: null,
-        prepare: () => prepareInferred(source.datasetPath, example, outputTokens),
+        prepare: () => prepareInferred(source.datasetPath, example, outputTokens, variant),
       });
     }
 
     return {
       mode: 'inferred',
+      variant,
       datasetHash: fingerprint(dataset),
       outputTokens,
       recordedOutputTokens,
@@ -323,6 +360,7 @@ export async function planExperiment(
 
   return {
     mode: 'fixed-route',
+    variant,
     datasetHash: fingerprint(dataset),
     outputTokens,
     recordedOutputTokens: null,
@@ -343,10 +381,14 @@ export function describeVariant(plan: ExperimentPlan) {
     }
   }
 
+  const percentages = plan.variant === PERCENTAGES_VARIANT_ID;
+
   let modifications: string[];
   if (plan.mode === 'inferred') {
     modifications = [
-      'System prompt: two bare-intent-name sentences replaced; response-format and text-cleanup section appended.',
+      percentages
+        ? 'System prompt: two bare-intent-name sentences replaced; response-format (including self-reported integer percentages for every offered intent) and text-cleanup section appended.'
+        : 'System prompt: two bare-intent-name sentences replaced; response-format and text-cleanup section appended.',
       `max_tokens: recorded value replaced by the experimental budget ${plan.outputTokens}.`,
       'model: replaced by the target model.',
       'Unchanged: user message (utterance, application, conversation context), screenshot, offered intent names, temperature, streaming and all other recorded fields.',
@@ -359,12 +401,18 @@ export function describeVariant(plan: ExperimentPlan) {
     ];
   }
 
+  let contract =
+    'One JSON object {"intent", "parameters"}; text routes require parameters {"text": nonempty string}, all other intents require {}; fixed routes must echo the shortcut route.';
+  if (percentages) {
+    contract =
+      'One JSON object {"intent", "parameters", "percentages"}; parameters as in json-cleanup-v1; percentages has exactly the offered intent names as keys, unsigned integer literals 0-100 summing to exactly 100, and the chosen intent has the highest value (ties allowed). SELF-REPORTED estimates, not calibrated probabilities.';
+  }
+
   return {
-    id: VARIANT_ID,
+    id: plan.variant,
     exactReplay: false,
-    promptHash: promptFingerprint(),
-    contract:
-      'One JSON object {"intent", "parameters"}; text routes require parameters {"text": nonempty string}, all other intents require {}; fixed routes must echo the shortcut route.',
+    promptHash: promptFingerprint(plan.variant),
+    contract,
     modifications,
     outputTokens: {
       experimental: plan.outputTokens,
@@ -383,6 +431,7 @@ async function evaluateExample(
   planned: PlannedExample,
   target: EvalTarget,
   check: LiteralCheck | undefined,
+  percentages: boolean,
   batchSignal: AbortSignal,
 ): Promise<{ result: ExperimentResult; privateOutput: PrivateOutput }> {
   // Restoring happens before the latency timer starts; it counts only toward wall time.
@@ -424,6 +473,15 @@ async function evaluateExample(
     literalCheck: { status: 'no-checks' },
   };
 
+  // Percentage fields exist only in percentages-variant rows, so json-cleanup-v1
+  // rows keep exactly their earlier shape.
+  if (percentages) {
+    result.chosenPercentage = null;
+    result.expectedPercentage = null;
+    result.chosenTied = null;
+    privateOutput.percentages = null;
+  }
+
   // Per-request timeout that starts now, not while waiting for a free slot.
   const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
@@ -460,6 +518,14 @@ async function evaluateExample(
       }
       privateOutput.intent = parsed.intent;
       privateOutput.cleanedText = parsed.text;
+
+      if (percentages && parsed.percentages !== undefined) {
+        result.chosenPercentage = parsed.percentages[parsed.intent]!;
+        // The label is always an offered intent (checked when restoring).
+        result.expectedPercentage = parsed.percentages[planned.expected!] ?? null;
+        result.chosenTied = parsed.chosenTied === true;
+        privateOutput.percentages = parsed.percentages;
+      }
     } else {
       result.status = 'invalid';
       result.invalidReason = parsed.reason;
@@ -514,8 +580,51 @@ export function latencyStatistics(values: number[]) {
   };
 }
 
+/** Mean of a nonempty list, null for an empty one. */
+function meanOrNull(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  let total = 0;
+  for (const value of values) {
+    total += value;
+  }
+  return total / values.length;
+}
+
+/**
+ * Percentages variant only: compliance with the percentage rules and simple
+ * descriptive statistics of the SELF-REPORTED values. These are the model's
+ * own estimates; nothing here calibrates or validates them as probabilities.
+ */
+function summarizePercentages(rows: ExperimentResult[]) {
+  const valid = rows.filter((row) => row.status === 'valid');
+  const invalid = rows.filter((row) => row.status === 'invalid');
+  const failedOnPercentages = invalid.filter((row) => PERCENTAGE_REASONS.has(row.invalidReason!));
+
+  return {
+    definition:
+      'SELF-REPORTED integer percentages per offered intent (not calibrated probabilities or log-probabilities). "compliant" responses satisfied the whole contract including the percentage rules; "failedOnPercentageRules" satisfied everything else but broke a percentage rule; "failedEarlier" broke an earlier rule, so their percentages were never judged.',
+    compliant: valid.length,
+    failedOnPercentageRules: failedOnPercentages.length,
+    failedEarlier: invalid.length - failedOnPercentages.length,
+    transportErrors: rows.filter((row) => row.status === 'error').length,
+    chosenTied: valid.filter((row) => row.chosenTied === true).length,
+    meanChosenPercentage: {
+      usableCorrect: meanOrNull(
+        valid.filter((row) => row.correct === true).map((row) => row.chosenPercentage!),
+      ),
+      usableWrong: meanOrNull(
+        valid.filter((row) => row.correct !== true).map((row) => row.chosenPercentage!),
+      ),
+    },
+    meanExpectedIntentPercentage: meanOrNull(valid.map((row) => row.expectedPercentage!)),
+  };
+}
+
 function summarizeTarget(
   mode: ExperimentMode,
+  variant: VariantId,
   target: EvalTarget,
   rows: ExperimentResult[],
   batch: BatchTiming,
@@ -632,6 +741,9 @@ function summarizeTarget(
       note: 'No cleanup ground truth exists; review the private outputs file by hand.',
     },
     literalChecks,
+    ...(variant === PERCENTAGES_VARIANT_ID
+      ? { selfReportedPercentages: summarizePercentages(rows) }
+      : {}),
     batch: {
       startedAt: batch.startedAt,
       completedAt: batch.completedAt,
@@ -696,7 +808,13 @@ export async function runExperiment(
       signal,
       (index, batchSignal) => {
         const example = plan.supported[index]!;
-        return evaluateExample(example, target, checks?.checks[example.id], batchSignal);
+        return evaluateExample(
+          example,
+          target,
+          checks?.checks[example.id],
+          plan.variant === PERCENTAGES_VARIANT_ID,
+          batchSignal,
+        );
       },
     );
 
@@ -711,7 +829,7 @@ export async function runExperiment(
     const rows = batchResults.map((entry) => entry.result);
     results.push(...rows);
     privateOutputs.push(...batchResults.map((entry) => entry.privateOutput));
-    summary.push(summarizeTarget(plan.mode, target, rows, batch));
+    summary.push(summarizeTarget(plan.mode, plan.variant, target, rows, batch));
   }
 
   const report = {

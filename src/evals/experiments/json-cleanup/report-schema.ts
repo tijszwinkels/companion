@@ -29,6 +29,12 @@
  *   diagnostic intent must be possible for its reason
  *   (`DIAGNOSTIC_FOR_INVALID_REASON` in contract.ts).
  *
+ * - Variants: the variant ID must be known and its prompt hash must equal the
+ *   current prompt of that ID. json-cleanup-v1 rows keep their exact key set;
+ *   json-cleanup-percentages-v1 rows have three more fields (chosen and
+ *   labeled self-reported percentages, tie flag) with their own cross-field
+ *   rules, and only they may carry percentage invalid reasons.
+ *
  * Refusals are SafeEvalError messages naming only a field, a side, and (once
  * validated) an example UUID. They never quote a value, so a malformed file
  * cannot move private text into stderr or a report. Error strings are
@@ -44,15 +50,23 @@ import {
   diagnosticConsistentWithReason,
   INVALID_REASONS,
   isTextRoute,
+  PERCENTAGE_REASONS,
   type InvalidReason,
 } from './contract.ts';
-import { MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, UNSUPPORTED_REASONS } from './prompt.ts';
+import {
+  isVariantId,
+  MAX_OUTPUT_TOKENS,
+  MIN_OUTPUT_TOKENS,
+  PERCENTAGES_VARIANT_ID,
+  promptFingerprint,
+  UNSUPPORTED_REASONS,
+  type VariantId,
+} from './prompt.ts';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 /** Registered intent names follow the router's identifier rule. */
 const INTENT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-const VARIANT_ID_SHAPE = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 
 const MAX_ERROR_CHARACTERS = 600;
 const MAX_TARGET_FIELD_CHARACTERS = 2_000;
@@ -97,6 +111,15 @@ export interface ValidatedVariantRow {
   latencyMs: number;
   inputHash: string;
   outputTokens: number | null;
+  /** Percentages variant only; null for other rows and for non-valid responses. */
+  percentages: ValidatedPercentages | null;
+}
+
+/** Validated self-reported values of one valid percentages-variant row. */
+export interface ValidatedPercentages {
+  chosen: number;
+  expected: number;
+  chosenTied: boolean;
 }
 
 export interface ValidatedBaselineReport {
@@ -109,7 +132,7 @@ export interface ValidatedBaselineReport {
 export interface ValidatedVariantReport {
   startedAt: string;
   datasetHash: string;
-  variantId: string;
+  variantId: VariantId;
   promptHash: string;
   outputTokens: number;
   supportedIds: string[];
@@ -394,11 +417,82 @@ const VARIANT_ROW_KEYS = [
   'estimatedCost',
 ] as const;
 
-function validateVariantRow(value: Record<string, unknown>): ValidatedVariantRow {
+/** Percentages-variant rows carry exactly three more fields. */
+const PERCENTAGES_VARIANT_ROW_KEYS = [
+  ...VARIANT_ROW_KEYS,
+  'chosenPercentage',
+  'expectedPercentage',
+  'chosenTied',
+] as const;
+
+function percentage(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 100) {
+    refuse(`${field} must be an integer from 0 to 100`);
+  }
+  return value;
+}
+
+/**
+ * Cross-field rules for the self-reported values of a valid row, implied by
+ * the contract (integers 0-100, total exactly 100, chosen intent highest,
+ * ties flagged). The full distribution is private, so only these are checkable.
+ */
+function validateRowPercentages(
+  value: Record<string, unknown>,
+  status: VariantStatus,
+  correct: boolean,
+  field: string,
+): ValidatedPercentages | null {
+  if (status !== 'valid') {
+    if (
+      value.chosenPercentage !== null ||
+      value.expectedPercentage !== null ||
+      value.chosenTied !== null
+    ) {
+      refuse(`${field} percentages must be null unless the response was valid`);
+    }
+    return null;
+  }
+
+  const chosen = percentage(value.chosenPercentage, `${field} chosenPercentage`);
+  const expected = percentage(value.expectedPercentage, `${field} expectedPercentage`);
+  const chosenTied = boolean(value.chosenTied, `${field} chosenTied`);
+
+  // The highest of values summing to 100 is at least 1.
+  if (chosen < 1) {
+    refuse(`${field} chosenPercentage cannot be the highest of a total of 100`);
+  }
+  if (correct && expected !== chosen) {
+    refuse(`${field} expectedPercentage must equal chosenPercentage when correct`);
+  }
+  if (!correct && expected > chosen) {
+    refuse(`${field} expectedPercentage cannot exceed the chosen (highest) percentage`);
+  }
+  // Another intent at the same value as a wrong choice is a tie by definition.
+  if (!correct && expected === chosen && !chosenTied) {
+    refuse(`${field} chosenTied must be true when the labeled intent shares the highest value`);
+  }
+  // Two intents at the highest value cannot exceed half of 100.
+  if (chosenTied && chosen > 50) {
+    refuse(`${field} a tied highest percentage cannot exceed 50`);
+  }
+  // With the chosen intent at 100, every other intent is at 0.
+  if (chosen === 100 && !correct && expected !== 0) {
+    refuse(`${field} expectedPercentage must be 0 when another intent has 100`);
+  }
+
+  return { chosen, expected, chosenTied };
+}
+
+function validateVariantRow(
+  value: Record<string, unknown>,
+  variant: VariantId,
+): ValidatedVariantRow {
   const id = matching(value.id, UUID, 'Variant row id');
   const field = `Variant row ${id}`;
+  const withPercentages = variant === PERCENTAGES_VARIANT_ID;
 
-  exactKeys(value, VARIANT_ROW_KEYS, field);
+  exactKeys(value, withPercentages ? PERCENTAGES_VARIANT_ROW_KEYS : VARIANT_ROW_KEYS, field);
   const expected = matching(value.expected, INTENT_NAME, `${field} expected label`);
   nullableMatching(value.originalPrediction, INTENT_NAME, `${field} originalPrediction`);
   if (value.fixedRoute !== null) {
@@ -452,6 +546,10 @@ function validateVariantRow(value: Record<string, unknown>): ValidatedVariantRow
     if (invalidReason === 'route-changed') {
       refuse(`${field} route-changed cannot occur in an inferred run`);
     }
+    // Only the percentages contract can fail on a percentage rule.
+    if (PERCENTAGE_REASONS.has(invalidReason) && !withPercentages) {
+      refuse(`${field} invalidReason is not possible for this variant`);
+    }
     // The diagnostic must be one the parser could have produced for this reason.
     if (!diagnosticConsistentWithReason(invalidReason, selectedIntent)) {
       refuse(`${field} selectedIntent is impossible for its invalid reason`);
@@ -479,6 +577,10 @@ function validateVariantRow(value: Record<string, unknown>): ValidatedVariantRow
     refuse(`${field} literalCheck cannot be evaluated without valid cleaned text`);
   }
 
+  const percentages = withPercentages
+    ? validateRowPercentages(value, status, correct, field)
+    : null;
+
   return {
     id,
     expected,
@@ -492,6 +594,7 @@ function validateVariantRow(value: Record<string, unknown>): ValidatedVariantRow
     latencyMs,
     inputHash,
     outputTokens,
+    percentages,
   };
 }
 
@@ -512,6 +615,14 @@ export function validateVariantReport(value: unknown, targetName: string): Valid
   const variant = object(report.variant, 'Variant metadata');
   if (variant.exactReplay !== false) {
     refuse('Variant metadata must declare exactReplay false');
+  }
+  // A known variant ID with its exact prompt hash: a changed prompt must use a new ID.
+  if (!isVariantId(variant.id)) {
+    refuse('Variant id is not a known experiment variant');
+  }
+  const variantId = variant.id;
+  if (variant.promptHash !== promptFingerprint(variantId)) {
+    refuse('Variant promptHash does not match the prompt of its variant id');
   }
   const outputTokens = object(variant.outputTokens, 'Variant outputTokens').experimental;
   if (
@@ -536,13 +647,15 @@ export function validateVariantReport(value: unknown, targetName: string): Valid
   return {
     startedAt: timestamp(report.startedAt, 'Variant startedAt'),
     datasetHash: matching(report.datasetHash, HASH, 'Variant datasetHash'),
-    variantId: matching(variant.id, VARIANT_ID_SHAPE, 'Variant id'),
-    promptHash: matching(variant.promptHash, HASH, 'Variant promptHash'),
+    variantId,
+    promptHash: variant.promptHash as string,
     outputTokens,
     supportedIds: uuidList(examples.supportedIds, 'Variant supportedIds'),
     exclusions,
     target: selectTarget(report, targetName, 'Variant'),
-    rows: selectedRows(report, targetName, 'Variant').map((row) => validateVariantRow(row)),
+    rows: selectedRows(report, targetName, 'Variant').map((row) =>
+      validateVariantRow(row, variantId),
+    ),
   };
 }
 

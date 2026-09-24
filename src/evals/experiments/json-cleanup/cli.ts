@@ -30,11 +30,13 @@ import { parseArgs } from 'node:util';
 import { parseLocalJson } from '../../errors.ts';
 import { parseTargets, type EvalTarget } from '../../transport.ts';
 import { assertChecksMatchExamples, loadLiteralChecks, type LiteralChecks } from './checks.ts';
-import { ARM_ORDERS, runPairedComparison, type ArmOrder } from './compare.ts';
+import { ARM_ORDERS, runPairedComparison, runVariantComparison, type ArmOrder } from './compare.ts';
 import { TEXT_ROUTES } from './contract.ts';
-import { pairRuns } from './pairing.ts';
+import { pairRuns, pairVariantRuns } from './pairing.ts';
 import {
+  PERCENTAGES_VARIANT_ID,
   fixedRouteSystemPrompt,
+  isVariantId,
   MAX_OUTPUT_TOKENS,
   MIN_OUTPUT_TOKENS,
   promptFingerprint,
@@ -43,7 +45,9 @@ import {
   transformRecordedRequest,
   VARIANT_ANSWER_SENTENCE,
   VARIANT_ID,
+  VARIANT_IDS,
   VARIANT_IGNORE_SENTENCE,
+  type VariantId,
 } from './prompt.ts';
 import {
   describeVariant,
@@ -60,7 +64,7 @@ This is NOT exact replay: the variant changes the recorded prompt and output
 budget. It is eval-only: nothing is integrated into the running application.
 "npm run eval:intents" (exact replay) is unaffected by this command.
 
-npm run eval:intent-cleanup -- prompt
+npm run eval:intent-cleanup -- prompt [--variant ID]
 npm run eval:intent-cleanup -- dry-run (--dataset DATASET.json | --fixed-routes FIXTURE.json) \\
   --targets targets.json --output-tokens N [--checks CHECKS.json]
 npm run eval:intent-cleanup -- compare --dataset DATASET.json --targets targets.json \\
@@ -71,6 +75,15 @@ npm run eval:intent-cleanup -- run (--dataset DATASET.json | --fixed-routes FIXT
   --out new-report.json --private-out new-private-outputs.json --send
 npm run eval:intent-cleanup -- pair --baseline-report EXACT.json --baseline-target NAME \\
   --variant-report VARIANT.json --variant-target NAME --out new-pairing.json
+npm run eval:intent-cleanup -- pair-variants --left-report V1.json --left-target NAME \\
+  --right-report V2.json --right-target NAME --out new-pairing.json
+
+--variant ID     ${VARIANT_IDS.join(' | ')} (default ${VARIANT_ID}).
+                ${PERCENTAGES_VARIANT_ID} additionally asks for one SELF-REPORTED
+                integer percentage (0-100, total exactly 100) per offered intent;
+                inferred --dataset runs only. compare accepts --variant twice
+                (e.g. v1 then percentages): each is paired with the baseline and
+                the second with the first.
 
 prompt:   prints the instruction templates (no private data, no network).
 dry-run:  validates everything and prints counts/hashes. Zero model calls.
@@ -80,6 +93,8 @@ compare:  PRIMARY QUESTION. Runs the unmodified exact-replay baseline and the
           improvements, malformed-output rates and latency. Default order
           baseline-first; run again with the other order to check cache effects.
 run:      variant only (also for fixed-route shortcut fixtures).
+pair-variants: offline strict pairing of two inferred variant "run" reports
+          (for example json-cleanup-v1 left, percentages right). Zero model calls.
 pair:     offline strict pairing of an existing "eval:intents run" report and an
           existing inferred "run" report, one selected target each. Requires the
           same frozen dataset; pairs one-to-one by example ID; restricts the
@@ -150,7 +165,7 @@ function sourceFrom(values: { dataset?: string; 'fixed-routes'?: string }): Expe
 }
 
 /** Print the templates for review. Uses a synthetic prompt, never a recording. */
-function printPrompt(): void {
+function printPrompt(variant: VariantId): void {
   const syntheticRecordedPrompt = `…recorded preamble… ${RECORDED_ANSWER_SENTENCE}\n…the user didn't intent to use any of the available systems. ${RECORDED_IGNORE_SENTENCE}\n…\n\nPossible intents:\n\nName: IGNORE\nInstruction: …\n\nName: SEND_TEXT_TO_APPLICATION\nInstruction: …\n\nName: START_CODING_AGENT_SESSION\nInstruction: …\n\nName: CONTINUE_OPEN_AGENT_CONVERSATION\nInstruction: …\n`;
   const transformed = transformRecordedRequest(
     {
@@ -161,10 +176,11 @@ function printPrompt(): void {
       body: { messages: [{ role: 'system', content: syntheticRecordedPrompt }], max_tokens: 32 },
     },
     MIN_OUTPUT_TOKENS,
+    variant,
   );
   const systemMessage = (transformed.body.messages as { content: string }[])[0]!;
 
-  console.log(`Variant ${VARIANT_ID}; prompt hash ${promptFingerprint()}\n`);
+  console.log(`Variant ${variant}; prompt hash ${promptFingerprint(variant)}\n`);
   console.log('=== Inferred routes: sentence replacements in the recorded system prompt ===');
   console.log(`- ${RECORDED_ANSWER_SENTENCE}\n+ ${VARIANT_ANSWER_SENTENCE}`);
   console.log(`- ${RECORDED_IGNORE_SENTENCE}\n+ ${VARIANT_IGNORE_SENTENCE}\n`);
@@ -172,6 +188,13 @@ function printPrompt(): void {
     '=== Inferred routes: resulting system prompt for a synthetic recording offering all three inferred text routes ===',
   );
   console.log(systemMessage.content);
+
+  if (variant !== VARIANT_ID) {
+    console.log(
+      `=== Fixed routes: not used by ${variant}; shortcuts stay on ${VARIANT_ID} (print with --variant ${VARIANT_ID}) ===`,
+    );
+    return;
+  }
 
   for (const route of TEXT_ROUTES) {
     console.log(`=== Fixed route ${route}: complete system prompt ===`);
@@ -182,7 +205,13 @@ function printPrompt(): void {
 /** Summary written to stdout after a successful compare/run. Content-free. */
 interface Completed {
   report: object & { datasetHash: string };
-  privateOutputs: PrivateOutput[];
+  /**
+   * Private file content: `{variant, outputs}` for one variant (the earlier
+   * shape), or `{variants: [{variant, outputs}, …]}` for two.
+   */
+  privateOutputs:
+    | { variant: VariantId; outputs: PrivateOutput[] }
+    | { variants: { variant: VariantId; outputs: PrivateOutput[] }[] };
   console: object;
   hasErrors: boolean;
 }
@@ -251,9 +280,8 @@ async function withReservedOutputs(
       state: 'complete',
       sensitive:
         'Contains dictated text and model outputs. Keep out of Git, chats and coding-model prompts; delete when reviewed.',
-      variant: VARIANT_ID,
       datasetHash: completed.report.datasetHash,
-      outputs: completed.privateOutputs,
+      ...completed.privateOutputs,
     });
     await replaceFile(reportFile, { state: 'complete', ...completed.report });
 
@@ -347,6 +375,76 @@ async function pairReports(values: {
   );
 }
 
+/** Offline strict pairing of two inferred variant report files. Zero model calls. */
+async function pairVariantReports(values: {
+  'left-report'?: string;
+  'left-target'?: string;
+  'right-report'?: string;
+  'right-target'?: string;
+  out?: string;
+}): Promise<void> {
+  const leftPath = values['left-report'];
+  const rightPath = values['right-report'];
+  const leftTarget = values['left-target'];
+  const rightTarget = values['right-target'];
+  if (!leftPath || !rightPath || !leftTarget || !rightTarget || !values.out) {
+    throw Error(
+      'pair-variants requires --left-report, --left-target, --right-report, --right-target and --out',
+    );
+  }
+
+  const left = parseLocalJson(await readFile(leftPath, 'utf8'), 'Left report');
+  const right = parseLocalJson(await readFile(rightPath, 'utf8'), 'Right report');
+  // Validates both files completely and refuses before any output exists.
+  const comparison = pairVariantRuns({ left, leftTarget, right, rightTarget });
+
+  const output = await open(values.out, 'wx', 0o600);
+  try {
+    await replaceFile(output, {
+      kind: 'intent-json-cleanup-offline-variant-pairing',
+      version: 1,
+      state: 'complete',
+      createdAt: new Date().toISOString(),
+      sources: { leftReport: leftPath, rightReport: rightPath },
+      ...comparison,
+    });
+  } finally {
+    await output.close();
+  }
+
+  console.log(
+    JSON.stringify(
+      {
+        modelCalls: 0,
+        selection: comparison.selection,
+        coverage: { paired: comparison.coverage.paired, excluded: comparison.coverage.excluded },
+        summary: comparison.summary,
+        report: values.out,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+/** One variant for run/dry-run/prompt; default json-cleanup-v1. */
+function singleVariant(values: string[] | undefined): VariantId {
+  if (values === undefined || values.length === 0) {
+    return VARIANT_ID;
+  }
+  if (values.length !== 1) {
+    throw Error('This command takes at most one --variant');
+  }
+  return parseVariant(values[0]!);
+}
+
+function parseVariant(value: string): VariantId {
+  if (!isVariantId(value)) {
+    throw Error(`--variant must be one of: ${VARIANT_IDS.join(', ')}`);
+  }
+  return value;
+}
+
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -358,6 +456,11 @@ async function main(): Promise<void> {
       'output-tokens': { type: 'string' },
       checks: { type: 'string' },
       order: { type: 'string' },
+      variant: { type: 'string', multiple: true },
+      'left-report': { type: 'string' },
+      'left-target': { type: 'string' },
+      'right-report': { type: 'string' },
+      'right-target': { type: 'string' },
       'baseline-report': { type: 'string' },
       'baseline-target': { type: 'string' },
       'variant-report': { type: 'string' },
@@ -374,9 +477,10 @@ async function main(): Promise<void> {
 
   const command = positionals[0];
   const allowed: Record<string, string[]> = {
-    prompt: [],
+    prompt: ['variant'],
     pair: ['baseline-report', 'baseline-target', 'variant-report', 'variant-target', 'out'],
-    'dry-run': ['dataset', 'fixed-routes', 'targets', 'output-tokens', 'checks'],
+    'pair-variants': ['left-report', 'left-target', 'right-report', 'right-target', 'out'],
+    'dry-run': ['dataset', 'fixed-routes', 'targets', 'output-tokens', 'checks', 'variant'],
     // fixed-routes is accepted only to refuse it with an explanation below.
     compare: [
       'dataset',
@@ -385,6 +489,7 @@ async function main(): Promise<void> {
       'output-tokens',
       'checks',
       'order',
+      'variant',
       'out',
       'private-out',
       'send',
@@ -395,6 +500,7 @@ async function main(): Promise<void> {
       'targets',
       'output-tokens',
       'checks',
+      'variant',
       'out',
       'private-out',
       'send',
@@ -410,7 +516,12 @@ async function main(): Promise<void> {
   }
 
   if (command === 'prompt') {
-    printPrompt();
+    printPrompt(singleVariant(values.variant));
+    return;
+  }
+
+  if (command === 'pair-variants') {
+    await pairVariantReports(values);
     return;
   }
 
@@ -420,6 +531,9 @@ async function main(): Promise<void> {
   }
 
   const source = sourceFrom(values);
+  if (command !== 'compare') {
+    source.variant = singleVariant(values.variant);
+  }
   const outputTokens = parseOutputTokens(values['output-tokens']);
   if (!values.targets) {
     throw Error('--targets is required; use --help');
@@ -481,23 +595,67 @@ async function main(): Promise<void> {
     }
     const order = parseOrder(values.order);
 
+    const variants = (values.variant ?? [VARIANT_ID]).map((value) => parseVariant(value));
+    if (variants.length > 2) {
+      throw Error('compare takes at most two --variant values');
+    }
+
     await withReservedOutputs('compare', values.out, values['private-out'], async (signal) => {
-      const { report, privateOutputs } = await runPairedComparison({
+      const common = {
         datasetPath: source.datasetPath,
         targets,
         outputTokens,
         order,
         checks,
         signal,
+      };
+
+      if (variants.length === 2) {
+        const { report, privateOutputs } = await runVariantComparison({
+          ...common,
+          variants: [variants[0]!, variants[1]!],
+        });
+        return {
+          report,
+          privateOutputs: { variants: privateOutputs },
+          console: {
+            variants,
+            order: report.order,
+            paired: report.paired.map((entry) => ({
+              target: entry.target,
+              variant: entry.variant,
+              coverage: {
+                datasetExamples: entry.coverage.datasetExamples,
+                paired: entry.coverage.paired,
+                excluded: entry.coverage.excluded,
+              },
+              summary: entry.summary,
+            })),
+            variantComparisons: report.variantComparisons.map((entry) => ({
+              target: entry.target,
+              summary: entry.summary,
+            })),
+          },
+          hasErrors:
+            report.baselineReport.results.some((result) => result.error !== null) ||
+            report.variantReports.some((variantReport) =>
+              variantReport.results.some((result) => result.status === 'error'),
+            ),
+        };
+      }
+
+      const { report, privateOutputs } = await runPairedComparison({
+        ...common,
+        variant: variants[0]!,
       });
       const hasErrors =
         report.baselineReport.results.some((result) => result.error !== null) ||
         report.variantReport.results.some((result) => result.status === 'error');
       return {
         report,
-        privateOutputs,
+        privateOutputs: { variant: variants[0]!, outputs: privateOutputs },
         console: {
-          variant: VARIANT_ID,
+          variant: variants[0]!,
           order: report.order,
           paired: report.paired.map((entry) => ({
             target: entry.target,
@@ -526,7 +684,7 @@ async function main(): Promise<void> {
     );
     return {
       report,
-      privateOutputs,
+      privateOutputs: { variant: report.variant.id, outputs: privateOutputs },
       console: {
         variant: report.variant.id,
         exactReplay: false,

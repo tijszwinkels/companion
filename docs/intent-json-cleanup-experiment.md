@@ -457,6 +457,147 @@ processors, delivery, sensors, UI, child processes or sockets; a test checks
 the import graph. Network access is only the shared transport's `fetch` to the
 explicitly configured targets.
 
+## Self-reported per-intent percentages (`json-cleanup-percentages-v1`)
+
+User request (2026-09-24): in this offline experiment only, also ask the model
+for one integer percentage per offered intent. Live intent recognition,
+processors, the router and the application are unchanged. The research
+question is still whether the added output requirement affects intent
+recognition, so compare it with the same frozen baseline and with
+`json-cleanup-v1` (see below).
+
+**Versioning.** This is a separate variant with its own prompt hash
+(`npm run eval:intent-cleanup -- prompt --variant json-cleanup-percentages-v1`).
+`json-cleanup-v1` is unchanged: same prompt hash (`5e14464c…a4d529`), same
+transformed requests and fixed-route prompts, same run-report rows and
+single-variant compare shape. Tests pin these to the values at `ac75f81`.
+Without `--variant`, every command still uses `json-cleanup-v1`.
+
+**Inferred only.** Explicit shortcuts fix the action without classification,
+so there is nothing to estimate. Fixed-route fixtures stay on
+`json-cleanup-v1`, unchanged; `--fixed-routes` with the percentages variant is
+refused before any call. No percentage can influence a fixed route.
+
+**Contract.** The json-cleanup-v1 object plus exactly one more key:
+
+```json
+{"intent":"IGNORE","parameters":{},"percentages":{"IGNORE":70,"SEND_TEXT_TO_APPLICATION":20,"CHOOSE_AGENT_OPTION_1":10}}
+```
+
+- `intent` and `parameters`: exactly as in json-cleanup-v1. Those rules are
+  checked first and keep their reasons.
+- `percentages`: an object whose keys are exactly the intent names offered in
+  that recorded request (the recorded `Name:` lines, including IGNORE and
+  scoped choices when offered). Nothing missing, nothing extra, no case
+  variants. **Key order is not significant.**
+- Every value is written in the raw response as an **unsigned integer literal**
+  from 0 to 100: zero decimal places, no sign, exponent or leading zero.
+  `50.0`, `5e1`, `-0` and `1e400` are refused even though `JSON.parse` would
+  read them as numbers; the check runs on the raw text, where the percentages
+  are the only numbers a valid response can contain. Leading zeros and
+  `NaN`/`Infinity` are not valid JSON at all.
+- **Total exactly 100.** There is no rounding tolerance and nothing is
+  normalized. The prompt tells the model how to round: round each estimate,
+  then add or remove single points on the largest values until the total is
+  100.
+- **Consistency:** the chosen intent must have the highest percentage. **Ties**
+  at the top are allowed when the chosen intent is one of them, and are
+  reported (`chosenTied`).
+- New invalid reasons, in check order: `percentages-missing`,
+  `percentages-not-an-object`, `percentages-keys-mismatch`,
+  `percentage-not-a-number`, `percentage-not-integer-literal`,
+  `percentage-out-of-range`, `percentages-sum-not-100`,
+  `chosen-intent-not-highest`. They are reached only after the whole v1
+  contract passed, so the intent-selection diagnostic still reports the
+  (allowed) chosen intent for them.
+
+These are **self-reported estimates, not calibrated probabilities or token
+log-probabilities**, and the reports say so.
+
+**Prompt addition.** The appended section asks for three keys and lists the
+offered names with placeholders, not example numbers, so it does not
+suggest particular estimates. It then gives the percentages instruction:
+
+> Each value is your own estimate, in percent, of how likely it is that the
+> user wants that intent. These are self-reported estimates, not exact
+> probabilities. Write every value as a whole number from 0 to 100, without
+> decimals, signs, exponents, leading zeros or quotes. The values must add up
+> to exactly 100: round each estimate to a whole number, then add or remove
+> single points on the largest values until the total is exactly 100. Choose
+> the intent exactly as described above. The chosen "intent" must have the
+> highest percentage; if several intents share the highest percentage, the
+> chosen intent must be one of them.
+
+The cleanup and SEND formatting instructions are identical to json-cleanup-v1.
+The request asks for more output, so choose `--output-tokens` accordingly.
+
+**Commands.**
+
+```sh
+# Print the percentages prompt (synthetic example; no private data).
+npm run eval:intent-cleanup -- prompt --variant json-cleanup-percentages-v1
+
+# PRIMARY: baseline + json-cleanup-v1 + percentages, on identical frozen examples.
+npm run eval:intent-cleanup -- compare --dataset D/dataset.json --targets T.json \
+  --output-tokens 512 --variant json-cleanup-v1 --variant json-cleanup-percentages-v1 \
+  --order baseline-first --out new.json --private-out new-private.json --send
+# ...and again with --order variant-first.
+
+# Offline: v1 report (left) versus percentages report (right), zero model calls.
+npm run eval:intent-cleanup -- pair-variants --left-report V1.json --left-target NAME \
+  --right-report V2.json --right-target NAME --out new-pairing.json
+```
+
+`compare` with one `--variant` keeps the version 2 report. With two distinct
+variants it writes version 3:
+
+- `armSequence`: whole arms, never interleaved.
+- `paired[]`: one entry per variant and target, each labeled with its
+  `variant`, strictly paired with the baseline.
+- `variantComparisons[]`: right versus left per target (`pairVariantRuns`),
+  covering usable accuracy and delta, per-example regressions and
+  improvements with causes, McNemar, the intent-selection diagnostic and its
+  regression IDs, malformed rates, percentage-rule failures and paired latency.
+- `baselineReport`, and `variantReports[]`.
+
+The private file holds `{variants: [{variant, outputs}]}`.
+
+**Reports.**
+
+- Percentages-variant run rows have three more fields: `chosenPercentage`,
+  `expectedPercentage` (the value the model gave the labeled intent) and
+  `chosenTied`. They are non-null only for fully valid responses.
+- The per-target summary adds `selfReportedPercentages`:
+  - `compliant`;
+  - `failedOnPercentageRules`, meaning everything else was valid;
+  - `failedEarlier`, where the percentages were never judged;
+  - transport errors and tie count;
+  - mean chosen percentage for usable-correct and usable-wrong responses;
+  - mean labeled-intent percentage.
+- Invalid distributions (wrong sums, keys, types or decimals) appear only as
+  reason codes. Their raw text is only in the private file, which also holds
+  the full valid distributions.
+- Paired baseline/variant summaries add `percentageRuleFailures` for this
+  variant.
+
+**Report-file validation** (`pair`, `pair-variants`, and in-memory `compare`):
+
+- The variant ID must be known, and its `promptHash` must equal that ID's
+  current prompt hash, so a changed prompt must use a new ID.
+- Rows have exact per-variant key sets. v1 rows cannot carry percentage fields
+  or percentage reasons.
+- Percentages-variant rows must satisfy:
+  - integers 0–100, non-null only on valid rows;
+  - `chosenPercentage` ≥ 1;
+  - a correct row has `expectedPercentage` = `chosenPercentage`;
+  - a wrong row has `expectedPercentage` ≤ `chosenPercentage`, and when they
+    are equal, `chosenTied` must be true;
+  - a tied top value is ≤ 50;
+  - a chosen 100 means a wrong row's labeled value is 0.
+- `pair-variants` additionally requires the same dataset, identical planned
+  support and exclusions, one-to-one IDs, and matching input hashes and
+  labels.
+
 ## What this does and does not measure
 
 - Usable intent accuracy (primary), the intent-selection diagnostic and
@@ -477,7 +618,7 @@ explicitly configured targets.
 
 ```sh
 npm run check
-npx tsx --test test/unit/intent-json-cleanup.test.ts test/unit/intent-json-cleanup-adversarial.test.ts
+npx tsx --test test/unit/intent-json-cleanup.test.ts test/unit/intent-json-cleanup-adversarial.test.ts test/unit/intent-json-percentages.test.ts
 npm test
 ```
 
@@ -504,6 +645,21 @@ Tests use synthetic text, fake PNG bytes and local HTTP servers only. They cover
   ambiguous JSON.
 - Literal checks.
 - Adversarial fixture integrity and harness detection of every scripted attack.
+- Percentages variant (`intent-json-percentages.test.ts`):
+  - contract: 0/100, ties, key order, digits inside text, wrong, missing, extra
+    and case-variant keys, wrong types, decimals, exponents, `-0`, leading
+    zeros, NaN/Infinity/1e400, range, totals 99/101/0, chosen not highest,
+    malformed and duplicate JSON;
+  - v1 prompt, transform and fixed prompts pinned to `ac75f81`;
+  - the prompt lists exactly the offered intents, including IGNORE and choices;
+  - fixed-route refusal;
+  - runner fields, summary, and private/shareable separation;
+  - cancellation;
+  - baseline + v1 + percentages compare, with arm order, exact baseline bodies
+    and v1-versus-percentages regressions;
+  - CLI `compare`/`run` files;
+  - offline `pair`/`pair-variants` validation with 13+ corruptions refused
+    before writing.
 - An import-graph check that the experiment reaches no router, processor,
   delivery, sensor or UI code.
 

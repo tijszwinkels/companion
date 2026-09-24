@@ -42,9 +42,13 @@ import {
   validateVariantReport,
   type BaselineErrorKind,
   type LiteralCheckStatus,
+  type ValidatedPercentages,
+  type ValidatedVariantReport,
+  type ValidatedVariantRow,
   type VariantStatus,
 } from './report-schema.ts';
-import type { InvalidReason } from './contract.ts';
+import { PERCENTAGE_REASONS, type InvalidReason } from './contract.ts';
+import { PERCENTAGES_VARIANT_ID } from './prompt.ts';
 import { latencyStatistics } from './runner.ts';
 
 export type PairChange = 'both-correct' | 'regression' | 'improvement' | 'both-wrong';
@@ -75,6 +79,25 @@ export interface PairedExample {
     literalCheck: LiteralCheckStatus;
     latencyMs: number;
     outputTokens: number | null;
+    /** Percentages variant only (absent otherwise): self-reported values of a valid response. */
+    percentages?: ValidatedPercentages | null;
+  };
+}
+
+/** The variant side of a pair, built only from a validated row. */
+function variantSide(row: ValidatedVariantRow, withPercentages: boolean): PairedExample['variant'] {
+  return {
+    prediction: row.prediction,
+    correct: row.correct,
+    selectedIntent: row.selectedIntent,
+    intentSelectedCorrectly: row.intentSelectedCorrectly,
+    status: row.status,
+    invalidReason: row.invalidReason,
+    literalCheck: row.literalCheck,
+    latencyMs: row.latencyMs,
+    outputTokens: row.outputTokens,
+    // json-cleanup-v1 pairs keep exactly their earlier shape.
+    ...(withPercentages ? { percentages: row.percentages } : {}),
   };
 }
 
@@ -234,17 +257,7 @@ export function pairRuns(selection: PairSelection) {
         latencyMs: baselineRow.latencyMs,
         outputTokens: baselineRow.outputTokens,
       },
-      variant: {
-        prediction: variantRow.prediction,
-        correct: variantRow.correct,
-        selectedIntent: variantRow.selectedIntent,
-        intentSelectedCorrectly: variantRow.intentSelectedCorrectly,
-        status: variantRow.status,
-        invalidReason: variantRow.invalidReason,
-        literalCheck: variantRow.literalCheck,
-        latencyMs: variantRow.latencyMs,
-        outputTokens: variantRow.outputTokens,
-      },
+      variant: variantSide(variantRow, variant.variantId === PERCENTAGES_VARIANT_ID),
     });
   }
 
@@ -271,7 +284,7 @@ export function pairRuns(selection: PairSelection) {
       pairedFraction: datasetIds.size > 0 ? pairs.length / datasetIds.size : null,
       exclusions: excluded,
     },
-    summary: summarizePairs(pairs),
+    summary: summarizePairs(pairs, variant.variantId === PERCENTAGES_VARIANT_ID),
     baselineFullDataset: {
       note: 'Context only, NOT a paired statistic: includes examples the variant never attempted.',
       correct: allBaselineCorrect,
@@ -282,7 +295,7 @@ export function pairRuns(selection: PairSelection) {
   };
 }
 
-function summarizePairs(pairs: PairedExample[]) {
+function summarizePairs(pairs: PairedExample[], withPercentages: boolean) {
   const count = pairs.length;
   const rate = (value: number) => (count > 0 ? value / count : null);
 
@@ -336,6 +349,8 @@ function summarizePairs(pairs: PairedExample[]) {
       invalidContractResponses: variantInvalid,
       otherErrors: variantErrors,
       malformedRate: rate(variantInvalid),
+      // Percentages variant only: responses that failed only a percentage rule.
+      ...(withPercentages ? { percentageRuleFailures: countPercentageFailures(pairs) } : {}),
     },
     usableAccuracyDelta:
       baselineAccuracy !== null && variantAccuracy !== null
@@ -376,5 +391,213 @@ function summarizePairs(pairs: PairedExample[]) {
       baseline: mean(pairs.map((pair) => pair.baseline.outputTokens)),
       variant: mean(pairs.map((pair) => pair.variant.outputTokens)),
     },
+  };
+}
+
+function countPercentageFailures(pairs: PairedExample[]): number {
+  return pairs.filter(
+    (pair) =>
+      pair.variant.invalidReason !== null && PERCENTAGE_REASONS.has(pair.variant.invalidReason),
+  ).length;
+}
+
+// ---------------------------------------------------------------------------
+// Variant versus variant (for example json-cleanup-percentages-v1 vs json-cleanup-v1)
+// ---------------------------------------------------------------------------
+
+/** Two variant reports and one target name per side, validated like `pairRuns`. */
+export interface VariantPairSelection {
+  left: unknown;
+  leftTarget: string;
+  right: unknown;
+  rightTarget: string;
+}
+
+/** Pair one variant side with the other; `change` goes from left to right. */
+interface VariantVersusVariantPair {
+  id: string;
+  expected: string;
+  change: PairChange;
+  left: PairedExample['variant'];
+  right: PairedExample['variant'];
+}
+
+function variantRowsById(report: ValidatedVariantReport, side: string) {
+  const supported = new Set(report.supportedIds);
+  if (supported.size !== report.supportedIds.length) {
+    throw new SafeEvalError(`${side} report has missing or duplicate planned supported IDs`);
+  }
+  const byId = uniqueById(report.rows, side);
+  if (!sameIdSet(byId.keys(), supported)) {
+    throw new SafeEvalError(`${side} rows do not match its planned supported examples exactly`);
+  }
+  return { byId, supported };
+}
+
+function sideStatistics(sides: PairedExample['variant'][], withPercentages: boolean) {
+  const count = sides.length;
+  const rate = (value: number) => (count > 0 ? value / count : null);
+  const usableCorrect = sides.filter((side) => side.correct).length;
+  const selected = sides.filter((side) => side.intentSelectedCorrectly).length;
+  const invalid = sides.filter((side) => side.status === 'invalid').length;
+
+  return {
+    usableCorrect,
+    usableAccuracy: rate(usableCorrect),
+    intentSelectionCorrect: selected,
+    intentSelectionAccuracy: rate(selected),
+    invalidContractResponses: invalid,
+    otherErrors: sides.filter((side) => side.status === 'error').length,
+    malformedRate: rate(invalid),
+    ...(withPercentages
+      ? {
+          percentageRuleFailures: sides.filter(
+            (side) => side.invalidReason !== null && PERCENTAGE_REASONS.has(side.invalidReason),
+          ).length,
+        }
+      : {}),
+  };
+}
+
+/**
+ * Strict pairing of two JSON variant runs on the same frozen dataset, for
+ * example whether adding self-reported percentages (right) changes intent
+ * recognition compared with json-cleanup-v1 (left). Same rules as `pairRuns`:
+ * validated reports, same dataset hash, identical planned support and
+ * exclusions (both variants use the same transformation support), one-to-one
+ * by unique example ID, matching `inputHash` and labels, every attempt counted.
+ */
+export function pairVariantRuns(selection: VariantPairSelection) {
+  const left = validateVariantReport(selection.left, selection.leftTarget);
+  const right = validateVariantReport(selection.right, selection.rightTarget);
+
+  if (left.datasetHash !== right.datasetHash) {
+    throw new SafeEvalError('The two variant runs used different frozen datasets');
+  }
+
+  const leftRows = variantRowsById(left, 'Left');
+  const rightRows = variantRowsById(right, 'Right');
+  if (!sameIdSet(leftRows.supported, rightRows.supported)) {
+    throw new SafeEvalError('The two variant runs planned different supported examples');
+  }
+  const leftExcluded = new Set(left.exclusions.map((entry) => entry.id));
+  if (
+    leftExcluded.size !== left.exclusions.length ||
+    !sameIdSet(
+      right.exclusions.map((entry) => entry.id),
+      leftExcluded,
+    ) ||
+    right.exclusions.length !== left.exclusions.length
+  ) {
+    throw new SafeEvalError('The two variant runs excluded different examples');
+  }
+
+  const leftPercentages = left.variantId === PERCENTAGES_VARIANT_ID;
+  const rightPercentages = right.variantId === PERCENTAGES_VARIANT_ID;
+
+  const pairs: VariantVersusVariantPair[] = [];
+  for (const id of left.supportedIds) {
+    const leftRow = leftRows.byId.get(id)!;
+    const rightRow = rightRows.byId.get(id)!;
+    if (leftRow.inputHash !== rightRow.inputHash) {
+      throw new SafeEvalError(`Example ${id}: the two runs used different recorded inputs`);
+    }
+    if (leftRow.expected !== rightRow.expected) {
+      throw new SafeEvalError(`Example ${id}: the two runs have different labels`);
+    }
+    pairs.push({
+      id,
+      expected: leftRow.expected,
+      change: pairChange(leftRow.correct, rightRow.correct),
+      left: variantSide(leftRow, leftPercentages),
+      right: variantSide(rightRow, rightPercentages),
+    });
+  }
+
+  const regressions = pairs.filter((pair) => pair.change === 'regression');
+  const improvements = pairs.filter((pair) => pair.change === 'improvement');
+  const leftStatistics = sideStatistics(
+    pairs.map((pair) => pair.left),
+    leftPercentages,
+  );
+  const rightStatistics = sideStatistics(
+    pairs.map((pair) => pair.right),
+    rightPercentages,
+  );
+  const delta = (leftValue: number | null, rightValue: number | null) =>
+    leftValue !== null && rightValue !== null ? rightValue - leftValue : null;
+
+  const describe = (report: ValidatedVariantReport) => ({
+    startedAt: report.startedAt,
+    target: report.target,
+    variantId: report.variantId,
+    promptHash: report.promptHash,
+    outputTokens: report.outputTokens,
+  });
+
+  return {
+    selection: { left: describe(left), right: describe(right) },
+    datasetHash: left.datasetHash,
+    coverage: {
+      paired: pairs.length,
+      excluded: left.exclusions.length,
+      exclusions: left.exclusions,
+    },
+    summary: {
+      definitions: {
+        usable:
+          'PRIMARY: correct intent in a fully contract-valid response of that variant, over every paired attempt including invalid responses and errors.',
+        intentSelection:
+          'DIAGNOSTIC: intent from a syntactically valid, duplicate-free JSON object even if other contract rules failed; never repaired or promoted.',
+        change: 'From left to right: a regression is left usable-correct and right not.',
+      },
+      pairedExamples: pairs.length,
+      left: leftStatistics,
+      right: rightStatistics,
+      usableAccuracyDelta: delta(leftStatistics.usableAccuracy, rightStatistics.usableAccuracy),
+      intentSelectionDelta: delta(
+        leftStatistics.intentSelectionAccuracy,
+        rightStatistics.intentSelectionAccuracy,
+      ),
+      changes: {
+        bothCorrect: pairs.filter((pair) => pair.change === 'both-correct').length,
+        regressions: regressions.length,
+        improvements: improvements.length,
+        bothWrong: pairs.filter((pair) => pair.change === 'both-wrong').length,
+        mcnemarExactPValue: mcnemarExactPValue(regressions.length, improvements.length),
+      },
+      regressionCauses: {
+        wrongIntent: regressions.filter((pair) => pair.right.status === 'valid').length,
+        invalidContract: regressions.filter((pair) => pair.right.status === 'invalid').length,
+        transportError: regressions.filter((pair) => pair.right.status === 'error').length,
+      },
+      regressionIds: regressions.map((pair) => pair.id),
+      improvementIds: improvements.map((pair) => pair.id),
+      intentSelectionDiagnostic: {
+        regressionIds: pairs
+          .filter(
+            (pair) => pair.left.intentSelectedCorrectly && !pair.right.intentSelectedCorrectly,
+          )
+          .map((pair) => pair.id),
+        improvementIds: pairs
+          .filter(
+            (pair) => !pair.left.intentSelectedCorrectly && pair.right.intentSelectedCorrectly,
+          )
+          .map((pair) => pair.id),
+      },
+      latencyMs: {
+        left: latencyStatistics(pairs.map((pair) => pair.left.latencyMs)),
+        right: latencyStatistics(pairs.map((pair) => pair.right.latencyMs)),
+        // Per-example right minus left; negative means the right variant was faster.
+        pairedDifference: latencyStatistics(
+          pairs.map((pair) => pair.right.latencyMs - pair.left.latencyMs),
+        ),
+      },
+      meanOutputTokens: {
+        left: mean(pairs.map((pair) => pair.left.outputTokens)),
+        right: mean(pairs.map((pair) => pair.right.outputTokens)),
+      },
+    },
+    pairs,
   };
 }
