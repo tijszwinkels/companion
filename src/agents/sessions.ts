@@ -708,8 +708,9 @@ export class AgentSessions implements InspectableModule {
 
   /**
    * One promise owns the entire sequence, so idle/stop/close include queued
-   * work. Await both the backend and its final save before resuming the agent. Once
-   * accepted, a message is independent of microphone pause and UI tab changes.
+   * work. Await both the backend and its final save before resuming the agent.
+   * Once accepted, a message is independent of microphone pause and UI tab
+   * changes.
    */
   private async drain(
     session: RunningSession,

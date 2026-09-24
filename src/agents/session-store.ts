@@ -24,8 +24,9 @@ const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 /**
  * Companion's display transcript and screenshot accompany the harness's own
- * resumable conversation (Pi or Claude Code). Atomic replacement preserves the last complete snapshot if a
- * write is interrupted. Nothing is created during construction or inspection.
+ * resumable conversation (Pi or Claude Code). Atomic replacement preserves the
+ * last complete snapshot if a write is interrupted. Nothing is created during
+ * construction or inspection.
  */
 export class SessionStore {
   private readonly writes = new Map<string, Promise<void>>();
