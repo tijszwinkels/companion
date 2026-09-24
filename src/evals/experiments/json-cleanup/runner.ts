@@ -32,6 +32,13 @@ import { runBounded } from '../../pool.ts';
 import { complete, validateTargets, type EvalTarget } from '../../transport.ts';
 import type { IntentRequestRecord } from '../../../core/intent-request.ts';
 import {
+  assertChecksMatchExamples,
+  evaluateLiteralCheck,
+  type LiteralCheck,
+  type LiteralCheckOutcome,
+  type LiteralChecks,
+} from './checks.ts';
+import {
   parseExperimentResponse,
   type InvalidReason,
   type ResponseExpectation,
@@ -114,6 +121,8 @@ export interface ExperimentResult {
   correct: boolean | null;
   hasText: boolean;
   invalidReason: InvalidReason | null;
+  /** Outcome of fixture-specified literal checks; the literals stay private. */
+  literalCheck: LiteralCheckOutcome['status'];
   error: string | null;
   latencyMs: number;
   inputHash: string | null;
@@ -135,6 +144,8 @@ export interface PrivateOutput {
   cleanedText: string | null;
   /** Raw model text, kept only for invalid responses to diagnose the failure. */
   invalidResponseText: string | null;
+  /** Full literal-check outcome, including which private literals failed. */
+  literalCheck: LiteralCheckOutcome;
 }
 
 interface BatchTiming {
@@ -357,6 +368,7 @@ export function describeVariant(plan: ExperimentPlan) {
 async function evaluateExample(
   planned: PlannedExample,
   target: EvalTarget,
+  check: LiteralCheck | undefined,
   batchSignal: AbortSignal,
 ): Promise<{ result: ExperimentResult; privateOutput: PrivateOutput }> {
   // Restoring happens before the latency timer starts; it counts only toward wall time.
@@ -374,6 +386,7 @@ async function evaluateExample(
     correct: planned.fixedRoute === null ? false : null,
     hasText: false,
     invalidReason: null,
+    literalCheck: 'no-checks',
     error: null,
     latencyMs: 0,
     inputHash: prepared.inputHash,
@@ -392,6 +405,7 @@ async function evaluateExample(
     intent: null,
     cleanedText: null,
     invalidResponseText: null,
+    literalCheck: { status: 'no-checks' },
   };
 
   // Per-request timeout that starts now, not while waiting for a free slot.
@@ -438,6 +452,11 @@ async function evaluateExample(
   }
 
   result.latencyMs = performance.now() - started;
+
+  // Literal checks run on valid cleaned text only; everything else is not evaluated.
+  privateOutput.literalCheck = evaluateLiteralCheck(check, privateOutput.cleanedText);
+  result.literalCheck = privateOutput.literalCheck.status;
+
   return { result, privateOutput };
 }
 
@@ -454,7 +473,8 @@ function percentile(sorted: number[], fraction: number): number | null {
   return sorted[rank]!;
 }
 
-function latencyStatistics(values: number[]) {
+/** Latency summary; also used by the paired comparison. */
+export function latencyStatistics(values: number[]) {
   const sorted = [...values].sort((left, right) => left - right);
   let total = 0;
   for (const value of sorted) {
@@ -531,6 +551,20 @@ function summarizeTarget(
     };
   }
 
+  // Fixture-specified literal checks: IDs and counts only, never the literals.
+  const checked = rows.filter((row) => row.literalCheck !== 'no-checks');
+  let literalChecks = null;
+  if (checked.length > 0) {
+    literalChecks = {
+      examplesWithChecks: checked.length,
+      passed: checked.filter((row) => row.literalCheck === 'passed').length,
+      failed: checked.filter((row) => row.literalCheck === 'failed').length,
+      notEvaluated: checked.filter((row) => row.literalCheck === 'not-evaluated').length,
+      failedIds: checked.filter((row) => row.literalCheck === 'failed').map((row) => row.id),
+      note: 'Fixture-specified literal checks only; not a cleanup quality score.',
+    };
+  }
+
   let estimatedCost: number | null = 0;
   for (const row of rows) {
     if (row.estimatedCost === null) {
@@ -560,6 +594,7 @@ function summarizeTarget(
       qualityScore: null,
       note: 'No cleanup ground truth exists; review the private outputs file by hand.',
     },
+    literalChecks,
     batch: {
       startedAt: batch.startedAt,
       completedAt: batch.completedAt,
@@ -584,6 +619,7 @@ export async function runExperiment(
   targets: EvalTarget[],
   outputTokens: number,
   signal: AbortSignal = new AbortController().signal,
+  checks: LiteralChecks | null = null,
 ) {
   validateTargets(targets);
   for (const target of targets) {
@@ -595,6 +631,12 @@ export async function runExperiment(
   const plan = await planExperiment(source, outputTokens, signal);
   if (plan.supported.length === 0) {
     throw Error(`No example is supported by ${VARIANT_ID}; nothing was sent`);
+  }
+  if (checks !== null) {
+    assertChecksMatchExamples(
+      checks,
+      plan.supported.map((example) => example.id),
+    );
   }
 
   const startedAt = new Date().toISOString();
@@ -615,7 +657,10 @@ export async function runExperiment(
       plan.supported.length,
       concurrency,
       signal,
-      (index, batchSignal) => evaluateExample(plan.supported[index]!, target, batchSignal),
+      (index, batchSignal) => {
+        const example = plan.supported[index]!;
+        return evaluateExample(example, target, checks?.checks[example.id], batchSignal);
+      },
     );
 
     const batch: BatchTiming = {

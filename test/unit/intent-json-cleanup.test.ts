@@ -41,6 +41,15 @@ import {
   UnsupportedExampleError,
 } from '../../src/evals/experiments/json-cleanup/prompt.ts';
 import { planExperiment, runExperiment } from '../../src/evals/experiments/json-cleanup/runner.ts';
+import {
+  assertChecksMatchExamples,
+  evaluateLiteralCheck,
+  loadLiteralChecks,
+} from '../../src/evals/experiments/json-cleanup/checks.ts';
+import {
+  mcnemarExactPValue,
+  runPairedComparison,
+} from '../../src/evals/experiments/json-cleanup/compare.ts';
 
 const png = Buffer.from('synthetic image bytes; never a personal recording');
 const pngSha256 = createHash('sha256').update(png).digest('hex');
@@ -1209,17 +1218,38 @@ test('CLI run writes a shareable report and a separate private 0600 outputs file
 // Isolation from live actions
 // ---------------------------------------------------------------------------
 
-test('experiment modules never import routing, processors, delivery, sensors or UI code', async () => {
+test('experiment modules never reach routing, processors, delivery, sensors, UI or processes', async () => {
+  // Static evidence that no experiment output can reach an action: walk every
+  // relative import (and re-export) from the experiment entry points and allow
+  // only the experiment itself, the shared eval modules and the recording format.
   const experimentDirectory = resolve('src/evals/experiments/json-cleanup');
-  const entries = ['cli.ts', 'runner.ts', 'prompt.ts', 'contract.ts', 'fixed-routes.ts'].map(
-    (name) => join(experimentDirectory, name),
-  );
+  const entries = [
+    'cli.ts',
+    'compare.ts',
+    'runner.ts',
+    'prompt.ts',
+    'contract.ts',
+    'checks.ts',
+    'fixed-routes.ts',
+  ].map((name) => join(experimentDirectory, name));
   const allowed = new Set([
     'src/core/intent-request.ts',
     'src/evals/dataset.ts',
     'src/evals/errors.ts',
     'src/evals/pool.ts',
+    'src/evals/runner.ts',
+    'src/evals/summary.ts',
     'src/evals/transport.ts',
+  ]);
+  // No child processes, sockets, workers or keyboard/desktop helpers. Network
+  // access is only the shared transport's fetch to explicitly configured targets.
+  const allowedBuiltins = new Set([
+    'node:crypto',
+    'node:fs/promises',
+    'node:path',
+    'node:perf_hooks',
+    'node:sqlite',
+    'node:util',
   ]);
 
   const visited = new Set<string>();
@@ -1232,16 +1262,20 @@ test('experiment modules never import routing, processors, delivery, sensors or 
     visited.add(file);
 
     const source = await readFile(file, 'utf8');
-    for (const match of source.matchAll(/^import[^'"]*['"]([^'"]+)['"]/gm)) {
+    assert.ok(!/\bimport\s*\(/.test(source), `${file} uses a dynamic import`);
+    assert.ok(!/\brequire\s*\(/.test(source), `${file} uses require`);
+
+    for (const match of source.matchAll(/(?:^import\s+|\bfrom\s+)['"]([^'"]+)['"];$/gm)) {
       const specifier = match[1]!;
       if (!specifier.startsWith('.')) {
-        assert.ok(specifier.startsWith('node:'), `${file} imports package ${specifier}`);
+        assert.ok(allowedBuiltins.has(specifier), `${file} imports ${specifier}`);
         continue;
       }
       pending.push(resolve(dirname(file), specifier));
     }
   }
 
+  assert.ok(visited.size >= entries.length + allowed.size);
   for (const file of visited) {
     const path = relative(process.cwd(), file);
     assert.ok(
@@ -1318,4 +1352,278 @@ test('CLI reserves incomplete markers and turns SIGHUP into failed, text-free fi
   } finally {
     await endpoint.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Paired comparison with the exact-replay baseline
+// ---------------------------------------------------------------------------
+
+test('exact McNemar p-values', () => {
+  assert.equal(mcnemarExactPValue(0, 0), 1);
+  assert.equal(mcnemarExactPValue(1, 1), 1);
+  assert.equal(mcnemarExactPValue(5, 0), 0.0625);
+  assert.equal(mcnemarExactPValue(0, 5), 0.0625);
+  assert.ok(Math.abs(mcnemarExactPValue(3, 7) - 0.34375) < 1e-12);
+  const large = mcnemarExactPValue(600, 400);
+  assert.ok(Number.isFinite(large) && large > 0 && large < 0.001);
+});
+
+test('paired comparison runs the unmodified baseline and the variant on identical inputs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-compare-'));
+  const examples: SyntheticExample[] = [
+    { utterance: `dear team ${SECRET}`, expected: 'SEND_TEXT_TO_APPLICATION' },
+    { utterance: `and also fix the test ${SECRET}`, expected: 'CONTINUE_OPEN_AGENT_CONVERSATION' },
+    { utterance: `what is this error ${SECRET}`, expected: 'START_CODING_AGENT_SESSION' },
+    { utterance: `talking to Sam ${SECRET}`, expected: 'IGNORE' },
+    {
+      utterance: `legacy ${SECRET}`,
+      expected: 'IGNORE',
+      systemPrompt: 'Legacy prompt.\nName: IGNORE\nInstruction: x\n',
+    },
+  ];
+  const datasetPath = await writeDataset(root, examples);
+
+  // Baseline answers (bare names) and variant answers (JSON), per utterance prefix.
+  const baselineAnswers: Record<string, string> = {
+    dear: 'SEND_TEXT_TO_APPLICATION',
+    and: 'CONTINUE_OPEN_AGENT_CONVERSATION',
+    what: 'START_CODING_AGENT_SESSION',
+    talking: 'SEND_TEXT_TO_APPLICATION',
+    legacy: 'IGNORE',
+  };
+  const variantAnswers: Record<string, string> = {
+    dear: '{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{"text":"Dear team."}}',
+    and: '```json\n{"intent":"CONTINUE_OPEN_AGENT_CONVERSATION","parameters":{"text":"x"}}\n```',
+    what: '{"intent":"IGNORE","parameters":{}}',
+    talking: '{"intent":"IGNORE","parameters":{}}',
+  };
+
+  const arms: string[] = [];
+  const baselineBodies = new Map<string, Record<string, unknown>>();
+  const endpoint = await server(async (request, response) => {
+    const body = await readBody(request);
+    const key = utteranceOf(body).split(' ')[0]!;
+    response.setHeader('Content-Type', 'text/event-stream');
+    if (systemPromptOf(body).includes('Response format (json-cleanup-v1):')) {
+      arms.push('variant');
+      assert.equal(body.max_tokens, 256);
+      response.end(stream(variantAnswers[key]!));
+    } else {
+      arms.push('baseline');
+      baselineBodies.set(key, body);
+      response.end(stream(baselineAnswers[key]!));
+    }
+  });
+
+  try {
+    const target = { name: 'local', model: 'local-model', baseUrl: endpoint.url, concurrency: 2 };
+    const { report, privateOutputs } = await runPairedComparison({
+      datasetPath,
+      targets: [target],
+      outputTokens: 256,
+      order: 'baseline-first',
+      checks: null,
+    });
+
+    // Baseline arm: every example, exact recorded bodies with only the model changed.
+    assert.equal(baselineBodies.size, 5);
+    for (const example of examples) {
+      const { record } = recordFor(
+        recordedPayload(example.utterance, example.intents, example.systemPrompt),
+      );
+      const key = example.utterance.split(' ')[0]!;
+      assert.deepEqual(baselineBodies.get(key), requestBody(record, target));
+    }
+    // Variant arm: only supported examples, strictly after the baseline arm.
+    assert.deepEqual(arms, [...Array(5).fill('baseline'), ...Array(4).fill('variant')]);
+    assert.equal(report.baselineReport.results.length, 5);
+    assert.deepEqual(report.excludedFromPairing, [
+      { id: uuid(4), reason: 'recorded-prompt-template-mismatch' },
+    ]);
+
+    const paired = report.paired[0]!;
+    assert.equal(paired.pairedExamples, 4);
+    assert.equal(paired.baseline.correct, 3);
+    assert.equal(paired.baseline.accuracy, 0.75);
+    assert.equal(paired.variant.correct, 2);
+    assert.equal(paired.variant.accuracy, 0.5);
+    assert.equal(paired.accuracyDelta, -0.25);
+    assert.equal(paired.variant.invalidJsonResponses, 1);
+    assert.equal(paired.variant.malformedRate, 0.25);
+    assert.equal(paired.baseline.malformedRate, 0);
+    assert.deepEqual(paired.changes, {
+      bothCorrect: 1,
+      regressions: 2,
+      improvements: 1,
+      bothWrong: 0,
+      mcnemarExactPValue: 1,
+    });
+    assert.deepEqual(paired.regressionCauses, {
+      wrongIntent: 1,
+      invalidJson: 1,
+      transportError: 0,
+    });
+    assert.deepEqual(paired.regressionIds, [uuid(1), uuid(2)]);
+    assert.deepEqual(paired.improvementIds, [uuid(3)]);
+    assert.equal(paired.latencyMs.baseline.count, 4);
+    assert.equal(paired.latencyMs.pairedDifference.count, 4);
+    assert.equal(paired.meanOutputTokens.variant, 20);
+
+    // Pairs join on the same recorded input in both arms.
+    for (const pair of report.pairs) {
+      const baselineRow = report.baselineReport.results.find((row) => row.id === pair.id)!;
+      const variantRow = report.variantReport.results.find((row) => row.id === pair.id)!;
+      assert.equal(baselineRow.inputHash, variantRow.inputHash);
+    }
+    const invalidPair = report.pairs.find((pair) => pair.id === uuid(1))!;
+    assert.equal(invalidPair.change, 'regression');
+    assert.equal(invalidPair.variant.invalidReason, 'invalid-json');
+
+    assert.equal(report.arms.variant.exactReplay, false);
+    assert.ok(!JSON.stringify(report).includes(SECRET));
+    assert.equal(privateOutputs.length, 4);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('CLI compare writes paired files, honors --order and refuses fixed routes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-cli-compare-'));
+  const datasetPath = await writeDataset(root, [
+    { utterance: `hello ${SECRET}`, expected: 'SEND_TEXT_TO_APPLICATION' },
+  ]);
+  const fixedPath = await writeFixedRoutes(root, [
+    { id: 'q', route: 'QUICK_QUESTION', text: 'why' },
+  ]);
+
+  const arms: string[] = [];
+  const endpoint = await server(async (request, response) => {
+    const body = await readBody(request);
+    response.setHeader('Content-Type', 'text/event-stream');
+    if (systemPromptOf(body).includes('Response format (json-cleanup-v1):')) {
+      arms.push('variant');
+      response.end(stream('{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{"text":"Hello."}}'));
+    } else {
+      arms.push('baseline');
+      response.end(stream('SEND_TEXT_TO_APPLICATION'));
+    }
+  });
+
+  try {
+    const targets = join(root, 'targets.json');
+    await writeFile(targets, JSON.stringify([{ name: 't', model: 'm', baseUrl: endpoint.url }]));
+    const reportPath = join(root, 'compare.json');
+    const privatePath = join(root, 'compare-private.json');
+
+    const refused = cli([
+      'compare',
+      '--fixed-routes',
+      fixedPath,
+      '--targets',
+      targets,
+      '--output-tokens',
+      '64',
+      '--out',
+      join(root, 'x.json'),
+      '--private-out',
+      join(root, 'y.json'),
+      '--send',
+    ]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /fixed-route shortcuts have no exact-replay baseline/);
+    const badOrder = cli([
+      'compare',
+      '--dataset',
+      datasetPath,
+      '--targets',
+      targets,
+      '--output-tokens',
+      '64',
+      '--order',
+      'random',
+      '--out',
+      join(root, 'x.json'),
+      '--private-out',
+      join(root, 'y.json'),
+      '--send',
+    ]);
+    assert.match(badOrder.stderr, /--order must be/);
+    assert.equal(arms.length, 0);
+
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      '--import',
+      'tsx',
+      CLI,
+      'compare',
+      '--dataset',
+      datasetPath,
+      '--targets',
+      targets,
+      '--output-tokens',
+      '64',
+      '--order',
+      'variant-first',
+      '--out',
+      reportPath,
+      '--private-out',
+      privatePath,
+      '--send',
+    ]);
+    assert.ok(!stdout.includes(SECRET));
+    assert.deepEqual(arms, ['variant', 'baseline']);
+
+    const report = JSON.parse(await readFile(reportPath, 'utf8'));
+    assert.equal(report.state, 'complete');
+    assert.equal(report.kind, 'intent-json-cleanup-paired-comparison');
+    assert.equal(report.order, 'variant-first');
+    assert.equal(report.paired[0].accuracyDelta, 0);
+    assert.ok(!JSON.stringify(report).includes(SECRET));
+    const privateOutputs = JSON.parse(await readFile(privatePath, 'utf8'));
+    assert.equal(privateOutputs.outputs[0].cleanedText, 'Hello.');
+    assert.equal((await stat(reportPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(privatePath)).mode & 0o777, 0o600);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('literal checks are validated, matched to examples and never echoed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-checks-'));
+  const write = async (name: string, value: unknown) => {
+    const path = join(root, name);
+    await writeFile(path, JSON.stringify(value));
+    return path;
+  };
+  const base = { version: 1, kind: 'companion-cleanup-literal-checks' };
+
+  for (const [value, pattern] of [
+    [{ ...base, checks: { a: { mustContain: [] } } }, /need 1-50/],
+    [{ ...base, checks: { a: { mustContain: [''] } } }, /need 1-50/],
+    [{ ...base, checks: { a: { mustContain: [[]] } } }, /need 1-50/],
+    [{ ...base, checks: { a: { mustContain: [SECRET], extra: 1 } } }, /only mustContain/],
+    [{ ...base, checks: [] }, /version 1/],
+  ] as [unknown, RegExp][]) {
+    await assert.rejects(loadLiteralChecks(await write('bad.json', value)), (error: Error) => {
+      assert.match(error.message, pattern);
+      assert.ok(!error.message.includes(SECRET));
+      return true;
+    });
+  }
+
+  const checks = await loadLiteralChecks(
+    await write('good.json', {
+      ...base,
+      checks: { a: { mustContain: ['4.2', ['not', 'never']], mustNotContain: ['\n'] } },
+    }),
+  );
+  const check = checks.checks.a!;
+  assert.deepEqual(evaluateLiteralCheck(check, 'It is 4.2, not 4.7.'), { status: 'passed' });
+  assert.deepEqual(evaluateLiteralCheck(check, 'It is 4.7.\nOK'), {
+    status: 'failed',
+    missing: ['4.2', ['not', 'never']],
+    forbiddenPresent: ['\n'],
+  });
+  assert.deepEqual(evaluateLiteralCheck(check, null), { status: 'not-evaluated' });
+  assert.deepEqual(evaluateLiteralCheck(undefined, 'x'), { status: 'no-checks' });
+  assert.throws(() => assertChecksMatchExamples(checks, ['b']), /not a supported example/);
 });

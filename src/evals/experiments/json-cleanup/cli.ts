@@ -1,24 +1,33 @@
 /**
  * CLI for the offline JSON intent + spoken-text cleanup experiment.
  *
+ * The first question this experiment answers is whether requesting JSON plus
+ * cleaned text reduces intent-detection quality compared with exact replay.
+ * `compare` answers it on identical frozen examples; cleanup output is
+ * secondary evidence for human inspection. Nothing here is wired into the
+ * running application, and no response is ever executed.
+ *
  * Commands:
  * - prompt:  print the versioned instruction templates. No files, no network.
- * - dry-run: validate a dataset/fixture, targets and output budget and print
- *            content-free counts, hashes and the variant description. Makes
- *            zero model calls.
- * - run:     send the variant requests (requires --send) and write a shareable
- *            report plus a separate private outputs file for human review.
+ * - dry-run: validate a dataset/fixture, targets, output budget and optional
+ *            literal checks, and print content-free counts, hashes and the
+ *            variant description. Makes zero model calls.
+ * - compare: paired run of the unmodified exact-replay baseline and the variant
+ *            on the same frozen dataset (requires --send).
+ * - run:     variant only, for a frozen dataset or fixed-route fixtures
+ *            (requires --send).
  *
- * This is deliberately a separate CLI from `npm run eval:intents`, whose exact-
- * replay behavior stays unchanged. Output handling mirrors that CLI: both output
- * files are reserved (mode 0600, never overwritten) with an "incomplete" marker
- * before any call; the first stop signal aborts and drains gracefully, and a
- * second signal exits immediately.
+ * compare/run write a shareable report plus a separate private outputs file.
+ * Output handling mirrors `eval:intents`: both files are reserved (mode 0600,
+ * never overwritten) with an "incomplete" marker before any call; the first
+ * stop signal aborts and drains gracefully, a second signal exits immediately.
  */
 import { open, readFile, type FileHandle } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 
 import { parseTargets, type EvalTarget } from '../../transport.ts';
+import { assertChecksMatchExamples, loadLiteralChecks, type LiteralChecks } from './checks.ts';
+import { ARM_ORDERS, runPairedComparison, type ArmOrder } from './compare.ts';
 import { TEXT_ROUTES } from './contract.ts';
 import {
   fixedRouteSystemPrompt,
@@ -38,29 +47,43 @@ import {
   runExperiment,
   type ExperimentMode,
   type ExperimentSource,
+  type PrivateOutput,
 } from './runner.ts';
 
 const help = `Companion intent JSON + spoken-text cleanup EXPERIMENT (${VARIANT_ID})
 
-This is NOT exact replay: it changes the recorded prompt and output budget.
-Use "npm run eval:intents" for exact replay; it is unaffected by this command.
+This is NOT exact replay: the variant changes the recorded prompt and output
+budget. It is eval-only: nothing is integrated into the running application.
+"npm run eval:intents" (exact replay) is unaffected by this command.
 
 npm run eval:intent-cleanup -- prompt
 npm run eval:intent-cleanup -- dry-run (--dataset DATASET.json | --fixed-routes FIXTURE.json) \\
-  --targets targets.json --output-tokens N
+  --targets targets.json --output-tokens N [--checks CHECKS.json]
+npm run eval:intent-cleanup -- compare --dataset DATASET.json --targets targets.json \\
+  --output-tokens N [--order baseline-first|variant-first] [--checks CHECKS.json] \\
+  --out new-report.json --private-out new-private-outputs.json --send
 npm run eval:intent-cleanup -- run (--dataset DATASET.json | --fixed-routes FIXTURE.json) \\
-  --targets targets.json --output-tokens N --out new-report.json \\
-  --private-out new-private-outputs.json --send
+  --targets targets.json --output-tokens N [--checks CHECKS.json] \\
+  --out new-report.json --private-out new-private-outputs.json --send
 
 prompt:   prints the instruction templates (no private data, no network).
 dry-run:  validates everything and prints counts/hashes. Zero model calls.
-run:      sends private text/context/screenshots to every target. Requires --send.
+compare:  PRIMARY QUESTION. Runs the unmodified exact-replay baseline and the
+          variant on the same frozen examples and targets, one arm after the
+          other, and reports paired accuracy, per-example regressions and
+          improvements, malformed-output rates and latency. Default order
+          baseline-first; run again with the other order to check cache effects.
+run:      variant only (also for fixed-route shortcut fixtures).
+compare and run send private text/context/screenshots to every target and
+require --send.
 
 --dataset       dataset.json from "eval:intents export" (inferred routes; recorded
                 requests only, never reconstructed).
 --fixed-routes  explicit, user-supplied fixed-route (shortcut) fixture file.
 --output-tokens explicit experimental output budget, ${MIN_OUTPUT_TOKENS}-${MAX_OUTPUT_TOKENS}
                 (recorded requests use 32; the report records the delta).
+--checks        optional fixture-specified literal checks (must/must-not contain)
+                on cleaned text. Reported as IDs and counts; not a quality score.
 --out           shareable report: hashes, accuracy, JSON validity, invalid
                 reasons, latency. Contains no dictated or cleaned text.
 --private-out   PRIVATE file with spoken text, cleaned text and raw invalid
@@ -72,6 +95,12 @@ judge, no action execution. See docs/intent-json-cleanup-experiment.md.
 `;
 
 const STOP_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+const REPORT_KIND: Record<'run' | 'compare', string> = {
+  run: 'intent-json-cleanup-experiment',
+  compare: 'intent-json-cleanup-paired-comparison',
+};
+const PRIVATE_KIND = 'intent-json-cleanup-private-outputs';
 
 async function replaceFile(output: FileHandle, value: object): Promise<void> {
   await output.truncate(0);
@@ -86,6 +115,16 @@ function parseOutputTokens(value: string | undefined): number {
     );
   }
   return Number(value);
+}
+
+function parseOrder(value: string | undefined): ArmOrder {
+  if (value === undefined) {
+    return 'baseline-first';
+  }
+  if (!(ARM_ORDERS as readonly string[]).includes(value)) {
+    throw Error('--order must be baseline-first or variant-first');
+  }
+  return value as ArmOrder;
 }
 
 function sourceFrom(values: { dataset?: string; 'fixed-routes'?: string }): ExperimentSource {
@@ -129,6 +168,112 @@ function printPrompt(): void {
   }
 }
 
+/** Summary written to stdout after a successful compare/run. Content-free. */
+interface Completed {
+  report: object & { datasetHash: string };
+  privateOutputs: PrivateOutput[];
+  console: object;
+  hasErrors: boolean;
+}
+
+/**
+ * Reserve both output files, run `work` with a stop-signal controller, and
+ * replace both files with the result or an explicit failure. Existing files or
+ * a missing parent fail before any model call.
+ */
+async function withReservedOutputs(
+  command: 'run' | 'compare',
+  reportPath: string,
+  privatePath: string,
+  work: (signal: AbortSignal) => Promise<Completed>,
+): Promise<void> {
+  if (reportPath === privatePath) {
+    throw Error('--out and --private-out must be different files');
+  }
+
+  const reportKind = REPORT_KIND[command];
+  const reportFile = await open(reportPath, 'wx', 0o600);
+  let privateFile: FileHandle;
+  try {
+    privateFile = await open(privatePath, 'wx', 0o600);
+  } catch (error) {
+    await replaceFile(reportFile, {
+      kind: reportKind,
+      state: 'failed',
+      failed: true,
+      error: 'Private outputs file could not be reserved; nothing was sent',
+    });
+    await reportFile.close();
+    throw error;
+  }
+
+  const incomplete = {
+    state: 'incomplete',
+    note: 'Run started but did not finish writing a result; no score is claimed.',
+    startedAt: new Date().toISOString(),
+  };
+  await replaceFile(reportFile, { kind: reportKind, ...incomplete });
+  await replaceFile(privateFile, { kind: PRIVATE_KIND, ...incomplete });
+
+  // The first stop signal aborts gracefully: no new requests, active requests
+  // aborted and drained, then "failed" files. Handlers are removed at once, so
+  // a second signal takes its default action and ends the process immediately.
+  const controller = new AbortController();
+  const interrupt = (signal: NodeJS.Signals) => {
+    removeStopHandlers();
+    controller.abort(Error(`Experiment interrupted by ${signal}`));
+  };
+  const removeStopHandlers = () => {
+    for (const signal of STOP_SIGNALS) {
+      process.removeListener(signal, interrupt);
+    }
+  };
+  for (const signal of STOP_SIGNALS) {
+    process.on(signal, interrupt);
+  }
+
+  try {
+    const completed = await work(controller.signal);
+
+    await replaceFile(privateFile, {
+      kind: PRIVATE_KIND,
+      state: 'complete',
+      sensitive:
+        'Contains dictated text and model outputs. Keep out of Git, chats and coding-model prompts; delete when reviewed.',
+      variant: VARIANT_ID,
+      datasetHash: completed.report.datasetHash,
+      outputs: completed.privateOutputs,
+    });
+    await replaceFile(reportFile, { state: 'complete', ...completed.report });
+
+    console.log(
+      JSON.stringify(
+        { ...completed.console, report: reportPath, privateOutputs: privatePath },
+        null,
+        2,
+      ),
+    );
+    if (completed.hasErrors) {
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    // Partial results are not saved; both files state only why the run failed.
+    const failed = {
+      state: 'failed',
+      failed: true,
+      interrupted: controller.signal.aborted,
+      error: (error as Error).message,
+    };
+    await replaceFile(privateFile, { kind: PRIVATE_KIND, ...failed });
+    await replaceFile(reportFile, { kind: reportKind, ...failed });
+    throw error;
+  } finally {
+    removeStopHandlers();
+    await privateFile.close();
+    await reportFile.close();
+  }
+}
+
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -138,6 +283,8 @@ async function main(): Promise<void> {
       'fixed-routes': { type: 'string' },
       targets: { type: 'string' },
       'output-tokens': { type: 'string' },
+      checks: { type: 'string' },
+      order: { type: 'string' },
       out: { type: 'string' },
       'private-out': { type: 'string' },
       send: { type: 'boolean' },
@@ -151,8 +298,29 @@ async function main(): Promise<void> {
   const command = positionals[0];
   const allowed: Record<string, string[]> = {
     prompt: [],
-    'dry-run': ['dataset', 'fixed-routes', 'targets', 'output-tokens'],
-    run: ['dataset', 'fixed-routes', 'targets', 'output-tokens', 'out', 'private-out', 'send'],
+    'dry-run': ['dataset', 'fixed-routes', 'targets', 'output-tokens', 'checks'],
+    // fixed-routes is accepted only to refuse it with an explanation below.
+    compare: [
+      'dataset',
+      'fixed-routes',
+      'targets',
+      'output-tokens',
+      'checks',
+      'order',
+      'out',
+      'private-out',
+      'send',
+    ],
+    run: [
+      'dataset',
+      'fixed-routes',
+      'targets',
+      'output-tokens',
+      'checks',
+      'out',
+      'private-out',
+      'send',
+    ],
   };
   if (
     positionals.length !== 1 ||
@@ -174,9 +342,20 @@ async function main(): Promise<void> {
     throw Error('--targets is required; use --help');
   }
   const targets: EvalTarget[] = parseTargets(await readFile(values.targets, 'utf8'));
+  let checks: LiteralChecks | null = null;
+  if (values.checks !== undefined) {
+    checks = await loadLiteralChecks(values.checks);
+  }
 
   if (command === 'dry-run') {
     const plan = await planExperiment(source, outputTokens);
+    if (checks !== null) {
+      assertChecksMatchExamples(
+        checks,
+        plan.supported.map((example) => example.id),
+      );
+    }
+
     console.log(
       JSON.stringify(
         {
@@ -189,6 +368,7 @@ async function main(): Promise<void> {
             supported: plan.supported.length,
             unsupported: plan.unsupported,
             routeCounts: plan.routeCounts,
+            withLiteralChecks: checks === null ? 0 : Object.keys(checks.checks).length,
           },
           targets: targets.map((target) => ({
             name: target.name,
@@ -207,103 +387,64 @@ async function main(): Promise<void> {
   }
 
   if (!values.out || !values['private-out'] || !values.send) {
-    throw Error('run requires --out, --private-out and explicit --send; use --help');
-  }
-  if (values.out === values['private-out']) {
-    throw Error('--out and --private-out must be different files');
+    throw Error(`${command} requires --out, --private-out and explicit --send; use --help`);
   }
 
-  // Reserve both private files before sending anything. Existing files or a
-  // missing parent fail before any model call.
-  const reportFile = await open(values.out, 'wx', 0o600);
-  let privateFile: FileHandle;
-  try {
-    privateFile = await open(values['private-out'], 'wx', 0o600);
-  } catch (error) {
-    await replaceFile(reportFile, {
-      kind: 'intent-json-cleanup-experiment',
-      state: 'failed',
-      failed: true,
-      error: 'Private outputs file could not be reserved; nothing was sent',
-    });
-    await reportFile.close();
-    throw error;
-  }
-
-  const incomplete = {
-    state: 'incomplete',
-    note: 'Run started but did not finish writing a result; no score is claimed.',
-    startedAt: new Date().toISOString(),
-  };
-  await replaceFile(reportFile, { kind: 'intent-json-cleanup-experiment', ...incomplete });
-  await replaceFile(privateFile, { kind: 'intent-json-cleanup-private-outputs', ...incomplete });
-
-  const controller = new AbortController();
-  const interrupt = (signal: NodeJS.Signals) => {
-    removeStopHandlers();
-    controller.abort(Error(`Experiment interrupted by ${signal}`));
-  };
-  const removeStopHandlers = () => {
-    for (const signal of STOP_SIGNALS) {
-      process.removeListener(signal, interrupt);
+  if (command === 'compare') {
+    if (source.mode !== 'inferred') {
+      throw Error(
+        'compare requires --dataset: fixed-route shortcuts have no exact-replay baseline',
+      );
     }
-  };
-  for (const signal of STOP_SIGNALS) {
-    process.on(signal, interrupt);
+    const order = parseOrder(values.order);
+
+    await withReservedOutputs('compare', values.out, values['private-out'], async (signal) => {
+      const { report, privateOutputs } = await runPairedComparison({
+        datasetPath: source.datasetPath,
+        targets,
+        outputTokens,
+        order,
+        checks,
+        signal,
+      });
+      const hasErrors =
+        report.baselineReport.results.some((result) => result.error !== null) ||
+        report.variantReport.results.some((result) => result.status === 'error');
+      return {
+        report,
+        privateOutputs,
+        console: {
+          variant: VARIANT_ID,
+          order: report.order,
+          excludedFromPairing: report.excludedFromPairing.length,
+          paired: report.paired,
+        },
+        hasErrors,
+      };
+    });
+    return;
   }
 
-  try {
+  await withReservedOutputs('run', values.out, values['private-out'], async (signal) => {
     const { report, privateOutputs } = await runExperiment(
       source,
       targets,
       outputTokens,
-      controller.signal,
+      signal,
+      checks,
     );
-
-    await replaceFile(privateFile, {
-      kind: 'intent-json-cleanup-private-outputs',
-      state: 'complete',
-      sensitive:
-        'Contains dictated text and model outputs. Keep out of Git, chats and coding-model prompts; delete when reviewed.',
-      variant: VARIANT_ID,
-      datasetHash: report.datasetHash,
-      outputs: privateOutputs,
-    });
-    await replaceFile(reportFile, { state: 'complete', ...report });
-
-    // Console output is content-free: summary counts and file locations only.
-    console.log(
-      JSON.stringify(
-        {
-          variant: report.variant.id,
-          exactReplay: false,
-          summary: report.summary,
-          unsupported: report.examples.unsupported.length,
-          report: values.out,
-          privateOutputs: values['private-out'],
-        },
-        null,
-        2,
-      ),
-    );
-    if (report.results.some((result) => result.status === 'error')) {
-      process.exitCode = 1;
-    }
-  } catch (error) {
-    const failed = {
-      state: 'failed',
-      failed: true,
-      interrupted: controller.signal.aborted,
-      error: (error as Error).message,
+    return {
+      report,
+      privateOutputs,
+      console: {
+        variant: report.variant.id,
+        exactReplay: false,
+        summary: report.summary,
+        unsupported: report.examples.unsupported.length,
+      },
+      hasErrors: report.results.some((result) => result.status === 'error'),
     };
-    await replaceFile(privateFile, { kind: 'intent-json-cleanup-private-outputs', ...failed });
-    await replaceFile(reportFile, { kind: 'intent-json-cleanup-experiment', ...failed });
-    throw error;
-  } finally {
-    removeStopHandlers();
-    await privateFile.close();
-    await reportFile.close();
-  }
+  });
 }
 
 main().catch((error: unknown) => {
