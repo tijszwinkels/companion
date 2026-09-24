@@ -6,6 +6,11 @@ export interface EvalTarget {
   baseUrl: string;
   apiKeyEnv?: string;
   timeoutMs?: number;
+  /**
+   * Maximum requests this target has in flight at once (default 1). Targets run
+   * one at a time in isolated batches, so this never adds to another target's load.
+   */
+  concurrency?: number;
   /** Optional user-supplied pricing, per million tokens, not a provider quote. */
   pricing?: { inputPerMillion: number; outputPerMillion: number };
 }
@@ -15,6 +20,9 @@ export interface Completion {
   inputTokens: number | null;
   outputTokens: number | null;
 }
+
+/** Upper bound for per-target concurrency; a sanity limit, not a recommendation. */
+export const MAX_CONCURRENCY = 16;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -30,7 +38,16 @@ export function validateTargets(value: unknown): EvalTarget[] {
     if (
       !object(target) ||
       Object.keys(target).some(
-        (key) => !['name', 'model', 'baseUrl', 'apiKeyEnv', 'timeoutMs', 'pricing'].includes(key),
+        (key) =>
+          ![
+            'name',
+            'model',
+            'baseUrl',
+            'apiKeyEnv',
+            'timeoutMs',
+            'concurrency',
+            'pricing',
+          ].includes(key),
       ) ||
       typeof target.name !== 'string' ||
       !target.name.trim() ||
@@ -68,6 +85,19 @@ export function validateTargets(value: unknown): EvalTarget[] {
     ) {
       throw Error('timeoutMs must be an integer from 1 to 600000');
     }
+
+    // Concurrency bounds client-side in-flight work. A server may still queue
+    // admitted requests internally; that shows up as higher per-request latency.
+    if (
+      target.concurrency !== undefined &&
+      (typeof target.concurrency !== 'number' ||
+        !Number.isSafeInteger(target.concurrency) ||
+        target.concurrency < 1 ||
+        target.concurrency > MAX_CONCURRENCY)
+    ) {
+      throw Error(`concurrency must be an integer from 1 to ${MAX_CONCURRENCY}`);
+    }
+
     if (target.pricing !== undefined) {
       const pricing = target.pricing;
       if (
@@ -150,6 +180,18 @@ export async function complete(
   return decodeCompletion(wire, body.stream === true);
 }
 
+/**
+ * V8's SyntaxError message quotes part of the input. Response text can echo
+ * private prompts, so reports receive only this fixed message.
+ */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw Error('Response contained invalid JSON');
+  }
+}
+
 export function decodeCompletion(wire: string, streaming: boolean): Completion {
   const packets: unknown[] = [];
   if (streaming) {
@@ -170,13 +212,13 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
         done = true;
         continue;
       }
-      packets.push(JSON.parse(data));
+      packets.push(parseJson(data));
     }
     if (!done) {
       throw Error('Incomplete response stream');
     }
   } else {
-    packets.push(JSON.parse(wire));
+    packets.push(parseJson(wire));
   }
 
   let text = '';
@@ -209,7 +251,8 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
         message.refusal ||
         message.reasoning_content ||
         message.reasoning ||
-        message.reasoning_text
+        message.reasoning_text ||
+        message.reasoning_details
       ) {
         throw Error('Expected only an intent name, not tool calls, refusals or reasoning');
       }

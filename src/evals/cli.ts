@@ -17,11 +17,15 @@ export: freezes explicitly labeled recorded requests and checksum-verified PNGs.
 run:    sends private recorded text/context/screenshots to explicitly configured
         OpenAI-compatible endpoints. Requires --send. Changes ONLY body.model.
         First target is the comparison baseline. No actions, retries, or fallback.
-        JSON report includes errors, accuracy, latency, costs when known, and diffs.
+        Targets run one at a time; each has up to "concurrency" requests in flight.
+        JSON report includes errors, accuracy, latency, batch wall time/throughput,
+        costs when known, and diffs.
 
 Targets JSON: [{"name":"baseline","model":"model-id","baseUrl":"http://localhost:8000/v1",
-  "apiKeyEnv":"OPTIONAL_KEY_ENV","timeoutMs":30000,
+  "apiKeyEnv":"OPTIONAL_KEY_ENV","timeoutMs":30000,"concurrency":1,
   "pricing":{"inputPerMillion":0,"outputPerMillion":0}}]
+concurrency: integer 1-16, default 1. The same model may appear twice under
+different names/concurrency to measure speedup on the same frozen dataset.
 Pricing is optional, in your chosen currency. Missing usage/cost is null, not zero.
 Existing output files/directories are never overwritten. See docs/intent-evals.md.
 `;
@@ -98,7 +102,7 @@ async function main(): Promise<void> {
       }
     } catch (error) {
       await output.writeFile(
-        JSON.stringify({ version: 1, failed: true, error: (error as Error).message }) + '\n',
+        JSON.stringify({ version: 2, failed: true, error: (error as Error).message }) + '\n',
       );
       throw error;
     } finally {

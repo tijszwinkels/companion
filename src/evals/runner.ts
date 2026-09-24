@@ -1,75 +1,140 @@
+/**
+ * Evaluation runner: replays frozen recorded intent requests against explicit
+ * targets and builds the JSON report.
+ *
+ * Input: a frozen dataset path, validated targets and a cancellation signal.
+ * Output: a version 2 report with canonical per-request results and summaries.
+ *
+ * Scheduling: targets run one after another in isolated batches, in target
+ * order. Within a batch, up to `target.concurrency` requests (default 1) are in
+ * flight. Two targets never share the wire at the same time, so one target's
+ * load cannot slow another target's measured latency or throughput.
+ *
+ * Determinism: results are stored by (target, example) position, not by
+ * completion time. The report lists them target by target in dataset order,
+ * with exactly one result per example and target.
+ *
+ * This module imports no sensor, router, processor, history-writer or UI code,
+ * and never executes a detected action.
+ */
 import { performance } from 'node:perf_hooks';
 
-import { fingerprint, loadDataset, recordedIntents, restoreExample } from './dataset.ts';
+import {
+  fingerprint,
+  loadDataset,
+  recordedIntents,
+  restoreExample,
+  type EvalDataset,
+  type EvalExample,
+} from './dataset.ts';
+import { runBounded } from './pool.ts';
+import { compareWithBaseline, summarize, type BatchTiming, type EvalResult } from './summary.ts';
 import { complete, requestBody, validateTargets, type EvalTarget } from './transport.ts';
 
-export interface EvalResult {
-  id: string;
-  target: string;
-  expected: string;
-  originalPrediction: string | null;
-  prediction: string | null;
-  correct: boolean;
-  error: string | null;
-  latencyMs: number;
-  inputHash: string;
-  requestHash: string;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  estimatedCost: number | null;
-}
+export type { EvalResult } from './summary.ts';
 
-function percentile(values: number[], fraction: number): number | null {
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)]! : null;
-}
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_CONCURRENCY = 1;
 
-export function summarize(results: EvalResult[]) {
-  const summaries = [];
-  for (const target of new Set(results.map((result) => result.target))) {
-    const rows = results.filter((result) => result.target === target);
-    const confusion: Record<string, Record<string, number>> = Object.create(null);
-    for (const row of rows) {
-      const predictions = (confusion[row.expected] ??= Object.create(null) as Record<
-        string,
-        number
-      >);
-      const predicted = row.prediction ?? '<ERROR>';
-      predictions[predicted] = (predictions[predicted] ?? 0) + 1;
+/**
+ * Send one example to one target and score it.
+ *
+ * Ordinary request failures (HTTP errors, timeouts, invalid responses) become
+ * an error in the returned result. Cancellation of the batch signal is rethrown
+ * instead, so an interrupted request is never scored as a model error.
+ */
+async function evaluateExample(
+  datasetPath: string,
+  example: EvalExample,
+  target: EvalTarget,
+  batchSignal: AbortSignal,
+): Promise<EvalResult> {
+  // Restore per request instead of holding every screenshot in memory. Restoring
+  // happens before the latency timer starts; it counts only toward wall time.
+  const record = await restoreExample(datasetPath, example);
+  const { model: _originalModel, ...fixedInputs } = record.body;
+  const allowedIntents = recordedIntents(record);
+  const body = requestBody(record, target);
+
+  const result: EvalResult = {
+    id: example.id,
+    target: target.name,
+    expected: example.expected,
+    originalPrediction: example.originalPrediction,
+    prediction: null,
+    correct: false,
+    error: null,
+    latencyMs: 0,
+    inputHash: fingerprint(fixedInputs),
+    requestHash: fingerprint(body),
+    inputTokens: null,
+    outputTokens: null,
+    estimatedCost: null,
+  };
+
+  // The timeout is per request and starts now, so time spent waiting for a
+  // free concurrency slot never counts against it. Server-side queueing does.
+  const timeoutSignal = AbortSignal.timeout(target.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const requestSignal = AbortSignal.any([batchSignal, timeoutSignal]);
+  const started = performance.now();
+
+  try {
+    const reply = await complete(body, target, requestSignal);
+
+    result.inputTokens = reply.inputTokens;
+    result.outputTokens = reply.outputTokens;
+    if (target.pricing && reply.inputTokens !== null && reply.outputTokens !== null) {
+      const inputCost = reply.inputTokens * target.pricing.inputPerMillion;
+      const outputCost = reply.outputTokens * target.pricing.outputPerMillion;
+      result.estimatedCost = (inputCost + outputCost) / 1_000_000;
     }
-    const correct = rows.filter((row) => row.correct).length;
-    summaries.push({
-      target,
-      total: rows.length,
-      correct,
-      errors: rows.filter((row) => row.error !== null).length,
-      // Errors count against accuracy rather than disappearing from its denominator.
-      accuracy: correct / rows.length,
-      latencyMs: {
-        mean: rows.reduce((sum, row) => sum + row.latencyMs, 0) / rows.length,
-        p50: percentile(
-          rows.map((row) => row.latencyMs),
-          0.5,
-        ),
-        p95: percentile(
-          rows.map((row) => row.latencyMs),
-          0.95,
-        ),
-      },
-      estimatedCost: rows.every((row) => row.estimatedCost !== null)
-        ? rows.reduce((sum, row) => sum + row.estimatedCost!, 0)
-        : null,
-      pricedResults: rows.filter((row) => row.estimatedCost !== null).length,
-      confusion,
-      regressionsFromRecordedPrediction: rows
-        .filter((row) => row.originalPrediction === row.expected && !row.correct)
-        .map((row) => row.id),
-    });
+
+    if (!allowedIntents.includes(reply.text)) {
+      throw Error('Response is not a registered intent name');
+    }
+    result.prediction = reply.text;
+    result.correct = reply.text === example.expected;
+  } catch (error) {
+    batchSignal.throwIfAborted();
+    result.error = (error as Error).message;
   }
-  return summaries;
+
+  result.latencyMs = performance.now() - started;
+  return result;
 }
 
-/** Sequential, bounded inference only. No sensor, router, processor, or UI imports. */
+/** Run all examples for one target with bounded concurrency. */
+async function runTargetBatch(
+  datasetPath: string,
+  dataset: EvalDataset,
+  target: EvalTarget,
+  signal: AbortSignal,
+): Promise<{ results: EvalResult[]; timing: BatchTiming }> {
+  const concurrency = target.concurrency ?? DEFAULT_CONCURRENCY;
+  const startedAt = new Date().toISOString();
+  const started = performance.now();
+
+  // runBounded returns results in example order and, on cancellation or a fatal
+  // error, rejects only after every active request has settled.
+  const results = await runBounded(
+    dataset.examples.length,
+    concurrency,
+    signal,
+    (index, batchSignal) =>
+      evaluateExample(datasetPath, dataset.examples[index]!, target, batchSignal),
+  );
+
+  const wallTimeMs = performance.now() - started;
+  const timing: BatchTiming = {
+    target: target.name,
+    concurrency,
+    startedAt,
+    completedAt: new Date().toISOString(),
+    wallTimeMs,
+  };
+  return { results, timing };
+}
+
 export async function runEvaluation(
   datasetPath: string,
   targets: EvalTarget[],
@@ -84,89 +149,45 @@ export async function runEvaluation(
   const dataset = await loadDataset(datasetPath);
 
   // Validate every artifact before any network call, so broken fixtures cannot
-  // create a partially comparable run. Restore again per example to bound memory.
+  // create a partially comparable run. Restore again per request to bound memory.
   for (const example of dataset.examples) {
     signal.throwIfAborted();
     await restoreExample(datasetPath, example);
   }
-  const results: EvalResult[] = [];
+
   const startedAt = new Date().toISOString();
+  const started = performance.now();
+  const results: EvalResult[] = [];
+  const batches: BatchTiming[] = [];
 
-  for (const example of dataset.examples) {
-    const record = await restoreExample(datasetPath, example);
-    const { model: _originalModel, ...fixedInputs } = record.body;
-    const inputHash = fingerprint(fixedInputs);
-    const allowed = recordedIntents(record);
-
-    for (const target of targets) {
-      signal.throwIfAborted();
-      const body = requestBody(record, target);
-      const started = performance.now();
-      const result: EvalResult = {
-        id: example.id,
-        target: target.name,
-        expected: example.expected,
-        originalPrediction: example.originalPrediction,
-        prediction: null,
-        correct: false,
-        error: null,
-        latencyMs: 0,
-        inputHash,
-        requestHash: fingerprint(body),
-        inputTokens: null,
-        outputTokens: null,
-        estimatedCost: null,
-      };
-      try {
-        const deadline = AbortSignal.any([signal, AbortSignal.timeout(target.timeoutMs ?? 30_000)]);
-        const reply = await complete(body, target, deadline);
-        result.inputTokens = reply.inputTokens;
-        result.outputTokens = reply.outputTokens;
-        if (target.pricing && reply.inputTokens !== null && reply.outputTokens !== null) {
-          result.estimatedCost =
-            (reply.inputTokens * target.pricing.inputPerMillion +
-              reply.outputTokens * target.pricing.outputPerMillion) /
-            1_000_000;
-        }
-        if (!allowed.includes(reply.text)) {
-          throw Error('Response is not a registered intent name');
-        }
-        result.prediction = reply.text;
-        result.correct = reply.text === example.expected;
-      } catch (error) {
-        signal.throwIfAborted();
-        result.error = (error as Error).message;
-      }
-      result.latencyMs = performance.now() - started;
-      results.push(result);
-    }
+  // Targets run strictly one after another. See the module comment.
+  for (const target of targets) {
+    signal.throwIfAborted();
+    const batch = await runTargetBatch(datasetPath, dataset, target, signal);
+    results.push(...batch.results);
+    batches.push(batch.timing);
   }
 
-  const baseline = targets[0]!.name;
+  const wallTimeMs = performance.now() - started;
+
   return {
-    version: 1,
+    version: 2,
     startedAt,
     completedAt: new Date().toISOString(),
+    wallTimeMs,
     datasetHash: fingerprint(dataset),
     policy: 'Only body.model changes; no prompt conversion, retries, or action execution.',
-    targets,
-    baseline,
-    summary: summarize(results),
-    comparisons: targets.slice(1).map((target) => {
-      const baselineRows = new Map(
-        results.filter((row) => row.target === baseline).map((row) => [row.id, row]),
-      );
-      const rows = results.filter((row) => row.target === target.name);
-      return {
-        target: target.name,
-        regressions: rows
-          .filter((row) => baselineRows.get(row.id)!.correct && !row.correct)
-          .map((row) => row.id),
-        improvements: rows
-          .filter((row) => !baselineRows.get(row.id)!.correct && row.correct)
-          .map((row) => row.id),
-      };
-    }),
+    schedule:
+      'Targets run sequentially in isolated batches; each batch has at most target.concurrency requests in flight.',
+    // Resolved values, so every report states the concurrency actually used.
+    targets: targets.map((target) => ({
+      ...target,
+      timeoutMs: target.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      concurrency: target.concurrency ?? DEFAULT_CONCURRENCY,
+    })),
+    baseline: targets[0]!.name,
+    summary: summarize(targets, results, batches),
+    comparisons: compareWithBaseline(targets, results),
     results,
   };
 }

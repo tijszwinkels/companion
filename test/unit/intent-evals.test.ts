@@ -17,8 +17,14 @@ import {
   loadDataset,
   restoreExample,
 } from '../../src/evals/dataset.ts';
+import { runBounded } from '../../src/evals/pool.ts';
 import { runEvaluation } from '../../src/evals/runner.ts';
-import { decodeCompletion, requestBody, validateTargets } from '../../src/evals/transport.ts';
+import {
+  decodeCompletion,
+  requestBody,
+  validateTargets,
+  type EvalTarget,
+} from '../../src/evals/transport.ts';
 
 const png = Buffer.from('synthetic image bytes; never a personal recording');
 const ids = Array.from(
@@ -181,8 +187,9 @@ test('model comparison sends identical bodies except model, reports accuracy, co
     const body = JSON.parse(Buffer.concat(chunks).toString());
     bodies.push(body);
     response.setHeader('Content-Type', 'text/event-stream');
-    const answer =
-      bodies.length <= 2 ? 'IGNORE' : body.model === 'baseline-model' ? 'DICTATION' : 'IGNORE';
+    // Targets run in sequential batches in dataset order: the baseline sees
+    // examples 1-2 (IGNORE, DICTATION), then the candidate sees the same two.
+    const answer = bodies.length === 2 ? 'DICTATION' : 'IGNORE';
     const wire = stream(answer, 'stop', body.model === 'baseline-model');
     // Split in arbitrary byte positions, not SSE/event boundaries.
     response.write(wire.slice(0, 17));
@@ -205,8 +212,19 @@ test('model comparison sends identical bodies except model, reports accuracy, co
     assert.equal(report.summary[0]!.estimatedCost, 0.000208);
     assert.equal(report.summary[1]!.estimatedCost, null);
     assert.deepEqual(report.comparisons[0]!.regressions, [ids[1]]);
-    assert.equal(report.results[0]!.inputHash, report.results[1]!.inputHash);
-    assert.notEqual(report.results[0]!.requestHash, report.results[1]!.requestHash);
+    // Results are target-major: [baseline ex1, baseline ex2, candidate ex1, candidate ex2].
+    assert.deepEqual(
+      report.results.map((result) => [result.target, result.id]),
+      [
+        ['baseline', ids[0]],
+        ['baseline', ids[1]],
+        ['candidate', ids[0]],
+        ['candidate', ids[1]],
+      ],
+    );
+    assert.equal(report.results[0]!.inputHash, report.results[2]!.inputHash);
+    assert.notEqual(report.results[0]!.requestHash, report.results[2]!.requestHash);
+    assert.equal(report.summary[0]!.concurrency, 1);
     assert.equal(report.results[0]!.error, null);
     assert.ok(report.results.every((result) => result.latencyMs >= 0));
     assert.ok(!JSON.stringify(report).includes('héllo'));
@@ -418,4 +436,446 @@ test('unknown names are errors, redirects are not followed, and missing keys fai
   } finally {
     await endpoint.close();
   }
+});
+
+/** Payload for synthetic example `index`, distinguishable by the server. */
+function indexedPayload(index: number) {
+  const user = payload.messages[1]!.content as object[];
+  return {
+    ...payload,
+    messages: [
+      payload.messages[0]!,
+      {
+        role: 'user',
+        content: [{ type: 'text', text: `{"utterance":"example ${index}"}` }, user[1]!],
+      },
+    ],
+  };
+}
+
+/** Frozen dataset with `count` labeled, distinguishable examples. */
+async function indexedDataset(count: number) {
+  const root = await mkdtemp(join(tmpdir(), 'companion-evals-concurrency-'));
+  const path = join(root, 'utterances.sqlite');
+  const database = new DatabaseSync(path);
+  database.exec(`
+    PRAGMA user_version = 5;
+    CREATE TABLE utterances (id TEXT PRIMARY KEY, observed_at INTEGER, intent_request TEXT, recognized_intent TEXT);
+    CREATE TABLE intent_feedback (id TEXT PRIMARY KEY, correct INTEGER, actual_intent TEXT, recognized_intent TEXT);
+  `);
+  const exampleIds: string[] = [];
+  for (let index = 0; index < count; index++) {
+    const id = `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+    exampleIds.push(id);
+    const record = snapshotIntentRequest(indexedPayload(index), png, 'http://recorded.invalid/v1');
+    database
+      .prepare('INSERT INTO utterances VALUES (?, ?, ?, ?)')
+      .run(id, observedAt + index, record, 'IGNORE');
+    database
+      .prepare('INSERT INTO intent_feedback VALUES (?, ?, ?, ?)')
+      .run(id, 0, index % 2 === 0 ? 'IGNORE' : 'DICTATION', 'IGNORE');
+  }
+  database.close();
+  for (const id of exampleIds) {
+    await saveArtifact(root, id, observedAt, 'screenshots', png);
+  }
+  const directory = join(root, 'dataset');
+  await exportDataset(path, directory);
+  return { root, datasetPath: join(directory, 'dataset.json'), exampleIds };
+}
+
+/** Correct answer for synthetic example `index`. */
+function indexedAnswer(index: number): string {
+  return index % 2 === 0 ? 'IGNORE' : 'DICTATION';
+}
+
+interface ObservedRequest {
+  index: number;
+  body: Record<string, unknown>;
+  response: ServerResponse;
+}
+
+/**
+ * Local HTTP server that counts overlapping requests per model. `respond`
+ * decides when and how each request is answered; it may never answer.
+ */
+async function overlapServer(respond: (request: ObservedRequest) => void | Promise<void>) {
+  const state = {
+    calls: 0,
+    active: 0,
+    activeByModel: new Map<string, number>(),
+    maxActive: new Map<string, number>(),
+    activeModels: new Set<string>(),
+    mixedModels: false,
+    arrivals: [] as number[],
+    completions: [] as number[],
+    bodies: [] as Record<string, unknown>[],
+  };
+  const endpoint = await server(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+    const model = String(body.model);
+    const text = ((body.messages as { content: { text?: string }[] }[])[1]!.content[0]!.text ??
+      '') as string;
+    const index = Number(/example (\d+)/.exec(text)![1]);
+
+    state.calls++;
+    state.active++;
+    state.bodies.push(body);
+    state.arrivals.push(index);
+    state.activeModels.add(model);
+    if (state.activeModels.size > 1) {
+      state.mixedModels = true;
+    }
+    const perModel = (state.activeByModel.get(model) ?? 0) + 1;
+    state.activeByModel.set(model, perModel);
+    state.maxActive.set(model, Math.max(state.maxActive.get(model) ?? 0, perModel));
+
+    // 'close' fires both after a normal response and when the client aborts.
+    response.once('close', () => {
+      state.active--;
+      const remaining = state.activeByModel.get(model)! - 1;
+      state.activeByModel.set(model, remaining);
+      if (remaining === 0) {
+        state.activeModels.delete(model);
+      }
+      if (response.writableFinished) {
+        state.completions.push(index);
+      }
+    });
+    await respond({ index, body, response });
+  });
+  return { endpoint, state };
+}
+
+function answer(response: ServerResponse, text: string): void {
+  response.setHeader('Content-Type', 'text/event-stream');
+  response.end(stream(text));
+}
+
+const delay = (milliseconds: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+/** Poll `condition` until true or the timeout passes; returns the final value. */
+async function waitUntil(condition: () => boolean, timeoutMs = 2000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      return false;
+    }
+    await delay(5);
+  }
+  return true;
+}
+
+test('concurrency 1 and 4 run in isolated batches with real, bounded overlap and exact bodies', async () => {
+  const { datasetPath, exampleIds } = await indexedDataset(10);
+  let parallelArrivals = 0;
+  const { endpoint, state } = await overlapServer(async ({ index, body, response }) => {
+    if (body.model === 'parallel-model') {
+      parallelArrivals++;
+      // Hold the first wave until four requests overlap. If the runner were
+      // secretly sequential this would time out and maxActive would stay 1.
+      if (parallelArrivals <= 4) {
+        await waitUntil(() => state.activeByModel.get('parallel-model') === 4);
+      }
+    }
+    await delay(10);
+    answer(response, indexedAnswer(index));
+  });
+  try {
+    const targets: EvalTarget[] = [
+      { name: 'serial', model: 'serial-model', baseUrl: endpoint.url, concurrency: 1 },
+      { name: 'parallel', model: 'parallel-model', baseUrl: endpoint.url, concurrency: 4 },
+    ];
+    const report = await runEvaluation(datasetPath, targets);
+
+    assert.equal(state.calls, 20);
+    assert.equal(state.maxActive.get('serial-model'), 1);
+    assert.equal(state.maxActive.get('parallel-model'), 4);
+    // Batches are isolated: two targets never had requests in flight together.
+    assert.equal(state.mixedModels, false);
+
+    // Exact restored body per example; only the model differs.
+    for (const body of state.bodies) {
+      const text = JSON.stringify(body);
+      const index = Number(/example (\d+)/.exec(text)![1]);
+      assert.deepEqual({ ...body, model: 'original' }, indexedPayload(index));
+      assert.equal(JSON.stringify({ ...indexedPayload(index), model: body.model }), text);
+    }
+
+    assert.equal(report.version, 2);
+    assert.deepEqual(
+      report.targets.map((target) => target.concurrency),
+      [1, 4],
+    );
+    assert.deepEqual(
+      report.summary.map((summary) => [summary.target, summary.concurrency, summary.accuracy]),
+      [
+        ['serial', 1, 1],
+        ['parallel', 4, 1],
+      ],
+    );
+    for (const summary of report.summary) {
+      assert.ok(summary.batch.wallTimeMs > 0);
+      assert.ok(summary.batch.requestsPerSecond! > 0);
+      assert.equal(summary.latencyMs.allRequests.count, 10);
+      assert.equal(summary.latencyMs.successfulRequests.count, 10);
+    }
+    assert.ok(report.wallTimeMs >= report.summary[0]!.batch.wallTimeMs);
+    assert.deepEqual(
+      report.results.map((result) => [result.target, result.id]),
+      [...exampleIds.map((id) => ['serial', id]), ...exampleIds.map((id) => ['parallel', id])],
+    );
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('out-of-order completion yields canonical result order and stable hashes', async () => {
+  const { datasetPath, exampleIds } = await indexedDataset(8);
+  const { endpoint, state } = await overlapServer(async ({ index, response }) => {
+    // Later examples answer first, so completion order reverses within a wave.
+    await delay((8 - index) * 6);
+    answer(response, indexedAnswer(index));
+  });
+  const serial = { name: 'qwen-c1', model: 'same-model', baseUrl: endpoint.url, concurrency: 1 };
+  const parallel = { name: 'qwen-c4', model: 'same-model', baseUrl: endpoint.url, concurrency: 4 };
+  try {
+    const forward = await runEvaluation(datasetPath, [serial, parallel]);
+    const parallelCompletions = state.completions.slice(8);
+    assert.deepEqual(state.completions.slice(0, 8), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.notDeepEqual(parallelCompletions, [0, 1, 2, 3, 4, 5, 6, 7]);
+
+    const reversed = await runEvaluation(datasetPath, [parallel, serial]);
+    assert.equal(forward.datasetHash, reversed.datasetHash);
+
+    const canonical = (report: typeof forward) =>
+      report.results
+        .map((result) => ({
+          target: result.target,
+          id: result.id,
+          prediction: result.prediction,
+          correct: result.correct,
+          inputHash: result.inputHash,
+          requestHash: result.requestHash,
+        }))
+        .sort((left, right) =>
+          `${left.target}/${left.id}`.localeCompare(`${right.target}/${right.id}`),
+        );
+    assert.deepEqual(canonical(forward), canonical(reversed));
+
+    // One record per example and target, in dataset order within each batch.
+    assert.deepEqual(
+      forward.results.filter((result) => result.target === 'qwen-c4').map((result) => result.id),
+      exampleIds,
+    );
+    assert.equal(new Set(forward.results.map((row) => `${row.target}/${row.id}`)).size, 16);
+    for (let index = 0; index < 8; index++) {
+      // Same model and dataset: identical wire body whatever the concurrency.
+      assert.equal(forward.results[index]!.requestHash, forward.results[index + 8]!.requestHash);
+      assert.equal(forward.results[index]!.inputHash, forward.results[index + 8]!.inputHash);
+    }
+    assert.equal(forward.comparisons[0]!.regressions.length, 0);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('concurrent errors and timeouts are recorded per example, not retried, and cleaned up', async () => {
+  const { datasetPath, exampleIds } = await indexedDataset(8);
+  const { endpoint, state } = await overlapServer(async ({ index, response }) => {
+    if (index % 4 === 0) {
+      response.writeHead(500);
+      response.end('private echoed prompt');
+      return;
+    }
+    if (index % 4 === 1) {
+      // Never answer: the client's per-request timeout must abort it.
+      return;
+    }
+    await delay(5);
+    answer(response, indexedAnswer(index));
+  });
+  try {
+    const report = await runEvaluation(datasetPath, [
+      { name: 'mixed', model: 'mixed', baseUrl: endpoint.url, concurrency: 4, timeoutMs: 150 },
+    ]);
+    assert.equal(state.calls, 8);
+    assert.ok(state.maxActive.get('mixed')! <= 4);
+    assert.ok(await waitUntil(() => state.active === 0));
+
+    assert.deepEqual(
+      report.results.map((result) => result.id),
+      exampleIds,
+    );
+    for (const [index, result] of report.results.entries()) {
+      if (index % 4 === 0) {
+        assert.match(result.error!, /HTTP 500/);
+      } else if (index % 4 === 1) {
+        assert.match(result.error!, /timeout/i);
+        assert.ok(result.latencyMs >= 140);
+      } else {
+        assert.equal(result.error, null);
+        assert.equal(result.correct, true);
+      }
+    }
+    assert.ok(!JSON.stringify(report).includes('private echoed'));
+
+    const summary = report.summary[0]!;
+    assert.equal(summary.errors, 4);
+    assert.equal(summary.accuracy, 0.5);
+    assert.equal(summary.latencyMs.allRequests.count, 8);
+    assert.equal(summary.latencyMs.successfulRequests.count, 4);
+    // Timeouts dominate the all-request tail; success-only latency excludes them.
+    assert.ok(summary.latencyMs.allRequests.p95Ms! >= 140);
+    assert.ok(summary.latencyMs.successfulRequests.p95Ms! < 140);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('cancellation stops scheduling, aborts active requests and drains before rejecting', async () => {
+  const { datasetPath } = await indexedDataset(10);
+  const { endpoint, state } = await overlapServer(() => {
+    // Never answer; only cancellation can end these requests.
+  });
+  const controller = new AbortController();
+  try {
+    const run = runEvaluation(
+      datasetPath,
+      [{ name: 'hung', model: 'hung', baseUrl: endpoint.url, concurrency: 4 }],
+      controller.signal,
+    );
+    assert.ok(await waitUntil(() => state.calls === 4));
+    controller.abort(Error('cancelled by test'));
+    await assert.rejects(run, /cancelled by test/);
+
+    assert.equal(state.calls, 4);
+    assert.ok(await waitUntil(() => state.active === 0));
+    await delay(50);
+    assert.equal(state.calls, 4);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test('bounded pool keeps order, respects its limit, and drains on fatal errors', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const results = await runBounded(10, 3, new AbortController().signal, async (index) => {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await delay((10 - index) * 2);
+    active--;
+    return index * 10;
+  });
+  assert.deepEqual(results, [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]);
+  assert.equal(maxActive, 3);
+
+  assert.deepEqual(
+    await runBounded(2, 16, new AbortController().signal, async (index) => index),
+    [0, 1],
+  );
+  assert.deepEqual(await runBounded(0, 4, new AbortController().signal, async () => 1), []);
+
+  for (const invalid of [0, -1, 1.5, Number.NaN]) {
+    await assert.rejects(
+      runBounded(1, invalid, new AbortController().signal, async () => 1),
+      /positive integer/,
+    );
+  }
+
+  let started = 0;
+  const aborted = new AbortController();
+  aborted.abort(Error('already cancelled'));
+  await assert.rejects(
+    runBounded(3, 2, aborted.signal, async () => {
+      started++;
+    }),
+    /already cancelled/,
+  );
+  assert.equal(started, 0);
+
+  const startedIndexes: number[] = [];
+  let settled = 0;
+  const fatal = runBounded(10, 3, new AbortController().signal, async (index, signal) => {
+    startedIndexes.push(index);
+    try {
+      if (index === 1) {
+        await delay(5);
+        throw Error('fatal task');
+      }
+      // Siblings wait until the pool aborts them, then settle a little later.
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve()));
+      await delay(10);
+      signal.throwIfAborted();
+    } finally {
+      settled++;
+    }
+  });
+  await assert.rejects(fatal, /fatal task/);
+  assert.deepEqual(startedIndexes, [0, 1, 2]);
+  assert.equal(settled, 3);
+});
+
+test('concurrency configuration is a bounded positive integer and fails before any call', async () => {
+  const target = { name: 'a', model: 'a', baseUrl: 'http://localhost/v1' };
+  for (const concurrency of [1, 4, 16]) {
+    assert.equal(validateTargets([{ ...target, concurrency }])[0]!.concurrency, concurrency);
+  }
+  for (const concurrency of [0, -1, 17, 1.5, '4', null, Number.NaN]) {
+    assert.throws(() => validateTargets([{ ...target, concurrency }]), /concurrency/);
+  }
+
+  const root = await mkdtemp(join(tmpdir(), 'companion-evals-cli-'));
+  const targets = join(root, 'targets.json');
+  const reportPath = join(root, 'report.json');
+  await writeFile(targets, JSON.stringify([{ ...target, concurrency: 0 }]));
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      'src/evals/cli.ts',
+      'run',
+      '--dataset',
+      join(root, 'absent.json'),
+      '--targets',
+      targets,
+      '--out',
+      reportPath,
+      '--send',
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /concurrency/);
+  // Validation happens before the report file is reserved or anything is sent.
+  await assert.rejects(stat(reportPath), /ENOENT/);
+});
+
+test('decoder hides invalid JSON snippets and rejects reasoning_details', () => {
+  for (const [wire, streaming] of [
+    ['SECRET-PRIVATE prompt echo', false],
+    ['data: SECRET-PRIVATE prompt echo\n\ndata: [DONE]\n\n', true],
+  ] as const) {
+    assert.throws(
+      () => decodeCompletion(wire, streaming),
+      (error: Error) => error.message === 'Response contained invalid JSON',
+    );
+  }
+  const packet = JSON.stringify({
+    choices: [
+      {
+        index: 0,
+        message: { content: 'IGNORE', reasoning_details: [{ text: 'x' }] },
+        finish_reason: 'stop',
+      },
+    ],
+  });
+  assert.throws(() => decodeCompletion(packet, false), /only an intent/);
 });
