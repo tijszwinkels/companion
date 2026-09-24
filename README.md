@@ -663,3 +663,12 @@ lines that separate steps:
 npm run format
 npm run format:check
 ```
+
+### Local external coding agents
+
+Companion can optionally expose session list/start/reopen/close/send/draft to local
+processes running as your Linux user. Enable `--external-sessions` on the listener
+and use `bin/companion-session --help` from its checkout. Access is off by default,
+uses a private Unix socket rather than network exposure, and identifies caller
+labels as unverified. See the [external session API guide](src/agents/external/README.md)
+for discovery, commands, retries and the same-user trust boundary.

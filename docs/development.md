@@ -134,3 +134,13 @@ directory with exact commits, review scope, merge/deployment status, PR/MR links
 and known user feedback. Read it immediately before editing to preserve other
 agents' updates. Use source and Git to verify current status; a dated ledger
 entry is not permission to merge or deploy.
+
+## External session API development
+
+`src/agents/external/` implements the optional private Linux Unix socket;
+`bin/companion-session` is the CLI entrypoint, including from an unrelated cwd.
+See its [contract](../src/agents/external/README.md). The external integration tests
+use temporary session stores, real subprocesses and sockets, and synthetic agent
+backends. Never point these tests at the live listener or personal session store.
+The feature is off unless the listener is explicitly started with
+`--external-sessions`; activation remains a separate user decision.

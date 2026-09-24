@@ -421,3 +421,13 @@ ledger. Automated tests do not prove every live voice or compositor interaction.
 No choices are inferred from arbitrary bracketed answer text; the model must use
 the tool. The existing headless-backend restriction on unrelated interactive Pi
 dialogs remains in effect.
+
+## External local agents
+
+The optional `--external-sessions` listener flag exposes these same lifecycle
+operations to processes running as the same Linux user, through a separate private
+Unix socket and `bin/companion-session`. It is off by default and does not issue
+internal turn tokens. External messages/drafts are explicitly attributed to an
+unverified local label, with no internal sender/self identity. See the
+[external API contract](external/README.md) for activation, CLI commands, security,
+receipt lifetime, cancellation, limits and validation scope.
