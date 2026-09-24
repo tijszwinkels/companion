@@ -36,7 +36,10 @@ function respond(action, message) {
       return;
     case 'on-signal':
       // Respond only when the test releases this request, independent of time.
+      // Publish 'waiting' only after installing the handler: before that, the
+      // default SIGUSR2 disposition would terminate this process.
       process.once('SIGUSR2', () => send(message));
+      record('waiting');
       return;
     case 'exit':
       process.exit(0);

@@ -23,7 +23,8 @@ interface Plan {
 }
 
 interface WorkerEvent {
-  event: 'start' | 'request';
+  /** `waiting`: an `on-signal` request is ready to be released by SIGUSR2. */
+  event: 'start' | 'request' | 'waiting';
   pid: number;
   /** Request framing only: counts and a hash, never samples. */
   samples?: number;
@@ -449,16 +450,16 @@ test('the retry shares the operation timeout instead of receiving a new one', as
   // A controlled clock makes the deadline independent of scheduling latency.
   // Only setTimeout is mocked, so this test polls using setImmediate.
   context.mock.timers.enable({ apis: ['setTimeout'] });
-  const requestCount = async (count: number): Promise<WorkerEvent> => {
+  const recorded = async (event: WorkerEvent['event'], count: number): Promise<WorkerEvent> => {
     const deadline = performance.now() + 3000;
     while (performance.now() < deadline) {
-      const sent = await requests(worker);
-      if (sent.length >= count) {
-        return sent[count - 1];
+      const matches = (await worker.events()).filter((item) => item.event === event);
+      if (matches.length >= count) {
+        return matches[count - 1];
       }
       await nextTurn();
     }
-    throw Error(`Test worker did not record request ${count}`);
+    throw Error(`Test worker did not record ${event} ${count}`);
   };
   // Settlement after the deadline also waits for the real child to be reaped,
   // so poll against real time. A wrongly restarted retry timeout never fires
@@ -482,10 +483,10 @@ test('the retry shares the operation timeout instead of receiving a new one', as
   const rejected = assert.rejects(operation, /timed out/);
 
   // Spend 600 of the 1000 ms budget on the first pass, then release it.
-  const first = await requestCount(1);
+  const first = await recorded('waiting', 1);
   context.mock.timers.tick(600);
   process.kill(first.pid, 'SIGUSR2');
-  await requestCount(2);
+  await recorded('request', 2);
 
   // A fresh retry timeout would expire at 1600 ms; the shared one at 1000 ms.
   context.mock.timers.tick(399);
