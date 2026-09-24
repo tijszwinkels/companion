@@ -26,6 +26,8 @@ export interface InternalAgentOrigin {
   /** Sender title captured when the message was sent. */
   title: string;
   depth: number;
+  /** Source tool group, when the outbound call was retained in the sender transcript. */
+  sourceGroupId?: string;
 }
 
 /** Portable chat data. Provider events and subprocess details stay in the backend. */

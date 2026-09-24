@@ -63,6 +63,8 @@ export interface SessionDirectory {
  */
 export interface SessionToolHost {
   title(id: string): string | undefined;
+  /** Stored tool group of the sender's outbound call, if it was retained. */
+  sourceGroupId?(sender: string, turnId: string, toolCallId: string): string | undefined;
   directory(sender: string | undefined, query: string, limit: number): SessionDirectory;
   start(
     request: {
@@ -128,6 +130,8 @@ interface Lease {
   kind: 'internal';
   token: string;
   owner: string;
+  /** Sender turn whose transcript stores this turn's tool calls. */
+  turnId: string;
   depth: number;
   signal: AbortSignal;
   actions: number;
@@ -156,6 +160,7 @@ export class SessionToolService {
   /** Grant the calling turn access until `signal` aborts or `release` runs. */
   async lease(
     owner: string,
+    turnId: string,
     depth: number,
     signal: AbortSignal,
   ): Promise<{ endpoint: string; token: string; release(): void }> {
@@ -175,6 +180,7 @@ export class SessionToolService {
       kind: 'internal',
       token,
       owner,
+      turnId,
       depth,
       signal: AbortSignal.any([signal, controller.signal]),
       actions: 0,
@@ -344,7 +350,7 @@ export class SessionToolService {
       throw new SessionToolError('limit', 'Too many session tool calls in this turn', 429);
     }
 
-    const reply = this.act(lease, method, command).catch((error) => this.failure(error));
+    const reply = this.act(lease, method, command, requestId).catch((error) => this.failure(error));
     lease.receipts.set(receiptKey, reply);
     return reply;
   }
@@ -408,6 +414,8 @@ export class SessionToolService {
     caller: Lease | ExternalCaller,
     method: 'start' | 'reopen' | 'close' | 'send' | 'draft',
     command: Record<string, unknown>,
+    /** Pi's tool-call ID for internal calls; external requests have none. */
+    toolCallId?: string,
   ): Promise<ToolReply> {
     // Validate before consuming the turn's action budget, so a malformed call
     // can be corrected without exhausting it.
@@ -477,6 +485,16 @@ export class SessionToolService {
         title: [...senderTitle].slice(0, 80).join(''),
         depth,
       };
+
+      // Anchor the recipient's heading link to the sender's stored tool group.
+      // External callers have no sender transcript, so they never get one.
+      const sourceGroupId =
+        toolCallId === undefined
+          ? undefined
+          : this.host.sourceGroupId?.(caller.owner, caller.turnId, toolCallId);
+      if (sourceGroupId) {
+        origin.sourceGroupId = sourceGroupId;
+      }
     }
 
     // Reserve the content before awaiting, so parallel identical calls in one
