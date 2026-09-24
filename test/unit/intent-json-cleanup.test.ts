@@ -23,8 +23,11 @@ import { fingerprint } from '../../src/evals/dataset.ts';
 import { runEvaluation } from '../../src/evals/runner.ts';
 import { decodeCompletion, requestBody } from '../../src/evals/transport.ts';
 import {
+  DIAGNOSTIC_FOR_INVALID_REASON,
+  diagnosticConsistentWithReason,
   diagnosticIntentSelection,
   hasDuplicateKey,
+  INVALID_REASONS,
   parseExperimentResponse,
   TEXT_ROUTES,
   type ResponseExpectation,
@@ -2231,6 +2234,8 @@ const MALFORMED_PAIR_CASES: [
         correct: false,
         hasText: false,
         invalidReason: 'invalid-json',
+        selectedIntent: null,
+        intentSelectedCorrectly: false,
         literalCheck: 'passed',
       });
     },
@@ -2415,5 +2420,281 @@ test('R3: paired output is built only from validated fields (no pass-through)', 
     );
   } finally {
     await endpoint.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Residual R3 cross-field checks (Rowan, 77cc240)
+// ---------------------------------------------------------------------------
+
+test('reason-to-diagnostic table matches the actual parsers on a response corpus', () => {
+  const inferred: ResponseExpectation = {
+    allowedIntents: ['IGNORE', 'CHOOSE_AGENT_OPTION_1', 'SEND_TEXT_TO_APPLICATION'],
+    fixedRoute: null,
+  };
+  const fixed: ResponseExpectation = {
+    allowedIntents: ['ENTER_TEXT_TO_APPLICATION'],
+    fixedRoute: 'ENTER_TEXT_TO_APPLICATION',
+  };
+
+  // Every intent kind combined with every parameter shape and extra-key variant.
+  const intents: unknown[] = [
+    'IGNORE',
+    'CHOOSE_AGENT_OPTION_1',
+    'SEND_TEXT_TO_APPLICATION',
+    'ENTER_TEXT_TO_APPLICATION',
+    'UNKNOWN_NAME',
+    'ignore',
+    42,
+    null,
+  ];
+  const parameters: unknown[] = [
+    undefined,
+    {},
+    { text: 'x' },
+    { text: '' },
+    { text: ' x' },
+    { text: 5 },
+    { text: 'x', enter: true },
+    { other: 1 },
+    null,
+    [],
+    'x',
+  ];
+  const corpus: string[] = [];
+  for (const intent of intents) {
+    for (const parameter of parameters) {
+      for (const extra of [false, true]) {
+        const response: Record<string, unknown> = { intent };
+        if (parameter !== undefined) {
+          response.parameters = parameter;
+        }
+        if (extra) {
+          response.action = 'execute';
+        }
+        corpus.push(JSON.stringify(response));
+      }
+    }
+  }
+  corpus.push(
+    '{"parameters":{}}',
+    'IGNORE',
+    '["IGNORE"]',
+    `${BOM}{"intent":"IGNORE","parameters":{}}`,
+    '{"intent":"IGNORE","intent":"IGNORE","parameters":{}}',
+    '{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{"text":"a","text":"b"}}',
+  );
+
+  const observed = new Map<string, Set<string>>();
+  for (const expectation of [inferred, fixed]) {
+    for (const response of corpus) {
+      const parsed = parseExperimentResponse(response, expectation);
+      const selected = diagnosticIntentSelection(response, expectation);
+      if (parsed.valid) {
+        // Valid rows: the diagnostic equals the intent.
+        assert.equal(selected, parsed.intent, response);
+        continue;
+      }
+      assert.ok(
+        diagnosticConsistentWithReason(parsed.reason, selected),
+        `${parsed.reason}: ${response}`,
+      );
+      const kinds = observed.get(parsed.reason) ?? new Set<string>();
+      kinds.add(selected === null ? 'null' : 'intent');
+      observed.set(parsed.reason, kinds);
+    }
+  }
+
+  // Every reason is exercised, and "optional" really does occur both ways.
+  assert.deepEqual([...observed.keys()].sort(), [...INVALID_REASONS].sort());
+  assert.deepEqual([...observed.get('unexpected-top-level-key')!].sort(), ['intent', 'null']);
+  for (const [reason, expectation] of Object.entries(DIAGNOSTIC_FOR_INVALID_REASON)) {
+    if (expectation === 'none') {
+      assert.deepEqual([...observed.get(reason)!], ['null'], reason);
+    } else if (expectation !== 'optional') {
+      assert.deepEqual([...observed.get(reason)!], ['intent'], reason);
+    }
+  }
+});
+
+test('R3 residual: CLI refuses single-field cross-field corruption of real reports', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r3-cross-'));
+  const examples: SyntheticExample[] = [
+    { utterance: `send ${SECRET}`, expected: 'SEND_TEXT_TO_APPLICATION' },
+    { utterance: `ignore ${SECRET}`, expected: 'IGNORE' },
+    { utterance: `broken ${SECRET}`, expected: 'IGNORE' },
+    { utterance: `params ${SECRET}`, expected: 'IGNORE' },
+    { utterance: `dup ${SECRET}`, expected: 'IGNORE' },
+    { utterance: `missing ${SECRET}`, expected: 'SEND_TEXT_TO_APPLICATION' },
+  ];
+  const datasetPath = await writeDataset(root, examples);
+
+  const variantAnswers: Record<string, string> = {
+    send: `{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{"text":"Hello ${SECRET}."}}`,
+    ignore: '{"intent":"IGNORE","parameters":{}}',
+    broken: `{"intent":"IGNORE","parameters":{"text":"${SECRET}`,
+    params: `{"intent":"IGNORE","parameters":{"text":"${SECRET}"}}`,
+    dup: '{"intent":"SEND_TEXT_TO_APPLICATION","intent":"IGNORE","parameters":{}}',
+    missing: '{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{}}',
+  };
+  const endpoint = await server(async (request, response) => {
+    const body = await readBody(request);
+    const key = utteranceOf(body).split(' ')[0]!;
+    response.setHeader('Content-Type', 'text/event-stream');
+    if (systemPromptOf(body).includes('Response format (json-cleanup-v1):')) {
+      response.end(stream(variantAnswers[key]!));
+    } else {
+      const example = examples.find((entry) => entry.utterance.startsWith(key))!;
+      response.end(stream(example.expected));
+    }
+  });
+
+  let baseline: ReportJson;
+  let variant: ReportJson;
+  try {
+    const target = { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 };
+    baseline = { state: 'complete', ...(await runEvaluation(datasetPath, [target])) };
+    variant = {
+      state: 'complete',
+      ...(await runExperiment({ mode: 'inferred', datasetPath }, [target], 64)).report,
+    };
+  } finally {
+    await endpoint.close();
+  }
+  baseline = JSON.parse(JSON.stringify(baseline));
+  variant = JSON.parse(JSON.stringify(variant));
+
+  // The generated rows are what we expect from the actual parser.
+  const row = (index: number) =>
+    variant.results.find((entry: ReportJson) => entry.id === uuid(index));
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5].map((index) => [
+      row(index).status,
+      row(index).invalidReason,
+      row(index).selectedIntent,
+      row(index).hasText,
+    ]),
+    [
+      ['valid', null, 'SEND_TEXT_TO_APPLICATION', true],
+      ['valid', null, 'IGNORE', false],
+      ['invalid', 'invalid-json', null, false],
+      ['invalid', 'text-on-no-text-intent', 'IGNORE', false],
+      ['invalid', 'duplicate-key', null, false],
+      ['invalid', 'text-missing', 'SEND_TEXT_TO_APPLICATION', false],
+    ],
+  );
+
+  const pairFiles = async (name: string, left: ReportJson, right: ReportJson) => {
+    const baselinePath = join(root, `${name}-baseline.json`);
+    const variantPath = join(root, `${name}-variant.json`);
+    const outPath = join(root, `${name}-paired.json`);
+    await writeFile(baselinePath, JSON.stringify(left));
+    await writeFile(variantPath, JSON.stringify(right));
+    const result = cli([
+      'pair',
+      '--baseline-report',
+      baselinePath,
+      '--baseline-target',
+      'local',
+      '--variant-report',
+      variantPath,
+      '--variant-target',
+      'local',
+      '--out',
+      outPath,
+    ]);
+    return { result, outPath };
+  };
+
+  // Valid generated reports pair. Invalid-parameter rows legitimately keep their
+  // diagnostic intent and are not overrejected: usable counts only the two
+  // valid rows, while the diagnostic adds the text-on-no-text-intent IGNORE row
+  // and the text-missing SEND row (4 of 6).
+  const valid = await pairFiles('valid', baseline, variant);
+  assert.equal(valid.result.status, 0, valid.result.stderr);
+  const pairing = JSON.parse(await readFile(valid.outPath, 'utf8'));
+  assert.equal(pairing.summary.variant.usableCorrect, 2);
+  assert.equal(pairing.summary.variant.intentSelectionCorrect, 4);
+  assert.ok(!JSON.stringify(pairing).includes(SECRET));
+
+  const corruptions: [string, (rows: (index: number) => ReportJson) => void, RegExp][] = [
+    // Reviewer case (1): a valid text route claiming no text.
+    [
+      'valid SEND with hasText false',
+      (rows) => void (rows(0).hasText = false),
+      /hasText does not match/,
+    ],
+    [
+      'valid IGNORE with hasText true',
+      (rows) => void (rows(1).hasText = true),
+      /hasText does not match/,
+    ],
+    [
+      'valid IGNORE with text and a passed literal check',
+      (rows) => Object.assign(rows(1), { hasText: true, literalCheck: 'passed' }),
+      /hasText does not match/,
+    ],
+    // Reviewer case (2): invalid-json claiming a correct diagnostic.
+    [
+      'invalid-json claiming a correct diagnostic',
+      (rows) => Object.assign(rows(2), { selectedIntent: 'IGNORE', intentSelectedCorrectly: true }),
+      /impossible for its invalid reason/,
+    ],
+    [
+      'invalid-json with a wrong diagnostic intent',
+      (rows) => void (rows(2).selectedIntent = 'SEND_TEXT_TO_APPLICATION'),
+      /impossible for its invalid reason/,
+    ],
+    [
+      'duplicate-key with a diagnostic intent',
+      (rows) => Object.assign(rows(4), { selectedIntent: 'IGNORE', intentSelectedCorrectly: true }),
+      /impossible for its invalid reason/,
+    ],
+    [
+      'unknown-intent with a diagnostic intent',
+      (rows) =>
+        Object.assign(rows(2), {
+          invalidReason: 'unknown-intent',
+          selectedIntent: 'IGNORE',
+          intentSelectedCorrectly: true,
+        }),
+      /impossible for its invalid reason/,
+    ],
+    [
+      'text-on-no-text-intent without its diagnostic intent',
+      (rows) => Object.assign(rows(3), { selectedIntent: null, intentSelectedCorrectly: false }),
+      /impossible for its invalid reason/,
+    ],
+    [
+      'text-on-no-text-intent with a text-route diagnostic',
+      (rows) => void (rows(3).selectedIntent = 'SEND_TEXT_TO_APPLICATION'),
+      /impossible for its invalid reason|intentSelectedCorrectly does not match/,
+    ],
+    [
+      'text-missing with a no-text diagnostic',
+      (rows) =>
+        Object.assign(rows(5), { selectedIntent: 'IGNORE', intentSelectedCorrectly: false }),
+      /impossible for its invalid reason/,
+    ],
+    [
+      'route-changed in an inferred run',
+      (rows) => void (rows(2).invalidReason = 'route-changed'),
+      /route-changed cannot occur/,
+    ],
+  ];
+
+  for (let index = 0; index < corruptions.length; index++) {
+    const [name, corrupt, reason] = corruptions[index]!;
+    const right = structuredClone(variant);
+    corrupt((position) => right.results.find((entry: ReportJson) => entry.id === uuid(position)));
+
+    const { result, outPath } = await pairFiles(`corrupt-${index}`, baseline, right);
+    assert.equal(result.status, 1, `${name}: ${result.stdout}`);
+    assert.equal(result.stdout, '', name);
+    await assert.rejects(stat(outPath), /ENOENT/, name);
+    const message = result.stderr.trim();
+    assert.match(message, reason, name);
+    assert.ok(message.length < 200 && !message.includes('\n'), name);
+    assert.ok(!message.includes(SECRET), name);
   }
 });

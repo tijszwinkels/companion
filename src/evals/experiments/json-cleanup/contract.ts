@@ -289,3 +289,69 @@ export function diagnosticIntentSelection(
   }
   return intent;
 }
+
+/**
+ * What `diagnosticIntentSelection` can return for a response rejected with a
+ * given reason. Derived from the order of checks in `parseExperimentResponse`:
+ *
+ * 1. invalid-json, not-an-object, duplicate-key: the diagnostic applies the
+ *    same JSON, object and duplicate-key tests, so it finds no intent.
+ * 2. unexpected-top-level-key: checked before the intent, so the intent may or
+ *    may not be an allowed string.
+ * 3. intent-not-a-string, unknown-intent, route-changed: no allowed intent
+ *    (for a fixed route the only allowed name is the route itself).
+ * 4. Every later reason is reached only with valid, duplicate-free JSON and an
+ *    allowed intent string, so the diagnostic always finds it:
+ *    - text-missing, text-not-a-string, text-empty, text-surrounding-whitespace
+ *      are text-route checks;
+ *    - text-on-no-text-intent is a no-text-intent check;
+ *    - parameters-missing, parameters-not-an-object and unexpected-parameter
+ *      can occur for either kind of intent.
+ *
+ * Report validation uses this to refuse rows whose diagnostic fields could not
+ * have been produced by the parser. A unit test checks it against both parsers.
+ */
+export type DiagnosticForReason = 'none' | 'optional' | 'present' | 'text-route' | 'no-text-intent';
+
+export const DIAGNOSTIC_FOR_INVALID_REASON: Readonly<Record<InvalidReason, DiagnosticForReason>> = {
+  'invalid-json': 'none',
+  'not-an-object': 'none',
+  'duplicate-key': 'none',
+  'unexpected-top-level-key': 'optional',
+  'intent-not-a-string': 'none',
+  'unknown-intent': 'none',
+  'route-changed': 'none',
+  'parameters-missing': 'present',
+  'parameters-not-an-object': 'present',
+  'unexpected-parameter': 'present',
+  'text-missing': 'text-route',
+  'text-not-a-string': 'text-route',
+  'text-empty': 'text-route',
+  'text-surrounding-whitespace': 'text-route',
+  'text-on-no-text-intent': 'no-text-intent',
+};
+
+/** Whether an invalid row's diagnostic intent is possible for its reason. */
+export function diagnosticConsistentWithReason(
+  reason: InvalidReason,
+  selectedIntent: string | null,
+): boolean {
+  const expectation = DIAGNOSTIC_FOR_INVALID_REASON[reason];
+
+  if (expectation === 'none') {
+    return selectedIntent === null;
+  }
+  if (expectation === 'optional') {
+    return true;
+  }
+  if (selectedIntent === null) {
+    return false;
+  }
+  if (expectation === 'text-route') {
+    return isTextRoute(selectedIntent);
+  }
+  if (expectation === 'no-text-intent') {
+    return !isTextRoute(selectedIntent);
+  }
+  return true;
+}

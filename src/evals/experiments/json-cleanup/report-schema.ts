@@ -24,7 +24,10 @@
  *   replay is correct only with a prediction equal to the label and no error;
  *   a variant row is usable-correct only when valid with a prediction equal to
  *   the label; invalid and error rows can never be correct; the diagnostic
- *   fields must agree with the selected intent and label.
+ *   fields must agree with the selected intent and label; a valid row has
+ *   text exactly when its intent is a text route; and an invalid row's
+ *   diagnostic intent must be possible for its reason
+ *   (`DIAGNOSTIC_FOR_INVALID_REASON` in contract.ts).
  *
  * Refusals are SafeEvalError messages naming only a field, a side, and (once
  * validated) an example UUID. They never quote a value, so a malformed file
@@ -37,7 +40,12 @@
  */
 import { SafeEvalError } from '../../errors.ts';
 import { LITERAL_CHECK_STATUSES } from './checks.ts';
-import { INVALID_REASONS, type InvalidReason } from './contract.ts';
+import {
+  diagnosticConsistentWithReason,
+  INVALID_REASONS,
+  isTextRoute,
+  type InvalidReason,
+} from './contract.ts';
 import { MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, UNSUPPORTED_REASONS } from './prompt.ts';
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -432,9 +440,21 @@ function validateVariantRow(value: Record<string, unknown>): ValidatedVariantRow
     if (selectedIntent !== prediction) {
       refuse(`${field} selectedIntent must equal the prediction of a valid row`);
     }
+    // The contract requires text exactly for text routes, and none otherwise.
+    if (hasText !== isTextRoute(prediction)) {
+      refuse(`${field} hasText does not match whether its intent takes text`);
+    }
   } else if (status === 'invalid') {
     if (prediction !== null || invalidReason === null || error !== null || hasText) {
       refuse(`${field} invalid row must have a reason and no prediction, text or error`);
+    }
+    // Inferred runs have no fixed route, so the parser cannot report a route change.
+    if (invalidReason === 'route-changed') {
+      refuse(`${field} route-changed cannot occur in an inferred run`);
+    }
+    // The diagnostic must be one the parser could have produced for this reason.
+    if (!diagnosticConsistentWithReason(invalidReason, selectedIntent)) {
+      refuse(`${field} selectedIntent is impossible for its invalid reason`);
     }
   } else {
     if (prediction !== null || invalidReason !== null || error === null) {

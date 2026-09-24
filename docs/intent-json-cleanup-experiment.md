@@ -278,6 +278,20 @@ bounded, content-free message, before any output file exists.
     equals the label. `invalid` and `error` rows can never be correct, and must
     have the matching reason/error/prediction shape.
   - The intent-selection diagnostic must agree with the selected intent and label.
+  - A valid row has `hasText: true` exactly when its intent is a text route
+    (so a valid SEND without text, or IGNORE with text, is refused).
+  - An invalid row's diagnostic intent must be one the parser could have
+    produced for its reason. The table is `DIAGNOSTIC_FOR_INVALID_REASON` in
+    `contract.ts`, derived from the parser's check order and tested against it:
+    - `invalid-json`, `not-an-object`, `duplicate-key`, `intent-not-a-string`,
+      `unknown-intent`: always null.
+    - `unexpected-top-level-key`: either.
+    - `parameters-missing`, `parameters-not-an-object`, `unexpected-parameter`:
+      always an allowed intent.
+    - `text-missing`, `text-not-a-string`, `text-empty`,
+      `text-surrounding-whitespace`: a text route.
+    - `text-on-no-text-intent`: a no-text intent.
+    - `route-changed` cannot occur in an inferred run.
   - Literal checks can only be `passed`/`failed` on valid rows with text.
 - **Output:** the paired output is built only from validated values. Error
   strings and literal-check contents are never copied; pairs carry only fixed
