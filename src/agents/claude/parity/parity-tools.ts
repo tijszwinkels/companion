@@ -10,6 +10,7 @@
  */
 import type { BridgeTool } from '../bridge-tools.ts';
 import { desktopTools } from './desktop/desktop-tools.ts';
+import { openRigTools } from './openrig/openrig-tools.ts';
 import type { ClaudeToolSettings } from './settings.ts';
 
 export function parityTools(settings: ClaudeToolSettings): BridgeTool[] {
@@ -17,6 +18,10 @@ export function parityTools(settings: ClaudeToolSettings): BridgeTool[] {
 
   if (settings.desktop) {
     tools.push(...desktopTools({ pointerHelper: settings.desktop.pointerHelper }));
+  }
+
+  if (settings.openRig) {
+    tools.push(...openRigTools({ directory: settings.openRig.directory }));
   }
 
   return tools;

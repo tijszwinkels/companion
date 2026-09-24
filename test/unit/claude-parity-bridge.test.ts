@@ -208,3 +208,40 @@ test('an invalid claude-tools.json stops the bridge, so the turn fails visibly',
   assert.notEqual(code, 0);
   assert.match(bridge.stderr(), /desktop\.pointerHelper must be an absolute path/);
 });
+
+test('the real bridge adds configured OpenRig tools and refuses preview start', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-claude-tools-'));
+  const route = await TurnResultRoute.open();
+  context.after(async () => {
+    route.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  // The demo directory does not exist: listing still works, calls fail alone.
+  const settings = { openRig: { directory: join(directory, 'no-demo') } };
+  await writeFile(join(directory, 'claude-tools.json'), JSON.stringify(settings));
+
+  const bridge = startBridge(directory, directory, route);
+  const names = (await bridge.request('tools/list')).result.tools.map(
+    (tool: { name: string }) => tool.name,
+  );
+  assert.deepEqual(names, [
+    'companion_choices',
+    'companion_name_session',
+    'openrig_submit',
+    'openrig_progress',
+    'openrig_preview',
+  ]);
+
+  const start = await bridge.request('tools/call', {
+    name: 'openrig_preview',
+    arguments: { action: 'start', id: 'synthetic' },
+    _meta: { 'claudecode/toolUseId': 'toolu_start' },
+  });
+  assert.equal(start.result.isError, true);
+  assert.match(start.result.content[0].text, /require direct human confirmation/);
+
+  const exited = once(bridge.child, 'exit');
+  bridge.child.stdin.end();
+  assert.equal((await exited)[0], 0);
+});
