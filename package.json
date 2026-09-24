@@ -12,7 +12,7 @@
     "asr:test": "cargo test --locked --manifest-path native/asr-worker/Cargo.toml",
     "asr:bench": "tsx test/bench/asr.ts",
     "asr:short-phrases": "tsx test/bench/short-phrases.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc --noEmit -p integrations/mobile",
     "test": "tsx --test test/unit/*.test.ts",
     "test:live": "tsx test/live/run.ts",
     "test:desktop": "tsx test/live/desktop.ts",
@@ -28,7 +28,11 @@
     "test:widgets-native": "tsx --test test/widgets/native.test.ts",
     "ui:build": "tsx native/window/build.ts",
     "ui": "native/window/build/companion-ui",
-    "test:window": "tsx --test test/window/*.test.ts"
+    "test:window": "tsx --test test/window/*.test.ts",
+    "mobile:build": "tsx integrations/mobile/build.ts",
+    "remote": "tsx src/remote/cli.ts",
+    "test:mobile": "tsx --test test/mobile/*.test.ts",
+    "mobile:demo": "tsx integrations/mobile/demo.ts"
   },
   "keywords": [],
   "author": "",

@@ -5,3 +5,4 @@ companion.config.json
 /.worktrees/
 /native/widget-renderer/build/
 /native/window/build/
+integrations/mobile/dist/

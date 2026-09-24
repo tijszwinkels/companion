@@ -34,6 +34,7 @@ milestones. User instructions can waive review for a particular change.
 | History, exact intent requests, feedback and deletion        | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
 | Shared Activity/conversation components                      | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
 | Standalone Window/Sidebar/Dock client                        | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
+| Opt-in phone gateway and phone panel                         | `src/remote/`, `integrations/mobile/`                           | [Gateway](../src/remote/README.md), [phone app](../integrations/mobile/README.md)          |
 | Omarchy shortcuts, theme, media and focus bridge             | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
 | Widget tools, durable state and browser views                | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
 | Native WebEngine profile/module                              | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
@@ -144,3 +145,13 @@ use temporary session stores, real subprocesses and sockets, and synthetic agent
 backends. Never point these tests at the live listener or personal session store.
 The feature is off unless the listener is explicitly started with
 `--external-sessions`; activation remains a separate user decision.
+
+## Phone panel development
+
+`bin/companion-remote` is an opt-in gateway for the phone app in
+`integrations/mobile/`; nothing starts it automatically. `npm run mobile:build`
+builds the app, `npm run mobile:demo` runs a fully synthetic listener and gateway
+on loopback, and `npm run test:mobile` drives the built app in headless Chromium.
+Gateway and remote-role unit tests use temporary state and synthetic backends.
+Pairing a real phone, serving on a Tailscale address and running the production
+listener with this protocol are separate user decisions.
