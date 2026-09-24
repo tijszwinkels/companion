@@ -174,8 +174,9 @@ rendering by default. Switching tabs keeps the host's size. Scrolling
 up stops following the stream until you return to the bottom. Conversation wheel
 and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
-Agents can also publish reusable **interactive widgets** from
-[`widget-library/`](widget-library/README.md): compact diagrams, comparisons,
+Agents can also publish reusable **interactive widgets** from the user widget
+library, `~/companion/widget-library` by default (see
+[library location](widget-library/README.md#library-location)): compact diagrams, comparisons,
 charts, to-do lists and WebGL views. The agent supplies props or calls a declared
 action instead of repeating the implementation. A hover arrow opens a dedicated
 Chromium window sharing the same saved state. Widgets may be pinned above the

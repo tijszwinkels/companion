@@ -7,6 +7,36 @@ answers, choices, session names and freeform follow-ups remain available.
 The initial library contains `todo`, `bar-chart`, `pipeline`, `comparison` and
 `webgl-cube`. The cube is a small working WebGL example, including a drag action.
 
+## Library location
+
+The listener discovers and publishes widgets from one **user widget library**
+outside the source checkout, so authored widgets are unversioned scratch space
+that survives branch switches and worktrees. In priority order it uses:
+
+1. `npm start -- --widget-library /absolute/path`;
+2. the `COMPANION_WIDGET_LIBRARY` environment variable (absolute path);
+3. `~/companion/widget-library`, next to the agents' working directory.
+
+Relative paths are refused. The startup log prints the resolved directory, and
+`companion_widgets({})` reports it as `directory`. A missing directory lists no
+widgets (with a `note`) and refuses new publications; it is not a startup error.
+Discovery and publication open the same path with the symlink rules below, so a
+widget is never listed that publication would refuse.
+
+This checkout's `widget-library/` holds the tracked examples, their tests and
+this guide. Tests use it (or synthetic temporary copies) by default and never
+read the user library. The running listener does not read it unless configured
+to. To offer a changed example live, copy that widget directory into the user
+library; nothing synchronizes the two. Co-located browser tests that import
+`../../src/` run only from a checkout, not from the user library. Templates
+that build into the library, such as `widget-templates/`, belong in the user
+library's parent directory (`~/companion/widget-templates` by default).
+
+Existing widget instances keep rendering from their retained bundle under
+`.companion-widgets/bundles` in the agents' directory. Changing, moving or
+removing the library does not change or break them; it affects only discovery
+and new publications.
+
 ## Agent workflow
 
 1. `companion_widgets({})` lists the library directory and available widgets.
@@ -289,4 +319,5 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 No model call, microphone capture, desktop input or headed browser is used by
 these checks. Test the actual pop-out/focus behavior with the user before a live
 installation. The installer copies `WidgetSurface.qml` alongside the portable
-panel; the listener reads library and browser host assets from this checkout.
+panel; the listener reads browser host assets from this checkout and widget
+source from the configured user library (see [Library location](#library-location)).

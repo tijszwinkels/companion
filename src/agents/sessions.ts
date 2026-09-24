@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { WidgetService } from '../widgets/service.ts';
+import { userWidgetLibrary } from '../widgets/library-path.ts';
 import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
@@ -89,10 +90,16 @@ export class AgentSessions implements InspectableModule {
   // The desktop runtime owns UI connections and therefore unsent drafts.
   private draftHost?: AgentDraftHost;
 
+  /**
+   * `directory` is the agents' working directory holding saved conversations
+   * and widget state. `widgetLibrary` is the widget source directory used for
+   * discovery and publication; by default the configured user library.
+   */
   constructor(
     readonly dependencies: { backend: AgentBackend },
     private readonly log: Log,
     private readonly directory = agentDirectory(),
+    widgetLibrary = userWidgetLibrary(),
   ) {
     this.store = new SessionStore(join(directory, '.companion-sessions'));
     this.widgets = new WidgetService(
@@ -112,7 +119,7 @@ export class AgentSessions implements InspectableModule {
         // immediately after a click, without waiting for another model response.
         await this.store.save(session.view);
       },
-      undefined,
+      widgetLibrary,
       undefined,
       (records) => this.validateWidgetChanges(records),
     );

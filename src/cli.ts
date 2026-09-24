@@ -16,6 +16,8 @@ import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts
 import { ExternalSessionServer } from './agents/external/server.ts';
 import { externalSocketPath } from './agents/external/paths.ts';
 import { AgentSessions } from './agents/sessions.ts';
+import { agentDirectory } from './agents/settings.ts';
+import { userWidgetLibrary } from './widgets/library-path.ts';
 import { PiBackend } from './agents/pi-backend.ts';
 import { AgentChoiceIntents } from './agents/choice-intents.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
       'no-desktop': { type: 'boolean', default: false },
       'external-sessions': { type: 'boolean', default: false },
       'external-socket': { type: 'string' },
+      'widget-library': { type: 'string' },
       paused: { type: 'boolean', default: false },
     },
   });
@@ -81,6 +84,8 @@ Usage: npm start -- [options]
   --no-desktop       Disable history, sounds, and desktop control
   --external-sessions Enable the same-user Unix session API (off by default)
   --external-socket PATH Override its private socket path; requires --external-sessions
+  --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
+                     else ~/companion/widget-library)
   --paused           Start paused; resume through the desktop control
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
@@ -122,12 +127,21 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     throw Error('--seconds must be positive');
   }
 
+  // Resolved once here so every widget discovery and publication in this
+  // listener uses the same directory. It may not exist yet; that is not fatal.
+  const widgetLibrary = userWidgetLibrary(values['widget-library']);
+
   const config = await loadConfig(values.config);
 
   // Every asynchronous stage observes this signal, so Ctrl+C cancels the whole
   // session, including an in-flight transcription or intent request.
   const controller = new AbortController();
-  const agents = new AgentSessions({ backend: new PiBackend() }, log);
+  const agents = new AgentSessions(
+    { backend: new PiBackend() },
+    log,
+    agentDirectory(),
+    widgetLibrary,
+  );
   const stop = () => {
     controller.abort();
     void agents.close();
@@ -153,6 +167,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         'start',
         `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
       );
+      log('widgets', `Library ${widgetLibrary}`);
     }
 
     if (!values['no-desktop'] && !values.graph) {

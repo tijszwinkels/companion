@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Dirent } from 'node:fs';
 import {
   mkdir,
   open,
@@ -11,9 +11,9 @@ import {
   type FileHandle,
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Ajv, type ValidateFunction } from 'ajv';
 
+import { bundledLibraryDirectory } from './library-path.ts';
 import {
   boundedJson,
   object,
@@ -22,7 +22,12 @@ import {
   type WidgetManifest,
 } from './types.ts';
 
-export const libraryDirectory = fileURLToPath(new URL('../../widget-library/', import.meta.url));
+/**
+ * The source checkout's tracked widgets, kept under this name for tests and
+ * co-located widget tests. The running listener passes its user library instead.
+ */
+export const libraryDirectory = bundledLibraryDirectory;
+
 const names = /^[a-z][a-z0-9-]{0,47}$/;
 const hashes = /^[0-9a-f]{64}$/;
 const readFlags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -46,8 +51,25 @@ async function openDirectory(path: string): Promise<FileHandle> {
     return directory;
   } catch (cause) {
     await directory.close();
+
+    // A component that does not exist is reported separately from a refused
+    // symlink, so an absent library or widget is not mistaken for an attack.
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw Error('Widget directory does not exist', { cause });
+    }
+
     throw Error('Widget paths must use directories without symlinks', { cause });
   }
+}
+
+/** True when openDirectory failed only because a path component is absent. */
+function isMissingDirectory(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const cause = error.cause as NodeJS.ErrnoException | undefined;
+  return cause?.code === 'ENOENT';
 }
 
 async function readAsset(
@@ -99,7 +121,14 @@ export async function atomicJson(path: string, value: unknown): Promise<void> {
   }
 }
 
-/** Discover metadata only. Widget JavaScript is data here, never imported by Node. */
+/**
+ * Discover metadata only. Widget JavaScript is data here, never imported by Node.
+ *
+ * `cache` holds retained bundles, which existing widget instances keep using.
+ * `library` is the single source directory for discovery and publication. It
+ * defaults to the checkout's bundled widgets so tests never read user data;
+ * the listener supplies the configured user library (see library-path.ts).
+ */
 export class WidgetRegistry {
   private readonly ajv = new Ajv({ allErrors: false, useDefaults: true, strict: true });
   private readonly validators = new Map<string, ValidateFunction>();
@@ -215,11 +244,35 @@ export class WidgetRegistry {
     return data as JsonObject;
   }
 
+  /**
+   * Lists the library, or returns one manifest when `name` is given.
+   *
+   * Listing opens the library through the same symlink-refusing walk that load()
+   * uses, so discovery never offers a widget that publication would then refuse.
+   * A library directory that does not exist yet is reported as an empty library.
+   */
   async discover(query = '', name?: string): Promise<unknown> {
     if (name) {
       return (await this.load(name)).manifest;
     }
-    const entries = await readdir(this.library, { withFileTypes: true });
+
+    let entries: Dirent[];
+    try {
+      entries = await this.libraryEntries();
+    } catch (error) {
+      if (isMissingDirectory(error)) {
+        return {
+          directory: this.library,
+          widgets: [],
+          note: 'The widget library directory does not exist yet.',
+        };
+      }
+      throw error;
+    }
+
+    // Stable alphabetical order; directory order differs between filesystems.
+    entries.sort((first, second) => first.name.localeCompare(second.name));
+
     const catalog = [];
     for (const entry of entries.slice(0, 200)) {
       if (!entry.isDirectory() || !names.test(entry.name)) {
@@ -243,11 +296,32 @@ export class WidgetRegistry {
     return { directory: this.library, widgets: catalog };
   }
 
+  /** Reads the library's entries through a descriptor opened without symlinks. */
+  private async libraryEntries(): Promise<Dirent[]> {
+    const directory = await openDirectory(this.library);
+    try {
+      // The descriptor path names the directory that was already opened, so a
+      // concurrent rename or symlink swap of the library cannot redirect it.
+      return await readdir(`/proc/self/fd/${directory.fd}`, { withFileTypes: true });
+    } finally {
+      await directory.close();
+    }
+  }
+
   async load(name: string): Promise<WidgetBundle> {
     if (!names.test(name)) {
       throw Error('Unknown widget name');
     }
-    const directory = await openDirectory(join(this.library, name));
+    let directory: FileHandle;
+    try {
+      directory = await openDirectory(join(this.library, name));
+    } catch (error) {
+      if (isMissingDirectory(error)) {
+        throw Error(`Widget "${name}" was not found in ${this.library}`, { cause: error });
+      }
+      throw error;
+    }
+
     try {
       const manifest = this.manifest(
         JSON.parse(await readAsset(directory, 'widget.json', 48 * 1024)),
