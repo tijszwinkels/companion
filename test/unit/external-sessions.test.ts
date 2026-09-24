@@ -1,95 +1,25 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect, createServer } from 'node:net';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import test, { type TestContext } from 'node:test';
-import { AgentSessions } from '../../src/agents/sessions.ts';
-import { defaultAgentSettings } from '../../src/agents/settings.ts';
-import { chatMessage, type AgentBackend } from '../../src/agents/types.ts';
+import test from 'node:test';
+import { promisify } from 'node:util';
 import { ExternalSessionServer, receiptLifetimeMs } from '../../src/agents/external/server.ts';
 import { requestExternal } from '../../src/agents/external/client.ts';
 import { openSocketDirectory } from '../../src/agents/external/paths.ts';
 import { parseOrigin, promptText } from '../../src/agents/agent-origin.ts';
 import { desktopFixture, waitFor } from '../desktop-fixture.ts';
 import { deferred, signal } from '../helpers.ts';
-
-const executable = fileURLToPath(new URL('../../bin/companion-session', import.meta.url));
-
-async function fixture(
-  t: TestContext,
-  options: { run?: AgentBackend['run']; deadline?: number } = {},
-) {
-  const directory = await mkdtemp(join(tmpdir(), 'external-test-'));
-  await writeFile(join(directory, 'companion-agent.json'), JSON.stringify(defaultAgentSettings));
-  const prompts: string[] = [];
-  const sessions = new AgentSessions(
-    {
-      backend: {
-        id: 'synthetic-external',
-        label: 'Synthetic external',
-        dependencies: {},
-        async models() {
-          return ['test/model'];
-        },
-        async run(request, signal, emit) {
-          prompts.push(request.prompt.text);
-          if (options.run) {
-            await options.run(request, signal, emit);
-          }
-          emit(chatMessage(randomUUID(), 'assistant', 'Synthetic answer'));
-        },
-      },
-    },
-    () => {},
-    directory,
-  );
-  await sessions.loadPrevious();
-  const path = join(directory, 'api', 'session.sock');
-  const server = new ExternalSessionServer(sessions.sessionTools, path, options.deadline);
-  await server.start();
-  t.after(async () => {
-    await server.close();
-    await sessions.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-  const identity = (time = Date.now()) => `${server.epoch}_${time}_${randomUUID()}`;
-  const call = (method: string, args: Record<string, unknown> = {}) =>
-    requestExternal(path, { method, label: 'Rowan', requestId: identity(), ...args }, signal());
-  const cli = (args: string[]) => runCli(path, args);
-  return { directory, path, sessions, server, prompts, identity, call, cli };
-}
-
-/** Invoke the shipped executable from an unrelated cwd, like a local MM agent. */
-async function runCli(path: string, args: string[], timeout = 10_000, env = process.env) {
-  const child = spawn(executable, [...args, '--socket', path], {
-    cwd: '/tmp',
-    env: { ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout.on('data', (chunk) => (stdout += chunk));
-  child.stderr.on('data', (chunk) => (stderr += chunk));
-  const timer = setTimeout(() => child.kill('SIGKILL'), timeout);
-  const [code] = await once(child, 'close');
-  clearTimeout(timer);
-  return { code, stdout, stderr, result: JSON.parse(stdout) as any };
-}
+import {
+  executable,
+  externalCliEnvironment,
+  fixture,
+  runCli,
+} from '../external-session-fixture.ts';
 
 async function raw(path: string, input: string | Buffer, halfClose = false): Promise<any> {
   const socket = connect(path);
@@ -160,8 +90,7 @@ test('CLI -> Unix socket -> actual sessions/store: list/start/send/close/reopen,
 
 test('busy close refuses and real CLI sends join the human FIFO without focus', async (t) => {
   const gate = deferred<void>();
-  const f = await fixture(t, { run: async () => gate.promise });
-  t.after(() => gate.resolve());
+  const f = await fixture(t, { run: async () => gate.promise, beforeClose: () => gate.resolve() });
   const first = await f.call('start', { text: 'Held turn' });
   const id = (first.session as any).id;
   f.sessions.followUp(id, 'Human first', signal());
@@ -265,7 +194,7 @@ test('CLI reports usage and unavailable sockets with structured exits and discov
   assert.equal((await runCli(join(f.directory, 'api', 'missing.sock'), ['list'])).code, 3);
   const child = spawn(executable, ['info'], {
     cwd: '/',
-    env: { ...process.env, COMPANION_EXTERNAL_SOCKET: f.path },
+    env: externalCliEnvironment({ COMPANION_EXTERNAL_SOCKET: f.path }),
   });
   let output = '';
   child.stdout.on('data', (chunk) => (output += chunk));
@@ -326,12 +255,17 @@ test('stale sockets are recovered, but an active server without our lock is neve
     ],
     { stdio: ['ignore', 'pipe', 'ignore'] },
   );
+  const childClosed = once(child, 'close');
+  t.after(async () => {
+    child.kill('SIGKILL');
+    await childClosed;
+  });
   await once(child.stdout, 'data');
   await chmod(path, 0o600);
   const external = new ExternalSessionServer(f.sessions.sessionTools, path);
   await assert.rejects(external.start(), /already running/);
   child.kill('SIGKILL');
-  await once(child, 'close');
+  await childClosed;
   const recovered = new ExternalSessionServer(f.sessions.sessionTools, path);
   await recovered.start();
   assert.equal((await requestExternal(path, { method: 'info' }, signal())).ok, true);
@@ -383,8 +317,8 @@ test('archived external provenance validates independently and cannot gain an in
 });
 
 test('cancelled model discovery cannot create a session; accepted work outlives CLI disconnect', async (t) => {
-  const f = await fixture(t, { deadline: 80 });
   const discovery = deferred<void>();
+  const f = await fixture(t, { deadline: 80, beforeClose: () => discovery.resolve() });
   f.sessions.dependencies.backend.models = async () => {
     await discovery.promise;
     return ['test/model'];
@@ -481,7 +415,6 @@ test('an internal leased turn cannot self-trigger through the shipped external C
         ['send', '--label', 'Pretend external', '--id', request.id, '--text', 'Self loop'],
         10_000,
         {
-          ...process.env,
           COMPANION_SESSION_TOOLS_TOKEN: request.sessionTools!.token,
         },
       );
@@ -499,13 +432,18 @@ test('an internal leased turn cannot self-trigger through the shipped external C
     1,
   );
   // The marker also covers turns where Companion did not grant a tool lease.
-  const blocked = await runCli(
-    f.path,
-    ['start', '--label', 'Rowan', '--text', 'No lease'],
-    10_000,
-    { ...process.env, COMPANION_INTERNAL_AGENT: '1' },
-  );
-  assert.equal(blocked.result.code, 'internal-caller');
+  for (const authority of [
+    { COMPANION_INTERNAL_AGENT: '1' },
+    { COMPANION_WIDGET_TOKEN: 'synthetic-widget-token' },
+  ]) {
+    const blocked = await runCli(
+      f.path,
+      ['start', '--label', 'Rowan', '--text', 'No lease'],
+      10_000,
+      authority,
+    );
+    assert.equal(blocked.result.code, 'internal-caller');
+  }
   assert.equal(f.sessions.snapshot().length, 1);
 });
 
@@ -568,7 +506,7 @@ test('CLI discovery timeout is definite non-transmission, and a full connection 
   const interrupted = spawn(
     executable,
     ['start', '--socket', path, '--label', 'Rowan', '--text', 'Interrupted discovery'],
-    { cwd: '/tmp' },
+    { cwd: '/tmp', env: externalCliEnvironment() },
   );
   let interruptedOutput = '';
   interrupted.stdout.on('data', (chunk) => (interruptedOutput += chunk));
@@ -632,4 +570,60 @@ test('external label controls cannot break or visually reverse attribution', asy
     );
   }
   assert.equal((await f.call('start', { text: 'Ordinary emoji', label: '🧑‍💻 Rowan' })).ok, true);
+});
+
+test('failed busy assertions still release the gate, close the fixture and terminate', async () => {
+  // Execute the real fixture in a separate process: its intentional assertion
+  // failure must exit normally with code 1, not hang until the watchdog kills it.
+  const failureFixture = fileURLToPath(
+    new URL('../fixtures/external-session-cleanup-failure.ts', import.meta.url),
+  );
+  const project = fileURLToPath(new URL('../../', import.meta.url));
+  let output = '';
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ['--import', 'tsx', failureFixture], {
+      cwd: project,
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+      env: externalCliEnvironment(),
+    }),
+    (error: unknown) => {
+      const result = error as { code: number; killed?: boolean; stdout: string };
+      assert.equal(result.code, 1, 'The expected assertion must fail without timing out');
+      assert.equal(result.killed, false);
+      output = result.stdout;
+      assert.match(output, /Intentional failure with a busy synthetic turn/);
+      return true;
+    },
+  );
+  const directory = output.match(/EXTERNAL_FIXTURE_DIRECTORY=(\S+)/)?.[1];
+  assert.ok(directory, 'The failure fixture must report its temporary directory');
+  await assert.rejects(lstat(directory), { code: 'ENOENT' });
+});
+
+test('synthetic external child environments remove inherited authority without changing the parent', () => {
+  const keys = [
+    'COMPANION_INTERNAL_AGENT',
+    'COMPANION_SESSION_TOOLS_TOKEN',
+    'COMPANION_SESSION_TOOLS_ENDPOINT',
+    'COMPANION_WIDGET_TOKEN',
+    'COMPANION_WIDGET_ENDPOINT',
+    'COMPANION_EXTERNAL_SOCKET',
+  ];
+  const original = keys.map((key) => process.env[key]);
+  const external = externalCliEnvironment();
+  for (const [index, key] of keys.entries()) {
+    // Compare booleans only: even a failure must never print inherited secrets.
+    assert.equal(Object.hasOwn(external, key), false, `${key} must not reach a fixture CLI`);
+    assert.equal(
+      process.env[key] === original[index],
+      true,
+      `${key} must remain unchanged in the parent`,
+    );
+  }
+  assert.equal(external.PATH === process.env.PATH, true);
+  assert.equal(
+    externalCliEnvironment({ COMPANION_INTERNAL_AGENT: 'synthetic' }).COMPANION_INTERNAL_AGENT,
+    'synthetic',
+  );
 });
