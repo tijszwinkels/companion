@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../../src/config.ts';
@@ -440,21 +440,60 @@ for (const reason of ['cancel', 'close'] as const) {
 }
 
 test('the retry shares the operation timeout instead of receiving a new one', async (context) => {
-  // The first pass takes 150 ms, then the retry hangs. A fresh retry timeout
-  // would settle no earlier than 150 + 400 ms after the call.
-  const worker = await fixture(context, [{ requests: ['delay', 'hang'] }, {}], 'Dublin.', ['']);
+  // The first pass answers empty only when released; the retry never answers.
+  const worker = await fixture(context, [{ requests: ['on-signal', 'hang'] }, {}], 'Dublin.', ['']);
   await worker.transcriber.start(signal());
-  worker.config.timeoutMs = 400;
+  worker.config.timeoutMs = 1000;
   const diagnostics: TranscriptionDiagnostic[] = [];
 
-  const started = performance.now();
-  await assert.rejects(
-    worker.transcriber.transcribe(speech(), signal(), (entry) => diagnostics.push(entry)),
-    /timed out/,
-  );
-  const elapsed = performance.now() - started;
+  // A controlled clock makes the deadline independent of scheduling latency.
+  // Only setTimeout is mocked, so this test polls using setImmediate.
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const requestCount = async (count: number): Promise<WorkerEvent> => {
+    const deadline = performance.now() + 3000;
+    while (performance.now() < deadline) {
+      const sent = await requests(worker);
+      if (sent.length >= count) {
+        return sent[count - 1];
+      }
+      await nextTurn();
+    }
+    throw Error(`Test worker did not record request ${count}`);
+  };
+  // Settlement after the deadline also waits for the real child to be reaped,
+  // so poll against real time. A wrongly restarted retry timeout never fires
+  // on the mocked clock, so a generous bound cannot hide it.
+  const settlesWithin = async (operation: Promise<unknown>, realMs: number): Promise<boolean> => {
+    let settled = false;
+    operation.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const deadline = performance.now() + realMs;
+    while (!settled && performance.now() < deadline) {
+      await nextTurn();
+    }
+    return settled;
+  };
 
-  assert.ok(elapsed < 540, `Timed out after ${Math.round(elapsed)} ms`);
+  const operation = worker.transcriber.transcribe(speech(), signal(), (entry) =>
+    diagnostics.push(entry),
+  );
+  const rejected = assert.rejects(operation, /timed out/);
+
+  // Spend 600 of the 1000 ms budget on the first pass, then release it.
+  const first = await requestCount(1);
+  context.mock.timers.tick(600);
+  process.kill(first.pid, 'SIGUSR2');
+  await requestCount(2);
+
+  // A fresh retry timeout would expire at 1600 ms; the shared one at 1000 ms.
+  context.mock.timers.tick(399);
+  assert.equal(await settlesWithin(operation, 50), false, 'The deadline has not passed yet');
+  context.mock.timers.tick(1);
+  assert.equal(await settlesWithin(operation, 3000), true, 'The shared deadline ended the retry');
+  await rejected;
+
   const sent = await requests(worker);
   assert.equal(sent.length, 2);
   assertReaped(sent[1].pid);

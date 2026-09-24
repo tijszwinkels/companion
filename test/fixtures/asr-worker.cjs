@@ -34,6 +34,10 @@ function respond(action, message) {
     case 'delay':
       setTimeout(() => send(message), 150);
       return;
+    case 'on-signal':
+      // Respond only when the test releases this request, independent of time.
+      process.once('SIGUSR2', () => send(message));
+      return;
     case 'exit':
       process.exit(0);
     case 'eof':
