@@ -280,7 +280,12 @@ test('screenshot_active_window discards a capture when the window moves or chang
   };
   await assert.rejects(call('screenshot_active_window'), /Active window changed during capture/);
 
+  // Every form of the empty address means no active window.
   desktop.afterCapture = undefined;
+  desktop.clients.push(syntheticWindow('0x00'));
+  desktop.activeAddress = '0x00';
+  await assert.rejects(call('screenshot_active_window'), /No visible active Hyprland window/);
+
   desktop.activeAddress = '0x0';
   await assert.rejects(call('screenshot_active_window'), /No visible active Hyprland window/);
   assert.equal(
