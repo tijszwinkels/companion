@@ -29,6 +29,7 @@ import { LabelPreviousCorrect } from '../../src/processors/label-previous-correc
 import { LabelPreviousIncorrect } from '../../src/processors/label-previous-incorrect.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { PiBackend } from '../../src/agents/pi-backend.ts';
+import { ClaudeCodeBackend } from '../../src/agents/claude/claude-backend.ts';
 import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { ActiveWindowSensor } from '../../src/sensors/screen/sensor.ts';
 import { desktopFixture } from '../desktop-fixture.ts';
@@ -248,7 +249,10 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   send.subscribe(router);
   enter.subscribe(router);
   new Ignore(() => {}, activity).subscribe(router);
-  const sessions = new AgentSessions({ pi: new PiBackend() }, () => {});
+  const sessions = new AgentSessions(
+    { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
+    () => {},
+  );
   new StartCodingAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new QuickQuestion({ sessions }, () => {}, false, activity).subscribe(router);
   new StartClaudeCodeSession({ sessions }, () => {}, false, activity).subscribe(router);
@@ -321,7 +325,7 @@ process.once('exit', () => {
       const graph = JSON.parse(stdout) as Graph;
       assert.deepEqual(graph, desktopGraph);
       assert.equal(graph.nodes[0].id, 'pipeline');
-      assert.equal(graph.nodes.length, 20);
+      assert.equal(graph.nodes.length, 21);
       assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 12);
     } else {
       assert.ok(stdout.startsWith('flowchart LR\n'));

@@ -21,6 +21,7 @@ import { AgentSessions } from './agents/sessions.ts';
 import { agentDirectory } from './agents/settings.ts';
 import { userWidgetLibrary } from './widgets/library-path.ts';
 import { PiBackend } from './agents/pi-backend.ts';
+import { ClaudeCodeBackend } from './agents/claude/claude-backend.ts';
 import { AgentChoiceIntents } from './agents/choice-intents.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
@@ -140,8 +141,12 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // Every asynchronous stage observes this signal, so Ctrl+C cancels the whole
   // session, including an in-flight transcription or intent request.
   const controller = new AbortController();
-  // Claude Code conversations fail visibly until its backend is wired here.
-  const agents = new AgentSessions({ pi: new PiBackend() }, log, agentDirectory(), widgetLibrary);
+  const agents = new AgentSessions(
+    { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
+    log,
+    agentDirectory(),
+    widgetLibrary,
+  );
   const stop = () => {
     controller.abort();
     void agents.close();
