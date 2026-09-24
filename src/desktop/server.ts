@@ -183,8 +183,8 @@ export class DesktopServer {
             ? (value as Record<string, unknown>).action
             : undefined;
         // Echo only a short opaque correlation ID, including admission errors.
+        // Remote panels correlate every reply this way; older clients ignore it.
         const requestId =
-          action === 'agent-tool-page' &&
           value &&
           typeof value === 'object' &&
           typeof (value as Record<string, unknown>).requestId === 'string' &&
@@ -213,7 +213,9 @@ export class DesktopServer {
           action === 'panel-state' ||
           action === 'agent-draft-result' ||
           action === 'reopen-agent' ||
-          action === 'close-agent';
+          action === 'close-agent' ||
+          action === 'client-role' ||
+          action === 'start-agent';
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
