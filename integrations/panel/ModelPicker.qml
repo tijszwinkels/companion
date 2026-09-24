@@ -4,6 +4,8 @@ import QtQuick.Controls.Basic as Basic
 
 // The selected conversation owns this override. Profile defaults and the
 // model actually running remain distinct, especially while a turn is active.
+// A Claude Code conversation has no pickers: its model and effort are fixed
+// when it starts, so the footer only names them.
 Item {
   id: root
   property var session: null
@@ -26,6 +28,8 @@ Item {
   signal refreshRequested()
   signal modelRequested(string id, string model)
   readonly property string sessionId: session ? session.id : ""
+  // Absent in Pi conversations and in messages from older listeners.
+  readonly property bool fixedModel: session !== null && session.harness === "claude-code"
   signal thinkingRequested(string id, string thinking)
   property bool showAllModels: false
   onSessionIdChanged: {
@@ -59,7 +63,7 @@ Item {
   readonly property bool stacked: width < 380 * unit
   readonly property real effortWidth: 172 * unit
   readonly property real controlsBottom: Math.max(chooser.y + chooser.height, effort.y + effort.height)
-  height: controlsBottom + (statusText ? 62 : 38) * unit
+  height: fixedModel ? fixedNote.y + fixedNote.height + 12 * unit : controlsBottom + (statusText ? 62 : 38) * unit
 
   // Match Pi's ordered adjustment for display only; launch validation uses Pi's
   // own helper. Keep the requested override so switching back can restore it.
@@ -76,6 +80,33 @@ Item {
   }
 
   Text {
+    id: fixedSummary
+    objectName: "fixedSessionModel"
+    visible: root.fixedModel
+    width: parent.width
+    text: root.fixedModel && root.session.claudeCode
+      ? "Claude Code · " + root.session.claudeCode.model + " · " + root.session.claudeCode.effort + " effort"
+      : "Claude Code"
+    textFormat: Text.PlainText
+    color: root.foreground
+    elide: Text.ElideRight
+    font.family: root.fontFamily
+    font.pixelSize: 12 * root.unit
+  }
+  Text {
+    id: fixedNote
+    objectName: "fixedSessionModelNote"
+    visible: root.fixedModel
+    y: fixedSummary.height + 2 * root.unit
+    width: parent.width
+    text: "Model and effort are fixed when a Claude Code conversation starts."
+    color: root.muted
+    wrapMode: Text.WordWrap
+    font.family: root.fontFamily
+    font.pixelSize: 10 * root.unit
+  }
+  Text {
+    visible: !root.fixedModel
     text: "This session · next turn model"
     width: chooser.width
     color: root.muted
@@ -84,6 +115,7 @@ Item {
     elide: Text.ElideRight
   }
   Text {
+    visible: !root.fixedModel
     x: effort.x
     y: effort.y - 20 * root.unit
     text: "Effort"
@@ -196,6 +228,7 @@ Item {
   SettingChooser {
     id: chooser
     objectName: "sessionModelPicker"
+    visible: !root.fixedModel
     y: 20 * root.unit
     width: Math.max(0, root.width - (root.stacked ? 0 : root.effortWidth + 8 * root.unit))
     entries: root.options
@@ -208,6 +241,7 @@ Item {
   SettingChooser {
     id: effort
     objectName: "sessionThinkingPicker"
+    visible: !root.fixedModel
     x: root.stacked ? 0 : chooser.width + 8 * root.unit
     y: root.stacked ? chooser.y + chooser.height + 24 * root.unit : chooser.y
     width: root.stacked ? root.width : root.effortWidth
@@ -224,6 +258,7 @@ Item {
   PanelAction {
     id: allModels
     objectName: "showAllSessionModels"
+    visible: !root.fixedModel
     y: root.controlsBottom + 6 * root.unit
     text: root.showAllModels ? "Pinned models only" : "Show all models"
     enabled: root.online && root.catalogLoaded && root.catalog.pinned !== undefined
@@ -239,6 +274,7 @@ Item {
   PanelAction {
     id: refresh
     objectName: "refreshSessionModels"
+    visible: !root.fixedModel
     anchors.right: parent.right
     y: allModels.y
     text: root.loading ? "…" : "↻"
@@ -253,7 +289,7 @@ Item {
   Text {
     y: allModels.y + allModels.height + 2 * root.unit
     width: parent.width
-    visible: root.statusText !== ""
+    visible: !root.fixedModel && root.statusText !== ""
     text: root.statusText
     color: root.muted
     elide: Text.ElideRight

@@ -8,6 +8,7 @@ import { defaultAgentSettings, defaultClaudeCodeSettings } from '../../src/agent
 import type { AgentSession, ClaudeCodeSettings } from '../../src/agents/types.ts';
 import { deferred, frame, signal } from '../helpers.ts';
 import { harnessFixture } from '../harness-fixture.ts';
+import { desktopFixture, waitFor } from '../desktop-fixture.ts';
 
 const claudeDefault = {
   ...defaultAgentSettings,
@@ -322,4 +323,38 @@ test('the store round-trips old archives and validates the harness fields', asyn
     await writeFile(path, JSON.stringify({ ...legacy, ...fields }));
     await assert.rejects(store.read(id), /Invalid saved conversation/, JSON.stringify(fields));
   }
+});
+
+test('desktop clients receive the harness fields and a clear picker refusal', async (context) => {
+  const { sessions } = await harnessFixture(context, { configuration: claudeDefault });
+  const desktop = await desktopFixture(async () => Buffer.from(''), sessions);
+  context.after(() => desktop.close());
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+
+  // Updates and reconnect snapshots carry the whole view; older clients
+  // simply ignore the optional fields.
+  await waitFor(() =>
+    desktop.messages.some(
+      (message) =>
+        message.type === 'agent-session' &&
+        message.session?.harness === 'claude-code' &&
+        message.session.claudeCode?.model === 'claude-sonnet-5',
+    ),
+  );
+  desktop.send({ action: 'toggle-pause' });
+  await desktop.reply('toggle-pause');
+  await waitFor(() =>
+    desktop.messages.some(
+      (message) =>
+        message.type === 'state' &&
+        message.sessions?.[0]?.harness === 'claude-code' &&
+        message.sessions[0].claudeCode?.effort === 'medium',
+    ),
+  );
+
+  desktop.send({ action: 'set-agent-model', id, model: 'configured/one' });
+  const refused = await desktop.reply('set-agent-model');
+  assert.equal(refused.type, 'error');
+  assert.match(refused.message ?? '', /Claude Code conversation keeps the model and effort/);
 });

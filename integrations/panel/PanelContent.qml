@@ -88,7 +88,9 @@ Item {
     if (!root.pendingOriginRestoring || root.selectedSessionId === root.pendingOriginId) return
     if (root.sessions.some(entry => entry.id === root.pendingOriginId)) clearPendingOrigin()
   }
-  readonly property bool modelsNeeded: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
+  // Only Pi conversations have model/effort pickers. A Claude Code conversation
+  // keeps the model captured at its start, so it never needs Pi's catalogue.
+  readonly property bool modelsNeeded: online && selectedSession !== null && selectedSession.harness !== "claude-code" && sessionControls !== null && sessionControls.controlsAvailable
   onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
   onSessionControlsChanged: Qt.callLater(ensureModels)
   function ensureModels() {

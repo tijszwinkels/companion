@@ -528,6 +528,11 @@ session metadata and **only changed messages**. Upsert by session/message ID in
 arrival order; do not replace the entire conversation with this partial array.
 Streaming updates are coalesced every 40 ms; a terminal status flushes pending
 messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
+Session metadata may carry `harness: "claude-code"` with
+`claudeCode: {model, effort}`; absence means a Pi conversation. The panel and
+standalone window then replace the model/effort pickers with that fixed model
+and skip Pi's model catalogue; `set-agent-model`/`set-agent-thinking` are refused
+for such a conversation. Clients that do not know these fields ignore them.
 All messages share the ordered socket with snapshots. A newly seen session opens
 and selects its panel tab once; further updates and reconnects do not reopen it.
 Exception: a live-only `openInBackground: true` marks a tab an agent tool opened
