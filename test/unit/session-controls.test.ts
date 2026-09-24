@@ -16,7 +16,7 @@ test('desktop session controls discover once, validate models, publish order and
   let discoveries = 0;
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'control-fixture',
         label: 'Control fixture',
         dependencies: {},
@@ -110,7 +110,7 @@ test('panel reports broadcast once for selection or navigation ownership and nev
   const directory = await mkdtemp(join(tmpdir(), 'companion-navigation-broadcast-'));
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'broadcast-fixture',
         label: 'Broadcast fixture',
         dependencies: {},

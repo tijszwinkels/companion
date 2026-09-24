@@ -319,7 +319,7 @@ test('archived external provenance validates independently and cannot gain an in
 test('cancelled model discovery cannot create a session; accepted work outlives CLI disconnect', async (t) => {
   const discovery = deferred<void>();
   const f = await fixture(t, { deadline: 80, beforeClose: () => discovery.resolve() });
-  f.sessions.dependencies.backend.models = async () => {
+  f.backend.models = async () => {
     await discovery.promise;
     return {
       models: ['test/model'],
@@ -453,7 +453,7 @@ test('an internal leased turn cannot self-trigger through the shipped external C
 
 test('half-closed request streams support asynchronous start, reopen and draft', async (t) => {
   const f = await fixture(t);
-  f.sessions.dependencies.backend.models = async () => {
+  f.backend.models = async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     return {
       models: ['test/model'],

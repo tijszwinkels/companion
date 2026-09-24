@@ -18,7 +18,7 @@ test('actual application and agent acceptance play distinct cues; preview, rejec
   const directory = await mkdtemp(join(tmpdir(), 'companion-destination-sounds-'));
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'sound-fixture',
         label: 'Sound fixture',
         dependencies: {},

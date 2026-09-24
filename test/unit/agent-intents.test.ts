@@ -29,7 +29,7 @@ async function fixture(
   const requests: Parameters<AgentBackend['run']>[0][] = [];
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'intent-fixture',
         label: 'Intent fixture',
         dependencies: {},

@@ -126,7 +126,7 @@ test('new coding session uses the selected utterance and its recorded screenshot
   const requests: Parameters<AgentBackend['run']>[0][] = [];
   const agents = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'test',
         label: 'test',
         dependencies: {},

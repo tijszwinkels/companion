@@ -9,7 +9,9 @@ import { randomUUID } from 'node:crypto';
 import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
 import {
+  agentHarnesses,
   agentThinkingLevels,
+  claudeCodeEffortLevels,
   type AgentMessage,
   type AgentSession,
   type PreviousSession,
@@ -21,8 +23,8 @@ import { parseOrigin } from './agent-origin.ts';
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 /**
- * Companion's display transcript and screenshot accompany Pi's own resumable
- * conversation. Atomic replacement preserves the last complete snapshot if a
+ * Companion's display transcript and screenshot accompany the harness's own
+ * resumable conversation (Pi or Claude Code). Atomic replacement preserves the last complete snapshot if a
  * write is interrupted. Nothing is created during construction or inspection.
  */
 export class SessionStore {
@@ -140,7 +142,8 @@ export class SessionStore {
         !agentThinkingLevels.includes(session.thinkingOverride)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
-      session.messages.length > panelMessageLimit + toolCallLimit
+      session.messages.length > panelMessageLimit + toolCallLimit ||
+      !validHarness(session)
     ) {
       throw Error('Invalid saved conversation');
     }
@@ -288,6 +291,13 @@ export class SessionStore {
       ...(session.thinkingOverride !== undefined
         ? { thinkingOverride: session.thinkingOverride }
         : {}),
+      // A Pi conversation is stored without a harness, like every older archive.
+      ...(session.harness === 'claude-code'
+        ? {
+            harness: session.harness,
+            claudeCode: { model: session.claudeCode!.model, effort: session.claudeCode!.effort },
+          }
+        : {}),
       error: session.error,
       updatedAt: session.updatedAt,
       messages,
@@ -333,4 +343,37 @@ export class SessionStore {
     }
     return entries;
   }
+}
+
+/**
+ * The harness fields are optional; older archives and Pi conversations omit
+ * both. A Claude Code conversation must carry the model and effort captured
+ * at its creation, because later turns never read them from the configuration.
+ * The model follows the `claudeCode.model` rules in settings.ts. Pi model
+ * choices belong to Pi conversations only.
+ */
+function validHarness(session: AgentSession): boolean {
+  if (session.harness === undefined || session.harness === 'pi') {
+    return session.claudeCode === undefined;
+  }
+  if (!agentHarnesses.includes(session.harness)) {
+    return false;
+  }
+
+  const settings: unknown = session.claudeCode;
+  if (!settings || typeof settings !== 'object') {
+    return false;
+  }
+  const { model, effort } = settings as Record<string, unknown>;
+  return (
+    typeof model === 'string' &&
+    model.length > 0 &&
+    model.length <= 300 &&
+    !model.startsWith('-') &&
+    !/\s/u.test(model) &&
+    !model.includes('/') &&
+    claudeCodeEffortLevels.includes(effort as (typeof claudeCodeEffortLevels)[number]) &&
+    session.modelOverride === undefined &&
+    session.thinkingOverride === undefined
+  );
 }
