@@ -140,32 +140,77 @@ async function refusal(
   assert.fail(`${name} unexpectedly succeeded`);
 }
 
+/** Emit a sender's outbound tool call as Pi reports it before running the tool. */
+function emitOutboundCall(run: RecordedRun, name: string, callId: string): void {
+  const outbound = chatMessage(`tool-${callId}`, 'tool', '');
+  outbound.toolName = name;
+  outbound.state = 'running';
+  run.emit(outbound);
+}
+
 test('agent provenance points to the sender tool group when the call was retained', async (context) => {
-  const { sessions, script, view, directory } = await fixture(context);
+  const { sessions, script, view } = await fixture(context);
   const sender = sessions.start(frame, signal());
   const callId = randomUUID();
   let destination = '';
-  let lookup: string | undefined;
+  let storedGroup: string | undefined;
   script(sender, async (run) => {
-    const outbound = chatMessage(`tool-${callId}`, 'tool', '');
-    outbound.toolName = 'companion_session_start';
-    outbound.state = 'running';
-    run.emit(outbound);
-    lookup = new SessionStore(join(directory, '.companion-sessions')).tools.groupForCall(
-      sender,
-      callId,
-    );
+    emitOutboundCall(run, 'companion_session_start', callId);
+    storedGroup = view(sender).messages.at(-1)?.id;
     const result = await call(run, 'companion_session_start', { text: 'Follow up' }, callId);
     destination = (result.session as { id: string }).id;
   });
   await sessions.idle();
-  assert.ok(lookup, 'tool call must be stored before delivery');
+
   const origin = view(destination).messages[0].origin;
-  assert.ok(origin?.sourceGroupId);
-  assert.ok(view(sender).messages.some((message) => message.id === origin.sourceGroupId));
+  assert.equal(origin?.kind, 'agent');
+  const sourceGroupId = origin.sourceGroupId;
+  assert.ok(sourceGroupId);
+  assert.equal(sourceGroupId, storedGroup, 'the call was stored before delivery');
+  assert.ok(view(sender).messages.some((message) => message.id === sourceGroupId));
+
   await sessions.remove(destination);
   await sessions.reopen(destination);
-  assert.equal(view(destination).messages[0].origin?.sourceGroupId, origin.sourceGroupId);
+  const reopened = view(destination).messages[0].origin;
+  assert.equal(reopened?.kind, 'agent');
+  assert.equal(reopened.sourceGroupId, sourceGroupId);
+});
+
+test('a reused provider call ID anchors only to the current turn, never an older group', async (context) => {
+  const { sessions, script, view } = await fixture(context);
+  const sender = sessions.start(frame, signal());
+  const target = sessions.start(frame, signal());
+  await sessions.idle();
+  const reusedCallId = randomUUID();
+  const groups: (string | undefined)[] = [];
+  script(
+    sender,
+    async (run) => {
+      emitOutboundCall(run, 'companion_session_send', reusedCallId);
+      groups.push(view(sender).messages.at(-1)?.id);
+      await call(run, 'companion_session_send', { id: target, text: 'First' }, reusedCallId);
+    },
+    async (run) => {
+      // The provider repeats the ID, but this turn's call was not stored.
+      await call(run, 'companion_session_send', { id: target, text: 'Second' }, reusedCallId);
+    },
+  );
+  sessions.followUp(sender, 'Send the first', signal());
+  await sessions.idle();
+  sessions.followUp(sender, 'Send the second', signal());
+  await sessions.idle();
+
+  const received = view(target).messages.filter((message) => message.origin);
+  assert.equal(received.length, 2);
+  const first = received[0].origin;
+  const second = received[1].origin;
+  assert.equal(first?.kind, 'agent');
+  assert.equal(second?.kind, 'agent');
+  assert.ok(groups[0]);
+  assert.equal(first.sourceGroupId, groups[0]);
+  // Without an exact anchor the heading still opens the sender conversation.
+  assert.equal(second.sessionId, sender);
+  assert.equal(second.sourceGroupId, undefined);
 });
 
 test('an agent starts a labelled background session that keeps its profile and model', async (context) => {
@@ -719,7 +764,7 @@ test('a lease released while a request body is arriving performs no action', asy
 
   for (const method of ['close', 'reopen', 'list']) {
     bodyEntered = deferred<void>();
-    const lease = await service.lease(randomUUID(), 0, signal());
+    const lease = await service.lease(randomUUID(), randomUUID(), 0, signal());
     const url = new URL(lease.endpoint);
     const { status, body } = await new Promise<{ status: number; body: string }>(
       (resolve, reject) => {

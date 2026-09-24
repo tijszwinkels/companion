@@ -63,7 +63,8 @@ export interface SessionDirectory {
  */
 export interface SessionToolHost {
   title(id: string): string | undefined;
-  sourceGroupId?(sender: string, toolCallId: string): string | undefined;
+  /** Stored tool group of the sender's outbound call, if it was retained. */
+  sourceGroupId?(sender: string, turnId: string, toolCallId: string): string | undefined;
   directory(sender: string | undefined, query: string, limit: number): SessionDirectory;
   start(
     request: {
@@ -129,6 +130,8 @@ interface Lease {
   kind: 'internal';
   token: string;
   owner: string;
+  /** Sender turn whose transcript stores this turn's tool calls. */
+  turnId: string;
   depth: number;
   signal: AbortSignal;
   actions: number;
@@ -157,6 +160,7 @@ export class SessionToolService {
   /** Grant the calling turn access until `signal` aborts or `release` runs. */
   async lease(
     owner: string,
+    turnId: string,
     depth: number,
     signal: AbortSignal,
   ): Promise<{ endpoint: string; token: string; release(): void }> {
@@ -176,6 +180,7 @@ export class SessionToolService {
       kind: 'internal',
       token,
       owner,
+      turnId,
       depth,
       signal: AbortSignal.any([signal, controller.signal]),
       actions: 0,
@@ -484,7 +489,9 @@ export class SessionToolService {
       // Anchor the recipient's heading link to the sender's stored tool group.
       // External callers have no sender transcript, so they never get one.
       const sourceGroupId =
-        toolCallId === undefined ? undefined : this.host.sourceGroupId?.(caller.owner, toolCallId);
+        toolCallId === undefined
+          ? undefined
+          : this.host.sourceGroupId?.(caller.owner, caller.turnId, toolCallId);
       if (sourceGroupId) {
         origin.sourceGroupId = sourceGroupId;
       }

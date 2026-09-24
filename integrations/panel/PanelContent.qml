@@ -61,6 +61,17 @@ Item {
   // membership: a quiet background reopen must never take over the user's view.
   property string pendingOriginId: ""
   property string pendingOriginGroupId: ""
+  // True while the pending sender was archived when its heading was clicked.
+  property bool pendingOriginRestoring: false
+  // Senders an agent heading can actually open: an open tab or a saved Previous
+  // session while connected. Deleted senders and offline panels show plain text.
+  readonly property var openableOrigins: {
+    const ids = {}
+    if (!root.online) return ids
+    for (const entry of root.sessions) ids[entry.id] = true
+    for (const entry of root.previousSessions) ids[entry.id] = true
+    return ids
+  }
   onSelectedSessionIdChanged: {
     if (root.pendingOriginId && root.selectedSessionId !== root.pendingOriginId) clearPendingOrigin()
     Qt.callLater(ensureSelectedVisible)
@@ -68,6 +79,14 @@ Item {
   function clearPendingOrigin() {
     root.pendingOriginId = ""
     root.pendingOriginGroupId = ""
+    root.pendingOriginRestoring = false
+  }
+  // A user-requested reopen selects its tab in the same restore update. If the
+  // sender arrived without selection (our reopen was refused, then an agent
+  // reopened it quietly), forget the request so a later tab click is ordinary.
+  function settlePendingRestore() {
+    if (!root.pendingOriginRestoring || root.selectedSessionId === root.pendingOriginId) return
+    if (root.sessions.some(entry => entry.id === root.pendingOriginId)) clearPendingOrigin()
   }
   readonly property bool modelsNeeded: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
   onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
@@ -101,8 +120,7 @@ Item {
       if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
     } else if (selectedSession.id === root.pendingOriginId) {
       const groupId = root.pendingOriginGroupId
-      root.pendingOriginId = ""
-      root.pendingOriginGroupId = ""
+      root.clearPendingOrigin()
       if (groupId) Qt.callLater(function() { chat.jumpToToolGroup(groupId) })
     }
   }
@@ -184,6 +202,7 @@ Item {
     // Removing a delegate during a grabbed pointer gesture emits neither
     // release nor cancel. Membership, not the delegate, owns this cleanup.
     if (root.draggingSessionId && !root.sessions.some(entry => entry.id === root.draggingSessionId)) cancelDrag()
+    if (root.pendingOriginRestoring) Qt.callLater(settlePendingRestore)
     synchronizeTabs()
     const dismissed = Object.assign({}, root.locallyUnpinned)
     for (const id of Object.keys(dismissed)) {
@@ -217,13 +236,18 @@ Item {
   }
   Component.onCompleted: synchronizeTabs()
 
+  // Navigation only: select the sender's tab, or ask to reopen it from
+  // Previous sessions. It never sends a message or moves composer focus.
   function openOrigin(id, groupId) {
-    if (!id || !root.online) return
-    if (root.sessions.some(entry => entry.id === id) || root.previousSessions.some(entry => entry.id === id)) {
-      root.pendingOriginId = id
-      root.pendingOriginGroupId = groupId
-      if (root.sessions.some(entry => entry.id === id)) root.sessionSelected(id)
-      else root.reopenSessionRequested(id)
+    if (!id || root.openableOrigins[id] !== true) return
+    const open = root.sessions.some(entry => entry.id === id)
+    root.pendingOriginId = id
+    root.pendingOriginGroupId = groupId
+    root.pendingOriginRestoring = !open
+    if (open) {
+      root.sessionSelected(id)
+    } else {
+      root.reopenSessionRequested(id)
     }
   }
 
@@ -801,6 +825,7 @@ Item {
       fontFamily: root.fontFamily
       unit: root.unit
       onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
+      openableOrigins: root.openableOrigins
       onOriginRequested: (id, groupId) => root.openOrigin(id, groupId)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)

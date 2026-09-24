@@ -290,12 +290,24 @@ with `origin: {kind: "agent", sessionId, title, depth}`. The panel labels it
 reopening. Pi receives the text after a header beginning
 `[Companion agent message] Written by the agent of another Companion
 conversation, "<title>" (session <id>), not typed by the user.` Human messages
-are sent unchanged. Agent-started conversations have no screenshot. Clicking
-an attributed bubble's heading selects its sender's open conversation, or
-requests reopening it from Previous sessions if archived. New messages also
-retain the sender's tool-group ID when its outbound call was stored; the link
-scrolls to and expands that group. Older messages without an anchor still open
-the source conversation. It does not send a message.
+are sent unchanged. Agent-started conversations have no screenshot.
+
+**Source links.** While the panel is connected, an internal agent bubble's
+heading is a link when its sender is an open tab or listed in Previous
+sessions; otherwise (deleted sender, offline panel) it is plain text. Clicking
+selects the open sender, or requests reopening an archived one; the ordinary
+user-reopen `agent-restored` event then selects it. The click never sends a
+message, changes a draft or moves composer focus. A pending request is
+forgotten when the user navigates elsewhere or the sender is restored without
+selection (for example, the reopen was refused and an agent later reopened it
+quietly), so it can never take over the view. New messages also carry
+`origin.sourceGroupId`: the sender's stored tool group for that exact turn and
+Pi tool-call ID (`<turn>:tool-<call>`), only when the call was stored before
+delivery. The link aligns that group to the top and expands it; the group's
+individual calls are not highlighted. Older or unanchored messages open the
+conversation only. External-origin messages have unverified labels and no
+source conversation, so they are never links. Transcript headings, including
+these links, are reachable by pointer and screen-reader press action, not Tab.
 
 **Ordering and busy targets.** Sends use the same FIFO as typed and spoken
 follow-ups: they never interrupt a running turn, never overtake earlier queued

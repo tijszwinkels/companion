@@ -87,16 +87,6 @@ export class ToolTranscripts {
       ?.group_id as string | undefined;
   }
 
-  /** Pi's tool-call ID is turn-prefixed in this store; keep that private ID out
-   * of the agent-facing session tool while locating its persisted group. */
-  groupForCall(owner: string, toolCallId: string): string | undefined {
-    return this.db()
-      .prepare(
-        'SELECT group_id FROM tools WHERE owner = ? AND substr(id, -length(?)) = ? ORDER BY rowid DESC LIMIT 1',
-      )
-      .get(owner, `:tool-${toolCallId}`, `:tool-${toolCallId}`)?.group_id as string | undefined;
-  }
-
   put(owner: string, message: AgentMessage, groupId: string): AgentMessage {
     const db = this.db();
     const bodyBytes =

@@ -143,6 +143,160 @@ Item {
       compare(state.selectedId, "other")
     }
 
+    function test_unopenable_and_external_origin_headings_are_plain_text() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const deleted = message("from-deleted", "user", "Sender was deleted")
+      deleted.origin = {kind: "agent", sessionId: "deleted", title: "Deleted", depth: 1, sourceGroupId: "group"}
+      const external = message("from-external", "user", "Outside request")
+      // Validated external origins never carry a session ID; the UI must not link one anyway.
+      external.screenshot = false
+      external.origin = {kind: "external", title: "MM Rowan", requestId: "0123456789abcdef", depth: 1, sessionId: "source"}
+      const open = message("from-open", "user", "Open sender")
+      open.origin = {kind: "agent", sessionId: "source", title: "Source", depth: 1}
+      panel.sessions = [session([deleted, external, open]), Object.assign({}, session([]), {id: "source", title: "Source"})]
+      panel.selectedSessionId = "question-1"
+      let navigations = 0
+      panel.sessionSelected.connect(function() { navigations++ })
+      panel.reopenSessionRequested.connect(function() { navigations++ })
+      tryVerify(function() { return findChild(panel, "bubble-from-open") !== null })
+
+      const deletedBubble = findChild(panel, "bubble-from-deleted")
+      const externalBubble = findChild(panel, "bubble-from-external")
+      const openBubble = findChild(panel, "bubble-from-open")
+      verify(!deletedBubble.originLinked)
+      verify(!externalBubble.originLinked)
+      verify(openBubble.originLinked)
+      compare(findChild(deletedBubble, "messageHeading").color, panel.muted)
+      compare(findChild(externalBubble, "messageHeading").text, "External agent (unverified) · MM Rowan")
+      mouseClick(findChild(deletedBubble, "messageHeading"), 18, 10)
+      mouseClick(findChild(externalBubble, "messageHeading"), 18, 10)
+      compare(navigations, 0)
+
+      // Offline, even an open sender cannot be navigated to reliably.
+      panel.online = false
+      verify(!openBubble.originLinked)
+      mouseClick(findChild(openBubble, "messageHeading"), 18, 10)
+      compare(navigations, 0)
+      compare(panel.pendingOriginId, "")
+      panel.online = true
+      verify(openBubble.originLinked)
+    }
+
+    function test_quiet_restore_after_refused_origin_reopen_forgets_the_request() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const state = createTemporaryObject(stateComponent, parent)
+      panel.sessions = Qt.binding(function() { return state.sessions })
+      panel.selectedSessionId = Qt.binding(function() { return state.selectedId })
+      const incoming = message("agent-message", "user", "Check this")
+      incoming.origin = {kind: "agent", sessionId: "archived", title: "Archived", depth: 1, sourceGroupId: "archived-group"}
+      state.replace([session([incoming])])
+      state.select("question-1")
+      panel.previousSessions = [{id: "archived", title: "Archived"}]
+      panel.sessionSelected.connect(function(id) { state.select(id) })
+      tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
+      mouseClick(findChild(findChild(panel, "bubble-agent-message"), "messageHeading"), 18, 10)
+      compare(panel.pendingOriginId, "archived")
+
+      // The reopen was refused; later an agent reopens the sender without focus.
+      const group = message("archived-group", "tool", "")
+      group.toolGroup = {count: 1, revision: "fixture"}
+      state.restore(Object.assign({}, session([group]), {id: "archived", title: "Archived"}), false)
+      compare(state.selectedId, "question-1")
+      tryCompare(panel, "pendingOriginId", "")
+
+      // Visiting that tab later is ordinary navigation, not a delayed jump.
+      state.select("archived")
+      tryVerify(function() { return findChild(panel, "bubble-archived-group") !== null })
+      wait(50)
+      compare(findChild(panel, "bubble-archived-group").expanded, false)
+    }
+
+    function test_rapid_origin_navigation_keeps_only_the_latest_request_and_drafts() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const state = createTemporaryObject(stateComponent, parent)
+      panel.sessions = Qt.binding(function() { return state.sessions })
+      panel.selectedSessionId = Qt.binding(function() { return state.selectedId })
+      const fromArchived = message("from-archived", "user", "From archived")
+      fromArchived.origin = {kind: "agent", sessionId: "archived", title: "Archived", depth: 1, sourceGroupId: "archived-group"}
+      const fromOpen = message("from-open", "user", "From open")
+      fromOpen.origin = {kind: "agent", sessionId: "source", title: "Source", depth: 1, sourceGroupId: "source-group"}
+      const sourceGroup = message("source-group", "tool", "")
+      sourceGroup.toolGroup = {count: 2, revision: "fixture"}
+      state.replace([session([fromArchived, fromOpen]),
+        Object.assign({}, session([sourceGroup]), {id: "source", title: "Source", status: "running"})])
+      state.select("question-1")
+      panel.previousSessions = [{id: "archived", title: "Archived"}]
+      let reopens = 0
+      let sends = 0
+      panel.reopenSessionRequested.connect(function() { reopens++ })
+      panel.sendSessionRequested.connect(function() { sends++ })
+      panel.sessionSelected.connect(function(id) { state.select(id) })
+      tryVerify(function() { return findChild(panel, "bubble-from-open") !== null })
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Unsent draft"
+
+      mouseClick(findChild(findChild(panel, "bubble-from-archived"), "messageHeading"), 18, 10)
+      mouseClick(findChild(findChild(panel, "bubble-from-open"), "messageHeading"), 18, 10)
+      compare(reopens, 1)
+      compare(state.selectedId, "source")
+      tryVerify(function() { return findChild(panel, "bubble-source-group") !== null })
+      tryCompare(findChild(panel, "bubble-source-group"), "expanded", true)
+      compare(panel.pendingOriginId, "")
+
+      // The earlier archived request no longer carries an anchor.
+      const archivedGroup = message("archived-group", "tool", "")
+      archivedGroup.toolGroup = {count: 1, revision: "fixture"}
+      state.restore(Object.assign({}, session([archivedGroup]), {id: "archived", title: "Archived"}))
+      tryVerify(function() { return findChild(panel, "bubble-archived-group") !== null })
+      wait(50)
+      compare(findChild(panel, "bubble-archived-group").expanded, false)
+
+      state.select("question-1")
+      tryCompare(findChild(panel, "sessionComposer"), "text", "Unsent draft")
+      compare(sends, 0)
+    }
+
+    function test_origin_jump_keeps_the_group_heading_in_view() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const incoming = message("agent-message", "user", "Please check this")
+      incoming.origin = {kind: "agent", sessionId: "source", title: "Source", depth: 1, sourceGroupId: "source-group"}
+      const history = []
+      for (let index = 0; index < 60; index++) {
+        history.push(message("before-" + index, "assistant", "Earlier answer " + index))
+      }
+      const group = message("source-group", "tool", "")
+      group.toolGroup = {count: 30, revision: "fixture"}
+      history.push(group)
+      for (let index = 0; index < 60; index++) {
+        history.push(message("after-" + index, "assistant", "Later answer " + index))
+      }
+      panel.sessions = [session([incoming]), Object.assign({}, session(history), {id: "source", title: "Source"})]
+      panel.selectedSessionId = "question-1"
+      panel.sessionSelected.connect(function(id) { panel.selectedSessionId = id })
+      // Answer tool pages at once, so the expanded group is taller than the view
+      // before the jump settles its position.
+      let pages = 0
+      panel.toolPageRequested.connect(function(request) {
+        pages++
+        panel.toolPageReceived({type: "result", action: "agent-tool-page", requestId: request.requestId,
+          result: Object.assign({}, request, {callRevision: "call", state: "done",
+            text: new Array(300).fill("tall tool output line").join("\n"), next: null})})
+      })
+      tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
+      mouseClick(findChild(findChild(panel, "bubble-agent-message"), "messageHeading"), 18, 10)
+      tryVerify(function() { return findChild(panel, "bubble-source-group") !== null })
+      const bubble = findChild(panel, "bubble-source-group")
+      tryVerify(function() { return pages > 0 && bubble.height > findChild(panel, "sessionTranscript").height },
+        2000, "the expanded group is taller than the transcript")
+      tryCompare(bubble, "expanded", true)
+      const transcript = findChild(panel, "sessionTranscript")
+      const heading = findChild(bubble, "messageHeading")
+      tryVerify(function() {
+        const top = heading.mapToItem(transcript, 0, 0).y
+        return top >= 0 && top + heading.height <= transcript.height
+      }, 2000, "the navigated-to group heading is visible")
+    }
+
     function test_tool_disclosure_survives_streaming_updates() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.sessions = [session([message("tool", "tool", "partial output")])]

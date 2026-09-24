@@ -118,7 +118,7 @@ export class AgentSessions implements InspectableModule {
     );
     this.sessionTools = new SessionToolService({
       title: (id) => this.sessions.get(id)?.view.title,
-      sourceGroupId: (sender, toolCallId) => this.store.tools.groupForCall(sender, toolCallId),
+      sourceGroupId: (sender, turnId, toolCallId) => this.sourceGroupId(sender, turnId, toolCallId),
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
       start: (request, signal) => this.startFromAgent(request, signal),
       reopen: (id, focus, signal) => this.reopenFromAgent(id, focus, signal),
@@ -176,6 +176,21 @@ export class AgentSessions implements InspectableModule {
 
   previousSnapshot(): PreviousSession[] {
     return [...this.previous.values()].sort((first, second) => second.updatedAt - first.updatedAt);
+  }
+
+  /**
+   * Locate the sender's stored tool group for one outbound session-tool call,
+   * using the turn-prefixed Pi tool message ID written by `runTurn` and
+   * `pi-transcript`. The anchor is optional navigation metadata: a storage
+   * read failure omits it instead of refusing an otherwise valid delivery.
+   */
+  private sourceGroupId(sender: string, turnId: string, toolCallId: string): string | undefined {
+    try {
+      return this.store.tools.groupFor(sender, `${turnId}:tool-${toolCallId}`);
+    } catch (error) {
+      this.log('agent-session-tools', `Source tool group unavailable: ${String(error)}`);
+      return undefined;
+    }
   }
 
   private publishHistory(): void {
@@ -720,6 +735,7 @@ export class AgentSessions implements InspectableModule {
         // the sender; queued successors receive a fresh lease and depth.
         sessionToolLease = await this.sessionTools.lease(
           session.view.id,
+          turnId,
           session.depth,
           session.controller.signal,
         );
