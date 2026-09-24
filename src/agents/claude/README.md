@@ -26,6 +26,8 @@ the contract below.
 | `mcp-server.ts`        | bridge entry point (started by Claude Code, not by Companion)          |
 | `mcp-stdio.ts`         | minimal MCP JSON-RPC server over stdio (tools only)                    |
 | `bridge-tools.ts`      | Companion tools for the bridge, built from the native Pi tool modules  |
+| `tool-output.ts`       | text-plus-image tool results and their 5 MiB image bound               |
+| `parity/`              | opt-in Pi-parity tools (desktop, OpenRig, web); see its README         |
 
 ## Configuration contract
 
@@ -181,8 +183,16 @@ Details:
   `_meta["claudecode/toolUseId"]`. The bridge passes it as the Pi tool-call ID,
   so session-tool receipts, duplicate refusal and `origin.sourceGroupId`
   (`<turn>:tool-<id>`) behave as with Pi. A call without this ID fails.
-- **Text results only.** Results contain text only: Claude Code would show a
-  result's `structuredContent` to the model instead of its text.
+- **Text and image results.** Results contain a text block, optionally
+  followed by PNG/JPEG image blocks (`tool-output.ts`), never
+  `structuredContent`: Claude Code would show that to the model instead of
+  the text. More than 5 MiB of base64 image data in one result is refused as
+  a tool error, never truncated. Companion's transcript keeps the text only.
+- **Pi-parity tools.** The opt-in `claude-tools.json` in the agent directory
+  adds Companion-owned equivalents of the user's Pi extension tools
+  (desktop windows, OpenRig, retained web content). See
+  [`parity/README.md`](parity/README.md) for the per-tool matrix, guards,
+  the web-search blocker and the Google Workspace proposal.
 - **Cancellation.** Claude Code's `notifications/cancelled` aborts the running
   call. The end of stdin aborts all calls, and the bridge then exits.
 
