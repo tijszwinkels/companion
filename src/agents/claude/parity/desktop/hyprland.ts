@@ -87,12 +87,8 @@ export function validWindowAddress(address: unknown): address is string {
  * window and for invalid geometry.
  */
 export function windowRegion(window: HyprlandWindow): string {
-  if (
-    !window.address ||
-    window.address === '0x0' ||
-    window.mapped === false ||
-    window.hidden === true
-  ) {
+  // The same address rule as everywhere else, so `0x00` is as empty as `0x0`.
+  if (!validWindowAddress(window.address) || window.mapped === false || window.hidden === true) {
     throw Error('No visible active Hyprland window. Focus a window and retry.');
   }
 
