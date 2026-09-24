@@ -975,12 +975,12 @@ test('offline pair and pair-variants validate percentages reports and refuse cor
     [
       'tie above 50',
       (r) => Object.assign(row(r, 2), { chosenPercentage: 60, expectedPercentage: 60 }),
-      /tied highest percentage cannot exceed 50/,
+      /would total more than 100/,
     ],
     [
       '100 with a nonzero labeled value',
       (r) => Object.assign(row(r, 3), { chosenPercentage: 100, expectedPercentage: 10 }),
-      /must be 0 when another intent has 100/,
+      /would total more than 100/,
     ],
     [
       'values on an invalid row',
@@ -1159,4 +1159,215 @@ test('CLI compare with two variants and run with the percentages variant write l
   } finally {
     await endpoint.close();
   }
+});
+
+test('percentage summaries must fit on distinct intents; feasible summaries are kept (review A)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-percentages-mass-'));
+  const datasetPath = await writeDataset(root, SCENARIO);
+  const { endpoint } = await scenarioServer();
+
+  let baseline: ReportJson;
+  let v1: ReportJson;
+  let v2: ReportJson;
+  try {
+    const target = { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 };
+    baseline = { state: 'complete', ...(await runEvaluation(datasetPath, [target])) };
+    v1 = {
+      state: 'complete',
+      ...(await runExperiment({ mode: 'inferred', datasetPath }, [target], 512)).report,
+    };
+    v2 = {
+      state: 'complete',
+      ...(
+        await runExperiment(
+          { mode: 'inferred', datasetPath, variant: PERCENTAGES_VARIANT_ID },
+          [target],
+          512,
+        )
+      ).report,
+    };
+  } finally {
+    await endpoint.close();
+  }
+  [baseline, v1, v2] = [baseline, v1, v2].map((report) => JSON.parse(JSON.stringify(report)));
+
+  const row = (report: ReportJson, index: number) =>
+    report.results.find((entry: ReportJson) => entry.id === uuid(index));
+  const withValues = (index: number, chosen: number, expected: number, tied: boolean) => {
+    const copy = structuredClone(v2);
+    Object.assign(row(copy, index), {
+      chosenPercentage: chosen,
+      expectedPercentage: expected,
+      chosenTied: tied,
+    });
+    return copy;
+  };
+  const accepts = (report: ReportJson) => {
+    pairRuns({ baseline, baselineTarget: 'local', variant: report, variantTarget: 'local' });
+    pairVariantRuns({ left: v1, leftTarget: 'local', right: report, rightTarget: 'local' });
+  };
+  const refuses = (report: ReportJson) => {
+    for (const run of [
+      () =>
+        pairRuns({ baseline, baselineTarget: 'local', variant: report, variantTarget: 'local' }),
+      () => pairVariantRuns({ left: v1, leftTarget: 'local', right: report, rightTarget: 'local' }),
+    ]) {
+      assert.throws(
+        run,
+        /would total more than 100|chosenTied must be true|cannot exceed the chosen/,
+      );
+    }
+  };
+
+  // Row 3 chose a wrong intent (START) over the labeled IGNORE: distinct intents.
+  const feasibleWrong: [number, number, boolean][] = [
+    [60, 40, false], // 60 + 40
+    [99, 1, false], // 99 + 1
+    [100, 0, false], // 100 + 0
+    [50, 50, true], // the labeled intent is the tie partner: 50 + 50
+    [40, 20, true], // a third intent at 40: 40 + 40 + 20
+    [34, 32, true], // 34 + 34 + 32
+    [26, 0, true], // 26 + 26 + 0, the rest spread over other intents
+    [50, 0, true], // 50 + 50 + 0 (review control)
+  ];
+  for (const [chosen, expected, tied] of feasibleWrong) {
+    accepts(withValues(3, chosen, expected, tied));
+  }
+  const infeasibleWrong: [number, number, boolean][] = [
+    [60, 50, false], // 110 on two distinct intents (review case)
+    [80, 30, false], // 110 (review case)
+    [40, 30, true], // needs 40 + 40 + 30 = 110 (review case)
+    [50, 1, true], // needs 50 + 50 + 1 = 101 (review case)
+    [51, 51, true], // 102
+    [50, 50, false], // an equal labeled value is a tie
+  ];
+  for (const [chosen, expected, tied] of infeasibleWrong) {
+    refuses(withValues(3, chosen, expected, tied));
+  }
+
+  // Row 0 is correct (chosen = labeled): alone, or with a tie partner.
+  accepts(withValues(0, 100, 100, false));
+  accepts(withValues(0, 50, 50, true));
+  accepts(withValues(0, 1, 1, true)); // 100 intents at 1 is possible in principle
+  refuses(withValues(0, 51, 51, true));
+  // Untied highest value 1: every other intent is 0, so the total is 1.
+  assert.throws(
+    () =>
+      pairRuns({
+        baseline,
+        baselineTarget: 'local',
+        variant: withValues(0, 1, 1, false),
+        variantTarget: 'local',
+      }),
+    /untied highest percentage of 1 cannot total 100/,
+  );
+});
+
+test('pair-variants refuses an ID that is both paired and excluded in either report (review B)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-percentages-partition-'));
+  const datasetPath = await writeDataset(root, [
+    ...SCENARIO,
+    { utterance: 'legacy', expected: 'IGNORE', systemPrompt: 'Legacy\nName: IGNORE\n' },
+  ]);
+  const { endpoint } = await scenarioServer();
+
+  let v1: ReportJson;
+  let v2: ReportJson;
+  try {
+    const target = { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 };
+    v1 = {
+      state: 'complete',
+      ...(await runExperiment({ mode: 'inferred', datasetPath }, [target], 512)).report,
+    };
+    v2 = {
+      state: 'complete',
+      ...(
+        await runExperiment(
+          { mode: 'inferred', datasetPath, variant: PERCENTAGES_VARIANT_ID },
+          [target],
+          512,
+        )
+      ).report,
+    };
+  } finally {
+    await endpoint.close();
+  }
+  [v1, v2] = [v1, v2].map((report) => JSON.parse(JSON.stringify(report)));
+
+  // Legitimate shared support and exclusion still pair: 7 paired, 1 excluded.
+  const valid = pairVariantRuns({ left: v1, leftTarget: 'local', right: v2, rightTarget: 'local' });
+  assert.deepEqual([valid.coverage.paired, valid.coverage.excluded], [7, 1]);
+
+  // The same ID paired and excluded, on both sides consistently (review B).
+  const overlap = (report: ReportJson) => {
+    const copy = structuredClone(report);
+    copy.examples.unsupported.push({ id: uuid(0), reason: 'recorded-prompt-template-mismatch' });
+    return copy;
+  };
+  const write = async (name: string, value: unknown) => {
+    const path = join(root, name);
+    await writeFile(path, JSON.stringify(value));
+    return path;
+  };
+  const out = join(root, 'versus.json');
+  const result = cli([
+    'pair-variants',
+    '--left-report',
+    await write('left.json', overlap(v1)),
+    '--left-target',
+    'local',
+    '--right-report',
+    await write('right.json', overlap(v2)),
+    '--right-target',
+    'local',
+    '--out',
+    out,
+  ]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Left report lists an example as both supported and excluded/);
+  await assert.rejects(stat(out), /ENOENT/);
+
+  // Overlap on only one side is refused through the real CLI too, before writing.
+  for (const [side, left, right] of [
+    ['Left', overlap(v1), v2],
+    ['Right', v1, overlap(v2)],
+  ] as const) {
+    const sideOut = join(root, `versus-${side}.json`);
+    const sideResult = cli([
+      'pair-variants',
+      '--left-report',
+      await write(`left-${side}.json`, left),
+      '--left-target',
+      'local',
+      '--right-report',
+      await write(`right-${side}.json`, right),
+      '--right-target',
+      'local',
+      '--out',
+      sideOut,
+    ]);
+    assert.equal(sideResult.status, 1, side);
+    assert.match(sideResult.stderr, new RegExp(`${side} report lists an example as both`));
+    assert.equal(sideResult.stdout, '', side);
+    await assert.rejects(stat(sideOut), /ENOENT/, side);
+  }
+
+  // Overlap on only the right side, and duplicate exclusions, are refused too.
+  assert.throws(
+    () =>
+      pairVariantRuns({ left: v1, leftTarget: 'local', right: overlap(v2), rightTarget: 'local' }),
+    /Right report lists an example as both supported and excluded/,
+  );
+  const duplicateExclusion = structuredClone(v2);
+  duplicateExclusion.examples.unsupported.push({ ...duplicateExclusion.examples.unsupported[0] });
+  assert.throws(
+    () =>
+      pairVariantRuns({
+        left: v1,
+        leftTarget: 'local',
+        right: duplicateExclusion,
+        rightTarget: 'local',
+      }),
+    /both supported and excluded/,
+  );
 });

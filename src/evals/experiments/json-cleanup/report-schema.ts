@@ -472,13 +472,35 @@ function validateRowPercentages(
   if (!correct && expected === chosen && !chosenTied) {
     refuse(`${field} chosenTied must be true when the labeled intent shares the highest value`);
   }
-  // Two intents at the highest value cannot exceed half of 100.
-  if (chosenTied && chosen > 50) {
-    refuse(`${field} a tied highest percentage cannot exceed 50`);
+
+  // Joint mass: the values that these three fields prove to exist on DISTINCT
+  // intents must fit in a total of 100. Only logically necessary values are
+  // counted; unknown other intents are never guessed (they can be 0).
+  // - Correct: the chosen (= labeled) intent, plus one more intent at the same
+  //   value when tied.
+  // - Wrong: the chosen and the labeled intent are different intents. When
+  //   tied and the labeled value is lower, the tie partner is a third intent at
+  //   the chosen value; when the labeled value equals the chosen value, the
+  //   labeled intent itself can be the tie partner.
+  let necessaryTotal = chosen;
+  if (correct) {
+    if (chosenTied) {
+      necessaryTotal += chosen;
+    }
+  } else {
+    necessaryTotal += expected;
+    if (chosenTied && expected < chosen) {
+      necessaryTotal += chosen;
+    }
   }
-  // With the chosen intent at 100, every other intent is at 0.
-  if (chosen === 100 && !correct && expected !== 0) {
-    refuse(`${field} expectedPercentage must be 0 when another intent has 100`);
+  if (necessaryTotal > 100) {
+    refuse(`${field} percentages on distinct intents would total more than 100`);
+  }
+  // An untied highest value of 1 forces every other intent to 0, so the total
+  // would be 1. Other lower bounds depend on how many intents were offered,
+  // which the row does not record, so they are not guessed.
+  if (chosen === 1 && !chosenTied) {
+    refuse(`${field} an untied highest percentage of 1 cannot total 100`);
   }
 
   return { chosen, expected, chosenTied };

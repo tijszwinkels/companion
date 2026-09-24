@@ -541,7 +541,26 @@ npm run eval:intent-cleanup -- prompt --variant json-cleanup-percentages-v1
 npm run eval:intent-cleanup -- compare --dataset D/dataset.json --targets T.json \
   --output-tokens 512 --variant json-cleanup-v1 --variant json-cleanup-percentages-v1 \
   --order baseline-first --out new.json --private-out new-private.json --send
-# ...and again with --order variant-first.
+# ...and again with --order variant-first, and with the two --variant flags reversed.
+```
+
+**Arm order (review note N1).** The variant arms run in the order of the
+repeated `--variant` flags; `--order` only places the baseline before
+(`baseline-first`) or after (`variant-first`) that whole sequence. So
+`--variant json-cleanup-v1 --variant json-cleanup-percentages-v1` always runs
+v1 before the percentages arm, whichever `--order` you choose, and the report's
+`armSequence` records the actual order. To check whether the arm that runs
+later benefits from warmer server caches in the v1-versus-percentages
+comparison, run once more with the two `--variant` flags reversed. That also
+swaps left and right in `variantComparisons`, so the delta's sign flips and
+"regression" means the opposite direction. Read it as right minus left. This
+is guidance for the existing behavior, not a different schedule.
+
+```sh
+# Reversed variant order: percentages runs first, v1 second; left = percentages.
+npm run eval:intent-cleanup -- compare --dataset D/dataset.json --targets T.json \
+  --output-tokens 512 --variant json-cleanup-percentages-v1 --variant json-cleanup-v1 \
+  --order baseline-first --out new-reversed.json --private-out new-reversed-private.json --send
 
 # Offline: v1 report (left) versus percentages report (right), zero model calls.
 npm run eval:intent-cleanup -- pair-variants --left-report V1.json --left-target NAME \
@@ -591,9 +610,21 @@ The private file holds `{variants: [{variant, outputs}]}`.
   - `chosenPercentage` ≥ 1;
   - a correct row has `expectedPercentage` = `chosenPercentage`;
   - a wrong row has `expectedPercentage` ≤ `chosenPercentage`, and when they
-    are equal, `chosenTied` must be true;
-  - a tied top value is ≤ 50;
-  - a chosen 100 means a wrong row's labeled value is 0.
+    are equal, `chosenTied` must be true.
+  - **Joint mass on distinct intents** (review finding A): the values these
+    fields prove to exist on different intents must total at most 100. Only
+    logically necessary values count; the unrecorded other intents are never
+    guessed.
+    - Correct: chosen, plus one more intent at the same value when tied.
+    - Wrong: chosen + labeled, plus a third intent at the chosen value when
+      tied with a lower labeled value.
+
+    So 60/50, 80/30, tied 40/30 (needs 110) and tied 50/1 (needs 101) are
+    refused, while 60/40, 100/0, tied 50/50, tied 40/20 and tied 34/32 are kept.
+  - An untied highest value of 1 is refused (the total would be 1).
+- Every variant report's support partition (unique supported IDs, unique
+  exclusions, no ID in both) is checked by `pair` and `pair-variants` alike
+  (review finding B).
 - `pair-variants` additionally requires the same dataset, identical planned
   support and exclusions, one-to-one IDs, and matching input hashes and
   labels.

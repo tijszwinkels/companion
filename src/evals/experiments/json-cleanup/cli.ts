@@ -83,7 +83,11 @@ npm run eval:intent-cleanup -- pair-variants --left-report V1.json --left-target
                 integer percentage (0-100, total exactly 100) per offered intent;
                 inferred --dataset runs only. compare accepts --variant twice
                 (e.g. v1 then percentages): each is paired with the baseline and
-                the second with the first.
+                the second (right) with the first (left). Variant arms run in
+                --variant flag order; --order only puts the baseline before or
+                after them. To check order/cache effects between the two
+                variants, also run with the --variant flags reversed (left and
+                right swap, so the delta's sign flips).
 
 prompt:   prints the instruction templates (no private data, no network).
 dry-run:  validates everything and prints counts/hashes. Zero model calls.

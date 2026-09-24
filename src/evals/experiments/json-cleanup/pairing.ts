@@ -164,6 +164,27 @@ function uniqueById<Row extends { id: string }>(rows: Row[], side: string): Map<
   return byId;
 }
 
+/**
+ * One variant report's planned partition of the frozen dataset: unique
+ * supported IDs, unique excluded IDs, and no ID in both. Every pairing of a
+ * variant report (with the baseline or with another variant) checks this
+ * first, so coverage counts can never describe an impossible dataset.
+ */
+function supportPartition(report: ValidatedVariantReport, side: string) {
+  const supported = new Set(report.supportedIds);
+  if (supported.size !== report.supportedIds.length) {
+    throw new SafeEvalError(`${side} report has missing or duplicate planned supported IDs`);
+  }
+  const excludedIds = new Set(report.exclusions.map((entry) => entry.id));
+  if (
+    excludedIds.size !== report.exclusions.length ||
+    report.exclusions.some((entry) => supported.has(entry.id))
+  ) {
+    throw new SafeEvalError(`${side} report lists an example as both supported and excluded`);
+  }
+  return { supported, excludedIds };
+}
+
 function sameIdSet(left: Iterable<string>, right: Set<string>): boolean {
   const leftSet = new Set(left);
   if (leftSet.size !== right.size) {
@@ -210,16 +231,9 @@ export function pairRuns(selection: PairSelection) {
 
   // Planned support: the variant must have attempted exactly its supported IDs,
   // and those must be disjoint from its listed exclusions.
+  const { supported, excludedIds } = supportPartition(variant, 'Variant');
   const supportedIds = variant.supportedIds;
-  const supported = new Set(supportedIds);
-  if (supported.size !== supportedIds.length) {
-    throw new SafeEvalError('Variant report has missing or duplicate planned supported IDs');
-  }
   const excluded = variant.exclusions;
-  const excludedIds = new Set(excluded.map((entry) => entry.id));
-  if (excludedIds.size !== excluded.length || excluded.some((entry) => supported.has(entry.id))) {
-    throw new SafeEvalError('Variant report lists an example as both supported and excluded');
-  }
   if (!sameIdSet(variantById.keys(), supported)) {
     throw new SafeEvalError('Variant rows do not match its planned supported examples exactly');
   }
@@ -423,10 +437,7 @@ interface VariantVersusVariantPair {
 }
 
 function variantRowsById(report: ValidatedVariantReport, side: string) {
-  const supported = new Set(report.supportedIds);
-  if (supported.size !== report.supportedIds.length) {
-    throw new SafeEvalError(`${side} report has missing or duplicate planned supported IDs`);
-  }
+  const { supported } = supportPartition(report, side);
   const byId = uniqueById(report.rows, side);
   if (!sameIdSet(byId.keys(), supported)) {
     throw new SafeEvalError(`${side} rows do not match its planned supported examples exactly`);
