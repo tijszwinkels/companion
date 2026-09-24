@@ -126,6 +126,8 @@ class ClaudeTurn {
 
   /** The settings check passed and the prompt was written. */
   private promptSent = false;
+  /** A `system/init` event passed every check. Nothing counts before it. */
+  private initVerified = false;
   /** The first `result` arrived. Everything after it is ignored. */
   private settled = false;
   private stdoutBuffer = '';
@@ -370,6 +372,20 @@ class ClaudeTurn {
 
     if (event.type === 'system' && event.subtype === 'init') {
       this.verifyInit(event);
+      this.initVerified = true;
+    }
+
+    // Fail closed: nothing counts before a fully verified init. A stream that
+    // ends without one (a wrapper or changed CLI skipping the event) must not
+    // complete a turn whose session, permission mode and tool bridge were
+    // never confirmed. Earlier transcript fragments are dropped, not shown.
+    if (!this.initVerified) {
+      if (event.type === 'result') {
+        throw Error(
+          'Claude Code finished without its init event, so this session was never verified',
+        );
+      }
+      return;
     }
 
     this.transcript.receive(event);
@@ -490,8 +506,11 @@ class ClaudeTurn {
     }
 
     // Claude Code continues without an MCP server that failed to start, which
-    // would silently drop choices, naming, widgets and session tools. A
-    // `pending` server may still connect, so only a definite failure counts.
+    // would silently drop choices, naming, widgets and session tools. Accept
+    // only the states that can still deliver the tools: `connected`, and
+    // `pending` because such a server may still finish connecting. Anything
+    // else — a missing entry, an absent status, `failed`, or a state this
+    // adapter does not know — fails closed instead of assuming the best.
     let bridgeStatus = 'missing';
     const servers = Array.isArray(event.mcp_servers) ? event.mcp_servers : [];
     for (const server of servers) {
@@ -500,7 +519,7 @@ class ClaudeTurn {
         bridgeStatus = String(fields.status);
       }
     }
-    if (bridgeStatus === 'missing' || bridgeStatus === 'failed') {
+    if (bridgeStatus !== 'connected' && bridgeStatus !== 'pending') {
       throw Error(`Companion's tool bridge did not start in Claude Code (${bridgeStatus})`);
     }
   }

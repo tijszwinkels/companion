@@ -216,6 +216,8 @@ for (const [scenario, expected] of [
   ['permission', /permission mode default; Companion requires bypassPermissions/],
   ['wrong-session', /opened session 00000000-0000-4000-8000-000000000000/],
   ['bridge-failed', /tool bridge did not start in Claude Code \(failed\)/],
+  ['bridge-unknown', /tool bridge did not start in Claude Code \(undefined\)/],
+  ['no-init', /finished without its init event/],
   ['control', /requested an interactive decision/],
   ['error', /fixture model failure/],
   ['exit', /exited before finishing \(3\)\. fixture crash/],

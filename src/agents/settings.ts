@@ -244,6 +244,12 @@ function validateClaudeCodeSettings(value: unknown, path: string): ClaudeCodeSet
   if (model.startsWith('-') || /\s/u.test(model) || model.includes('/')) {
     throw Error(`${path}: model must be a Claude model ID such as claude-opus-5-5`);
   }
+  // The session store refuses to read archives whose captured Claude model
+  // exceeds this bound, so an over-long configured model must fail here
+  // rather than produce conversations that disappear after a restart.
+  if (model.length > 300) {
+    throw Error(`${path}: model must be at most 300 characters`);
+  }
 
   const effort = merged.effort as string;
   if (!claudeCodeEffortLevels.includes(effort as ClaudeCodeEffort)) {

@@ -112,7 +112,11 @@ claude --print --verbose --input-format stream-json --output-format stream-json
 4. Send one stream-json user message: the prompt text, plus (with a
    screenshot) `Captured window: {…}` and a base64 PNG image block.
 5. Verify the `system/init` event: the session ID, the model, permission
-   mode `bypassPermissions`, and that the `companion` MCP server did not fail.
+   mode `bypassPermissions`, and that the `companion` MCP server is
+   `connected` or `pending`; any other bridge state fails closed. Nothing
+   counts before a verified init: earlier transcript fragments are dropped,
+   and a `result` without one fails the turn instead of completing an
+   unverified session.
 6. Map events to `AgentMessage`s until the **first** `result`, which ends the
    turn. `is_error` fails it with Claude Code's reason.
 7. Clean up whether the turn succeeded, failed or was cancelled:

@@ -85,6 +85,9 @@ test('invalid Claude settings are rejected and also block Pi turns', async (cont
     { model: 'anthropic/claude-opus-5-5' },
     { model: '--dangerous-flag' },
     { model: 'claude opus' },
+    // The session store refuses archives with a longer captured model, so an
+    // over-long configured model must already fail whole-file validation.
+    { model: 'c'.repeat(301) },
     { effort: 'off' },
     { effort: 'minimal' },
     { thinking: 'high' },

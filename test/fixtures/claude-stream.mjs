@@ -211,6 +211,19 @@ async function answer(message) {
     return;
   }
 
+  if (scenario === 'bridge-unknown') {
+    init({ mcp_servers: [{ name: 'companion' }] });
+    return;
+  }
+
+  // A stream that never confirms its init must not complete the turn, even
+  // when it otherwise looks like a successful answer.
+  if (scenario === 'no-init') {
+    streamText('msg-no-init', ['unverified']);
+    success();
+    return;
+  }
+
   if (scenario === 'wrong-session') {
     init({ session_id: '00000000-0000-4000-8000-000000000000' });
     return;
