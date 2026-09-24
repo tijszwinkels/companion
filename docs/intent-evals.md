@@ -90,6 +90,12 @@ Use an environment variable for authentication; never put credentials into a URL
 or targets file. Only specify `apiKeyEnv` when needed. Endpoints must not contain
 query strings, fragments, or embedded credentials. Redirects are refused.
 
+A target with `apiKeyEnv` must use `https://` unless its host is loopback
+(`localhost`, `127.x.x.x` or `[::1]`); otherwise preflight rejects it before any
+call, because the bearer key would cross the network in cleartext. Unauthenticated
+plain-HTTP endpoints, such as a local vLLM server, remain allowed. The recorded body
+and its settings are never changed to satisfy this rule.
+
 ```sh
 npm run eval:intents -- run --dataset /path/to/dataset/dataset.json \
   --targets targets.json --out /path/to/new-report.json --send
@@ -140,10 +146,18 @@ separate run with the target order reversed and compare both reports; the runner
 never repeats a pass on its own.
 
 The first target is the comparison baseline. Existing reports are never overwritten.
-An output file is reserved before any call; failures leave an explicit failure
-report. Ctrl+C/SIGTERM stops scheduling new requests, aborts every active request
-and waits for them to settle before writing the failure report. Partial results
-are not saved. A fatal (non-request) error during a batch does the same. A run
+An output file is reserved (mode 0600) before any call and immediately holds
+`"state": "incomplete"`. It is replaced by the full report with `"state": "complete"`,
+or by `{"state": "failed", "failed": true, "interrupted": …, "error": …}`. A file
+still marked `incomplete` means the process ended before writing a result (hard
+kill, crash, or a second signal); it claims no score.
+
+The first Ctrl+C, SIGTERM or SIGHUP stops scheduling new requests, aborts every
+active request and waits for them to settle before writing the failed report. All
+handlers are removed at that moment, so a second signal of any of these kinds ends
+the process immediately as an escape hatch, leaving the `incomplete` marker. Partial
+results are not saved in either case. A fatal (non-request) error during a batch
+also stops and drains the batch and writes a failed report. A run
 with per-request errors writes a complete report but exits nonzero; classification
 mistakes alone are valid eval results and do not make the command fail. Fatal
 validation/interruption reports do not claim a completed score.
@@ -177,13 +191,47 @@ plus per target:
   recordings stream without usage options, so expect null cost for them.
 
 Only normal `stop` completions containing a registered intent name are accepted.
-Tool calls, reasoning output (including `reasoning_details`), refusals, truncated
-responses and unknown names are errors, like the live detector's intent-name-only
-contract. The eval is slightly stricter than live pi-ai parsing: streams must end
-with `[DONE]` and `finish_reason` must be `stop` (pi-ai also accepts `end` and a
-stream without `[DONE]`). vLLM and llama.cpp send both. HTTP error bodies and
-invalid-JSON snippets are not saved because they can echo private inputs. Reports omit prompt/image
-content, but UUIDs, dynamic intent names and endpoint metadata can still be private.
+Tool calls, function calls, reasoning output (including `reasoning_details`),
+refusals, truncated responses and unknown names are errors, like the live
+detector's intent-name-only contract. As in pi-ai, empty values do not count:
+`tool_calls: []` (vLLM's non-streaming form), empty `reasoning_details`, and an
+empty `content` delta after the finish chunk are ignored. Nonempty text after the
+finish reason is still an error. The eval remains slightly stricter than live pi-ai
+parsing: streams must end with `[DONE]` and `finish_reason` must be `stop` (pi-ai
+also accepts `end` and a stream without `[DONE]`). vLLM and llama.cpp send both.
+
+### Error text and privacy
+
+Error text in reports, stdout and stderr contains only messages written by the eval
+code, never library messages that could quote inputs or keys:
+
+- HTTP error bodies are not read or saved; only the status code is reported.
+- Invalid JSON in a response, dataset file, recorded request or targets file is
+  reported with a fixed message naming the file or example UUID, never V8's
+  snippet of the text. Export skip reasons follow the same rule.
+- Network failures report `Request failed (<cause>)` or `Response stream
+terminated (<cause>)` only when the cause is an allowlisted system/undici code
+  (for example `ECONNREFUSED`, `ENOTFOUND`, `CERT_HAS_EXPIRED`, `UND_ERR_SOCKET`)
+  or a known fixed condition (`redirect refused`, `blocked port`). Anything else is
+  `unclassified`.
+- Timeouts report `Request timed out after <timeoutMs> ms`.
+- A server's `finish_reason` is named only if it is a known value (`length`,
+  `content_filter`, `tool_calls` and so on); other strings become `unrecognized
+finish reason`.
+
+Reports omit prompt/image content, but UUIDs, dynamic intent names and endpoint
+metadata can still be private. Filesystem errors (for example a missing screenshot)
+include local paths, which contain UUIDs but no recorded text.
+
+### Known limitations
+
+- Partial results of an interrupted or failed run are not saved.
+- Per-request latency includes client-side JSON serialization of the multi-megabyte
+  body. With higher concurrency that work shares the event loop with sibling
+  screenshot restores, which inflates latency slightly.
+- Allowed intents come from `Name:` lines in the recorded system prompt. A `Name:`
+  line inside an intent's multi-line instruction would also be accepted; live
+  detection would reject it. No current instruction contains such a line.
 
 A small hand-labeled set is a regression suite, not an unbiased population estimate.
 Do not tune on all examples and then call the same examples held-out validation.
@@ -205,5 +253,9 @@ checksum preflight, privacy modes, HTTP failures/no retries, timeouts/cancellati
 stream parsing, scoring, cost nullability and safe CLI defaults. Concurrency tests
 count overlapping requests on a real local HTTP server (exactly 1 at concurrency 1,
 exactly 4 at concurrency 4, never two targets at once), and cover out-of-order
-completion, per-request errors/timeouts, and cancellation without later scheduling. Passing these tests
+completion, per-request errors/timeouts, and cancellation without later scheduling.
+Privacy tests feed synthetic secret strings through malformed dataset/request/targets
+JSON, finish reasons and network error causes, and check that they never appear in
+reports or CLI output. CLI tests cover the `incomplete` marker after SIGKILL and a
+graceful SIGHUP. Passing these tests
 does not establish any particular model's accuracy or live-provider compatibility.

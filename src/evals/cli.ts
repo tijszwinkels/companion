@@ -1,9 +1,9 @@
-import { open, readFile } from 'node:fs/promises';
+import { open, readFile, type FileHandle } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 
 import { exportDataset, inspectDatabase } from './dataset.ts';
 import { runEvaluation } from './runner.ts';
-import { validateTargets } from './transport.ts';
+import { parseTargets } from './transport.ts';
 
 const help = `Companion intent evals (no listener or UI restart)
 
@@ -26,9 +26,23 @@ Targets JSON: [{"name":"baseline","model":"model-id","baseUrl":"http://localhost
   "pricing":{"inputPerMillion":0,"outputPerMillion":0}}]
 concurrency: integer 1-16, default 1. The same model may appear twice under
 different names/concurrency to measure speedup on the same frozen dataset.
+apiKeyEnv requires https:// unless the endpoint host is loopback (localhost/127.x/[::1]).
 Pricing is optional, in your chosen currency. Missing usage/cost is null, not zero.
 Existing output files/directories are never overwritten. See docs/intent-evals.md.
+The report file is reserved first with "state": "incomplete"; it becomes "complete"
+or "failed". Ctrl+C, SIGTERM or SIGHUP stops gracefully; a second signal exits at
+once and leaves the "incomplete" marker.
 `;
+
+/** Signals that stop a run gracefully: stop scheduling, abort and drain. */
+const STOP_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+/** Replace the whole reserved report. Writes at offset 0 after truncating. */
+async function replaceReport(output: FileHandle, report: object): Promise<void> {
+  await output.truncate(0);
+  await output.write(JSON.stringify(report, null, 2) + '\n', 0);
+  await output.sync();
+}
 
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
@@ -78,18 +92,41 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'run' && values.dataset && values.targets && values.out && values.send) {
-    const targets = validateTargets(JSON.parse(await readFile(values.targets, 'utf8')));
+    const targets = parseTargets(await readFile(values.targets, 'utf8'));
+
     // Reserve a private output before sending anything. Existing reports or a
-    // missing parent fail before incurring model calls. A failed run leaves an
-    // explicit failure report rather than an apparently successful empty result.
+    // missing parent fail before incurring model calls. The reservation holds an
+    // explicit "incomplete" marker at once, so a run killed before it can write
+    // its final state (second signal, SIGKILL, crash) never leaves an empty file.
     const output = await open(values.out, 'wx', 0o600);
+    await replaceReport(output, {
+      version: 2,
+      state: 'incomplete',
+      note: 'Run started but did not finish writing a result; no score is claimed.',
+      startedAt: new Date().toISOString(),
+    });
+
+    // The first stop signal aborts the run gracefully: no new requests start,
+    // active requests are aborted and drained, then a "failed" report is written.
+    // All handlers are removed at that point, so a second signal of any kind
+    // takes its default action and ends the process immediately (escape hatch).
     const controller = new AbortController();
-    const interrupt = () => controller.abort(Error('Evaluation interrupted'));
-    process.once('SIGINT', interrupt);
-    process.once('SIGTERM', interrupt);
+    const interrupt = (signal: NodeJS.Signals) => {
+      removeStopHandlers();
+      controller.abort(Error(`Evaluation interrupted by ${signal}`));
+    };
+    const removeStopHandlers = () => {
+      for (const signal of STOP_SIGNALS) {
+        process.removeListener(signal, interrupt);
+      }
+    };
+    for (const signal of STOP_SIGNALS) {
+      process.on(signal, interrupt);
+    }
+
     try {
       const report = await runEvaluation(values.dataset, targets, controller.signal);
-      await output.writeFile(JSON.stringify(report, null, 2) + '\n');
+      await replaceReport(output, { state: 'complete', ...report });
       console.log(
         JSON.stringify(
           { summary: report.summary, comparisons: report.comparisons, report: values.out },
@@ -101,13 +138,17 @@ async function main(): Promise<void> {
         process.exitCode = 1;
       }
     } catch (error) {
-      await output.writeFile(
-        JSON.stringify({ version: 2, failed: true, error: (error as Error).message }) + '\n',
-      );
+      // Partial results are not saved; the report states only why it failed.
+      await replaceReport(output, {
+        version: 2,
+        state: 'failed',
+        failed: true,
+        interrupted: controller.signal.aborted,
+        error: (error as Error).message,
+      });
       throw error;
     } finally {
-      process.removeListener('SIGINT', interrupt);
-      process.removeListener('SIGTERM', interrupt);
+      removeStopHandlers();
       await output.close();
     }
     return;

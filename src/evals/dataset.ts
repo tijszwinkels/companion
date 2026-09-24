@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { restoreIntentRequest, type IntentRequestRecord } from '../core/intent-request.ts';
+import { parseLocalJson, SafeEvalError } from './errors.ts';
 
 /** Frozen labels and requests; images remain checksum-verified, separate files. */
 export interface EvalExample {
@@ -28,6 +29,23 @@ interface Row {
   correct: number | null;
   actual_intent: string | null;
   feedback_prediction: string | null;
+}
+
+/**
+ * Eval-local wrapper around the shared restore function. A corrupted recording
+ * would otherwise surface V8's SyntaxError, which quotes part of the private
+ * request text, in export reports, failure reports and stderr. Other restore
+ * errors are fixed messages and pass through unchanged.
+ */
+function restoreRecordedRequest(serialized: string, png: Buffer): IntentRequestRecord {
+  try {
+    return restoreIntentRequest(serialized, png);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new SafeEvalError('Recorded intent request is not valid JSON');
+    }
+    throw error;
+  }
 }
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -162,7 +180,7 @@ export async function exportDataset(
     }
     try {
       const png = await screenshot(dirname(databasePath), row.id);
-      const record = restoreIntentRequest(row.intent_request, png);
+      const record = restoreRecordedRequest(row.intent_request, png);
       if (!recordedIntents(record).includes(expected)) {
         throw Error('Label is not a registered intent in this recorded request');
       }
@@ -196,7 +214,7 @@ export async function exportDataset(
 }
 
 export async function loadDataset(path: string): Promise<EvalDataset> {
-  const dataset = JSON.parse(await readFile(path, 'utf8')) as EvalDataset;
+  const dataset = parseLocalJson(await readFile(path, 'utf8'), 'Dataset file') as EvalDataset;
   if (dataset.version !== 1 || !Array.isArray(dataset.examples) || dataset.examples.length === 0) {
     throw Error('Expected a nonempty version 1 evaluation dataset');
   }
@@ -227,11 +245,18 @@ export async function restoreExample(
     throw Error('Invalid utterance UUID');
   }
   const png = await readFile(join(dirname(datasetPath), `${example.id}.png`));
-  const record = restoreIntentRequest(example.request, png);
-  if (!recordedIntents(record).includes(example.expected)) {
-    throw Error('Expected intent is absent from the recorded prompt');
+
+  // Name the example (a UUID, already present in reports) so a failure is
+  // actionable without quoting any of its private content.
+  try {
+    const record = restoreRecordedRequest(example.request, png);
+    if (!recordedIntents(record).includes(example.expected)) {
+      throw Error('Expected intent is absent from the recorded prompt');
+    }
+    return record;
+  } catch (error) {
+    throw Error(`Example ${example.id}: ${(error as Error).message}`);
   }
-  return record;
 }
 
 /** Fingerprints contain no prompt text or screenshots and permit parity checks. */

@@ -1,4 +1,5 @@
 import type { IntentRequestRecord } from '../core/intent-request.ts';
+import { parseLocalJson, SafeEvalError } from './errors.ts';
 
 export interface EvalTarget {
   name: string;
@@ -26,6 +27,16 @@ export const MAX_CONCURRENCY = 16;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Loopback hosts where a plain-HTTP bearer key never leaves this machine. */
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+/** Parse a targets file without echoing its contents on malformed JSON. */
+export function parseTargets(text: string): EvalTarget[] {
+  return validateTargets(parseLocalJson(text, 'Targets file'));
 }
 
 /** Explicit endpoints only; never dispatch to an endpoint found in a dataset. */
@@ -60,7 +71,12 @@ export function validateTargets(value: unknown): EvalTarget[] {
         'Invalid target or duplicate name; only model/endpoint/transport/pricing settings are allowed',
       );
     }
-    const url = new URL(target.baseUrl);
+    let url: URL;
+    try {
+      url = new URL(target.baseUrl);
+    } catch {
+      throw Error(`Target ${target.name}: baseUrl is not a valid URL`);
+    }
     if (
       !['http:', 'https:'].includes(url.protocol) ||
       url.username ||
@@ -75,6 +91,19 @@ export function validateTargets(value: unknown): EvalTarget[] {
       (typeof target.apiKeyEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(target.apiKeyEnv))
     ) {
       throw Error('apiKeyEnv must name an environment variable, not contain a key');
+    }
+
+    // A bearer key over plain HTTP is readable by anything on the network path.
+    // Loopback stays on this machine, so unauthenticated or keyed local servers
+    // keep working; remote keyed endpoints must use HTTPS.
+    if (
+      target.apiKeyEnv !== undefined &&
+      url.protocol === 'http:' &&
+      !isLoopbackHost(url.hostname)
+    ) {
+      throw Error(
+        `Target ${target.name}: apiKeyEnv requires an https:// endpoint unless the host is loopback`,
+      );
     }
     if (
       target.timeoutMs !== undefined &&
@@ -134,7 +163,7 @@ export async function complete(
 ): Promise<Completion> {
   const key = target.apiKeyEnv ? process.env[target.apiKeyEnv] : undefined;
   if (target.apiKeyEnv && !key) {
-    throw Error(`Missing API key environment variable: ${target.apiKeyEnv}`);
+    throw new SafeEvalError(`Missing API key environment variable: ${target.apiKeyEnv}`);
   }
   const response = await fetch(`${target.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -149,10 +178,12 @@ export async function complete(
   if (!response.ok) {
     await response.body?.cancel();
     // Provider error bodies may echo private prompts or credentials. Do not log.
-    throw Error(`HTTP ${response.status}; request rejected without retry or adaptation`);
+    throw new SafeEvalError(
+      `HTTP ${response.status}; request rejected without retry or adaptation`,
+    );
   }
   if (!response.body) {
-    throw Error('Empty response body');
+    throw new SafeEvalError('Empty response body');
   }
 
   let wire = '';
@@ -167,7 +198,7 @@ export async function complete(
       }
       bytes += chunk.value.byteLength;
       if (bytes > 1_048_576) {
-        throw Error('Intent response exceeded 1 MiB');
+        throw new SafeEvalError('Intent response exceeded 1 MiB');
       }
       wire += decoder.decode(chunk.value, { stream: true });
     }
@@ -188,8 +219,36 @@ function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
-    throw Error('Response contained invalid JSON');
+    throw new SafeEvalError('Response contained invalid JSON');
   }
+}
+
+/**
+ * Finish reasons reported by name. The value is server-controlled, so any
+ * other string is reported as unrecognised instead of copied into the report.
+ */
+const KNOWN_FINISH_REASONS = new Set([
+  'stop',
+  'length',
+  'tool_calls',
+  'function_call',
+  'content_filter',
+  'end',
+  'abort',
+  'error',
+  'repetition',
+]);
+
+/**
+ * A field counts as present when it carries content. Some servers (for example
+ * vLLM's non-streaming responses) always send `tool_calls: []`; pi-ai, used by
+ * the live detector, treats an empty array as no tool calls, so the eval does too.
+ */
+function hasContent(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  return Boolean(value);
 }
 
 export function decodeCompletion(wire: string, streaming: boolean): Completion {
@@ -206,7 +265,7 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
         continue;
       }
       if (done) {
-        throw Error('Data after stream completion');
+        throw new SafeEvalError('Data after stream completion');
       }
       if (data === '[DONE]') {
         done = true;
@@ -215,7 +274,7 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
       packets.push(parseJson(data));
     }
     if (!done) {
-      throw Error('Incomplete response stream');
+      throw new SafeEvalError('Incomplete response stream');
     }
   } else {
     packets.push(parseJson(wire));
@@ -227,7 +286,7 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
   let outputTokens: number | null = null;
   for (const packet of packets) {
     if (!object(packet) || packet.error || !Array.isArray(packet.choices)) {
-      throw Error('Invalid completion response');
+      throw new SafeEvalError('Invalid completion response');
     }
     if (object(packet.usage)) {
       const input = packet.usage.prompt_tokens;
@@ -241,37 +300,48 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
     }
     for (const choice of packet.choices) {
       if (!object(choice) || choice.index !== 0) {
-        throw Error('Expected one completion choice at index zero');
+        throw new SafeEvalError('Expected one completion choice at index zero');
       }
       const message = streaming ? choice.delta : choice.message;
       if (
         !object(message) ||
-        message.tool_calls ||
-        message.function_call ||
-        message.refusal ||
-        message.reasoning_content ||
-        message.reasoning ||
-        message.reasoning_text ||
-        message.reasoning_details
+        hasContent(message.tool_calls) ||
+        hasContent(message.function_call) ||
+        hasContent(message.refusal) ||
+        hasContent(message.reasoning_content) ||
+        hasContent(message.reasoning) ||
+        hasContent(message.reasoning_text) ||
+        hasContent(message.reasoning_details)
       ) {
-        throw Error('Expected only an intent name, not tool calls, refusals or reasoning');
+        throw new SafeEvalError(
+          'Expected only an intent name, not tool calls, refusals or reasoning',
+        );
       }
-      if (message.content !== null && message.content !== undefined) {
-        if (typeof message.content !== 'string' || finish !== null) {
-          throw Error('Invalid completion content');
+
+      // Empty content carries no text; pi-ai ignores it, even after the finish
+      // chunk. Nonempty content after the finish reason is still rejected.
+      const content = message.content;
+      if (content !== null && content !== undefined && content !== '') {
+        if (typeof content !== 'string' || finish !== null) {
+          throw new SafeEvalError('Invalid completion content');
         }
-        text += message.content;
+        text += content;
       }
+
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
         if (finish !== null || typeof choice.finish_reason !== 'string') {
-          throw Error('Duplicate or invalid finish reason');
+          throw new SafeEvalError('Duplicate or invalid finish reason');
         }
         finish = choice.finish_reason;
       }
     }
   }
   if (finish !== 'stop') {
-    throw Error(`Intent response did not finish normally (${finish ?? 'missing finish reason'})`);
+    let reason = 'missing finish reason';
+    if (finish !== null) {
+      reason = KNOWN_FINISH_REASONS.has(finish) ? finish : 'unrecognized finish reason';
+    }
+    throw new SafeEvalError(`Intent response did not finish normally (${reason})`);
   }
   return { text: text.trim(), inputTokens, outputTokens };
 }

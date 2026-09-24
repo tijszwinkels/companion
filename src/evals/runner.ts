@@ -27,6 +27,7 @@ import {
   type EvalDataset,
   type EvalExample,
 } from './dataset.ts';
+import { describeRequestError, SafeEvalError } from './errors.ts';
 import { runBounded } from './pool.ts';
 import { compareWithBaseline, summarize, type BatchTiming, type EvalResult } from './summary.ts';
 import { complete, requestBody, validateTargets, type EvalTarget } from './transport.ts';
@@ -74,7 +75,8 @@ async function evaluateExample(
 
   // The timeout is per request and starts now, so time spent waiting for a
   // free concurrency slot never counts against it. Server-side queueing does.
-  const timeoutSignal = AbortSignal.timeout(target.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const requestSignal = AbortSignal.any([batchSignal, timeoutSignal]);
   const started = performance.now();
 
@@ -90,13 +92,20 @@ async function evaluateExample(
     }
 
     if (!allowedIntents.includes(reply.text)) {
-      throw Error('Response is not a registered intent name');
+      throw new SafeEvalError('Response is not a registered intent name');
     }
     result.prediction = reply.text;
     result.correct = reply.text === example.expected;
   } catch (error) {
     batchSignal.throwIfAborted();
-    result.error = (error as Error).message;
+
+    // Only eval-written messages and allowlisted causes reach the report;
+    // library messages could echo keys or private request data.
+    if (timeoutSignal.aborted) {
+      result.error = `Request timed out after ${timeoutMs} ms`;
+    } else {
+      result.error = describeRequestError(error);
+    }
   }
 
   result.latencyMs = performance.now() - started;

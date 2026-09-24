@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -17,6 +17,7 @@ import {
   loadDataset,
   restoreExample,
 } from '../../src/evals/dataset.ts';
+import { describeRequestError, SafeEvalError } from '../../src/evals/errors.ts';
 import { runBounded } from '../../src/evals/pool.ts';
 import { runEvaluation } from '../../src/evals/runner.ts';
 import {
@@ -716,7 +717,7 @@ test('concurrent errors and timeouts are recorded per example, not retried, and 
       if (index % 4 === 0) {
         assert.match(result.error!, /HTTP 500/);
       } else if (index % 4 === 1) {
-        assert.match(result.error!, /timeout/i);
+        assert.equal(result.error, 'Request timed out after 150 ms');
         assert.ok(result.latencyMs >= 140);
       } else {
         assert.equal(result.error, null);
@@ -878,4 +879,333 @@ test('decoder hides invalid JSON snippets and rejects reasoning_details', () => 
     ],
   });
   assert.throws(() => decodeCompletion(packet, false), /only an intent/);
+});
+
+const secret = 'SECRET-PRIVATE-UTTERANCE-sk-live-0123456789';
+
+test('decoder accepts empty tool/reasoning arrays and empty post-finish content like pi-ai', () => {
+  const nonStreaming = (message: object) =>
+    JSON.stringify({ choices: [{ index: 0, message, finish_reason: 'stop' }] });
+
+  // vLLM's non-streaming form always serializes an empty tool_calls array.
+  assert.equal(
+    decodeCompletion(nonStreaming({ content: 'IGNORE', tool_calls: [] }), false).text,
+    'IGNORE',
+  );
+  assert.equal(
+    decodeCompletion(
+      nonStreaming({ content: 'IGNORE', function_call: null, reasoning_details: [] }),
+      false,
+    ).text,
+    'IGNORE',
+  );
+  // Real tool calls, function calls and reasoning are still rejected.
+  for (const extra of [
+    { tool_calls: [{ id: 'call', type: 'function' }] },
+    { function_call: { name: 'x', arguments: '{}' } },
+    { reasoning_details: [{ type: 'reasoning.text', text: 'x' }] },
+    { reasoning_content: 'thinking' },
+  ]) {
+    assert.throws(
+      () => decodeCompletion(nonStreaming({ content: 'IGNORE', ...extra }), false),
+      /only an intent/,
+    );
+  }
+
+  const events = (...packets: object[]) =>
+    packets.map((packet) => `data: ${JSON.stringify(packet)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const delta = (value: object, finish: string | null = null) => ({
+    choices: [{ index: 0, delta: value, finish_reason: finish }],
+  });
+
+  assert.equal(
+    decodeCompletion(
+      events(delta({ content: 'IGN', tool_calls: [] }), delta({ content: 'ORE' }, 'stop')),
+      true,
+    ).text,
+    'IGNORE',
+  );
+  // Empty content after the finish chunk is ignored; real text there is not.
+  assert.equal(
+    decodeCompletion(events(delta({ content: 'IGNORE' }, 'stop'), delta({ content: '' })), true)
+      .text,
+    'IGNORE',
+  );
+  assert.throws(
+    () =>
+      decodeCompletion(
+        events(delta({ content: 'IGNORE' }, 'stop'), delta({ content: 'more' })),
+        true,
+      ),
+    /Invalid completion content/,
+  );
+});
+
+test('server-controlled finish reasons and invalid JSON never reach error text verbatim', () => {
+  const finished = (reason: string) =>
+    JSON.stringify({
+      choices: [{ index: 0, message: { content: 'IGNORE' }, finish_reason: reason }],
+    });
+
+  assert.throws(
+    () => decodeCompletion(finished('length'), false),
+    (error: Error) => error.message === 'Intent response did not finish normally (length)',
+  );
+  assert.throws(
+    () => decodeCompletion(finished(secret), false),
+    (error: Error) =>
+      error.message === 'Intent response did not finish normally (unrecognized finish reason)',
+  );
+  assert.throws(
+    () => decodeCompletion(`data: ${secret}\n\ndata: [DONE]\n\n`, true),
+    (error: Error) => error instanceof SafeEvalError && !error.message.includes('SECRET'),
+  );
+});
+
+test('transport errors report allowlisted causes only', async () => {
+  const withCause = (message: string, cause: object) => new TypeError(message, { cause });
+
+  assert.equal(
+    describeRequestError(
+      withCause('fetch failed', Object.assign(Error(secret), { code: 'ECONNREFUSED' })),
+    ),
+    'Request failed (ECONNREFUSED)',
+  );
+  assert.equal(
+    describeRequestError(withCause('fetch failed', Error('unexpected redirect'))),
+    'Request failed (redirect refused)',
+  );
+  assert.equal(
+    describeRequestError(withCause('fetch failed', Object.assign(Error(secret), { code: secret }))),
+    'Request failed (unclassified network error)',
+  );
+  assert.equal(
+    describeRequestError(
+      withCause('terminated', Object.assign(Error(secret), { code: 'UND_ERR_SOCKET' })),
+    ),
+    'Response stream terminated (UND_ERR_SOCKET)',
+  );
+  assert.equal(describeRequestError(Error(secret)), 'Request failed (unclassified error)');
+  assert.equal(describeRequestError(new TypeError(secret)), 'Request failed (unclassified error)');
+
+  // Real local sockets: a refused port and a refused redirect.
+  const { root, path } = await fixture();
+  const directory = join(root, 'dataset');
+  await exportDataset(path, directory, 1);
+  const closed = await server(() => {});
+  const closedUrl = closed.url;
+  await closed.close();
+  const redirecting = await server((_request, response) => {
+    response.writeHead(307, { Location: '/elsewhere' });
+    response.end();
+  });
+  try {
+    const report = await runEvaluation(join(directory, 'dataset.json'), [
+      { name: 'refused', model: 'refused', baseUrl: closedUrl },
+      { name: 'redirect', model: 'redirect', baseUrl: redirecting.url },
+    ]);
+    assert.deepEqual(
+      report.results.map((result) => result.error),
+      ['Request failed (ECONNREFUSED)', 'Request failed (redirect refused)'],
+    );
+  } finally {
+    await redirecting.close();
+  }
+});
+
+test('malformed local dataset, recorded request and targets JSON do not leak snippets', async () => {
+  const { root, path } = await fixture();
+  const directory = join(root, 'dataset');
+  await exportDataset(path, directory, 1);
+  const datasetPath = join(directory, 'dataset.json');
+  const target = [{ name: 'unused', model: 'unused', baseUrl: 'http://127.0.0.1:9/v1' }];
+
+  // Corrupted recorded request inside an otherwise valid dataset.
+  const dataset = JSON.parse(await readFile(datasetPath, 'utf8'));
+  const example = dataset.examples[0];
+  const corrupted = { ...dataset, examples: [{ ...example, request: `${secret} {` }] };
+  const corruptedPath = join(directory, 'corrupted.json');
+  await writeFile(corruptedPath, JSON.stringify(corrupted));
+  await assert.rejects(runEvaluation(corruptedPath, target), (error: Error) => {
+    assert.equal(error.message, `Example ${example.id}: Recorded intent request is not valid JSON`);
+    return true;
+  });
+
+  // Whole dataset file is not JSON.
+  const brokenPath = join(directory, 'broken.json');
+  await writeFile(brokenPath, `${secret} not json`);
+  await assert.rejects(
+    runEvaluation(brokenPath, target),
+    /^SafeEvalError: Dataset file is not valid JSON$/,
+  );
+
+  // Export skip reasons for a corrupted database recording.
+  const database = new DatabaseSync(path);
+  database
+    .prepare('UPDATE utterances SET intent_request = ? WHERE id = ?')
+    .run(`${secret} {`, ids[0]!);
+  database.close();
+  const exported = await exportDataset(path, join(root, 'second-export'));
+  assert.ok(!JSON.stringify(exported).includes('SECRET'));
+  assert.ok(
+    exported.skipped.some((skip) => skip.reason === 'Recorded intent request is not valid JSON'),
+  );
+  assert.ok(
+    !(await readFile(join(root, 'second-export', 'export-report.json'), 'utf8')).includes('SECRET'),
+  );
+
+  // CLI: malformed targets and dataset. Neither stderr nor the report may quote them.
+  const cli = (args: string[]) =>
+    spawnSync(process.execPath, ['--import', 'tsx', 'src/evals/cli.ts', ...args], {
+      encoding: 'utf8',
+    });
+  const targetsPath = join(root, 'targets.json');
+  await writeFile(targetsPath, `${secret} [`);
+  const badTargets = cli([
+    'run',
+    '--dataset',
+    datasetPath,
+    '--targets',
+    targetsPath,
+    '--out',
+    join(root, 'r1.json'),
+    '--send',
+  ]);
+  assert.equal(badTargets.status, 1);
+  assert.match(badTargets.stderr, /Targets file is not valid JSON/);
+  assert.ok(!badTargets.stderr.includes('SECRET'));
+
+  await writeFile(targetsPath, JSON.stringify(target));
+  const reportPath = join(root, 'r2.json');
+  const badDataset = cli([
+    'run',
+    '--dataset',
+    brokenPath,
+    '--targets',
+    targetsPath,
+    '--out',
+    reportPath,
+    '--send',
+  ]);
+  assert.equal(badDataset.status, 1);
+  assert.ok(!badDataset.stderr.includes('SECRET'));
+  assert.ok(!badDataset.stdout.includes('SECRET'));
+  const failure = JSON.parse(await readFile(reportPath, 'utf8'));
+  assert.equal(failure.state, 'failed');
+  assert.equal(failure.error, 'Dataset file is not valid JSON');
+});
+
+test('bearer keys are refused over plain HTTP to non-loopback hosts before any call', async () => {
+  const keyed = { name: 'k', model: 'k', apiKeyEnv: 'EVAL_KEY' };
+  for (const baseUrl of [
+    'http://127.0.0.1:18081/v1',
+    'http://127.1.2.3/v1',
+    'http://localhost:8000/v1',
+    'http://[::1]:8000/v1',
+    'https://provider.example/v1',
+  ]) {
+    assert.equal(validateTargets([{ ...keyed, baseUrl }]).length, 1);
+  }
+  for (const baseUrl of [
+    'http://provider.example/v1',
+    'http://192.168.1.20:8000/v1',
+    'http://127.0.0.1.example/v1',
+  ]) {
+    assert.throws(() => validateTargets([{ ...keyed, baseUrl }]), /requires an https/);
+  }
+  // Unauthenticated plain HTTP stays allowed, including the local Qwen endpoint.
+  assert.equal(
+    validateTargets([{ name: 'q', model: 'q', baseUrl: 'http://192.168.1.20:8000/v1' }]).length,
+    1,
+  );
+  assert.throws(
+    () => validateTargets([{ ...keyed, name: 'x', baseUrl: 'not a url' }]),
+    /valid URL/,
+  );
+});
+
+test('pool never starts a task after cancellation, even when active tasks resolve normally', async () => {
+  const controller = new AbortController();
+  const started: number[] = [];
+  const run = runBounded(6, 2, controller.signal, async (index, signal) => {
+    started.push(index);
+    // Resolve (not reject) on abort, so only the pool's claim check can stop
+    // the worker from taking the next item.
+    if (!signal.aborted) {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve()));
+    }
+    return index;
+  });
+  assert.ok(await waitUntil(() => started.length === 2));
+  controller.abort(Error('stop now'));
+  await assert.rejects(run, /stop now/);
+  await delay(20);
+  assert.deepEqual(started, [0, 1]);
+});
+
+test('CLI reserves an explicit incomplete report and handles SIGHUP gracefully', async () => {
+  const { root, path } = await fixture();
+  const directory = join(root, 'dataset');
+  await exportDataset(path, directory);
+  let calls = 0;
+  const endpoint = await server(() => {
+    // Never answer; the run can only end by signal.
+    calls++;
+  });
+  const targets = join(root, 'targets.json');
+  await writeFile(
+    targets,
+    JSON.stringify([{ name: 'hung', model: 'hung', baseUrl: endpoint.url, concurrency: 1 }]),
+  );
+  const start = (reportPath: string) =>
+    spawn(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        'src/evals/cli.ts',
+        'run',
+        '--dataset',
+        join(directory, 'dataset.json'),
+        '--targets',
+        targets,
+        '--out',
+        reportPath,
+        '--send',
+      ],
+      { stdio: 'ignore' },
+    );
+  try {
+    // Hard kill: the reserved marker survives instead of an empty file.
+    const killedPath = join(root, 'killed.json');
+    const killed = start(killedPath);
+    assert.ok(await waitUntil(() => calls === 1, 10_000));
+    killed.kill('SIGKILL');
+    await once(killed, 'exit');
+    const marker = JSON.parse(await readFile(killedPath, 'utf8'));
+    assert.equal(marker.state, 'incomplete');
+    assert.equal(marker.version, 2);
+    assert.equal((await stat(killedPath)).mode & 0o777, 0o600);
+
+    // SIGHUP: graceful stop, drain, explicit failed/interrupted report.
+    const hupPath = join(root, 'hup.json');
+    const hup = start(hupPath);
+    assert.ok(await waitUntil(() => calls === 2, 10_000));
+    hup.kill('SIGHUP');
+    const [code, signal] = await once(hup, 'exit');
+    assert.equal(signal, null);
+    assert.equal(code, 1);
+    const failure = JSON.parse(await readFile(hupPath, 'utf8'));
+    assert.deepEqual(failure, {
+      version: 2,
+      state: 'failed',
+      failed: true,
+      interrupted: true,
+      error: 'Evaluation interrupted by SIGHUP',
+    });
+    // The second example was never scheduled after the signal.
+    assert.equal(calls, 2);
+  } finally {
+    await endpoint.close();
+  }
 });
