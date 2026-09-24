@@ -2,6 +2,9 @@ import { choiceTool } from '../choice-tool.ts';
 import { sessionNameTool } from '../session-name-tool.ts';
 import { sessionTools } from '../session-tools.ts';
 import { widgetTools } from '../widget-tools.ts';
+import { parityTools } from './parity/parity-tools.ts';
+import type { ClaudeToolSettings } from './parity/settings.ts';
+import type { ToolOutput } from './tool-output.ts';
 import type { TurnResult } from './turn-results.ts';
 
 /**
@@ -18,13 +21,14 @@ export interface BridgeTool {
   promptGuidelines?: string[];
   /**
    * Run one call. `toolUseId` is Claude Code's tool-use ID for this call.
+   * The result is text, or text plus images (see `tool-output.ts`).
    * A thrown error becomes a failed tool result, as with Pi.
    */
   execute(
     toolUseId: string,
     parameters: Record<string, unknown>,
     signal: AbortSignal,
-  ): Promise<string>;
+  ): Promise<string | ToolOutput>;
 }
 
 /** Connection details the bridge process received from its per-turn config. */
@@ -54,9 +58,13 @@ const resultReportTimeoutMilliseconds = 5000;
 /**
  * Build the tools for this turn. Choices and naming need the result route;
  * widgets and session tools are present only when the turn has their lease,
- * exactly like Pi's conditional `--extension` arguments.
+ * exactly like Pi's conditional `--extension` arguments. `toolSettings`
+ * (from the opt-in `claude-tools.json`) adds the Pi-parity tool groups.
  */
-export function bridgeTools(connections: BridgeToolConnections): BridgeTool[] {
+export function bridgeTools(
+  connections: BridgeToolConnections,
+  toolSettings: ClaudeToolSettings = {},
+): BridgeTool[] {
   const tools: BridgeTool[] = [];
 
   if (connections.results) {
@@ -77,6 +85,9 @@ export function bridgeTools(connections: BridgeToolConnections): BridgeTool[] {
       tools.push(fromPiTool(tool as unknown as PiToolDefinition));
     }
   }
+
+  // Equivalents of the user's Pi extension tools, only as configured.
+  tools.push(...parityTools(toolSettings));
 
   return tools;
 }

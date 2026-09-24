@@ -2,6 +2,7 @@ import { Ajv, type ValidateFunction } from 'ajv';
 
 import { object } from '../pi-transcript.ts';
 import type { BridgeTool } from './bridge-tools.ts';
+import { maximumToolImageBase64Length, type ToolOutput } from './tool-output.ts';
 
 /**
  * MCP protocol versions this server understands. Claude Code 2.1.280 requests
@@ -173,7 +174,8 @@ export class McpStdioServer {
   /**
    * Run one tool. Failures are ordinary tool results with `isError`, which
    * Claude Code reports to the model like Pi's thrown tool errors. Results
-   * contain text only: Claude Code would replace text with `structuredContent`.
+   * contain a text block and optional image blocks, never `structuredContent`,
+   * which Claude Code would show the model instead of the text.
    */
   private async callTool(id: string | number, parameters: Record<string, unknown>): Promise<void> {
     const name = String(parameters.name ?? '');
@@ -206,8 +208,8 @@ export class McpStdioServer {
     const controller = new AbortController();
     this.running.set(id, controller);
     try {
-      const text = await tool.execute(toolUseId, toolArguments, controller.signal);
-      this.sendResult(id, { content: [{ type: 'text', text }] });
+      const output = await tool.execute(toolUseId, toolArguments, controller.signal);
+      this.sendResult(id, { content: resultContent(output) });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.sendToolFailure(id, message);
@@ -228,6 +230,41 @@ export class McpStdioServer {
     this.stdio.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
   }
 }
+
+/**
+ * MCP content blocks of a successful result: the text block, then one standard
+ * MCP image block per image. Images are checked here, at the boundary, so no
+ * tool can send Claude Code an unsupported type or more image data than
+ * `maximumToolImageBase64Length`; such a result becomes a tool failure.
+ */
+function resultContent(output: string | ToolOutput): Record<string, unknown>[] {
+  if (typeof output === 'string') {
+    return [{ type: 'text', text: output }];
+  }
+
+  const content: Record<string, unknown>[] = [{ type: 'text', text: output.text }];
+  let imageLength = 0;
+
+  for (const image of output.images ?? []) {
+    if (!supportedImageTypes.has(image.mimeType) || typeof image.data !== 'string') {
+      throw Error('The tool returned an unsupported image.');
+    }
+
+    imageLength += image.data.length;
+    if (imageLength > maximumToolImageBase64Length) {
+      throw Error(
+        `The tool's images exceed the ${maximumToolImageBase64Length / (1024 * 1024)} MiB result limit.`,
+      );
+    }
+
+    content.push({ type: 'image', data: image.data, mimeType: image.mimeType });
+  }
+
+  return content;
+}
+
+/** Image types a bridge tool may return. */
+const supportedImageTypes = new Set<string>(['image/png', 'image/jpeg']);
 
 /**
  * Pi puts each tool's snippet and guidelines into its system prompt. Claude
