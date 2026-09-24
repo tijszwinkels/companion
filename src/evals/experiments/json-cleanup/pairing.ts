@@ -30,53 +30,29 @@
  * dataset accuracy is kept as a separate, clearly labeled statistic that is
  * never used for the paired delta.
  *
+ * Report fields are validated first (report-schema.ts): explicit completion,
+ * required metadata and hashes, and per-row type and consistency checks. The
+ * output is built only from those validated values.
+ *
  * Pure function: no I/O, no model calls.
  */
 import { SafeEvalError } from '../../errors.ts';
-import type { EvalResult } from '../../summary.ts';
-import type { EvalTarget } from '../../transport.ts';
-import type { ExperimentResult } from './runner.ts';
+import {
+  validateBaselineReport,
+  validateVariantReport,
+  type BaselineErrorKind,
+  type LiteralCheckStatus,
+  type VariantStatus,
+} from './report-schema.ts';
+import type { InvalidReason } from './contract.ts';
 import { latencyStatistics } from './runner.ts';
-
-/** The parts of an exact-replay report (version 2) this module relies on. */
-export interface BaselineRunReport {
-  /** Checked at runtime: must be 2. */
-  version: number;
-  state?: string;
-  startedAt: string;
-  datasetHash: string;
-  targets: EvalTarget[];
-  results: EvalResult[];
-}
-
-/** The parts of an inferred variant report this module relies on. */
-export interface VariantRunReport {
-  /** Checked at runtime: must be intent-json-cleanup-experiment, version 1. */
-  kind: string;
-  version: number;
-  state?: string;
-  mode: 'inferred' | 'fixed-route';
-  startedAt: string;
-  datasetHash: string;
-  variant: {
-    id: string;
-    promptHash: string;
-    outputTokens: { experimental: number };
-  };
-  targets: EvalTarget[];
-  examples: {
-    supportedIds: string[];
-    unsupported: { id: string; reason: string }[];
-  };
-  results: ExperimentResult[];
-}
-
-/** The fixed error message exact replay uses for a non-registered bare answer. */
-const BASELINE_UNREGISTERED_NAME = 'Response is not a registered intent name';
 
 export type PairChange = 'both-correct' | 'regression' | 'improvement' | 'both-wrong';
 
-/** One example, both sides side by side. Contains no text. */
+/**
+ * One example, both sides side by side. Built only from validated fields; it
+ * contains no text and no error strings, only fixed categories.
+ */
 export interface PairedExample {
   id: string;
   expected: string;
@@ -85,7 +61,7 @@ export interface PairedExample {
   baseline: {
     prediction: string | null;
     correct: boolean;
-    error: string | null;
+    errorKind: BaselineErrorKind | null;
     latencyMs: number;
     outputTokens: number | null;
   };
@@ -94,10 +70,9 @@ export interface PairedExample {
     correct: boolean;
     selectedIntent: string | null;
     intentSelectedCorrectly: boolean;
-    status: ExperimentResult['status'];
-    invalidReason: ExperimentResult['invalidReason'];
-    error: string | null;
-    literalCheck: ExperimentResult['literalCheck'];
+    status: VariantStatus;
+    invalidReason: InvalidReason | null;
+    literalCheck: LiteralCheckStatus;
     latencyMs: number;
     outputTokens: number | null;
   };
@@ -166,24 +141,6 @@ function uniqueById<Row extends { id: string }>(rows: Row[], side: string): Map<
   return byId;
 }
 
-function selectTarget(targets: EvalTarget[], name: string, side: string): EvalTarget {
-  const matches = targets.filter((target) => target.name === name);
-  if (matches.length !== 1) {
-    throw new SafeEvalError(`${side} report has no single target named ${name}`);
-  }
-  return matches[0]!;
-}
-
-function targetIdentity(target: EvalTarget) {
-  return {
-    name: target.name,
-    model: target.model,
-    baseUrl: target.baseUrl,
-    concurrency: target.concurrency ?? 1,
-    timeoutMs: target.timeoutMs ?? null,
-  };
-}
-
 function sameIdSet(left: Iterable<string>, right: Set<string>): boolean {
   const leftSet = new Set(left);
   if (leftSet.size !== right.size) {
@@ -197,68 +154,45 @@ function sameIdSet(left: Iterable<string>, right: Set<string>): boolean {
   return true;
 }
 
+/**
+ * Two reports and one target name per side. The reports are `unknown` on
+ * purpose: they are validated here, whether they came from files or from the
+ * runners (through `completedRunnerReport`).
+ */
 export interface PairSelection {
-  baseline: BaselineRunReport;
+  baseline: unknown;
   baselineTarget: string;
-  variant: VariantRunReport;
+  variant: unknown;
   variantTarget: string;
 }
 
-/** Validate the selection and build the paired comparison. Throws on any mismatch. */
+/**
+ * Validate both reports, then build the paired comparison. Throws a bounded,
+ * content-free SafeEvalError on any schema, consistency, identity or
+ * cardinality problem, before any output exists.
+ */
 export function pairRuns(selection: PairSelection) {
-  const { baseline, variant } = selection;
+  // Schema, completeness and per-row consistency (report-schema.ts). From here
+  // on only validated, newly constructed values are used.
+  const baseline = validateBaselineReport(selection.baseline, selection.baselineTarget);
+  const variant = validateVariantReport(selection.variant, selection.variantTarget);
 
-  // Report identity and completeness.
-  if (baseline.version !== 2 || (baseline.state !== undefined && baseline.state !== 'complete')) {
-    throw new SafeEvalError('Baseline must be a complete exact-replay (version 2) report');
-  }
-  if (
-    variant.kind !== 'intent-json-cleanup-experiment' ||
-    variant.version !== 1 ||
-    (variant.state !== undefined && variant.state !== 'complete')
-  ) {
-    throw new SafeEvalError('Variant must be a complete intent-json-cleanup-experiment report');
-  }
-  if (variant.mode !== 'inferred') {
-    throw new SafeEvalError('Only inferred variant runs have an exact-replay baseline to pair');
-  }
   if (baseline.datasetHash !== variant.datasetHash) {
     throw new SafeEvalError('Baseline and variant used different frozen datasets');
   }
 
-  // Reports may come from files: check the shapes this function iterates.
-  if (
-    !Array.isArray(baseline.targets) ||
-    !Array.isArray(baseline.results) ||
-    !Array.isArray(variant.targets) ||
-    !Array.isArray(variant.results) ||
-    !Array.isArray(variant.examples?.supportedIds) ||
-    !Array.isArray(variant.examples?.unsupported)
-  ) {
-    throw new SafeEvalError('Report is missing targets, results or planned example lists');
-  }
-
-  const baselineTarget = selectTarget(baseline.targets, selection.baselineTarget, 'Baseline');
-  const variantTarget = selectTarget(variant.targets, selection.variantTarget, 'Variant');
-
   // Rows of exactly the selected targets, keyed by unique example ID.
-  const baselineById = uniqueById(
-    baseline.results.filter((row) => row.target === baselineTarget.name),
-    'Baseline',
-  );
-  const variantById = uniqueById(
-    variant.results.filter((row) => row.target === variantTarget.name),
-    'Variant',
-  );
+  const baselineById = uniqueById(baseline.rows, 'Baseline');
+  const variantById = uniqueById(variant.rows, 'Variant');
 
   // Planned support: the variant must have attempted exactly its supported IDs,
   // and those must be disjoint from its listed exclusions.
-  const supportedIds = variant.examples.supportedIds;
+  const supportedIds = variant.supportedIds;
   const supported = new Set(supportedIds);
   if (supported.size !== supportedIds.length) {
     throw new SafeEvalError('Variant report has missing or duplicate planned supported IDs');
   }
-  const excluded = variant.examples.unsupported;
+  const excluded = variant.exclusions;
   const excludedIds = new Set(excluded.map((entry) => entry.id));
   if (excludedIds.size !== excluded.length || excluded.some((entry) => supported.has(entry.id))) {
     throw new SafeEvalError('Variant report lists an example as both supported and excluded');
@@ -275,7 +209,8 @@ export function pairRuns(selection: PairSelection) {
     );
   }
 
-  // One-to-one pairs in the variant's planned order.
+  // One-to-one pairs in the variant's planned order. Hashes and labels are
+  // already known to be present and well formed, so equality is real evidence.
   const pairs: PairedExample[] = [];
   for (const id of supportedIds) {
     const baselineRow = baselineById.get(id)!;
@@ -288,26 +223,24 @@ export function pairRuns(selection: PairSelection) {
       throw new SafeEvalError(`Example ${id}: the two runs have different labels`);
     }
 
-    const variantCorrect = variantRow.correct === true;
     pairs.push({
       id,
       expected: baselineRow.expected,
-      change: pairChange(baselineRow.correct, variantCorrect),
+      change: pairChange(baselineRow.correct, variantRow.correct),
       baseline: {
         prediction: baselineRow.prediction,
         correct: baselineRow.correct,
-        error: baselineRow.error,
+        errorKind: baselineRow.errorKind,
         latencyMs: baselineRow.latencyMs,
         outputTokens: baselineRow.outputTokens,
       },
       variant: {
         prediction: variantRow.prediction,
-        correct: variantCorrect,
+        correct: variantRow.correct,
         selectedIntent: variantRow.selectedIntent,
-        intentSelectedCorrectly: variantRow.intentSelectedCorrectly === true,
+        intentSelectedCorrectly: variantRow.intentSelectedCorrectly,
         status: variantRow.status,
         invalidReason: variantRow.invalidReason,
-        error: variantRow.error,
         literalCheck: variantRow.literalCheck,
         latencyMs: variantRow.latencyMs,
         outputTokens: variantRow.outputTokens,
@@ -321,13 +254,13 @@ export function pairRuns(selection: PairSelection) {
 
   return {
     selection: {
-      baseline: { startedAt: baseline.startedAt, target: targetIdentity(baselineTarget) },
+      baseline: { startedAt: baseline.startedAt, target: baseline.target },
       variant: {
         startedAt: variant.startedAt,
-        target: targetIdentity(variantTarget),
-        variantId: variant.variant.id,
-        promptHash: variant.variant.promptHash,
-        outputTokens: variant.variant.outputTokens.experimental,
+        target: variant.target,
+        variantId: variant.variantId,
+        promptHash: variant.promptHash,
+        outputTokens: variant.outputTokens,
       },
     },
     datasetHash: baseline.datasetHash,
@@ -368,10 +301,10 @@ function summarizePairs(pairs: PairedExample[]) {
   );
 
   const baselineUnregistered = pairs.filter(
-    (pair) => pair.baseline.error === BASELINE_UNREGISTERED_NAME,
+    (pair) => pair.baseline.errorKind === 'unregistered-name',
   ).length;
   const baselineOtherErrors = pairs.filter(
-    (pair) => pair.baseline.error !== null && pair.baseline.error !== BASELINE_UNREGISTERED_NAME,
+    (pair) => pair.baseline.errorKind === 'request-error',
   ).length;
   const variantInvalid = pairs.filter((pair) => pair.variant.status === 'invalid').length;
   const variantErrors = pairs.filter((pair) => pair.variant.status === 'error').length;

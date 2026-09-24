@@ -53,6 +53,7 @@ import {
   runPairedComparison,
 } from '../../src/evals/experiments/json-cleanup/compare.ts';
 import { pairRuns } from '../../src/evals/experiments/json-cleanup/pairing.ts';
+import { completedRunnerReport } from '../../src/evals/experiments/json-cleanup/report-schema.ts';
 
 const png = Buffer.from('synthetic image bytes; never a personal recording');
 const pngSha256 = createHash('sha256').update(png).digest('hex');
@@ -1244,6 +1245,7 @@ test('experiment modules never reach routing, processors, delivery, sensors, UI 
     'contract.ts',
     'checks.ts',
     'pairing.ts',
+    'report-schema.ts',
     'fixed-routes.ts',
   ].map((name) => join(experimentDirectory, name));
   const allowed = new Set([
@@ -1459,6 +1461,10 @@ test('paired comparison runs the unmodified baseline and the variant on identica
     assert.equal(comparison.coverage.paired, 4);
     // Full-dataset baseline is context only (4/5 here), never the comparator.
     assert.equal(comparison.baselineFullDataset.accuracy, 0.8);
+    // Whole-arm throughput carries each arm's own workload (N2): 5 vs 4 requests.
+    assert.equal(comparison.armThroughput.baseline.requests, 5);
+    assert.equal(comparison.armThroughput.variant.requests, 4);
+    assert.match(comparison.armThroughput.note, /not matched workload/);
 
     const paired = comparison.summary;
     assert.equal(paired.pairedExamples, 4);
@@ -1857,9 +1863,9 @@ test('R2: the 40%-vs-50% scenario pairs by ID on common support and finds the on
     assert.equal(first!.inputHash, second!.inputHash);
 
     const offline = pairRuns({
-      baseline,
+      baseline: completedRunnerReport(baseline),
       baselineTarget: 'local',
-      variant: variant.report,
+      variant: completedRunnerReport(variant.report),
       variantTarget: 'local',
     });
     assertMisleadingScenarioPairedCorrectly(offline);
@@ -1946,7 +1952,10 @@ test('R2: pairing refuses missing, duplicate, mismatched or wrongly selected row
     mutate: (copies: { baseline: typeof baseline; variant: typeof variant }) => void,
     variantTarget = 'local',
   ) => {
-    const copies = { baseline: structuredClone(baseline), variant: structuredClone(variant) };
+    const copies = {
+      baseline: structuredClone(completedRunnerReport(baseline)),
+      variant: structuredClone(completedRunnerReport(variant)),
+    };
     mutate(copies);
     return () =>
       pairRuns({
@@ -1961,11 +1970,11 @@ test('R2: pairing refuses missing, duplicate, mismatched or wrongly selected row
   assert.equal(attempt(() => {}, 'other')().selection.variant.target.name, 'other');
 
   const refusals: [string, () => unknown, RegExp][] = [
-    ['unknown target', attempt(() => {}, 'missing'), /no single target named missing/],
+    ['unknown target', attempt(() => {}, 'missing'), /no single target with the selected name/],
     [
       'dataset hash',
       attempt(({ variant }) => {
-        variant.datasetHash = 'different';
+        variant.datasetHash = '0'.repeat(64);
       }),
       /different frozen datasets/,
     ],
@@ -2000,14 +2009,19 @@ test('R2: pairing refuses missing, duplicate, mismatched or wrongly selected row
     [
       'input hash mismatch',
       attempt(({ variant }) => {
-        variant.results[0]!.inputHash = 'different';
+        variant.results[0]!.inputHash = 'f'.repeat(64);
       }),
       /different recorded inputs/,
     ],
     [
       'label mismatch',
       attempt(({ variant }) => {
-        variant.results[0]!.expected = 'SEND_TEXT_TO_APPLICATION';
+        // A consistent row (scores recomputed for the new label) with another label.
+        Object.assign(variant.results[0]!, {
+          expected: 'SEND_TEXT_TO_APPLICATION',
+          correct: false,
+          intentSelectedCorrectly: false,
+        });
       }),
       /different labels/,
     ],
@@ -2033,7 +2047,7 @@ test('R2: pairing refuses missing, duplicate, mismatched or wrongly selected row
       attempt(({ variant }) => {
         (variant as { state?: string }).state = 'incomplete';
       }),
-      /complete intent-json-cleanup-experiment report/,
+      /not explicitly marked "state": "complete"/,
     ],
     [
       'fixed-route report',
@@ -2078,5 +2092,328 @@ test('N1: intent-selection diagnostic never guesses through malformed or ambiguo
     if (expected !== null && !parseExperimentResponse(response, expectation).valid) {
       assert.equal(parseExperimentResponse(response, expectation).valid, false);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review finding R3 (Rowan, ef18132): the offline report-file boundary
+// ---------------------------------------------------------------------------
+
+type ReportJson = Record<string, any>;
+
+/**
+ * Malformed report pairs derived from valid synthetic reports. The first five
+ * are the reviewer's reproductions; the rest cover missing, extra, wrong-type
+ * and NaN-like fields and cross-field inconsistencies. Every case must be
+ * refused by the real CLI before an output file exists, with a bounded message
+ * that never contains the private marker.
+ */
+const MALFORMED_PAIR_CASES: [
+  string,
+  (baseline: ReportJson, variant: ReportJson) => void,
+  RegExp,
+][] = [
+  [
+    'reviewer 1: missing dataset/input hashes and labels',
+    (baseline, variant) => {
+      delete baseline.datasetHash;
+      delete variant.datasetHash;
+      for (const row of [...baseline.results, ...variant.results]) {
+        delete row.inputHash;
+        delete row.expected;
+      }
+    },
+    /datasetHash is missing or malformed/,
+  ],
+  [
+    'reviewer 2: string "false" as baseline correct',
+    (baseline) => {
+      baseline.results[0].correct = 'false';
+    },
+    /correct must be true or false/,
+  ],
+  [
+    'reviewer 3: error row claiming correct',
+    (_baseline, variant) => {
+      Object.assign(variant.results[1], {
+        status: 'error',
+        correct: true,
+        prediction: null,
+        error: 'Request failed (ECONNREFUSED)',
+        selectedIntent: null,
+        intentSelectedCorrectly: false,
+        hasText: false,
+      });
+    },
+    /correct does not match its status/,
+  ],
+  [
+    'reviewer 4: failed marker without state',
+    (baseline, variant) => {
+      baseline.failed = true;
+      variant.failed = true;
+      delete baseline.state;
+      delete variant.state;
+    },
+    /not explicitly marked "state": "complete"/,
+  ],
+  [
+    'reviewer 5: private objects in error and literalCheck',
+    (_baseline, variant) => {
+      Object.assign(variant.results[1], {
+        status: 'error',
+        correct: false,
+        prediction: null,
+        selectedIntent: null,
+        intentSelectedCorrectly: false,
+        hasText: false,
+        error: { privateResponse: SECRET },
+        literalCheck: { missing: [SECRET] },
+      });
+    },
+    /literalCheck is not an allowed value|error must be a nonempty string/,
+  ],
+  ['missing state only', (baseline) => void delete baseline.state, /not explicitly marked/],
+  [
+    'incomplete state',
+    (_baseline, variant) => void (variant.state = 'incomplete'),
+    /not explicitly marked/,
+  ],
+  [
+    'interrupted marker',
+    (baseline) => void (baseline.interrupted = true),
+    /failure or interruption marker/,
+  ],
+  [
+    'extra row field',
+    (_baseline, variant) => void (variant.results[0].notes = SECRET),
+    /missing or unexpected fields/,
+  ],
+  [
+    'missing row field',
+    (_baseline, variant) => void delete variant.results[0].hasText,
+    /missing or unexpected fields/,
+  ],
+  [
+    'NaN-like latency',
+    (baseline) => void (baseline.results[0].latencyMs = 'NaN'),
+    /latencyMs must be a finite nonnegative number/,
+  ],
+  [
+    'negative latency',
+    (_baseline, variant) => void (variant.results[0].latencyMs = -1),
+    /latencyMs must be a finite nonnegative number/,
+  ],
+  [
+    'fractional tokens',
+    (_baseline, variant) => void (variant.results[0].outputTokens = 1.5),
+    /outputTokens must be null or a nonnegative integer/,
+  ],
+  [
+    'non-allowlisted invalid reason',
+    (_baseline, variant) => {
+      Object.assign(variant.results[1], {
+        status: 'invalid',
+        prediction: null,
+        correct: false,
+        hasText: false,
+        invalidReason: SECRET,
+      });
+    },
+    /invalidReason is not an allowed value/,
+  ],
+  [
+    'literal check on an invalid row',
+    (_baseline, variant) => {
+      Object.assign(variant.results[1], {
+        status: 'invalid',
+        prediction: null,
+        correct: false,
+        hasText: false,
+        invalidReason: 'invalid-json',
+        literalCheck: 'passed',
+      });
+    },
+    /literalCheck cannot be evaluated/,
+  ],
+  [
+    'baseline prediction and error together',
+    (baseline) => {
+      baseline.results[0].error = 'Response is not a registered intent name';
+    },
+    /exactly one of prediction and error/,
+  ],
+  [
+    'baseline correct with a wrong prediction',
+    (baseline) => {
+      baseline.results[2].correct = true;
+    },
+    /correct does not match its prediction and label/,
+  ],
+  [
+    'diagnostic inconsistent with its intent',
+    (_baseline, variant) => {
+      variant.results[1].intentSelectedCorrectly = true;
+    },
+    /intentSelectedCorrectly does not match/,
+  ],
+  [
+    'prediction not an intent name',
+    (_baseline, variant) => {
+      variant.results[0].prediction = `${SECRET} IGNORE`;
+    },
+    /prediction is missing or malformed/,
+  ],
+  [
+    'malformed dataset hash',
+    (baseline) => void (baseline.datasetHash = baseline.datasetHash.toUpperCase()),
+    /datasetHash is missing or malformed/,
+  ],
+  [
+    'non-UUID supported ID',
+    (_baseline, variant) => void variant.examples.supportedIds.push(SECRET),
+    /supportedIds entry is missing or malformed/,
+  ],
+  [
+    'non-allowlisted exclusion reason',
+    (_baseline, variant) => {
+      variant.examples.unsupported[0].reason = SECRET;
+    },
+    /reason is not an allowed value/,
+  ],
+  [
+    'variant metadata not declaring non-exact replay',
+    (_baseline, variant) => {
+      delete variant.variant.exactReplay;
+    },
+    /declare exactReplay false/,
+  ],
+  ['missing targets', (baseline) => void delete baseline.targets, /targets must be an array/],
+  [
+    'invalid timestamp',
+    (_baseline, variant) => void (variant.startedAt = 'yesterday'),
+    /startedAt must be an ISO timestamp/,
+  ],
+  [
+    'row with a non-UUID id',
+    (_baseline, variant) => void (variant.results[0].id = SECRET),
+    /row id is missing or malformed/,
+  ],
+  [
+    'fixed-route mode',
+    (_baseline, variant) => void (variant.mode = 'fixed-route'),
+    /Only inferred variant runs/,
+  ],
+];
+
+test('R3: offline pair refuses malformed or inconsistent report files before writing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r3-'));
+  const { datasetPath, endpoint } = await misleadingScenario(root);
+  let baseline: ReportJson;
+  let variant: ReportJson;
+  try {
+    const target = { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 };
+    // Files as the CLIs write them: explicit "complete" state first.
+    baseline = { state: 'complete', ...(await runEvaluation(datasetPath, [target])) };
+    variant = {
+      state: 'complete',
+      ...(await runExperiment({ mode: 'inferred', datasetPath }, [target], 64)).report,
+    };
+  } finally {
+    await endpoint.close();
+  }
+  baseline = JSON.parse(JSON.stringify(baseline));
+  variant = JSON.parse(JSON.stringify(variant));
+
+  const pairFiles = async (name: string, left: ReportJson, right: ReportJson) => {
+    const baselinePath = join(root, `${name}-baseline.json`);
+    const variantPath = join(root, `${name}-variant.json`);
+    const outPath = join(root, `${name}-paired.json`);
+    await writeFile(baselinePath, JSON.stringify(left));
+    await writeFile(variantPath, JSON.stringify(right));
+    const result = cli([
+      'pair',
+      '--baseline-report',
+      baselinePath,
+      '--baseline-target',
+      'local',
+      '--variant-report',
+      variantPath,
+      '--variant-target',
+      'local',
+      '--out',
+      outPath,
+    ]);
+    return { result, outPath };
+  };
+
+  // The unmodified files pair successfully: 100% -> 50%, one regression.
+  const valid = await pairFiles('valid', baseline, variant);
+  assert.equal(valid.result.status, 0, valid.result.stderr);
+  assertMisleadingScenarioPairedCorrectly(JSON.parse(await readFile(valid.outPath, 'utf8')));
+
+  for (let index = 0; index < MALFORMED_PAIR_CASES.length; index++) {
+    const [name, mutate, reason] = MALFORMED_PAIR_CASES[index]!;
+    const left = structuredClone(baseline);
+    const right = structuredClone(variant);
+    mutate(left, right);
+
+    const { result, outPath } = await pairFiles(`case-${index}`, left, right);
+    assert.equal(result.status, 1, `${name}: ${result.stdout}`);
+    assert.equal(result.stdout, '', name);
+    // Refused before the output file was created.
+    await assert.rejects(stat(outPath), /ENOENT/, name);
+    // Bounded, single-line, content-free message.
+    const message = result.stderr.trim();
+    assert.ok(message.length > 0 && message.length < 200, `${name}: ${message}`);
+    assert.ok(!message.includes('\n'), name);
+    assert.ok(!message.includes(SECRET), name);
+    assert.ok(!message.includes('privateResponse'), name);
+    // Refused for the intended reason, not an incidental one.
+    assert.match(message, reason, name);
+  }
+});
+
+test('R3: paired output is built only from validated fields (no pass-through)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r3-shape-'));
+  const { datasetPath, endpoint } = await misleadingScenario(root);
+  try {
+    const target = { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 };
+    const baseline = await runEvaluation(datasetPath, [target]);
+    const variant = (await runExperiment({ mode: 'inferred', datasetPath }, [target], 64)).report;
+    const comparison = pairRuns({
+      baseline: completedRunnerReport(baseline),
+      baselineTarget: 'local',
+      variant: completedRunnerReport(variant),
+      variantTarget: 'local',
+    });
+
+    // Rows carry fixed categories only; error strings are never copied.
+    const pair = comparison.pairs[1]!;
+    assert.deepEqual(Object.keys(pair.baseline).sort(), [
+      'correct',
+      'errorKind',
+      'latencyMs',
+      'outputTokens',
+      'prediction',
+    ]);
+    assert.ok(!('error' in pair.variant));
+    assert.equal(pair.variant.status, 'valid');
+    // Unpaired baseline rows (excluded examples) keep their error category only.
+    assert.equal(comparison.baselineFullDataset.total, 5);
+
+    // Runner reports without the explicit adapter are not trusted as complete.
+    assert.throws(
+      () =>
+        pairRuns({
+          baseline,
+          baselineTarget: 'local',
+          variant: completedRunnerReport(variant),
+          variantTarget: 'local',
+        }),
+      /not explicitly marked/,
+    );
+  } finally {
+    await endpoint.close();
   }
 });

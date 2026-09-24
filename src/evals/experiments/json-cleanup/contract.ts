@@ -61,22 +61,25 @@ export interface ResponseExpectation {
 }
 
 /** Fixed, content-free reasons why a response does not satisfy the contract. */
-export type InvalidReason =
-  | 'invalid-json'
-  | 'duplicate-key'
-  | 'not-an-object'
-  | 'unexpected-top-level-key'
-  | 'intent-not-a-string'
-  | 'unknown-intent'
-  | 'route-changed'
-  | 'parameters-missing'
-  | 'parameters-not-an-object'
-  | 'unexpected-parameter'
-  | 'text-missing'
-  | 'text-not-a-string'
-  | 'text-empty'
-  | 'text-surrounding-whitespace'
-  | 'text-on-no-text-intent';
+export const INVALID_REASONS = [
+  'invalid-json',
+  'duplicate-key',
+  'not-an-object',
+  'unexpected-top-level-key',
+  'intent-not-a-string',
+  'unknown-intent',
+  'route-changed',
+  'parameters-missing',
+  'parameters-not-an-object',
+  'unexpected-parameter',
+  'text-missing',
+  'text-not-a-string',
+  'text-empty',
+  'text-surrounding-whitespace',
+  'text-on-no-text-intent',
+] as const;
+
+export type InvalidReason = (typeof INVALID_REASONS)[number];
 
 export type ParsedResponse =
   | {

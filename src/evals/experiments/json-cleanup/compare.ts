@@ -35,6 +35,7 @@ import { runEvaluation } from '../../runner.ts';
 import { validateTargets, type EvalTarget } from '../../transport.ts';
 import { assertChecksMatchExamples, type LiteralChecks } from './checks.ts';
 import { pairRuns } from './pairing.ts';
+import { completedRunnerReport } from './report-schema.ts';
 import { VARIANT_ID } from './prompt.ts';
 import { describeVariant, planExperiment, runExperiment } from './runner.ts';
 
@@ -98,10 +99,12 @@ export async function runPairedComparison(options: PairedComparisonOptions) {
   // One strict comparison per target: the same target name on both sides.
   const paired = [];
   for (const target of targets) {
+    // Both runner promises resolved, so both runs completed. The explicit
+    // adapter marks that; the reports still go through full validation.
     const comparison = pairRuns({
-      baseline,
+      baseline: completedRunnerReport(baseline),
       baselineTarget: target.name,
-      variant: variant.report,
+      variant: completedRunnerReport(variant.report),
       variantTarget: target.name,
     });
 
@@ -110,10 +113,21 @@ export async function runPairedComparison(options: PairedComparisonOptions) {
     paired.push({
       target: target.name,
       ...comparison,
-      // Batch throughput of each arm. The baseline batch also covers excluded examples.
-      requestsPerSecond: {
-        baseline: baselineSummary.batch.requestsPerSecond,
-        variant: variantSummary.batch.requestsPerSecond,
+      // Whole-arm throughput, reported with each arm's own request count. The
+      // workloads differ when examples are excluded, so this is not a matched
+      // speedup statistic; paired latency above is the matched comparison.
+      armThroughput: {
+        note: 'Per whole arm, not matched workload: the baseline arm also sends examples excluded from pairing. Do not read the ratio as a speedup; use paired latency instead.',
+        baseline: {
+          requests: baselineSummary.total,
+          wallTimeMs: baselineSummary.batch.wallTimeMs,
+          requestsPerSecond: baselineSummary.batch.requestsPerSecond,
+        },
+        variant: {
+          requests: variantSummary.sent,
+          wallTimeMs: variantSummary.batch.wallTimeMs,
+          requestsPerSecond: variantSummary.batch.requestsPerSecond,
+        },
       },
     });
   }

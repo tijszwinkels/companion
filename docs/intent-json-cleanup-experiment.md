@@ -249,6 +249,40 @@ existing inferred `eval:intent-cleanup run` report. The target names may
 differ, for example one model under two names. It reads reports only and makes
 zero model calls; the output is a new 0600 file.
 
+**Report files are validated before pairing** (review finding R3;
+`report-schema.ts`). A corrupted or hand-edited file is refused, with a
+bounded, content-free message, before any output file exists.
+
+- **Completion:** both reports must say `"state": "complete"` explicitly. A
+  missing state, `incomplete`, or any `failed`/`interrupted` marker is
+  refused. `compare` passes its own in-process runner results through an
+  explicit adapter (`completedRunnerReport`), which it calls only after both
+  runs finished successfully.
+- **Metadata:** required and well formed: 64-hex dataset/input/prompt hashes,
+  ISO timestamps, the selected target (model, endpoint, concurrency, timeout),
+  `exactReplay: false`, the output budget, UUID `supportedIds`, and exclusions
+  with allowlisted reasons. Hashes and labels must be present before they are
+  compared, so two missing values never count as a match.
+- **Selected-target rows:**
+  - an exact key set (no missing or extra fields), UUID IDs, and
+    intent-name-shaped labels and predictions;
+  - real booleans and allowlisted statuses, invalid reasons and literal-check
+    statuses;
+  - bounded error strings;
+  - finite nonnegative latency and cost, and null or nonnegative integer token
+    counts.
+- **Consistency:** stored scores must match what they summarize.
+  - Exact replay has exactly one of prediction and error, and is correct only
+    when the prediction equals the label.
+  - A variant row is usable-correct only when it is `valid` and its prediction
+    equals the label. `invalid` and `error` rows can never be correct, and must
+    have the matching reason/error/prediction shape.
+  - The intent-selection diagnostic must agree with the selected intent and label.
+  - Literal checks can only be `passed`/`failed` on valid rows with text.
+- **Output:** the paired output is built only from validated values. Error
+  strings and literal-check contents are never copied; pairs carry only fixed
+  categories (`errorKind`, `status`, `invalidReason`, `literalCheck`).
+
 Each comparison (`paired[]` in `compare`, the whole file for `pair`) contains
 `selection`, `coverage`, `baselineFullDataset`, `pairs[]` (per example, both
 sides, no text) and `summary`:
@@ -272,8 +306,12 @@ sides, no text) and `summary`:
 - `regressionCauses` (wrong intent / invalid contract / transport error), and
   `regressionIds` / `improvementIds`.
 - Latency (mean/p50/p95) for each arm, the per-example latency difference, and
-  mean output tokens when servers report usage. `compare` adds each arm's batch
-  throughput.
+  mean output tokens when servers report usage.
+- `compare` adds `armThroughput` for each arm: its own request count, wall time
+  and requests per second (review note N2). These cover the **whole arm**: the
+  baseline arm also sends examples excluded from pairing, so the two rates are
+  not a matched workload. Do not read their ratio as a speedup; use the paired
+  latency statistics for matched comparisons.
 
 The variant changes prompt wording, response format and output budget
 together, so the delta measures that combination, not JSON alone. A small

@@ -32,7 +32,7 @@ import { parseTargets, type EvalTarget } from '../../transport.ts';
 import { assertChecksMatchExamples, loadLiteralChecks, type LiteralChecks } from './checks.ts';
 import { ARM_ORDERS, runPairedComparison, type ArmOrder } from './compare.ts';
 import { TEXT_ROUTES } from './contract.ts';
-import { pairRuns, type BaselineRunReport, type VariantRunReport } from './pairing.ts';
+import { pairRuns } from './pairing.ts';
 import {
   fixedRouteSystemPrompt,
   MAX_OUTPUT_TOKENS,
@@ -308,12 +308,9 @@ async function pairReports(values: {
 
   const baseline = parseLocalJson(await readFile(baselinePath, 'utf8'), 'Baseline report');
   const variant = parseLocalJson(await readFile(variantPath, 'utf8'), 'Variant report');
-  const comparison = pairRuns({
-    baseline: baseline as BaselineRunReport,
-    baselineTarget,
-    variant: variant as VariantRunReport,
-    variantTarget,
-  });
+  // pairRuns validates both files completely (explicit completion, schema,
+  // consistency) and refuses before any output file is created.
+  const comparison = pairRuns({ baseline, baselineTarget, variant, variantTarget });
 
   // Never overwrite an earlier result; fail before writing anything partial.
   const output = await open(values.out, 'wx', 0o600);

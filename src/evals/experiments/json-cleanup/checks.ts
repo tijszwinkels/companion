@@ -48,6 +48,9 @@ export interface LiteralChecks {
   checks: Record<string, LiteralCheck>;
 }
 
+/** Every literal-check status a report row can carry. */
+export const LITERAL_CHECK_STATUSES = ['no-checks', 'not-evaluated', 'passed', 'failed'] as const;
+
 /** Outcome of the literal checks for one response. */
 export type LiteralCheckOutcome =
   | { status: 'no-checks' }

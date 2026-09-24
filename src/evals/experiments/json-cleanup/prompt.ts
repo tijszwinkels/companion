@@ -176,11 +176,14 @@ export function promptFingerprint(): string {
 // ---------------------------------------------------------------------------
 
 /** Fixed reasons why a recorded request cannot be used for this variant. */
-export type UnsupportedReason =
-  | 'recorded-prompt-not-single-system-message'
-  | 'recorded-prompt-template-mismatch'
-  | 'recorded-prompt-offers-shortcut-only-intent'
-  | 'recorded-output-limit-missing';
+export const UNSUPPORTED_REASONS = [
+  'recorded-prompt-not-single-system-message',
+  'recorded-prompt-template-mismatch',
+  'recorded-prompt-offers-shortcut-only-intent',
+  'recorded-output-limit-missing',
+] as const;
+
+export type UnsupportedReason = (typeof UNSUPPORTED_REASONS)[number];
 
 /** A recorded example this variant refuses to transform; never sent. */
 export class UnsupportedExampleError extends SafeEvalError {
