@@ -245,3 +245,45 @@ test('the real bridge adds configured OpenRig tools and refuses preview start', 
   bridge.child.stdin.end();
   assert.equal((await exited)[0], 0);
 });
+
+test('the real bridge adds configured web tools with the default address policy', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-claude-tools-'));
+  const route = await TurnResultRoute.open();
+  context.after(async () => {
+    route.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  await writeFile(join(directory, 'claude-tools.json'), '{"web":{}}');
+  const bridge = startBridge(directory, directory, route);
+  const names = (await bridge.request('tools/list')).result.tools.map(
+    (tool: { name: string }) => tool.name,
+  );
+  assert.deepEqual(names, [
+    'companion_choices',
+    'companion_name_session',
+    'fetch_content',
+    'get_search_content',
+  ]);
+
+  // Loopback and file URLs are refused before any connection: no network.
+  const cases: [Record<string, unknown>, string][] = [
+    [
+      { url: 'http://127.0.0.1:9/' },
+      'Error: 127.0.0.1 resolves to a local or private address, which is not fetched',
+    ],
+    [{ url: 'file:///etc/hostname' }, 'Error: Only http and https URLs can be fetched, not file:'],
+  ];
+  for (const [parameters, text] of cases) {
+    const reply = await bridge.request('tools/call', {
+      name: 'fetch_content',
+      arguments: parameters,
+      _meta: { 'claudecode/toolUseId': 'toolu_fetch' },
+    });
+    assert.deepEqual(reply.result, { content: [{ type: 'text', text }] });
+  }
+
+  const exited = once(bridge.child, 'exit');
+  bridge.child.stdin.end();
+  assert.equal((await exited)[0], 0);
+});

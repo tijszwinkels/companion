@@ -12,6 +12,8 @@ import type { BridgeTool } from '../bridge-tools.ts';
 import { desktopTools } from './desktop/desktop-tools.ts';
 import { openRigTools } from './openrig/openrig-tools.ts';
 import type { ClaudeToolSettings } from './settings.ts';
+import { ContentStore } from './web/content-store.ts';
+import { webTools } from './web/web-tools.ts';
 
 export function parityTools(settings: ClaudeToolSettings): BridgeTool[] {
   const tools: BridgeTool[] = [];
@@ -22,6 +24,10 @@ export function parityTools(settings: ClaudeToolSettings): BridgeTool[] {
 
   if (settings.openRig) {
     tools.push(...openRigTools({ directory: settings.openRig.directory }));
+  }
+
+  if (settings.web) {
+    tools.push(...webTools({ store: ContentStore.forEnvironment(process.env) }));
   }
 
   return tools;
