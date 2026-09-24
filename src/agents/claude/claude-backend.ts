@@ -52,6 +52,13 @@ const terminateGraceMilliseconds = 750;
 const settingsRequestId = 'companion-settings';
 const interruptRequestId = 'companion-interrupt';
 
+/**
+ * Pending Tijs's product decision: without `--strict-mcp-config`, Companion's
+ * Claude sessions also load the user's own MCP servers (like his terminal
+ * Claude Code). Setting this to true isolates them to Companion's bridge.
+ */
+const isolateFromUserMcpServers = false;
+
 const uuidPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 
 /**
@@ -246,7 +253,7 @@ class ClaudeTurn {
   }
 
   private arguments(mcpConfigPath: string): string[] {
-    return [
+    const argumentList = [
       '--print',
       '--verbose',
       '--input-format',
@@ -270,6 +277,12 @@ class ClaudeTurn {
       '--append-system-prompt',
       systemInstruction,
     ];
+
+    if (isolateFromUserMcpServers) {
+      argumentList.push('--strict-mcp-config');
+    }
+
+    return argumentList;
   }
 
   private environment(): NodeJS.ProcessEnv {
@@ -378,20 +391,60 @@ class ClaudeTurn {
       throw Error(`Claude Code rejected the settings request: ${String(response.error)}`);
     }
 
-    // Claude Code resolves aliases here (for example "opus"), so an alias
-    // in the configuration shows up as drift naming the resolved model ID.
-    // A model without effort support reports null, which is also drift.
     const applied = object(object(response.response).applied);
-    if (applied.model !== this.settings.model || applied.effort !== this.settings.effort) {
-      throw Error(
-        `Claude Code selected ${String(applied.model)} (${String(applied.effort ?? 'no effort')}); ` +
-          `expected ${this.settings.model} (${this.settings.effort})`,
-      );
-    }
+    this.verifyAppliedModel(applied.model);
+    this.verifyAppliedEffort(applied.effort);
 
     clearTimeout(startupTimer);
     this.promptSent = true;
     this.sendPrompt();
+  }
+
+  /**
+   * The model must match exactly. Claude Code resolves aliases here (for
+   * example "opus" becomes "claude-opus-5-5"); an alias is rejected rather
+   * than adopted, so a conversation's captured model stays a concrete ID.
+   */
+  private verifyAppliedModel(appliedModel: unknown): void {
+    if (appliedModel === this.settings.model) {
+      return;
+    }
+
+    throw Error(
+      `Claude Code selected ${String(appliedModel)}; expected ${this.settings.model}. ` +
+        `If "${this.settings.model}" is an alias, configure the full model ID ` +
+        `${String(appliedModel)} in claudeCode.model instead.`,
+    );
+  }
+
+  /**
+   * The effort must match exactly, with one deliberate exception: a model
+   * without effort support reports null. Claude Code then ignores the
+   * setting, which is accepted without clamping, and the user is told so on
+   * the conversation's first turn (the model never changes afterwards). Any
+   * other difference is drift and fails the turn.
+   */
+  private verifyAppliedEffort(appliedEffort: unknown): void {
+    if (appliedEffort === this.settings.effort) {
+      return;
+    }
+
+    if (appliedEffort !== null) {
+      throw Error(
+        `Claude Code selected effort ${String(appliedEffort)}; expected ${this.settings.effort}`,
+      );
+    }
+
+    if (!this.request.resume) {
+      this.emit(
+        chatMessage(
+          'effort-notice',
+          'notice',
+          `${this.settings.model} does not support effort levels, so the configured effort ` +
+            `“${this.settings.effort}” has no effect in this conversation.`,
+        ),
+      );
+    }
   }
 
   private sendPrompt(): void {

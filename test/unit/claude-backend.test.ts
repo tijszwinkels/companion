@@ -166,11 +166,12 @@ test('the screenshot is delivered as an image block with the captured window as 
 });
 
 for (const [model, expected] of [
-  ['claude-drift', /selected claude-other \(high\); expected claude-drift \(high\)/],
+  ['claude-drift', /selected claude-other; expected claude-drift\./],
   [
-    'claude-no-effort',
-    /selected claude-no-effort \(no effort\); expected claude-no-effort \(high\)/,
+    'opus',
+    /selected claude-opus-5-5; expected opus\. If "opus" is an alias, configure the full model ID claude-opus-5-5/,
   ],
+  ['claude-effort-drift', /selected effort low; expected high/],
 ] as const) {
   test(`startup drift (${model}) fails before any prompt is sent`, async (context) => {
     const { directory, settings } = await fixture(context);
@@ -183,6 +184,33 @@ for (const [model, expected] of [
     await assert.rejects(readFile(join(directory, 'request.json')), { code: 'ENOENT' });
   });
 }
+
+test('a model without effort support runs, with a notice on the first turn only', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new ClaudeCodeBackend();
+  const first = request(directory, { ...settings, model: 'claude-no-effort' }, 'hello');
+
+  const firstUpdates: AgentMessage[] = [];
+  await backend.run(first, signal(), (message) => firstUpdates.push(message));
+  const notices = firstUpdates.filter((message) => message.kind === 'notice');
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].text, /claude-no-effort does not support effort levels/);
+  assert.equal(latest(firstUpdates).at(-1)?.text, '## Answer\n**42**');
+
+  const followUpdates: AgentMessage[] = [];
+  await backend.run({ ...first, resume: true }, signal(), (message) => followUpdates.push(message));
+  assert.equal(
+    followUpdates.some((message) => message.kind === 'notice'),
+    false,
+  );
+});
+
+test('user MCP servers are not isolated until that product decision is made', async (context) => {
+  const { directory, settings } = await fixture(context);
+  await new ClaudeCodeBackend().run(request(directory, settings, 'hello'), signal(), () => {});
+
+  assert.equal((await captured(directory)).argv.includes('--strict-mcp-config'), false);
+});
 
 for (const [scenario, expected] of [
   ['permission', /permission mode default; Companion requires bypassPermissions/],

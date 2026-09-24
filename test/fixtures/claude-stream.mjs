@@ -59,6 +59,12 @@ async function receive(message) {
     if (model === 'claude-no-effort') {
       appliedEffort = null;
     }
+    if (model === 'claude-effort-drift') {
+      appliedEffort = 'low';
+    }
+    if (model === 'opus') {
+      appliedModel = 'claude-opus-5-5';
+    }
     send({
       type: 'control_response',
       response: {
