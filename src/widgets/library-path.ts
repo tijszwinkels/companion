@@ -23,6 +23,9 @@ import { fileURLToPath } from 'node:url';
 /**
  * Widgets tracked in this source checkout. They are examples and test fixtures;
  * the running listener does not read them unless explicitly configured to.
+ * Library parameters below the listener entry point (AgentSessions,
+ * WidgetService, WidgetRegistry) default to this directory, so tests and
+ * harnesses never read the user's real library unless they pass it in.
  */
 export const bundledLibraryDirectory = fileURLToPath(
   new URL('../../widget-library/', import.meta.url),
@@ -35,7 +38,10 @@ export function defaultWidgetLibrary(home = homedir()): string {
 }
 
 /**
- * Returns the configured library. An explicit option wins over the environment.
+ * Returns the configured library. A supplied option always wins, even over a
+ * valid environment value, and must itself be valid: `--widget-library ''` is an
+ * error, not a request for the default. An empty environment variable counts as
+ * unset, the usual shell convention for clearing an inherited value.
  * Relative paths are refused because they would depend on the launch directory,
  * which differs between terminals, services and agent subprocesses.
  */
@@ -44,14 +50,20 @@ export function userWidgetLibrary(
   environment: string | undefined = process.env[widgetLibraryVariable],
   home = homedir(),
 ): string {
-  const configured = option ?? environment;
+  let configured: string;
+  let source: string;
 
-  if (configured === undefined || configured === '') {
+  if (option !== undefined) {
+    configured = option;
+    source = '--widget-library';
+  } else if (environment !== undefined && environment !== '') {
+    configured = environment;
+    source = widgetLibraryVariable;
+  } else {
     return defaultWidgetLibrary(home);
   }
 
   if (configured.includes('\0') || !isAbsolute(configured)) {
-    const source = option === undefined ? widgetLibraryVariable : '--widget-library';
     throw Error(`${source} must be an absolute directory path`);
   }
 

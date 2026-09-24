@@ -97,6 +97,7 @@ test('user library path: default home, environment and option overrides, strict 
   const home = '/synthetic/home';
   assert.equal(defaultWidgetLibrary(home), '/synthetic/home/companion/widget-library');
   assert.equal(userWidgetLibrary(undefined, undefined, home), defaultWidgetLibrary(home));
+  // An empty environment variable counts as unset.
   assert.equal(userWidgetLibrary(undefined, '', home), defaultWidgetLibrary(home));
 
   // The command-line option wins over the environment; both are normalized lexically.
@@ -107,7 +108,9 @@ test('user library path: default home, environment and option overrides, strict 
   );
 
   // Relative paths would depend on the launch directory; NUL cannot name a file.
+  // An explicitly supplied empty option is invalid, not a request for a fallback.
   assert.throws(() => userWidgetLibrary('widget-library', undefined, home), /--widget-library/);
+  assert.throws(() => userWidgetLibrary('', '/from/environment', home), /--widget-library/);
   assert.throws(() => userWidgetLibrary(undefined, './library', home), /COMPANION_WIDGET_LIBRARY/);
   assert.throws(() => userWidgetLibrary('/bad\0path', undefined, home), /absolute/);
 });
@@ -278,7 +281,7 @@ function discoveringBackend(listings: unknown[]): AgentBackend {
   };
 }
 
-test('agent sessions pass the configured library to widget discovery', async (context) => {
+test('agent sessions use the injected library, otherwise the bundled examples', async (context) => {
   const { root, library } = await temporaryRoot(context);
 
   // Explicit injection, as the listener does after resolving --widget-library.
@@ -296,25 +299,25 @@ test('agent sessions pass the configured library to widget discovery', async (co
   await explicit.idle();
   assert.equal((explicitListings[0] as { directory: string }).directory, library);
 
-  // The environment variable supplies the default when no library is passed.
+  // Without an explicit library, sessions use the checkout's bundled examples,
+  // even when the environment names another library: tests and harnesses that
+  // construct AgentSessions directly must never read the user's real widgets.
   const previous = process.env[widgetLibraryVariable];
-  const configured = join(root, 'configured-library');
-  await mkdir(configured);
-  process.env[widgetLibraryVariable] = configured;
-  let fromEnvironment: AgentSessions;
+  process.env[widgetLibraryVariable] = join(root, 'must-not-be-used');
+  let withDefault: AgentSessions;
   try {
-    const environmentDirectory = join(root, 'agents-environment');
-    await mkdir(environmentDirectory);
-    const environmentListings: unknown[] = [];
-    fromEnvironment = new AgentSessions(
-      { backend: discoveringBackend(environmentListings) },
+    const defaultDirectory = join(root, 'agents-default');
+    await mkdir(defaultDirectory);
+    const defaultListings: unknown[] = [];
+    withDefault = new AgentSessions(
+      { backend: discoveringBackend(defaultListings) },
       () => {},
-      environmentDirectory,
+      defaultDirectory,
     );
-    context.after(() => fromEnvironment.close());
-    fromEnvironment.start(frame, signal());
-    await fromEnvironment.idle();
-    assert.deepEqual(environmentListings[0], { directory: configured, widgets: [] });
+    context.after(() => withDefault.close());
+    withDefault.start(frame, signal());
+    await withDefault.idle();
+    assert.equal((defaultListings[0] as { directory: string }).directory, bundledLibraryDirectory);
   } finally {
     if (previous === undefined) {
       delete process.env[widgetLibraryVariable];
@@ -324,19 +327,30 @@ test('agent sessions pass the configured library to widget discovery', async (co
   }
 });
 
-test('the listener refuses a relative --widget-library before starting anything', async () => {
-  // Run from the checkout so the tsx loader resolves; validation fails before
-  // configuration, sessions, the microphone or any desktop service are touched.
-  const checkout = new URL('../../', import.meta.url).pathname;
-  const run = promisify(execFile)(
-    process.execPath,
-    ['--import', 'tsx', 'src/cli.ts', '--widget-library', 'relative/library', '--graph', 'json'],
-    { timeout: 10000, cwd: checkout },
-  );
-  // The listener logs fatal errors on stdout and exits with status 1.
-  await assert.rejects(run, (error: { code: number; stdout: string }) => {
-    assert.equal(error.code, 1);
-    assert.match(error.stdout, /--widget-library must be an absolute directory path/);
-    return true;
+for (const [description, value] of [
+  ['a relative', 'relative/library'],
+  ['an empty', ''],
+]) {
+  test(`the listener refuses ${description} --widget-library before starting anything`, async () => {
+    // Run from the checkout so the tsx loader resolves; validation fails before
+    // configuration, sessions, the microphone or any desktop service are touched.
+    // A valid environment value must not rescue an invalid explicit option.
+    const checkout = new URL('../../', import.meta.url).pathname;
+    const run = promisify(execFile)(
+      process.execPath,
+      ['--import', 'tsx', 'src/cli.ts', '--widget-library', value, '--graph', 'json'],
+      {
+        timeout: 10000,
+        cwd: checkout,
+        env: { ...process.env, [widgetLibraryVariable]: '/synthetic/environment-library' },
+      },
+    );
+
+    // The listener logs fatal errors on stdout and exits with status 1.
+    await assert.rejects(run, (error: { code: number; stdout: string }) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stdout, /--widget-library must be an absolute directory path/);
+      return true;
+    });
   });
-});
+}

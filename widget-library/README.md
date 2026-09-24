@@ -17,15 +17,17 @@ that survives branch switches and worktrees. In priority order it uses:
 2. the `COMPANION_WIDGET_LIBRARY` environment variable (absolute path);
 3. `~/companion/widget-library`, next to the agents' working directory.
 
-Relative paths are refused. The startup log prints the resolved directory, and
+Relative or empty option values are refused; an empty environment variable
+counts as unset. The startup log prints the resolved directory, and
 `companion_widgets({})` reports it as `directory`. A missing directory lists no
 widgets (with a `note`) and refuses new publications; it is not a startup error.
 Discovery and publication open the same path with the symlink rules below, so a
 widget is never listed that publication would refuse.
 
 This checkout's `widget-library/` holds the tracked examples, their tests and
-this guide. Tests use it (or synthetic temporary copies) by default and never
-read the user library. The running listener does not read it unless configured
+this guide. Only the listener entry point chooses the user library;
+`AgentSessions`, `WidgetService` and `WidgetRegistry` default to these bundled
+examples, so tests (or synthetic temporary copies) never read the user library. The running listener does not read it unless configured
 to. To offer a changed example live, copy that widget directory into the user
 library; nothing synchronizes the two. Co-located browser tests that import
 `../../src/` run only from a checkout, not from the user library. Templates

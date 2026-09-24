@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { WidgetService } from '../widgets/service.ts';
-import { userWidgetLibrary } from '../widgets/library-path.ts';
+import { bundledLibraryDirectory } from '../widgets/library-path.ts';
 import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
@@ -93,13 +93,15 @@ export class AgentSessions implements InspectableModule {
   /**
    * `directory` is the agents' working directory holding saved conversations
    * and widget state. `widgetLibrary` is the widget source directory used for
-   * discovery and publication; by default the configured user library.
+   * discovery and publication. The listener passes the configured user library
+   * (see library-path.ts); the default is the checkout's bundled examples so
+   * tests and harnesses stay hermetic and never read the user's real widgets.
    */
   constructor(
     readonly dependencies: { backend: AgentBackend },
     private readonly log: Log,
     private readonly directory = agentDirectory(),
-    widgetLibrary = userWidgetLibrary(),
+    widgetLibrary = bundledLibraryDirectory,
   ) {
     this.store = new SessionStore(join(directory, '.companion-sessions'));
     this.widgets = new WidgetService(
