@@ -14,6 +14,7 @@
     "asr:short-phrases": "tsx test/bench/short-phrases.ts",
     "check": "tsc --noEmit",
     "eval:intents": "tsx src/evals/cli.ts",
+    "eval:intent-cleanup": "tsx src/evals/experiments/json-cleanup/cli.ts",
     "test": "tsx --test test/unit/*.test.ts",
     "test:live": "tsx test/live/run.ts",
     "test:desktop": "tsx test/live/desktop.ts",
