@@ -250,3 +250,39 @@ export function parseExperimentResponse(
 
   return { valid: true, intent, text };
 }
+
+/**
+ * Diagnostic only: the intent a response selects, judged independently of the
+ * rest of the contract.
+ *
+ * Returns the intent when the response is syntactically valid JSON (as
+ * received, without trimming), a single object with no duplicate key anywhere,
+ * and has an `intent` string that is an allowed name. Otherwise returns null.
+ *
+ * This never repairs or promotes a response: an invalid response stays
+ * invalid, and it keeps counting as wrong in the primary (usable) score. It
+ * only lets reports separate "the model picked a different intent" from "the
+ * model picked the right intent but broke the parameters contract". Malformed
+ * JSON, duplicate keys, unknown or non-string names never get a guessed intent.
+ */
+export function diagnosticIntentSelection(
+  responseText: string,
+  expectation: ResponseExpectation,
+): string | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(responseText);
+  } catch {
+    return null;
+  }
+
+  if (!isPlainObject(value) || hasDuplicateKey(responseText)) {
+    return null;
+  }
+
+  const intent = value.intent;
+  if (typeof intent !== 'string' || !expectation.allowedIntents.includes(intent)) {
+    return null;
+  }
+  return intent;
+}

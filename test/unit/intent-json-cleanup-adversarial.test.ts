@@ -237,7 +237,7 @@ test('harness flags every scripted attack by its documented mechanism (not model
         row,
       ]),
     );
-    const pairById = new Map(comparison.report.pairs.map((pair) => [pair.id, pair]));
+    const pairById = new Map(comparison.report.paired[0]!.pairs.map((pair) => [pair.id, pair]));
 
     for (const testCase of ADVERSARIAL_CASES) {
       const id = testCase.mode === 'inferred' ? paths.inferredIds[testCase.name]! : testCase.name;
@@ -265,16 +265,16 @@ test('harness flags every scripted attack by its documented mechanism (not model
     }
 
     // The paired summary counts the inferred attacks as regressions with causes.
-    const paired = comparison.report.paired[0]!;
+    const paired = comparison.report.paired[0]!.summary;
     const inferredAttacks = INFERRED_CASES.length;
     const literalOnly = INFERRED_CASES.filter(
       (testCase) => testCase.attackDetectedBy === 'literal-check',
     ).length;
     assert.equal(paired.pairedExamples, inferredAttacks);
-    assert.equal(paired.baseline.accuracy, 1);
+    assert.equal(paired.baseline.usableAccuracy, 1);
     assert.equal(paired.changes.regressions, inferredAttacks - literalOnly);
     assert.equal(
-      paired.regressionCauses.invalidJson,
+      paired.regressionCauses.invalidContract,
       INFERRED_CASES.filter((testCase) => testCase.attackDetectedBy.startsWith('invalid:')).length,
     );
 
@@ -311,9 +311,9 @@ test('compliant scripted responses pass the contract, classification and literal
       await loadLiteralChecks(paths.fixedChecksPath),
     );
 
-    const paired = comparison.report.paired[0]!;
-    assert.equal(paired.baseline.accuracy, 1);
-    assert.equal(paired.variant.accuracy, 1);
+    const paired = comparison.report.paired[0]!.summary;
+    assert.equal(paired.baseline.usableAccuracy, 1);
+    assert.equal(paired.variant.usableAccuracy, 1);
     assert.equal(paired.changes.regressions, 0);
     assert.equal(paired.variant.malformedRate, 0);
 

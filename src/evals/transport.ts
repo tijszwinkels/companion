@@ -17,7 +17,15 @@ export interface EvalTarget {
 }
 
 export interface Completion {
+  /** Assistant content with outer whitespace trimmed; the exact-replay contract uses this. */
   text: string;
+  /**
+   * The same assistant content exactly as received, untrimmed. Exact replay
+   * ignores it. Consumers with a stricter contract (the JSON cleanup experiment)
+   * must validate this, because `trim()` also strips non-JSON characters such
+   * as U+FEFF and U+00A0.
+   */
+  rawText: string;
   inputTokens: number | null;
   outputTokens: number | null;
 }
@@ -343,5 +351,5 @@ export function decodeCompletion(wire: string, streaming: boolean): Completion {
     }
     throw new SafeEvalError(`Intent response did not finish normally (${reason})`);
   }
-  return { text: text.trim(), inputTokens, outputTokens };
+  return { text: text.trim(), rawText: text, inputTokens, outputTokens };
 }

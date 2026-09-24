@@ -51,6 +51,11 @@ One JSON object with exactly two keys. The intent name is the discriminant:
 - **Every other intent** (IGNORE, contextual choices, labels, close session…):
   `parameters` must be exactly `{}`. Text on such an intent is invalid, so no
   text is ever made up for them.
+- The response is validated **exactly as received**. The shared transport's
+  trimmed `text` is only for exact replay; the experiment parses the untrimmed
+  `rawText`. Ordinary JSON whitespace (space, tab, CR, LF) around the object is
+  legal. Other characters, such as U+FEFF (BOM) or U+00A0 (NBSP), are
+  `invalid-json`. (Review finding R1: trimming used to turn such output valid.)
 - The response must be valid JSON on its own. Code fences, surrounding prose,
   extra or duplicate keys (including escaped duplicates such as `"\u0069ntent"`),
   wrong types, unknown names and case variants are all invalid. Nothing is repaired.
@@ -184,49 +189,96 @@ npm run eval:intent-cleanup -- compare --dataset /private/dataset/dataset.json \
   --out /private/compare-a.json --private-out /private/compare-a-outputs.json --send
 # ...and a second run with --order variant-first to expose cache/order effects.
 
+# Offline strict pairing of two existing report files (zero model calls).
+npm run eval:intent-cleanup -- pair --baseline-report /private/exact.json \
+  --baseline-target qwen --variant-report /private/variant.json \
+  --variant-target qwen --out /private/pairing.json
+
 # Variant only (also the only mode for fixed-route shortcut fixtures).
 npm run eval:intent-cleanup -- run --fixed-routes /private/fixed/fixed-routes.json \
   --targets targets.json --output-tokens 512 [--checks /private/fixed-checks.json] \
   --out /private/cleanup-report.json --private-out /private/cleanup-outputs.json --send
 ```
 
-### Paired comparison (`compare`)
+### Paired comparison (`compare` and offline `pair`)
 
-`compare` needs `--dataset`. Fixed-route shortcuts have no classifier call,
-so they have no exact-replay baseline. For each target it runs two arms, one
-after the other, never at the same time:
+Both commands use the same strict pairing function
+(`src/evals/experiments/json-cleanup/pairing.ts`). Comparing two runs'
+headline accuracies, or joining rows by `inputHash`, can give the wrong answer
+(review finding R2). The two runs can support different examples: the variant
+refuses older prompt templates. And a content hash is not a row key: distinct
+examples can have identical recorded bodies. In the review's synthetic
+scenario, the baseline's 40% over five examples against the variant's 50% over
+two looked like an improvement. On the common two examples it was a drop from
+100% to 50%, with one regression; a hash join counted that regression twice.
+
+The pairing rules, each enforced with a refusal rather than a guess:
+
+1. Select exactly **one** baseline run/target and **one** variant run/target by
+   name. The output records each side's model, endpoint, concurrency, timeout
+   and start time, plus the variant ID, prompt hash and output budget.
+2. Require the **same frozen dataset hash**, complete reports, and an inferred
+   (`--dataset`) variant run.
+3. Pair **one-to-one by example ID**. Duplicate IDs on either side are refused.
+   Repeated identical content under distinct IDs stays distinct.
+4. The variant's rows must equal its **planned supported IDs** exactly
+   (`examples.supportedIds`). The baseline's rows must equal supported plus
+   excluded IDs exactly: the whole frozen dataset.
+5. Every pair must have the same `inputHash` and the same label.
+6. The **baseline is restricted to the variant's support**. Every attempt stays
+   in the common denominator, including invalid responses and transport errors.
+   Excluded examples are reported under `coverage` with their reasons. The
+   baseline's full-dataset accuracy is reported only as `baselineFullDataset`,
+   labeled context, and is never the comparator.
+
+`compare` (needs `--dataset`; fixed-route shortcuts have no classifier call,
+so no exact-replay baseline) runs two arms per target, one after the other:
 
 - **Baseline:** the unmodified `eval:intents` runner (`runEvaluation`), i.e.
   exactly what `eval:intents run` measures: the recorded body with only
   `model` changed.
 - **Variant:** `json-cleanup-v1` on the same examples and endpoint.
 
-`--order` (`baseline-first` by default, or `variant-first`) chooses which arm
-runs first. Whichever runs second may benefit from warmer server caches, so
-compare one run in each order. Both arms preflight before anything is sent. The
-report fails, rather than comparing different inputs, if the dataset hash or
-any example's `inputHash` differs between the arms. Examples the variant cannot
-transform are still in the embedded baseline report, but are listed under
-`excludedFromPairing`.
+It then pairs each target with itself. `--order` (`baseline-first` by default,
+or `variant-first`) chooses which arm runs first. The second arm may benefit
+from warmer server caches, so compare one run in each order. Both arms
+preflight before anything is sent.
 
-Per target, `paired[]` contains:
+`pair` does the same offline for an existing `eval:intents run` report and an
+existing inferred `eval:intent-cleanup run` report. The target names may
+differ, for example one model under two names. It reads reports only and makes
+zero model calls; the output is a new 0600 file.
 
-- `baseline`/`variant`: correct count and accuracy on the paired examples.
-- Malformed-output rate for each contract: an unregistered bare name for the
-  baseline, any invalid-reason code for the variant. Other errors are counted
-  separately.
-- `accuracyDelta` (variant minus baseline).
+Each comparison (`paired[]` in `compare`, the whole file for `pair`) contains
+`selection`, `coverage`, `baselineFullDataset`, `pairs[]` (per example, both
+sides, no text) and `summary`:
+
+- **Usable accuracy (PRIMARY):** the correct intent in a response that
+  satisfies that side's full contract (a registered bare name for the
+  baseline; the strict JSON contract for the variant), over every paired
+  attempt. Reported as `baseline`/`variant.usableAccuracy` and
+  `usableAccuracyDelta`.
+- **Intent selection (DIAGNOSTIC, review note N1):** the variant's intent from a
+  syntactically valid, duplicate-free JSON object whose `intent` is an allowed
+  name, even if parameters or extra keys break the contract. The response is
+  never repaired or promoted: it stays invalid and wrong in the usable score.
+  Malformed JSON, non-JSON whitespace, duplicate keys and unknown names count
+  as wrong. This separates "picked a different intent" from "picked the right
+  intent but broke the format". Reported as `variant.intentSelectionAccuracy`,
+  `intentSelectionDelta` and diagnostic regression/improvement IDs.
+- Malformed-output rate for each contract, plus other errors counted separately.
 - `changes`: both correct, regressions, improvements and both wrong, plus an
   exact two-sided McNemar p-value over the discordant pairs.
-- `regressionCauses` (wrong intent / invalid JSON / transport error), and
+- `regressionCauses` (wrong intent / invalid contract / transport error), and
   `regressionIds` / `improvementIds`.
-- Latency (mean/p50/p95) for each arm, the per-example latency difference,
-  mean output tokens when servers report usage, and each arm's batch throughput.
+- Latency (mean/p50/p95) for each arm, the per-example latency difference, and
+  mean output tokens when servers report usage. `compare` adds each arm's batch
+  throughput.
 
-`pairs[]` lists every example side by side, without text. The full baseline
-and variant reports are embedded. A small hand-labeled dataset is a regression
-suite, not a population estimate, and one run is one sample of possibly
-nondeterministic outputs.
+The variant changes prompt wording, response format and output budget
+together, so the delta measures that combination, not JSON alone. A small
+hand-labeled dataset is a regression suite, not a population estimate, and one
+run is one sample of possibly nondeterministic outputs.
 
 ### Literal checks (`--checks`)
 
@@ -260,26 +312,42 @@ immediately.
 **Report (`--out`)**: shareable within the limits of `eval:intents` reports. It
 has no dictated text, cleaned text, raw output or prompts. Per target it contains:
 
-- `json`: valid / invalid / transport errors, `validityRate` (valid ÷ responses
-  received), counts per invalid reason and per error message.
-- `classification` (inferred only): `accuracy` against explicit labels, with
-  invalid responses and errors counted as wrong; `accuracyAmongValid`; confusion
-  (`<INVALID>`, `<ERROR>`); regressions from the recorded prediction.
+- `responseContract`: valid / invalid / transport errors, and `validityRate`
+  (valid ÷ responses received). This is **full response-contract validity**
+  (strict JSON of the content exactly as received, exact keys, allowed intent,
+  parameter shape), not JSON syntax alone. Also counts per invalid reason and
+  per error message.
+- `classification` (inferred only):
+  - `usableAccuracy` (PRIMARY): the correct intent in a contract-valid
+    response, over all attempts; invalid responses and errors count as wrong.
+  - `usableAccuracyAmongContractValid`: a diagnostic denominator.
+  - `intentSelectionDiagnostic`: see the paired comparison above.
+  - Confusion (`<INVALID>`, `<ERROR>`), and regressions from the recorded
+    prediction.
+
+  Per row, `correct` is the usable score, and `selectedIntent` /
+  `intentSelectedCorrectly` are the diagnostic.
 - `routeIdentity` (fixed routes only): preserved vs `route-changed`.
 - `cleanup`: number of valid text responses, and `qualityScore: null`.
 - Batch wall time, throughput, latency (mean/p50/p95), and cost when usage and
   pricing are known.
 
 Per request it has hashes. `inputHash` equals the exact-replay report's
-`inputHash` for the same recording, so the two reports can be joined.
-`variantInputHash` covers the modified body without model; `requestHash` covers
-the sent body. The report also includes the variant description
-(`exactReplay: false`, the list of modifications, the output-token delta), the
-dataset hash, and unsupported examples with their reasons.
+`inputHash` for the same recording, and pairing uses it as a **consistency
+check**. It is never a join key: identical content can occur under different
+example IDs. Always pair by ID with `pair` or `compare`. `variantInputHash`
+covers the modified body without model; `requestHash` covers the sent body.
+The report also includes:
+
+- the variant description (`exactReplay: false`, the list of modifications, the
+  output-token delta)
+- the dataset hash
+- the planned `supportedIds`
+- unsupported examples with their reasons.
 
 **Private outputs (`--private-out`)**: for human review only. Per request it holds
 the original spoken text, the chosen intent, the cleaned text, and the raw
-response text of invalid responses. Keep it outside Git, chats and coding-model
+response text of invalid responses, exactly as received (untrimmed). Keep it outside Git, chats and coding-model
 prompts, and delete it when you're done.
 
 ## Adversarial synthetic fixtures
@@ -339,14 +407,16 @@ explicitly configured targets.
 
 ## What this does and does not measure
 
-- Classification accuracy and JSON validity are measured automatically.
+- Usable intent accuracy (primary), the intent-selection diagnostic and
+  response-contract validity are measured automatically.
 - **Cleanup quality is not scored.** Existing labels contain no cleanup ground
   truth. There is no LLM judge, and the tool computes no cleanup accuracy
   percentage. A model grading its own output is not objective evidence. Review
   the private outputs by hand.
 - The inferred variant changes the prompt, so classification accuracy can
   differ from exact replay because of the format change itself. That is the
-  primary question; use `compare` (paired, same examples, `inputHash`-checked).
+  primary question. Use `compare` or `pair`: one target per side, paired by ID
+  on the variant's support.
 - No `response_format`/JSON-schema provider feature is used. That would be an
   adapter change that not every target accepts; validity here measures
   prompt-only compliance.
@@ -372,6 +442,14 @@ Tests use synthetic text, fake PNG bytes and local HTTP servers only. They cover
 - Zero-call help, prompt and dry-run.
 - Paired compare: exact baseline bodies, arm order, exclusions, regressions,
   McNemar values and the CLI.
+- Review R1 regressions: BOM/NBSP wrappers over real streaming and
+  non-streaming HTTP stay `invalid-json`, raw text is kept exactly, ordinary
+  JSON whitespace stays valid, and the exact-replay trimming is unchanged.
+- Review R2 regressions: the 40%-vs-50% scenario through separate runs,
+  offline `pair` (CLI) and `compare`; plus refusal of missing, duplicate and
+  mismatched rows, wrong target, dataset, labels and state.
+- Review N1: the intent-selection diagnostic never guesses through malformed or
+  ambiguous JSON.
 - Literal checks.
 - Adversarial fixture integrity and harness detection of every scripted attack.
 - An import-graph check that the experiment reaches no router, processor,

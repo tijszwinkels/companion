@@ -16,6 +16,8 @@
  *            on the same frozen dataset (requires --send).
  * - run:     variant only, for a frozen dataset or fixed-route fixtures
  *            (requires --send).
+ * - pair:    offline, strict pairing of an existing exact-replay report and an
+ *            existing inferred variant report (one target each). Zero calls.
  *
  * compare/run write a shareable report plus a separate private outputs file.
  * Output handling mirrors `eval:intents`: both files are reserved (mode 0600,
@@ -25,10 +27,12 @@
 import { open, readFile, type FileHandle } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 
+import { parseLocalJson } from '../../errors.ts';
 import { parseTargets, type EvalTarget } from '../../transport.ts';
 import { assertChecksMatchExamples, loadLiteralChecks, type LiteralChecks } from './checks.ts';
 import { ARM_ORDERS, runPairedComparison, type ArmOrder } from './compare.ts';
 import { TEXT_ROUTES } from './contract.ts';
+import { pairRuns, type BaselineRunReport, type VariantRunReport } from './pairing.ts';
 import {
   fixedRouteSystemPrompt,
   MAX_OUTPUT_TOKENS,
@@ -65,6 +69,8 @@ npm run eval:intent-cleanup -- compare --dataset DATASET.json --targets targets.
 npm run eval:intent-cleanup -- run (--dataset DATASET.json | --fixed-routes FIXTURE.json) \\
   --targets targets.json --output-tokens N [--checks CHECKS.json] \\
   --out new-report.json --private-out new-private-outputs.json --send
+npm run eval:intent-cleanup -- pair --baseline-report EXACT.json --baseline-target NAME \\
+  --variant-report VARIANT.json --variant-target NAME --out new-pairing.json
 
 prompt:   prints the instruction templates (no private data, no network).
 dry-run:  validates everything and prints counts/hashes. Zero model calls.
@@ -74,6 +80,11 @@ compare:  PRIMARY QUESTION. Runs the unmodified exact-replay baseline and the
           improvements, malformed-output rates and latency. Default order
           baseline-first; run again with the other order to check cache effects.
 run:      variant only (also for fixed-route shortcut fixtures).
+pair:     offline strict pairing of an existing "eval:intents run" report and an
+          existing inferred "run" report, one selected target each. Requires the
+          same frozen dataset; pairs one-to-one by example ID; restricts the
+          baseline to the variant's planned support; refuses missing, duplicate
+          or mismatched rows. Never joins by content hash. Zero model calls.
 compare and run send private text/context/screenshots to every target and
 require --send.
 
@@ -274,6 +285,71 @@ async function withReservedOutputs(
   }
 }
 
+/**
+ * Offline strict pairing of two existing report files. Reads only reports
+ * (which contain no dictated text) and writes one new 0600 file.
+ */
+async function pairReports(values: {
+  'baseline-report'?: string;
+  'baseline-target'?: string;
+  'variant-report'?: string;
+  'variant-target'?: string;
+  out?: string;
+}): Promise<void> {
+  const baselinePath = values['baseline-report'];
+  const variantPath = values['variant-report'];
+  const baselineTarget = values['baseline-target'];
+  const variantTarget = values['variant-target'];
+  if (!baselinePath || !variantPath || !baselineTarget || !variantTarget || !values.out) {
+    throw Error(
+      'pair requires --baseline-report, --baseline-target, --variant-report, --variant-target and --out',
+    );
+  }
+
+  const baseline = parseLocalJson(await readFile(baselinePath, 'utf8'), 'Baseline report');
+  const variant = parseLocalJson(await readFile(variantPath, 'utf8'), 'Variant report');
+  const comparison = pairRuns({
+    baseline: baseline as BaselineRunReport,
+    baselineTarget,
+    variant: variant as VariantRunReport,
+    variantTarget,
+  });
+
+  // Never overwrite an earlier result; fail before writing anything partial.
+  const output = await open(values.out, 'wx', 0o600);
+  try {
+    await replaceFile(output, {
+      kind: 'intent-json-cleanup-offline-pairing',
+      version: 1,
+      state: 'complete',
+      createdAt: new Date().toISOString(),
+      sources: { baselineReport: baselinePath, variantReport: variantPath },
+      ...comparison,
+    });
+  } finally {
+    await output.close();
+  }
+
+  console.log(
+    JSON.stringify(
+      {
+        modelCalls: 0,
+        selection: comparison.selection,
+        coverage: {
+          datasetExamples: comparison.coverage.datasetExamples,
+          paired: comparison.coverage.paired,
+          excluded: comparison.coverage.excluded,
+        },
+        summary: comparison.summary,
+        baselineFullDataset: comparison.baselineFullDataset,
+        report: values.out,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -285,6 +361,10 @@ async function main(): Promise<void> {
       'output-tokens': { type: 'string' },
       checks: { type: 'string' },
       order: { type: 'string' },
+      'baseline-report': { type: 'string' },
+      'baseline-target': { type: 'string' },
+      'variant-report': { type: 'string' },
+      'variant-target': { type: 'string' },
       out: { type: 'string' },
       'private-out': { type: 'string' },
       send: { type: 'boolean' },
@@ -298,6 +378,7 @@ async function main(): Promise<void> {
   const command = positionals[0];
   const allowed: Record<string, string[]> = {
     prompt: [],
+    pair: ['baseline-report', 'baseline-target', 'variant-report', 'variant-target', 'out'],
     'dry-run': ['dataset', 'fixed-routes', 'targets', 'output-tokens', 'checks'],
     // fixed-routes is accepted only to refuse it with an explanation below.
     compare: [
@@ -333,6 +414,11 @@ async function main(): Promise<void> {
 
   if (command === 'prompt') {
     printPrompt();
+    return;
+  }
+
+  if (command === 'pair') {
+    await pairReports(values);
     return;
   }
 
@@ -416,8 +502,16 @@ async function main(): Promise<void> {
         console: {
           variant: VARIANT_ID,
           order: report.order,
-          excludedFromPairing: report.excludedFromPairing.length,
-          paired: report.paired,
+          paired: report.paired.map((entry) => ({
+            target: entry.target,
+            coverage: {
+              datasetExamples: entry.coverage.datasetExamples,
+              paired: entry.coverage.paired,
+              excluded: entry.coverage.excluded,
+            },
+            summary: entry.summary,
+            baselineFullDataset: entry.baselineFullDataset,
+          })),
         },
         hasErrors,
       };

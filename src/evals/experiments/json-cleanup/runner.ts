@@ -39,6 +39,7 @@ import {
   type LiteralChecks,
 } from './checks.ts';
 import {
+  diagnosticIntentSelection,
   parseExperimentResponse,
   type InvalidReason,
   type ResponseExpectation,
@@ -116,9 +117,22 @@ export interface ExperimentResult {
   originalPrediction: string | null;
   fixedRoute: TextRoute | null;
   status: ResultStatus;
+  /** Intent of a fully contract-valid response; null otherwise. */
   prediction: string | null;
-  /** Inferred only: valid and equal to the explicit label. Null for fixed routes. */
+  /**
+   * Inferred only, PRIMARY usable score: contract-valid and equal to the
+   * explicit label. Invalid responses and errors are false. Null for fixed routes.
+   */
   correct: boolean | null;
+  /**
+   * DIAGNOSTIC: the intent selected by a syntactically valid, duplicate-free
+   * JSON object, even if other contract rules failed. Never a repair: the
+   * response keeps its status and `correct` value. Null when there is no
+   * unambiguous allowed intent (malformed, duplicate keys, unknown name, error).
+   */
+  selectedIntent: string | null;
+  /** Inferred only: `selectedIntent` equals the explicit label. Null for fixed routes. */
+  intentSelectedCorrectly: boolean | null;
   hasText: boolean;
   invalidReason: InvalidReason | null;
   /** Outcome of fixture-specified literal checks; the literals stay private. */
@@ -384,6 +398,8 @@ async function evaluateExample(
     status: 'error',
     prediction: null,
     correct: planned.fixedRoute === null ? false : null,
+    selectedIntent: null,
+    intentSelectedCorrectly: planned.fixedRoute === null ? false : null,
     hasText: false,
     invalidReason: null,
     literalCheck: 'no-checks',
@@ -425,7 +441,16 @@ async function evaluateExample(
       result.estimatedCost = (inputCost + outputCost) / 1_000_000;
     }
 
-    const parsed = parseExperimentResponse(reply.text, prepared.expectation);
+    // Validate the assistant content exactly as received. The trimmed `text`
+    // is the exact-replay contract; trimming would also strip non-JSON
+    // characters such as U+FEFF and U+00A0 and turn invalid output valid.
+    const parsed = parseExperimentResponse(reply.rawText, prepared.expectation);
+
+    result.selectedIntent = diagnosticIntentSelection(reply.rawText, prepared.expectation);
+    if (planned.expected !== null) {
+      result.intentSelectedCorrectly = result.selectedIntent === planned.expected;
+    }
+
     if (parsed.valid) {
       result.status = 'valid';
       result.prediction = parsed.intent;
@@ -438,7 +463,7 @@ async function evaluateExample(
     } else {
       result.status = 'invalid';
       result.invalidReason = parsed.reason;
-      privateOutput.invalidResponseText = reply.text;
+      privateOutput.invalidResponseText = reply.rawText;
     }
   } catch (error) {
     // An interrupted request is never scored as a model error.
@@ -508,7 +533,7 @@ function summarizeTarget(
     increment(errorMessages, row.error!);
   }
 
-  // JSON validity is judged only on responses that arrived; transport errors
+  // Contract validity is judged only on responses that arrived; transport errors
   // are counted separately rather than hiding inside either rate.
   const answered = valid.length + invalid.length;
   const wallTimeSeconds = batch.wallTimeMs / 1000;
@@ -532,13 +557,23 @@ function summarizeTarget(
       increment(predictions, predicted);
     }
 
-    const correct = rows.filter((row) => row.correct === true).length;
+    const usableCorrect = rows.filter((row) => row.correct === true).length;
+    const selectedCorrectly = rows.filter((row) => row.intentSelectedCorrectly === true).length;
     classification = {
-      correct,
+      definition:
+        'PRIMARY usable score: the correct intent inside a fully contract-valid response, over all attempts. Invalid responses and transport errors count as wrong.',
+      usableCorrect,
       total: rows.length,
-      // Invalid responses and errors count as wrong, as in the exact-replay report.
-      accuracy: rows.length > 0 ? correct / rows.length : null,
-      accuracyAmongValid: valid.length > 0 ? correct / valid.length : null,
+      usableAccuracy: rows.length > 0 ? usableCorrect / rows.length : null,
+      // Diagnostic denominator: only contract-valid responses.
+      usableAccuracyAmongContractValid: valid.length > 0 ? usableCorrect / valid.length : null,
+      intentSelectionDiagnostic: {
+        definition:
+          'DIAGNOSTIC only: the correct allowed intent in a syntactically valid, duplicate-free JSON object even when other contract rules failed, over all attempts. No response is repaired or promoted; malformed, duplicate-key and unknown-name responses count as wrong.',
+        correct: selectedCorrectly,
+        total: rows.length,
+        accuracy: rows.length > 0 ? selectedCorrectly / rows.length : null,
+      },
       confusion,
       regressionsFromRecordedPrediction: rows
         .filter((row) => row.originalPrediction === row.expected && row.correct !== true)
@@ -579,7 +614,9 @@ function summarizeTarget(
     model: target.model,
     concurrency: batch.concurrency,
     sent: rows.length,
-    json: {
+    responseContract: {
+      definition:
+        'Full response-contract validity over responses received (strict JSON of the assistant content exactly as received, exact keys, allowed intent, parameter shape), not JSON syntax alone. Transport errors are counted separately.',
       valid: valid.length,
       invalid: invalid.length,
       errors: errors.length,
@@ -697,6 +734,8 @@ export async function runExperiment(
     })),
     examples: {
       supported: plan.supported.length,
+      // Explicit planned support, so offline pairing can verify it exactly.
+      supportedIds: plan.supported.map((example) => example.id),
       unsupported: plan.unsupported,
       routeCounts: plan.routeCounts,
     },

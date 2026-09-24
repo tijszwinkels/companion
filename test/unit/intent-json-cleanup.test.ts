@@ -20,8 +20,10 @@ import { promisify } from 'node:util';
 import { buildPrompt } from '../../src/core/intent-detector.ts';
 import { restoreIntentRequest, snapshotIntentRequest } from '../../src/core/intent-request.ts';
 import { fingerprint } from '../../src/evals/dataset.ts';
-import { requestBody } from '../../src/evals/transport.ts';
+import { runEvaluation } from '../../src/evals/runner.ts';
+import { decodeCompletion, requestBody } from '../../src/evals/transport.ts';
 import {
+  diagnosticIntentSelection,
   hasDuplicateKey,
   parseExperimentResponse,
   TEXT_ROUTES,
@@ -50,6 +52,7 @@ import {
   mcnemarExactPValue,
   runPairedComparison,
 } from '../../src/evals/experiments/json-cleanup/compare.ts';
+import { pairRuns } from '../../src/evals/experiments/json-cleanup/pairing.ts';
 
 const png = Buffer.from('synthetic image bytes; never a personal recording');
 const pngSha256 = createHash('sha256').update(png).digest('hex');
@@ -800,21 +803,31 @@ test('inferred run scores classification separately from JSON validity and keeps
 
     const summary = report.summary[0]!;
     assert.deepEqual(
-      { ...summary.json, errorMessages: { ...summary.json.errorMessages } },
+      { ...summary.responseContract, errorMessages: { ...summary.responseContract.errorMessages } },
       {
+        definition: summary.responseContract.definition,
         valid: 4,
         invalid: 1,
         errors: 0,
         validityRate: 0.8,
-        invalidReasons: summary.json.invalidReasons,
+        invalidReasons: summary.responseContract.invalidReasons,
         errorMessages: {},
       },
     );
-    assert.deepEqual({ ...summary.json.invalidReasons }, { 'text-on-no-text-intent': 1 });
-    assert.equal(summary.classification!.correct, 3);
+    assert.deepEqual(
+      { ...summary.responseContract.invalidReasons },
+      { 'text-on-no-text-intent': 1 },
+    );
+    assert.equal(summary.classification!.usableCorrect, 3);
     assert.equal(summary.classification!.total, 5);
-    assert.equal(summary.classification!.accuracy, 0.6);
-    assert.equal(summary.classification!.accuracyAmongValid, 0.75);
+    assert.equal(summary.classification!.usableAccuracy, 0.6);
+    assert.equal(summary.classification!.usableAccuracyAmongContractValid, 0.75);
+    // Diagnostic: the invalid IGNORE response still selected IGNORE unambiguously,
+    // but it stays invalid and wrong in the usable score.
+    assert.equal(summary.classification!.intentSelectionDiagnostic.correct, 4);
+    assert.equal(summary.classification!.intentSelectionDiagnostic.accuracy, 0.8);
+    assert.equal(report.results.find((row) => row.id === uuid(3))!.correct, false);
+    assert.equal(report.results.find((row) => row.id === uuid(3))!.selectedIntent, 'IGNORE');
     assert.equal(summary.classification!.confusion.IGNORE!['<INVALID>'], 1);
     assert.equal(summary.classification!.confusion.START_CODING_AGENT_SESSION!.IGNORE, 1);
     assert.equal(summary.routeIdentity, null);
@@ -907,11 +920,11 @@ test('fixed-route run covers all five routes and reports route changes and trunc
     const summary = report.summary[0]!;
     assert.equal(summary.classification, null);
     assert.deepEqual(summary.routeIdentity, { preserved: 5, changed: 1 });
-    assert.equal(summary.json.valid, 5);
-    assert.equal(summary.json.invalid, 1);
-    assert.equal(summary.json.errors, 1);
+    assert.equal(summary.responseContract.valid, 5);
+    assert.equal(summary.responseContract.invalid, 1);
+    assert.equal(summary.responseContract.errors, 1);
     assert.deepEqual(
-      { ...summary.json.errorMessages },
+      { ...summary.responseContract.errorMessages },
       {
         'Intent response did not finish normally (length)': 1,
       },
@@ -955,7 +968,7 @@ test('timeouts become per-request errors; cancellation aborts, drains and schedu
     );
     assert.equal(calls, 3);
     assert.deepEqual(
-      { ...report.summary[0]!.json.errorMessages },
+      { ...report.summary[0]!.responseContract.errorMessages },
       {
         'Request timed out after 50 ms': 3,
       },
@@ -1230,6 +1243,7 @@ test('experiment modules never reach routing, processors, delivery, sensors, UI 
     'prompt.ts',
     'contract.ts',
     'checks.ts',
+    'pairing.ts',
     'fixed-routes.ts',
   ].map((name) => join(experimentDirectory, name));
   const allowed = new Set([
@@ -1437,18 +1451,23 @@ test('paired comparison runs the unmodified baseline and the variant on identica
     // Variant arm: only supported examples, strictly after the baseline arm.
     assert.deepEqual(arms, [...Array(5).fill('baseline'), ...Array(4).fill('variant')]);
     assert.equal(report.baselineReport.results.length, 5);
-    assert.deepEqual(report.excludedFromPairing, [
+    const comparison = report.paired[0]!;
+    assert.deepEqual(comparison.coverage.exclusions, [
       { id: uuid(4), reason: 'recorded-prompt-template-mismatch' },
     ]);
+    assert.equal(comparison.coverage.datasetExamples, 5);
+    assert.equal(comparison.coverage.paired, 4);
+    // Full-dataset baseline is context only (4/5 here), never the comparator.
+    assert.equal(comparison.baselineFullDataset.accuracy, 0.8);
 
-    const paired = report.paired[0]!;
+    const paired = comparison.summary;
     assert.equal(paired.pairedExamples, 4);
-    assert.equal(paired.baseline.correct, 3);
-    assert.equal(paired.baseline.accuracy, 0.75);
-    assert.equal(paired.variant.correct, 2);
-    assert.equal(paired.variant.accuracy, 0.5);
-    assert.equal(paired.accuracyDelta, -0.25);
-    assert.equal(paired.variant.invalidJsonResponses, 1);
+    assert.equal(paired.baseline.usableCorrect, 3);
+    assert.equal(paired.baseline.usableAccuracy, 0.75);
+    assert.equal(paired.variant.usableCorrect, 2);
+    assert.equal(paired.variant.usableAccuracy, 0.5);
+    assert.equal(paired.usableAccuracyDelta, -0.25);
+    assert.equal(paired.variant.invalidContractResponses, 1);
     assert.equal(paired.variant.malformedRate, 0.25);
     assert.equal(paired.baseline.malformedRate, 0);
     assert.deepEqual(paired.changes, {
@@ -1460,7 +1479,7 @@ test('paired comparison runs the unmodified baseline and the variant on identica
     });
     assert.deepEqual(paired.regressionCauses, {
       wrongIntent: 1,
-      invalidJson: 1,
+      invalidContract: 1,
       transportError: 0,
     });
     assert.deepEqual(paired.regressionIds, [uuid(1), uuid(2)]);
@@ -1470,12 +1489,12 @@ test('paired comparison runs the unmodified baseline and the variant on identica
     assert.equal(paired.meanOutputTokens.variant, 20);
 
     // Pairs join on the same recorded input in both arms.
-    for (const pair of report.pairs) {
+    for (const pair of comparison.pairs) {
       const baselineRow = report.baselineReport.results.find((row) => row.id === pair.id)!;
       const variantRow = report.variantReport.results.find((row) => row.id === pair.id)!;
       assert.equal(baselineRow.inputHash, variantRow.inputHash);
     }
-    const invalidPair = report.pairs.find((pair) => pair.id === uuid(1))!;
+    const invalidPair = comparison.pairs.find((pair) => pair.id === uuid(1))!;
     assert.equal(invalidPair.change, 'regression');
     assert.equal(invalidPair.variant.invalidReason, 'invalid-json');
 
@@ -1576,7 +1595,7 @@ test('CLI compare writes paired files, honors --order and refuses fixed routes',
     assert.equal(report.state, 'complete');
     assert.equal(report.kind, 'intent-json-cleanup-paired-comparison');
     assert.equal(report.order, 'variant-first');
-    assert.equal(report.paired[0].accuracyDelta, 0);
+    assert.equal(report.paired[0].summary.usableAccuracyDelta, 0);
     assert.ok(!JSON.stringify(report).includes(SECRET));
     const privateOutputs = JSON.parse(await readFile(privatePath, 'utf8'));
     assert.equal(privateOutputs.outputs[0].cleanedText, 'Hello.');
@@ -1626,4 +1645,438 @@ test('literal checks are validated, matched to examples and never echoed', async
   assert.deepEqual(evaluateLiteralCheck(check, null), { status: 'not-evaluated' });
   assert.deepEqual(evaluateLiteralCheck(undefined, 'x'), { status: 'no-checks' });
   assert.throws(() => assertChecksMatchExamples(checks, ['b']), /not a supported example/);
+});
+
+// ---------------------------------------------------------------------------
+// Review findings R1/R2 (Rowan, a42d150): regression tests
+// ---------------------------------------------------------------------------
+
+const BOM = '﻿';
+const NBSP = ' ';
+
+test('R1: BOM/NBSP around JSON over real HTTP stays invalid, raw text is preserved exactly', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r1-'));
+  const good = '{"intent":"IGNORE","parameters":{}}';
+  const wrapped = BOM + good + NBSP;
+
+  // Streaming: BOM in the first delta, NBSP in the last, split mid-JSON.
+  const streamed = (text: string) =>
+    [
+      { choices: [{ index: 0, delta: { content: text.slice(0, 5) }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { content: text.slice(5) }, finish_reason: 'stop' }] },
+    ]
+      .map((packet) => `data: ${JSON.stringify(packet)}\n\n`)
+      .join('') + 'data: [DONE]\n\n';
+
+  const bodies: Record<string, string> = {
+    'bom-nbsp': wrapped,
+    'nbsp-only': good + NBSP,
+    'bom-only': BOM + good,
+    'json-whitespace': ' \n\t' + good + '\r\n ',
+  };
+  const utterances = Object.keys(bodies);
+
+  for (const streaming of [false, true]) {
+    const directory = join(root, streaming ? 'streaming' : 'plain');
+    await mkdir(directory);
+    const datasetPath = await writeDataset(
+      directory,
+      utterances.map((utterance) => ({ utterance, expected: 'IGNORE' })),
+    );
+    // The recorded body decides the wire mode; rewrite `stream` for this pass.
+    const dataset = JSON.parse(await readFile(datasetPath, 'utf8'));
+    for (const example of dataset.examples) {
+      const record = JSON.parse(example.request);
+      record.body.stream = streaming;
+      example.request = JSON.stringify(record);
+    }
+    await writeFile(datasetPath, JSON.stringify(dataset));
+
+    const endpoint = await server(async (request, response) => {
+      const body = await readBody(request);
+      const content = bodies[utteranceOf(body)]!;
+      assert.equal(body.stream, streaming);
+      response.end(streaming ? streamed(content) : plain(content));
+    });
+
+    try {
+      const { report, privateOutputs } = await runExperiment(
+        { mode: 'inferred', datasetPath },
+        [{ name: 't', model: 'm', baseUrl: endpoint.url }],
+        64,
+      );
+      const byId = new Map(report.results.map((row) => [row.id, row]));
+      const privateById = new Map(privateOutputs.map((entry) => [entry.id, entry]));
+
+      for (let index = 0; index < utterances.length; index++) {
+        const name = utterances[index]!;
+        const row = byId.get(uuid(index))!;
+        const label = `${name} (${streaming ? 'streaming' : 'non-streaming'})`;
+
+        if (name === 'json-whitespace') {
+          // Ordinary JSON whitespace (space, tab, CR, LF) is legal JSON.
+          assert.equal(row.status, 'valid', label);
+          assert.equal(row.correct, true, label);
+          continue;
+        }
+
+        assert.equal(row.status, 'invalid', label);
+        assert.equal(row.invalidReason, 'invalid-json', label);
+        assert.equal(row.correct, false, label);
+        // No promotion through the diagnostic either: malformed JSON has no intent.
+        assert.equal(row.selectedIntent, null, label);
+        // The private evidence is the exact assistant content, untrimmed.
+        assert.equal(privateById.get(uuid(index))!.invalidResponseText, bodies[name], label);
+      }
+
+      assert.equal(report.summary[0]!.responseContract.validityRate, 0.25);
+      assert.equal(report.summary[0]!.classification!.usableAccuracy, 0.25);
+    } finally {
+      await endpoint.close();
+    }
+  }
+});
+
+test('R1 parity: exact replay still trims bare names as before; rawText is only additive', async () => {
+  // Shared decoder: `text` is trimmed exactly as before, `rawText` is untouched.
+  const wire = JSON.stringify({
+    choices: [{ index: 0, message: { content: `${BOM} IGNORE${NBSP}\n` }, finish_reason: 'stop' }],
+  });
+  const decoded = decodeCompletion(wire, false);
+  assert.equal(decoded.text, 'IGNORE');
+  assert.equal(decoded.rawText, `${BOM} IGNORE${NBSP}\n`);
+
+  // End to end: the unmodified exact-replay runner still accepts such a name.
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r1-parity-'));
+  const datasetPath = await writeDataset(root, [{ utterance: 'x', expected: 'IGNORE' }]);
+  const endpoint = await server((_request, response) => {
+    response.end(stream(`${BOM}IGNORE${NBSP}`));
+  });
+  try {
+    const baseline = await runEvaluation(datasetPath, [
+      { name: 'b', model: 'b', baseUrl: endpoint.url },
+    ]);
+    assert.equal(baseline.results[0]!.prediction, 'IGNORE');
+    assert.equal(baseline.results[0]!.correct, true);
+    assert.equal(baseline.summary[0]!.accuracy, 1);
+    // The baseline report shape is unchanged: no raw text is added to it.
+    assert.ok(!('rawText' in baseline.results[0]!));
+  } finally {
+    await endpoint.close();
+  }
+});
+
+/**
+ * The review's misleading scenario: 5 examples, two distinct IDs with identical
+ * recorded content, three older-template examples only exact replay supports.
+ * Baseline: 2/5 overall (40%), 2/2 on the variant's support. Variant: 1/2 (50%).
+ * Truth: one regression, -50 percentage points.
+ */
+async function misleadingScenario(root: string) {
+  const datasetPath = await writeDataset(root, [
+    { utterance: 'identical input', expected: 'IGNORE' },
+    { utterance: 'identical input', expected: 'IGNORE' },
+    {
+      utterance: 'old 2',
+      expected: 'IGNORE',
+      systemPrompt: 'Legacy\nName: IGNORE\nName: SEND_TEXT_TO_APPLICATION\n',
+    },
+    {
+      utterance: 'old 3',
+      expected: 'IGNORE',
+      systemPrompt: 'Legacy\nName: IGNORE\nName: SEND_TEXT_TO_APPLICATION\n',
+    },
+    {
+      utterance: 'old 4',
+      expected: 'IGNORE',
+      systemPrompt: 'Legacy\nName: IGNORE\nName: SEND_TEXT_TO_APPLICATION\n',
+    },
+  ]);
+
+  let variantCalls = 0;
+  const endpoint = await server(async (request, response) => {
+    const body = await readBody(request);
+    response.setHeader('Content-Type', 'text/event-stream');
+    if (systemPromptOf(body).includes('Response format (json-cleanup-v1):')) {
+      variantCalls++;
+      // Same content, different answers: only the ID can tell them apart.
+      response.end(
+        stream(
+          variantCalls === 1
+            ? '{"intent":"IGNORE","parameters":{}}'
+            : '{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{"text":"x"}}',
+        ),
+      );
+    } else {
+      response.end(
+        stream(utteranceOf(body).startsWith('old') ? 'SEND_TEXT_TO_APPLICATION' : 'IGNORE'),
+      );
+    }
+  });
+  return { datasetPath, endpoint };
+}
+
+function assertMisleadingScenarioPairedCorrectly(comparison: ReturnType<typeof pairRuns>) {
+  // Full-dataset baseline (40%) is reported only as context.
+  assert.equal(comparison.baselineFullDataset.accuracy, 0.4);
+  assert.equal(comparison.coverage.datasetExamples, 5);
+  assert.equal(comparison.coverage.paired, 2);
+  assert.equal(comparison.coverage.excluded, 3);
+
+  // Common support, one-to-one by ID: 100% -> 50%, exactly one regression.
+  const summary = comparison.summary;
+  assert.equal(summary.pairedExamples, 2);
+  assert.equal(summary.baseline.usableAccuracy, 1);
+  assert.equal(summary.variant.usableAccuracy, 0.5);
+  assert.equal(summary.usableAccuracyDelta, -0.5);
+  assert.equal(summary.changes.regressions, 1);
+  assert.equal(summary.changes.improvements, 0);
+  assert.deepEqual(summary.regressionIds, [uuid(1)]);
+
+  // The two pairs share one content hash but stay distinct rows.
+  assert.equal(comparison.pairs.length, 2);
+  assert.deepEqual(
+    comparison.pairs.map((pair) => pair.id),
+    [uuid(0), uuid(1)],
+  );
+}
+
+test('R2: the 40%-vs-50% scenario pairs by ID on common support and finds the one regression', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r2-'));
+  const { datasetPath, endpoint } = await misleadingScenario(root);
+
+  try {
+    const target = { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 };
+
+    // Separate runs, then offline pairing (the documented procedure).
+    const baseline = await runEvaluation(datasetPath, [target]);
+    const variant = await runExperiment({ mode: 'inferred', datasetPath }, [target], 64);
+    assert.equal(baseline.summary[0]!.accuracy, 0.4);
+    assert.equal(variant.report.summary[0]!.classification!.usableAccuracy, 0.5);
+    const [first, second] = variant.report.results;
+    assert.equal(first!.inputHash, second!.inputHash);
+
+    const offline = pairRuns({
+      baseline,
+      baselineTarget: 'local',
+      variant: variant.report,
+      variantTarget: 'local',
+    });
+    assertMisleadingScenarioPairedCorrectly(offline);
+
+    // The same via the offline CLI from report files, with zero model calls.
+    const baselinePath = join(root, 'baseline.json');
+    const variantPath = join(root, 'variant.json');
+    await writeFile(baselinePath, JSON.stringify({ state: 'complete', ...baseline }));
+    await writeFile(variantPath, JSON.stringify({ state: 'complete', ...variant.report }));
+    const pairingPath = join(root, 'pairing.json');
+    const pair = cli([
+      'pair',
+      '--baseline-report',
+      baselinePath,
+      '--baseline-target',
+      'local',
+      '--variant-report',
+      variantPath,
+      '--variant-target',
+      'local',
+      '--out',
+      pairingPath,
+    ]);
+    assert.equal(pair.status, 0, pair.stderr);
+    assert.equal(JSON.parse(pair.stdout).modelCalls, 0);
+    const written = JSON.parse(await readFile(pairingPath, 'utf8'));
+    assert.equal(written.state, 'complete');
+    assertMisleadingScenarioPairedCorrectly(written);
+    assert.equal((await stat(pairingPath)).mode & 0o777, 0o600);
+    assert.match(
+      cli([
+        'pair',
+        '--baseline-report',
+        baselinePath,
+        '--baseline-target',
+        'local',
+        '--variant-report',
+        variantPath,
+        '--variant-target',
+        'local',
+        '--out',
+        pairingPath,
+      ]).stderr,
+      /EEXIST/,
+    );
+  } finally {
+    await endpoint.close();
+  }
+
+  // The in-process compare command reaches the same paired result.
+  const compareRoot = await mkdtemp(join(tmpdir(), 'companion-cleanup-r2-compare-'));
+  const scenario = await misleadingScenario(compareRoot);
+  try {
+    const { report } = await runPairedComparison({
+      datasetPath: scenario.datasetPath,
+      targets: [{ name: 'local', model: 'm', baseUrl: scenario.endpoint.url, concurrency: 1 }],
+      outputTokens: 64,
+      order: 'baseline-first',
+      checks: null,
+    });
+    assertMisleadingScenarioPairedCorrectly(report.paired[0]!);
+  } finally {
+    await scenario.endpoint.close();
+  }
+});
+
+test('R2: pairing refuses missing, duplicate, mismatched or wrongly selected rows', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-cleanup-r2-refusals-'));
+  const { datasetPath, endpoint } = await misleadingScenario(root);
+  let baseline: Awaited<ReturnType<typeof runEvaluation>>;
+  let variant: Awaited<ReturnType<typeof runExperiment>>['report'];
+  try {
+    const targets = [
+      { name: 'local', model: 'm', baseUrl: endpoint.url, concurrency: 1 },
+      { name: 'other', model: 'm2', baseUrl: endpoint.url, concurrency: 1 },
+    ];
+    baseline = await runEvaluation(datasetPath, targets);
+    variant = (await runExperiment({ mode: 'inferred', datasetPath }, targets, 64)).report;
+  } finally {
+    await endpoint.close();
+  }
+
+  const attempt = (
+    mutate: (copies: { baseline: typeof baseline; variant: typeof variant }) => void,
+    variantTarget = 'local',
+  ) => {
+    const copies = { baseline: structuredClone(baseline), variant: structuredClone(variant) };
+    mutate(copies);
+    return () =>
+      pairRuns({
+        baseline: copies.baseline,
+        baselineTarget: 'local',
+        variant: copies.variant,
+        variantTarget,
+      });
+  };
+
+  // Selecting the other target on the variant side is allowed and explicit.
+  assert.equal(attempt(() => {}, 'other')().selection.variant.target.name, 'other');
+
+  const refusals: [string, () => unknown, RegExp][] = [
+    ['unknown target', attempt(() => {}, 'missing'), /no single target named missing/],
+    [
+      'dataset hash',
+      attempt(({ variant }) => {
+        variant.datasetHash = 'different';
+      }),
+      /different frozen datasets/,
+    ],
+    [
+      'duplicate baseline row',
+      attempt(({ baseline }) => {
+        baseline.results.push({ ...baseline.results[0]! });
+      }),
+      /Baseline has more than one row/,
+    ],
+    [
+      'duplicate variant row',
+      attempt(({ variant }) => {
+        variant.results.push({ ...variant.results[0]! });
+      }),
+      /Variant has more than one row/,
+    ],
+    [
+      'missing variant row',
+      attempt(({ variant }) => {
+        variant.results = variant.results.filter((row) => row.id !== uuid(1));
+      }),
+      /Variant rows do not match/,
+    ],
+    [
+      'missing baseline row for an excluded example',
+      attempt(({ baseline }) => {
+        baseline.results = baseline.results.filter((row) => row.id !== uuid(4));
+      }),
+      /Baseline rows do not match/,
+    ],
+    [
+      'input hash mismatch',
+      attempt(({ variant }) => {
+        variant.results[0]!.inputHash = 'different';
+      }),
+      /different recorded inputs/,
+    ],
+    [
+      'label mismatch',
+      attempt(({ variant }) => {
+        variant.results[0]!.expected = 'SEND_TEXT_TO_APPLICATION';
+      }),
+      /different labels/,
+    ],
+    [
+      'supported and excluded overlap',
+      attempt(({ variant }) => {
+        variant.examples.unsupported.push({
+          id: uuid(0),
+          reason: 'recorded-prompt-template-mismatch',
+        });
+      }),
+      /both supported and excluded/,
+    ],
+    [
+      'duplicate planned ID',
+      attempt(({ variant }) => {
+        variant.examples.supportedIds.push(uuid(0));
+      }),
+      /duplicate planned supported IDs/,
+    ],
+    [
+      'incomplete report',
+      attempt(({ variant }) => {
+        (variant as { state?: string }).state = 'incomplete';
+      }),
+      /complete intent-json-cleanup-experiment report/,
+    ],
+    [
+      'fixed-route report',
+      attempt(({ variant }) => {
+        (variant as { mode: string }).mode = 'fixed-route';
+      }),
+      /Only inferred variant runs/,
+    ],
+  ];
+  for (const [name, run, pattern] of refusals) {
+    assert.throws(run, pattern, name);
+  }
+});
+
+test('N1: intent-selection diagnostic never guesses through malformed or ambiguous JSON', () => {
+  const expectation: ResponseExpectation = {
+    allowedIntents: ['IGNORE', 'SEND_TEXT_TO_APPLICATION'],
+    fixedRoute: null,
+  };
+  const cases: [string, string | null][] = [
+    // Unambiguous intent even though the full contract fails: diagnostic only.
+    ['{"intent":"IGNORE","parameters":{"text":"unrequested"}}', 'IGNORE'],
+    ['{"intent":"SEND_TEXT_TO_APPLICATION","parameters":{}}', 'SEND_TEXT_TO_APPLICATION'],
+    ['{"intent":"IGNORE","parameters":{},"extra":1}', 'IGNORE'],
+    [' \n{"intent":"IGNORE"}\n', 'IGNORE'],
+    // No guessing: malformed, non-JSON whitespace, duplicates, unknown, wrong types.
+    [`${BOM}{"intent":"IGNORE","parameters":{}}`, null],
+    [`{"intent":"IGNORE","parameters":{}}${NBSP}`, null],
+    ['```json\n{"intent":"IGNORE","parameters":{}}\n```', null],
+    ['{"intent":"IGNORE","parameters":{"text":"cut', null],
+    ['{"intent":"IGNORE","intent":"SEND_TEXT_TO_APPLICATION","parameters":{}}', null],
+    ['{"intent":"IGNORE","parameters":{"a":1,"a":2}}', null],
+    ['{"intent":"ignore","parameters":{}}', null],
+    ['{"intent":"ENTER_TEXT_TO_APPLICATION","parameters":{"text":"x"}}', null],
+    ['{"intent":["IGNORE"],"parameters":{}}', null],
+    ['["IGNORE"]', null],
+    ['IGNORE', null],
+  ];
+  for (const [response, expected] of cases) {
+    assert.equal(diagnosticIntentSelection(response, expectation), expected, response);
+    // The diagnostic never changes the contract verdict for invalid responses.
+    if (expected !== null && !parseExperimentResponse(response, expectation).valid) {
+      assert.equal(parseExperimentResponse(response, expectation).valid, false);
+    }
+  }
 });
