@@ -358,3 +358,38 @@ test('desktop clients receive the harness fields and a clear picker refusal', as
   assert.equal(refused.type, 'error');
   assert.match(refused.message ?? '', /Claude Code conversation keeps the model and effort/);
 });
+
+test('an unresolved Claude Code start retries while open but reopens as Pi', async (context) => {
+  const { sessions, runs, view, configure, directory } = await harnessFixture(context);
+  const broken = { ...defaultAgentSettings, claudeCode: { effort: 'ultra' } };
+  await configure(broken);
+  const open = sessions.start(frame, signal(), 'coding', 'claude-code');
+  const closed = sessions.start(frame, signal(), 'coding', 'claude-code');
+  await sessions.idle();
+
+  for (const id of [open, closed]) {
+    assert.equal(view(id).status, 'error');
+    assert.match(view(id).error, /effort/);
+    assert.equal(view(id).harness, undefined, 'nothing was resolved');
+    assert.equal('harness' in (await savedJson(directory, id)), false);
+  }
+  assert.equal(runs.length, 0);
+  await configure({ ...defaultAgentSettings });
+
+  // Still open: the next turn resolves the requested harness from the file.
+  sessions.followUp(open, 'Retry', signal());
+  await sessions.idle();
+  assert.equal(runs.at(-1)?.harness, 'claude-code');
+  assert.equal(view(open).harness, 'claude-code');
+
+  // Closed and reopened: the archive is an ordinary Pi conversation. Pi gets
+  // a resume request, which a real Pi refuses visibly (it has no transcript).
+  await sessions.remove(closed);
+  await sessions.reopen(closed);
+  sessions.followUp(closed, 'After reopen', signal());
+  await sessions.idle();
+  assert.equal(runs.at(-1)?.id, closed);
+  assert.equal(runs.at(-1)?.harness, 'pi');
+  assert.equal(runs.at(-1)?.resume, true);
+  assert.equal(view(closed).harness, undefined);
+});

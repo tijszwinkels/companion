@@ -80,11 +80,17 @@ native session state and retains it when the conversation is saved and reopened.
 
 `START_CODING_AGENT_SESSION` is also available to the intent recognizer, for
 questions addressed to the computer's AI assistant. Each invocation starts an
-independent Pi session in `~/companion/agents`. **“new session …”** bypasses intent
-inference and uses the coding model (Astra by default). It replaces the old
-“new coding agent” shortcut. **“quick question …”** is a separate, prefix-only
-`QUICK_QUESTION` processor using local Qwen through the same Pi backend. Both
-send the captured screenshot and utterance and open an ordinary conversation tab.
+independent agent session in `~/companion/agents` using the configured coding
+harness: Pi by default, or Claude Code when `codingDefaultHarness` is
+`claude-code`. **“new session …”** bypasses intent inference and does the same;
+on Pi it uses the coding model (Astra by default). It replaces the old
+“new coding agent” shortcut. **“new claude session …”** always starts Claude
+Code with the configured Claude model, and **“new codex session …”** always
+starts Pi with the coding model. A Claude Code conversation keeps the model and
+effort it started with. **“quick question …”** is a separate, prefix-only
+`QUICK_QUESTION` processor using local Qwen through the same Pi backend. All of
+them send the captured screenshot and utterance and open an ordinary
+conversation tab.
 
 When an agent conversation is selected in the visible sidebar,
 `CONTINUE_OPEN_AGENT_CONVERSATION` joins the classifier's choices. With its input

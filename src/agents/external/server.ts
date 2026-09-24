@@ -16,6 +16,7 @@ const allowedFields = new Set([
   'id',
   'text',
   'profile',
+  'harness',
   'model',
   'focus',
   'ifDraftExists',

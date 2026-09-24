@@ -635,3 +635,59 @@ test('synthetic external child environments remove inherited authority without c
     'synthetic',
   );
 });
+
+test('external start accepts an optional harness with the internal validation and refusal codes', async (t) => {
+  const f = await fixture(t);
+
+  // Older callers are unchanged: no harness means the configured default, Pi.
+  const pi = await f.cli(['start', '--label', 'MM Rowan', '--text', 'Default harness']);
+  assert.equal(pi.code, 0, pi.stdout);
+  assert.equal(pi.result.session.harness, 'pi');
+
+  const claude = await f.cli([
+    'start',
+    '--label',
+    'MM Rowan',
+    '--text',
+    'Claude please',
+    '--harness',
+    'claude-code',
+    '--model',
+    'claude-sonnet-5',
+  ]);
+  assert.equal(claude.code, 0, claude.stdout);
+  assert.equal(claude.result.session.harness, 'claude-code');
+  assert.equal(claude.result.session.model, 'claude-sonnet-5');
+  await f.sessions.idle();
+  assert.deepEqual(f.claudeModels, ['claude-sonnet-5']);
+  const view = f.sessions.snapshot().find((entry) => entry.id === claude.result.session.id);
+  assert.equal(view?.harness, 'claude-code');
+  assert.equal(view?.messages[0].origin?.kind, 'external');
+
+  const refusals = [
+    ['--harness', 'codex'],
+    ['--harness', 'claude-code', '--model', 'test/model'],
+    ['--harness', 'claude-code', '--profile', 'quickQuestion'],
+    ['--harness', 'pi', '--model', 'claude-sonnet-5'],
+  ];
+  for (const options of refusals) {
+    const refused = await f.cli(['start', '--label', 'MM Rowan', '--text', 'Refused', ...options]);
+    assert.equal(refused.code, 4, options.join(' '));
+    assert.equal(refused.result.code, 'invalid', options.join(' '));
+  }
+  const unavailable = await f.cli([
+    'start',
+    '--label',
+    'MM Rowan',
+    '--text',
+    'Refused',
+    '--harness',
+    'pi',
+    '--model',
+    'invented/model',
+  ]);
+  assert.equal(unavailable.result.code, 'unavailable-model');
+
+  // Refusals created no tab.
+  assert.equal(f.sessions.snapshot().length, 2);
+});
