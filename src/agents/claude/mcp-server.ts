@@ -5,11 +5,17 @@
  *
  * Only the connections present in the environment produce tools, mirroring
  * Pi's per-turn `--extension` selection. Without a result route the bridge
- * offers nothing, because choices and names could not reach Companion.
+ * offers no Companion tools, because choices and names could not reach
+ * Companion.
+ *
+ * The Pi-parity tools come from the opt-in `claude-tools.json` in the working
+ * directory, which Claude Code gives the bridge: the agent directory. An
+ * invalid file throws here, so the bridge exits and the turn fails visibly.
  */
 import { bridgeTools, type BridgeToolConnections } from './bridge-tools.ts';
 import { bridgeEnvironment } from './mcp-config.ts';
 import { bridgeInstructions, McpStdioServer } from './mcp-stdio.ts';
+import { loadClaudeToolSettings } from './parity/settings.ts';
 
 function connection(
   endpointVariable: string,
@@ -33,7 +39,8 @@ const connections: BridgeToolConnections = {
   ),
 };
 
-const tools = bridgeTools(connections);
+const toolSettings = await loadClaudeToolSettings(process.cwd());
+const tools = bridgeTools(connections, toolSettings);
 const server = new McpStdioServer(tools, bridgeInstructions(tools), {
   input: process.stdin,
   write: (line) => {
