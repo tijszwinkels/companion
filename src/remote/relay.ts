@@ -390,6 +390,13 @@ export class Relay {
    * the desktop) are removed and the phone shows a placeholder instead.
    */
   private rewriteEvent(message: Record<string, unknown>): void {
+    // The recent-utterance list (latest 100, across earlier runs) feeds the
+    // desktop's paste-recovery picker. The phone shows only this run's
+    // Activity, so that text never needs to leave the computer.
+    if (message.type === 'state') {
+      message.history = [];
+    }
+
     const sessions: unknown[] = [];
 
     if (message.type === 'state' && Array.isArray(message.sessions)) {

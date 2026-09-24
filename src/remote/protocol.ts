@@ -154,6 +154,7 @@ export interface EngineState {
   soundsEnabled: boolean;
   processing: number;
   preview: boolean;
+  /** Always empty for phones: the gateway withholds the recent-utterance list. */
   history: HistoryEntry[];
   activitySessionId: string;
   activityHistoryCount: number;

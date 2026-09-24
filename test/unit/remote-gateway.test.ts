@@ -131,6 +131,20 @@ test('an authenticated phone receives state and gets correlated replies', async 
 
   const state = await phone.engine('state');
   assert.equal(state.ready, true);
+
+  // The desktop's recent-utterance list reaches desktop panels, never phones.
+  fixture.desktop.seed();
+  await waitFor(() =>
+    fixture.desktop.messages.some((message) => message.type === 'state' && message.history?.length),
+  );
+  await delay(50);
+  const phoneStates = phone.messages.filter(
+    (message) => message.type === 'engine' && message.message.type === 'state',
+  );
+  assert.ok(phoneStates.length >= 2);
+  for (const message of phoneStates) {
+    assert.deepEqual((message as { message: { history: unknown[] } }).message.history, []);
+  }
   assert.equal(state.sessionControlsAvailable, true);
 
   phone.send({ requestId: 'sounds-1', action: 'toggle-sounds' });

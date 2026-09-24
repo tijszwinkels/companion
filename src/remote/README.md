@@ -87,6 +87,9 @@ page a secure context.
   `api/screenshots/<session-uuid>`, fetched with the bearer token. The gateway
   serves only `<sessions directory>/<uuid>.png`, and only to a device that was
   shown that conversation. Widget view URLs are removed.
+- **Data minimization.** The desktop's recent-utterance list (latest 100 across
+  earlier runs, used for paste recovery) is emptied before snapshots reach phones;
+  the phone shows only the current run's Activity.
 - **Limits.** 4 phones, 8 unauthenticated sockets, 32 KiB messages, 30-request
   bursts at 10/s per phone, 16 MiB unsent backlog before disconnecting a stalled
   phone. Compression is disabled.
