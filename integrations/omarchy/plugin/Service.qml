@@ -662,7 +662,7 @@ Item {
     unreadSessionIds: agentSessions.unreadIds
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["set-agent-model", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["set-agent-model", "set-agent-thinking", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled, mode) => root.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})

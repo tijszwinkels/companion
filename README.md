@@ -144,6 +144,13 @@ The Qwen provider must already be registered in Pi's `~/.pi/agent/models.json`;
 this installation uses the same Qwen endpoint as intent detection. An unavailable
 local model reports an error instead of silently falling back to Astra.
 
+For a single conversation, use the **Model** and **Effort** selectors at the bottom
+of its panel. They apply from its next turn and survive reopening. Each profile-default
+option clears only that selector's override. The model menu initially shows Pi's
+pinned models; **Show all models** reveals the remaining available models. Effort
+choices follow the selected model's capabilities. Pi adjusts an inherited level
+when necessary (for example `off` becomes `minimal` for Astra).
+
 Edit this file to change the next turn's model or executable. Pi calls the
 Codex provider `openai-codex`. An absolute executable path can pin an installed
 Pi release and avoid version-manager wrapper behavior. Existing files are never
@@ -656,3 +663,12 @@ lines that separate steps:
 npm run format
 npm run format:check
 ```
+
+### Local external coding agents
+
+Companion can optionally expose session list/start/reopen/close/send/draft to local
+processes running as your Linux user. Enable `--external-sessions` on the listener
+and use `bin/companion-session --help` from its checkout. Access is off by default,
+uses a private Unix socket rather than network exposure, and identifies caller
+labels as unverified. See the [external session API guide](src/agents/external/README.md)
+for discovery, commands, retries and the same-user trust boundary.

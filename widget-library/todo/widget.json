@@ -1,6 +1,6 @@
 {
   "name": "todo",
-  "version": 1,
+  "version": 3,
   "description": "A shared checklist. Add, rename, complete or remove individual items.",
   "parameters": {
     "type": "object",
@@ -9,6 +9,13 @@
         "type": "string",
         "maxLength": 100,
         "default": "To do"
+      },
+      "textScale": {
+        "type": "number",
+        "minimum": 0.75,
+        "maximum": 1.5,
+        "default": 0.9,
+        "description": "Widget-only typography multiplier, layered on conversation zoom. 1 matches the original redesign; default 0.9 is 10% smaller."
       },
       "items": {
         "type": "array",
@@ -102,6 +109,12 @@
             "type": "string",
             "maxLength": 300,
             "minLength": 1
+          },
+          "expectedText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "Optional saved item text to compare before renaming. A mismatch rejects the edit without changing props."
           }
         },
         "required": ["itemId", "text"],

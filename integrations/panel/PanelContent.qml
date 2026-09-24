@@ -835,5 +835,6 @@ Item {
     unit: root.unit
     onRefreshRequested: root.refreshModels()
     onModelRequested: (id, model) => root.sessionControls.controlRequested({action: "set-agent-model", id: id, model: model})
+    onThinkingRequested: (id, thinking) => root.sessionControls.controlRequested({action: "set-agent-thinking", id: id, thinking: thinking})
   }
 }

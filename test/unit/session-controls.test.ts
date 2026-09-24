@@ -23,7 +23,14 @@ test('desktop session controls discover once, validate models, publish order and
         async models() {
           discoveries++;
           await discovery.promise;
-          return ['configured/one', 'configured/two'];
+          const models = ['configured/one', 'configured/two'];
+          return {
+            models,
+            pinned: models,
+            thinkingLevels: Object.fromEntries(
+              models.map((model) => [model, ['off', 'minimal', 'low', 'medium', 'high']]),
+            ),
+          };
         },
         async run() {},
       },
@@ -61,6 +68,18 @@ test('desktop session controls discover once, validate models, publish order and
   desktop.send({ action: 'set-agent-model', id: second, model: 'unknown/model' });
   assert.equal((await desktop.reply('set-agent-model')).type, 'error');
   assert.equal(sessions.snapshot()[1].modelOverride, 'configured/two');
+
+  desktop.send({ action: 'set-agent-thinking', id: second, thinking: 'high' });
+  assert.equal((await desktop.reply('set-agent-thinking')).result, 'thinking-selected');
+  assert.equal(sessions.snapshot()[1].thinkingOverride, 'high');
+  assert.equal(sessions.snapshot()[0].thinkingOverride, undefined);
+  desktop.send({ action: 'set-agent-thinking', id: second, thinking: 'ultra' });
+  assert.equal((await desktop.reply('set-agent-thinking')).type, 'error');
+  assert.equal(sessions.snapshot()[1].thinkingOverride, 'high');
+  desktop.send({ action: 'set-agent-thinking', id: second, thinking: '' });
+  await desktop.reply('set-agent-thinking');
+  assert.equal(sessions.snapshot()[1].thinkingOverride, undefined);
+  assert.equal(await readFile(configPath, 'utf8'), config);
 
   const order = sessions.order();
   desktop.send({ action: 'move-agent', id: second, beforeId: first, revision: order.revision });

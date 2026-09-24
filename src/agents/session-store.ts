@@ -8,7 +8,12 @@ import { randomUUID } from 'node:crypto';
 
 import { attachment } from '../widgets/types.ts';
 import type { Log } from '../core/frame.ts';
-import type { AgentMessage, AgentSession, PreviousSession } from './types.ts';
+import {
+  agentThinkingLevels,
+  type AgentMessage,
+  type AgentSession,
+  type PreviousSession,
+} from './types.ts';
 import { toolCallLimit, ToolTranscripts } from './tool-transcripts.ts';
 import { panelMessageLimit } from './transcript-limits.ts';
 import { parseOrigin } from './agent-origin.ts';
@@ -131,6 +136,8 @@ export class SessionStore {
         (typeof session.modelOverride !== 'string' ||
           !session.modelOverride.includes('/') ||
           session.modelOverride.length > 300)) ||
+      (session.thinkingOverride !== undefined &&
+        !agentThinkingLevels.includes(session.thinkingOverride)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
       session.messages.length > panelMessageLimit + toolCallLimit
@@ -278,6 +285,9 @@ export class SessionStore {
       model: session.model,
       ...(session.profile !== undefined ? { profile: session.profile } : {}),
       ...(session.modelOverride !== undefined ? { modelOverride: session.modelOverride } : {}),
+      ...(session.thinkingOverride !== undefined
+        ? { thinkingOverride: session.thinkingOverride }
+        : {}),
       error: session.error,
       updatedAt: session.updatedAt,
       messages,

@@ -49,6 +49,34 @@ While Chromium starts, the arrow shows progress and rejects duplicate clicks.
 Launch failures remain visible through background refreshes until the next
 attempt or a different widget view is selected.
 
+## To-do editing
+
+To-do item text opens an inline editor; the checkbox controls completion only.
+The sidebar's Escape key keeps the host contract above: focus moves to the
+pop-out button, leaving the inline draft intact. Use **Cancel** to abandon that
+edit. In the Chromium pop-out, Escape cancels the edit and focuses the item text.
+
+An editor remembers the item's saved text when opened. Another writer's rename
+is shown beside the retained draft. The first Save acknowledges that saved
+value; **Replace saved text** confirms replacing it. A further rename requires
+another confirmation. Changes to other items, completion or the title do not
+invalidate the draft. The optional `rename_item.expectedText` argument compares
+against saved text in the reducer, protecting a rename arriving during save too.
+Existing callers can omit it; retained older bundles keep their old action
+schema and behavior. The host still rejects stale displayed revisions, including
+those caused by unrelated changes during a save; the widget never retries
+mutations automatically. Inspect the saved value before retrying a failed save.
+
+If an edited item is removed, its editor remains as a copyable recovery draft
+with saving disabled. Dismiss it after copying any text to keep. Failed additions
+retain the input and ask the user to check the list before adding again, because
+a reported failure may follow a committed write.
+
+The approved typography and density remain: `textScale` is 0.75–1.5 (default
+0.9), multiplied by host text size. Small pinned views may show only one or two
+rows; the list scrolls. Coral remains on the progress fill and checked circles;
+text, control boundaries and focus outlines use readable theme foregrounds.
+
 ## Adding a widget
 
 Create a directory named with lowercase letters, digits and hyphens. It contains
@@ -155,6 +183,11 @@ scroll when the user reserves less height.
 Self-contained HTML, CSS, inline SVG, canvas and WebGL are available. CDN imports,
 remote images, fonts, fetches and browser storage are unavailable. Bundle needed
 libraries locally; do not add network dependencies to a widget.
+Embed photos and other raster images as `data:` URLs, for example
+`data:image/jpeg;base64,…` in an `<img>` source, CSS `url()` or canvas image.
+Size and compress them for the widget: `widget.js` is limited to 1 MiB and
+`style.css` to 32 KiB. Every network image URL, including localhost, and `blob:`
+images are blocked.
 
 ## State, errors and cancellation
 
@@ -209,7 +242,9 @@ are not mounted. The explicit pop-out receives only the Wayland display socket.
 There is no TCP debugging port. Browser automation uses anonymous pipes. The
 opaque sandbox iframe has no host credentials or application APIs; its only
 bridge accepts declared widget actions. CSP blocks network content, nesting,
-workers and form navigation. Browser permissions, file choosers and downloads
+workers and form navigation. The iframe inherits the trusted host document's CSP
+in addition to its own, so a resource type is only usable when both policies
+allow it; both permit `data:` images and nothing else for images. Browser permissions, file choosers and downloads
 are denied. The trusted pop-out host's capability-scoped state/action requests
 are fulfilled through the private pipe; Chromium itself has no network access.
 There is no fallback that disables these protections.

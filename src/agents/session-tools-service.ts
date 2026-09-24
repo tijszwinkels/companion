@@ -64,7 +64,7 @@ export interface SessionDirectory {
 export interface SessionToolHost {
   title(id: string): string | undefined;
   sourceGroupId?(sender: string, toolCallId: string): string | undefined;
-  directory(sender: string, query: string, limit: number): SessionDirectory;
+  directory(sender: string | undefined, query: string, limit: number): SessionDirectory;
   start(
     request: {
       text: string;
@@ -86,7 +86,7 @@ export interface SessionToolHost {
   }>;
   close(
     id: string,
-    sender: string,
+    sender: string | undefined,
     signal: AbortSignal,
   ): Promise<{
     outcome: 'closed' | 'closing-after-turn' | 'already-closed';
@@ -110,16 +110,23 @@ export interface SessionToolHost {
   ): Promise<AgentDraftOutcome>;
 }
 
-interface ToolReply {
+export interface ToolReply {
   status: number;
   body: Record<string, unknown>;
 }
 
-/**
- * One agent turn's authority. It names the calling conversation and the depth
- * of the prompt that started the turn; the tool cannot claim another sender.
- */
+/** External admission context: no conversation ownership, token or turn lease. */
+export interface ExternalCaller {
+  kind: 'external';
+  label: string;
+  requestId: string;
+  signal: AbortSignal;
+  delivered: Set<string>;
+}
+
+/** One internal turn's authority, with a server-established sender and depth. */
 interface Lease {
+  kind: 'internal';
   token: string;
   owner: string;
   depth: number;
@@ -166,6 +173,7 @@ export class SessionToolService {
     };
 
     this.leases.set(token, {
+      kind: 'internal',
       token,
       owner,
       depth,
@@ -342,21 +350,67 @@ export class SessionToolService {
     return reply;
   }
 
-  private list(lease: Lease, command: Record<string, unknown>): ToolReply {
+  private list(lease: Lease | undefined, command: Record<string, unknown>): ToolReply {
     const query = optionalString(command.query, 'query', 100) ?? '';
     const limit = command.limit ?? 20;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50) {
       throw new SessionToolError('invalid', 'limit must be an integer from 1 to 50', 400);
     }
-    const directory = this.host.directory(lease.owner, query, limit);
-    return { status: 200, body: { self: lease.owner, ...directory } };
+    const directory = this.host.directory(lease?.owner, query, limit);
+    return { status: 200, body: { self: lease?.owner ?? null, ...directory } };
+  }
+
+  /** External transport owns its request receipts, deadline and global rate window.
+   * It never obtains a turn lease or an internal bearer token. */
+  async external(caller: ExternalCaller, command: Record<string, unknown>): Promise<ToolReply> {
+    try {
+      caller.signal.throwIfAborted();
+      if (this.closed) {
+        throw new SessionToolError('unavailable', 'Session tools are closed');
+      }
+      if (command.method === 'list') {
+        return this.list(undefined, command);
+      }
+      if (!['start', 'reopen', 'close', 'send', 'draft'].includes(String(command.method))) {
+        throw new SessionToolError('invalid', 'Unknown method', 400);
+      }
+      return await this.act(
+        caller,
+        command.method as 'start' | 'reopen' | 'close' | 'send' | 'draft',
+        command,
+      );
+    } catch (error) {
+      if (caller.signal.aborted) {
+        return {
+          status: 409,
+          body: {
+            code: 'unconfirmed',
+            error:
+              'Request cancelled or timed out; inspect the destination before another mutation.',
+          },
+        };
+      }
+      // Never return arbitrary filesystem/backend errors to external clients.
+      if (!(error instanceof SessionToolError)) {
+        return {
+          status: 409,
+          body: {
+            code: 'unconfirmed',
+            error:
+              'Session outcome could not be confirmed; inspect the destination before another mutation.',
+          },
+        };
+      }
+      return this.failure(error);
+    }
   }
 
   private async act(
-    lease: Lease,
+    caller: Lease | ExternalCaller,
     method: 'start' | 'reopen' | 'close' | 'send' | 'draft',
     command: Record<string, unknown>,
-    toolCallId: string,
+    /** Pi's tool-call ID for internal calls; external requests have none. */
+    toolCallId?: string,
   ): Promise<ToolReply> {
     // Validate before consuming the turn's action budget, so a malformed call
     // can be corrected without exhausting it.
@@ -364,31 +418,36 @@ export class SessionToolService {
     const id = method === 'start' ? '' : sessionId(command.id);
     const text = method === 'reopen' || method === 'close' ? '' : messageText(command.text);
 
-    // Commit point for every mutating method; hosts recheck the lease signal
+    // Commit point for every mutating method; hosts recheck the caller signal
     // across their own awaits before changing any conversation.
-    this.assertLive(lease);
-    if (lease.actions >= maxLifecycleActionsPerTurn) {
-      throw new SessionToolError(
-        'limit',
-        `An agent turn can perform at most ${maxLifecycleActionsPerTurn} session actions`,
-        429,
-      );
+    if (caller.kind === 'internal') {
+      this.assertLive(caller);
+      if (caller.actions >= maxLifecycleActionsPerTurn) {
+        throw new SessionToolError(
+          'limit',
+          `An agent turn can perform at most ${maxLifecycleActionsPerTurn} session actions`,
+          429,
+        );
+      }
+      caller.actions++;
+    } else {
+      caller.signal.throwIfAborted();
     }
-    lease.actions++;
+    const owner = caller.kind === 'internal' ? caller.owner : undefined;
 
     if (method === 'reopen') {
-      const result = await this.host.reopen(id, focus, lease.signal);
+      const result = await this.host.reopen(id, focus, caller.signal);
       return { status: 200, body: { ...result } };
     }
 
     // Closing never delivers content or starts a turn, so it has no depth or
     // duplicate-content check. The host defers closing the caller's own tab.
     if (method === 'close') {
-      const result = await this.host.close(id, lease.owner, lease.signal);
+      const result = await this.host.close(id, owner, caller.signal);
       return { status: 200, body: { ...result } };
     }
 
-    if (method === 'send' && id === lease.owner) {
+    if (method === 'send' && id === owner) {
       throw new SessionToolError(
         'self-target',
         'An agent cannot send a message to its own conversation',
@@ -397,42 +456,53 @@ export class SessionToolService {
 
     // Only messages that can start another agent turn extend the chain. A
     // draft waits for the user, so it cannot create an automatic loop.
-    const depth = lease.depth + 1;
+    const depth = caller.kind === 'internal' ? caller.depth + 1 : 1;
     if ((method === 'start' || method === 'send') && depth > maxAgentDepth) {
       throw new SessionToolError(
         'loop-limit',
-        `This turn was started by a chain of ${lease.depth} agent messages. ` +
+        `This turn was started by a chain of ${depth - 1} agent messages. ` +
           'Further agent-to-agent messages are blocked to prevent a feedback loop; ' +
           'report back to the user instead.',
       );
     }
 
-    const senderTitle = this.host.title(lease.owner);
-    if (senderTitle === undefined) {
-      throw new SessionToolError('expired', 'The calling conversation is no longer open', 403);
-    }
-    const origin: AgentMessageOrigin = {
-      kind: 'agent',
-      sessionId: lease.owner,
-      title: [...senderTitle].slice(0, 80).join(''),
-      depth,
-    };
-    const sourceGroupId = this.host.sourceGroupId?.(lease.owner, toolCallId);
-    if (sourceGroupId) {
-      origin.sourceGroupId = sourceGroupId;
+    let origin: AgentMessageOrigin;
+    if (caller.kind === 'external') {
+      origin = { kind: 'external', title: caller.label, requestId: caller.requestId, depth };
+    } else {
+      const senderTitle = this.host.title(caller.owner);
+      if (senderTitle === undefined) {
+        throw new SessionToolError('expired', 'The calling conversation is no longer open', 403);
+      }
+      origin = {
+        kind: 'agent',
+        sessionId: caller.owner,
+        title: [...senderTitle].slice(0, 80).join(''),
+        depth,
+      };
+
+      // Anchor the recipient's heading link to the sender's stored tool group.
+      // External callers have no sender transcript, so they never get one.
+      const sourceGroupId =
+        toolCallId === undefined ? undefined : this.host.sourceGroupId?.(caller.owner, toolCallId);
+      if (sourceGroupId) {
+        origin.sourceGroupId = sourceGroupId;
+      }
     }
 
     // Reserve the content before awaiting, so parallel identical calls in one
     // turn cannot both deliver. Only a definite non-delivery releases it.
     const deliveryKey = createHash('sha256').update(`${method}\0${id}\0${text}`).digest('hex');
-    if (lease.delivered.has(deliveryKey)) {
+    if (caller.delivered.has(deliveryKey)) {
       throw new SessionToolError(
         'duplicate',
-        'This exact content was already delivered to that destination in this turn. ' +
+        (caller.kind === 'internal'
+          ? 'This exact content was already delivered to that destination in this turn. '
+          : 'This exact content may already have been delivered to that destination within the duplicate-protection window. ') +
           'Do not resend it; inspect the destination with companion_sessions instead.',
       );
     }
-    lease.delivered.add(deliveryKey);
+    caller.delivered.add(deliveryKey);
 
     try {
       if (method === 'start') {
@@ -446,13 +516,13 @@ export class SessionToolService {
         }
         const session = await this.host.start(
           { text, profile, model, focus, origin },
-          lease.signal,
+          caller.signal,
         );
         return { status: 200, body: { outcome: 'started', session } };
       }
 
       if (method === 'send') {
-        const result = this.host.send(id, text, origin, lease.signal);
+        const result = this.host.send(id, text, origin, caller.signal);
         return { status: 200, body: { ...result } };
       }
 
@@ -462,17 +532,21 @@ export class SessionToolService {
       }
       const result = await this.host.draft(
         { id, text, ifDraftExists, focus, origin },
-        lease.signal,
+        caller.signal,
       );
       if (result.outcome === 'inserted' || result.outcome === 'appended') {
         return { status: 200, body: { ...result, id } };
       }
       throw new SessionToolError(result.outcome, draftFailure(result));
     } catch (error) {
-      // A draft's uncertain outcome must keep its reservation. Every other
-      // thrown path happened before the host accepted the content.
-      if (!(error instanceof SessionToolError && error.code === 'unconfirmed')) {
-        lease.delivered.delete(deliveryKey);
+      // Keep uncertain drafts and unexpected external host failures reserved:
+      // the host might have changed state before throwing. Only a known refusal
+      // releases external content for a new attempt. Internal behavior is retained.
+      const uncertain =
+        (error instanceof SessionToolError && error.code === 'unconfirmed') ||
+        (caller.kind === 'external' && !(error instanceof SessionToolError));
+      if (!uncertain) {
+        caller.delivered.delete(deliveryKey);
       }
       throw error;
     }

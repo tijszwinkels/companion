@@ -31,6 +31,9 @@ Item {
             const ids = sessions.map(entry => entry.id).filter(id => id !== request.id)
             ids.splice(request.beforeId ? ids.indexOf(request.beforeId) : ids.length, 0, request.id)
             controlReceived({type: "agent-order", ids: ids, revision: orderRevision + "-next"})
+          } else if (request.action === "set-agent-thinking") {
+            const session = sessions.find(entry => entry.id === request.id)
+            update(Object.assign({}, session, {thinkingOverride: request.thinking, messages: []}))
           } else if (request.action === "set-agent-model") {
             const session = sessions.find(entry => entry.id === request.id)
             update(Object.assign({}, session, {modelOverride: request.model, messages: []}))
@@ -275,6 +278,23 @@ Item {
       keyClick(Qt.Key_Return)
       compare(setup.requests.filter(request => request.action === "set-agent-model").length, 1)
     }
+    function test_effort_picker_forwards_only_selected_conversation() {
+      const setup = createTemporaryObject(fixture, parent)
+      setup.availableCatalog = {models: ["configured/local"], pinned: ["configured/local"], quickQuestion: "configured/local", quickQuestionThinking: "off", thinkingLevels: {"configured/local": ["off", "low", "high"]}}
+      const picker = findChild(setup.panel, "sessionThinkingPicker")
+      tryCompare(picker, "enabled", true)
+      verify(waitForRendering(picker))
+      mouseClick(picker, 30, picker.height / 2)
+      keyClick(Qt.Key_End)
+      keyClick(Qt.Key_Return)
+      const request = setup.requests.find(request => request.action === "set-agent-thinking")
+      verify(request !== undefined)
+      compare(request.id, "b")
+      compare(request.thinking, "high")
+      compare(setup.state.sessions[1].thinkingOverride, "high")
+      compare(setup.state.sessions[0].thinkingOverride, undefined)
+    }
+
     function test_model_picker_scope_and_stale_voice_selection() {
       const setup = createTemporaryObject(fixture, parent)
       const panel = setup.panel
