@@ -9,7 +9,8 @@ const help = `Usage: companion-session <info|list|start|reopen|close|send|draft>
   --id UUID               Companion conversation from list (reopen/close/send/draft)
   --text TEXT             Message or draft, 1–4000 characters
   --profile PROFILE       coding (default) or quickQuestion, for start
-  --model PROVIDER/ID     Explicit model for start
+  --harness HARNESS       pi or claude-code, for start (default: configured coding harness)
+  --model MODEL           Explicit model for start: Pi provider/id or Claude model ID
   --focus                 Explicitly reveal a started/reopened/drafted conversation
   --append                Append draft below existing text; default refuses overwrite
   --query TEXT --limit N  Saved title filter and count (1–50) for list
@@ -43,6 +44,7 @@ try {
       id: { type: 'string' },
       text: { type: 'string' },
       profile: { type: 'string' },
+      harness: { type: 'string' },
       model: { type: 'string' },
       focus: { type: 'boolean' },
       append: { type: 'boolean' },
@@ -97,7 +99,7 @@ try {
         requestId = `${info.epoch}_${Date.now()}_${randomUUID()}`;
       }
       const command: Record<string, unknown> = { method, requestId, label: values.label ?? 'CLI' };
-      for (const key of ['id', 'text', 'profile', 'model', 'focus', 'query'] as const) {
+      for (const key of ['id', 'text', 'profile', 'harness', 'model', 'focus', 'query'] as const) {
         if (values[key] !== undefined) {
           command[key] = values[key];
         }

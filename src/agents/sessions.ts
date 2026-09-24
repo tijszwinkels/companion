@@ -81,6 +81,14 @@ interface RunningSession {
    * `coding-default` reads `codingDefaultHarness`; `claude-code` only reads the
    * Claude model and effort. A configuration error then fails that turn in its
    * own tab. Cleared once resolved; never saved.
+   *
+   * If the first turn fails or stops before resolution (for example because
+   * the configuration is broken), the saved archive has no harness. While the
+   * tab stays open, the next turn tries to resolve again. Once it is closed
+   * and reopened, or after a listener restart, it is an ordinary Pi
+   * conversation, even if "new claude session" started it: a follow-up runs Pi
+   * with `resume`, which fails visibly because Pi has no transcript for it.
+   * This is deliberate. Do not turn it into a silent fallback.
    */
   pendingHarness?: 'coding-default' | 'claude-code';
 }

@@ -72,10 +72,17 @@ once, from the configured `claudeCode` section or an explicit
 `companion_session_start` model, and shows that model as `AgentSession.model`.
 Later turns pass the recorded pair with the executable read afresh from
 `companion-agent.json`, so configuration edits change the program but never the
-model of an existing conversation. A speech-started conversation resolves
-`codingDefaultHarness` and the Claude settings when its first turn begins, before
-its first save or backend call; until then the conversation refuses model/effort
-changes, and a configuration error fails that first turn in its own tab. The
+model of an existing conversation. That read validates the whole file, as for
+Pi: a mistake in any section, including `claudeCode`, also blocks turns of
+existing Claude Code conversations until it is corrected.
+
+A speech-started conversation resolves `codingDefaultHarness` and the Claude
+settings when its first turn begins, before its first save or backend call;
+until then the conversation refuses model/effort changes, and a configuration
+error fails that first turn in its own tab. The next turn in the still-open tab
+retries the resolution. A tab closed (or a listener stopped) before any
+resolution succeeded is saved without a harness and reopens as a Pi
+conversation; its follow-up then fails visibly on Pi's missing transcript. The
 session store accepts `harness` only as `claude-code` together with valid
 `claudeCode` settings (an explicit `"pi"` is normalized to absence) and never
 with Pi's model/effort overrides; archives without the fields stay valid.

@@ -75,7 +75,8 @@ needed to update this adapter.
   coding/quick-question default. Overrides survive closing and reopening, while
   running turns and other sessions keep their models. Thinking follows the
   conversation profile, or `off` for models without reasoning. The picker does
-  not edit profile or Pi configuration.
+  not edit profile or Pi configuration. A Claude Code conversation has no
+  picker: the footer names the model and effort fixed when it started.
 - While the panel has keyboard focus, **Super+minus** widens it and
   **Super+equals** narrows it by 100 logical pixels. These are Omarchy's existing
   physical horizontal-resize keys (`code:20`/`code:21`); their original window
@@ -200,7 +201,8 @@ status or expands the microphone and phrase animation. The choice follows you
 between tabs until the plugin is restarted; hidden animations stop immediately.
 Each session has Stop and
 Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
-inserts a newline). A follow-up resumes its Pi conversation. Closing the panel
+inserts a newline). A follow-up resumes its Pi or Claude Code conversation.
+Closing the panel
 keeps its questions running and retains its drafts. Right-click a question tab or
 use the animated **×** at its top-right corner to stop and archive it. **Previous
 sessions** at the bottom of the tab rail shows saved titles, dates, and status in

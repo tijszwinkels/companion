@@ -9,7 +9,11 @@ import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { AgentSessions } from '../src/agents/sessions.ts';
 import { defaultAgentSettings } from '../src/agents/settings.ts';
-import { chatMessage, type AgentBackend } from '../src/agents/types.ts';
+import {
+  chatMessage,
+  type AgentBackend,
+  type ClaudeCodeAgentBackend,
+} from '../src/agents/types.ts';
 import { ExternalSessionServer } from '../src/agents/external/server.ts';
 import { requestExternal } from '../src/agents/external/client.ts';
 import { signal } from './helpers.ts';
@@ -84,7 +88,18 @@ export async function fixture(
       emit(chatMessage(randomUUID(), 'assistant', 'Synthetic answer'));
     },
   };
-  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
+  // A scripted Claude Code backend; its turns are recorded with their model.
+  const claudeModels: string[] = [];
+  const claude: ClaudeCodeAgentBackend = {
+    id: 'synthetic-external-claude',
+    label: 'Synthetic external Claude Code',
+    dependencies: {},
+    async run(request, _signal, emit) {
+      claudeModels.push(request.settings.model);
+      emit(chatMessage(randomUUID(), 'assistant', 'Synthetic Claude answer'));
+    },
+  };
+  const sessions = new AgentSessions({ pi: backend, 'claude-code': claude }, () => {}, directory);
   resources.sessions = sessions;
   await sessions.loadPrevious();
   const path = join(directory, 'api', 'session.sock');
@@ -95,7 +110,7 @@ export async function fixture(
   const call = (method: string, args: Record<string, unknown> = {}) =>
     requestExternal(path, { method, label: 'Rowan', requestId: identity(), ...args }, signal());
   const cli = (args: string[]) => runCli(path, args);
-  return { directory, path, sessions, backend, server, prompts, identity, call, cli };
+  return { directory, path, sessions, backend, server, prompts, claudeModels, identity, call, cli };
 }
 
 /** Invoke the shipped executable from an unrelated cwd, like a local MM agent. */
