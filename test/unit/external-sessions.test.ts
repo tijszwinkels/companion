@@ -321,7 +321,11 @@ test('cancelled model discovery cannot create a session; accepted work outlives 
   const f = await fixture(t, { deadline: 80, beforeClose: () => discovery.resolve() });
   f.sessions.dependencies.backend.models = async () => {
     await discovery.promise;
-    return ['test/model'];
+    return {
+      models: ['test/model'],
+      pinned: ['test/model'],
+      thinkingLevels: { 'test/model': ['off', 'minimal', 'low', 'medium', 'high'] },
+    };
   };
   const pending = f.call('start', { text: 'Never created', model: 'test/model' });
   assert.equal((await pending).code, 'unconfirmed');
@@ -451,7 +455,11 @@ test('half-closed request streams support asynchronous start, reopen and draft',
   const f = await fixture(t);
   f.sessions.dependencies.backend.models = async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
-    return ['test/model'];
+    return {
+      models: ['test/model'],
+      pinned: ['test/model'],
+      thinkingLevels: { 'test/model': ['off', 'minimal', 'low', 'medium', 'high'] },
+    };
   };
   const half = (method: string, args: Record<string, unknown>) =>
     raw(

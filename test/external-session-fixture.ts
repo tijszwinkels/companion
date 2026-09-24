@@ -71,7 +71,11 @@ export async function fixture(
         label: 'Synthetic external',
         dependencies: {},
         async models() {
-          return ['test/model'];
+          return {
+            models: ['test/model'],
+            pinned: ['test/model'],
+            thinkingLevels: { 'test/model': ['off', 'minimal', 'low', 'medium', 'high'] },
+          };
         },
         async run(request, signal, emit) {
           prompts.push(request.prompt.text);
