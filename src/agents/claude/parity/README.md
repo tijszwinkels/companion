@@ -31,6 +31,11 @@ Companion never creates or edits it.
 ```
 
 - Each section enables one tool group; omit a section to leave its tools out.
+- **Trust:** `openRig.directory` names code, not data. The bridge imports that
+  checkout's `lib/tasks.mjs` and `lib/previews.mjs` and runs them inside the
+  bridge process with the user's permissions, on every OpenRig tool call.
+  Point it only at a checkout you trust, as you would a Pi extension. Likewise,
+  `desktop.pointerHelper` is an executable the bridge runs to click.
 - A missing file enables nothing. Unknown keys, relative paths or invalid
   JSON stop the bridge, so Claude Code reports the `companion` MCP server as
   `failed` in `init` and the backend fails the turn visibly (it requires
