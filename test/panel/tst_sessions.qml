@@ -94,7 +94,8 @@ Item {
       mouseClick(heading, 18, 10)
       compare(selected, "source")
       tryVerify(function() { return findChild(panel, "bubble-source-group") !== null })
-      tryCompare(findChild(panel, "bubble-source-group"), "expanded", true)
+      wait(50)
+      compare(findChild(panel, "bubble-source-group").expanded, false)
       compare(sends, 0)
     }
 
@@ -240,7 +241,8 @@ Item {
       compare(reopens, 1)
       compare(state.selectedId, "source")
       tryVerify(function() { return findChild(panel, "bubble-source-group") !== null })
-      tryCompare(findChild(panel, "bubble-source-group"), "expanded", true)
+      wait(50)
+      compare(findChild(panel, "bubble-source-group").expanded, false)
       compare(panel.pendingOriginId, "")
 
       // The earlier archived request no longer carries an anchor.
@@ -273,22 +275,16 @@ Item {
       panel.sessions = [session([incoming]), Object.assign({}, session(history), {id: "source", title: "Source"})]
       panel.selectedSessionId = "question-1"
       panel.sessionSelected.connect(function(id) { panel.selectedSessionId = id })
-      // Answer tool pages at once, so the expanded group is taller than the view
-      // before the jump settles its position.
+      // Navigation must not open details or fetch their lazy tool pages.
       let pages = 0
-      panel.toolPageRequested.connect(function(request) {
-        pages++
-        panel.toolPageReceived({type: "result", action: "agent-tool-page", requestId: request.requestId,
-          result: Object.assign({}, request, {callRevision: "call", state: "done",
-            text: new Array(300).fill("tall tool output line").join("\n"), next: null})})
-      })
+      panel.toolPageRequested.connect(function() { pages++ })
       tryVerify(function() { return findChild(panel, "bubble-agent-message") !== null })
       mouseClick(findChild(findChild(panel, "bubble-agent-message"), "messageHeading"), 18, 10)
       tryVerify(function() { return findChild(panel, "bubble-source-group") !== null })
       const bubble = findChild(panel, "bubble-source-group")
-      tryVerify(function() { return pages > 0 && bubble.height > findChild(panel, "sessionTranscript").height },
-        2000, "the expanded group is taller than the transcript")
-      tryCompare(bubble, "expanded", true)
+      wait(50)
+      compare(bubble.expanded, false)
+      compare(pages, 0)
       const transcript = findChild(panel, "sessionTranscript")
       const heading = findChild(bubble, "messageHeading")
       tryVerify(function() {

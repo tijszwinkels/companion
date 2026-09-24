@@ -303,7 +303,7 @@ selection (for example, the reopen was refused and an agent later reopened it
 quietly), so it can never take over the view. New messages also carry
 `origin.sourceGroupId`: the sender's stored tool group for that exact turn and
 Pi tool-call ID (`<turn>:tool-<call>`), only when the call was stored before
-delivery. The link aligns that group to the top and expands it; the group's
+delivery. The link aligns that group to the top without expanding it; the group's
 individual calls are not highlighted. Older or unanchored messages open the
 conversation only. External-origin messages have unverified labels and no
 source conversation, so they are never links. Transcript headings, including

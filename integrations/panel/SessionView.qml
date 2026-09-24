@@ -226,7 +226,7 @@ Item {
   }
 
   // The sender's tool call may be one of several in a collapsed group. Bring
-  // that group into view and expose its calls without changing the composer.
+  // that group into view without opening tool details or changing the composer.
   // Align its top edge: an expanded group can be taller than the viewport, and
   // centring it would push the heading being navigated to out of sight.
   function jumpToToolGroup(groupId) {
@@ -236,9 +236,7 @@ Item {
       if (messages.get(index).messageId !== groupId) continue
       root.followEnd = false
       transcript.positionViewAtIndex(index, ListView.Beginning)
-      const bubble = transcript.itemAtIndex(index)
-      if (bubble && bubble.toolCount) bubble.expanded = true
-      // Expansion changes heights above and within the group; settle once more.
+      // Delegate layout can change heights; settle the scroll position once more.
       Qt.callLater(function() {
         if (root.displayedId === sessionId) transcript.positionViewAtIndex(index, ListView.Beginning)
       })
