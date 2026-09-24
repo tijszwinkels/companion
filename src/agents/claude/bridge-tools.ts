@@ -2,6 +2,7 @@ import { choiceTool } from '../choice-tool.ts';
 import { sessionNameTool } from '../session-name-tool.ts';
 import { sessionTools } from '../session-tools.ts';
 import { widgetTools } from '../widget-tools.ts';
+import type { ToolOutput } from './tool-output.ts';
 import type { TurnResult } from './turn-results.ts';
 
 /**
@@ -18,13 +19,14 @@ export interface BridgeTool {
   promptGuidelines?: string[];
   /**
    * Run one call. `toolUseId` is Claude Code's tool-use ID for this call.
+   * The result is text, or text plus images (see `tool-output.ts`).
    * A thrown error becomes a failed tool result, as with Pi.
    */
   execute(
     toolUseId: string,
     parameters: Record<string, unknown>,
     signal: AbortSignal,
-  ): Promise<string>;
+  ): Promise<string | ToolOutput>;
 }
 
 /** Connection details the bridge process received from its per-turn config. */
