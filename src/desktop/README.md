@@ -316,6 +316,12 @@ NULL, not an inferred label.
 The `closed` outcome records an explicit `close session` command after the tab
 has been saved and removed; it does not delete its conversation archive.
 
+The `superseded` outcome marks a provisional speech attempt that was replaced
+because the user resumed speaking before it committed to an action. It plays no
+sound and is not a failure. The retranscribed whole utterance follows as its own
+row. An attempt replaced before its transcript arrived has no row at all. See
+[speech timing](../../docs/speech-timing.md).
+
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
 the question's screenshot and conversation in its own session storage.
@@ -443,8 +449,10 @@ Only a confirmed final ASR `empty` outcome qualifies, with at least 128 ms of in
 strongest-128-ms-window RMS at or above 0.0005. Live audio has already passed the
 VAD requirement of 128 ms of voiced frames. These are the existing speech gates;
 they do not establish that the sound is intelligible. Silence rejection,
-punctuation-only output, worker errors, untranscribed cancelled jobs and overload
-drops do not create these clips. The helper exposes empty **text**, so this does
+punctuation-only output, worker errors, untranscribed cancelled jobs, overload
+drops and provisional attempts replaced by resumed speech do not create these clips.
+An empty provisional attempt is retained only after the legacy 800 ms quiet
+window passes without a continuation. The helper exposes empty **text**, so this does
 not distinguish zero raw tokens from special-token-only output.
 
 The transcriber may retry an empty first pass once with padding
