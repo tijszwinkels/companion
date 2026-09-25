@@ -11,7 +11,8 @@
  * - Redirects are followed manually, at most `maximumRedirects`, and every
  *   hop repeats all of these checks.
  * - The (decompressed) body is limited to `maximumBodyBytes`; a larger body
- *   is an error, never silently cut. The whole fetch has a deadline.
+ *   is an error, never silently cut. The whole fetch, including every DNS
+ *   lookup, has a deadline and follows cancellation.
  * - Only textual responses are accepted (HTML, text, JSON, XML).
  *
  * No proxy is used, whatever the environment says, because a proxy would
@@ -36,6 +37,8 @@ export type ResolveHost = (hostname: string) => Promise<string[]>;
 export interface SafeFetchOptions {
   resolveHost?: ResolveHost;
   addressPolicy?: AddressPolicy;
+  /** Deadline for the whole fetch; `fetchTimeoutMilliseconds` unless a test shortens it. */
+  timeoutMilliseconds?: number;
 }
 
 /** A successfully fetched textual response. */
@@ -68,6 +71,35 @@ function isTextual(mediaType: string): boolean {
 }
 
 /**
+ * Resolve `hostname`, but stop waiting as soon as `signal` aborts.
+ *
+ * `lookup` runs getaddrinfo on libuv's thread pool and cannot be cancelled,
+ * so a resolver that never answers would otherwise hold the fetch past its
+ * deadline and past cancellation. The abandoned lookup may still finish
+ * later; its answer is then ignored and never connected to. `Promise.race`
+ * keeps handling that late settlement, so it cannot become unhandled.
+ */
+async function resolveUntilAborted(
+  hostname: string,
+  resolveHost: ResolveHost,
+  signal: AbortSignal,
+): Promise<string[]> {
+  signal.throwIfAborted();
+
+  let stopWaiting = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    stopWaiting = () => reject(signal.reason);
+    signal.addEventListener('abort', stopWaiting, { once: true });
+  });
+
+  try {
+    return await Promise.race([resolveHost(hostname), aborted]);
+  } finally {
+    signal.removeEventListener('abort', stopWaiting);
+  }
+}
+
+/**
  * Parse and check one URL, then resolve and vet its host.
  * Returns the address to connect to.
  */
@@ -75,6 +107,7 @@ async function vetTarget(
   url: URL,
   resolveHost: ResolveHost,
   addressPolicy: AddressPolicy,
+  signal: AbortSignal,
 ): Promise<string> {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw Error(`Only http and https URLs can be fetched, not ${url.protocol}`);
@@ -86,7 +119,9 @@ async function vetTarget(
 
   // URL keeps IPv6 literals in brackets.
   const hostname = url.hostname.replace(/^\[(.*)\]$/, '$1');
-  const addresses = isIP(hostname) ? [hostname] : await resolveHost(hostname);
+  const addresses = isIP(hostname)
+    ? [hostname]
+    : await resolveUntilAborted(hostname, resolveHost, signal);
   if (addresses.length === 0) {
     throw Error(`${hostname} did not resolve to an address`);
   }
@@ -184,7 +219,8 @@ export async function safeFetchText(
 ): Promise<FetchedText> {
   const resolveHost = options.resolveHost ?? defaultResolveHost;
   const addressPolicy = options.addressPolicy ?? publicAddressesOnly;
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(fetchTimeoutMilliseconds)]);
+  const timeoutMilliseconds = options.timeoutMilliseconds ?? fetchTimeoutMilliseconds;
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(timeoutMilliseconds)]);
 
   let url: URL;
   try {
@@ -194,7 +230,7 @@ export async function safeFetchText(
   }
 
   for (let redirects = 0; ; redirects += 1) {
-    const connectTo = await vetTarget(url, resolveHost, addressPolicy);
+    const connectTo = await vetTarget(url, resolveHost, addressPolicy, deadline);
     deadline.throwIfAborted();
     const response = await sendRequest(url, connectTo, deadline);
     const status = response.statusCode ?? 0;

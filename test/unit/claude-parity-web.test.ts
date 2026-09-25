@@ -193,6 +193,75 @@ test('every redirect hop is checked again, and redirect chains are bounded', asy
   assert.ok(web.requests.includes(`site.test:${web.port} /relative`));
 });
 
+test('a DNS lookup that never answers follows cancellation and the deadline', async (context) => {
+  const web = await syntheticWeb({
+    '/to-stalled': (response) => {
+      response.writeHead(302, { Location: 'http://stalled.test/' });
+      response.end();
+    },
+  });
+  context.after(() => web.close());
+
+  // Names in `names` resolve normally; `stalled.test` hangs until the test
+  // itself answers it, like a lookup that getaddrinfo never completes.
+  const lookups: string[] = [];
+  let answerStalled: (addresses: string[]) => void = () => {};
+  const stalledFetch: SafeFetchOptions = {
+    ...fixtureFetch,
+    resolveHost: (hostname) => {
+      lookups.push(hostname);
+      if (hostname !== 'stalled.test') {
+        return Promise.resolve(names[hostname] ?? []);
+      }
+      return new Promise((resolve) => {
+        answerStalled = resolve;
+      });
+    },
+  };
+  const waitForLookup = async (hostname: string) => {
+    while (!lookups.includes(hostname)) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+
+  // Cancellation during the lookup ends the fetch at once.
+  const cancelled = new AbortController();
+  const cancelledFetch = safeFetchText('http://stalled.test/', cancelled.signal, stalledFetch);
+  await waitForLookup('stalled.test');
+  cancelled.abort();
+  await assert.rejects(cancelledFetch, { name: 'AbortError' });
+
+  // A late answer to the abandoned lookup is never connected to, even though
+  // it now names the (fixture-public) address of the synthetic web.
+  answerStalled([fixtureAddress]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(web.requests, []);
+
+  // The lookup of a redirect target is bound in the same way.
+  lookups.length = 0;
+  const redirected = new AbortController();
+  const redirectedFetch = safeFetchText(web.url('/to-stalled'), redirected.signal, stalledFetch);
+  await waitForLookup('stalled.test');
+  redirected.abort();
+  await assert.rejects(redirectedFetch, { name: 'AbortError' });
+  assert.deepEqual(web.requests, [`site.test:${web.port} /to-stalled`]);
+
+  // Without cancellation, the fetch deadline ends the lookup.
+  await assert.rejects(
+    safeFetchText('http://stalled.test/', signal(), { ...stalledFetch, timeoutMilliseconds: 50 }),
+    { name: 'TimeoutError' },
+  );
+
+  // An already cancelled fetch does not start a lookup at all.
+  lookups.length = 0;
+  const early = new AbortController();
+  early.abort();
+  await assert.rejects(safeFetchText('http://stalled.test/', early.signal, stalledFetch), {
+    name: 'AbortError',
+  });
+  assert.deepEqual(lookups, []);
+});
+
 test('bodies are bounded (also after decompression), and only text is accepted', async (context) => {
   const web = await syntheticWeb({
     '/large': (response) => {

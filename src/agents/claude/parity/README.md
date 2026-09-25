@@ -97,8 +97,11 @@ synthetic fixtures. Claude built-ins are Claude Code 2.1.280's own tools.
   link-local, CGNAT, multicast, reserved, documentation and IPv4-embedding
   IPv6 forms are refused), and the connection goes to that vetted address.
   Every redirect (at most 5) repeats the checks. Bodies are capped at 5 MiB
-  after decompression, text types only, 30 s deadline, no proxy. Retained
-  results are 0600 files in a private 0700 `$XDG_RUNTIME_DIR/companion-claude-web`
+  after decompression, text types only, no proxy. One 30 s deadline covers
+  the whole fetch, DNS lookups included: cancellation or the deadline stops
+  waiting for a lookup that never answers, and a late answer is never
+  connected to. Retained results are 0600 files in a private 0700
+  `$XDG_RUNTIME_DIR/companion-claude-web`
   (owner and mode checked, never repaired, no symlinks), 24 h expiry, 64 MiB
   total, oldest removed first. Tests use a loopback fixture server behind a
   fixed name table and never contact the network.
@@ -157,8 +160,9 @@ A safe opt-in route, for Tijs to decide:
 - `test/unit/claude-parity-openrig.test.ts`: the adapter against a fake demo
   library, including start/stop refusal and Pi's truncation.
 - `test/unit/claude-parity-web.test.ts`: address policy, redirects to private
-  ranges, DNS answers, schemes, size and decompression bombs, content types,
-  find/slice texts and the store's permissions, expiry and size cap.
+  ranges, DNS answers, hanging lookups (cancellation and deadline), schemes,
+  size and decompression bombs, content types, find/slice texts and the
+  store's permissions, expiry and size cap.
 - `test/unit/claude-parity-bridge.test.ts`: `claude-tools.json` validation and
   the real bridge process with each group (fake `hyprctl`/`grim` on `PATH`).
 

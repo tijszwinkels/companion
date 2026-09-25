@@ -245,6 +245,48 @@ for (const [scenario, expected] of [
   });
 }
 
+test('a living Claude Code that never becomes ready is bounded at each startup step', async (context) => {
+  const { directory, settings } = await fixture(context);
+
+  // No settings answer: the turn fails before any prompt is sent.
+  const settingsStall = new ClaudeCodeBackend({
+    settingsMilliseconds: 300,
+    initMilliseconds: 5000,
+  });
+  await assert.rejects(
+    settingsStall.run(
+      request(directory, { ...settings, model: 'claude-silent-settings' }, 'hello'),
+      signal(),
+      () => {},
+    ),
+    /did not become ready within 0\.3 seconds/,
+  );
+  await assert.rejects(readFile(join(directory, 'request.json')), { code: 'ENOENT' });
+
+  // Settings answered and prompt taken, but no init: answering get_settings
+  // must not end the startup deadline, or the tab and slot stay held.
+  const initStall = new ClaudeCodeBackend({ settingsMilliseconds: 5000, initMilliseconds: 300 });
+  await assert.rejects(
+    initStall.run(request(directory, settings, 'silent-init'), signal(), () => {}),
+    /did not confirm its session within 0\.3 seconds/,
+  );
+  const recorded = await captured(directory);
+  assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+});
+
+test('after a verified init, a turn may take longer than the startup deadlines', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new ClaudeCodeBackend({ settingsMilliseconds: 5000, initMilliseconds: 500 });
+  const updates: AgentMessage[] = [];
+
+  await backend.run(request(directory, settings, 'slow 1500'), signal(), (message) =>
+    updates.push(message),
+  );
+
+  assert.equal(latest(updates).at(-1)?.text, '## Answer\n**42**');
+  assert.equal(latest(updates).at(-1)?.state, 'done');
+});
+
 test('tool calls stream as Pi-shaped bubbles; subagent traffic is not displayed', async (context) => {
   const { directory, settings } = await fixture(context);
   const updates: AgentMessage[] = [];

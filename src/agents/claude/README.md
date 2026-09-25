@@ -133,7 +133,11 @@ claude --print --verbose --input-format stream-json --output-format stream-json
 
 Guards shared with Pi:
 
-- 20 s startup deadline.
+- Bounded startup: 20 s from starting Claude Code until the `get_settings`
+  answer, then 60 s from sending the prompt until a verified `system/init`.
+  Answering settings alone does not end startup, so a living process that
+  never sends init cannot hold its tab and agent slot. After a verified init
+  there is no deadline (model turns can be long); cancellation still applies.
 - 8 MiB limit per stream-json record and per unterminated remainder.
 - The last 2000 characters of stderr in error messages.
 - A request for an interactive decision (`control_request`) fails the turn

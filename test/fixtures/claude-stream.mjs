@@ -65,6 +65,10 @@ async function receive(message) {
     if (model === 'opus') {
       appliedModel = 'claude-opus-5-5';
     }
+    // A living process that never answers its settings request.
+    if (model === 'claude-silent-settings') {
+      return;
+    }
     send({
       type: 'control_response',
       response: {
@@ -224,6 +228,11 @@ async function answer(message) {
     return;
   }
 
+  // A living process that took the prompt but never confirms its init.
+  if (scenario === 'silent-init') {
+    return;
+  }
+
   if (scenario === 'wrong-session') {
     init({ session_id: '00000000-0000-4000-8000-000000000000' });
     return;
@@ -350,6 +359,14 @@ async function answer(message) {
       title: '🐛 Login fix',
     });
     toolResult('toolu_name', 'Conversation named 🐛 Login fix.', variant === 'failed');
+    streamText('msg_answer', ['## Answer\n**42**']);
+    success();
+    return;
+  }
+
+  // A verified turn whose answer takes `variant` milliseconds.
+  if (scenario === 'slow') {
+    await new Promise((resolve) => setTimeout(resolve, Number(variant)));
     streamText('msg_answer', ['## Answer\n**42**']);
     success();
     return;
