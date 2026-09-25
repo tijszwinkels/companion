@@ -118,7 +118,7 @@ These are separate operations, not an automatic deployment script:
 | Standalone native C++ or Qt dependencies | `npm run ui:build`, then stop/relaunch the UI with `npm run ui`. Rebuild after Qt upgrades because Sidebar/Dock use matching private Qt headers. |
 | Source-launched UI QML                   | Stop/relaunch the UI; restarting the listener does not reload it. Packaged UI assets require their own update.                                   |
 | Installed Omarchy QML or Lua             | `npm run omarchy:install` from a Hyprland desktop terminal. QML changes rescan the plugin; changed bindings can reload Hyprland.                 |
-| Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Existing Claude Code conversations keep their effort (and model).  |
+| Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Claude conversations keep effort; only their picker changes model. |
 
 Save unsent drafts before stopping the UI. Its window close button hides the
 resident process; it does not exit it. Stop that process before relaunching when

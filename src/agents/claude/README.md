@@ -124,6 +124,10 @@ claude --print --verbose --input-format stream-json --output-format stream-json
      `previousModel` is the model Companion requested for the previous turn
      (`AgentSession.model`), even if that turn failed. A retry of a failed
      switch with the same model therefore shows no second notice.
+   - These notices precede the `system/init` check (step 5) and its
+     deadline, so a turn can still fail after announcing a switch. A switch
+     whose turn failed before these checks passed is not announced on a
+     retry with the same model either.
 4. Send one stream-json user message: the prompt text, plus (with a
    screenshot) `Captured window: {…}` and a base64 PNG image block.
 5. Verify the `system/init` event: the session ID, the model, permission

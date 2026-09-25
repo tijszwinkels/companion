@@ -448,8 +448,9 @@ class ClaudeTurn {
     }
 
     const applied = object(object(response.response).applied);
-    // Notices follow both checks, so a turn that fails its startup check
-    // never claims to have switched model.
+    // Notices follow both settings checks, so a turn that fails them never
+    // claims to have switched model. The later `system/init` check (and its
+    // deadline) can still fail the turn after a notice was shown.
     this.verifyAppliedModel(applied.model);
     const effortIgnored = this.verifyAppliedEffort(applied.effort);
     this.announceModelSwitch();
