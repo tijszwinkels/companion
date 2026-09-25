@@ -85,7 +85,7 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
       emit(chatMessage(`answer-${runs.length}`, 'assistant', `Answer ${runs.length}`));
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   sessions.subscribe((event) => events.push(event));
   context.after(async () => {
     await sessions.close();

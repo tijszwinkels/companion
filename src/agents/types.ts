@@ -52,6 +52,40 @@ export interface AgentMessage {
 /** Selects a model configuration for the whole conversation, including reopening. */
 export type AgentProfile = 'coding' | 'quickQuestion';
 
+/**
+ * The agent program that runs a conversation's turns. There are exactly two:
+ * the headless Pi RPC process (which also serves OpenAI Codex models) and the
+ * native Claude Code CLI. A conversation keeps its harness for its lifetime,
+ * because each harness stores its own transcript that only it can resume.
+ */
+export const agentHarnesses = ['pi', 'claude-code'] as const;
+
+export type AgentHarness = (typeof agentHarnesses)[number];
+
+/** Effort levels accepted by `claude --effort` (verified against Claude Code 2.1.280). */
+export const claudeCodeEffortLevels = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export type ClaudeCodeEffort = (typeof claudeCodeEffortLevels)[number];
+
+/**
+ * Settings for one Claude Code turn. `model` is the exact model ID that Claude
+ * Code must report at startup; the backend fails the turn on any difference
+ * and never configures a fallback model.
+ */
+export interface ClaudeCodeSettings {
+  executable: string;
+  model: string;
+  effort: ClaudeCodeEffort;
+}
+
+/**
+ * The Claude model and effort captured when a Claude Code conversation is
+ * created. Later turns reuse these values instead of the current configuration
+ * file, so a conversation never changes model mid-way. The executable is still
+ * read from the configuration for each turn.
+ */
+export type ClaudeCodeConversationSettings = Pick<ClaudeCodeSettings, 'model' | 'effort'>;
+
 export interface AgentSession {
   id: string;
   title: string;
@@ -59,6 +93,10 @@ export interface AgentSession {
   model: string;
   /** Older saved conversations omit this and retain the coding configuration. */
   profile?: AgentProfile;
+  /** Absent in older archives and in every Pi conversation; absence means `pi`. */
+  harness?: AgentHarness;
+  /** Present only when `harness` is `claude-code`; fixed at conversation creation. */
+  claudeCode?: ClaudeCodeConversationSettings;
   /** Explicit conversation choice; absence reloads the profile default each turn. */
   modelOverride?: string;
   /** Requested effort for subsequent turns; Pi adapts it to the chosen model. */
@@ -117,29 +155,46 @@ export interface AgentModelCatalog {
   thinkingLevels: Record<string, AgentSettings['thinking'][]>;
 }
 
-export interface AgentBackend extends InspectableModule {
-  /** Discover authenticated/configured Pi models without starting a conversation. */
-  models?(
-    settings: AgentSettings,
-    directory: string,
-    signal: AbortSignal,
-  ): Promise<AgentModelCatalog>;
+/**
+ * One agent turn. `Settings` is the harness's own settings type: Pi receives
+ * `AgentSettings`, Claude Code receives `ClaudeCodeSettings`.
+ */
+export interface AgentRunRequest<Settings = AgentSettings> {
+  /** Companion conversation ID; both harnesses use it as their own session ID. */
+  id: string;
+  directory: string;
+  settings: Settings;
+  prompt: { text: string; screenshot?: Screenshot };
+  /** False only for a conversation's first turn. A missing transcript then fails. */
+  resume: boolean;
+  widgets?: { endpoint: string; token: string };
+  /** Turn-scoped connection for the session lifecycle tools. */
+  sessionTools?: { endpoint: string; token: string };
+}
+
+export interface AgentBackend<Settings = AgentSettings> extends InspectableModule {
+  /** Discover authenticated/configured models without starting a conversation. */
+  models?(settings: Settings, directory: string, signal: AbortSignal): Promise<AgentModelCatalog>;
   run(
-    request: {
-      id: string;
-      directory: string;
-      settings: AgentSettings;
-      prompt: { text: string; screenshot?: Screenshot };
-      resume: boolean;
-      widgets?: { endpoint: string; token: string };
-      /** Turn-scoped connection for the session lifecycle tools. */
-      sessionTools?: { endpoint: string; token: string };
-    },
+    request: AgentRunRequest<Settings>,
     signal: AbortSignal,
     emit: (message: AgentMessage) => void,
     replaceChoices?: (options: readonly AgentChoice[]) => void,
     renameSession?: (title: string) => void,
   ): Promise<void>;
+}
+
+/** The Claude Code adapter; it offers no model catalogue or mid-conversation picker. */
+export type ClaudeCodeAgentBackend = AgentBackend<ClaudeCodeSettings>;
+
+/**
+ * The backends available to the session layer, selected by a conversation's
+ * harness. Claude Code is optional so that tests and older wiring can supply
+ * only Pi; selecting `claude-code` without a backend must then fail visibly.
+ */
+export interface AgentHarnessBackends {
+  pi: AgentBackend;
+  'claude-code'?: ClaudeCodeAgentBackend;
 }
 
 export function chatMessage(id: string, kind: AgentMessage['kind'], text: string): AgentMessage {

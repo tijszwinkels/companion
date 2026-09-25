@@ -289,7 +289,7 @@ test('agent sessions use the injected library, otherwise the bundled examples', 
   const explicitDirectory = join(root, 'agents-explicit');
   await mkdir(explicitDirectory);
   const explicit = new AgentSessions(
-    { backend: discoveringBackend(explicitListings) },
+    { pi: discoveringBackend(explicitListings) },
     () => {},
     explicitDirectory,
     library,
@@ -310,7 +310,7 @@ test('agent sessions use the injected library, otherwise the bundled examples', 
     await mkdir(defaultDirectory);
     const defaultListings: unknown[] = [];
     withDefault = new AgentSessions(
-      { backend: discoveringBackend(defaultListings) },
+      { pi: discoveringBackend(defaultListings) },
       () => {},
       defaultDirectory,
     );

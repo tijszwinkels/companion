@@ -26,7 +26,7 @@ async function fixture(context: TestContext) {
   const active = new Set<string>();
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'queue-fixture',
         label: 'Queue fixture',
         dependencies: {},

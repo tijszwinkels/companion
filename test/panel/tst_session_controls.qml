@@ -129,6 +129,39 @@ Item {
     function modelRequests(setup) {
       return setup.requests.filter(request => request.action === "agent-models").length
     }
+    function test_claude_code_conversation_hides_pickers_without_pi_catalogue() {
+      const setup = createTemporaryObject(fixture, parent, {initiallySelected: false})
+      const claude = Object.assign(setup.entry("claude"), {profile: "coding", harness: "claude-code",
+        model: "claude-opus-5-5", claudeCode: {model: "claude-opus-5-5", effort: "high"}})
+      setup.state.replace([claude, setup.entry("pi")])
+      setup.state.select("claude")
+      verify(waitForRendering(setup.panel))
+      wait(20)
+      compare(modelRequests(setup), 0, "A Claude Code conversation never needs Pi's catalogue")
+      const footer = findChild(setup.panel, "sessionModelFooter")
+      const summary = findChild(setup.panel, "fixedSessionModel")
+      verify(footer.visible)
+      verify(summary.visible)
+      compare(summary.text, "Claude Code · claude-opus-5-5 · high effort")
+      verify(findChild(setup.panel, "fixedSessionModelNote").visible)
+      for (const name of ["sessionModelPicker", "sessionThinkingPicker", "showAllSessionModels", "refreshSessionModels"]) {
+        compare(findChild(setup.panel, name).visible, false, name)
+      }
+
+      // Pi conversations keep the existing pickers and catalogue loading.
+      setup.state.select("pi")
+      tryVerify(() => modelRequests(setup) === 1)
+      verify(findChild(setup.panel, "sessionModelPicker").visible)
+      verify(findChild(setup.panel, "sessionThinkingPicker").visible)
+      verify(!summary.visible)
+
+      // Streaming updates carry the whole view, so the harness is retained.
+      setup.state.update(Object.assign({}, claude, {status: "completed", messages: []}))
+      setup.state.select("claude")
+      verify(summary.visible)
+      compare(findChild(setup.panel, "sessionModelPicker").visible, false)
+      compare(modelRequests(setup), 1)
+    }
     function test_model_catalog_reused_across_selection_and_reconnect() {
       const setup = createTemporaryObject(fixture, parent, {controlsEnabled: false})
       verify(waitForRendering(setup.panel))

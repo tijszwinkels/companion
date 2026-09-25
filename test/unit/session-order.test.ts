@@ -16,7 +16,7 @@ test('moving running sessions retains turn, messages and queue; order rejects st
   const events: SessionEvent[] = [];
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'order-fixture',
         label: 'Order fixture',
         dependencies: {},

@@ -10,6 +10,8 @@ import { EnterTextToApplication } from './processors/enter-text-to-application.t
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
 import { QuickQuestion } from './processors/quick-question.ts';
+import { StartClaudeCodeSession } from './processors/start-claude-code-session.ts';
+import { StartCodexSession } from './processors/start-codex-session.ts';
 import { GoToSession } from './processors/go-to-session.ts';
 import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
 import { CloseAgentSession } from './processors/close-agent-session.ts';
@@ -21,6 +23,7 @@ import { AgentSessions } from './agents/sessions.ts';
 import { agentDirectory } from './agents/settings.ts';
 import { userWidgetLibrary } from './widgets/library-path.ts';
 import { PiBackend } from './agents/pi-backend.ts';
+import { ClaudeCodeBackend } from './agents/claude/claude-backend.ts';
 import { AgentChoiceIntents } from './agents/choice-intents.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
@@ -92,7 +95,9 @@ Usage: npm start -- [options]
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
-"new session …" asks Pi using the coding model; "quick question …" uses local Qwen.
+"new session …" asks the coding harness (codingDefaultHarness, Pi by default);
+"new claude session …" uses Claude Code; "new codex session …" uses Pi's coding model.
+"quick question …" uses local Qwen.
 "continue session …" continues the currently open agent conversation.
 "close session" closes the selected conversation, keeping it in Previous sessions.
 "label previous correct" / "label previous incorrect" records intent feedback.
@@ -139,7 +144,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // session, including an in-flight transcription or intent request.
   const controller = new AbortController();
   const agents = new AgentSessions(
-    { backend: new PiBackend() },
+    { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
     log,
     agentDirectory(),
     widgetLibrary,
@@ -215,6 +220,10 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       router,
     );
     new QuickQuestion({ sessions: agents }, log, values.preview, activity).subscribe(router);
+    new StartClaudeCodeSession({ sessions: agents }, log, values.preview, activity).subscribe(
+      router,
+    );
+    new StartCodexSession({ sessions: agents }, log, values.preview, activity).subscribe(router);
     new GoToSession(log, values.preview, activity).subscribe(router);
     new ContinueOpenAgentConversation(
       { sessions: agents },
@@ -258,7 +267,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'registered',
-      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), CONTINUE_OPEN_AGENT_CONVERSATION (continue session / visible conversation), CLOSE_AGENT_SESSION (close session), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), START_CLAUDE_CODE_SESSION (new claude session), START_CODEX_SESSION (new codex session), CONTINUE_OPEN_AGENT_CONVERSATION (continue session / visible conversation), CLOSE_AGENT_SESSION (close session), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
     );
 
     // Supplied text enters the same routing path but needs no audio resources.

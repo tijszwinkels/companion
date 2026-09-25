@@ -23,12 +23,15 @@ import { SendTextToApplication } from '../../src/processors/send-text-to-applica
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { GoToSession } from '../../src/processors/go-to-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
+import { StartClaudeCodeSession } from '../../src/processors/start-claude-code-session.ts';
+import { StartCodexSession } from '../../src/processors/start-codex-session.ts';
 import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { LabelPreviousCorrect } from '../../src/processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from '../../src/processors/label-previous-incorrect.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { PiBackend } from '../../src/agents/pi-backend.ts';
+import { ClaudeCodeBackend } from '../../src/agents/claude/claude-backend.ts';
 import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { ActiveWindowSensor } from '../../src/sensors/screen/sensor.ts';
 import { desktopFixture } from '../desktop-fixture.ts';
@@ -255,9 +258,14 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   send.subscribe(router);
   enter.subscribe(router);
   new Ignore(() => {}, activity).subscribe(router);
-  const sessions = new AgentSessions({ backend: new PiBackend() }, () => {});
+  const sessions = new AgentSessions(
+    { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
+    () => {},
+  );
   new StartCodingAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new QuickQuestion({ sessions }, () => {}, false, activity).subscribe(router);
+  new StartClaudeCodeSession({ sessions }, () => {}, false, activity).subscribe(router);
+  new StartCodexSession({ sessions }, () => {}, false, activity).subscribe(router);
   new GoToSession(() => {}, false, activity).subscribe(router);
   new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
   new CloseAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
@@ -327,8 +335,8 @@ process.once('exit', () => {
       assert.deepEqual(graph, desktopGraph);
       assert.equal(graph.nodes[0].id, 'pipeline');
       // Includes the transcription cleanup call used by explicit shortcuts.
-      assert.equal(graph.nodes.length, 19);
-      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 10);
+      assert.equal(graph.nodes.length, 22);
+      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 12);
     } else {
       assert.ok(stdout.startsWith('flowchart LR\n'));
     }

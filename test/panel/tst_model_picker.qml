@@ -79,6 +79,27 @@ Item {
       compare(model.count, 4)
     }
 
+    function test_claude_code_session_shows_fixed_model_instead_of_pickers() {
+      const setup = createTemporaryObject(fixture, parent)
+      const picker = setup.picker
+      const piHeight = picker.height
+      picker.session = {id: "claude", profile: "coding", harness: "claude-code", model: "claude-sonnet-5",
+        claudeCode: {model: "claude-sonnet-5", effort: "medium"}}
+      verify(waitForRendering(picker))
+      compare(findChild(setup, "fixedSessionModel").text, "Claude Code · claude-sonnet-5 · medium effort")
+      compare(findChild(setup, "sessionModelPicker").visible, false)
+      compare(findChild(setup, "sessionThinkingPicker").visible, false)
+      verify(picker.height < piHeight, "The footer shrinks to the fixed summary")
+      const note = findChild(setup, "fixedSessionModelNote")
+      verify(note.y + note.height <= picker.height)
+
+      // An older listener omits the harness: the Pi pickers remain.
+      picker.session = {id: "synthetic", profile: "coding", model: "configured/current"}
+      verify(findChild(setup, "sessionModelPicker").visible)
+      compare(findChild(setup, "fixedSessionModel").visible, false)
+      compare(picker.height, piHeight)
+    }
+
     function test_effort_popup_pins_rows_and_rejects_changed_conversation() {
       const setup = createTemporaryObject(fixture, parent)
       const picker = setup.picker

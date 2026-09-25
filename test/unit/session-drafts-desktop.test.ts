@@ -34,7 +34,7 @@ test('the desktop protocol confirms drafts only from the asked panel', async (co
   let releaseTurn: () => void = () => {};
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'draft-fixture',
         label: 'Draft fixture',
         dependencies: {},

@@ -64,8 +64,8 @@ export function sessionTools(endpoint: string, token: string) {
       ],
       description:
         'List Companion conversations. "open" contains every open tab: id, title, status, busy, queuedMessages, ' +
-        'profile, model and self (your own conversation). "previous" contains saved conversations that can be ' +
-        'reopened, newest first, filtered by an optional case-insensitive title query and limited (default 20, ' +
+        'profile, harness ("pi" or "claude-code"), model and self (your own conversation). "previous" contains ' +
+        'saved conversations that can be reopened, newest first, filtered by an optional case-insensitive title query and limited (default 20, ' +
         'maximum 50); previousMatches is the total before the limit. No transcripts or unsent drafts are returned.',
       parameters: Type.Object({
         query: Type.Optional(Type.String({ maxLength: 100 })),
@@ -79,16 +79,22 @@ export function sessionTools(endpoint: string, token: string) {
       promptSnippet: 'Start a new Companion conversation with a first message for its agent.',
       promptGuidelines: [
         'Use companion_session_start only when the user asks for a new or parallel Companion conversation. The first message immediately starts that conversation’s agent.',
+        'Pass harness "claude-code" only when the user asks for Claude or Claude Code, and harness "pi" when they ask for Pi or Codex; otherwise omit harness.',
       ],
       description:
         'Start a new Companion conversation (a new tab) whose agent immediately answers text. The message is ' +
         'labelled as written by your conversation’s agent, not by the user. profile is "coding" (default) or ' +
-        '"quickQuestion"; model optionally selects an available provider/model for that conversation, otherwise its ' +
-        'profile default applies. The tab opens in the background unless focus is true. Returns the new session. ' +
-        'At most 12 tabs and 4 running agents exist at once.',
+        '"quickQuestion". harness is "pi" or "claude-code" (the native Claude Code CLI); it defaults to the ' +
+        'configured coding harness, and quick questions always use Pi. model optionally selects the ' +
+        'conversation’s model, otherwise the configured default applies: for Pi an available provider/model, for ' +
+        'Claude Code a Claude model ID without provider such as claude-opus-5-5. A Claude Code conversation keeps ' +
+        'its model for its lifetime and fails visibly if Claude Code does not run exactly that model. The tab opens ' +
+        'in the background unless focus is true. Returns the new session. At most 12 tabs and 4 running agents ' +
+        'exist at once.',
       parameters: Type.Object({
         text,
         profile: Type.Optional(StringEnum(['coding', 'quickQuestion'] as const)),
+        harness: Type.Optional(StringEnum(['pi', 'claude-code'] as const)),
         model: Type.Optional(Type.String({ minLength: 3, maxLength: 300 })),
         focus,
       }),
@@ -100,7 +106,7 @@ export function sessionTools(endpoint: string, token: string) {
       promptSnippet: 'Reopen a saved Companion conversation as a tab, keeping its history.',
       description:
         'Reopen a saved conversation from companion_sessions "previous" as an open tab. Its id, transcript, ' +
-        'profile and model choice are preserved; nothing is sent and no agent turn starts. Opens in the ' +
+        'profile, harness and model choice are preserved; nothing is sent and no agent turn starts. Opens in the ' +
         'background unless focus is true. An already open id returns outcome "already-open".',
       parameters: Type.Object({ id: sessionId, focus }),
       method: 'reopen',

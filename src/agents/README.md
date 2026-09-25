@@ -20,7 +20,7 @@ for transport ownership, streaming, legacy recovery and storage limitations.
 
 “new session …” and inferred `START_CODING_AGENT_SESSION` use the top-level
 `model`/`thinking` settings in `~/companion/agents/companion-agent.json` (Astra by
-default). “quick question …” selects the prefix-only `QUICK_QUESTION` processor
+default) when they run on Pi, the default harness (see [Harnesses](#harnesses)). “quick question …” selects the prefix-only `QUICK_QUESTION` processor
 and the same file's `quickQuestion` model/thinking overrides. It still runs a
 normal Pi session with screenshots and the same conversation tools. Default:
 `pillar-vllm/qwen3.8-128k`, thinking `off`; the Pi executable is shared.
@@ -37,6 +37,59 @@ prompt. The whole configuration is validated on each load, so an invalid
 quick-question override also prevents a coding turn until it is corrected.
 `QUICK_QUESTION` and `START_CODING_AGENT_SESSION` have independent enable/disable
 controls; an existing disabled coding intent does not disable the new shortcut.
+
+## Harnesses
+
+Each conversation runs on one harness for its whole lifetime: `pi` (the Pi RPC
+process described above, which also serves the OpenAI Codex models) or
+`claude-code` (the native Claude Code CLI; see [claude/README.md](claude/README.md)
+for its configuration contract and adapter). `AgentSessions` receives one backend
+per harness (`AgentHarnessBackends`) and selects the backend for every turn from
+the conversation's persisted `AgentSession.harness`; absence means `pi`, which
+covers every older archive. First turns, spoken/typed/queued follow-ups, agent
+messages with their provenance header, stop, close/reopen and listener restarts
+all use the conversation's own harness. There is no fallback to the other harness
+and no mid-conversation harness or model switching: each harness resumes only its
+own transcript. If a Claude Code conversation's turn starts while no Claude Code
+backend is wired, the turn fails visibly in its tab.
+
+How a new conversation chooses its harness:
+
+| Start                                                     | Harness                                                  |
+| --------------------------------------------------------- | -------------------------------------------------------- |
+| “new session …” and inferred `START_CODING_AGENT_SESSION` | the configured `codingDefaultHarness` (default `pi`)     |
+| “new claude session …” (`START_CLAUDE_CODE_SESSION`)      | `claude-code`                                            |
+| “new codex session …” (`START_CODEX_SESSION`)             | `pi` with the coding profile (Codex means Pi's model)    |
+| “quick question …”                                        | always `pi`                                              |
+| `companion_session_start`                                 | its `harness`, else as “new session”; quick questions Pi |
+
+The two new shortcuts are prefix-only, so the detector's prompt is unchanged, and
+each has its own switch. The router still tries longer prefixes first; “new
+session” is literal and never captures “new claude session”.
+
+A Claude Code conversation records `AgentSession.claudeCode = {model, effort}`
+once, from the configured `claudeCode` section or an explicit
+`companion_session_start` model, and shows that model as `AgentSession.model`.
+Later turns pass the recorded pair with the executable read afresh from
+`companion-agent.json`, so configuration edits change the program but never the
+model of an existing conversation. That read validates the whole file, as for
+Pi: a mistake in any section, including `claudeCode`, also blocks turns of
+existing Claude Code conversations until it is corrected.
+
+A speech-started conversation resolves `codingDefaultHarness` and the Claude
+settings when its first turn begins, before its first save or backend call;
+until then the conversation refuses model/effort changes, and a configuration
+error fails that first turn in its own tab. The next turn in the still-open tab
+retries the resolution. A tab closed (or a listener stopped) before any
+resolution succeeded is saved without a harness and reopens as a Pi
+conversation; its follow-up then fails visibly on Pi's missing transcript. The
+session store accepts `harness` only as `claude-code` together with valid
+`claudeCode` settings (an explicit `"pi"` is normalized to absence) and never
+with Pi's model/effort overrides; archives without the fields stay valid.
+
+Claude Code conversations have no model or effort picker: `setModel` and
+`setThinking` refuse them, and the panel and standalone window hide both pickers
+with a short explanation. `AgentSessions.models()` remains Pi's catalogue.
 
 The bottom model and effort pickers change **this conversation's next turn**,
 through optional persisted `AgentSession.modelOverride` and `thinkingOverride`.
@@ -233,14 +286,14 @@ and a draft already forwarded to the panel reports `unconfirmed` because the
 panel may have inserted it. Targets are Companion session UUIDs
 from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 
-| Tool                       | Parameters                                                                                      | Effect                                                                                          |
-| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `companion_sessions`       | `query?` (≤100), `limit?` (1–50, default 20)                                                    | Lists open tabs and matching saved conversations. No transcripts or drafts.                     |
-| `companion_session_start`  | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `model?` provider/id, `focus?` (false)   | Opens a tab whose agent immediately answers `text`.                                             |
-| `companion_session_reopen` | `id`, `focus?` (false)                                                                          | Reopens a saved conversation with its ID, transcript, profile and model. Starts no turn.        |
-| `companion_session_close`  | `id`                                                                                            | Closes an open tab, saving it to Previous sessions; the caller's own tab closes after its turn. |
-| `companion_session_send`   | `id`, `text` (1–4000)                                                                           | Follow-up to another open tab; starts its turn or queues behind earlier messages.               |
-| `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false) | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.    |
+| Tool                       | Parameters                                                                                                        | Effect                                                                                                             |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `companion_sessions`       | `query?` (≤100), `limit?` (1–50, default 20)                                                                      | Lists open tabs and matching saved conversations. No transcripts or drafts.                                        |
+| `companion_session_start`  | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `harness?` `pi`\|`claude-code`, `model?`, `focus?` (false) | Opens a tab whose agent immediately answers `text`. `model` is a Pi provider/id or a Claude model ID, per harness. |
+| `companion_session_reopen` | `id`, `focus?` (false)                                                                                            | Reopens a saved conversation with its ID, transcript, profile, harness and model. Starts no turn.                  |
+| `companion_session_close`  | `id`                                                                                                              | Closes an open tab, saving it to Previous sessions; the caller's own tab closes after its turn.                    |
+| `companion_session_send`   | `id`, `text` (1–4000)                                                                                             | Follow-up to another open tab; starts its turn or queues behind earlier messages.                                  |
+| `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false)                   | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.                       |
 
 `companion_sessions` matches titles only. Its prompt guidelines also tell the
 agent how to search contents: grep `.companion-sessions/*.json` in the agent
@@ -255,6 +308,7 @@ Examples of tool arguments:
 {"query":"login","limit":5}
 {"text":"Review src/auth for token expiry bugs and summarise them.","profile":"coding"}
 {"text":"What is the weather in Utrecht?","profile":"quickQuestion","model":"pillar-vllm/qwen3.8-128k"}
+{"text":"Review the diff on this branch.","harness":"claude-code","model":"claude-opus-5-5"}
 {"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"}
 {"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","focus":true}
 {"id":"6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f","text":"The migration is merged; please rerun your checks."}
@@ -263,13 +317,13 @@ Examples of tool arguments:
 
 A successful call returns JSON, for example `{"outcome":"queued","queuePosition":2,
 "session":{...}}` or `{"outcome":"reopened","messages":14,"session":{...}}`.
-Summaries contain `id`, `title`, `status`, `profile`, `model`, optional
-`modelOverride` and `updatedAt`; open entries add `busy`, `queuedMessages` and
+Summaries contain `id`, `title`, `status`, `profile`, `harness` (`pi` or
+`claude-code`), `model`, optional `modelOverride` and `updatedAt`; open entries add `busy`, `queuedMessages` and
 `self`. A refusal is a failed tool result whose message ends with a stable code:
 
 | Code                      | Meaning                                                                                                   |
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `invalid`                 | Malformed ID, empty/oversized text, or unsupported option.                                                |
+| `invalid`                 | Malformed ID, empty/oversized text, unsupported option, or a model of the wrong form for its harness.     |
 | `unknown-session`         | No open or saved conversation has that ID.                                                                |
 | `not-open`                | Saved but closed; reopen it first. Sends/drafts never reopen implicitly.                                  |
 | `self-target`             | `companion_session_send` to the calling conversation.                                                     |

@@ -1,7 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
-import type { AgentDraftOutcome, AgentMessageOrigin, AgentProfile } from './types.ts';
+import {
+  agentHarnesses,
+  type AgentDraftOutcome,
+  type AgentHarness,
+  type AgentMessageOrigin,
+  type AgentProfile,
+} from './types.ts';
 
 /**
  * Agent-to-agent hops allowed after a human-originated turn. A human message
@@ -35,6 +41,8 @@ export interface SessionToolSummary {
   title: string;
   status: string;
   profile: AgentProfile;
+  /** The agent program running this conversation, fixed for its lifetime. */
+  harness: AgentHarness;
   /** Current/last turn's model, or the explicit conversation override. */
   model: string;
   modelOverride?: string;
@@ -70,6 +78,9 @@ export interface SessionToolHost {
     request: {
       text: string;
       profile: AgentProfile;
+      /** Absent: the configured coding default, or Pi for quick questions. */
+      harness?: AgentHarness;
+      /** Empty: the harness's configured default. Its form is checked by the host. */
       model: string;
       focus: boolean;
       origin: AgentMessageOrigin;
@@ -517,12 +528,29 @@ export class SessionToolService {
         if (profile !== 'coding' && profile !== 'quickQuestion') {
           throw new SessionToolError('invalid', 'profile must be coding or quickQuestion', 400);
         }
-        const model = optionalString(command.model, 'model', 300) ?? '';
-        if (model && !model.includes('/')) {
-          throw new SessionToolError('invalid', 'model must be a provider/model identifier', 400);
+        const harness = command.harness;
+        if (harness !== undefined && !agentHarnesses.includes(harness as AgentHarness)) {
+          throw new SessionToolError('invalid', 'harness must be pi or claude-code', 400);
         }
+        if (profile === 'quickQuestion' && harness === 'claude-code') {
+          throw new SessionToolError(
+            'invalid',
+            'Quick questions always use Pi; omit harness or use the coding profile',
+            400,
+          );
+        }
+        // The model's form depends on the harness, which may be the configured
+        // default, so the host checks it with `checkStartModel` after resolving.
+        const model = optionalString(command.model, 'model', 300) ?? '';
         const session = await this.host.start(
-          { text, profile, model, focus, origin },
+          {
+            text,
+            profile,
+            ...(harness !== undefined ? { harness: harness as AgentHarness } : {}),
+            model,
+            focus,
+            origin,
+          },
           caller.signal,
         );
         return { status: 200, body: { outcome: 'started', session } };
@@ -557,6 +585,34 @@ export class SessionToolService {
       }
       throw error;
     }
+  }
+}
+
+/**
+ * Check the form of a requested start model once the harness is known. An
+ * empty model selects the harness's configured default. Pi models name their
+ * provider; availability is then checked against Pi's catalog. Claude models
+ * follow the same rules as `claudeCode.model` in companion-agent.json (see
+ * settings.ts); the Claude Code backend then checks the exact model at startup.
+ */
+export function checkStartModel(harness: AgentHarness, model: string): void {
+  if (!model) {
+    return;
+  }
+
+  if (harness === 'pi' && !model.includes('/')) {
+    throw new SessionToolError('invalid', 'model must be a provider/model identifier', 400);
+  }
+
+  if (
+    harness === 'claude-code' &&
+    (model.startsWith('-') || /\s/u.test(model) || model.includes('/'))
+  ) {
+    throw new SessionToolError(
+      'invalid',
+      'model must be a Claude model ID such as claude-opus-5-5, without a provider',
+      400,
+    );
   }
 }
 

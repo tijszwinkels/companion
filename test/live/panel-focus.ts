@@ -354,7 +354,7 @@ try {
   const agentPrompts: string[] = [];
   historyAgents = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'native-history-fixture',
         label: 'Native history fixture',
         dependencies: {},

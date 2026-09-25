@@ -32,7 +32,7 @@ for (const count of [200, 799, 800]) {
         assert.fail('Reopening history must not invoke the model');
       },
     };
-    const sessions = new AgentSessions({ backend }, () => {}, directory);
+    const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
     const saved: AgentSession = {
       id: randomUUID(),
       title: 'Synthetic recovery',

@@ -28,20 +28,20 @@ milestones. User instructions can waive review for a particular change.
 
 ## Source and documentation map
 
-| Responsibility                                               | Source                                                          | Guide                                                                                      |
-| ------------------------------------------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| CLI assembly and config                                      | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                       |
-| Speech/typed observation queue, context and intent selection | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)     |
-| Capture, VAD and persistent ASR                              | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md) |
-| Pi sessions, follow-up queue, choices, naming and tools      | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                 |
-| History, exact intent requests, feedback and deletion        | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
-| Shared Activity/conversation components                      | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
-| Standalone Window/Sidebar/Dock client                        | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
-| Omarchy shortcuts, theme, media and focus bridge             | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
-| Widget tools, durable state and browser views                | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
-| Native WebEngine profile/module                              | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
-| Application text delivery                                    | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
-| Automatic transcription cleanup (optional, default off)      | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
+| Responsibility                                                                         | Source                                                          | Guide                                                                                      |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| CLI assembly and config                                                                | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                       |
+| Speech/typed observation queue, context and intent selection                           | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)     |
+| Capture, VAD and persistent ASR                                                        | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md) |
+| Pi/Claude Code sessions, harness selection, follow-up queue, choices, naming and tools | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                 |
+| History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
+| Shared Activity/conversation components                                                | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
+| Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
+| Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
+| Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
+| Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
+| Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
+| Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -64,13 +64,14 @@ in `src/core/transcription-cleanup/prompt.ts`. Scoped choice instructions live i
 not an exact replay of yesterday's dynamic prompt. Prefix-only dispatches do not
 call the classifier. Old design proposals contain historical prompt snapshots.
 
-| Configuration                                                               | Applies to                                                                                              |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Optional `companion.config.json` in the launch directory, or CLI `--config` | Intent LLM, ASR and VAD; defaults in `src/config.ts`.                                                   |
-| `~/companion/agents/companion-agent.json`                                   | Pi executable and coding model/thinking; nested `quickQuestion` model/thinking. Reloaded for each turn. |
-| Pi's provider configuration and credentials                                 | Providers used by Pi; quick questions require its local-Qwen provider to exist.                         |
-| `~/companion/disabled-intents.json`                                         | Independent persisted inference/shortcut switches.                                                      |
-| `~/companion/transcription-cleanup.json`                                    | Transcription cleanup switch; missing means off.                                                        |
+| Configuration                                                                       | Applies to                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Optional `companion.config.json` in the launch directory, or CLI `--config`         | Intent LLM, ASR and VAD; defaults in `src/config.ts`.                                                                                                                                                                                            |
+| `~/companion/agents/companion-agent.json`                                           | Pi executable and coding model/thinking; nested `quickQuestion` model/thinking; `codingDefaultHarness` and `claudeCode` executable/model/effort. Reloaded for each turn; a Claude Code conversation keeps the model/effort captured at creation. |
+| Pi's provider configuration and credentials                                         | Providers used by Pi; quick questions require its local-Qwen provider to exist.                                                                                                                                                                  |
+| `~/companion/agents/claude-tools.json` (proposed, opt-in; not created by Companion) | Pi-parity tool groups for Claude Code conversations (desktop, OpenRig, web); see [parity tools](../src/agents/claude/parity/README.md).                                                                                                          |
+| `~/companion/disabled-intents.json`                                                 | Independent persisted inference/shortcut switches.                                                                                                                                                                                               |
+| `~/companion/transcription-cleanup.json`                                            | Transcription cleanup switch; missing means off.                                                                                                                                                                                                 |
 
 Do not edit literal user-approved prompts as part of an unrelated refactor.
 The live panel transcript currently has limits of **800 bubbles** and
@@ -117,7 +118,7 @@ These are separate operations, not an automatic deployment script:
 | Standalone native C++ or Qt dependencies | `npm run ui:build`, then stop/relaunch the UI with `npm run ui`. Rebuild after Qt upgrades because Sidebar/Dock use matching private Qt headers. |
 | Source-launched UI QML                   | Stop/relaunch the UI; restarting the listener does not reload it. Packaged UI assets require their own update.                                   |
 | Installed Omarchy QML or Lua             | `npm run omarchy:install` from a Hyprland desktop terminal. QML changes rescan the plugin; changed bindings can reload Hyprland.                 |
-| Pi model settings                        | Edit the profile config; the next turn reloads it without a listener restart.                                                                    |
+| Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Existing Claude Code conversations keep their model and effort.    |
 
 Save unsent drafts before stopping the UI. Its window close button hides the
 resident process; it does not exit it. Stop that process before relaunching when
