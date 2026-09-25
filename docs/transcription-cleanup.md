@@ -61,8 +61,8 @@ not break routing.
 
 Responses are validated by the experiment's parser, unchanged
 (`parseExperimentResponse` in `src/core/transcription-cleanup/contract.ts`,
-which the experiment re-exports; json-cleanup-v1 contract). The response must be one
-bare JSON object with exactly `intent` and `parameters`. Code fences, prose, a
+which the experiment re-exports; json-cleanup-v1 contract). The response must
+be one bare JSON object with exactly `intent` and `parameters`. Code fences, prose, a
 BOM, duplicate or extra keys, wrong types and unknown intents are invalid. A
 text route needs nonempty `text` without leading or trailing whitespace.
 Nothing is repaired.
