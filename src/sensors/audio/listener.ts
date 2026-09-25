@@ -6,7 +6,15 @@ import { Segmenter } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
 import { CaptureDiagnostics } from './capture-diagnostics.ts';
 
-/** One listening period owns its recorder and segmenter; pause discards both. */
+/**
+ * One listening period owns its recorder and segmenter; pause discards both.
+ *
+ * Besides accepted segments, the listener reports candidate boundaries so the
+ * pipeline can continue a provisional utterance: a newly opened candidate
+ * holds the newest attempt (`speechResumed`), and a candidate that closes
+ * without a segment releases it (`speechDiscarded`). Every exit path releases
+ * an open hold, so no attempt can wait for a candidate that will never close.
+ */
 export async function listen(
   vad: VoiceActivityDetector,
   pipeline: SensorPipeline,
@@ -26,6 +34,7 @@ export async function listen(
     for await (const frame of audioFrames(signal, options)) {
       signal.throwIfAborted();
       const wasSpeaking = segmenter.speaking;
+      const wasCollecting = segmenter.collecting;
       const probability = await vad.probability(frame);
       signal.throwIfAborted();
       captureDiagnostics.push(frame, probability);
@@ -39,6 +48,17 @@ export async function listen(
 
       if (!wasSpeaking && segmenter.speaking) {
         log('speech', 'Speech detected');
+      }
+
+      // A new candidate may continue a provisional utterance that has not yet
+      // committed. Hold it now, before its inference can complete and act.
+      if (!wasCollecting && segmenter.collecting) {
+        pipeline.speechResumed();
+      }
+
+      // The candidate closed without a segment: too little voiced audio.
+      if (wasCollecting && !segmenter.collecting && !segment) {
+        pipeline.speechDiscarded();
       }
 
       if (segment) {
@@ -62,6 +82,10 @@ export async function listen(
     }
     completed = true;
   } finally {
+    // EOF without speech, pause, capture or VAD failure, and shutdown: any
+    // candidate still open will never be submitted. Idempotent after submit.
+    pipeline.speechDiscarded();
+
     captureDiagnostics.finish();
     log('audio-end', signal.aborted ? 'cancelled' : completed ? 'eof' : 'failed');
     // EOF, pause, failure, and shutdown must never leave the microphone red.

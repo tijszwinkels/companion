@@ -155,6 +155,16 @@ Item {
       compare(view.phraseColor, "#82aaff")
     }
 
+    function test_superseded_phrase_is_neutral() {
+      const view = createTemporaryObject(phraseComponent, parent)
+      view.history = [row("provisional", null, "processing")]
+      view.history = [row("provisional", null, "superseded")]
+      tryCompare(view, "showingResult", true)
+      compare(view.label, "SUPERSEDED")
+      compare(view.failed, false)
+      compare(view.phraseColor, view.muted)
+    }
+
     function test_transcript_is_literal_text() {
       const view = createTemporaryObject(phraseComponent, parent)
       const transcript = "<b>Keep this literal</b> & café — 🙂"
