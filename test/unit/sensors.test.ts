@@ -45,14 +45,15 @@ test('VAD keeps short-word speech with its lead-in and still waits for ending si
       // A clear onset can continue below the starting threshold, as before.
       assert.equal(segmenter.push(index === 0 ? 0.95 : 0.5, speech), undefined);
     }
-    for (let index = 0; index < 24; index++) {
+    // The provisional endpoint is 7 silent frames (224 ms): 6 frames are not enough.
+    for (let index = 0; index < 6; index++) {
       assert.equal(segmenter.push(0, silence), undefined);
     }
 
     const segment = segmenter.push(0, silence);
     assert.ok(segment, `${voicedFrames * 32} ms of speech must reach transcription`);
     assert.equal(segment.reason, 'silence');
-    assert.equal(segment.samples.length, (8 + voicedFrames + 25) * 512);
+    assert.equal(segment.samples.length, (8 + voicedFrames + 7) * 512);
     assert.deepEqual(segment.samples.slice(0, 8 * 512), new Float32Array(8 * 512));
     assert.deepEqual(segment.samples.slice(8 * 512, 9 * 512), speech);
     assert.equal(segmenter.finish(), undefined, 'The utterance is emitted only once');
@@ -77,7 +78,7 @@ test('VAD rejects isolated spikes without counting lead-in or trailing silence a
   }
 
   // Each rejected burst resets the counters. A subsequent short word is kept,
-  // including at EOF when there is no final 800 ms of silence.
+  // including at EOF when there is no final endpoint silence.
   for (let index = 0; index < 4; index++) {
     segmenter.push(0.95, sound);
   }

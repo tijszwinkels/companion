@@ -7,6 +7,7 @@ import type { InspectableModule, RegisteredProcessor } from './module.ts';
 import { DeliveryInterruptedError, IntentDisabledError } from './delivery-error.ts';
 import type { ScopedIntent, ScopedIntentSource } from './scoped-intent.ts';
 import { voiceLabel } from './voice-shortcut.ts';
+import type { DispatchCommitment } from './utterance-continuation.ts';
 
 /** Allows the router to use either the Pi detector or a test implementation. */
 export interface Detector extends InspectableModule {
@@ -227,7 +228,17 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     this.emit('change');
   }
 
-  async route(frame: UserSensorFrame, signal: AbortSignal): Promise<string> {
+  /**
+   * Choose and run exactly one action for a frame. A provisional speech attempt
+   * passes its commitment; each path awaits it immediately before its first
+   * decision (dispatch or skip), so resumed speech can still replace the
+   * attempt until then. Typed input and direct callers pass none.
+   */
+  async route(
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+    commitment?: DispatchCommitment,
+  ): Promise<string> {
     signal.throwIfAborted();
 
     // Prefixes resolve locally before any inference. The existing pipeline still
@@ -237,6 +248,10 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       if (utterance === undefined) {
         continue;
       }
+
+      // Shortcuts have no inference time in which a pause can be bridged, so
+      // their commitment also waits for the legacy quiet window.
+      await commitment?.commit('shortcut', signal);
 
       const intentSignal = this.intentControllers.get(processor.name)!.shortcut.signal;
       if (intentSignal.aborted || processor.availableForPrefix?.(frame) === false) {
@@ -267,6 +282,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         voiceLabel(intent.exactUtterance) === voiceLabel(frame.utterance),
     );
     if (exact) {
+      await commitment?.commit('shortcut', signal);
       this.log(
         'shortcut',
         `${JSON.stringify(exact.exactUtterance)} → ${exact.name} (LLM bypassed)`,
@@ -329,6 +345,10 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
     // Cancellation during inference must prevent the processor's side effect.
     signal.throwIfAborted();
+
+    // Dispatch immediately unless the user resumed speaking; then wait until
+    // that speech is either merged into a new attempt or rejected as noise.
+    await commitment?.commit('inference', signal);
 
     const contextual = scopedByName.get(name);
     if (contextual) {

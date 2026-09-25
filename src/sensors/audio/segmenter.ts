@@ -1,6 +1,9 @@
 export const SAMPLE_RATE = 16000;
 export const FRAME_SAMPLES = 512;
 
+/** One VAD frame lasts 32 ms: 512 samples at 16 samples per millisecond. */
+export const FRAME_MS = FRAME_SAMPLES / 16;
+
 // Separate start/continue thresholds prevent rapid toggling near the boundary.
 export const VAD_SETTINGS = {
   positive: 0.65,
@@ -8,10 +11,20 @@ export const VAD_SETTINGS = {
   // Count voiced frames only. Short answers such as "stop", "yes", and "no"
   // must survive the duration gate; four 32 ms frames still reject brief spikes.
   minSpeechMs: 128,
-  silenceMs: 800,
+  // Provisional endpoint. The pipeline starts ASR and the intent LLM here and
+  // merges resumed speech until dispatch commits (see core/utterance-continuation.ts).
+  // Silence is counted in whole frames, so the effective value is ENDPOINT_MS.
+  silenceMs: 200,
   maxMs: 30000,
   preRollMs: 256,
 };
+
+/**
+ * The actual silence after which a candidate closes: the smallest whole number
+ * of 32 ms frames that reaches silenceMs. For 200 ms that is 7 frames (224 ms);
+ * 6 frames would be only 192 ms.
+ */
+export const ENDPOINT_MS = Math.ceil(VAD_SETTINGS.silenceMs / FRAME_MS) * FRAME_MS;
 
 /** A complete utterance, with the reason its audio buffer was closed. */
 export interface Segment {
@@ -45,6 +58,15 @@ export class Segmenter {
   /** The latest frame's speech state, used by the CLI for progress messages. */
   speaking = false;
 
+  /**
+   * Whether a candidate is open: speech has started and the candidate has not
+   * yet been accepted or rejected. The listener uses the transitions of this
+   * value to report resumed speech and rejected bursts to the pipeline.
+   */
+  get collecting(): boolean {
+    return this.frames.length > 0;
+  }
+
   /** Return a segment only when enough speech ends in silence or reaches the cap. */
   push(probability: number, frame: Float32Array): Segment | undefined {
     if (
@@ -56,8 +78,7 @@ export class Segmenter {
       throw Error('Invalid VAD frame');
     }
 
-    // At 16 kHz, each millisecond contains 16 samples; a frame lasts 32 ms.
-    const ms = FRAME_SAMPLES / 16;
+    const ms = FRAME_MS;
     this.speaking = probability >= (this.speaking ? VAD_SETTINGS.negative : VAD_SETTINGS.positive);
 
     if (!this.frames.length && this.speaking) {

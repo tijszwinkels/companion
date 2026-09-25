@@ -149,7 +149,7 @@ Rectangle {
       objectName: "historyDetectedIntent"
       width: parent.width
       horizontalAlignment: Text.AlignRight
-      text: (root.intent || "NO INTENT") + (["error", "skipped", "cancelled", "interrupted", "preview"].includes(root.outcome) ? " · " + root.outcome : "") + (root.actualIntent ? "\nCorrected: " + root.actualIntent : "")
+      text: (root.intent || "NO INTENT") + (["error", "skipped", "cancelled", "interrupted", "preview", "superseded"].includes(root.outcome) ? " · " + root.outcome : "") + (root.actualIntent ? "\nCorrected: " + root.actualIntent : "")
       textFormat: Text.PlainText
       wrapMode: Text.WrapAnywhere
       color: root.tone

@@ -3,7 +3,11 @@ import test from 'node:test';
 
 import { CaptureDiagnostics } from '../../src/sensors/audio/capture-diagnostics.ts';
 import { audioLevels } from '../../src/sensors/audio/levels.ts';
-import { Segmenter, type SegmentDiagnostic } from '../../src/sensors/audio/segmenter.ts';
+import {
+  ENDPOINT_MS,
+  Segmenter,
+  type SegmentDiagnostic,
+} from '../../src/sensors/audio/segmenter.ts';
 
 test('capture summaries include undetected audio with bounded output and independent windows', () => {
   const reports: Record<string, number>[] = [];
@@ -52,9 +56,11 @@ test('VAD reports rejected duration separately from accepted silence, EOF and li
   );
   assert.deepEqual(
     reports.map((entry) => entry.audioMs),
-    [1152, 1184],
+    // 8 preroll frames, the voiced frames, then the 7-frame (224 ms) endpoint.
+    [576, 608],
   );
-  assert.ok(reports.every((entry) => entry.trailingSilenceMs === 800));
+  assert.equal(ENDPOINT_MS, 224);
+  assert.ok(reports.every((entry) => entry.trailingSilenceMs === ENDPOINT_MS));
   assert.ok(reports.every((entry) => entry.peakProbability === 0.9));
 
   for (let index = 0; index < 4; index++) {
@@ -62,7 +68,9 @@ test('VAD reports rejected duration separately from accepted silence, EOF and li
   }
   segmenter.finish();
   assert.equal(reports.at(-1)?.reason, 'end');
-  assert.equal(reports.at(-1)?.audioMs, 128);
+  // The earlier candidate closed 18 frames before the loop ended, so this one
+  // starts with the full 256 ms preroll before its 128 ms of speech.
+  assert.equal(reports.at(-1)?.audioMs, 384);
 
   for (let index = 0; index < 938; index++) {
     segmenter.push(0.8, frame);
