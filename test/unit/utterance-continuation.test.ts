@@ -856,3 +856,85 @@ test('an unreadable fragment stays continuable beyond the shortcut window', asyn
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'How do I get to Dublin' }]);
   assert.deepEqual(setup.emptyClips, []);
 });
+
+test('typed input during an open speech candidate waits for neither', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  // Speech (or background sound) opens a candidate, then text is typed while
+  // it is still open. The candidate can no longer continue the attempt.
+  setup.pipeline.speechResumed();
+  assert.equal(setup.pipeline.submitText('typed words'), true);
+  setup.detections[0].answer('SEND');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await settle();
+
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.utterance),
+    ['Open the browser', 'typed words'],
+    'Both dispatch before the candidate closes',
+  );
+  assert.ok(setup.logs.some((entry) => entry.stage === 'release' && entry.id === 1));
+
+  // When the candidate is accepted, it is a new request after the typed text.
+  setup.pipeline.submit(audio(0.2));
+  await settle();
+  assert.deepEqual(setup.transcriptions[1].samples, [0.2]);
+  setup.transcriptions[1].answer('and close it');
+  await settle();
+  setup.detections[2].answer('SEND');
+  await setup.pipeline.idle();
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.utterance),
+    ['Open the browser', 'typed words', 'and close it'],
+  );
+  assert.notEqual(setup.outcomes.get(1), 'superseded');
+});
+
+for (const earlierText of [true, false]) {
+  test(`a failed empty-clip write ${earlierText ? 'still routes the earlier words' : 'fails the job as before'}`, async () => {
+    const setup = harness();
+    const logs: string[] = [];
+    const router = setup.pipeline.dependencies.router;
+    const pipeline = new SensorPipeline(
+      setup.pipeline.dependencies,
+      (stage, detail) => {
+        logs.push(`${stage}: ${detail}`);
+      },
+      setup.controller.signal,
+      {
+        emptyAudioCaptured: async () => {
+          throw Error('Disk full');
+        },
+      },
+    );
+    assert.equal(pipeline.dependencies.router, router);
+
+    pipeline.submit(audio(0.1));
+    await settle();
+    setup.transcriptions[0].answer(earlierText ? 'Open the browser' : '');
+    await settle();
+
+    pipeline.speechResumed();
+    pipeline.submit(audio(0.2));
+    await settle();
+    setup.transcriptions[1].answer('');
+    await settle();
+
+    if (earlierText) {
+      setup.detections.at(-1)!.answer('SEND');
+    }
+    await pipeline.idle();
+
+    assert.ok(logs.includes('error: recording: Disk full'));
+    assert.equal(pipeline.failures, 1);
+    assert.deepEqual(
+      setup.dispatched.map((entry) => entry.utterance),
+      earlierText ? ['Open the browser'] : [],
+    );
+  });
+}

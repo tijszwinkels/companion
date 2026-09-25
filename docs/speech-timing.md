@@ -61,7 +61,7 @@ closed by the 30-second `limit` is an accepted segment and follows `submit`.
 | Intent LLM (permanent or contextual intent) | As soon as inference returns, unless a hold is open. | Tijs: no additional wait. Resumed speech during inference replaces it. |
 | Prefix and exact-label shortcuts, including their skips | After routing **and** 576 ms of quiet after the provisional endpoint (restarted by a released hold). | Product choice D1. Shortcuts have no inference time in which a pause can be bridged; without the window, "go to session ‹pause› three" would dispatch the bare prefix. This keeps today's 800 ms semantics. Shortcuts are still faster than before: ASR overlaps the window. |
 | Empty transcript (no earlier text) | After 1200 ms of quiet after the provisional endpoint, before the empty clip is retained. | A fragment cut by a pause can be unreadable alone (see the evaluation). No action or cue is involved, so the wait is invisible; the window is comparable to how long an attempt with text stays continuable during inference. Costs: typed input queued behind it waits up to 1.2 s, and speech within the window is joined with the unreadable sound. |
-| Typed input | Never held and never waits. | Typed input has no VAD. A typed job admitted after a speech attempt is a boundary: later speech cannot merge past it. |
+| Typed input | Never held and never waits. | Typed input has no VAD. A typed job admitted (or dropped as overload) after a speech attempt is a boundary: later speech cannot merge past it. Text typed while a VAD candidate is open therefore also releases that candidate's hold, so neither the earlier attempt nor the text waits for the candidate to close; the order stays attempt, text, then the resumed speech as a new request. |
 
 Direct `submit()` callers without a listener never hold an attempt; only their
 shortcut and empty decisions wait for their quiet windows.
@@ -92,8 +92,9 @@ shortcut and empty decisions wait for their quiet windows.
   the legacy endpoint would have produced, apart from its shorter trailing
   silence. A longer pause is shortened to 800 ms of real audio. The evaluation
   motivated this: with the pause compressed to 480 ms, one merged clip lost six
-  of its eight words. The lead-in is ignored for new requests. A rejected burst between the parts
-  restarts the lead-in, so audio before the burst is not restored.
+  of its eight words. The lead-in is ignored for new requests. A rejected burst
+  between the parts restarts the lead-in, so audio before the burst is not
+  restored.
 - **Memory.** The combined buffer is copied when the continuation is admitted,
   before the old job's `finally` clears its samples. It is limited to 30 s
   (1.9 MB of Float32). A transcript chain retains only the latest usable text.
@@ -110,7 +111,9 @@ constant or one branch:
 - **D2** If the combined retranscription is empty after the padded retry, but
   an earlier attempt of the same utterance had usable text, that latest earlier
   transcript is routed with a fresh LLM (`TranscriptChain`, pipeline `fallback`
-  log). The empty combined clip is still retained under the usual floors.
+  log). The empty combined clip is still retained under the usual floors; if
+  that optional write fails, the failure is logged and counted, and the earlier
+  transcript is still routed.
 - **D3** A continuation that would make the combined audio exceed 30 s is not
   merged: the held attempt proceeds and the continuation is a new request.
 - **D4** A superseded attempt whose transcript was already recorded keeps its
