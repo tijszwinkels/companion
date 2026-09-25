@@ -368,6 +368,30 @@ test('a living Claude Code that never becomes ready is bounded at each startup s
   );
   const recorded = await captured(directory);
   assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+
+  // A picker switch announces the confirmed model after the settings checks,
+  // but its resumed turn is still bounded until a verified init.
+  const first = request(directory, settings, 'hello');
+  await initStall.run(first, signal(), () => {});
+  const switched: AgentMessage[] = [];
+  await assert.rejects(
+    initStall.run(
+      {
+        ...first,
+        settings: { ...settings, model: 'claude-sonnet-5' },
+        prompt: { text: 'silent-init' },
+        resume: true,
+        previousModel: 'claude-opus-5-5',
+      },
+      signal(),
+      (message) => switched.push(message),
+    ),
+    /did not confirm its session within 0\.3 seconds/,
+  );
+  assert.match(switched[0]?.text ?? '', /^Now using claude-sonnet-5 \(previous turn:/);
+  const resumed = await captured(directory);
+  assert.equal(resumed.argv[resumed.argv.indexOf('--resume') + 1], first.id);
+  assert.throws(() => process.kill(resumed.pid, 0), { code: 'ESRCH' });
 });
 
 test('after a verified init, a turn may take longer than the startup deadlines', async (context) => {
