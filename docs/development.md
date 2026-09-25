@@ -70,6 +70,9 @@ call the classifier. Old design proposals contain historical prompt snapshots.
 | `~/companion/agents/claude-tools.json` (proposed, opt-in; not created by Companion) | Pi-parity tool groups for Claude Code conversations (desktop, OpenRig, web); see [parity tools](../src/agents/claude/parity/README.md).                                                                                                          |
 | `~/companion/disabled-intents.json`                                                 | Independent persisted inference/shortcut switches.                                                                                                                                                                                               |
 
+A Claude Code conversation's model changes only through its footer picker, for
+the next turn and in the same Claude history; its effort never changes.
+
 Do not edit literal user-approved prompts as part of an unrelated refactor.
 The live panel transcript currently has limits of **800 bubbles** and
 **1,000,000 UTF-16 code units**, defined in `src/agents/transcript-limits.ts`.

@@ -68,11 +68,12 @@ each has its own switch. The router still tries longer prefixes first; “new
 session” is literal and never captures “new claude session”.
 
 A Claude Code conversation records `AgentSession.claudeCode = {model, effort}`
-once, from the configured `claudeCode` section or an explicit
+when it is created, from the configured `claudeCode` section or an explicit
 `companion_session_start` model, and shows that model as `AgentSession.model`.
 Later turns pass the recorded pair with the executable read afresh from
 `companion-agent.json`, so configuration edits change the program but never the
-model of an existing conversation. That read validates the whole file, as for
+model of an existing conversation. Only the footer's Claude model picker
+changes `claudeCode.model`, for the next turn. That read validates the whole file, as for
 Pi: a mistake in any section, including `claudeCode`, also blocks turns of
 existing Claude Code conversations until it is corrected.
 
@@ -87,9 +88,13 @@ session store accepts `harness` only as `claude-code` together with valid
 `claudeCode` settings (an explicit `"pi"` is normalized to absence) and never
 with Pi's model/effort overrides; archives without the fields stay valid.
 
-Claude Code conversations have no model or effort picker: `setModel` and
-`setThinking` refuse them, and the panel and standalone window hide both pickers
-with a short explanation. `AgentSessions.models()` remains Pi's catalogue.
+Claude Code conversations get a Claude-only next-turn model picker and no
+effort picker. `setModel` accepts an exact allowlisted Claude ID (or the
+configured/current model) and replaces `claudeCode.model`, keeping its effort.
+Pi IDs, aliases and unknown names are refused visibly. `setThinking` refuses
+Claude conversations. `AgentSessions.models()` returns Pi's catalogue plus
+`claudeCode: {models, model, effort}`. The turn resumes the same Claude session
+with the new `--model`. See [the Claude picker contract](claude/README.md#next-turn-model-picker).
 
 The bottom model and effort pickers change **this conversation's next turn**,
 through optional persisted `AgentSession.modelOverride` and `thinkingOverride`.

@@ -79,25 +79,80 @@ Item {
       compare(model.count, 4)
     }
 
-    function test_claude_code_session_shows_fixed_model_instead_of_pickers() {
+    function test_claude_code_session_lists_claude_models_with_fixed_effort() {
       const setup = createTemporaryObject(fixture, parent)
       const picker = setup.picker
       const piHeight = picker.height
+      picker.catalog = {models: ["configured/alternate"], coding: "configured/current",
+        claudeCode: {models: ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+          model: "claude-opus-5-5", effort: "high"}}
       picker.session = {id: "claude", profile: "coding", harness: "claude-code", model: "claude-sonnet-5",
         claudeCode: {model: "claude-sonnet-5", effort: "medium"}}
-      verify(waitForRendering(picker))
-      compare(findChild(setup, "fixedSessionModel").text, "Claude Code · claude-sonnet-5 · medium effort")
-      compare(findChild(setup, "sessionModelPicker").visible, false)
+      const model = findChild(setup, "sessionModelPicker")
+      verify(waitForRendering(model))
+      verify(model.visible)
+      compare(model.count, 4, "Only Claude models; no Pi rows and no profile-default row")
+      compare(model.currentText, "claude-sonnet-5")
+      verify(model.model.some(row => row.label === "claude-opus-5-5 · configured default"))
+      verify(!model.model.some(row => row.value === "configured/alternate" || row.value === ""))
       compare(findChild(setup, "sessionThinkingPicker").visible, false)
-      verify(picker.height < piHeight, "The footer shrinks to the fixed summary")
-      const note = findChild(setup, "fixedSessionModelNote")
+      const effort = findChild(setup, "claudeSessionEffort")
+      verify(effort.visible)
+      compare(effort.text, "medium · fixed")
+      compare(findChild(setup, "showAllSessionModels").visible, false)
+      const note = findChild(setup, "claudeSessionModelNote")
+      verify(note.visible)
       verify(note.y + note.height <= picker.height)
+      compare(picker.height, piHeight, "The footer keeps the Pi layout")
 
-      // An older listener omits the harness: the Pi pickers remain.
+      let choices = []
+      picker.modelRequested.connect((id, value) => { choices.push({id: id, value: value}) })
+      mouseClick(model, 35, model.height / 2)
+      tryCompare(model.popup, "visible", true)
+      keyClick(Qt.Key_Home)
+      keyClick(Qt.Key_Return)
+      compare(choices.length, 1)
+      compare(choices[0].id, "claude")
+      compare(choices[0].value, "claude-fable-5-1")
+
+      // A current model outside the list (for example one an agent tool
+      // started) stays visible and selected; it is not labelled unavailable.
+      picker.session = {id: "claude-other", profile: "coding", harness: "claude-code", model: "claude-opus-4-8",
+        claudeCode: {model: "claude-opus-4-8", effort: "max"}}
+      compare(model.count, 5)
+      compare(model.currentText, "claude-opus-4-8")
+      compare(effort.text, "max · fixed")
+
+      // An older listener sends no Claude list: only the current model shows.
+      picker.catalog = {models: ["configured/alternate"], coding: "configured/current"}
+      compare(model.count, 1)
+      compare(model.currentText, "claude-opus-4-8")
+
+      // Pi conversations (or older listeners without the harness) keep Pi's pickers.
       picker.session = {id: "synthetic", profile: "coding", model: "configured/current"}
-      verify(findChild(setup, "sessionModelPicker").visible)
-      compare(findChild(setup, "fixedSessionModel").visible, false)
-      compare(picker.height, piHeight)
+      verify(findChild(setup, "sessionThinkingPicker").visible)
+      compare(effort.visible, false)
+      compare(note.visible, false)
+      verify(findChild(setup, "showAllSessionModels").visible)
+      verify(model.currentText.indexOf("Use coding default") === 0)
+    }
+
+    function test_claude_popup_rejects_a_changed_conversation() {
+      const setup = createTemporaryObject(fixture, parent)
+      const picker = setup.picker
+      picker.catalog = {models: [], claudeCode: {models: ["claude-opus-5-5", "claude-sonnet-5"], model: "claude-opus-5-5", effort: "high"}}
+      picker.session = {id: "first", profile: "coding", harness: "claude-code", claudeCode: {model: "claude-opus-5-5", effort: "high"}}
+      const model = findChild(setup, "sessionModelPicker")
+      let choices = []
+      picker.modelRequested.connect((id, value) => { choices.push(id) })
+      verify(waitForRendering(model))
+      mouseClick(model, 35, model.height / 2)
+      tryCompare(model.popup, "visible", true)
+      picker.session = {id: "second", profile: "coding", harness: "claude-code", claudeCode: {model: "claude-opus-5-5", effort: "high"}}
+      tryCompare(model.popup, "visible", false)
+      keyClick(Qt.Key_End)
+      keyClick(Qt.Key_Return)
+      compare(choices.length, 0, "A tab change never retargets an open Claude menu")
     }
 
     function test_effort_popup_pins_rows_and_rejects_changed_conversation() {

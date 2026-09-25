@@ -348,10 +348,14 @@ export class SessionStore {
 
 /**
  * The harness fields are optional; older archives and Pi conversations omit
- * both. A Claude Code conversation must carry the model and effort captured
- * at its creation, because later turns never read them from the configuration.
- * The model follows the `claudeCode.model` rules in settings.ts. Pi model
- * choices belong to Pi conversations only.
+ * both. A Claude Code conversation must carry its own model and effort,
+ * because later turns never read them from the configuration. The model is
+ * the one for the next turn: captured at creation, or since chosen in the
+ * picker. The same `{model, effort}` shape is used either way, so archives
+ * stay readable by older and newer listeners alike. The model follows the
+ * `claudeCode.model` rules in settings.ts; the picker's allowlist is not
+ * enforced here, so older conversations with other models stay valid. Pi
+ * model choices belong to Pi conversations only.
  */
 function validHarness(session: AgentSession): boolean {
   if (session.harness === undefined || session.harness === 'pi') {

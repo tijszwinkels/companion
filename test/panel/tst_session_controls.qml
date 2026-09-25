@@ -17,7 +17,8 @@ Item {
       property bool answerModels: true
       property bool initiallySelected: true
       property bool controlsEnabled: true
-      property var availableCatalog: ({models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local"})
+      property var availableCatalog: ({models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local",
+        claudeCode: {models: ["claude-opus-5-5", "claude-sonnet-5"], model: "claude-opus-5-5", effort: "high"}})
       Panel.AgentSessionState {
         id: state
         controlsAvailable: setup.controlsEnabled
@@ -36,7 +37,11 @@ Item {
             update(Object.assign({}, session, {thinkingOverride: request.thinking, messages: []}))
           } else if (request.action === "set-agent-model") {
             const session = sessions.find(entry => entry.id === request.id)
-            update(Object.assign({}, session, {modelOverride: request.model, messages: []}))
+            // A Claude conversation's own model changes; Pi stores an override.
+            const change = session.harness === "claude-code"
+              ? {claudeCode: {model: request.model, effort: session.claudeCode.effort}}
+              : {modelOverride: request.model}
+            update(Object.assign({}, session, change, {messages: []}))
           }
         }
       }
@@ -129,37 +134,43 @@ Item {
     function modelRequests(setup) {
       return setup.requests.filter(request => request.action === "agent-models").length
     }
-    function test_claude_code_conversation_hides_pickers_without_pi_catalogue() {
+    function test_claude_code_conversation_chooses_claude_models_for_its_next_turn() {
       const setup = createTemporaryObject(fixture, parent, {initiallySelected: false})
       const claude = Object.assign(setup.entry("claude"), {profile: "coding", harness: "claude-code",
         model: "claude-opus-5-5", claudeCode: {model: "claude-opus-5-5", effort: "high"}})
       setup.state.replace([claude, setup.entry("pi")])
       setup.state.select("claude")
       verify(waitForRendering(setup.panel))
-      wait(20)
-      compare(modelRequests(setup), 0, "A Claude Code conversation never needs Pi's catalogue")
+      tryVerify(() => modelRequests(setup) === 1, 1000, "The Claude list arrives with the shared catalogue")
       const footer = findChild(setup.panel, "sessionModelFooter")
-      const summary = findChild(setup.panel, "fixedSessionModel")
+      const picker = findChild(setup.panel, "sessionModelPicker")
       verify(footer.visible)
-      verify(summary.visible)
-      compare(summary.text, "Claude Code · claude-opus-5-5 · high effort")
-      verify(findChild(setup.panel, "fixedSessionModelNote").visible)
-      for (const name of ["sessionModelPicker", "sessionThinkingPicker", "showAllSessionModels", "refreshSessionModels"]) {
-        compare(findChild(setup.panel, name).visible, false, name)
-      }
+      verify(picker.visible)
+      compare(picker.count, 2)
+      compare(picker.currentText, "claude-opus-5-5 · configured default")
+      compare(findChild(setup.panel, "sessionThinkingPicker").visible, false)
+      compare(findChild(setup.panel, "claudeSessionEffort").text, "high · fixed")
+      compare(findChild(setup.panel, "showAllSessionModels").visible, false)
+      verify(findChild(setup.panel, "claudeSessionModelNote").visible)
+      verify(findChild(setup.panel, "refreshSessionModels").visible)
 
-      // Pi conversations keep the existing pickers and catalogue loading.
+      verify(waitForRendering(picker))
+      mouseClick(picker, 35, picker.height / 2)
+      tryCompare(picker.popup, "visible", true)
+      keyClick(Qt.Key_End)
+      keyClick(Qt.Key_Return)
+      const choices = setup.requests.filter(request => request.action === "set-agent-model")
+      compare(choices.length, 1)
+      compare(choices[0].id, "claude")
+      compare(choices[0].model, "claude-sonnet-5")
+      tryCompare(picker, "currentText", "claude-sonnet-5")
+      compare(findChild(setup.panel, "claudeSessionEffort").text, "high · fixed", "The effort is unchanged")
+
+      // Pi conversations keep the Pi pickers and reuse the loaded catalogue.
       setup.state.select("pi")
-      tryVerify(() => modelRequests(setup) === 1)
-      verify(findChild(setup.panel, "sessionModelPicker").visible)
       verify(findChild(setup.panel, "sessionThinkingPicker").visible)
-      verify(!summary.visible)
-
-      // Streaming updates carry the whole view, so the harness is retained.
-      setup.state.update(Object.assign({}, claude, {status: "completed", messages: []}))
-      setup.state.select("claude")
-      verify(summary.visible)
-      compare(findChild(setup.panel, "sessionModelPicker").visible, false)
+      compare(findChild(setup.panel, "claudeSessionEffort").visible, false)
+      verify(picker.currentText.indexOf("Use quick-question default") === 0)
       compare(modelRequests(setup), 1)
     }
     function test_model_catalog_reused_across_selection_and_reconnect() {

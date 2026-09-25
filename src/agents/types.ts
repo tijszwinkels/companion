@@ -79,12 +79,24 @@ export interface ClaudeCodeSettings {
 }
 
 /**
- * The Claude model and effort captured when a Claude Code conversation is
- * created. Later turns reuse these values instead of the current configuration
- * file, so a conversation never changes model mid-way. The executable is still
- * read from the configuration for each turn.
+ * A Claude Code conversation's own model and effort. Both are captured from
+ * the configuration (or an explicit start request) when the conversation is
+ * created; later configuration edits never change them. The user can choose
+ * another Claude model for the next turn from the footer picker, which
+ * replaces `model` here; the effort stays fixed. The executable is still read
+ * from the configuration for each turn.
  */
 export type ClaudeCodeConversationSettings = Pick<ClaudeCodeSettings, 'model' | 'effort'>;
+
+/**
+ * The Claude part of the footer picker's catalogue: the allowlisted exact
+ * model IDs plus the configured default, and the configured defaults.
+ */
+export interface ClaudeCodeModelCatalog {
+  models: string[];
+  model: string;
+  effort: ClaudeCodeEffort;
+}
 
 export interface AgentSession {
   id: string;
@@ -95,7 +107,10 @@ export interface AgentSession {
   profile?: AgentProfile;
   /** Absent in older archives and in every Pi conversation; absence means `pi`. */
   harness?: AgentHarness;
-  /** Present only when `harness` is `claude-code`; fixed at conversation creation. */
+  /**
+   * Present only when `harness` is `claude-code`. `model` is the model for the
+   * next turn (the picker may change it); `effort` is fixed at creation.
+   */
   claudeCode?: ClaudeCodeConversationSettings;
   /** Explicit conversation choice; absence reloads the profile default each turn. */
   modelOverride?: string;
@@ -167,6 +182,12 @@ export interface AgentRunRequest<Settings = AgentSettings> {
   prompt: { text: string; screenshot?: Screenshot };
   /** False only for a conversation's first turn. A missing transcript then fails. */
   resume: boolean;
+  /**
+   * Claude Code only: the model of this conversation's previous turn, when the
+   * user has since chosen another one. The backend announces the switch once
+   * Claude Code has confirmed the new model. Pi ignores it.
+   */
+  previousModel?: string;
   widgets?: { endpoint: string; token: string };
   /** Turn-scoped connection for the session lifecycle tools. */
   sessionTools?: { endpoint: string; token: string };
@@ -184,7 +205,10 @@ export interface AgentBackend<Settings = AgentSettings> extends InspectableModul
   ): Promise<void>;
 }
 
-/** The Claude Code adapter; it offers no model catalogue or mid-conversation picker. */
+/**
+ * The Claude Code adapter. It has no `models()`: the Claude picker uses the
+ * fixed allowlist in `claude/models.ts`, not a discovery process.
+ */
 export type ClaudeCodeAgentBackend = AgentBackend<ClaudeCodeSettings>;
 
 /**

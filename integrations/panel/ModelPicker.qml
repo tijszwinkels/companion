@@ -4,8 +4,10 @@ import QtQuick.Controls.Basic as Basic
 
 // The selected conversation owns this override. Profile defaults and the
 // model actually running remain distinct, especially while a turn is active.
-// A Claude Code conversation has no pickers: its model and effort are fixed
-// when it starts, so the footer only names them.
+// A Claude Code conversation lists only the listener's Claude models: the
+// choice replaces that conversation's own Claude model for its next turn and
+// Claude Code keeps the same history. Its effort stays as it started, so the
+// footer names it instead of offering an effort picker.
 Item {
   id: root
   property var session: null
@@ -29,7 +31,18 @@ Item {
   signal modelRequested(string id, string model)
   readonly property string sessionId: session ? session.id : ""
   // Absent in Pi conversations and in messages from older listeners.
-  readonly property bool fixedModel: session !== null && session.harness === "claude-code"
+  readonly property bool claudeConversation: session !== null && session.harness === "claude-code"
+  readonly property string claudeModel: claudeConversation && session.claudeCode ? session.claudeCode.model : ""
+  // The listener's allowlist plus the configured default. The conversation's
+  // current model is always shown, even before the catalogue arrives or when
+  // it is not listed (for example a model started by an agent tool).
+  readonly property var claudeOptions: {
+    const claude = catalog.claudeCode || {}
+    const listed = claude.models || []
+    const entries = listed.map(model => ({label: model + (model === claude.model ? " · configured default" : ""), value: model}))
+    if (claudeModel && !listed.includes(claudeModel)) entries.push({label: claudeModel, value: claudeModel})
+    return entries
+  }
   signal thinkingRequested(string id, string thinking)
   property bool showAllModels: false
   onSessionIdChanged: {
@@ -63,7 +76,7 @@ Item {
   readonly property bool stacked: width < 380 * unit
   readonly property real effortWidth: 172 * unit
   readonly property real controlsBottom: Math.max(chooser.y + chooser.height, effort.y + effort.height)
-  height: fixedModel ? fixedNote.y + fixedNote.height + 12 * unit : controlsBottom + (statusText ? 62 : 38) * unit
+  height: controlsBottom + (statusText ? 62 : 38) * unit
 
   // Match Pi's ordered adjustment for display only; launch validation uses Pi's
   // own helper. Keep the requested override so switching back can restore it.
@@ -80,34 +93,7 @@ Item {
   }
 
   Text {
-    id: fixedSummary
-    objectName: "fixedSessionModel"
-    visible: root.fixedModel
-    width: parent.width
-    text: root.fixedModel && root.session.claudeCode
-      ? "Claude Code · " + root.session.claudeCode.model + " · " + root.session.claudeCode.effort + " effort"
-      : "Claude Code"
-    textFormat: Text.PlainText
-    color: root.foreground
-    elide: Text.ElideRight
-    font.family: root.fontFamily
-    font.pixelSize: 12 * root.unit
-  }
-  Text {
-    id: fixedNote
-    objectName: "fixedSessionModelNote"
-    visible: root.fixedModel
-    y: fixedSummary.height + 2 * root.unit
-    width: parent.width
-    text: "Model and effort are fixed when a Claude Code conversation starts."
-    color: root.muted
-    wrapMode: Text.WordWrap
-    font.family: root.fontFamily
-    font.pixelSize: 10 * root.unit
-  }
-  Text {
-    visible: !root.fixedModel
-    text: "This session · next turn model"
+    text: root.claudeConversation ? "This session · next turn Claude model" : "This session · next turn model"
     width: chooser.width
     color: root.muted
     font.family: root.fontFamily
@@ -115,7 +101,6 @@ Item {
     elide: Text.ElideRight
   }
   Text {
-    visible: !root.fixedModel
     x: effort.x
     y: effort.y - 20 * root.unit
     text: "Effort"
@@ -228,11 +213,10 @@ Item {
   SettingChooser {
     id: chooser
     objectName: "sessionModelPicker"
-    visible: !root.fixedModel
     y: 20 * root.unit
     width: Math.max(0, root.width - (root.stacked ? 0 : root.effortWidth + 8 * root.unit))
-    entries: root.options
-    selectedValue: root.session && root.session.modelOverride || ""
+    entries: root.claudeConversation ? root.claudeOptions : root.options
+    selectedValue: root.claudeConversation ? root.claudeModel : root.session && root.session.modelOverride || ""
     onChosen: (id, value) => root.modelRequested(id, value)
     Accessible.name: "Model for this conversation's next turn"
     ToolTip.visible: hovered
@@ -241,7 +225,7 @@ Item {
   SettingChooser {
     id: effort
     objectName: "sessionThinkingPicker"
-    visible: !root.fixedModel
+    visible: !root.claudeConversation
     x: root.stacked ? 0 : chooser.width + 8 * root.unit
     y: root.stacked ? chooser.y + chooser.height + 24 * root.unit : chooser.y
     width: root.stacked ? root.width : root.effortWidth
@@ -255,10 +239,28 @@ Item {
       ? "Requested: " + root.session.thinkingOverride + " · supported by this model: " + root.adaptedThinking(root.session.thinkingOverride)
       : "Inherits the conversation profile; Pi adjusts to the selected model's supported levels."
   }
+  // Claude Code has no effort picker: a model switch keeps the effort the
+  // conversation started with (models without effort support ignore it).
+  Text {
+    id: claudeEffort
+    objectName: "claudeSessionEffort"
+    visible: root.claudeConversation
+    x: effort.x
+    y: effort.y
+    width: effort.width
+    height: effort.height
+    text: root.session && root.session.claudeCode ? root.session.claudeCode.effort + " · fixed" : ""
+    textFormat: Text.PlainText
+    color: root.foreground
+    verticalAlignment: Text.AlignVCenter
+    elide: Text.ElideRight
+    font.family: root.fontFamily
+    font.pixelSize: 12 * root.unit
+  }
   PanelAction {
     id: allModels
     objectName: "showAllSessionModels"
-    visible: !root.fixedModel
+    visible: !root.claudeConversation
     y: root.controlsBottom + 6 * root.unit
     text: root.showAllModels ? "Pinned models only" : "Show all models"
     enabled: root.online && root.catalogLoaded && root.catalog.pinned !== undefined
@@ -271,10 +273,22 @@ Item {
     Keys.onReturnPressed: event => { if (enabled) triggered(); event.accepted = true }
     Keys.onSpacePressed: event => { if (enabled) triggered(); event.accepted = true }
   }
+  Text {
+    objectName: "claudeSessionModelNote"
+    visible: root.claudeConversation
+    y: allModels.y
+    width: Math.max(0, refresh.x - 8 * root.unit)
+    height: allModels.height
+    text: "Same Claude history; effort stays as it started."
+    color: root.muted
+    verticalAlignment: Text.AlignVCenter
+    elide: Text.ElideRight
+    font.family: root.fontFamily
+    font.pixelSize: 10 * root.unit
+  }
   PanelAction {
     id: refresh
     objectName: "refreshSessionModels"
-    visible: !root.fixedModel
     anchors.right: parent.right
     y: allModels.y
     text: root.loading ? "…" : "↻"
@@ -284,12 +298,12 @@ Item {
     fontFamily: root.fontFamily
     unit: root.unit
     onTriggered: root.refreshRequested()
-    Accessible.name: "Refresh available Pi models"
+    Accessible.name: root.claudeConversation ? "Refresh available Claude models" : "Refresh available Pi models"
   }
   Text {
     y: allModels.y + allModels.height + 2 * root.unit
     width: parent.width
-    visible: !root.fixedModel && root.statusText !== ""
+    visible: root.statusText !== ""
     text: root.statusText
     color: root.muted
     elide: Text.ElideRight

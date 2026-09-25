@@ -75,8 +75,9 @@ needed to update this adapter.
   coding/quick-question default. Overrides survive closing and reopening, while
   running turns and other sessions keep their models. Thinking follows the
   conversation profile, or `off` for models without reasoning. The picker does
-  not edit profile or Pi configuration. A Claude Code conversation has no
-  picker: the footer names the model and effort fixed when it started.
+  not edit profile or Pi configuration. A Claude Code conversation's picker
+  lists Claude models only and switches its next turn in the same Claude
+  history; its effort stays as it started and has no picker.
 - While the panel has keyboard focus, **Super+minus** widens it and
   **Super+equals** narrows it by 100 logical pixels. These are Omarchy's existing
   physical horizontal-resize keys (`code:20`/`code:21`); their original window
