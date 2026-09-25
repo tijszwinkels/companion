@@ -23,7 +23,7 @@ import type { UserSensorFrame } from '../frame.ts';
 import type { LlmConfig } from '../intent-detector.ts';
 import { CLEANUP_OUTPUT_TOKENS, localModel, localStream } from '../intent-detector.ts';
 import type { TextCleaner, FixedRouteCleanup } from '../router.ts';
-import type { TextRoute } from '../../evals/experiments/json-cleanup/contract.ts';
+import type { TextRoute } from './contract.ts';
 import { fixedRouteSystemPrompt } from './prompt.ts';
 import { interpretFixedRouteResponse } from './response.ts';
 

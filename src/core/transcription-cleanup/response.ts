@@ -6,7 +6,7 @@
  * on without ever repairing the response.
  *
  * Validation is the offline experiment's parser, unchanged
- * (`parseExperimentResponse` in src/evals/experiments/json-cleanup/contract.ts,
+ * (`parseExperimentResponse` in ./contract.ts, shared with the experiment;
  * a pure module without imports or I/O), used with the plain json-cleanup-v1
  * contract: no percentages and no optional text. So the live app accepts
  * exactly the responses the eval counted as valid: one bare JSON object, exact
@@ -23,7 +23,7 @@ import {
   parseExperimentResponse,
   type InvalidReason,
   type TextRoute,
-} from '../../evals/experiments/json-cleanup/contract.ts';
+} from './contract.ts';
 
 /**
  * Invalid reasons that concern only `parameters.text` of a text route. The

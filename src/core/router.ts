@@ -11,7 +11,7 @@ import {
   isTextRoute,
   type InvalidReason,
   type TextRoute,
-} from '../evals/experiments/json-cleanup/contract.ts';
+} from './transcription-cleanup/contract.ts';
 import type {
   CleanupFallbackReason,
   TranscriptionCleanupRecord,
@@ -300,9 +300,11 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     // is processed applies to the next utterance, never halfway through.
     const cleanupEnabled = this.cleanup.enabled;
 
-    // Report exactly one cleanup record per routed utterance. Text routes
-    // report theirs just before dispatch (so history has it even if delivery
-    // fails); every other path, including failures, reports "no text" here.
+    // Report exactly one cleanup record per routed utterance. With cleanup on,
+    // text routes report theirs just before dispatch, so the stored record is
+    // committed before any delivery side effect starts (typing can take long,
+    // or the process can die mid-delivery). Every other path, and every path
+    // while cleanup is off, reports in `finally` below.
     let cleanupReported = false;
     const reportCleanup = (record: TranscriptionCleanupRecord): void => {
       if (cleanupReported) {
@@ -408,8 +410,6 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
           reportCleanup,
         );
         signal.throwIfAborted();
-      } else if (!cleanupEnabled) {
-        reportCleanup({ enabled: false });
       }
 
       this.log('dispatch', processor.name, frame.id);
@@ -528,9 +528,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     // A text route delivers the cleaned text, or the raw text when the model's
     // text broke the contract. Nothing partially cleaned is ever delivered.
     let routedFrame = frame;
-    if (!detection) {
-      reportCleanup({ enabled: false });
-    } else if (isTextRoute(name)) {
+    if (detection && isTextRoute(name)) {
       if (detection.text !== null) {
         this.log(
           'cleanup',
@@ -540,9 +538,12 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         reportCleanup({ enabled: true, status: 'cleaned', text: detection.text });
         routedFrame = { ...frame, utterance: detection.text };
       } else {
-        const reason = detection.fallback ?? 'text-missing';
-        this.log('cleanup', `Using raw text (${reason})`, frame.id);
-        reportCleanup({ enabled: true, status: 'fallback', reason });
+        // A detector must name why it has no text; never invent a reason.
+        if (detection.fallback === null) {
+          throw Error('Cleanup detection returned a text route without text or a reason');
+        }
+        this.log('cleanup', `Using raw text (${detection.fallback})`, frame.id);
+        reportCleanup({ enabled: true, status: 'fallback', reason: detection.fallback });
       }
     }
 

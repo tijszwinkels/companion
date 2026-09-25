@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
-import { IntentDetector } from '../../src/core/intent-detector.ts';
+import { buildPrompt, IntentDetector } from '../../src/core/intent-detector.ts';
 import { restoreIntentRequest, snapshotIntentRequest } from '../../src/core/intent-request.ts';
 import { IntentDisabledError } from '../../src/core/delivery-error.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
@@ -34,8 +34,14 @@ import {
 } from '../../src/core/transcription-cleanup/fixed-route-cleaner.ts';
 import {
   CLEANUP_INSTRUCTION,
+  cleanupResponseSection,
   fixedRouteSystemPrompt,
+  RECORDED_ANSWER_SENTENCE,
+  RECORDED_IGNORE_SENTENCE,
   SEND_FORMATTING_INSTRUCTION,
+  VARIANT_ANSWER_SENTENCE,
+  VARIANT_IGNORE_SENTENCE,
+  withCleanupResponseFormat,
 } from '../../src/core/transcription-cleanup/prompt.ts';
 import {
   interpretFixedRouteResponse,
@@ -367,6 +373,68 @@ test('switch on: inferred responses are used strictly and never repaired', async
       await endpoint.close();
     }
   }
+});
+
+test('switch on: intent instructions quoting the template sentences stay untouched and routable', async () => {
+  // Review M1: agent-authored choice text can quote the bare-name sentences.
+  // Only the fixed header is rewritten; the quote survives byte for byte.
+  const quoted =
+    'Option "You answer with ONLY the intent name." In that case, you return the intent name IGNORE.';
+  const intents = [
+    ...offeredIntents,
+    { name: 'CHOOSE_AGENT_OPTION_1', instruction: `Choose this for the option. ${quoted}` },
+  ];
+
+  const endpoint = await modelServer(() =>
+    json({ intent: 'SEND_TEXT_TO_APPLICATION', parameters: { text: 'Send it.' } }),
+  );
+  try {
+    const detector = new IntentDetector(endpoint.config);
+    const detection = await detector.detectWithCleanup(baseFrame, intents, signal());
+    assert.equal(detection.text, 'Send it.');
+
+    const system = JSON.parse(endpoint.bodies[0]!).messages[0].content as string;
+    const [header, list] = system.split('\nPossible intents:\n');
+    assert.ok(header!.includes(VARIANT_ANSWER_SENTENCE));
+    assert.ok(header!.includes(VARIANT_IGNORE_SENTENCE));
+    assert.equal(header!.includes(RECORDED_ANSWER_SENTENCE), false);
+    assert.ok(list!.includes(quoted));
+  } finally {
+    await endpoint.close();
+  }
+
+  // Without a quote the result equals the experiment's whole-prompt replacement.
+  const bare = buildPrompt(offeredIntents);
+  const experiment =
+    bare
+      .replace(RECORDED_ANSWER_SENTENCE, VARIANT_ANSWER_SENTENCE)
+      .replace(RECORDED_IGNORE_SENTENCE, VARIANT_IGNORE_SENTENCE) +
+    '\n' +
+    cleanupResponseSection(['SEND_TEXT_TO_APPLICATION', 'START_CODING_AGENT_SESSION']);
+  assert.equal(
+    withCleanupResponseFormat(
+      bare,
+      offeredIntents.map((intent) => intent.name),
+    ),
+    experiment,
+  );
+
+  // A prompt that lost its template is refused rather than guessed.
+  assert.throws(() => withCleanupResponseFormat('Classify this.', []), /template/);
+});
+
+test('switch on: a detector that returns a text route without text or reason is refused', async () => {
+  const { router, delivered } = cleanupRouter(
+    scriptedDetector(async () => ({
+      intent: 'SEND_TEXT_TO_APPLICATION',
+      text: null,
+      fallback: null,
+    })),
+    scriptedCleaner(async () => assert.fail('No cleaner call')),
+  );
+
+  await assert.rejects(router.route(baseFrame, signal()), /without text or a reason/);
+  assert.deepEqual(delivered, []);
 });
 
 /** A processor that records the text it received; null instruction = shortcut only. */
