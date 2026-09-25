@@ -24,6 +24,8 @@ Item {
   property bool textInputAvailable: false
   property string pendingUtterance: ""
   property var intents: []
+  // {enabled: bool}, or null when the listener has no transcription cleanup.
+  property var transcriptionCleanup: null
   property var agentActions: ({})
   property string lastError: ""
   property string lastErrorAction: ""
@@ -345,6 +347,8 @@ Item {
         // mouse click or tooltip. Only changed routing state replaces the list.
         const intents = message.intents || []
         if (JSON.stringify(root.intents) !== JSON.stringify(intents)) root.intents = intents
+        const cleanup = message.transcriptionCleanup || null
+        if (JSON.stringify(root.transcriptionCleanup) !== JSON.stringify(cleanup)) root.transcriptionCleanup = cleanup
         root.updateAgentActions(message.agentActions)
         agentSessions.replace(message.sessions || [])
         agentSessions.orderRevision = message.sessionOrderRevision || ""
@@ -572,6 +576,7 @@ Item {
     activityHistory.disconnected()
     agentSessions.disconnectControls()
     root.intents = []
+    root.transcriptionCleanup = null
     root.agentActions = ({})
     root.cancel()
 
@@ -648,6 +653,7 @@ Item {
     processing: root.processing
     history: root.history
     intents: root.intents
+    transcriptionCleanup: root.transcriptionCleanup
     activityHistoryModel: activityHistory.model
     activityHistoryAvailable: activityHistory.available
     historyDeletionAvailable: root.historyDeletionAvailable
@@ -662,10 +668,11 @@ Item {
     unreadSessionIds: agentSessions.unreadIds
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["set-agent-model", "set-agent-thinking", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["set-agent-model", "set-agent-thinking", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "set-transcription-cleanup", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled, mode) => root.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})
+    onTranscriptionCleanupRequested: enabled => root.send({action: "set-transcription-cleanup", enabled: enabled})
     onHistoryActionRequested: (action, id, value) => root.historyAction(action, id, value)
     onSessionSelected: id => agentSessions.select(id)
     onPreviousRequested: agentSessions.showingPrevious = true

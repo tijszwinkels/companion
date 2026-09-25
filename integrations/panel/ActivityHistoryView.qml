@@ -56,6 +56,9 @@ Item {
       observedAt: model.observedAt
       feedback: model.feedback
       actualIntent: model.actualIntent
+      cleanedText: model.cleanedText
+      cleanupStatus: model.cleanupStatus
+      cleanupFallback: model.cleanupFallback
       intents: root.intents
       online: root.online
       historyDeletionAvailable: root.historyDeletionAvailable

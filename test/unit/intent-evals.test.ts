@@ -143,6 +143,7 @@ test('read-only inventory and frozen export use explicit labels, reject invalid 
   assert.deepEqual(inspectDatabase(path), {
     total: 8,
     recorded: 7,
+    recordedWithCleanupPrompt: 0,
     labeled: 7,
     usableLabels: 5,
     correctWithRequest: 3,

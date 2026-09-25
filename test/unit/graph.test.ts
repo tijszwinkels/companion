@@ -12,6 +12,8 @@ import { DeliveryControl } from '../../src/core/delivery-control.ts';
 import { createGraph, type Graph } from '../../src/core/graph.ts';
 import { graphToMermaid } from '../../src/core/graph-mermaid.ts';
 import { IntentDetector } from '../../src/core/intent-detector.ts';
+import { FixedRouteCleaner } from '../../src/core/transcription-cleanup/fixed-route-cleaner.ts';
+import { TranscriptionCleanupSetting } from '../../src/core/transcription-cleanup/setting.ts';
 import type { InspectableModule, RegisteredProcessor } from '../../src/core/module.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
@@ -243,7 +245,14 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   const activity = fixture.runtime.activity;
   const config = await loadConfig(configPath);
   const detector = new IntentDetector(config.llm);
-  const router = new UserSensorRouter({ detector }, () => {}, activity);
+  const cleaner = new FixedRouteCleaner(config.llm);
+  const router = new UserSensorRouter(
+    { detector, cleaner },
+    () => {},
+    activity,
+    'router',
+    new TranscriptionCleanupSetting(),
+  );
   const send = new SendTextToApplication(() => {}, false, undefined, activity);
   const enter = new EnterTextToApplication(() => {}, false, undefined, activity);
   send.subscribe(router);
@@ -325,7 +334,8 @@ process.once('exit', () => {
       const graph = JSON.parse(stdout) as Graph;
       assert.deepEqual(graph, desktopGraph);
       assert.equal(graph.nodes[0].id, 'pipeline');
-      assert.equal(graph.nodes.length, 21);
+      // Includes the transcription cleanup call used by explicit shortcuts.
+      assert.equal(graph.nodes.length, 22);
       assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 12);
     } else {
       assert.ok(stdout.startsWith('flowchart LR\n'));

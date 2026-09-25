@@ -272,6 +272,7 @@ Item {
     processing: client.processing
     history: client.history
     intents: client.intents
+    transcriptionCleanup: client.transcriptionCleanup
     agentActions: client.agentActions
     activityHistoryModel: client.activity.model
     activityHistoryAvailable: client.activity.available
@@ -321,6 +322,7 @@ Item {
       client.send({action: "stop-agent-run", id: id, runId: runId})
     }
     onIntentEnabledRequested: (name, enabled, mode) => client.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})
+    onTranscriptionCleanupRequested: enabled => client.send({action: "set-transcription-cleanup", enabled: enabled})
     onHistoryActionRequested: (action, id, value) => {
       if (action === "paste") {
         if (root.host.bridgeConnected) root.host.notify({type: "history-paste", id: id})

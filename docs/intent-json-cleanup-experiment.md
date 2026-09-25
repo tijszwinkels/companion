@@ -24,8 +24,16 @@ Every experimental prompt and output-budget change is explicit, versioned and
 labeled in reports. A real comparison run is a separate step that needs user
 authorization, after review; nothing in this repository makes one on its own.
 
-Variant ID: `json-cleanup-v1`. All instruction text is in
-`src/evals/experiments/json-cleanup/prompt.ts`. Print it with:
+**Live integration (2026-09-25).** The json-cleanup-v1 wording is now also used
+by the optional live feature ([transcription-cleanup.md](transcription-cleanup.md)).
+Its strings (cleanup and SEND formatting instructions, the v1 response section
+and the fixed-route prompt) moved unchanged to
+`src/core/transcription-cleanup/prompt.ts`. This experiment imports them, and the
+pinned json-cleanup-v1 prompt hash is unchanged. Nothing in this experiment
+imports routing or delivery code.
+
+Variant ID: `json-cleanup-v1`. The experiment's prompt module is
+`src/evals/experiments/json-cleanup/prompt.ts`. Print the prompt with:
 
 ```sh
 npm run eval:intent-cleanup -- prompt

@@ -73,6 +73,7 @@ Commands:
 {"action":"media-playback","playing":true}
 {"action":"toggle-sounds"}
 {"action":"set-intent-enabled","name":"SEND_TEXT_TO_APPLICATION","mode":"inference","enabled":false}
+{"action":"set-transcription-cleanup","enabled":true}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
 {"action":"close-agent","id":"question-uuid"}
@@ -207,6 +208,19 @@ leaves the live switches unchanged. Desktop startup restores preferences before
 sensor frames; `--no-desktop` does not load them. Older listeners cannot read the
 new format; restore the previous preferences file if rolling back to an old build.
 
+`transcriptionCleanup` in the state snapshot is `{"enabled":bool}`, or null when
+the listener has no cleanup support (the UI then hides its switch).
+`set-transcription-cleanup` requires a boolean, saves
+`transcription-cleanup.json` beside the database (mode 0600, atomic, serialized),
+then applies the switch and broadcasts. It returns `cleanup-enabled` or
+`cleanup-disabled`. A missing file means off. See
+[transcription cleanup](../../docs/transcription-cleanup.md).
+
+History entries (snapshot `history`, `activity-entry` and Activity pages) carry
+`cleanupEnabled` (true/false/null), `cleanupStatus` (`cleaned`, `fallback`,
+`no-text` or null), `cleanedText` and `cleanupFallback`. `utterance` is always
+the raw transcript.
+
 The optional `agentActions` snapshot field describes the selected conversation's
 ephemeral composer controls. Changes also arrive as
 `{"type":"agent-actions","actions":{...}}`, without resending transcripts:
@@ -317,6 +331,17 @@ than `intent_feedback`, since examples must be recorded before anyone labels
 them. Opening an older database adds the column without inventing past prompts
 or changing existing recordings/labels. Older Companion builds that only
 understand schema version 4 will refuse the upgraded database.
+
+Transcription cleanup adds nullable `cleanup_enabled`, `cleanup_status`,
+`cleaned_text` and `cleanup_fallback` columns to `utterances` without changing
+the schema version. Older builds keep opening the database and ignore them, so
+switching back needs no migration. NULL means unknown: older rows, rows written
+by an older checkout, or utterances that never reached routing.
+
+Requests prepared while transcription cleanup is on are saved as **version 2**
+records with `"promptVariant":"json-cleanup-v1"`; the bare-name prompt keeps the
+unchanged version 1 format. Exact-replay export skips version 2, and older
+builds refuse it as unsupported rather than mixing it into bare-name data.
 
 Pi's `onPayload` hook runs after provider conversion and before HTTP. We save the
 complete body there: exact system instruction text, enabled/dynamic intent

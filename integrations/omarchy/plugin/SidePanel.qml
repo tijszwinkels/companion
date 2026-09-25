@@ -20,6 +20,7 @@ PanelWindow {
   required property int processing
   property var history: []
   property var intents: []
+  property var transcriptionCleanup: null
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
@@ -42,6 +43,7 @@ PanelWindow {
   signal utteranceRequested(string text)
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled, string mode)
+  signal transcriptionCleanupRequested(bool enabled)
   signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
   signal previousRequested()
@@ -166,6 +168,7 @@ PanelWindow {
         processing: root.processing
         history: root.history
         intents: root.intents
+        transcriptionCleanup: root.transcriptionCleanup
         activityHistoryModel: root.activityHistoryModel
         activityHistoryAvailable: root.activityHistoryAvailable
         historyDeletionAvailable: root.historyDeletionAvailable
@@ -194,6 +197,7 @@ PanelWindow {
         shortcutLabel: "Super + Alt + C · panel / D · input focus\nIn panel: Super + Alt + 0 · Activity / Tab · next tab\nIn panel: Alt + 1–9 · conversations / Super + − or = · width\nIn panel: Ctrl + plus/minus · text size / Ctrl + 0 · reset\nSuper + Alt + P · pause/resume"
         onCloseRequested: root.closeRequested()
         onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
+        onTranscriptionCleanupRequested: enabled => root.transcriptionCleanupRequested(enabled)
         onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
         onPreviousRequested: root.previousRequested()
         onReopenSessionRequested: id => root.reopenSessionRequested(id)

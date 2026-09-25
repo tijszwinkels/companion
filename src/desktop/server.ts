@@ -196,6 +196,7 @@ export class DesktopServer {
           action === 'media-playback' ||
           action === 'toggle-sounds' ||
           action === 'set-intent-enabled' ||
+          action === 'set-transcription-cleanup' ||
           action === 'activity-history' ||
           action === 'agent-tool-page' ||
           action === 'agent-models' ||

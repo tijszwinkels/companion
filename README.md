@@ -206,6 +206,9 @@ is independently clickable: turning off recognition leaves that processor's
 explicit shortcut usable, and turning off its shortcut leaves recognition usable.
 Off and context-unavailable routes appear grey, with a written state beneath the
 label. `IGNORE` always remains available as the required no-action fallback.
+**Clean up transcriptions** (above the cards, default off) sends the text routes
+a cleaned-up version of what you said. History keeps the raw transcript next to
+the cleaned text; see [transcription cleanup](docs/transcription-cleanup.md).
 Switches persist in `~/companion/disabled-intents.json`; existing disabled intents
 migrate as disabled in both modes. A disabled prefix remains reserved and is
 skipped, never reinterpreted as dictation or another command. Conversation-owned
