@@ -131,15 +131,18 @@ export class SensorPipeline implements InspectableModule {
     }
   }
 
-  /** The open candidate did not become speech. Idempotent; safe on every exit path. */
-  speechDiscarded(): void {
+  /**
+   * The open candidate did not become speech, or can no longer continue the
+   * held attempt. Idempotent; safe on every exit path.
+   */
+  speechDiscarded(reason = 'Resumed sound was not speech; continuing'): void {
     const job = this.held;
     this.held = undefined;
 
     if (job) {
       job.attempt!.release();
       if (!job.settled) {
-        this.log('release', 'Resumed sound was not speech; continuing', job.id);
+        this.log('release', reason, job.id);
       }
     }
   }
@@ -164,7 +167,19 @@ export class SensorPipeline implements InspectableModule {
     if (!text.trim() || text.length > 4000) {
       throw Error('Enter between 1 and 4000 characters');
     }
-    return this.enqueue({ text }, signal, target);
+    const admitted = this.enqueue({ text }, signal, target);
+
+    // Typed input is a boundary, whether admitted or dropped as overload:
+    // speech after it can no longer continue an earlier attempt (see
+    // `continuable`). A hold from a VAD candidate that is still open therefore
+    // cannot change that attempt's outcome any more; release it now, so
+    // neither the attempt nor this text waits for the candidate to close.
+    // Order is unchanged: attempt, text, then the resumed speech.
+    if (this.held && this.held !== this.newest) {
+      this.speechDiscarded('Typed input ends the continuation; continuing');
+    }
+
+    return admitted;
   }
 
   private enqueue(input: JobInput, signal: AbortSignal, target?: string): boolean {
@@ -375,13 +390,25 @@ export class SensorPipeline implements InspectableModule {
             // Like successful transcript recordings, a completed ASR result
             // remains useful after cancellation. Await storage before finally
             // clears this job's samples or shutdown releases desktop services.
-            const clipId = await this.activity.emptyAudioCaptured({
-              id: job.id,
-              observedAt: job.observedAt,
-              samples: job.samples,
-              diagnostic: transcription,
-            });
-            this.log('asr-recorded', `Empty transcript audio saved (${clipId})`, job.id);
+            try {
+              const clipId = await this.activity.emptyAudioCaptured({
+                id: job.id,
+                observedAt: job.observedAt,
+                samples: job.samples,
+                diagnostic: transcription,
+              });
+              this.log('asr-recorded', `Empty transcript audio saved (${clipId})`, job.id);
+            } catch (error) {
+              // Without earlier text this remains a failed job, as before. With
+              // earlier text (D2), the diagnostic clip is optional: report the
+              // failed write, but still route the words the user already said.
+              if (!fallback) {
+                throw error;
+              }
+              this.failures++;
+              const message = error instanceof Error ? error.message : String(error);
+              this.log('error', `recording: ${message}`, job.id);
+            }
           }
 
           // Product choice D2: a combined retranscription can come back empty
