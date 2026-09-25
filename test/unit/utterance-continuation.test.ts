@@ -6,6 +6,7 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import type { UserSensorFrame } from '../../src/core/frame.ts';
 import type { UtteranceOutcome } from '../../src/core/activity.ts';
 import {
+  EMPTY_QUIET_MS,
   MAX_UTTERANCE_SAMPLES,
   ProvisionalAttempt,
   SHORTCUT_QUIET_MS,
@@ -227,6 +228,7 @@ test('the provisional endpoint is the smallest whole-frame silence of at least 2
   assert.equal(ENDPOINT_MS, 224);
   assert.equal(SHORTCUT_QUIET_MS, 800 - 224);
   assert.equal(MAX_UTTERANCE_SAMPLES, 16000 * 30);
+  assert.ok(EMPTY_QUIET_MS > SHORTCUT_QUIET_MS);
 });
 
 test('an attempt commits at once for inference and is final afterwards', async () => {
@@ -828,4 +830,29 @@ test('only the combined attempt is retained when both parts transcribe empty', a
 
   assert.deepEqual(setup.emptyClips, [[0.1, 0.2]], 'The superseded fragment is not retained');
   assert.deepEqual(setup.dispatched, []);
+});
+
+test('an unreadable fragment stays continuable beyond the shortcut window', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('');
+
+  // Speech resumes after the 576 ms shortcut window, within EMPTY_QUIET_MS.
+  await new Promise((resolve) => setTimeout(resolve, SHORTCUT_QUIET_MS + 150));
+  assert.equal(
+    setup.logs.some((entry) => entry.stage === 'filtered'),
+    false,
+  );
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(audio(0.2));
+  await settle();
+  assert.deepEqual(setup.transcriptions[1].samples, [0.1, 0.2]);
+  setup.transcriptions[1].answer('How do I get to Dublin');
+  await settle();
+  setup.detections[0].answer('SEND');
+  await setup.pipeline.idle();
+
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'How do I get to Dublin' }]);
+  assert.deepEqual(setup.emptyClips, []);
 });

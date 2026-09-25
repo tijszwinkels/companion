@@ -16,7 +16,8 @@ the product constants), `src/core/pipeline.ts` (merge, supersession, cleanup) an
 | Value | Setting | Effective |
 | --- | --- | --- |
 | Provisional endpoint | `VAD_SETTINGS.silenceMs = 200` | **224 ms**: silence is counted in whole 32 ms frames; 7 frames is the smallest count ≥ 200 ms (6 frames = 192 ms). Exported as `ENDPOINT_MS`. |
-| Shortcut/empty quiet window | `SHORTCUT_QUIET_MS = 800 − ENDPOINT_MS` | **576 ms** after the provisional endpoint, i.e. the legacy 800 ms after speech end. Derived from both constants. |
+| Shortcut quiet window | `SHORTCUT_QUIET_MS = 800 − ENDPOINT_MS` | **576 ms** after the provisional endpoint, i.e. the legacy 800 ms after speech end. Derived from both constants. |
+| Empty-transcript window | `EMPTY_QUIET_MS` | **1200 ms** after the provisional endpoint (see the evaluation). |
 | Restored pause | `CONTINUATION_GAP_MS = 800 − 224 − 256` | **320 ms** of audio after the previous candidate that the preroll cannot hold (`Segment.leadIn`). |
 | Combined audio cap | `MAX_UTTERANCE_SAMPLES` | 30 s, the segmenter's existing `maxMs`. |
 
@@ -59,11 +60,11 @@ closed by the 30-second `limit` is an accepted segment and follows `submit`.
 | --- | --- | --- |
 | Intent LLM (permanent or contextual intent) | As soon as inference returns, unless a hold is open. | Tijs: no additional wait. Resumed speech during inference replaces it. |
 | Prefix and exact-label shortcuts, including their skips | After routing **and** 576 ms of quiet after the provisional endpoint (restarted by a released hold). | Product choice D1. Shortcuts have no inference time in which a pause can be bridged; without the window, "go to session ‹pause› three" would dispatch the bare prefix. This keeps today's 800 ms semantics. Shortcuts are still faster than before: ASR overlaps the window. |
-| Empty transcript (no earlier text) | After the same quiet window, before the empty clip is retained. | A fragment cut by a pause can be unreadable alone (see the evaluation). No action or cue is involved, so the wait is invisible. |
+| Empty transcript (no earlier text) | After 1200 ms of quiet after the provisional endpoint, before the empty clip is retained. | A fragment cut by a pause can be unreadable alone (see the evaluation). No action or cue is involved, so the wait is invisible; the window is comparable to how long an attempt with text stays continuable during inference. Costs: typed input queued behind it waits up to 1.2 s, and speech within the window is joined with the unreadable sound. |
 | Typed input | Never held and never waits. | Typed input has no VAD. A typed job admitted after a speech attempt is a boundary: later speech cannot merge past it. |
 
 Direct `submit()` callers without a listener never hold an attempt; only their
-shortcut and empty decisions wait for the quiet window.
+shortcut and empty decisions wait for their quiet windows.
 
 ## Cancellation and ownership
 
@@ -91,8 +92,7 @@ shortcut and empty decisions wait for the quiet window.
   the legacy endpoint would have produced, apart from its shorter trailing
   silence. A longer pause is shortened to 800 ms of real audio. The evaluation
   motivated this: with the pause compressed to 480 ms, one merged clip lost six
-  of its eight words. The
-  lead-in is ignored for new requests. A rejected burst between the parts
+  of its eight words. The lead-in is ignored for new requests. A rejected burst between the parts
   restarts the lead-in, so audio before the burst is not restored.
 - **Memory.** The combined buffer is copied when the continuation is admitted,
   before the old job's `finally` clears its samples. It is limited to 30 s
@@ -219,11 +219,18 @@ differences come from splits and fragments:
 - Split sentences are slightly worse at the boundary: "And says," / "But how do I
   get to Dublin?" (inserted "but"), in both modes when a split happens.
 - A mid-sentence cut produces fragments that Parakeet cannot read alone, even
-  after the padded retry. With pauses up to 600 ms, the empty-fragment
-  commitment rule merges them and the result is exact. At 750 ms (VAD: 864 ms)
-  both modes split; the 800 ms baseline still read "And says, how do I" with its
-  longer trailing silence, while the 224 ms fragment was empty (WER 0.5 vs
-  0.875). At 900 ms both modes lost the whole sentence.
+  after the padded retry. In the main run (576 ms empty window), pauses up to
+  600 ms merged exactly. At 750 ms (VAD: 864 ms) both modes split; the 800 ms
+  baseline still read "And says, how do I" with its longer trailing silence,
+  while the 224 ms fragment was empty (WER 0.5 vs 0.875). At 900 ms both modes
+  lost the whole sentence.
+- A follow-up run of the mid-sentence clips (pauses 600–1800 ms, LLM 300 and
+  700 ms) compared the 576 ms empty window with 1200 ms. With 1200 ms, pauses
+  of 750, 900 and 1200 ms merged into the exact sentence (WER 0) at both
+  latencies, where 576 ms and the 800 ms baseline lost words (WER 0.75–1).
+  1800 ms still lost the first fragment. Latency was unchanged (710–1160 ms).
+  `EMPTY_QUIET_MS` is therefore 1200 ms. Clips without an empty fragment are
+  unaffected by this window.
 - Before restoring the real pause, a merge with the pause compressed to 480 ms
   lost six of eight words once ("And says," only, at a 600 ms comma pause). With
   the restored pause, all comma-pause merges are exact.
