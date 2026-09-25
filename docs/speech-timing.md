@@ -89,8 +89,9 @@ shortcut and empty decisions wait for the quiet window.
   and the new segment (starting with its 256 ms preroll). A pause of up to
   800 ms is therefore restored exactly: the retranscribed audio is the segment
   the legacy endpoint would have produced, apart from its shorter trailing
-  silence. A longer pause is shortened to 800 ms of real audio. The evaluation motivated this: with the pause
-  compressed to 480 ms, one merged clip lost six of its eight words. The
+  silence. A longer pause is shortened to 800 ms of real audio. The evaluation
+  motivated this: with the pause compressed to 480 ms, one merged clip lost six
+  of its eight words. The
   lead-in is ignored for new requests. A rejected burst between the parts
   restarts the lead-in, so audio before the burst is not restored.
 - **Memory.** The combined buffer is copied when the continuation is admitted,
@@ -102,8 +103,7 @@ shortcut and empty decisions wait for the quiet window.
 
 ## Product choices (D1–D4)
 
-Recommended by the implementation session and endorsed by the tech lead on
-2026-09-25; **awaiting Tijs's confirmation**. Each is isolated behind one
+Approved by Tijs on 2026-09-25 as recommended. Each is isolated behind one
 constant or one branch:
 
 - **D1** Shortcut commitment waits for the legacy quiet window (`SHORTCUT_QUIET_MS`).
@@ -119,6 +119,27 @@ constant or one branch:
   WAV or empty clip. The combined attempt has its own row.
 
 The `processing` cue plays at every provisional endpoint, including a merged one.
+
+### Shortcuts and pending inference
+
+Tijs's requirement (2026-09-25): the pending LLM is cancelled when a shortcut
+arrives. Supersession aborts the old attempt's inference at once, whatever the
+combined utterance routes to. A late answer from the old request cannot pass
+the commitment gate, and the new route's 576 ms shortcut window is never a grace
+period for it. Tests cover a merge that routes to a prefix, an exact contextual
+label and inference again (old request aborted, zero stale dispatches, exactly
+one new dispatch), both orders of inference completion and resumed speech, and
+the shortcut window with a cancelled inference.
+
+**Pending with Tijs:** what happens when the continuation *on its own* is a
+shortcut while the earlier inference is pending, for example "Can you help me"
+‹pause› "go to session three". The current behavior merges: the whole
+utterance routes afresh, so a prefix matches only at the start of the whole
+utterance, and otherwise inference decides on the whole string. The
+alternatives under discussion are to discard the earlier speech or to keep it
+as a separate request. Either would change only the merge decision in
+`SensorPipeline.submit`. The continuation's own segment is available there, but
+choosing a route for it requires transcribing it separately first.
 
 ## Logs
 
