@@ -10,7 +10,7 @@ Companion runs agent conversations on one of two harnesses:
 | Harness       | Program                    | Models                                                         |
 | ------------- | -------------------------- | -------------------------------------------------------------- |
 | `pi`          | headless Pi RPC process    | every Pi-configured provider, including OpenAI Codex (“Codex”) |
-| `claude-code` | native `claude` CLI (this) | Claude models, fixed per conversation at creation (no picker)  |
+| `claude-code` | native `claude` CLI (this) | allowlisted Claude models, switchable for the next turn        |
 
 There is no third harness. “Codex” stays Pi with the OpenAI Codex model.
 Session selection, persistence and UI wiring for this backend belong to the
@@ -26,6 +26,7 @@ the contract below.
 | `mcp-server.ts`        | bridge entry point (started by Claude Code, not by Companion)          |
 | `mcp-stdio.ts`         | minimal MCP JSON-RPC server over stdio (tools only)                    |
 | `bridge-tools.ts`      | Companion tools for the bridge, built from the native Pi tool modules  |
+| `models.ts`            | the footer picker's Claude model allowlist (exact IDs)                 |
 | `tool-output.ts`       | text-plus-image tool results and their 5 MiB image bound               |
 | `parity/`              | opt-in Pi-parity tools (desktop, OpenRig, web); see its README         |
 
@@ -72,16 +73,21 @@ Loaders in `../settings.ts`:
 
 - `AgentHarness = 'pi' | 'claude-code'`. `AgentSession.harness` is absent in
   every older archive and every Pi conversation; absence means `pi`.
-- `AgentSession.claudeCode` (`{model, effort}`) records the Claude model and
-  effort captured when the conversation was created. Later turns use these
-  values rather than the current file, so a conversation never switches model.
-  The executable is still read from the file for each turn.
+- `AgentSession.claudeCode` (`{model, effort}`) records the conversation's own
+  Claude model and effort, captured when it was created. Later turns use these
+  values rather than the current file, so configuration edits never switch its
+  model. The footer picker can replace `model` for the next turn (see
+  [Next-turn model picker](#next-turn-model-picker)); `effort` stays fixed. The
+  executable is still read from the file for each turn.
 - `AgentBackend<Settings>` and `AgentRunRequest<Settings>` are generic over the
   harness's settings. `AgentBackend` (default `AgentSettings`) is the unchanged
   Pi contract; `ClaudeCodeAgentBackend = AgentBackend<ClaudeCodeSettings>`.
   `AgentHarnessBackends` (`{ pi, 'claude-code'? }`) is the selection surface. A
   `claude-code` conversation without a configured backend must fail visibly.
-- The Claude backend has no `models()`, and there is no Claude model picker.
+- The Claude backend has no `models()`. The picker's catalogue is the fixed
+  allowlist in `models.ts`, not a discovery process.
+- `request.previousModel` (Claude only) names the previous turn's model when
+  the user has since chosen another. The backend then announces the switch.
 - `request.id` must be a UUID (Companion's session IDs are). Claude Code uses it
   as its own session ID.
 - `emit`, `replaceChoices` and `renameSession` keep their Pi semantics, so tool
@@ -111,6 +117,13 @@ claude --print --verbose --input-format stream-json --output-format stream-json
      clamping, and the conversation's first turn shows a notice that the model
      ignores effort levels. Any other effort is drift.
    - On drift the turn fails and no prompt is sent.
+   - After a picker switch (`previousModel`), and only once both checks
+     pass, a notice says “Now using B (previous turn: A). Claude Code
+     continues the same conversation history.” The effort notice above is
+     then repeated for the first turn with a model that reports `null`.
+     `previousModel` is the model Companion requested for the previous turn
+     (`AgentSession.model`), even if that turn failed. A retry of a failed
+     switch with the same model therefore shows no second notice.
 4. Send one stream-json user message: the prompt text, plus (with a
    screenshot) `Captured window: {…}` and a base64 PNG image block.
 5. Verify the `system/init` event: the session ID, the model, permission
@@ -226,6 +239,56 @@ transcripts and error messages. The config path is visible in the process list
 to the same user, so this is containment, not a security boundary. The tokens
 only authorize this conversation's own current turn, and they expire with it.
 
+## Next-turn model picker
+
+In an existing Claude Code conversation the footer lists Claude models only.
+Choosing one changes **that conversation's next turn**. The Companion UUID,
+the native Claude session and its history stay the same: the turn runs
+`claude --resume <uuid> --model <new>`. The harness never changes, a Pi
+model ID is never reinterpreted, and nothing moves between harnesses.
+
+- **Catalogue.** `models.ts` holds a small allowlist of exact IDs
+  (`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
+  `claude-haiku-4-5-20251001`). The configured `claudeCode.model` is added
+  when it is not listed. `AgentSessions.claudeModels()` returns them as
+  `{models, model}` (`model` is the configured default) through the desktop
+  action `claude-models`. It only reads the configuration file and starts
+  neither Pi nor Claude Code, so a Claude tab never runs Pi discovery and a
+  Pi failure cannot hide the Claude list. The conversation's current model
+  is always shown and accepted, even when it is not listed.
+- **Validation.** `setModel` accepts only an exact listed ID or the current
+  model. Aliases (`opus`), whitespace, case changes, `provider/` IDs, unknown
+  names and the empty string are refused with a visible error, and nothing
+  changes. There is no fallback. Claude Code itself does not check the name
+  (`get_settings` echoes anything), so the allowlist is Companion's check. A
+  listed model that the account cannot use fails that turn at the API, with
+  Claude Code's error; the user then picks another model.
+- **Effort.** There is no Claude effort picker. A switch keeps the effort the
+  conversation started with, and `get_settings` must still report it. Every
+  listed model therefore accepts all five levels or none (`null`, accepted
+  with a notice). Models that silently lower a level must not be listed; the
+  startup check would report drift. Verified with no-cost `get_settings`
+  probes (CLI 2.1.280, 2026-09-25), each listed ID with each of the five
+  levels: Fable 5.1, Opus 5.5 and Sonnet 5 report every level unchanged, and
+  Haiku 4.5 reports `null` for all. As a control, `claude-opus-4-6` reports
+  `xhigh` as `high`, so it is not listed. An effort picker is not needed for
+  switching models, so none was added.
+- **Persistence.** The choice replaces `claudeCode.model` in the archive. The
+  shape stays `{model, effort}`, so older archives need no migration and an
+  older listener reading a newer archive resumes with the chosen model.
+  `AgentSession.model` keeps naming the current/last turn's model; the next
+  turn's model is `claudeCode.model`. Session tool summaries report the latter.
+- **Races.** These are the same rules as Pi's overrides. A running turn keeps
+  the model it started with. Queued turns use the choice present when each
+  begins. A turn starting while a choice is still being saved waits for that
+  save or its rollback. A second choice while one is pending is refused, as
+  are choices for a closing tab or one whose harness is still being resolved.
+  The open menu is pinned to its conversation, so a tab change cannot
+  retarget it.
+- **Compatibility.** An older UI keeps showing its fixed summary. A newer UI
+  on an older listener gets an error for `claude-models`, lists only the
+  current model, and the listener refuses changes.
+
 ## Pi-vs-Claude capability matrix
 
 “Tested” names the hermetic test (fake `claude` unless stated). “Probed” means
@@ -260,7 +323,7 @@ effort, temp directory, not through `AgentSessions`).
 | `COMPANION_INTERNAL_AGENT=1`, external socket removed         | Same                                                                                                                                                                                                                                                                                                                                                                                        | Tested                                                                         |
 | Tool tokens in agent environment                              | **Different env, same capability**: tokens only in the bridge's config file, not in `claude`'s env (so Bash children cannot print them); `COMPANION_INTERNAL_AGENT=1` still covers Bash children                                                                                                                                                                                            | Tested (no `*_TOKEN` variables; marker set; redaction)                         |
 | Unattended tool use                                           | `--permission-mode bypassPermissions`, verified in `init`                                                                                                                                                                                                                                                                                                                                   | Tested; probed                                                                 |
-| Model catalogue, pins, per-conversation model/effort pickers  | **Not offered** by decision: model/effort fixed at creation, no `models()`                                                                                                                                                                                                                                                                                                                  | Contract                                                                       |
+| Model catalogue, pins, per-conversation model/effort pickers  | Next-turn **model** picker over a fixed allowlist of exact IDs (plus the configured default); `--resume` with the new `--model`, same session. No pins, no discovery, **no effort picker**: effort stays as the conversation started                                                                                                                                                        | Tested (sessions, backend, QML); probed (resume with another model, see below) |
 | Quick-question profile                                        | **Pi only** by decision                                                                                                                                                                                                                                                                                                                                                                     | Contract                                                                       |
 | Pi `--offline` (no startup network fetches)                   | No equivalent; Claude Code contacts its API normally                                                                                                                                                                                                                                                                                                                                        | n/a                                                                            |
 | Pi's own configuration/extensions                             | Claude Code loads the user's settings, CLAUDE.md, hooks, skills, plugins and MCP servers (not strict)                                                                                                                                                                                                                                                                                       | **Open product question** (see below)                                          |
@@ -340,6 +403,36 @@ All probes ran in a throwaway `/tmp` working directory, mostly with
 - **Permissions.** `--permission-mode bypassPermissions` is reported in
   `init.permissionMode`; tools run without prompts.
 
+### Resuming with another model (2026-09-25)
+
+Checked before building the picker. The official model-configuration docs
+state that `--model` on a resumed launch takes precedence over the restored
+model. `--help` alone was not taken as proof.
+
+- **No-cost probes.** A `get_settings`-only launch (no user message) creates
+  no session and makes no model call. On `--resume` of an existing session
+  with a different `--model`/`--effort`, `applied` reports the new values.
+  An unknown name such as `claude-bogus-9` is echoed back unchanged.
+- **One bounded paid probe.** Two turns in a fresh `/tmp` working directory
+  with a fresh UUID. Isolation: `--safe-mode --strict-mcp-config --tools ""`
+  and `--max-budget-usd 0.25` for each launch. No MCP servers, tools,
+  screenshots or Companion state were involved.
+  1. Turn 1 used `claude-haiku-4-5-20251001` and a codeword.
+  2. Turn 2 used `--resume` with `claude-sonnet-5`/`low`.
+  3. Results: `get_settings` gave `applied` =
+     `{claude-sonnet-5, low}`. `system/init` kept the same `session_id`, with
+     `model: claude-sonnet-5`. The model recalled the codeword. The
+     transcript gained a second `model` identity attachment, and the new
+     assistant records name `claude-sonnet-5`.
+  4. Total spend was $0.0183. The probe's session files were then deleted.
+- **Caveat.** The resumed model sees both identity attachments, so its
+  context says the conversation changed model. It noticed this and
+  commented on it. Companion's switch notice makes the change visible to the
+  user too.
+- **Not established.** This did not check Fable availability for this
+  account, or switching after compaction. It also did not check a switch
+  with thinking blocks from a long tool-using turn.
+
 ## Tests
 
 - `test/unit/claude-settings.test.ts`: configuration schema, defaults, no
@@ -354,5 +447,9 @@ All probes ran in a throwaway `/tmp` working directory, mostly with
   - choices and names, route expiry, and ignored post-result output;
   - redaction, cancellation and pipe-holding descendants.
 - `test/unit/claude-transcript.test.ts`: the event mapper.
+- `test/unit/claude-model-picker.test.ts`: the allowlist, next-turn switch,
+  refusals, queued/in-flight turns, rollback, restart and older archives.
+- `test/panel/tst_model_picker.qml`, `test/panel/tst_session_controls.qml`:
+  the Claude footer (list, fixed effort, menu pinning, older listeners).
 - `test/unit/claude-bridge.test.ts`: the real bridge process over stdio, with a
   real result route and fake widget/session services.

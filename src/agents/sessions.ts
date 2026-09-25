@@ -19,6 +19,7 @@ import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from 
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
 import { promptText } from './agent-origin.ts';
+import { claudeCodeModelCatalog } from './claude/models.ts';
 import {
   SessionToolError,
   SessionToolService,
@@ -36,6 +37,7 @@ import {
   type AgentHarnessBackends,
   type AgentRunRequest,
   type ClaudeCodeConversationSettings,
+  type ClaudeCodeModelCatalog,
   type ClaudeCodeSettings,
   type AgentDraftHost,
   type AgentDraftOutcome,
@@ -311,8 +313,8 @@ export class AgentSessions implements InspectableModule {
   async models(signal: AbortSignal) {
     const coding = await loadAgentSettings(this.directory, 'coding', false);
     const quickQuestion = await loadAgentSettings(this.directory, 'quickQuestion', false);
-    // The catalogue and the pickers are Pi-only; Claude Code conversations keep
-    // the model and effort captured when they were created.
+    // Pi's catalogue only. The Claude picker has its own catalogue below, so a
+    // Pi discovery failure cannot stop a Claude Code conversation's choice.
     if (!this.backends.pi.models) {
       throw Error('This agent backend does not support model selection');
     }
@@ -329,8 +331,32 @@ export class AgentSessions implements InspectableModule {
     };
   }
 
-  /** Choices affect only later turns of this conversation, including reopening. */
+  /**
+   * The Claude picker's catalogue: the fixed allowlist plus the configured
+   * default model. It only reads the configuration file; it starts neither
+   * Claude Code nor Pi, so it works even when Pi discovery fails.
+   */
+  async claudeModels(): Promise<ClaudeCodeModelCatalog> {
+    const { model } = await loadClaudeCodeSettings(this.directory, false);
+    return { models: claudeCodeModelCatalog(model), model };
+  }
+
+  /**
+   * Choices affect only later turns of this conversation, including reopening.
+   * A Pi conversation stores a Pi model override (empty clears it). A Claude
+   * Code conversation replaces its own Claude model; it never becomes a Pi
+   * conversation and a Pi model ID is not reinterpreted as a Claude one.
+   */
   async setModel(id: string, model: string, signal: AbortSignal): Promise<void> {
+    const session = this.sessions.get(id);
+    if (session?.view.harness === 'claude-code' && session.view.claudeCode) {
+      await this.setPreferences(
+        id,
+        { claudeCode: { model, effort: session.view.claudeCode.effort } },
+        signal,
+      );
+      return;
+    }
     await this.setPreferences(id, { modelOverride: model || undefined }, signal);
   }
 
@@ -347,28 +373,62 @@ export class AgentSessions implements InspectableModule {
     );
   }
 
+  /**
+   * A Claude model choice must be one exact ID from the allowlist (or the
+   * configured default), or the conversation's current model. There is no
+   * trimming, alias resolution or fallback; anything else is refused visibly.
+   */
+  private async checkClaudeModel(view: AgentSession, model: string): Promise<void> {
+    if (model === view.claudeCode?.model) {
+      return;
+    }
+    if (model === '') {
+      throw Error('Choose a Claude model for this Claude Code conversation');
+    }
+
+    const { model: configuredModel } = await loadClaudeCodeSettings(this.directory, false);
+    const catalog = claudeCodeModelCatalog(configuredModel);
+    if (!catalog.includes(model)) {
+      throw Error(
+        `${model} is not an available Claude model. Choose one of: ${catalog.join(', ')}`,
+      );
+    }
+  }
+
+  /**
+   * Validate and durably save one model/effort choice for the next turn.
+   * `changes` holds either Pi overrides or, for a Claude Code conversation,
+   * its replacement `claudeCode` settings (same effort, another model).
+   */
   private async setPreferences(
     id: string,
-    changes: Pick<AgentSession, 'modelOverride' | 'thinkingOverride'>,
+    changes: Pick<AgentSession, 'modelOverride' | 'thinkingOverride' | 'claudeCode'>,
     signal: AbortSignal,
   ): Promise<void> {
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing || this.modelChanges.has(id)) {
       throw Error('Conversation is unavailable or its model/effort is already being changed');
     }
-    if (session.view.harness === 'claude-code') {
-      throw Error(
-        'This Claude Code conversation keeps the model and effort chosen when it started',
-      );
+    const claudeConversation = session.view.harness === 'claude-code';
+    if (claudeConversation && 'thinkingOverride' in changes) {
+      throw Error('This Claude Code conversation keeps the effort chosen when it started');
+    }
+    const claudeChoice = 'claudeCode' in changes;
+    if (claudeConversation !== claudeChoice) {
+      // A choice prepared for the other harness, for example a Pi override
+      // for a conversation that has since become Claude Code. Never convert.
+      throw Error('That model choice does not belong to this conversation’s harness');
     }
     // Until the first turn has read the configuration, this conversation might
-    // still become a Claude Code conversation, which has no picker.
+    // still become a Claude Code conversation, whose picker lists Claude models.
     if (session.pendingHarness) {
       throw Error('This conversation is still starting; choose its model/effort in a moment');
     }
     this.modelChanges.add(id);
     try {
-      if (changes.modelOverride !== undefined || changes.thinkingOverride !== undefined) {
+      if (changes.claudeCode) {
+        await this.checkClaudeModel(session.view, changes.claudeCode.model);
+      } else if (changes.modelOverride !== undefined || changes.thinkingOverride !== undefined) {
         const catalog = await this.models(signal);
         if (
           changes.modelOverride !== undefined &&
@@ -387,10 +447,15 @@ export class AgentSessions implements InspectableModule {
       if (this.closed || this.sessions.get(id) !== session || session.closing) {
         throw Error('Conversation closed while choosing its model/effort');
       }
-      const previous = {
+      // `claudeCode` is replaced as a whole object, never edited in place, so
+      // a turn that already captured the previous object keeps its settings.
+      let previous: Pick<AgentSession, 'modelOverride' | 'thinkingOverride' | 'claudeCode'> = {
         modelOverride: session.view.modelOverride,
         thinkingOverride: session.view.thinkingOverride,
       };
+      if (claudeConversation) {
+        previous = { claudeCode: session.view.claudeCode };
+      }
       // Save both preferences through the same ordered write gate. A running
       // turn already holds a settings copy; a queued successor waits for this
       // save (or rollback). Changing models retains the requested effort: Pi
@@ -812,6 +877,9 @@ export class AgentSessions implements InspectableModule {
       }
       const modelOverride = session.view.modelOverride;
       const thinkingOverride = session.view.thinkingOverride;
+      // A Claude model choice is replaced as a whole object, so this keeps the
+      // settings accepted before this turn began, like the Pi overrides above.
+      let claudeCode = session.view.claudeCode;
       if (prompt.screenshot) {
         const question = session.view.messages[0];
         question.screenshotUrl = await this.store.screenshot(
@@ -823,12 +891,19 @@ export class AgentSessions implements InspectableModule {
       // A new conversation records its harness before the first save, so the
       // saved question already reopens with the harness that will answer it.
       await this.resolveHarness(session);
+      // A conversation still resolving its harness refuses model choices, so
+      // the freshly resolved settings are the ones this turn must use.
+      claudeCode ??= session.view.claudeCode;
       // Save the question before launching the agent. An interrupted turn can
       // still be found in history after a restart and is shown as stopped.
       session.view.updatedAt = Date.now();
       await this.store.save(session.view);
       session.controller.signal.throwIfAborted();
-      const turn = await this.prepareTurn(session.view, modelOverride, thinkingOverride);
+      const turn = await this.prepareTurn(session.view, resume, {
+        modelOverride,
+        thinkingOverride,
+        claudeCode,
+      });
       session.controller.signal.throwIfAborted();
       session.view.model = turn.model;
       session.view.status = 'running';
@@ -1027,16 +1102,21 @@ export class AgentSessions implements InspectableModule {
    * Select this turn's backend from the conversation's harness and load its
    * settings afresh, so configuration edits need no restart.
    *
-   * Pi reads its profile settings and applies the conversation's model/effort
-   * choices. Claude Code uses the model and effort captured at creation and
-   * only reads the executable, so a conversation never changes model. Without
-   * a Claude Code backend, the turn fails instead of falling back to Pi: Pi
-   * cannot resume a Claude Code transcript.
+   * `choices` are the conversation's model/effort choices captured when this
+   * turn began. Pi reads its profile settings and applies its overrides.
+   * Claude Code uses the conversation's own model and effort and only reads
+   * the executable, so configuration edits never change the model; only the
+   * picker does. Without a Claude Code backend, the turn fails instead of
+   * falling back to Pi: Pi cannot resume a Claude Code transcript.
    */
   private async prepareTurn(
     view: AgentSession,
-    modelOverride: string | undefined,
-    thinkingOverride: AgentSettings['thinking'] | undefined,
+    resume: boolean,
+    choices: {
+      modelOverride: string | undefined;
+      thinkingOverride: AgentSettings['thinking'] | undefined;
+      claudeCode: ClaudeCodeConversationSettings | undefined;
+    },
   ): Promise<PreparedTurn> {
     if (view.harness === 'claude-code') {
       const backend = this.backends['claude-code'];
@@ -1046,29 +1126,44 @@ export class AgentSessions implements InspectableModule {
         );
       }
       // The store only accepts a Claude Code conversation with its settings.
-      if (!view.claudeCode) {
+      const claudeCode = choices.claudeCode;
+      if (!claudeCode) {
         throw Error('This Claude Code conversation has no saved model and effort');
       }
 
       const { executable } = await loadClaudeCodeSettings(this.directory);
       const settings: ClaudeCodeSettings = {
         executable,
-        model: view.claudeCode.model,
-        effort: view.claudeCode.effort,
+        model: claudeCode.model,
+        effort: claudeCode.effort,
       };
+
+      // `view.model` still names the previous turn's model here; the caller
+      // replaces it with this turn's model afterwards. A first turn has no
+      // previous model to switch from.
+      let previousModel: string | undefined;
+      if (resume && view.model !== '' && view.model !== settings.model) {
+        previousModel = view.model;
+      }
       return {
         model: settings.model,
         run: (request, signal, emit, replaceChoices, renameSession) =>
-          backend.run({ ...request, settings }, signal, emit, replaceChoices, renameSession),
+          backend.run(
+            { ...request, settings, ...(previousModel ? { previousModel } : {}) },
+            signal,
+            emit,
+            replaceChoices,
+            renameSession,
+          ),
       };
     }
 
     const settings = await loadAgentSettings(this.directory, view.profile);
-    if (modelOverride) {
-      settings.model = modelOverride;
+    if (choices.modelOverride) {
+      settings.model = choices.modelOverride;
     }
-    if (thinkingOverride !== undefined) {
-      settings.thinking = thinkingOverride;
+    if (choices.thinkingOverride !== undefined) {
+      settings.thinking = choices.thinkingOverride;
     }
     const backend = this.backends.pi;
     return {
@@ -1330,7 +1425,9 @@ export class AgentSessions implements InspectableModule {
       status: view.status,
       profile: view.profile ?? 'coding',
       harness: view.harness ?? 'pi',
-      model: view.modelOverride ?? view.model,
+      // The model the next turn uses when known: a Claude conversation's own
+      // model or a Pi override, otherwise the current/last turn's model.
+      model: view.claudeCode?.model ?? view.modelOverride ?? view.model,
       ...(view.modelOverride ? { modelOverride: view.modelOverride } : {}),
       updatedAt: view.updatedAt,
     };
@@ -1580,7 +1677,7 @@ export class AgentSessions implements InspectableModule {
 }
 
 /**
- * Make `view` a Claude Code conversation with a fixed model and effort. The
+ * Make `view` a Claude Code conversation with its own model and effort. The
  * displayed model is the Claude model from the start, before any turn runs.
  */
 function adoptClaudeCode(view: AgentSession, settings: ClaudeCodeConversationSettings): void {

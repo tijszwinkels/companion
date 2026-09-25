@@ -22,7 +22,7 @@ import { StartCodingAgentSession } from '../../src/processors/start-coding-agent
 import { GoToSession } from '../../src/processors/go-to-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
 import { StartClaudeCodeSession } from '../../src/processors/start-claude-code-session.ts';
-import { StartCodexSession } from '../../src/processors/start-codex-session.ts';
+import { StartPiSession } from '../../src/processors/start-pi-session.ts';
 import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { LabelPreviousCorrect } from '../../src/processors/label-previous-correct.ts';
@@ -256,7 +256,7 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   new StartCodingAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new QuickQuestion({ sessions }, () => {}, false, activity).subscribe(router);
   new StartClaudeCodeSession({ sessions }, () => {}, false, activity).subscribe(router);
-  new StartCodexSession({ sessions }, () => {}, false, activity).subscribe(router);
+  new StartPiSession({ sessions }, () => {}, false, activity).subscribe(router);
   new GoToSession(() => {}, false, activity).subscribe(router);
   new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
   new CloseAgentSession({ sessions }, () => {}, false, activity).subscribe(router);

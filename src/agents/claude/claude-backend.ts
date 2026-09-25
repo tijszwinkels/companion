@@ -101,8 +101,10 @@ const parentClaudeSessionVariables = [
  * directory. Cancellation terminates Claude Code's process group, including
  * tool subprocesses that have remained in that group.
  *
- * Claude Code has no model catalogue here: the model and effort are fixed per
- * conversation, so `models()` is deliberately absent.
+ * Claude Code has no model discovery here, so `models()` is deliberately
+ * absent. Each turn runs with the model and effort in its settings; a
+ * resumed turn may use another model than the previous one (the user's
+ * picker choice, see `claude/models.ts`), which the startup checks verify.
  */
 export class ClaudeCodeBackend implements ClaudeCodeAgentBackend {
   readonly id = 'claude-code-backend';
@@ -446,8 +448,14 @@ class ClaudeTurn {
     }
 
     const applied = object(object(response.response).applied);
+    // Notices follow both checks, so a turn that fails its startup check
+    // never claims to have switched model.
     this.verifyAppliedModel(applied.model);
-    this.verifyAppliedEffort(applied.effort);
+    const effortIgnored = this.verifyAppliedEffort(applied.effort);
+    this.announceModelSwitch();
+    if (effortIgnored) {
+      this.announceIgnoredEffort();
+    }
 
     // Still starting up: a child that answers settings but never sends a
     // verified init must not hold the turn open indefinitely.
@@ -477,15 +485,39 @@ class ClaudeTurn {
   }
 
   /**
+   * After the user chose another model for this resumed conversation, and
+   * Claude Code has confirmed it, say so once in the transcript. Claude Code
+   * keeps the same native session and its history; the new model also sees
+   * that earlier turns came from another model. `previousModel` is the model
+   * Companion requested for the previous turn, which may have failed, so the
+   * notice names it as the previous turn's model rather than claiming that
+   * model answered.
+   */
+  private announceModelSwitch(): void {
+    const previousModel = this.request.previousModel;
+    if (!this.request.resume || previousModel === undefined) {
+      return;
+    }
+
+    this.emit(
+      chatMessage(
+        'model-notice',
+        'notice',
+        `Now using ${this.settings.model} (previous turn: ${previousModel}). ` +
+          `Claude Code continues the same conversation history.`,
+      ),
+    );
+  }
+
+  /**
    * The effort must match exactly, with one deliberate exception: a model
    * without effort support reports null. Claude Code then ignores the
-   * setting, which is accepted without clamping, and the user is told so on
-   * the conversation's first turn (the model never changes afterwards). Any
-   * other difference is drift and fails the turn.
+   * setting, which is accepted without clamping; this returns true. Any other
+   * difference is drift and fails the turn.
    */
-  private verifyAppliedEffort(appliedEffort: unknown): void {
+  private verifyAppliedEffort(appliedEffort: unknown): boolean {
     if (appliedEffort === this.settings.effort) {
-      return;
+      return false;
     }
 
     if (appliedEffort !== null) {
@@ -493,14 +525,23 @@ class ClaudeTurn {
         `Claude Code selected effort ${String(appliedEffort)}; expected ${this.settings.effort}`,
       );
     }
+    return true;
+  }
 
-    if (!this.request.resume) {
+  /**
+   * Tell the user that the effort has no effect, on the first turn with a
+   * model that ignores it: the conversation's first turn, or the first turn
+   * after switching to that model.
+   */
+  private announceIgnoredEffort(): void {
+    const firstTurnWithModel = !this.request.resume || this.request.previousModel !== undefined;
+    if (firstTurnWithModel) {
       this.emit(
         chatMessage(
           'effort-notice',
           'notice',
           `${this.settings.model} does not support effort levels, so the configured effort ` +
-            `“${this.settings.effort}” has no effect in this conversation.`,
+            `“${this.settings.effort}” has no effect while this conversation uses that model.`,
         ),
       );
     }

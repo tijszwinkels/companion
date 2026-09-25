@@ -205,6 +205,102 @@ test('a model without effort support runs, with a notice on the first turn only'
   );
 });
 
+test('a resumed turn with another model announces the switch only once Claude Code confirms it', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new ClaudeCodeBackend();
+  const first = request(directory, settings, 'hello');
+  await backend.run(first, signal(), () => {});
+
+  // Same native session, another model, the conversation's unchanged effort.
+  const switched: AgentMessage[] = [];
+  await backend.run(
+    {
+      ...first,
+      settings: { ...settings, model: 'claude-sonnet-5' },
+      prompt: { text: 'again' },
+      resume: true,
+      previousModel: 'claude-opus-5-5',
+    },
+    signal(),
+    (message) => switched.push(message),
+  );
+  const argv: string[] = (await captured(directory)).argv;
+  assert.equal(argv[argv.indexOf('--resume') + 1], first.id);
+  assert.equal(argv[argv.indexOf('--model') + 1], 'claude-sonnet-5');
+  assert.equal(argv[argv.indexOf('--effort') + 1], 'high');
+  assert.equal(argv.includes('--fallback-model'), false);
+  assert.deepEqual(
+    switched.filter((message) => message.kind === 'notice').map((message) => message.text),
+    [
+      'Now using claude-sonnet-5 (previous turn: claude-opus-5-5). Claude Code continues the same conversation history.',
+    ],
+  );
+  assert.equal(latest(switched).at(-1)?.text, '## Answer\n**42**');
+
+  // The first turn with a model that ignores effort repeats the effort notice.
+  const toNoEffort: AgentMessage[] = [];
+  await backend.run(
+    {
+      ...first,
+      settings: { ...settings, model: 'claude-no-effort' },
+      resume: true,
+      previousModel: 'claude-sonnet-5',
+    },
+    signal(),
+    (message) => toNoEffort.push(message),
+  );
+  const notices = toNoEffort.filter((message) => message.kind === 'notice');
+  assert.equal(notices.length, 2);
+  assert.match(notices[0].text, /^Now using claude-no-effort \(previous turn: claude-sonnet-5\)\./);
+  assert.match(notices[1].text, /claude-no-effort does not support effort levels/);
+
+  // Later turns with the same model are silent again.
+  const unchanged: AgentMessage[] = [];
+  await backend.run(
+    { ...first, settings: { ...settings, model: 'claude-no-effort' }, resume: true },
+    signal(),
+    (message) => unchanged.push(message),
+  );
+  assert.equal(
+    unchanged.some((message) => message.kind === 'notice'),
+    false,
+  );
+
+  // A switch Claude Code does not confirm fails before any notice or prompt,
+  // whether the model or the conversation's effort drifted.
+  const effortDrifted: AgentMessage[] = [];
+  await assert.rejects(
+    backend.run(
+      {
+        ...first,
+        settings: { ...settings, model: 'claude-effort-drift' },
+        resume: true,
+        previousModel: 'claude-no-effort',
+      },
+      signal(),
+      (message) => effortDrifted.push(message),
+    ),
+    /Claude Code selected effort low; expected high/,
+  );
+  assert.deepEqual(effortDrifted, []);
+
+  const drifted: AgentMessage[] = [];
+  await assert.rejects(
+    backend.run(
+      {
+        ...first,
+        settings: { ...settings, model: 'claude-drift' },
+        resume: true,
+        previousModel: 'claude-no-effort',
+      },
+      signal(),
+      (message) => drifted.push(message),
+    ),
+    /Claude Code selected claude-other; expected claude-drift/,
+  );
+  assert.deepEqual(drifted, []);
+});
+
 test('user MCP servers are not isolated until that product decision is made', async (context) => {
   const { directory, settings } = await fixture(context);
   await new ClaudeCodeBackend().run(request(directory, settings, 'hello'), signal(), () => {});

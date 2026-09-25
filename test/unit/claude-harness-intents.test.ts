@@ -7,8 +7,8 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
 import { StartClaudeCodeSession } from '../../src/processors/start-claude-code-session.ts';
-import { StartCodexSession } from '../../src/processors/start-codex-session.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
+import { StartPiSession } from '../../src/processors/start-pi-session.ts';
 import { frame, signal, testDetector } from '../helpers.ts';
 import { harnessFixture } from '../harness-fixture.ts';
 
@@ -36,7 +36,7 @@ function router(sessions: AgentSessions, inferred: string[] = []) {
   new StartCodingAgentSession({ sessions }, () => {}).subscribe(router);
   new QuickQuestion({ sessions }, () => {}).subscribe(router);
   new StartClaudeCodeSession({ sessions }, () => {}).subscribe(router);
-  new StartCodexSession({ sessions }, () => {}).subscribe(router);
+  new StartPiSession({ sessions }, () => {}).subscribe(router);
   return router;
 }
 
@@ -45,14 +45,17 @@ for (const codingDefaultHarness of ['pi', 'claude-code'] as const) {
     const { sessions, runs } = await harnessFixture(context, {
       configuration: { ...claudeDefault, codingDefaultHarness },
     });
-    const inferred = ['START_CODING_AGENT_SESSION'];
+    // The retired "new codex session" wording is no shortcut any more: it
+    // reaches inference like any other utterance (here the generic intent).
+    const inferred = ['START_CODING_AGENT_SESSION', 'START_CODING_AGENT_SESSION'];
     const routes = router(sessions, inferred);
 
     const cases = [
       ['new claude session: Explain this', 'START_CLAUDE_CODE_SESSION', 'claude-code'],
-      ['New Codex session, explain this', 'START_CODEX_SESSION', 'pi'],
+      ['New Pi session, explain this', 'START_PI_SESSION', 'pi'],
       ['new session explain this', 'START_CODING_AGENT_SESSION', codingDefaultHarness],
       ['Could you explain this', 'START_CODING_AGENT_SESSION', codingDefaultHarness],
+      ['new codex session explain this', 'START_CODING_AGENT_SESSION', codingDefaultHarness],
     ] as const;
     for (const [utterance, intent, harness] of cases) {
       assert.equal(await routes.route({ ...frame, utterance }, signal()), intent, utterance);
@@ -65,13 +68,14 @@ for (const codingDefaultHarness of ['pi', 'claude-code'] as const) {
       if (harness === 'claude-code') {
         assert.equal(run?.settings.model, 'claude-sonnet-5', utterance);
       } else {
-        // "Codex" is Pi with its configured coding model, never a Codex CLI.
+        // "new pi session" is Pi with its configured coding model.
         assert.equal(run?.settings.model, defaultAgentSettings.model, utterance);
       }
     }
     assert.equal(runs.length, cases.length);
     assert.equal(runs[0].text, 'Explain this');
     assert.equal(runs[1].text, 'explain this');
+    assert.equal(runs[4].text, 'new codex session explain this', 'no prefix was stripped');
     assert.equal(inferred.length, 0);
   });
 }
@@ -82,11 +86,11 @@ test('the new prefixes are prefix-only, keep priority and have independent switc
 
   assert.deepEqual(routes.reservedPrefixes().toSorted(), [
     'new claude session',
-    'new codex session',
+    'new pi session',
     'new session',
     'quick question',
   ]);
-  for (const name of ['START_CLAUDE_CODE_SESSION', 'START_CODEX_SESSION']) {
+  for (const name of ['START_CLAUDE_CODE_SESSION', 'START_PI_SESSION']) {
     const state = routes.intentStates().find((intent) => intent.name === name);
     assert.equal(state?.supportsInference, false, name);
     assert.equal(state?.toggleable, true, name);
@@ -125,15 +129,15 @@ test('the new prefixes are prefix-only, keep priority and have independent switc
   assert.equal(sessions.snapshot().length, 1);
 
   assert.equal(
-    await routes.route({ ...frame, utterance: 'new codex session explain' }, signal()),
-    'START_CODEX_SESSION',
+    await routes.route({ ...frame, utterance: 'new pi session explain' }, signal()),
+    'START_PI_SESSION',
   );
   await sessions.idle();
   assert.equal(runs.length, count + 1);
   assert.equal(runs.at(-1)?.harness, 'pi');
 
   // Bare prefixes create nothing.
-  await routes.route({ ...frame, utterance: 'new codex session' }, signal());
+  await routes.route({ ...frame, utterance: 'new pi session' }, signal());
   routes.setEnabled('START_CLAUDE_CODE_SESSION', true, 'shortcut');
   await routes.route({ ...frame, utterance: 'new claude session' }, signal());
   await sessions.idle();
@@ -147,10 +151,10 @@ test('preview names the harness without starting a conversation', async (context
     logged.push(detail);
   };
   const claude = new StartClaudeCodeSession({ sessions }, log, true);
-  const codex = new StartCodexSession({ sessions }, log, true);
+  const pi = new StartPiSession({ sessions }, log, true);
   const generic = new StartCodingAgentSession({ sessions }, log, true);
   const quick = new QuickQuestion({ sessions }, log, true);
-  for (const processor of [claude, codex, generic, quick]) {
+  for (const processor of [claude, pi, generic, quick]) {
     await processor.process({ ...frame, utterance: 'Explain' }, signal());
   }
 

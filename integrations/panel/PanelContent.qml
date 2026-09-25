@@ -88,16 +88,23 @@ Item {
     if (!root.pendingOriginRestoring || root.selectedSessionId === root.pendingOriginId) return
     if (root.sessions.some(entry => entry.id === root.pendingOriginId)) clearPendingOrigin()
   }
-  // Only Pi conversations have model/effort pickers. A Claude Code conversation
-  // keeps the model captured at its start, so it never needs Pi's catalogue.
-  readonly property bool modelsNeeded: online && selectedSession !== null && selectedSession.harness !== "claude-code" && sessionControls !== null && sessionControls.controlsAvailable
+  // Each harness has its own catalogue. A Pi conversation needs Pi's
+  // discovered models; a Claude Code conversation needs only the listener's
+  // Claude allowlist, so it never starts Pi discovery.
+  readonly property bool selectedClaude: selectedSession !== null && selectedSession.harness === "claude-code"
+  readonly property bool catalogueReachable: online && selectedSession !== null && sessionControls !== null && sessionControls.controlsAvailable
+  readonly property bool modelsNeeded: catalogueReachable && !selectedClaude
+  readonly property bool claudeModelsNeeded: catalogueReachable && selectedClaude
   onModelsNeededChanged: if (modelsNeeded) Qt.callLater(ensureModels)
+  onClaudeModelsNeededChanged: if (claudeModelsNeeded) Qt.callLater(ensureModels)
   onSessionControlsChanged: Qt.callLater(ensureModels)
   function ensureModels() {
     if (root.modelsNeeded) root.sessionControls.ensureModels()
+    if (root.claudeModelsNeeded) root.sessionControls.ensureClaudeModels()
   }
   function refreshModels() {
     if (root.modelsNeeded) root.sessionControls.refreshModels()
+    if (root.claudeModelsNeeded) root.sessionControls.refreshClaudeModels()
   }
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
   property var locallyUnpinned: ({})
@@ -849,10 +856,12 @@ Item {
     anchors.leftMargin: 20 * root.unit
     anchors.rightMargin: 20 * root.unit
     session: root.selectedSession
+    // Loading and error state follow the selected conversation's catalogue.
     catalog: root.sessionControls ? root.sessionControls.modelCatalog : ({models: []})
-    catalogLoaded: root.sessionControls ? root.sessionControls.modelsLoaded : false
-    loading: root.sessionControls ? root.sessionControls.modelsLoading : false
-    error: root.sessionControls ? root.sessionControls.modelsError : ""
+    claudeCatalog: root.sessionControls ? root.sessionControls.claudeModelCatalog : ({models: []})
+    catalogLoaded: !root.sessionControls ? false : root.selectedClaude ? root.sessionControls.claudeModelsLoaded : root.sessionControls.modelsLoaded
+    loading: !root.sessionControls ? false : root.selectedClaude ? root.sessionControls.claudeModelsLoading : root.sessionControls.modelsLoading
+    error: !root.sessionControls ? "" : root.selectedClaude ? root.sessionControls.claudeModelsError : root.sessionControls.modelsError
     online: root.online
     background: root.background
     foreground: root.foreground

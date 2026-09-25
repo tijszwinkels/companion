@@ -85,9 +85,10 @@ harness: Pi by default, or Claude Code when `codingDefaultHarness` is
 `claude-code`. **“new session …”** bypasses intent inference and does the same;
 on Pi it uses the coding model (Astra by default). It replaces the old
 “new coding agent” shortcut. **“new claude session …”** always starts Claude
-Code with the configured Claude model, and **“new codex session …”** always
-starts Pi with the coding model. A Claude Code conversation keeps the model and
-effort it started with. **“quick question …”** is a separate, prefix-only
+Code with the configured Claude model, and **“new pi session …”** always
+starts Pi with the coding model. A Claude Code conversation keeps the effort
+it started with; its footer can switch the next turn to another Claude model in
+the same Claude history. **“quick question …”** is a separate, prefix-only
 `QUICK_QUESTION` processor using local Qwen through the same Pi backend. All of
 them send the captured screenshot and utterance and open an ordinary
 conversation tab.
