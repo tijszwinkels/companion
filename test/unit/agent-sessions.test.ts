@@ -602,3 +602,29 @@ test('model switching accepts Pi disabling unsupported reasoning but rejects oth
   );
   await assert.rejects(readFile(join(directory, 'request.json')), { code: 'ENOENT' });
 });
+
+test('model switching accepts Pi clamping inherited off upward and unsupported high effort downward', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new PiBackend();
+  for (const [model, thinking] of [
+    ['requires-thinking', 'off'],
+    ['requires-thinking', 'max'],
+    ['limited-thinking', 'max'],
+  ] as const) {
+    await backend.run(
+      {
+        id: model,
+        directory,
+        settings: { ...settings, model: `configured/${model}`, thinking },
+        prompt: { text: 'Synthetic answer' },
+        resume: false,
+      },
+      signal(),
+      () => {},
+    );
+    const captured = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+    assert.equal(captured.request.message, 'Synthetic answer');
+    assert.equal(captured.argv[captured.argv.indexOf('--thinking') + 1], thinking);
+    await rm(join(directory, 'request.json'));
+  }
+});

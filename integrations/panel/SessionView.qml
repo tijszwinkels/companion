@@ -46,6 +46,8 @@ Item {
   // Conversation id -> title of the agent conversation that drafted its unsent
   // text. Cleared when that composer becomes empty or its message is sent.
   property var draftSources: ({})
+  // Sender conversation ID -> true when an agent heading can open it.
+  property var openableOrigins: ({})
   readonly property string displayedDraftSource: composer.text !== "" && root.draftSources[root.displayedId] !== undefined
     ? root.draftSources[root.displayedId] : ""
   property var pendingSubmission: null
@@ -70,6 +72,7 @@ Item {
   signal choiceRequested(string id, string revision, int index)
   signal stopRunRequested(string id, string runId)
   signal screenshotRequested(url source, string title)
+  signal originRequested(string sessionId, string groupId)
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
 
@@ -190,7 +193,7 @@ Item {
     }
 
     const title = request.source && typeof request.source.title === "string" ? request.source.title : ""
-    root.draftSources = Object.assign({}, root.draftSources, {[id]: title || "another conversation"})
+    root.draftSources = Object.assign({}, root.draftSources, {[id]: (request.source && request.source.kind === "external" ? "external (unverified) · " : "") + (title || "another conversation")})
     if (displayed) {
       composer.text = next
       composer.cursorPosition = composer.length
@@ -222,6 +225,25 @@ Item {
     }
   }
 
+  // The sender's tool call may be one of several in a collapsed group. Bring
+  // that group into view without opening tool details or changing the composer.
+  // Align its top edge: an expanded group can be taller than the viewport, and
+  // centring it would push the heading being navigated to out of sight.
+  function jumpToToolGroup(groupId) {
+    const sessionId = root.displayedId
+    if (!sessionId || !groupId) return
+    for (let index = 0; index < messages.count; index++) {
+      if (messages.get(index).messageId !== groupId) continue
+      root.followEnd = false
+      transcript.positionViewAtIndex(index, ListView.Beginning)
+      // Delegate layout can change heights; settle the scroll position once more.
+      Qt.callLater(function() {
+        if (root.displayedId === sessionId) transcript.positionViewAtIndex(index, ListView.Beginning)
+      })
+      break
+    }
+  }
+
   function synchronize() {
     const id = root.session ? root.session.id : ""
     if (id !== root.displayedId) {
@@ -243,8 +265,12 @@ Item {
         toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
         toolRevision: message.toolGroup ? message.toolGroup.revision : "",
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
+        fromExternal: message.origin ? message.origin.kind === "external" : false,
         fromAgent: message.origin !== undefined && message.origin !== null,
         originTitle: message.origin ? message.origin.title || "" : "",
+        // External origins carry unverified labels, never a linkable conversation.
+        originSessionId: message.origin && message.origin.kind === "agent" ? message.origin.sessionId || "" : "",
+        originGroupId: message.origin && message.origin.kind === "agent" ? message.origin.sourceGroupId || "" : "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
       if (index < messages.count) {
         messages.set(index, row)
@@ -323,8 +349,13 @@ Item {
       required property string toolRevision
       required property string widgetJson
       // Written by another conversation's agent through session tools.
+      required property bool fromExternal
       required property bool fromAgent
       required property string originTitle
+      required property string originSessionId
+      required property string originGroupId
+      readonly property bool originLinked: fromAgent && originSessionId !== ""
+        && root.openableOrigins[originSessionId] === true
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
       property bool expanded: false
       property string ownerId: root.displayedId
@@ -335,6 +366,15 @@ Item {
       objectName: "bubble-" + messageId
       width: transcript.width
       height: bubbleSurface.height
+
+      // A tool heading discloses its calls; a linked agent heading navigates.
+      function activateHeading() {
+        if (bubble.kind === "tool") {
+          bubble.toggleExpanded()
+        } else if (bubble.originLinked) {
+          root.originRequested(bubble.originSessionId, bubble.originGroupId)
+        }
+      }
 
       function toggleExpanded() {
         // Keep the visible answer in place when a group above or crossing the
@@ -382,29 +422,35 @@ Item {
 
           Text {
             id: heading
+            objectName: "messageHeading"
             width: parent.width - copyButton.width - 8 * root.unit
             height: Math.max(implicitHeight, copyButton.height)
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? (bubble.fromAgent ? "Agent · " + (bubble.originTitle || "another conversation") : "You")
+              : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
-            color: bubble.state === "error" ? "#ef5350" : root.muted
+            color: bubble.originLinked ? root.accent
+              : bubble.state === "error" ? "#ef5350" : root.muted
+            font.underline: bubble.originLinked && headingMouse.containsMouse
             font.family: root.fontFamily
             font.pixelSize: 10 * root.unit
 
             MouseArea {
               anchors.fill: parent
-              enabled: bubble.kind === "tool"
+              id: headingMouse
+              hoverEnabled: true
+              enabled: bubble.kind === "tool" || bubble.originLinked
               cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-              onClicked: bubble.toggleExpanded()
+              onClicked: bubble.activateHeading()
             }
-            Accessible.role: bubble.kind === "tool" ? Accessible.Button : Accessible.StaticText
+            Accessible.role: headingMouse.enabled ? Accessible.Button : Accessible.StaticText
             Accessible.name: text
-            Accessible.onPressAction: if (bubble.kind === "tool") bubble.toggleExpanded()
+            Accessible.description: bubble.originLinked ? "Opens the source conversation" : ""
+            Accessible.onPressAction: bubble.activateHeading()
           }
 
           Rectangle {

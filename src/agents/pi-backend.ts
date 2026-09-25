@@ -1,3 +1,4 @@
+import { clampThinkingLevel, type Api, type Model } from '@earendil-works/pi-ai';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +26,7 @@ export class PiBackend implements AgentBackend {
   readonly label = 'Headless Pi';
   readonly dependencies = {};
 
-  models(settings: AgentSettings, directory: string, signal: AbortSignal): Promise<string[]> {
+  models(settings: AgentSettings, directory: string, signal: AbortSignal) {
     return piModels(settings.executable, directory, signal);
   }
 
@@ -67,6 +68,11 @@ export class PiBackend implements AgentBackend {
         cwd: request.directory,
         env: {
           ...process.env,
+          // A convention guard prevents our bash-capable agents accidentally
+          // bypassing their turn-scoped tools via the external CLI. Same-user
+          // processes can clear this marker; it is not an authentication claim.
+          COMPANION_INTERNAL_AGENT: '1',
+          COMPANION_EXTERNAL_SOCKET: undefined,
           COMPANION_WIDGET_ENDPOINT: request.widgets?.endpoint,
           COMPANION_WIDGET_TOKEN: request.widgets?.token,
           COMPANION_SESSION_TOOLS_ENDPOINT: request.sessionTools?.endpoint,
@@ -167,10 +173,13 @@ export class PiBackend implements AgentBackend {
         const state = object(event.data);
         const model = object(state.model);
         const actual = `${String(model.provider)}/${String(model.id)}`;
-        // Pi explicitly disables thinking on non-reasoning models. Accept that
-        // documented adjustment when switching models, while still rejecting
-        // a different model or unexpected thinking on a reasoning-capable one.
-        const expectedThinking = model.reasoning === false ? 'off' : settings.thinking;
+        // Use Pi's model capability map, including reasoning models that cannot
+        // disable thinking. Keep checking the exact selected model and the exact
+        // supported adjustment; arbitrary startup drift must still fail.
+        const expectedThinking = clampThinkingLevel(
+          model as unknown as Model<Api>,
+          settings.thinking,
+        );
         if (actual !== settings.model || state.thinkingLevel !== expectedThinking) {
           throw Error(
             `Pi selected ${actual} (${String(state.thinkingLevel)}); expected ${settings.model} (${expectedThinking})`,

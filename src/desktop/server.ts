@@ -200,6 +200,7 @@ export class DesktopServer {
           action === 'agent-tool-page' ||
           action === 'agent-models' ||
           action === 'set-agent-model' ||
+          action === 'set-agent-thinking' ||
           action === 'move-agent' ||
           action === 'label-history' ||
           action === 'delete-history' ||

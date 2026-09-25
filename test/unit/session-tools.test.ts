@@ -18,6 +18,7 @@ import { defaultAgentSettings } from '../../src/agents/settings.ts';
 import { sessionTools } from '../../src/agents/session-tools.ts';
 import {
   chatMessage,
+  type AgentMessage,
   type AgentBackend,
   type AgentDraftOutcome,
   type AgentDraftRequest,
@@ -34,6 +35,7 @@ interface RecordedRun {
   model: string;
   screenshot: boolean;
   sessionTools?: { endpoint: string; token: string };
+  emit: (message: AgentMessage) => void;
 }
 
 type TurnScript = (run: RecordedRun) => Promise<void>;
@@ -56,7 +58,14 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
     label: 'Session tools fixture',
     dependencies: {},
     async models() {
-      return ['configured/one', 'configured/two'];
+      const models = ['configured/one', 'configured/two'];
+      return {
+        models,
+        pinned: models,
+        thinkingLevels: Object.fromEntries(
+          models.map((model) => [model, ['off', 'minimal', 'low', 'medium', 'high']]),
+        ),
+      };
     },
     async run(request, _signal, emit) {
       const run: RecordedRun = {
@@ -66,6 +75,7 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
         model: request.settings.model,
         screenshot: request.prompt.screenshot !== undefined,
         sessionTools: request.sessionTools,
+        emit,
       };
       runs.push(run);
       const script = scripts.get(request.id)?.shift();
@@ -129,6 +139,79 @@ async function refusal(
   }
   assert.fail(`${name} unexpectedly succeeded`);
 }
+
+/** Emit a sender's outbound tool call as Pi reports it before running the tool. */
+function emitOutboundCall(run: RecordedRun, name: string, callId: string): void {
+  const outbound = chatMessage(`tool-${callId}`, 'tool', '');
+  outbound.toolName = name;
+  outbound.state = 'running';
+  run.emit(outbound);
+}
+
+test('agent provenance points to the sender tool group when the call was retained', async (context) => {
+  const { sessions, script, view } = await fixture(context);
+  const sender = sessions.start(frame, signal());
+  const callId = randomUUID();
+  let destination = '';
+  let storedGroup: string | undefined;
+  script(sender, async (run) => {
+    emitOutboundCall(run, 'companion_session_start', callId);
+    storedGroup = view(sender).messages.at(-1)?.id;
+    const result = await call(run, 'companion_session_start', { text: 'Follow up' }, callId);
+    destination = (result.session as { id: string }).id;
+  });
+  await sessions.idle();
+
+  const origin = view(destination).messages[0].origin;
+  assert.equal(origin?.kind, 'agent');
+  const sourceGroupId = origin.sourceGroupId;
+  assert.ok(sourceGroupId);
+  assert.equal(sourceGroupId, storedGroup, 'the call was stored before delivery');
+  assert.ok(view(sender).messages.some((message) => message.id === sourceGroupId));
+
+  await sessions.remove(destination);
+  await sessions.reopen(destination);
+  const reopened = view(destination).messages[0].origin;
+  assert.equal(reopened?.kind, 'agent');
+  assert.equal(reopened.sourceGroupId, sourceGroupId);
+});
+
+test('a reused provider call ID anchors only to the current turn, never an older group', async (context) => {
+  const { sessions, script, view } = await fixture(context);
+  const sender = sessions.start(frame, signal());
+  const target = sessions.start(frame, signal());
+  await sessions.idle();
+  const reusedCallId = randomUUID();
+  const groups: (string | undefined)[] = [];
+  script(
+    sender,
+    async (run) => {
+      emitOutboundCall(run, 'companion_session_send', reusedCallId);
+      groups.push(view(sender).messages.at(-1)?.id);
+      await call(run, 'companion_session_send', { id: target, text: 'First' }, reusedCallId);
+    },
+    async (run) => {
+      // The provider repeats the ID, but this turn's call was not stored.
+      await call(run, 'companion_session_send', { id: target, text: 'Second' }, reusedCallId);
+    },
+  );
+  sessions.followUp(sender, 'Send the first', signal());
+  await sessions.idle();
+  sessions.followUp(sender, 'Send the second', signal());
+  await sessions.idle();
+
+  const received = view(target).messages.filter((message) => message.origin);
+  assert.equal(received.length, 2);
+  const first = received[0].origin;
+  const second = received[1].origin;
+  assert.equal(first?.kind, 'agent');
+  assert.equal(second?.kind, 'agent');
+  assert.ok(groups[0]);
+  assert.equal(first.sourceGroupId, groups[0]);
+  // Without an exact anchor the heading still opens the sender conversation.
+  assert.equal(second.sessionId, sender);
+  assert.equal(second.sourceGroupId, undefined);
+});
 
 test('an agent starts a labelled background session that keeps its profile and model', async (context) => {
   const { sessions, runs, script, view } = await fixture(context);
@@ -312,7 +395,10 @@ test('messages to a busy target join its FIFO queue behind earlier user messages
 
   const labelled = view(target).messages.filter((message) => message.kind === 'user');
   assert.deepEqual(
-    labelled.map((message) => [message.text, message.origin?.sessionId ?? 'user']),
+    labelled.map((message) => [
+      message.text,
+      message.origin?.kind === 'agent' ? message.origin.sessionId : 'user',
+    ]),
     [
       ['Long task', 'user'],
       ['Human first', 'user'],
@@ -460,11 +546,21 @@ test('archived agent provenance is validated when a conversation is read', async
   const id = randomUUID();
   const valid = {
     ...chatMessage('valid', 'user', 'From an agent'),
-    origin: { kind: 'agent' as const, sessionId: randomUUID(), title: 'Sender', depth: 2 },
+    origin: {
+      kind: 'agent' as const,
+      sessionId: randomUUID(),
+      title: 'Sender',
+      depth: 2,
+      sourceGroupId: randomUUID(),
+    },
   };
   const forged = {
     ...chatMessage('forged', 'user', 'Not really'),
     origin: { kind: 'agent' as const, sessionId: '../../x', title: 'Sender', depth: 1 },
+  };
+  const malformedAnchor = {
+    ...chatMessage('malformed-anchor', 'user', 'From an agent'),
+    origin: { ...valid.origin, sourceGroupId: '../../x' },
   };
   const assistant = { ...chatMessage('assistant', 'assistant', 'Answer'), origin: valid.origin };
   await store.save({
@@ -474,16 +570,31 @@ test('archived agent provenance is validated when a conversation is read', async
     model: 'configured/one',
     error: '',
     updatedAt: 1,
-    messages: [valid, forged, assistant],
+    messages: [valid, forged, malformedAnchor, assistant],
   });
 
   const read = await store.read(id);
   assert.deepEqual(read.messages[0].origin, valid.origin);
   assert.equal(read.messages[1].origin, undefined);
-  assert.equal(read.messages[2].origin, undefined);
+  assert.deepEqual(read.messages[2].origin, {
+    kind: 'agent',
+    sessionId: valid.origin.sessionId,
+    title: valid.origin.title,
+    depth: valid.origin.depth,
+  });
+  assert.equal(read.messages[3].origin, undefined);
 });
 
 test('Pi loads the session tools extension only with a turn lease', async (context) => {
+  const previousExternalSocket = process.env.COMPANION_EXTERNAL_SOCKET;
+  process.env.COMPANION_EXTERNAL_SOCKET = '/synthetic/should-not-be-inherited.sock';
+  context.after(() => {
+    if (previousExternalSocket === undefined) {
+      delete process.env.COMPANION_EXTERNAL_SOCKET;
+    } else {
+      process.env.COMPANION_EXTERNAL_SOCKET = previousExternalSocket;
+    }
+  });
   const directory = await mkdtemp(join(tmpdir(), 'companion-session-tools-pi-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const executable = join(directory, 'fixture-pi');
@@ -502,6 +613,13 @@ test('Pi loads the session tools extension only with a turn lease', async (conte
 
   await new PiBackend().run(request, signal(), () => {});
   assert.equal((await argv()).includes(extension), false);
+  const environment = JSON.parse(await readFile(join(directory, 'request.json'), 'utf8'));
+  assert.equal(
+    environment.internalAgent,
+    '1',
+    'Even a turn without a lease must use the internal API',
+  );
+  assert.equal(environment.externalSocketExported, false);
 
   await new PiBackend().run(
     {
@@ -646,7 +764,7 @@ test('a lease released while a request body is arriving performs no action', asy
 
   for (const method of ['close', 'reopen', 'list']) {
     bodyEntered = deferred<void>();
-    const lease = await service.lease(randomUUID(), 0, signal());
+    const lease = await service.lease(randomUUID(), randomUUID(), 0, signal());
     const url = new URL(lease.endpoint);
     const { status, body } = await new Promise<{ status: number; body: string }>(
       (resolve, reject) => {

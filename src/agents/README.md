@@ -38,27 +38,50 @@ quick-question override also prevents a coding turn until it is corrected.
 `QUICK_QUESTION` and `START_CODING_AGENT_SESSION` have independent enable/disable
 controls; an existing disabled coding intent does not disable the new shortcut.
 
-The bottom model picker changes **this conversation's next turn**, through an
-optional persisted `AgentSession.modelOverride`. It does not change the profile,
-thinking setting, other conversations, the intent classifier or either default
-configuration. A running/starting turn retains its captured settings; queued turns
-use the choice present when each turn begins. The override survives closing,
-listener restart and reopening. “Use coding/quick-question default” clears it and
-resumes per-turn configuration loading. The `model` field still describes the
-current/last turn; it is deliberately separate from `modelOverride`.
+The bottom model and effort pickers change **this conversation's next turn**,
+through optional persisted `AgentSession.modelOverride` and `thinkingOverride`.
+They do not change the profile, other conversations, the intent classifier or
+configuration files. A running/starting turn retains its captured settings;
+queued turns use the choices present when each turn begins. A turn starting
+while a choice is still being validated uses the previous preference; accepted
+saves and their rollback complete before queued successors start. Both overrides survive
+closing, listener restart and reopening. Each “Use profile default” choice clears
+only its own override and resumes per-turn configuration loading. The `model`
+field still describes the current/last turn; it is separate from `modelOverride`.
+
+The model menu initially shows Pi's pinned/scoped models (`enabledModels`), the
+profile-default entry and any existing override. **Show all models** reveals the
+rest of Pi's available catalogue; **Pinned models only** collapses it. With no
+pins, use Show all models to browse. Refresh reloads Pi settings and availability.
+An unpinned selected model stays visible; only a model missing from the full
+catalogue is labelled unavailable. These controls do not modify Pi's pins.
+
+Effort offers only levels supported by the selected model, plus the profile
+default. Pi's supported-level adjustment applies to both inherited and explicit
+preferences: for example, inherited `off` becomes `minimal` on Astra, and any
+reasoning level becomes `off` on a non-reasoning model. The picker displays the
+adjusted level; its tooltip retains the requested override. Switching models
+retains that preference so switching back restores it. An unexpected model or
+thinking result still fails the backend's startup check before sending a prompt.
 
 `AgentSessions.models()` asks the configured Pi executable for
 `get_available_models` using a bounded offline RPC process, without a prompt,
-session, extensions, tools or project resource loading. The UI receives only
-provider/model identifiers and the two configured profile defaults, never Pi's
-full provider objects or credentials. Pi's `enabledModels` is its keyboard cycling
-subset, not the catalog: the picker offers all models Pi reports available. Refresh
-reloads the catalog/config; selecting an override validates against a fresh
-catalog. An unavailable archived override remains visible. Pi's exact-model
-startup check fails visibly instead of choosing a fallback. The profile supplies
-thinking; Pi explicitly runs non-reasoning models with thinking `off`, which the
-startup check accepts. Other unexpected thinking changes still fail visibly.
-Model discovery alone never creates `companion-agent.json`.
+saved session, tools or automatic resource/extension loading. One explicitly
+loaded metadata-only extension reads Pi's resolved `ctx.scopedModels` on startup,
+so Pi itself handles global scope patterns and effort suffixes. Discovery retains
+`--no-approve`: project-local settings/resources are ignored, as before. It reports
+only IDs over a separate inherited pipe and registers no tool or prompt. If that
+optional helper fails or its pipe is lost, the full catalogue and effort levels
+remain usable with a visible pins-unavailable notice; an actual empty scope still
+shows the short pinned menu. A missing helper response falls back at the existing
+10-second discovery deadline. The helper checks its marker and pipe type before
+writing, so a wrapper cannot redirect its metadata into an ordinary file. The UI
+receives identifiers, pins, supported effort levels and profile defaults, never
+Pi's full provider objects or credentials. Extension-only model registrations
+remain excluded. Selecting an explicit override validates against fresh metadata.
+Model discovery alone never creates `companion-agent.json`. Cached catalogues stay
+usable while refreshing. Older listeners without effort metadata leave that
+selector disabled and keep their previous full-model menu.
 
 Active-session order is owned by `AgentSessions` for the listener lifetime. Moves
 reorder the existing run objects, preserving turns, queues, widgets and IDs. New
@@ -269,6 +292,23 @@ reopening. Pi receives the text after a header beginning
 conversation, "<title>" (session <id>), not typed by the user.` Human messages
 are sent unchanged. Agent-started conversations have no screenshot.
 
+**Source links.** While the panel is connected, an internal agent bubble's
+heading is a link when its sender is an open tab or listed in Previous
+sessions; otherwise (deleted sender, offline panel) it is plain text. Clicking
+selects the open sender, or requests reopening an archived one; the ordinary
+user-reopen `agent-restored` event then selects it. The click never sends a
+message, changes a draft or moves composer focus. A pending request is
+forgotten when the user navigates elsewhere or the sender is restored without
+selection (for example, the reopen was refused and an agent later reopened it
+quietly), so it can never take over the view. New messages also carry
+`origin.sourceGroupId`: the sender's stored tool group for that exact turn and
+Pi tool-call ID (`<turn>:tool-<call>`), only when the call was stored before
+delivery. The link aligns that group to the top without expanding it; the group's
+individual calls are not highlighted. Older or unanchored messages open the
+conversation only. External-origin messages have unverified labels and no
+source conversation, so they are never links. Transcript headings, including
+these links, are reachable by pointer and screen-reader press action, not Tab.
+
 **Ordering and busy targets.** Sends use the same FIFO as typed and spoken
 follow-ups: they never interrupt a running turn, never overtake earlier queued
 messages, and are cancelled with the rest of the queue by Stop or a failed turn.
@@ -398,3 +438,13 @@ ledger. Automated tests do not prove every live voice or compositor interaction.
 No choices are inferred from arbitrary bracketed answer text; the model must use
 the tool. The existing headless-backend restriction on unrelated interactive Pi
 dialogs remains in effect.
+
+## External local agents
+
+The optional `--external-sessions` listener flag exposes these same lifecycle
+operations to processes running as the same Linux user, through a separate private
+Unix socket and `bin/companion-session`. It is off by default and does not issue
+internal turn tokens. External messages/drafts are explicitly attributed to an
+unverified local label, with no internal sender/self identity. See the
+[external API contract](external/README.md) for activation, CLI commands, security,
+receipt lifetime, cancellation, limits and validation scope.

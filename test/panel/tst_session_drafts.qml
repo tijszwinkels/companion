@@ -132,6 +132,23 @@ Item {
       compare(findChild(panel, "bubble-user").fromAgent, false)
     }
 
+    function test_external_messages_and_drafts_are_explicitly_unverified() {
+      const panel = openPanel()
+      const proposal = draft("visible", "External proposal")
+      proposal.source = {kind: "external", title: "MM Rowan"}
+      compare(panel.applyDraft(proposal).outcome, "inserted")
+      const label = findChild(panel, "agentDraftSource")
+      verify(label.text.indexOf("external (unverified)") >= 0)
+      const entry = conversation("visible", "Visible")
+      const external = message("external", "user", "External message")
+      external.origin = {kind: "external", title: "MM Rowan", depth: 1, requestId: "example"}
+      entry.messages = [external]
+      panel.sessions = [entry]
+      tryVerify(function() { return findChild(panel, "bubble-external") !== null })
+      compare(findChild(panel, "bubble-external").fromExternal, true)
+      compare(findChild(panel, "bubble-external").originTitle, "MM Rowan")
+    }
+
     function test_background_tabs_and_quiet_reopening_do_not_steal_focus() {
       const state = createTemporaryObject(stateComponent, parent)
       let revealed = 0

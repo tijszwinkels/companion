@@ -34,6 +34,11 @@ interface Lease {
  * Owns widget state, versioned bundles and the private browser transport. Agent
  * leases last one turn; UI capabilities last one open conversation. Neither
  * capability permits file access, commands, arbitrary URLs or other sessions.
+ *
+ * `directory` holds durable records and retained bundles. `library` is the
+ * widget source directory used for discovery and new publications only
+ * (default: the checkout's bundled widgets, for tests). Existing instances
+ * render from their retained bundle even if the library is absent.
  */
 export class WidgetService {
   private readonly registry: WidgetRegistry;

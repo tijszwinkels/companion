@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { WidgetService } from '../widgets/service.ts';
+import { bundledLibraryDirectory } from '../widgets/library-path.ts';
 import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
@@ -22,6 +23,8 @@ import {
 } from './session-tools-service.ts';
 import {
   chatMessage,
+  agentThinkingLevels,
+  type AgentSettings,
   type AgentBackend,
   type AgentDraftHost,
   type AgentDraftOutcome,
@@ -83,14 +86,22 @@ export class AgentSessions implements InspectableModule {
   private readonly widgets: WidgetService;
   private orderRevision = randomUUID();
   private readonly modelChanges = new Set<string>();
-  private readonly sessionTools: SessionToolService;
+  readonly sessionTools: SessionToolService;
   // The desktop runtime owns UI connections and therefore unsent drafts.
   private draftHost?: AgentDraftHost;
 
+  /**
+   * `directory` is the agents' working directory holding saved conversations
+   * and widget state. `widgetLibrary` is the widget source directory used for
+   * discovery and publication. The listener passes the configured user library
+   * (see library-path.ts); the default is the checkout's bundled examples so
+   * tests and harnesses stay hermetic and never read the user's real widgets.
+   */
   constructor(
     readonly dependencies: { backend: AgentBackend },
     private readonly log: Log,
     private readonly directory = agentDirectory(),
+    widgetLibrary = bundledLibraryDirectory,
   ) {
     this.store = new SessionStore(join(directory, '.companion-sessions'));
     this.widgets = new WidgetService(
@@ -110,12 +121,13 @@ export class AgentSessions implements InspectableModule {
         // immediately after a click, without waiting for another model response.
         await this.store.save(session.view);
       },
-      undefined,
+      widgetLibrary,
       undefined,
       (records) => this.validateWidgetChanges(records),
     );
     this.sessionTools = new SessionToolService({
       title: (id) => this.sessions.get(id)?.view.title,
+      sourceGroupId: (sender, turnId, toolCallId) => this.sourceGroupId(sender, turnId, toolCallId),
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
       start: (request, signal) => this.startFromAgent(request, signal),
       reopen: (id, focus, signal) => this.reopenFromAgent(id, focus, signal),
@@ -175,6 +187,21 @@ export class AgentSessions implements InspectableModule {
     return [...this.previous.values()].sort((first, second) => second.updatedAt - first.updatedAt);
   }
 
+  /**
+   * Locate the sender's stored tool group for one outbound session-tool call,
+   * using the turn-prefixed Pi tool message ID written by `runTurn` and
+   * `pi-transcript`. The anchor is optional navigation metadata: a storage
+   * read failure omits it instead of refusing an otherwise valid delivery.
+   */
+  private sourceGroupId(sender: string, turnId: string, toolCallId: string): string | undefined {
+    try {
+      return this.store.tools.groupFor(sender, `${turnId}:tool-${toolCallId}`);
+    } catch (error) {
+      this.log('agent-session-tools', `Source tool group unavailable: ${String(error)}`);
+      return undefined;
+    }
+  }
+
   private publishHistory(): void {
     for (const listener of this.listeners) {
       listener({ type: 'agent-history', sessions: this.previousSnapshot() });
@@ -224,56 +251,102 @@ export class AgentSessions implements InspectableModule {
     this.publishOrder();
   }
 
-  async models(
-    signal: AbortSignal,
-  ): Promise<{ models: string[]; coding: string; quickQuestion: string }> {
+  async models(signal: AbortSignal) {
     const coding = await loadAgentSettings(this.directory, 'coding', false);
     const quickQuestion = await loadAgentSettings(this.directory, 'quickQuestion', false);
     if (!this.dependencies.backend.models) {
       throw Error('This agent backend does not support model selection');
     }
-    const models = await this.dependencies.backend.models(coding, this.directory, signal);
-    return { models, coding: coding.model, quickQuestion: quickQuestion.model };
+    const catalog = await this.dependencies.backend.models(coding, this.directory, signal);
+    if (catalog.warning) {
+      this.log('agent-models', catalog.warning);
+    }
+    return {
+      ...catalog,
+      coding: coding.model,
+      quickQuestion: quickQuestion.model,
+      codingThinking: coding.thinking,
+      quickQuestionThinking: quickQuestion.thinking,
+    };
   }
 
-  /** A choice affects only later turns of this conversation, including reopening. */
+  /** Choices affect only later turns of this conversation, including reopening. */
   async setModel(id: string, model: string, signal: AbortSignal): Promise<void> {
+    await this.setPreferences(id, { modelOverride: model || undefined }, signal);
+  }
+
+  async setThinking(id: string, thinking: string, signal: AbortSignal): Promise<void> {
+    if (thinking !== '' && !agentThinkingLevels.includes(thinking as AgentSettings['thinking'])) {
+      throw Error('Choose a supported effort level');
+    }
+    await this.setPreferences(
+      id,
+      {
+        thinkingOverride: thinking ? (thinking as AgentSettings['thinking']) : undefined,
+      },
+      signal,
+    );
+  }
+
+  private async setPreferences(
+    id: string,
+    changes: Pick<AgentSession, 'modelOverride' | 'thinkingOverride'>,
+    signal: AbortSignal,
+  ): Promise<void> {
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing || this.modelChanges.has(id)) {
-      throw Error('Conversation is unavailable or its model is already being changed');
+      throw Error('Conversation is unavailable or its model/effort is already being changed');
     }
     this.modelChanges.add(id);
     try {
-      if (model !== '' && !(await this.models(signal)).models.includes(model)) {
-        throw Error('Choose an available configured Pi model');
+      if (changes.modelOverride !== undefined || changes.thinkingOverride !== undefined) {
+        const catalog = await this.models(signal);
+        if (
+          changes.modelOverride !== undefined &&
+          !catalog.models.includes(changes.modelOverride)
+        ) {
+          throw Error('Choose an available configured Pi model');
+        }
+        if (changes.thinkingOverride !== undefined) {
+          const model = session.view.modelOverride ?? catalog[session.view.profile ?? 'coding'];
+          if (!catalog.thinkingLevels[model]?.includes(changes.thinkingOverride)) {
+            throw Error('Choose an effort level supported by this model');
+          }
+        }
       }
       signal.throwIfAborted();
       if (this.closed || this.sessions.get(id) !== session || session.closing) {
-        throw Error('Conversation closed while choosing its model');
+        throw Error('Conversation closed while choosing its model/effort');
       }
-      const previousModel = session.view.modelOverride;
-      // Save alongside the transcript, using SessionStore's ordered writes.
-      // The current turn already holds a settings copy; it is never restarted.
-      if (model) {
-        session.view.modelOverride = model;
-      } else {
-        delete session.view.modelOverride;
-      }
+      const previous = {
+        modelOverride: session.view.modelOverride,
+        thinkingOverride: session.view.thinkingOverride,
+      };
+      // Save both preferences through the same ordered write gate. A running
+      // turn already holds a settings copy; a queued successor waits for this
+      // save (or rollback). Changing models retains the requested effort: Pi
+      // clamps it to that model, so switching back restores the user's choice.
+      Object.assign(session.view, changes);
       this.flush(session);
-      session.modelWrite = this.store.save(session.view).catch((error) => {
-        if (previousModel === undefined) {
-          delete session.view.modelOverride;
-        } else {
-          session.view.modelOverride = previousModel;
-        }
+      session.modelWrite = this.store.save(session.view).catch(async (error) => {
+        Object.assign(session.view, previous);
         this.flush(session);
+        // A turn may have queued another snapshot while this write was pending.
+        // Repair after those ordered writes too, so a rejected preference cannot
+        // survive on disk while the live view correctly shows the old setting.
+        try {
+          await this.store.save(session.view);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            'Could not save or restore conversation model/effort',
+          );
+        }
         throw error;
       });
       await session.modelWrite;
     } finally {
-      if (session) {
-        session.modelWrite = undefined;
-      }
+      session.modelWrite = undefined;
       this.modelChanges.delete(id);
     }
   }
@@ -401,13 +474,19 @@ export class AgentSessions implements InspectableModule {
   ): string {
     signal.throwIfAborted();
     if (this.closed) {
-      throw Error('Agent sessions are shutting down');
+      throw new SessionToolError('rejected', 'Agent sessions are shutting down');
     }
     if (this.sessions.size + this.restoring.size >= 12) {
-      throw Error('Close a question tab before starting another (12 tabs maximum)');
+      throw new SessionToolError(
+        'rejected',
+        'Close a question tab before starting another (12 tabs maximum)',
+      );
     }
     if (this.activeRuns() >= 4) {
-      throw Error('Four questions are already running; stop one or wait for an answer');
+      throw new SessionToolError(
+        'rejected',
+        'Four questions are already running; stop one or wait for an answer',
+      );
     }
 
     const id = randomUUID();
@@ -470,19 +549,28 @@ export class AgentSessions implements InspectableModule {
     signal.throwIfAborted();
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing) {
-      throw Error('Question session is unavailable');
+      throw new SessionToolError('rejected', 'Question session is unavailable');
     }
     if (session.busy && session.controller.signal.aborted) {
-      throw Error('Wait for this question to stop before sending a follow-up');
+      throw new SessionToolError(
+        'rejected',
+        'Wait for this question to stop before sending a follow-up',
+      );
     }
     if (!text.trim() || text.length > 4000) {
-      throw Error('A follow-up requires 1–4000 characters');
+      throw new SessionToolError('rejected', 'A follow-up requires 1–4000 characters');
     }
     if (session.pending.length >= maxPendingFollowUps) {
-      throw Error(`This conversation already has ${maxPendingFollowUps} queued messages`);
+      throw new SessionToolError(
+        'rejected',
+        `This conversation already has ${maxPendingFollowUps} queued messages`,
+      );
     }
     if (!session.busy && this.activeRuns() >= 4) {
-      throw Error('Four questions are already running; stop one or wait for an answer');
+      throw new SessionToolError(
+        'rejected',
+        'Four questions are already running; stop one or wait for an answer',
+      );
     }
 
     const message = chatMessage(`user-${randomUUID()}`, 'user', text);
@@ -619,6 +707,7 @@ export class AgentSessions implements InspectableModule {
         await session.modelWrite.catch(() => {});
       }
       const modelOverride = session.view.modelOverride;
+      const thinkingOverride = session.view.thinkingOverride;
       if (prompt.screenshot) {
         const question = session.view.messages[0];
         question.screenshotUrl = await this.store.screenshot(
@@ -636,6 +725,9 @@ export class AgentSessions implements InspectableModule {
       if (modelOverride) {
         settings.model = modelOverride;
       }
+      if (thinkingOverride !== undefined) {
+        settings.thinking = thinkingOverride;
+      }
       session.controller.signal.throwIfAborted();
       session.view.model = settings.model;
       session.view.status = 'running';
@@ -652,6 +744,7 @@ export class AgentSessions implements InspectableModule {
         // the sender; queued successors receive a fresh lease and depth.
         sessionToolLease = await this.sessionTools.lease(
           session.view.id,
+          turnId,
           session.depth,
           session.controller.signal,
         );
@@ -969,16 +1062,19 @@ export class AgentSessions implements InspectableModule {
    */
   async reopen(id: string, reveal = true, signal?: AbortSignal): Promise<void> {
     if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
-      throw Error('Previous session is unavailable');
+      throw new SessionToolError('rejected', 'Previous session is unavailable');
     }
     if (this.sessions.size + this.restoring.size >= 12) {
-      throw Error('Close a question tab before reopening another (12 tabs maximum)');
+      throw new SessionToolError(
+        'rejected',
+        'Close a question tab before reopening another (12 tabs maximum)',
+      );
     }
     this.restoring.add(id);
     try {
       const view = await this.store.read(id);
       if (this.closed) {
-        throw Error('Agent sessions are shutting down');
+        throw new SessionToolError('rejected', 'Agent sessions are shutting down');
       }
       // Canonical widget state repairs a display snapshot interrupted after a
       // widget commit. Missing bundles leave the saved text readable instead.
@@ -1056,7 +1152,11 @@ export class AgentSessions implements InspectableModule {
    * Discoverable targets for session tools: every open tab in visible order,
    * and bounded saved summaries. Transcripts and drafts are never included.
    */
-  private sessionDirectory(sender: string, query: string, limit: number): SessionDirectory {
+  private sessionDirectory(
+    sender: string | undefined,
+    query: string,
+    limit: number,
+  ): SessionDirectory {
     const open: OpenSessionToolSummary[] = [];
     for (const session of this.sessions.values()) {
       open.push({
@@ -1151,7 +1251,7 @@ export class AgentSessions implements InspectableModule {
 
   private async closeFromAgent(
     id: string,
-    sender: string,
+    sender: string | undefined,
     signal: AbortSignal,
   ): Promise<{
     outcome: 'closed' | 'closing-after-turn' | 'already-closed';
@@ -1226,7 +1326,10 @@ export class AgentSessions implements InspectableModule {
         text: request.text,
         ifDraftExists: request.ifDraftExists,
         focus: request.focus,
-        source: { sessionId: request.origin.sessionId, title: request.origin.title },
+        source:
+          request.origin.kind === 'external'
+            ? { kind: 'external', title: request.origin.title }
+            : { sessionId: request.origin.sessionId, title: request.origin.title },
       },
       signal,
     );

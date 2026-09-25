@@ -14,12 +14,15 @@ On Tijs's machine:
 | `/home/user/companion/agents`                                    | Pi agents' working directory and shared memory; not the source repo. |
 | `/home/user/companion/agents/memory/software/projects/companion` | Project index, tech-lead instructions, feature/review ledger.        |
 | `/home/user/companion/utterances.sqlite`                         | Live utterance database; use temporary databases for tests.          |
-| `widget-library/` in the running listener's checkout             | Reusable widget source, including local user workspace files.        |
+| `/home/user/companion/widget-library`                            | Live widget source (user library, unversioned scratch space).        |
+| `widget-library/` in a source checkout                           | Tracked example widgets, their tests and the widget guide.           |
 
 Read the source checkout's `AGENTS.md` and the relevant shared project notes
 before editing. On this machine `AGENTS.md` is intentionally Git-ignored, so a
 worktree must read `/home/user/Work/companion/AGENTS.md` explicitly. Preserve
-uncommitted widget designs, tests and other agents' work. Create worktrees under
+uncommitted widget designs, tests and other agents' work. Author live widgets in
+the user library (`--widget-library`/`COMPANION_WIDGET_LIBRARY`, default
+`~/companion/widget-library`); it is not a Git repository. Create worktrees under
 `.worktrees/`; implementation, review readiness, merge and deployment are separate
 milestones. User instructions can waive review for a particular change.
 
@@ -134,3 +137,13 @@ directory with exact commits, review scope, merge/deployment status, PR/MR links
 and known user feedback. Read it immediately before editing to preserve other
 agents' updates. Use source and Git to verify current status; a dated ledger
 entry is not permission to merge or deploy.
+
+## External session API development
+
+`src/agents/external/` implements the optional private Linux Unix socket;
+`bin/companion-session` is the CLI entrypoint, including from an unrelated cwd.
+See its [contract](../src/agents/external/README.md). The external integration tests
+use temporary session stores, real subprocesses and sockets, and synthetic agent
+backends. Never point these tests at the live listener or personal session store.
+The feature is off unless the listener is explicitly started with
+`--external-sessions`; activation remains a separate user decision.

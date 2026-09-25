@@ -71,8 +71,9 @@ by the panel. Request bodies, replies and transfer time are bounded. Redirects
 are rejected. A changed view aborts old requests and advances an identity
 generation; stale completions cannot publish errors into a replacement view.
 
-The request interceptor blocks ordinary network/file requests. The opaque iframe
-and CSP remain in place, with no QWebChannel, shell/file API or native object
+The request interceptor blocks ordinary network/file requests; the only
+subresources it passes are inline `data:` scripts, images and fonts. The opaque
+iframe and both nested CSPs remain in place, with no QWebChannel, shell/file API or native object
 exposed to widget JavaScript. WebRTC/WebTransport constructors are disabled before
 author code in every frame because those transports bypass HTTP interception.
 Popups, file selection, script dialogs, fullscreen and drop navigation are denied.

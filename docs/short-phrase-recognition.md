@@ -74,9 +74,10 @@ transcript logging is unchanged; keep the complete CLI log private.
 | `vad` / `accepted` | Candidate duration, voiced duration, ending silence and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF. |
 | `audio-end` | `eof`, `cancelled` or `failed`; cancellation discards an unfinished candidate. Capture/framing errors still propagate with their existing error detail. |
 | `asr` / `silence` | Pre-ASR energy filter rejected the buffer. Includes whole-buffer and strongest-window RMS. No request was sent. |
-| `asr` / `empty` or `punctuation` | The worker answered, but its result supplied no usable words. |
+| `asr` / `empty` or `punctuation` | The worker answered, but its final result supplied no usable words. |
+| `asr` … `emptyRetry` | Present only when the first pass returned empty text: `recovered` (outcome `text`), `empty`, `punctuation` or `error` for the one padded retry, or `quiet` / `too-long` when none was sent. `retryMs` times a sent retry. |
 | `asr-recorded` | An eligible empty ASR result was saved as a WAV/metadata pair; links the job ID to the clip UUID. |
-| `asr` / `text` | Usable text, character count and ASR operation time, excluding screen capture. |
+| `asr` / `text` | Usable text, character count and ASR operation time (including any retry), excluding screen capture. |
 | `asr` / `error` | Worker startup, transport, native inference, timeout or cancellation failed. The accompanying existing error supplies the fixed description; no native stderr is forwarded. |
 | `error` / `transcription`, `capture`, `recording`, `routing` | Identifies the pipeline stage that failed. Errors in later stages are not speech-recognition failures. |
 | `dropped`, `filtered`, `intent`, delivery/outcome logs | Existing evidence for queue overload, missing text, classification and dispatch. |
@@ -135,7 +136,7 @@ quiet VAD-approved speech that previously never incurred ASR work, so those
 requests now pay the ordinary local inference cost. It can also expose any quiet
 false positives already admitted by VAD to the model; VAD thresholds are not
 loosened. It adds no ending-silence latency, retries, native model instances or
-additional queue. Capture summaries add approximately twelve short lines per
+additional queue. (The later empty-result retry below is a separate change.) Capture summaries add approximately twelve short lines per
 minute while listening. The running listener was not restarted or modified;
 integration requires the owner to start the updated source normally.
 
@@ -150,3 +151,64 @@ screenshot. Silence, punctuation-only output and ASR errors do not qualify.
 The helper reports empty text, not raw token counts. See the
 [storage contract](../src/desktop/README.md) for thresholds, cancellation, retention
 and the `--no-desktop` opt-out. Recognition and routing behavior are unchanged.
+
+## Empty-result retry
+
+A live utterance on 2026-09-24 passed VAD with clear speech (peak probability
+0.999, strongest-window RMS 0.0246), yet Parakeet returned empty text, twice, for
+the exact saved segment. The same samples produced words when given 250 ms of
+leading silence, 500 ms of trailing silence or 4× gain. The decoder's exact cause
+is unknown. The recording is private and is not a fixture.
+
+The transcriber now retries a genuinely **empty** first-pass result once: the
+unchanged samples with 250 ms of digital silence (PCM16 zeros) on each side, on
+the same resident worker. The first pass is unchanged, so a normal result still
+sends exactly one request. No other outcome is retried:
+
+- Punctuation-only results, silence-guard rejections, worker errors, timeouts and
+  cancellation never cause a retry. Nothing follows the retry.
+- The retry shares the original operation's timeout, cancellation and reaping. A
+  retry failure rejects the operation like any request failure; it does not start
+  a replacement worker. Only a later utterance can do that.
+- Input whose strongest-128-ms-window RMS is below 0.005 (ten times the silence
+  floor) is not retried (`emptyRetry: "quiet"`), for the reason shown below.
+- Input that padding would push past the 31-second request bound is not retried
+  (`too-long`). Live segments are capped at 30 seconds, so this affects only
+  direct callers near the bound.
+- The caller's samples are never modified. Empty-clip retention uses the final
+  outcome and saves the original segment; a recovered result follows the ordinary
+  transcript path, and its recording is the original, unpadded segment.
+
+The pipeline receives one `asr` diagnostic per operation. Its `outcome` is final,
+so a recovered result reads as `text`, with `emptyRetry` and `retryMs` fields.
+Neither contains transcripts or samples.
+
+### Evaluation (2026-09-24, local Parakeet TDT int8)
+
+These measurements used the existing main-checkout helper binary in separate
+local processes. The live listener was not touched.
+
+| Input | Result |
+| --- | --- |
+| Private clip, 10 padding variants × 2 runs (lead 125–500 ms, trail 250–1000 ms) | Unpadded: empty both times. Every padded variant: 8 words, repeatable. All variants agreed except trailing-only padding of 500 ms or more, which gave slightly different words. |
+| Private clip through the changed transcriber, 6 runs | Recovered 6/6 with identical text; samples unchanged. Total 388–506 ms, of which the retry took 191–275 ms. |
+| Public quiet phrases (gain 0.01, strongest-window RMS 0.0012) that decode empty, 11 cases | Padded retries mostly produced **wrong** words (for example single numbers); with 250/250 padding, 7 of 11 did. Hence the 0.005 retry floor: these stay empty and are retained. |
+| Public loud fixture fragments (1.2 s cut mid-word) with an empty first pass | The retry recovers leading words; `npm run asr:short-phrases` now checks one of them (“and says how do I get …”). The final clipped word can be misheard. |
+| Public loud/normal phrases and full fixture | First pass succeeds; no retry, one request, unchanged transcripts. Five-second request 250–346 ms. |
+
+False-positive probes sent directly to ASR (bypassing VAD, so harsher than live):
+
+- Synthetic tones, hum, clicks, white/brown noise and all six sound cues at three
+  gains (32 inputs): 24 were empty on the first pass, and 250/250 retries produced
+  no text for any of them. (Some other padding variants produced a filler word.)
+- Time-reversed fixture fragments, which are speech-like but contain no words:
+  the model already returns text for 152 of 284 on the first pass. Of first-pass empties
+  at or above the retry floor, 19 of 84 (23%) gained text on retry, compared with
+  20 of 83 (24%) for forward fragments. **The retry does not distinguish words from
+  word-like nonspeech.** Its false-positive risk is whatever VAD admits as speech
+  but the first pass leaves empty.
+
+The retry adds one inference (about 0.2 s for a short utterance) only when the
+first pass is empty and eligible. This is a bounded mitigation, verified on one
+private clip and public fixtures. It is not a universal fix, and other microphones,
+voices and rooms are untested.

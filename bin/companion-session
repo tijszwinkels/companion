@@ -1,0 +1,5 @@
+#!/bin/sh
+# Resolve this checkout independently of the invoking Mattermost session's cwd.
+entry=$(readlink -f -- "$0") || exit 2
+root=$(dirname -- "$(dirname -- "$entry")") || exit 2
+exec "$root/node_modules/.bin/tsx" "$root/src/agents/external/cli.ts" "$@"

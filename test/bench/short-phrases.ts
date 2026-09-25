@@ -169,6 +169,12 @@ try {
       assert.ok(diagnostics[0].rms < 0.0005, 'The old whole-buffer guard rejected this phrase');
       assert.ok(diagnostics[0].speechWindowRms >= 0.0005);
       assert.equal(diagnostics[0].outcome, delivered.length ? 'text' : 'empty');
+
+      // Padded retries of these near-floor phrases mostly produced wrong words
+      // during evaluation, so an empty result here must not be retried.
+      if (!delivered.length) {
+        assert.equal(diagnostics[0].emptyRetry, 'quiet');
+      }
     }
 
     if (entry.name === 'short-gain-0.01-offset-0') {
@@ -188,6 +194,26 @@ try {
         }
       }
     }
+  }
+
+  // Loud speech clipped after 1.2 s, framed with ordinary preroll and ending
+  // silence. The unpadded first pass returns empty text with the current model;
+  // the single padded retry recovers the leading words. The last word is not
+  // required: the clip ends inside a word, and recovery can mishear it.
+  {
+    const clipped = new Float32Array(4096 + 19200 + 12800);
+    clipped.set(source.slice(0, 19200), 4096);
+    const original = clipped.slice();
+    let report: TranscriptionDiagnostic | undefined;
+    const text = await transcriber.transcribe(clipped, signal, (diagnostic) => {
+      report = diagnostic;
+    });
+    console.log(JSON.stringify({ name: 'loud-clipped', asr: report, text }));
+    assert.deepEqual(clipped, original, 'The retry must not alter the caller’s samples');
+    assert.equal(report?.outcome, 'text');
+    // Accept a future model that needs no retry, but never a failed recovery.
+    assert.ok(report.emptyRetry === 'recovered' || report.emptyRetry === undefined);
+    assert.match(words(text), /^and says how do i get/);
   }
 
   // A longer request after repeated short requests must retain its words, and
