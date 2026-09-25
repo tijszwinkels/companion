@@ -40,6 +40,7 @@ import {
 } from './checks.ts';
 import {
   diagnosticIntentSelection,
+  hasDuplicateKey,
   isTextRoute,
   parseExperimentResponse,
   PERCENTAGE_REASONS,
@@ -268,18 +269,66 @@ function recordedUtterance(record: IntentRequestRecord): string | null {
 
 /**
  * The recorded utterance of the optional-text variant, which is also its
- * fallback text, so it must be unambiguous: exactly one frame part in the
- * whole request, with a nonempty utterance. Anything else aborts planning
- * before any call, with a content-free message; the fallback is never guessed.
+ * fallback text, so it must be unambiguous. Stricter than the best-effort
+ * lookup above (which old variants keep unchanged):
+ *
+ * - A candidate is any user text part whose JSON is an object with its own
+ *   `utterance` key, whatever the value.
+ * - A candidate with a duplicate key anywhere is refused: `JSON.parse` keeps
+ *   the last duplicate, while the model sees both values, so the fallback
+ *   would be a guess (review finding: `{"utterance":"a","utterance":"b"}`,
+ *   also with escaped keys such as `"utter\u0061nce"`).
+ * - Every candidate must have a nonempty string utterance, so a malformed
+ *   second frame is refused rather than skipped.
+ * - There must be exactly one candidate in the whole request.
+ *
+ * Anything else aborts planning before any call, with a content-free message.
  */
 function verifiedTranscript(record: IntentRequestRecord, exampleId: string): string {
-  const found = frameUtterances(record);
-  if (found.length !== 1 || found[0] === '') {
-    throw new SafeEvalError(
-      `Example ${exampleId}: ${OPTIONAL_TEXT_VARIANT_ID} needs exactly one nonempty recorded utterance as its fallback text`,
-    );
+  const refusal = new SafeEvalError(
+    `Example ${exampleId}: ${OPTIONAL_TEXT_VARIANT_ID} needs exactly one unambiguous, nonempty recorded utterance as its fallback text`,
+  );
+
+  const candidates: string[] = [];
+  const messages = record.body.messages;
+  if (Array.isArray(messages)) {
+    for (const message of messages) {
+      if (!message || message.role !== 'user' || !Array.isArray(message.content)) {
+        continue;
+      }
+      for (const part of message.content) {
+        if (!part || part.type !== 'text' || typeof part.text !== 'string') {
+          continue;
+        }
+
+        let data: unknown;
+        try {
+          data = JSON.parse(part.text);
+        } catch {
+          // Not JSON, so not a frame; its contents are never reported.
+          continue;
+        }
+        if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+          continue;
+        }
+        if (!Object.hasOwn(data, 'utterance')) {
+          continue;
+        }
+
+        // A frame candidate: it must be unambiguous and well formed.
+        const utterance = (data as { utterance: unknown }).utterance;
+        if (hasDuplicateKey(part.text) || typeof utterance !== 'string' || utterance === '') {
+          throw refusal;
+        }
+        candidates.push(utterance);
+      }
+    }
   }
-  return found[0]!;
+
+  if (candidates.length !== 1) {
+    throw refusal;
+  }
+  return candidates[0]!;
 }
 
 async function prepareInferred(

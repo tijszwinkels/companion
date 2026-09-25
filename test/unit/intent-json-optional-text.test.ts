@@ -574,7 +574,7 @@ test('prompt: only the system prompt changes; v1 and percentages-v1 pins are unc
   assert.ok(!noTextPrompt.includes('Optional text:'));
 });
 
-test('optional-text is inferred-only and needs exactly one nonempty recorded utterance', async () => {
+test('optional-text is inferred-only and needs exactly one unambiguous, nonempty recorded utterance', async () => {
   const root = await mkdtemp(join(tmpdir(), 'companion-optional-text-plan-'));
 
   // Fixed shortcut routes are refused before any call.
@@ -624,6 +624,20 @@ test('optional-text is inferred-only and needs exactly one nonempty recorded utt
       'two utterances',
       [JSON.stringify({ utterance: `a ${SECRET}` }), JSON.stringify({ utterance: 'b' })],
     ],
+    // Review finding: JSON.parse keeps the last duplicate, the model sees both.
+    ['duplicate utterance key', [`{"utterance":"First ${SECRET}.","utterance":"Second."}`]],
+    [
+      'escaped duplicate utterance key',
+      [`{"utterance":"First ${SECRET}.","utter\\u0061nce":"Second."}`],
+    ],
+    // Any duplicate key makes the frame ambiguous, even outside the utterance.
+    ['duplicate key elsewhere in the frame', [`{"utterance":"a","application":1,"application":2}`]],
+    // A malformed second frame is refused, not skipped.
+    [
+      'valid frame plus wrong-type utterance',
+      [JSON.stringify({ utterance: `a ${SECRET}` }), JSON.stringify({ utterance: null })],
+    ],
+    ['valid frame plus empty utterance', [JSON.stringify({ utterance: 'a' }), '{"utterance":""}']],
   ];
   let calls = 0;
   const endpoint = await server((_request, response) => {
@@ -637,7 +651,7 @@ test('optional-text is inferred-only and needs exactly one nonempty recorded utt
         { utterance: 'x', expected: 'IGNORE', userTexts },
       ]);
       const refusal = new RegExp(
-        `Example ${uuid(1)}: ${OPTIONAL_TEXT_VARIANT_ID} needs exactly one nonempty recorded utterance`,
+        `Example ${uuid(1)}: ${OPTIONAL_TEXT_VARIANT_ID} needs exactly one unambiguous, nonempty recorded utterance`,
       );
       await assert.rejects(
         planExperiment({ mode: 'inferred', datasetPath, variant: OPTIONAL_TEXT_VARIANT_ID }, 64),

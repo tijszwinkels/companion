@@ -672,8 +672,12 @@ effective text is the recorded transcript **byte for byte** (the `utterance`
 of the recorded frame; nothing is trimmed or normalized). That is
 `resolveEffectiveText` in `contract.ts`. Invalid responses never get a
 fallback and stay invalid; no-text intents never get text. Planning refuses
-the whole dataset before any call if an example does not have exactly one
-nonempty recorded utterance, so the fallback is never guessed.
+the whole dataset before any call unless every example has exactly one
+unambiguous frame candidate (a user text part whose JSON object has its own
+`utterance` key). A candidate with any duplicate key (including escaped ones
+such as `"utter\u0061nce"`, which `JSON.parse` would silently resolve to the
+last value) or with an empty or non-string utterance is refused, not skipped,
+so the fallback is never guessed (review finding on 32cc2ae).
 
 **Omission does not prove that cleanup was unnecessary.** It is only the
 model's own claim. A model could omit text for a transcript full of filler
@@ -820,8 +824,9 @@ Tests use synthetic text, fake PNG bytes and local HTTP servers only. They cover
     and case-variant parameter keys, duplicate keys, wrong and shortcut-only
     routes, top-level text and every percentage rule stay invalid; v1 and
     percentages-v1 still reject `{}` as `text-missing`;
-  - the byte-exact transcript fallback, and refusal of recordings without
-    exactly one nonempty utterance before any call;
+  - the byte-exact transcript fallback, and refusal before any call of
+    recordings without exactly one unambiguous, nonempty utterance
+    (duplicate and escaped-duplicate keys, malformed second frames);
   - v1 and percentages-v1 prompt/body pins; fixed-route refusal;
   - runner rows, `optionalText` counts and timing groups, literal checks on
     the effective text, private/shareable separation and cancellation;
