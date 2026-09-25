@@ -49,9 +49,10 @@ the conversation's persisted `AgentSession.harness`; absence means `pi`, which
 covers every older archive. First turns, spoken/typed/queued follow-ups, agent
 messages with their provenance header, stop, close/reopen and listener restarts
 all use the conversation's own harness. There is no fallback to the other harness
-and no mid-conversation harness or model switching: each harness resumes only its
-own transcript. If a Claude Code conversation's turn starts while no Claude Code
-backend is wired, the turn fails visibly in its tab.
+and no mid-conversation harness switching: each harness resumes only its own
+transcript. (The footer's model picker changes only the model within a harness.)
+If a Claude Code conversation's turn starts while no Claude Code backend is
+wired, the turn fails visibly in its tab.
 
 How a new conversation chooses its harness:
 
@@ -59,13 +60,17 @@ How a new conversation chooses its harness:
 | --------------------------------------------------------- | -------------------------------------------------------- |
 | “new session …” and inferred `START_CODING_AGENT_SESSION` | the configured `codingDefaultHarness` (default `pi`)     |
 | “new claude session …” (`START_CLAUDE_CODE_SESSION`)      | `claude-code`                                            |
-| “new codex session …” (`START_CODEX_SESSION`)             | `pi` with the coding profile (Codex means Pi's model)    |
+| “new pi session …” (`START_PI_SESSION`)                   | `pi` with the coding profile and its configured model    |
 | “quick question …”                                        | always `pi`                                              |
 | `companion_session_start`                                 | its `harness`, else as “new session”; quick questions Pi |
 
 The two new shortcuts are prefix-only, so the detector's prompt is unchanged, and
 each has its own switch. The router still tries longer prefixes first; “new
-session” is literal and never captures “new claude session”.
+session” is literal and never captures “new claude session” or “new pi session”.
+“new pi session” replaced the earlier “new codex session” wording
+(`START_CODEX_SESSION`) at Tijs's request; it never meant a Codex harness, and
+the old phrase has no alias. It now reaches inference like any other utterance.
+A disabled-intent entry saved under the old name is ignored.
 
 A Claude Code conversation records `AgentSession.claudeCode = {model, effort}`
 when it is created, from the configured `claudeCode` section or an explicit
