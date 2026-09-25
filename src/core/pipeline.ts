@@ -345,12 +345,12 @@ export class SensorPipeline implements InspectableModule {
         if (!utterance.trim()) {
           // An empty attempt takes no action, but it may be a fragment that the
           // decoder cannot read alone, such as speech cut by a pause mid-word.
-          // Like a shortcut, it has no inference time in which speech can
-          // resume, so keep it continuable for the legacy quiet window. A
-          // continuation then retranscribes it together with the new audio.
+          // It has no inference time in which speech can resume, so keep it
+          // continuable for EMPTY_QUIET_MS. A continuation then retranscribes
+          // it together with the new audio.
           if (!fallback && job.attempt) {
             try {
-              await job.attempt.commit('shortcut', job.routeSignal);
+              await job.attempt.commit('empty', job.routeSignal);
             } catch (error) {
               if (job.attempt.superseded) {
                 throw error;

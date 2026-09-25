@@ -421,8 +421,8 @@ VAD requirement of 128 ms of voiced frames. These are the existing speech gates;
 they do not establish that the sound is intelligible. Silence rejection,
 punctuation-only output, worker errors, untranscribed cancelled jobs, overload
 drops and provisional attempts replaced by resumed speech do not create these clips.
-An empty provisional attempt is retained only after the legacy 800 ms quiet
-window passes without a continuation. The helper exposes empty **text**, so this does
+An empty provisional attempt is retained only after 1.2 s pass after its
+endpoint without a continuation. The helper exposes empty **text**, so this does
 not distinguish zero raw tokens from special-token-only output.
 
 The transcriber may retry an empty first pass once with padding

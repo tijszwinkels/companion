@@ -26,10 +26,10 @@ export { LEGACY_ENDPOINT_MS };
  *
  * The commitment point is `commit`, which the router awaits immediately before
  * its first externally visible decision (dispatch or skip). The pipeline also
- * awaits it before discarding an empty transcript, so an unreadable fragment
- * can still be completed by the speech that follows it. Once `commit`
- * returns, the attempt can no longer be held or superseded, so later speech is
- * a new request and no side effect is ever undone or replayed.
+ * awaits it (for EMPTY_QUIET_MS) before discarding an empty transcript, so an
+ * unreadable fragment can still be completed by the speech that follows it.
+ * Once `commit` returns, the attempt can no longer be held or superseded, so
+ * later speech is a new request and no side effect is ever undone or replayed.
  *
  * Concurrency: JavaScript runs these callbacks on one thread. `commit` checks
  * the hold and marks the attempt committed without an intervening `await`, so
@@ -47,19 +47,33 @@ export { LEGACY_ENDPOINT_MS };
 export const SHORTCUT_QUIET_MS = LEGACY_ENDPOINT_MS - ENDPOINT_MS;
 
 /**
- * Product choice D3: combined audio (including the restored pause) is limited to the segmenter's existing
- * 30-second cap. A continuation that would exceed it is not merged; the held
- * attempt proceeds and the continuation becomes a new request, as a 30-second
- * `limit` segment split would today.
+ * How long an attempt whose transcript is empty stays continuable, after the
+ * provisional endpoint. A fragment cut by a pause mid-sentence can be
+ * unreadable on its own; the words return only when it is retranscribed with
+ * the speech that follows. Nothing is shown, played or dispatched while it
+ * waits, so this window is longer than the shortcut window: comparable to the
+ * time an attempt with text stays continuable while its inference runs. With
+ * public audio, it recovered sentences split by pauses of 750–1200 ms that both
+ * the 576 ms window and the legacy 800 ms endpoint lost (docs/speech-timing.md).
+ * The cost: typed input queued behind such an attempt waits up to this long,
+ * and speech within it is joined with the unreadable sound.
+ */
+export const EMPTY_QUIET_MS = 1200;
+
+/**
+ * Product choice D3: combined audio (including the restored pause) is limited
+ * to the segmenter's existing 30-second cap. A continuation that would exceed
+ * it is not merged; the held attempt proceeds and the continuation becomes a
+ * new request, as a 30-second `limit` segment split would today.
  */
 export const MAX_UTTERANCE_SAMPLES = (SAMPLE_RATE * VAD_SETTINGS.maxMs) / 1000;
 
 /**
  * Which kind of decision is about to be made. Inference acts as soon as the
- * model answers. Decisions without inference (prefix and exact-label shortcuts,
- * and filtering an empty transcript) wait for the legacy quiet window.
+ * model answers. Prefix and exact-label shortcuts wait for the legacy quiet
+ * window, and filtering an empty transcript waits for EMPTY_QUIET_MS.
  */
-export type CommitRoute = 'inference' | 'shortcut';
+export type CommitRoute = 'inference' | 'shortcut' | 'empty';
 
 /** The router's view of an attempt: wait until acting on it is final. */
 export interface DispatchCommitment {
@@ -104,7 +118,10 @@ export class ProvisionalAttempt implements DispatchCommitment {
   // Waiters in `commit`, woken whenever the hold or supersession changes.
   private waiters: (() => void)[] = [];
 
-  constructor(private readonly shortcutQuietMs = SHORTCUT_QUIET_MS) {}
+  constructor(
+    private readonly shortcutQuietMs = SHORTCUT_QUIET_MS,
+    private readonly emptyQuietMs = EMPTY_QUIET_MS,
+  ) {}
 
   /** Aborted with UtteranceSupersededError when a continuation replaces this attempt. */
   get signal(): AbortSignal {
@@ -163,8 +180,9 @@ export class ProvisionalAttempt implements DispatchCommitment {
         continue;
       }
 
-      if (route === 'shortcut') {
-        const remainingMs = this.quietSince + this.shortcutQuietMs - performance.now();
+      if (route !== 'inference') {
+        const quietMs = route === 'shortcut' ? this.shortcutQuietMs : this.emptyQuietMs;
+        const remainingMs = this.quietSince + quietMs - performance.now();
 
         if (remainingMs > 0) {
           await this.nextChange(signal, remainingMs);
