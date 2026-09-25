@@ -1,4 +1,11 @@
-import { ENDPOINT_MS, SAMPLE_RATE, VAD_SETTINGS } from '../sensors/audio/segmenter.ts';
+import {
+  ENDPOINT_MS,
+  LEGACY_ENDPOINT_MS,
+  SAMPLE_RATE,
+  VAD_SETTINGS,
+} from '../sensors/audio/segmenter.ts';
+
+export { LEGACY_ENDPOINT_MS };
 
 /**
  * Provisional utterances and their commitment point.
@@ -29,9 +36,6 @@ import { ENDPOINT_MS, SAMPLE_RATE, VAD_SETTINGS } from '../sensors/audio/segment
  * resumed speech and inference completion are ordered, never interleaved.
  */
 
-/** The endpoint before provisional attempts; shortcut commands keep its quiet window. */
-export const LEGACY_ENDPOINT_MS = 800;
-
 /**
  * Product choice D1: prefix and exact-label shortcuts have no LLM wait, so they
  * would otherwise commit as soon as ASR returns and split commands such as
@@ -43,7 +47,7 @@ export const LEGACY_ENDPOINT_MS = 800;
 export const SHORTCUT_QUIET_MS = LEGACY_ENDPOINT_MS - ENDPOINT_MS;
 
 /**
- * Product choice D3: combined audio is limited to the segmenter's existing
+ * Product choice D3: combined audio (including the restored pause) is limited to the segmenter's existing
  * 30-second cap. A continuation that would exceed it is not merged; the held
  * attempt proceeds and the continuation becomes a new request, as a 30-second
  * `limit` segment split would today.
