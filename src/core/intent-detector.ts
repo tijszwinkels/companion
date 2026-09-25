@@ -253,7 +253,10 @@ export class IntentDetector implements Detector {
         throw Error(reply.errorMessage || `Intent response ended: ${reply.stopReason}`);
       }
       if (reply.content.some((part) => part.type !== 'text')) {
-        throw Error('Expected only an intent name');
+        // The bare-name message is unchanged from before cleanup existed.
+        throw Error(
+          promptVariant === null ? 'Expected only an intent name' : 'Expected a text-only reply',
+        );
       }
 
       return reply.content.map((part) => (part.type === 'text' ? part.text : '')).join('');

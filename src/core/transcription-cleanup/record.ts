@@ -6,7 +6,7 @@
  *
  * Records carry fixed reason codes only, never model output or error text.
  */
-import type { InvalidReason } from '../../evals/experiments/json-cleanup/contract.ts';
+import type { InvalidReason } from './contract.ts';
 
 /**
  * Why the raw ASR text was delivered instead of cleaned text:

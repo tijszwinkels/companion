@@ -28,8 +28,9 @@ authorization, after review; nothing in this repository makes one on its own.
 by the optional live feature ([transcription-cleanup.md](transcription-cleanup.md)).
 Its strings (cleanup and SEND formatting instructions, the v1 response section
 and the fixed-route prompt) moved unchanged to
-`src/core/transcription-cleanup/prompt.ts`. This experiment imports them, and the
-pinned json-cleanup-v1 prompt hash is unchanged. Nothing in this experiment
+`src/core/transcription-cleanup/prompt.ts`, and the response contract moved
+unchanged to `src/core/transcription-cleanup/contract.ts`. This experiment
+re-exports both, and the pinned json-cleanup-v1 prompt hash is unchanged. Nothing in this experiment
 imports routing or delivery code.
 
 Variant ID: `json-cleanup-v1`. The experiment's prompt module is

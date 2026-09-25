@@ -1253,8 +1253,10 @@ test('experiment modules never reach routing, processors, delivery, sensors, UI 
   ].map((name) => join(experimentDirectory, name));
   const allowed = new Set([
     'src/core/intent-request.ts',
-    // The json-cleanup-v1 wording shared with the live app: pure text, no I/O.
+    // The json-cleanup-v1 wording and response contract shared with the live
+    // app: pure modules without I/O.
     'src/core/transcription-cleanup/prompt.ts',
+    'src/core/transcription-cleanup/contract.ts',
     'src/evals/dataset.ts',
     'src/evals/errors.ts',
     'src/evals/pool.ts',

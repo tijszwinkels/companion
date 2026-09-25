@@ -28,7 +28,7 @@
  *
  * This module is pure text assembly: no I/O, no model calls.
  */
-import { TEXT_ROUTES, type TextRoute } from '../../evals/experiments/json-cleanup/contract.ts';
+import { TEXT_ROUTES, type TextRoute } from './contract.ts';
 
 /**
  * Name of this prompt wording. Recorded intent requests made with cleanup on
@@ -125,25 +125,40 @@ function countOccurrences(text: string, fragment: string): number {
   return text.split(fragment).length - 1;
 }
 
+/** Starts the intent list in the detector's bare-name prompt (buildPrompt). */
+const INTENT_LIST_MARKER = '\nPossible intents:\n';
+
 /**
  * Turn the detector's bare-name system prompt into the json-cleanup-v1 prompt,
  * exactly as the experiment transformed recorded prompts:
  *
- * - the two bare-name sentences are replaced (each must occur exactly once);
+ * - the two bare-name sentences are replaced;
  * - a newline and `cleanupResponseSection` are appended.
+ *
+ * Only the fixed header before the intent list is searched and changed. Intent
+ * instructions include agent-authored choice labels and descriptions, which
+ * could quote one of the sentences; that text must neither be rewritten nor
+ * make routing fail (review finding M1). Without such a quote the result is
+ * byte-identical to the experiment's whole-prompt replacement.
  *
  * `offeredIntents` are the names in the prompt, in order. The text intents
  * are the offered ones among the five text routes. Throws instead of guessing
- * when the base prompt does not contain each sentence exactly once (for
- * example, if a processor instruction repeated one of them).
+ * when the header does not contain each sentence exactly once.
  */
 export function withCleanupResponseFormat(
   bareNamePrompt: string,
   offeredIntents: readonly string[],
 ): string {
+  const listStart = bareNamePrompt.indexOf(INTENT_LIST_MARKER);
+  if (listStart < 0) {
+    throw Error('Intent prompt does not match the transcription cleanup template');
+  }
+  const header = bareNamePrompt.slice(0, listStart);
+  const intentList = bareNamePrompt.slice(listStart);
+
   if (
-    countOccurrences(bareNamePrompt, RECORDED_ANSWER_SENTENCE) !== 1 ||
-    countOccurrences(bareNamePrompt, RECORDED_IGNORE_SENTENCE) !== 1
+    countOccurrences(header, RECORDED_ANSWER_SENTENCE) !== 1 ||
+    countOccurrences(header, RECORDED_IGNORE_SENTENCE) !== 1
   ) {
     throw Error('Intent prompt does not match the transcription cleanup template');
   }
@@ -152,11 +167,11 @@ export function withCleanupResponseFormat(
     (TEXT_ROUTES as readonly string[]).includes(name),
   );
 
-  const replaced = bareNamePrompt
+  const replacedHeader = header
     .replace(RECORDED_ANSWER_SENTENCE, VARIANT_ANSWER_SENTENCE)
     .replace(RECORDED_IGNORE_SENTENCE, VARIANT_IGNORE_SENTENCE);
 
-  return replaced + '\n' + cleanupResponseSection(textIntents);
+  return replacedHeader + intentList + '\n' + cleanupResponseSection(textIntents);
 }
 
 // ---------------------------------------------------------------------------

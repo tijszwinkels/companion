@@ -52,12 +52,16 @@ so recordings and eval reports never mix two wordings under one name.
 For inferred routes the live request is exactly the experiment's
 transformation of today's bare-name request. The two bare-name sentences are
 replaced, the response section is appended and `max_tokens` becomes 512. A test
-checks this against `transformRecordedRequest` from the experiment.
+checks this against `transformRecordedRequest` from the experiment. Only the
+fixed prompt header is searched: an intent instruction (for example an agent's
+choice description) that quotes one of the sentences stays unchanged and does
+not break routing.
 
 ### Strict responses and fallbacks
 
 Responses are validated by the experiment's parser, unchanged
-(`parseExperimentResponse`, json-cleanup-v1 contract). The response must be one
+(`parseExperimentResponse` in `src/core/transcription-cleanup/contract.ts`,
+which the experiment re-exports; json-cleanup-v1 contract). The response must be one
 bare JSON object with exactly `intent` and `parameters`. Code fences, prose, a
 BOM, duplicate or extra keys, wrong types and unknown intents are invalid. A
 text route needs nonempty `text` without leading or trailing whitespace.
