@@ -26,6 +26,8 @@ export interface HarnessRun {
   screenshot: boolean;
   /** Pi receives `AgentSettings`; Claude Code receives `ClaudeCodeSettings`. */
   settings: AgentSettings | ClaudeCodeSettings;
+  /** Claude Code only: the previous turn's model after a picker switch. */
+  previousModel?: string;
   sessionTools?: { endpoint: string; token: string };
   signal: AbortSignal;
   emit: (message: AgentMessage) => void;
@@ -94,7 +96,7 @@ export async function harnessFixture(
     },
   };
 
-  // Deliberately no `models`: Claude Code offers no catalogue or picker.
+  // Deliberately no `models`: the Claude picker uses a fixed allowlist.
   const claude: ClaudeCodeAgentBackend = {
     id: 'harness-claude-fixture',
     label: 'Scripted Claude Code',
@@ -107,6 +109,7 @@ export async function harnessFixture(
         resume: request.resume,
         screenshot: request.prompt.screenshot !== undefined,
         settings: request.settings,
+        previousModel: request.previousModel,
         sessionTools: request.sessionTools,
         signal,
         emit,

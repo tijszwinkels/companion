@@ -19,6 +19,14 @@ QtObject {
   property bool modelsRequested: false
   property bool modelsLoading: false
   property string modelsError: ""
+  // The Claude picker's allowlist has its own request and state, so opening a
+  // Claude Code conversation never starts Pi discovery and a Pi failure cannot
+  // hide the Claude models. Same caching rules as Pi's catalogue.
+  property var claudeModelCatalog: ({models: []})
+  property bool claudeModelsLoaded: false
+  property bool claudeModelsRequested: false
+  property bool claudeModelsLoading: false
+  property string claudeModelsError: ""
   // A request in flight must not select a tab after the user changes pages or
   // hides/reopens this UI. Each client instance has an independent token.
   property string navigationToken: Date.now().toString() + "-" + Math.random().toString()
@@ -40,10 +48,24 @@ QtObject {
     root.controlRequested({action: "agent-models"})
   }
 
+  function ensureClaudeModels() {
+    if (!root.claudeModelsRequested) root.refreshClaudeModels()
+  }
+
+  function refreshClaudeModels() {
+    if (!root.controlsAvailable || root.claudeModelsLoading) return
+    root.claudeModelsRequested = true
+    root.claudeModelsLoading = true
+    root.claudeModelsError = ""
+    root.controlRequested({action: "claude-models"})
+  }
+
   function disconnectControls() {
     root.controlsAvailable = false
     root.modelsLoading = false
     root.modelsRequested = false
+    root.claudeModelsLoading = false
+    root.claudeModelsRequested = false
     root.invalidateNavigation()
   }
 
@@ -68,6 +90,13 @@ QtObject {
       if (!root.modelsError) {
         root.modelCatalog = message.result
         root.modelsLoaded = true
+      }
+    } else if ((message.type === "result" || message.type === "error") && message.action === "claude-models") {
+      root.claudeModelsLoading = false
+      root.claudeModelsError = message.type === "error" ? message.message : ""
+      if (!root.claudeModelsError) {
+        root.claudeModelCatalog = message.result
+        root.claudeModelsLoaded = true
       }
     }
   }

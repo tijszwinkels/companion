@@ -559,10 +559,14 @@ arrival order; do not replace the entire conversation with this partial array.
 Streaming updates are coalesced every 40 ms; a terminal status flushes pending
 messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
 Session metadata may carry `harness: "claude-code"` with
-`claudeCode: {model, effort}`; absence means a Pi conversation. The panel and
-standalone window then replace the model/effort pickers with that fixed model
-and skip Pi's model catalogue; `set-agent-model`/`set-agent-thinking` are refused
-for such a conversation. Clients that do not know these fields ignore them.
+`claudeCode: {model, effort}`; absence means a Pi conversation. `claudeCode.model`
+is the next turn's model. The panel and standalone window then list the
+`claude-models` result (exact Claude IDs) instead of Pi's models, never request
+Pi's `agent-models` for it, and show the fixed effort instead of an effort
+picker.
+`set-agent-model` with a listed Claude ID changes that conversation's next turn;
+other names are refused. `set-agent-thinking` is refused for such a conversation.
+Clients that do not know these fields ignore them.
 All messages share the ordered socket with snapshots. A newly seen session opens
 and selects its panel tab once; further updates and reconnects do not reopen it.
 Exception: a live-only `openInBackground: true` marks a tab an agent tool opened
@@ -602,6 +606,16 @@ The UI initially shows pinned models, profile default and any selected override;
 Show all models exposes the remaining catalogue without changing Pi's pins.
 Only an override excluded from the full successful catalogue is unavailable.
 Both menus pin rows and conversation until selection or cancellation.
+
+`{"action":"claude-models"}` returns `{models: string[], model: string}`: the
+listener's allowlist of exact Claude model IDs plus the configured
+`claudeCode.model` (`model`), for a Claude Code conversation's picker. It reads
+only the configuration file and starts no process, so it is independent of Pi
+discovery; a broken configuration returns an error. Clients request it on the
+first Claude Code conversation in each connection and on refresh from such a
+tab, with the same caching and retry rules as `agent-models`. An older listener
+rejects the action; the picker then offers only the conversation's current
+model.
 
 `{"action":"set-agent-model","id":"...","model":"provider/id"}` validates the
 available identifier, saves `modelOverride`, and returns `model-selected`.

@@ -247,7 +247,7 @@ test('Claude Code follow-ups queue in order and stop/close keep the harness', as
   assert.equal(saved.status, 'cancelled');
 });
 
-test('Claude Code conversations refuse Pi model and effort changes', async (context) => {
+test('Claude Code conversations refuse Pi model IDs and effort changes', async (context) => {
   const { sessions, view } = await harnessFixture(context, { configuration: claudeDefault });
   const id = sessions.start(frame, signal());
 
@@ -255,22 +255,30 @@ test('Claude Code conversations refuse Pi model and effort changes', async (cont
   await assert.rejects(sessions.setModel(id, 'configured/one', signal()), /still starting/);
   await sessions.idle();
 
+  // A Pi model ID is never reinterpreted as a Claude model.
   await assert.rejects(
     sessions.setModel(id, 'configured/one', signal()),
-    /Claude Code conversation keeps the model and effort/,
+    /configured\/one is not an available Claude model/,
   );
   await assert.rejects(
     sessions.setThinking(id, 'high', signal()),
-    /Claude Code conversation keeps the model and effort/,
+    /Claude Code conversation keeps the effort chosen when it started/,
   );
   assert.equal(view(id).modelOverride, undefined);
   assert.equal(view(id).thinkingOverride, undefined);
+  assert.deepEqual(view(id).claudeCode, { model: 'claude-sonnet-5', effort: 'medium' });
 
-  // Pi conversations keep their pickers, and the catalogue remains Pi's.
+  // Pi conversations keep their pickers; a Claude ID is not a Pi model.
   const pi = sessions.start(frame, signal(), 'coding', 'pi');
   await sessions.idle();
+  await assert.rejects(
+    sessions.setModel(pi, 'claude-opus-5-5', signal()),
+    /Choose an available configured Pi model/,
+  );
   await sessions.setModel(pi, 'configured/two', signal());
   assert.equal(view(pi).modelOverride, 'configured/two');
+  assert.equal(view(pi).harness, undefined);
+  assert.equal(view(pi).claudeCode, undefined);
   assert.deepEqual((await sessions.models(signal())).models, ['configured/one', 'configured/two']);
 });
 
@@ -325,7 +333,7 @@ test('the store round-trips old archives and validates the harness fields', asyn
   }
 });
 
-test('desktop clients receive the harness fields and a clear picker refusal', async (context) => {
+test('desktop clients receive the harness fields, the Claude catalogue and model choices', async (context) => {
   const { sessions } = await harnessFixture(context, { configuration: claudeDefault });
   const desktop = await desktopFixture(async () => Buffer.from(''), sessions);
   context.after(() => desktop.close());
@@ -353,10 +361,34 @@ test('desktop clients receive the harness fields and a clear picker refusal', as
     ),
   );
 
+  // The Claude list has its own action; Pi's catalogue does not carry it.
+  desktop.send({ action: 'claude-models' });
+  const catalog = await desktop.reply('claude-models');
+  assert.equal(catalog.type, 'result');
+  assert.deepEqual(catalog.result, {
+    models: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    model: 'claude-sonnet-5',
+  });
+  desktop.send({ action: 'agent-models' });
+  const piCatalog = await desktop.reply('agent-models');
+  assert.equal('claudeCode' in (piCatalog.result as unknown as Record<string, unknown>), false);
+
   desktop.send({ action: 'set-agent-model', id, model: 'configured/one' });
   const refused = await desktop.reply('set-agent-model');
   assert.equal(refused.type, 'error');
-  assert.match(refused.message ?? '', /Claude Code conversation keeps the model and effort/);
+  assert.match(refused.message ?? '', /configured\/one is not an available Claude model/);
+
+  desktop.send({ action: 'set-agent-model', id, model: 'claude-opus-5-5' });
+  assert.equal((await desktop.reply('set-agent-model')).result, 'model-selected');
+  await waitFor(() =>
+    desktop.messages.some(
+      (message) =>
+        message.type === 'agent-session' &&
+        message.session?.id === id &&
+        message.session.claudeCode?.model === 'claude-opus-5-5' &&
+        message.session.claudeCode.effort === 'medium',
+    ),
+  );
 });
 
 test('an unresolved Claude Code start retries while open but reopens as Pi', async (context) => {

@@ -200,6 +200,7 @@ export class DesktopServer {
           action === 'activity-history' ||
           action === 'agent-tool-page' ||
           action === 'agent-models' ||
+          action === 'claude-models' ||
           action === 'set-agent-model' ||
           action === 'set-agent-thinking' ||
           action === 'move-agent' ||
