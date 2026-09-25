@@ -40,7 +40,9 @@ Item {
   // Recognition can succeed even when delivery fails or is skipped after a
   // focus change. Keep the detected intent, but make that outcome explicit.
   // Preview also needs a label because it deliberately sends no keyboard input.
-  readonly property string resultLabel: (failed || outcome === "preview")
+  // A superseded phrase is not a failure: resumed speech replaced it, and the
+  // combined phrase follows as a newer entry.
+  readonly property string resultLabel: (failed || outcome === "preview" || outcome === "superseded")
     ? outcome.toUpperCase() + (intent ? " · " + intent : "")
     : intent || outcome.toUpperCase()
   readonly property string label: showingResult ? resultLabel : "PROCESSING"

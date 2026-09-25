@@ -65,8 +65,9 @@ can also lazily start it for direct callers. Every owner must call `close()` in
 
 Only one operation is allowed; overlapping calls fail immediately. SensorPipeline
 still owns one active plus two pending frames. Screenshots still start at speech
-end. No routing, prefix, prompt, delivery or 800 ms silence-boundary behavior is
-changed. The 31-second input bound, RMS silence threshold of 0.0005, punctuation
+end. No routing, prefix, prompt, delivery or 800 ms silence-boundary behavior was
+changed by the worker (the later [provisional endpoint](../../docs/speech-timing.md)
+changed the boundary separately). The 31-second input bound, RMS silence threshold of 0.0005, punctuation
 filter and 4000 UTF-16-code-unit transcript bound are preserved. The silence floor
 now applies to the strongest 128 ms window, so quiet short speech is not diluted
 by endpoint silence. It does not normalize or trim the model input. PCM16 conversion

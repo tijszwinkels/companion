@@ -86,3 +86,83 @@ for (const ending of ['silence', 'abort', 'failure', 'eof']) {
     }
   });
 }
+
+// Each scripted VAD run opens one candidate at frame 10. The listener must
+// report it, then either submit it or release the hold on every exit path:
+// rejection, EOF, pause and failure. A leaked hold would stall dispatch.
+const candidateEndings = {
+  rejected: { voiced: 2, expected: ['resumed', 'discarded'] },
+  accepted: { voiced: 6, expected: ['resumed', 'submit'] },
+  'eof-accepted': { voiced: Infinity, expected: ['resumed', 'submit'] },
+  'eof-rejected': { voiced: Infinity, startAtEnd: true, expected: ['resumed', 'discarded'] },
+  abort: { voiced: 6, stopAt: 13, expected: ['resumed', 'discarded'] },
+  failure: { voiced: 6, stopAt: 13, expected: ['resumed', 'discarded'] },
+} as const;
+
+for (const [ending, script] of Object.entries(candidateEndings)) {
+  test(`an open VAD candidate is always resolved for the pipeline (${ending})`, async (context) => {
+    const config = await loadConfig();
+    const vad = await VoiceActivityDetector.create(config.vadModel);
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const totalFrames = 157; // The five-second fixture, including its padded final frame.
+    const onset = 'startAtEnd' in script ? totalFrames - 2 : 10;
+    let frames = 0;
+
+    context.mock.method(vad, 'probability', async () => {
+      frames++;
+      if ('stopAt' in script && frames === script.stopAt) {
+        if (ending === 'abort') {
+          controller.abort();
+        } else {
+          throw Error('VAD failed');
+        }
+      }
+      return frames > onset && frames <= onset + script.voiced ? 0.95 : 0;
+    });
+
+    const pipeline = new SensorPipeline(
+      {
+        ...testSensors({
+          capture: async () => assert.fail('No capture expected'),
+          transcribe: async () => assert.fail('No transcription expected'),
+        }),
+        router: new UserSensorRouter(
+          { detector: testDetector({ detect: async () => assert.fail('No inference expected') }) },
+          () => {},
+        ),
+      },
+      () => {},
+      controller.signal,
+    );
+    context.mock.method(pipeline, 'submit', () => {
+      calls.push('submit');
+      return true;
+    });
+    context.mock.method(pipeline, 'speechResumed', () => {
+      calls.push('resumed');
+    });
+    context.mock.method(pipeline, 'speechDiscarded', () => {
+      // Releasing is idempotent; record only the first release after an onset.
+      if (calls.at(-1) === 'resumed') {
+        calls.push('discarded');
+      }
+    });
+
+    try {
+      await listen(vad, pipeline, () => {}, controller.signal, {
+        file: fileURLToPath(new URL('../fixtures/speech.wav', import.meta.url)),
+      }).catch((error) => {
+        if (!('stopAt' in script)) {
+          throw error;
+        }
+      });
+
+      assert.deepEqual(calls, script.expected);
+    } finally {
+      controller.abort();
+      await pipeline.idle();
+      await vad.close();
+    }
+  });
+}

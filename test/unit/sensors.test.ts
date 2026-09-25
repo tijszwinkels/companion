@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { pcmFrames } from '../../src/sensors/audio/capture.ts';
-import { Segmenter, encodeWav } from '../../src/sensors/audio/segmenter.ts';
+import {
+  CONTINUATION_GAP_MS,
+  Segmenter,
+  encodeWav,
+  type Segment,
+} from '../../src/sensors/audio/segmenter.ts';
 import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
 import { loadConfig } from '../../src/config.ts';
@@ -45,14 +50,15 @@ test('VAD keeps short-word speech with its lead-in and still waits for ending si
       // A clear onset can continue below the starting threshold, as before.
       assert.equal(segmenter.push(index === 0 ? 0.95 : 0.5, speech), undefined);
     }
-    for (let index = 0; index < 24; index++) {
+    // The provisional endpoint is 7 silent frames (224 ms): 6 frames are not enough.
+    for (let index = 0; index < 6; index++) {
       assert.equal(segmenter.push(0, silence), undefined);
     }
 
     const segment = segmenter.push(0, silence);
     assert.ok(segment, `${voicedFrames * 32} ms of speech must reach transcription`);
     assert.equal(segment.reason, 'silence');
-    assert.equal(segment.samples.length, (8 + voicedFrames + 25) * 512);
+    assert.equal(segment.samples.length, (8 + voicedFrames + 7) * 512);
     assert.deepEqual(segment.samples.slice(0, 8 * 512), new Float32Array(8 * 512));
     assert.deepEqual(segment.samples.slice(8 * 512, 9 * 512), speech);
     assert.equal(segmenter.finish(), undefined, 'The utterance is emitted only once');
@@ -77,7 +83,7 @@ test('VAD rejects isolated spikes without counting lead-in or trailing silence a
   }
 
   // Each rejected burst resets the counters. A subsequent short word is kept,
-  // including at EOF when there is no final 800 ms of silence.
+  // including at EOF when there is no final endpoint silence.
   for (let index = 0; index < 4; index++) {
     segmenter.push(0.95, sound);
   }
@@ -163,4 +169,49 @@ test('screenshot is cropped to the active window and rejects focus changes durin
   assert.equal((await captureActiveWindow(signal(), run)).window.address, '0xabc');
   changed = true;
   await assert.rejects(captureActiveWindow(signal(), run), /changed during capture/);
+});
+
+test('a segment carries the bounded pause after the previous candidate for merges', () => {
+  const speech = new Float32Array(512).fill(0.1);
+  assert.equal(CONTINUATION_GAP_MS, 800 - 224 - 256);
+
+  for (const pauseFrames of [5, 12, 30]) {
+    const segmenter = new Segmenter();
+    for (let index = 0; index < 6; index++) {
+      segmenter.push(0.95, speech);
+    }
+    let first: Segment | undefined;
+    for (let index = 0; index < 7; index++) {
+      first = segmenter.push(0, new Float32Array(512));
+    }
+    assert.ok(first);
+
+    // Number each pause frame so the lead-in's position can be verified.
+    for (let index = 0; index < pauseFrames; index++) {
+      segmenter.push(0, new Float32Array(512).fill((index + 1) / 1000));
+    }
+    for (let index = 0; index < 6; index++) {
+      segmenter.push(0.95, speech);
+    }
+    let second: Segment | undefined;
+    for (let index = 0; index < 7; index++) {
+      second = segmenter.push(0, new Float32Array(512));
+    }
+    assert.ok(second);
+
+    // The preroll keeps the last 8 frames; the lead-in keeps the earliest of the
+    // rest, up to 10 frames (320 ms). Together they restore pauses up to 800 ms.
+    const leadInFrames = Math.min(Math.max(pauseFrames - 8, 0), CONTINUATION_GAP_MS / 32);
+    assert.equal(second.leadIn.length, leadInFrames * 512);
+    if (leadInFrames) {
+      assert.equal(second.leadIn[0], Math.fround(1 / 1000));
+    }
+    const prerollFrames = Math.min(pauseFrames, 8);
+    assert.equal(second.samples.length, (prerollFrames + 6 + 7) * 512);
+    assert.equal(
+      second.samples[0],
+      Math.fround((pauseFrames - prerollFrames + 1) / 1000),
+      'Preroll follows the lead-in',
+    );
+  }
 });

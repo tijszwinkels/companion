@@ -10,7 +10,8 @@ import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { audioFrames } from '../../src/sensors/audio/capture.ts';
 import { listen } from '../../src/sensors/audio/listener.ts';
-import { encodeWav } from '../../src/sensors/audio/segmenter.ts';
+import { encodeWav, ENDPOINT_MS } from '../../src/sensors/audio/segmenter.ts';
+import { LEGACY_ENDPOINT_MS } from '../../src/core/utterance-continuation.ts';
 import { Transcriber, type TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import { VoiceActivityDetector } from '../../src/sensors/audio/vad.ts';
 import { recordingDate } from '../../src/desktop/artifacts.ts';
@@ -166,7 +167,9 @@ try {
 
     if (entry.name.startsWith('short-gain-0.01')) {
       assert.equal(diagnostics.length, 1);
-      assert.ok(diagnostics[0].rms < 0.0005, 'The old whole-buffer guard rejected this phrase');
+      // The 224 ms provisional endpoint leaves less trailing silence in the
+      // segment, so its whole-buffer RMS alone no longer shows the old defect.
+      // The legacy 800 ms segment shape is reproduced below by direct ASR.
       assert.ok(diagnostics[0].speechWindowRms >= 0.0005);
       assert.equal(diagnostics[0].outcome, delivered.length ? 'text' : 'empty');
 
@@ -178,18 +181,24 @@ try {
     }
 
     if (entry.name === 'short-gain-0.01-offset-0') {
-      for (const addedSilenceMs of [800, 3200]) {
+      // Restore the legacy endpoint's segment shape first: the old whole-buffer
+      // guard rejected exactly that segment, while the windowed guard keeps it.
+      const legacyShapeMs = LEGACY_ENDPOINT_MS - ENDPOINT_MS;
+      for (const addedSilenceMs of [legacyShapeMs, 800, 3200]) {
         const padded = new Float32Array(captured[0].length + addedSilenceMs * 16);
         padded.set(captured[0]);
         const text = await transcriber.transcribe(padded, signal, (diagnostic) => {
           assert.ok(diagnostic.outcome === 'text' || diagnostic.outcome === 'empty');
           assert.equal(diagnostic.speechWindowRms, diagnostics[0].speechWindowRms);
+          if (addedSilenceMs === legacyShapeMs) {
+            assert.ok(diagnostic.rms < 0.0005, 'The old whole-buffer guard rejected this shape');
+          }
           console.log(JSON.stringify({ name: 'extra-silence', addedSilenceMs, asr: diagnostic }));
         });
         // The guard is invariant to both paddings. At +3200 ms the current
         // native model returns empty text; that model limit must not be confused
         // with skipping inference. Accept correct words if the model improves.
-        if (addedSilenceMs === 800 || text) {
+        if (addedSilenceMs !== 3200 || text) {
           assert.equal(words(text), 'and says');
         }
       }

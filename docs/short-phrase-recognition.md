@@ -9,7 +9,18 @@ The guard now applies the same 0.0005 floor to the strongest contiguous 128 ms
 window. It still rejects digital silence and uniformly quieter input before
 starting a worker. This measurement does not change, normalize, pad or trim the
 captured audio. The 0.65/0.35 VAD probabilities, four-frame minimum, 256 ms preroll,
-800 ms endpoint, 30-second cap, queue bounds and native model/protocol are unchanged.
+800 ms endpoint, 30-second cap, queue bounds and native model/protocol were unchanged
+by this fix.
+
+**Update (2026-09-25):** the endpoint is now a 224 ms
+[provisional endpoint](speech-timing.md). A live segment therefore carries at
+most 224 ms of ending silence instead of 800 ms, and the defect's original
+segment shape (1376 ms, whole-buffer RMS 0.0004080) no longer arises from VAD
+alone: the same quiet phrase now closes as an 800 ms segment with whole-buffer
+RMS 0.000535. `npm run asr:short-phrases` reproduces the legacy shape explicitly
+by adding the missing 576 ms of silence and still checks that the windowed guard
+keeps it. The windowed guard remains necessary for longer quiet utterances and
+for direct callers.
 
 ## Reproduction and scope
 
@@ -33,9 +44,10 @@ Measured cases in `npm run asr:short-phrases`:
 | Normal-volume short phrase at offsets 0, 127 and 511 samples | All three reach the inert router with the expected words. |
 | Quiet phrase at offsets 0 and 511 | Both recover the expected words; both previously failed the RMS guard. |
 | Quiet phrase at offset 127 | Passes VAD (192 ms) and the corrected guard; native ASR returns empty. Explicitly reported as an acoustic limit. |
+| Same accepted quiet segment with 576 ms extra silence (the legacy 800 ms segment shape) | Whole-buffer RMS falls below the floor; the windowed guard is unchanged and native ASR returns the expected words. |
 | Same accepted quiet segment with 800 ms extra silence | Guard measurement is unchanged; native ASR still returns the expected words. |
 | Same accepted quiet segment with 3200 ms extra silence | Guard measurement is unchanged; native ASR returns empty. Guard invariance does not imply model invariance. |
-| Full five-second fixture, before and after short requests | Same words; direct ASR repeats the exact original transcript. |
+| Full five-second fixture, before and after short requests | Same words; direct ASR repeats the exact original transcript. Through the file-mode pipeline, its natural 640 ms pause between sentences now yields two requests with the same combined words (file input never merges). |
 | Digital silence and deterministic broadband noise | No VAD segment, ASR job or routed text. |
 
 The two empty-output characterizations allow correct words if a future model
@@ -71,7 +83,7 @@ transcript logging is unchanged; keep the complete CLI log private.
 | `asr-start` | Human-readable startup notice before loading the resident Parakeet worker. Per-utterance `asr` records remain JSON. |
 | `audio-levels` | Five-second aggregate (plus a final partial window): decoded duration, RMS, peak amplitude and peak VAD probability, including sounds that never start a candidate. Persistent low peak probability indicates no onset. |
 | `vad` / `too-short` | A candidate reached onset but had fewer than 128 ms of voiced frames; preroll and silence are excluded from that count. |
-| `vad` / `accepted` | Candidate duration, voiced duration, ending silence and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF. |
+| `vad` / `accepted` | Candidate duration, voiced duration, ending silence (224 ms for a silence endpoint) and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF. |
 | `audio-end` | `eof`, `cancelled` or `failed`; cancellation discards an unfinished candidate. Capture/framing errors still propagate with their existing error detail. |
 | `asr` / `silence` | Pre-ASR energy filter rejected the buffer. Includes whole-buffer and strongest-window RMS. No request was sent. |
 | `asr` / `empty` or `punctuation` | The worker answered, but its final result supplied no usable words. |
@@ -81,6 +93,7 @@ transcript logging is unchanged; keep the complete CLI log private.
 | `asr` / `error` | Worker startup, transport, native inference, timeout or cancellation failed. The accompanying existing error supplies the fixed description; no native stderr is forwarded. |
 | `error` / `transcription`, `capture`, `recording`, `routing` | Identifies the pipeline stage that failed. Errors in later stages are not speech-recognition failures. |
 | `dropped`, `filtered`, `intent`, delivery/outcome logs | Existing evidence for queue overload, missing text, classification and dispatch. |
+| `hold`, `release`, `superseded`, `fallback` | Provisional-endpoint continuation; see [speech timing](speech-timing.md#logs). |
 
 ASR and pipeline records carry the same job ID. VAD reports precede job creation
 and are ordered next to the existing utterance/submission logs. Capture summaries

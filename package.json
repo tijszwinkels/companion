@@ -12,6 +12,7 @@
     "asr:test": "cargo test --locked --manifest-path native/asr-worker/Cargo.toml",
     "asr:bench": "tsx test/bench/asr.ts",
     "asr:short-phrases": "tsx test/bench/short-phrases.ts",
+    "asr:speech-timing": "tsx test/bench/speech-timing.ts",
     "check": "tsc --noEmit",
     "eval:intents": "tsx src/evals/cli.ts",
     "eval:intent-cleanup": "tsx src/evals/experiments/json-cleanup/cli.ts",

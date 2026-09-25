@@ -15,7 +15,9 @@ export type UtteranceOutcome =
   | 'preview'
   | 'error'
   | 'cancelled'
-  | 'interrupted';
+  | 'interrupted'
+  // Resumed speech replaced this provisional attempt before any action.
+  | 'superseded';
 
 /** Delivery feedback describes acceptance, not eventual agent-turn completion. */
 export type UtteranceDestination = 'application' | 'agent-session' | 'new-agent-session';

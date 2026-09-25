@@ -19,6 +19,10 @@ import test from 'node:test';
 import { buildPrompt, IntentDetector } from '../../src/core/intent-detector.ts';
 import { restoreIntentRequest, snapshotIntentRequest } from '../../src/core/intent-request.ts';
 import { IntentDisabledError } from '../../src/core/delivery-error.ts';
+import {
+  UtteranceSupersededError,
+  type DispatchCommitment,
+} from '../../src/core/utterance-continuation.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import type { UserSensorFrame, UserSensorProcessor } from '../../src/core/frame.ts';
 import {
@@ -565,6 +569,57 @@ test('switch on: a detector cannot pick a shortcut-only route, even with valid c
 
   await assert.rejects(router.route(baseFrame, signal()), /Unregistered intent/);
   assert.deepEqual(delivered, []);
+});
+
+test('switch on: a superseded provisional attempt gets no cleanup record and no delivery', async () => {
+  // Speech timing: a commitment that rejects because resumed speech replaced
+  // the attempt. The merged attempt is a new history row, so this one must
+  // keep NULL cleanup columns instead of claiming "no-text".
+  const supersededCommitment: DispatchCommitment = {
+    async commit() {
+      throw new UtteranceSupersededError();
+    },
+  };
+
+  const inferred = cleanupRouter(
+    scriptedDetector(async () => ({
+      intent: 'SEND_TEXT_TO_APPLICATION',
+      text: 'Hello there.',
+      fallback: null,
+    })),
+    scriptedCleaner(async () => assert.fail('Inference must not call the cleaner')),
+  );
+  await assert.rejects(
+    inferred.router.route(baseFrame, signal(), supersededCommitment),
+    UtteranceSupersededError,
+  );
+  assert.deepEqual(inferred.delivered, []);
+  assert.deepEqual(inferred.records, []);
+
+  const shortcut = cleanupRouter(
+    scriptedDetector(async () => assert.fail('Shortcuts bypass inference')),
+    scriptedCleaner(async () => assert.fail('A superseded shortcut must not be cleaned')),
+  );
+  await assert.rejects(
+    shortcut.router.route(
+      { ...baseFrame, utterance: 'insert um hello' },
+      signal(),
+      supersededCommitment,
+    ),
+    UtteranceSupersededError,
+  );
+  assert.deepEqual(shortcut.delivered, []);
+  assert.deepEqual(shortcut.records, []);
+
+  // An ordinary failure while cleanup is on still records "no-text".
+  const failed = cleanupRouter(
+    scriptedDetector(async () => {
+      throw Error('Invalid cleanup intent response (invalid-json)');
+    }),
+    scriptedCleaner(async () => assert.fail('No cleaner call')),
+  );
+  await assert.rejects(failed.router.route(baseFrame, signal()), /invalid-json/);
+  assert.deepEqual(failed.records, [{ enabled: true, status: 'no-text' }]);
 });
 
 // ---------------------------------------------------------------------------
