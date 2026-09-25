@@ -73,6 +73,10 @@ function harness(
     transcript?: (samples: Float32Array) => string | undefined;
     intent?: (frame: UserSensorFrame) => string | undefined;
     prefixes?: string[];
+    /** An exact contextual label, such as a visible choice, routed without inference. */
+    exactLabel?: string;
+    /** A model client that ignores cancellation and still answers late. */
+    ignoresAbort?: boolean;
   } = {},
 ) {
   const controller = new AbortController();
@@ -106,6 +110,9 @@ function harness(
 
           const reply = deferred<string>();
           detections.push({ utterance: frame.utterance, answer: reply.resolve });
+          if (options.ignoresAbort) {
+            return reply.promise;
+          }
           const aborted = new Promise<never>((_resolve, reject) => {
             signal.addEventListener('abort', () => reject(signal.reason), { once: true });
           });
@@ -126,6 +133,20 @@ function harness(
     Object.assign(send, { prefixes: options.prefixes, acceptsEmptyPrefix: true });
   }
   send.subscribe(router);
+
+  if (options.exactLabel) {
+    const label = options.exactLabel;
+    router.registerScoped(() => [
+      {
+        name: 'CHOICE',
+        exactUtterance: label,
+        process: async (frame) => {
+          events.push(`dispatch ${frame.id}`);
+          dispatched.push({ id: frame.id, utterance: `CHOICE ${frame.utterance}` });
+        },
+      },
+    ]);
+  }
 
   const pipeline = new SensorPipeline(
     {
@@ -660,4 +681,151 @@ test('pausing the listener cancels a held attempt instead of leaving it waiting'
   assert.deepEqual(setup.dispatched, []);
   assert.equal(setup.outcomes.get(1), 'cancelled');
   assert.equal(setup.pipeline.failures, 0);
+});
+
+// Tijs (2026-09-25): "don't forget to cancel the LLM if a shortcut arrives".
+// While a provisional attempt's inference is pending, resumed speech merges and
+// the whole utterance routes afresh. Whatever route wins, the old inference is
+// aborted and can never dispatch; the new route acts exactly once.
+for (const route of ['prefix', 'exact label', 'inference'] as const) {
+  test(`a merge that routes to ${route} aborts the pending inference and dispatches once`, async () => {
+    const setup = harness({
+      prefixes: route === 'prefix' ? ['go to session'] : undefined,
+      exactLabel: route === 'exact label' ? 'Option two' : undefined,
+      // A late answer from the old request must still be unable to dispatch.
+      ignoresAbort: true,
+    });
+    setup.pipeline.submit(audio(0.1));
+    await settle();
+    setup.transcriptions[0].answer(
+      route === 'inference' ? 'Open the' : route === 'prefix' ? 'Go to' : 'Option',
+    );
+    await settle();
+    assert.equal(setup.detections.length, 1, 'The first attempt is waiting for inference');
+
+    setup.pipeline.speechResumed();
+    setup.pipeline.submit(audio(0.2));
+    await settle();
+    assert.equal(setup.detectSignals[0].aborted, true, 'The pending inference is cancelled');
+    assert.ok(setup.detectSignals[0].reason instanceof UtteranceSupersededError);
+
+    // The old model answers anyway, after it was cancelled.
+    setup.detections[0].answer('SEND');
+    await settle();
+    assert.deepEqual(setup.dispatched, []);
+    assert.equal(setup.outcomes.get(1), 'superseded');
+
+    const combined =
+      route === 'prefix'
+        ? 'Go to session three'
+        : route === 'exact label'
+          ? 'Option two'
+          : 'Open the browser';
+    setup.transcriptions[1].answer(combined);
+    await settle();
+    if (route === 'inference') {
+      setup.detections[1].answer('SEND');
+    }
+    await setup.pipeline.idle();
+
+    const expected =
+      route === 'prefix'
+        ? 'three'
+        : route === 'exact label'
+          ? 'CHOICE Option two'
+          : 'Open the browser';
+    // Exactly one dispatch, from the combined attempt: zero stale dispatches.
+    assert.deepEqual(setup.dispatched, [{ id: 2, utterance: expected }]);
+    assert.equal(
+      setup.detections.length,
+      route === 'inference' ? 2 : 1,
+      'No inference for a shortcut',
+    );
+  });
+}
+
+test('the shortcut quiet window is never a grace period for the cancelled inference', async () => {
+  const setup = harness({ prefixes: ['go to session'] });
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('Go to');
+  await settle();
+
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(audio(0.2));
+  await settle();
+  assert.equal(setup.detectSignals[0].aborted, true, 'Cancelled before the new attempt routes');
+
+  const routed = performance.now();
+  setup.transcriptions[1].answer('Go to session three');
+  await settle();
+
+  // The combined attempt waits in its 576 ms window with no dispatch at all.
+  assert.deepEqual(setup.dispatched, []);
+  assert.equal(setup.outcomes.get(1), 'superseded');
+
+  await setup.pipeline.idle();
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'three' }]);
+  assert.ok(performance.now() - routed >= SHORTCUT_QUIET_MS - 50);
+  assert.equal(setup.detections.length, 1, 'The shortcut needs no new inference');
+});
+
+test('when commitment wins the race, the resumed speech is a new request', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  // Inference completes and the router commits before the listener reports speech.
+  setup.detections[0].answer('SEND');
+  await settle();
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(audio(0.2));
+  await settle();
+
+  assert.equal(setup.logs.filter((entry) => entry.stage === 'hold').length, 0);
+  assert.deepEqual(setup.transcriptions[1].samples, [0.2], 'Never merged after commitment');
+  setup.transcriptions[1].answer('and close it');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await setup.pipeline.idle();
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.id),
+    [1, 2],
+  );
+});
+
+test('a paused listener releases an empty attempt waiting in its quiet window', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('');
+  await settle();
+  assert.deepEqual(setup.emptyClips, [], 'Still inside the quiet window');
+
+  const paused = performance.now();
+  setup.controller.abort();
+  await setup.pipeline.idle();
+
+  assert.ok(performance.now() - paused < SHORTCUT_QUIET_MS / 2, 'Pause ends the wait at once');
+  assert.deepEqual(setup.emptyClips, [[0.1]], 'Retained once, as a paused empty result was before');
+  assert.equal(setup.pipeline.failures, 0);
+});
+
+test('only the combined attempt is retained when both parts transcribe empty', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('');
+  await settle();
+
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(audio(0.2));
+  await settle();
+  setup.transcriptions[1].answer('');
+  await setup.pipeline.idle();
+
+  assert.deepEqual(setup.emptyClips, [[0.1, 0.2]], 'The superseded fragment is not retained');
+  assert.deepEqual(setup.dispatched, []);
 });
