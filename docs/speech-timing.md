@@ -17,6 +17,7 @@ the product constants), `src/core/pipeline.ts` (merge, supersession, cleanup) an
 | --- | --- | --- |
 | Provisional endpoint | `VAD_SETTINGS.silenceMs = 200` | **224 ms**: silence is counted in whole 32 ms frames; 7 frames is the smallest count ≥ 200 ms (6 frames = 192 ms). Exported as `ENDPOINT_MS`. |
 | Shortcut/empty quiet window | `SHORTCUT_QUIET_MS = 800 − ENDPOINT_MS` | **576 ms** after the provisional endpoint, i.e. the legacy 800 ms after speech end. Derived from both constants. |
+| Restored pause | `CONTINUATION_GAP_MS = 800 − 224 − 256` | **320 ms** of audio after the previous candidate that the preroll cannot hold (`Segment.leadIn`). |
 | Combined audio cap | `MAX_UTTERANCE_SAMPLES` | 30 s, the segmenter's existing `maxMs`. |
 
 The 0.65/0.35 VAD thresholds, the 128 ms voiced minimum, the 256 ms preroll and
@@ -39,8 +40,8 @@ the 30-second segment cap are unchanged.
      hold. The attempt continues with its own result; nothing is lost or
      repeated. Coughs, clicks and the speaker's own cues end here.
    - _Accepted_: `submit()` supersedes the held attempt and admits a new job
-     whose samples are the held attempt's raw samples followed by the new
-     segment. The whole utterance is transcribed again, then a fresh intent
+     whose samples are the held attempt's raw samples, the real pause, and the
+     new segment. The whole utterance is transcribed again, then a fresh intent
      LLM runs on that transcript. This repeats for further pauses.
 4. **Commitment.** `ProvisionalAttempt.commit()` is awaited immediately before
    the first externally visible decision: dispatch or skip on every router path,
@@ -83,6 +84,15 @@ shortcut and empty decisions wait for the quiet window.
   in the worker). An active job is the newest, so its replacement runs next.
   A replacement bypasses the two-waiting bound because it does not add work;
   the bound still applies to new requests.
+- **Pause audio.** A merge contains the previous segment (ending in 224 ms of
+  silence), the segment's lead-in (up to 320 ms of the audio that followed it)
+  and the new segment (starting with its 256 ms preroll). A pause of up to
+  800 ms is therefore restored exactly: the retranscribed audio is the segment
+  the legacy endpoint would have produced, apart from its shorter trailing
+  silence. A longer pause is shortened to 800 ms of real audio. The evaluation motivated this: with the pause
+  compressed to 480 ms, one merged clip lost six of its eight words. The
+  lead-in is ignored for new requests. A rejected burst between the parts
+  restarts the lead-in, so audio before the burst is not restored.
 - **Memory.** The combined buffer is copied when the continuation is admitted,
   before the old job's `finally` clears its samples. It is limited to 30 s
   (1.9 MB of Float32). A transcript chain retains only the latest usable text.
@@ -129,6 +139,83 @@ of 224 ms or more is now processed as several requests. The public fixture's
 natural 640 ms pause between its two sentences, one segment before, is now two.
 `npm run asr:speech-timing` paces frames in real time to reproduce live timing.
 
-## Evaluation
+## Measured comparison (2026-09-25)
 
-See [the measured comparison](#measured-comparison-2026-09-25) below.
+`npm run asr:speech-timing` (`test/bench/speech-timing.ts`) plays clips built
+from the public `test/fixtures/speech.wav` in real time through the production
+listener, real Silero, the pipeline and the local Parakeet worker. The intent LLM
+is simulated with a fixed, abortable latency of 300, 700 or 1500 ms; capture and
+the processor are inert. The identical script ran in a detached checkout of the
+previous revision (`c5b01c4`, 800 ms endpoint) and at `9c3d86f` (224 ms plus
+continuation), 94 runs each, sequentially on the same machine. Latency is
+measured from VAD speech end (the report time minus its trailing silence) to the
+processor call. Word error rate (WER) compares all dispatched text with Parakeet's
+transcript of the same speech without inserted pauses. No microphone, private
+audio, screenshot, model service or desktop input was used.
+
+Clips: the first sentence ("And says, how do I get to Dublin?") alone; with a
+pause of 150–1800 ms inserted after "And says," (comma) or mid-sentence at
+1264 ms; both fixture sentences with a pause of 150–1800 ms; the unmodified
+fixture (natural ~640 ms pause); the processing cue mixed in at the endpoint at
+gains 1, 0.3 and 0.1; and 64/96 ms bursts of loud speech 100/400 ms after the
+endpoint. The shortcut route uses a test prefix `and`.
+
+**Latency, speech end → dispatch (ms):**
+
+| Route | 800 ms | 224 ms | Change |
+| --- | --- | --- | --- |
+| LLM 300 ms, single sentence | 1329 | 726 | −603 |
+| LLM 700 ms, single sentence | 1680 | 1118 | −562 |
+| LLM 1500 ms, single sentence | 2487 | 1902 | −585 |
+| LLM, median over all one-request results (300 / 700 / 1500) | 1364 / 1756 / 2545 | 731 / 1149 / 1944 | about −600 |
+| Prefix shortcut (single and merged) | 1051 median | 801 (800–803) | −250 |
+
+Merged utterances pay one extra ASR pass (150–200 ms) after the continuation, so
+their latency is up to about 150 ms above a single utterance of the same length.
+
+**Which pauses were joined into one request** (pause inserted in the audio; VAD
+measures it roughly 50–100 ms longer):
+
+| Clip | 800 ms | 224 ms, LLM 300 | 224 ms, LLM 700 | 224 ms, LLM 1500 |
+| --- | --- | --- | --- | --- |
+| Comma pause | ≤ 750 | ≤ 450 | ≤ 900 | ≤ 1200 |
+| Two sentences | ≤ 600 | ≤ 450 | ≤ 900 | ≤ 1200 |
+| Natural fixture (~640 ms) | joined | split | joined | joined |
+| Prefix shortcut, comma pause | ≤ 750 | ≤ 750 (all latencies) | | |
+
+The join window is now the time until commitment: 224 ms plus ASR plus
+inference, instead of a fixed 800 ms. With a fast model, pauses of 600–750 ms
+that used to join are split into two requests (more false splits); with a slow
+model, pauses up to about 1.2 s join (more false joins of genuinely separate
+requests). Shortcuts keep the legacy window by design (D1). All merges produced
+the same words as the unpaused reference, except as listed below.
+
+**Recognition quality.** Mean WER over all 94 runs: 0.122 at 800 ms and 0.133 at
+224 ms. Single utterances, all merges, cues and bursts: WER 0 in both modes except
+the prefix payload (the stripped word `and` counts as an error in both). The
+differences come from splits and fragments:
+
+- Split sentences are slightly worse at the boundary: "And says," / "But how do I
+  get to Dublin?" (inserted "but"), in both modes when a split happens.
+- A mid-sentence cut produces fragments that Parakeet cannot read alone, even
+  after the padded retry. With pauses up to 600 ms, the empty-fragment
+  commitment rule merges them and the result is exact. At 750 ms (VAD: 864 ms)
+  both modes split; the 800 ms baseline still read "And says, how do I" with its
+  longer trailing silence, while the 224 ms fragment was empty (WER 0.5 vs
+  0.875). At 900 ms both modes lost the whole sentence.
+- Before restoring the real pause, a merge with the pause compressed to 480 ms
+  lost six of eight words once ("And says," only, at a 600 ms comma pause). With
+  the restored pause, all comma-pause merges are exact.
+
+**Races and cues.** Neither mode had a pipeline failure. In every run, dispatches
+≤ accepted segments − superseded attempts, i.e. no superseded attempt dispatched.
+47 attempts were superseded and retranscribed; ASR calls rose from 130 to 173
+(+33 %) over this pause-heavy matrix. The processing cue at all three gains never
+opened a candidate. A 64 ms burst 100 ms after the endpoint did not either; the
+other three bursts each held the attempt and released it, with the same text, one
+ASR pass and unchanged latency (1070–1115 ms at LLM 700).
+
+**Limits.** One public five-second recording, digitally inserted silence, a
+simulated LLM with constant latency and one machine. Live rooms have background
+noise, and real inference latency varies, which moves the join window. These
+numbers do not measure intent accuracy on partial transcripts.
