@@ -18,7 +18,9 @@ import { ENDPOINT_MS, SAMPLE_RATE, VAD_SETTINGS } from '../sensors/audio/segment
  *    fresh intent LLM on the whole transcript.
  *
  * The commitment point is `commit`, which the router awaits immediately before
- * its first externally visible decision (dispatch or skip). Once `commit`
+ * its first externally visible decision (dispatch or skip). The pipeline also
+ * awaits it before discarding an empty transcript, so an unreadable fragment
+ * can still be completed by the speech that follows it. Once `commit`
  * returns, the attempt can no longer be held or superseded, so later speech is
  * a new request and no side effect is ever undone or replayed.
  *
@@ -48,7 +50,11 @@ export const SHORTCUT_QUIET_MS = LEGACY_ENDPOINT_MS - ENDPOINT_MS;
  */
 export const MAX_UTTERANCE_SAMPLES = (SAMPLE_RATE * VAD_SETTINGS.maxMs) / 1000;
 
-/** Which kind of route is about to act; shortcuts wait for the legacy quiet window. */
+/**
+ * Which kind of decision is about to be made. Inference acts as soon as the
+ * model answers. Decisions without inference (prefix and exact-label shortcuts,
+ * and filtering an empty transcript) wait for the legacy quiet window.
+ */
 export type CommitRoute = 'inference' | 'shortcut';
 
 /** The router's view of an attempt: wait until acting on it is final. */

@@ -434,6 +434,11 @@ test('a waiting attempt is replaced in place before ASR, even when the queue is 
     'The replacement kept the queue bound: two waiting jobs',
   );
 
+  // Speech after a dropped segment must not merge past it into job 4.
+  const holds = setup.logs.filter((entry) => entry.stage === 'hold').length;
+  setup.pipeline.speechResumed();
+  assert.equal(setup.logs.filter((entry) => entry.stage === 'hold').length, holds);
+
   delivery.resolve();
   for (const text of ['Second', 'Third continued']) {
     await settle();
@@ -506,6 +511,35 @@ test('an empty first attempt has no fallback and is still filtered', async () =>
   assert.deepEqual(setup.dispatched, []);
   assert.deepEqual(setup.emptyClips, [[0.1]]);
   assert.ok(setup.logs.some((entry) => entry.stage === 'filtered'));
+});
+
+test('an unreadable fragment stays continuable and is retranscribed with its continuation', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+
+  // The decoder cannot read the first fragment alone. Nothing is filtered or
+  // retained yet: speech may still resume within the legacy quiet window.
+  setup.transcriptions[0].answer('');
+  await settle();
+  assert.deepEqual(setup.emptyClips, []);
+  assert.equal(
+    setup.logs.some((entry) => entry.stage === 'filtered'),
+    false,
+  );
+
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(audio(0.2));
+  await settle();
+  assert.equal(setup.outcomes.get(1), 'superseded');
+  assert.deepEqual(setup.transcriptions[1].samples, [0.1, 0.2]);
+  setup.transcriptions[1].answer('How do I get to Dublin');
+  await settle();
+  setup.detections[0].answer('SEND');
+  await setup.pipeline.idle();
+
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'How do I get to Dublin' }]);
+  assert.deepEqual(setup.emptyClips, [], 'A superseded fragment is not retained as empty');
 });
 
 test('a continuation beyond the 30-second cap becomes a separate request', async () => {

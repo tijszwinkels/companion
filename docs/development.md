@@ -33,6 +33,7 @@ milestones. User instructions can waive review for a particular change.
 | CLI assembly and config                                      | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                       |
 | Speech/typed observation queue, context and intent selection | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)     |
 | Capture, VAD and persistent ASR                              | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md) |
+| Provisional endpoint, speech continuation and commitment     | `src/core/utterance-continuation.ts`, `src/core/pipeline.ts`    | [Speech timing](speech-timing.md)                                                          |
 | Pi sessions, follow-up queue, choices, naming and tools      | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                 |
 | History, exact intent requests, feedback and deletion        | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
 | Shared Activity/conversation components                      | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
@@ -93,7 +94,9 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 For native-window changes, build with `npm run ui:build`, then run
 `npm run test:window`. See the native guide for Qt/WebEngine/LayerShellQt
 dependencies and the window-only option. ASR changes use `npm run asr:build`,
-`npm run asr:test` and the relevant prerecorded regressions.
+`npm run asr:test` and the relevant prerecorded regressions. Endpoint or
+continuation changes also use `npm run asr:speech-timing`, which replays public
+audio in real time (several minutes).
 
 The format scripts also traverse `widget-library/`. Avoid rewriting another
 agent's local work; report unrelated failures separately. Test fixtures should

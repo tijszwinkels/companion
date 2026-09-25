@@ -175,6 +175,9 @@ export class SensorPipeline implements InspectableModule {
     // and can never be dropped here.
     if (!replaces && this.pending.length >= 2) {
       this.log('dropped', 'Two utterances already queued; this utterance was not processed', id);
+
+      // Later speech must not skip over the dropped audio into an older attempt.
+      this.newest = undefined;
       return false;
     }
 
@@ -332,6 +335,22 @@ export class SensorPipeline implements InspectableModule {
         }
 
         if (!utterance.trim()) {
+          // An empty attempt takes no action, but it may be a fragment that the
+          // decoder cannot read alone, such as speech cut by a pause mid-word.
+          // Like a shortcut, it has no inference time in which speech can
+          // resume, so keep it continuable for the legacy quiet window. A
+          // continuation then retranscribes it together with the new audio.
+          if (!fallback && job.attempt) {
+            try {
+              await job.attempt.commit('shortcut', job.routeSignal);
+            } catch (error) {
+              if (job.attempt.superseded) {
+                throw error;
+              }
+              // Pause or shutdown: keep the existing empty-result handling.
+            }
+          }
+
           // Live candidates already passed VAD's voiced-duration gate. Reuse
           // its duration floor and the ASR energy floor for direct callers too.
           // Only a confirmed empty decoder response qualifies: silence,
