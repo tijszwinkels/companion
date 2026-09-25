@@ -13,7 +13,8 @@ the example is not the complete current intent list.
 
 ```ts
 const detector = new IntentDetector(config.llm);
-const router = new UserSensorRouter({ detector }, log, activity);
+const cleaner = new FixedRouteCleaner(config.llm);
+const router = new UserSensorRouter({ detector, cleaner }, log, activity, 'router', cleanup);
 
 new SendTextToApplication(log, preview, command, activity).subscribe(router);
 new EnterTextToApplication(log, preview, command, activity).subscribe(router);
@@ -52,6 +53,13 @@ The router still invokes its detector through an ordinary method call:
 ```ts
 const name = await this.dependencies.detector.detect(frame, intents, signal);
 ```
+
+With transcription cleanup on (`cleanup.enabled`, read once per utterance), the
+router calls `detector.detectWithCleanup(...)` instead, which returns the intent
+plus cleaned text from one request. For an explicit text-route shortcut it calls
+`this.dependencies.cleaner.clean(route, text, frame, signal)`. That method
+returns only text (cleaned or raw) and never a route. Off, neither is used. See
+[transcription cleanup](transcription-cleanup.md).
 
 The pipeline likewise calls `this.dependencies.screen.capture(...)`,
 `this.dependencies.transcriber.transcribe(...)`, and

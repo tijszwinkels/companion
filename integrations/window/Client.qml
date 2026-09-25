@@ -17,6 +17,8 @@ Item {
   property string pendingUtterance: ""
   property string pendingUtteranceId: ""
   property var intents: []
+  // {enabled: bool}, or null when the listener has no transcription cleanup.
+  property var transcriptionCleanup: null
   property var agentActions: ({})
   property string error: ""
   property string errorAction: ""
@@ -143,6 +145,7 @@ Item {
     root.history = []
     root.historyDeletionAvailable = false
     root.intents = []
+    root.transcriptionCleanup = null
     root.agentActions = ({})
     activity.disconnected()
   }
@@ -159,6 +162,8 @@ Item {
       root.textInputAvailable = message.textInputAvailable === true
       const intents = message.intents || []
       if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
+      const cleanup = message.transcriptionCleanup || null
+      if (JSON.stringify(cleanup) !== JSON.stringify(root.transcriptionCleanup)) root.transcriptionCleanup = cleanup
       const actions = message.agentActions || {}
       if (JSON.stringify(actions) !== JSON.stringify(root.agentActions)) root.agentActions = actions
       sessions.replace(message.sessions || [])

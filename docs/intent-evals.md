@@ -52,6 +52,9 @@ Export freezes the selected requests, labels, original predictions, and PNGs int
 a new private directory. It refuses existing directories. Missing, modified,
 duplicate-across-date-buckets screenshots and labels absent from the recorded
 registered intent list are skipped with reasons in `export-report.json` and stdout.
+Requests recorded while live transcription cleanup was on (version 2 records with
+`promptVariant`) use a different prompt and are skipped too; `inspect` counts them
+as `recordedWithCleanupPrompt` ([transcription cleanup](transcription-cleanup.md)).
 A label that names a historical dynamic intent remains valid if that name appears
 in the recorded system prompt. The exporter does not consult today's registry.
 

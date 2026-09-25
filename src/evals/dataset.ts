@@ -36,16 +36,30 @@ interface Row {
  * would otherwise surface V8's SyntaxError, which quotes part of the private
  * request text, in export reports, failure reports and stderr. Other restore
  * errors are fixed messages and pass through unchanged.
+ *
+ * Exact replay measures today's bare-name prompt. A request recorded while
+ * live transcription cleanup was on used a different prompt and output budget
+ * (a version 2 record naming its `promptVariant`), so it is refused here: the
+ * export lists it as skipped with this reason, and a dataset that contains
+ * one anyway fails before any model call instead of mixing two prompts.
  */
 function restoreRecordedRequest(serialized: string, png: Buffer): IntentRequestRecord {
+  let record: IntentRequestRecord;
   try {
-    return restoreIntentRequest(serialized, png);
+    record = restoreIntentRequest(serialized, png);
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new SafeEvalError('Recorded intent request is not valid JSON');
     }
     throw error;
   }
+
+  if (record.version !== 1) {
+    throw new SafeEvalError(
+      `Recorded with the ${record.promptVariant} cleanup prompt; exact replay uses only bare-name recordings`,
+    );
+  }
+  return record;
 }
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -81,12 +95,31 @@ function expectedIntent(row: Row): string | null {
   return row.actual_intent || (row.correct === 1 ? row.feedback_prediction : null);
 }
 
+/**
+ * Whether a stored request was made with live transcription cleanup on (a
+ * version 2 record). Reads only the version field; unreadable rows count as
+ * not cleanup so this summary never throws on a corrupted recording.
+ */
+function recordedWithCleanupPrompt(row: Row): boolean {
+  if (row.intent_request === null) {
+    return false;
+  }
+  try {
+    const record = JSON.parse(row.intent_request) as { version?: unknown };
+    return record.version === 2;
+  } catch {
+    return false;
+  }
+}
+
 export function inspectDatabase(path: string): Record<string, number> {
   const rows = readRows(path);
 
   return {
     total: rows.length,
     recorded: rows.filter((row) => row.intent_request !== null).length,
+    // Excluded from exact-replay export (see restoreRecordedRequest).
+    recordedWithCleanupPrompt: rows.filter((row) => recordedWithCleanupPrompt(row)).length,
     labeled: rows.filter((row) => row.correct !== null).length,
     usableLabels: rows.filter((row) => row.intent_request !== null && expectedIntent(row)).length,
     correctWithRequest: rows.filter((row) => row.correct === 1 && row.intent_request !== null)

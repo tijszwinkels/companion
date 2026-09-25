@@ -19,6 +19,7 @@ import type {
   ActivityHistoryRemoval,
 } from '../src/desktop/activity-history.ts';
 import type { AgentActions } from '../src/agents/choice-intents.ts';
+import type { TranscriptionCleanupSetting } from '../src/core/transcription-cleanup/setting.ts';
 
 export interface DesktopMessage {
   type: string;
@@ -112,7 +113,12 @@ export async function findArtifact(
 export async function desktopFixture(
   run: RunCommand,
   agents?: AgentSessions,
-  options: { mediaPause?: boolean; sounds?: boolean; preview?: boolean } = {},
+  options: {
+    mediaPause?: boolean;
+    sounds?: boolean;
+    preview?: boolean;
+    cleanup?: TranscriptionCleanupSetting;
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-regression-'));
   const path = join(directory, 'control.sock');

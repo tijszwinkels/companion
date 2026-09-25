@@ -20,6 +20,8 @@ import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
 import { IntentPreferences } from './intent-preferences.ts';
+import { CleanupPreference } from './cleanup-preference.ts';
+import type { TranscriptionCleanupSetting } from '../core/transcription-cleanup/setting.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
 import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
@@ -75,6 +77,7 @@ export class DesktopRuntime {
   private router?: UserSensorRouter;
   private pipeline?: Pick<SensorPipeline, 'submitText'>;
   private readonly intentPreferences: IntentPreferences;
+  private readonly cleanupPreference: CleanupPreference;
   private lastAgentActions?: AgentActions;
   private routingRevision = 0;
   private cachedAgentActions?: {
@@ -102,12 +105,17 @@ export class DesktopRuntime {
       sounds: boolean;
       agents?: AgentSessions;
       mediaPause?: boolean;
+      /** The live transcription cleanup switch; absent hides the UI control. */
+      cleanup?: TranscriptionCleanupSetting;
     },
     private readonly run: RunCommand = command,
   ) {
     this.history = new UtteranceHistory(options.database);
     this.intentPreferences = new IntentPreferences(
       join(dirname(options.database), 'disabled-intents.json'),
+    );
+    this.cleanupPreference = new CleanupPreference(
+      join(dirname(options.database), 'transcription-cleanup.json'),
     );
     this.databaseLock = new InstanceLock(options.database + '.lock');
     this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview, run);
@@ -206,6 +214,10 @@ export class DesktopRuntime {
       intentRequested: (id, request) => this.history.saveIntentRequest(id, request),
       intentRecognized: (id, intent) => {
         this.history.setIntent(id, intent);
+        this.server.broadcast();
+      },
+      transcriptionCleanup: (id, record) => {
+        this.history.saveCleanup(id, record);
         this.server.broadcast();
       },
       labelPrevious: (id, correct) => {
@@ -331,6 +343,13 @@ export class DesktopRuntime {
 
       await this.history.open();
 
+      // Apply the saved cleanup choice before the pipeline accepts any
+      // utterance. A missing file keeps cleanup off.
+      if (this.options.cleanup) {
+        this.options.cleanup.set(await this.cleanupPreference.load());
+        this.options.cleanup.on('change', this.cleanupChanged);
+      }
+
       // Prepare cues even when starting muted, so the desktop can enable them
       // later without restarting. Preview mode remains silent throughout.
       if (!this.options.preview) {
@@ -346,6 +365,10 @@ export class DesktopRuntime {
       throw error;
     }
   }
+
+  private readonly cleanupChanged = () => {
+    this.server.broadcast();
+  };
 
   private readonly pauseChanged = () => {
     if (this.pause.paused) {
@@ -390,6 +413,8 @@ export class DesktopRuntime {
       sessionControlsAvailable: Boolean(this.options.agents),
       previousSessions: this.options.agents?.previousSnapshot() ?? [],
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
+      // Null hides the switch (no cleanup support in this listener).
+      transcriptionCleanup: this.options.cleanup ? { enabled: this.options.cleanup.enabled } : null,
       agentActions: this.agentActions(),
     };
   }
@@ -717,6 +742,17 @@ export class DesktopRuntime {
         `${name} (${mode ?? 'both'}): ${enabled ? 'enabled' : 'disabled'}`,
       );
       return enabled ? 'intent-enabled' : 'intent-disabled';
+    }
+
+    if (request.action === 'set-transcription-cleanup') {
+      if (!this.options.cleanup || typeof request.enabled !== 'boolean') {
+        throw Error('Expected a boolean transcription cleanup state');
+      }
+      const cleanup = this.options.cleanup;
+      const enabled = request.enabled;
+      await this.cleanupPreference.set(enabled, () => cleanup.set(enabled));
+      this.log('cleanup-control', `Transcription cleanup ${enabled ? 'enabled' : 'disabled'}`);
+      return enabled ? 'cleanup-enabled' : 'cleanup-disabled';
     }
 
     if (request.action === 'media-playback') {
@@ -1071,6 +1107,7 @@ export class DesktopRuntime {
     this.ready = false;
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);
+    this.options.cleanup?.off('change', this.cleanupChanged);
 
     try {
       await this.server.close();

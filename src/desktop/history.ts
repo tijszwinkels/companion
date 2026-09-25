@@ -5,6 +5,11 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
 import type { Screenshot, UserSensorFrame } from '../core/frame.ts';
+import type {
+  CleanupFallbackReason,
+  TranscriptionCleanupRecord,
+  TranscriptionCleanupStatus,
+} from '../core/transcription-cleanup/record.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
 import { artifactPath, removeArtifacts, saveArtifact } from './artifacts.ts';
 
@@ -16,10 +21,39 @@ export interface IntentFeedback {
 export interface HistoryEntry {
   id: string;
   observedAt: number;
+  /** The raw ASR transcript (or typed Activity text), always unchanged. */
   utterance: string;
   application: string | null;
   intent: string | null;
   outcome: UtteranceOutcome | 'processing' | 'delivering';
+  /**
+   * Transcription cleanup for this utterance: null when unknown (older rows,
+   * rows written by an older checkout, or utterances that never reached
+   * routing), otherwise whether the switch was on.
+   */
+  cleanupEnabled: boolean | null;
+  /** Null while cleanup was off or unknown. */
+  cleanupStatus: TranscriptionCleanupStatus | null;
+  /** The cleaned text a text route received instead of `utterance`. */
+  cleanedText: string | null;
+  /** Why a text route received the raw text although cleanup was on. */
+  cleanupFallback: CleanupFallbackReason | null;
+}
+
+/** Row shape before booleans are decoded; SQLite stores them as integers. */
+type HistoryRow = Omit<HistoryEntry, 'cleanupEnabled'> & { cleanupEnabled: number | null };
+
+// Every entry query selects the same columns in the same order.
+const ENTRY_COLUMNS = `id, observed_at AS observedAt, transcript AS utterance,
+      application, recognized_intent AS intent, outcome,
+      cleanup_enabled AS cleanupEnabled, cleanup_status AS cleanupStatus,
+      cleaned_text AS cleanedText, cleanup_fallback AS cleanupFallback`;
+
+function decodeEntry(row: HistoryRow): HistoryEntry {
+  return {
+    ...row,
+    cleanupEnabled: row.cleanupEnabled === null ? null : row.cleanupEnabled === 1,
+  };
 }
 
 /**
@@ -108,6 +142,24 @@ export class UtteranceHistory {
 
       if (utteranceColumns.some((column) => column.name === 'audio_path')) {
         this.database.exec('ALTER TABLE utterances DROP COLUMN audio_path');
+      }
+
+      // Transcription cleanup, stored beside the unchanged raw transcript.
+      // These nullable columns are additive and deliberately do not change
+      // the schema version: older checkouts keep opening this database and
+      // simply ignore them (their new rows read as "unknown"), so switching
+      // back to a build without cleanup needs no migration. They live in the
+      // utterances row itself, so deleting an utterance also deletes them.
+      const cleanupColumns: [string, string][] = [
+        ['cleanup_enabled', 'INTEGER CHECK (cleanup_enabled IN (0, 1))'],
+        ['cleanup_status', "TEXT CHECK (cleanup_status IN ('cleaned', 'fallback', 'no-text'))"],
+        ['cleaned_text', 'TEXT'],
+        ['cleanup_fallback', 'TEXT'],
+      ];
+      for (const [name, definition] of cleanupColumns) {
+        if (!utteranceColumns.some((column) => column.name === name)) {
+          this.database.exec(`ALTER TABLE utterances ADD COLUMN ${name} ${definition}`);
+        }
       }
 
       // No rows are inferred from delivery, recovery, or lack of complaints.
@@ -206,22 +258,19 @@ export class UtteranceHistory {
   }
 
   snapshot(limit = 100): HistoryEntry[] {
-    return this.db
+    const rows = this.db
       .prepare(
-        `SELECT id, observed_at AS observedAt, transcript AS utterance,
-      application, recognized_intent AS intent, outcome FROM utterances
+        `SELECT ${ENTRY_COLUMNS} FROM utterances
       ORDER BY observed_at DESC, rowid DESC LIMIT ?`,
       )
-      .all(limit) as unknown as HistoryEntry[];
+      .all(limit) as unknown as HistoryRow[];
+    return rows.map((row) => decodeEntry(row));
   }
 
   find(id: string): HistoryEntry | undefined {
-    return this.db
-      .prepare(
-        `SELECT id, observed_at AS observedAt, transcript AS utterance,
-      application, recognized_intent AS intent, outcome FROM utterances WHERE id = ?`,
-      )
-      .get(id) as unknown as HistoryEntry | undefined;
+    const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM utterances WHERE id = ?`).get(id) as
+      HistoryRow | undefined;
+    return row ? decodeEntry(row) : undefined;
   }
 
   /**
@@ -306,6 +355,38 @@ export class UtteranceHistory {
     if (id) {
       this.db.prepare('UPDATE utterances SET recognized_intent = ? WHERE id = ?').run(intent, id);
     }
+  }
+
+  /**
+   * Store what transcription cleanup did for an active utterance. The router
+   * reports once per routed utterance; the first record is kept. The raw
+   * transcript column is never touched.
+   */
+  saveCleanup(frameId: number, record: TranscriptionCleanupRecord): void {
+    const id = this.frameEntries.get(frameId);
+    if (!id) {
+      return;
+    }
+
+    let status: TranscriptionCleanupStatus | null = null;
+    let cleanedText: string | null = null;
+    let fallback: CleanupFallbackReason | null = null;
+    if (record.enabled) {
+      status = record.status;
+      if (record.status === 'cleaned') {
+        cleanedText = record.text;
+      }
+      if (record.status === 'fallback') {
+        fallback = record.reason;
+      }
+    }
+
+    this.db
+      .prepare(
+        `UPDATE utterances SET cleanup_enabled = ?, cleanup_status = ?, cleaned_text = ?,
+        cleanup_fallback = ? WHERE id = ? AND cleanup_enabled IS NULL`,
+      )
+      .run(Number(record.enabled), status, cleanedText, fallback, id);
   }
 
   /** The first prepared request is immutable, including after failures/feedback. */

@@ -91,6 +91,36 @@ Item {
       compare(request.enabled, true)
     }
 
+    function test_transcription_cleanup_switch_is_hidden_without_support_and_follows_the_backend() {
+      const host = createTemporaryObject(viewComponent, scene)
+      const panel = host.panel
+      const controls = findChild(findChild(panel, "fullActivityStatus"), "intentControls")
+      const chip = findChild(controls, "transcriptionCleanupSwitch")
+      compare(chip.visible, false, "An older listener without cleanup shows no switch")
+      compare(chip.height, 0)
+
+      let requests = []
+      panel.transcriptionCleanupRequested.connect(function(enabled) { requests.push(enabled) })
+      panel.transcriptionCleanup = {enabled: false}
+      verify(chip.visible)
+      compare(chip.cleanupEnabled, false)
+      compare(findChild(controls, "transcriptionCleanupState").text, "Cleanup · Off · raw transcript")
+      showItem(host, chip)
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [true])
+      compare(chip.cleanupEnabled, false, "Wait for the backend acknowledgement")
+
+      panel.transcriptionCleanup = {enabled: true}
+      compare(chip.cleanupEnabled, true)
+      verify(chip.active)
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [true, false])
+
+      panel.online = false
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [true, false], "Offline clicks send nothing")
+    }
+
     function test_context_changes_update_labels_without_disabling_the_intent() {
       const host = createTemporaryObject(viewComponent, scene)
       const controls = findChild(findChild(host, "fullActivityStatus"), "intentControls")

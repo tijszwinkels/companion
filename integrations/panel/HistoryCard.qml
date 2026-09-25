@@ -10,6 +10,12 @@ Rectangle {
   required property real observedAt
   required property string feedback
   required property string actualIntent
+  // Transcription cleanup. `utterance` stays the raw transcript; a text route
+  // that received cleaned text shows it below, and a fallback shows why the
+  // raw transcript was used. Empty when cleanup was off or unknown.
+  property string cleanedText: ""
+  property string cleanupStatus: ""
+  property string cleanupFallback: ""
   required property var intents
   required property bool online
   property bool historyDeletionAvailable: false
@@ -59,8 +65,8 @@ Rectangle {
     visible: false
     textFormat: TextEdit.PlainText
   }
-  function copy() {
-    copyBuffer.text = root.utterance;
+  function copy(text) {
+    copyBuffer.text = text;
     copyBuffer.selectAll();
     copyBuffer.copy();
     copyBuffer.text = "";
@@ -146,6 +152,19 @@ Rectangle {
     }
 
     Text {
+      objectName: "historyCleanup"
+      width: parent.width
+      visible: root.cleanupStatus === "cleaned" || root.cleanupStatus === "fallback"
+      text: root.cleanupStatus === "cleaned" ? "Cleaned: " + root.cleanedText : "Cleanup fell back to the raw transcript (" + root.cleanupFallback + ")"
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.cleanupStatus === "cleaned" ? "#8fcf9f" : root.muted
+      font.family: root.fontFamily
+      font.pixelSize: (root.cleanupStatus === "cleaned" ? 13 : 10) * root.textScale
+      lineHeight: 1.3
+    }
+
+    Text {
       objectName: "historyDetectedIntent"
       width: parent.width
       horizontalAlignment: Text.AlignRight
@@ -180,6 +199,10 @@ Rectangle {
               title: copied.running ? "Copied" : "Copy"
             },
             {
+              action: "copy-cleaned",
+              title: "Copy cleaned"
+            },
+            {
               action: "paste",
               title: "Insert"
             },
@@ -199,17 +222,20 @@ Rectangle {
           PanelAction {
             required property var modelData
             objectName: "history-action-" + modelData.action
+            visible: modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned"
             text: modelData.title
             foreground: root.foreground
             selection: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.12)
             fontFamily: root.fontFamily
             unit: root.unit
             textScale: root.textScale
-            enabled: root.actionsVisible && (modelData.action === "copy" || root.online) && (!["correct", "incorrect"].includes(modelData.action) || root.intent !== "")
+            enabled: root.actionsVisible && (modelData.action === "copy" || modelData.action === "copy-cleaned" || root.online) && (!["correct", "incorrect"].includes(modelData.action) || root.intent !== "")
             onTriggered: {
               const action = modelData.action;
               if (action === "copy")
-                root.copy();
+                root.copy(root.utterance);
+              else if (action === "copy-cleaned")
+                root.copy(root.cleanedText);
               else if (action === "incorrect") {
                 root.choosingIntent = !root.choosingIntent;
                 if (root.feedback !== "incorrect")

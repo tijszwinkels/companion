@@ -306,6 +306,43 @@ Item {
       compare(findChild(card, "history-action-paste").enabled, false);
     }
 
+    function test_cleaned_text_appears_below_the_raw_transcript_with_its_own_copy_action() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const cleaned = entry(1, null);
+      cleaned.utterance = "um so open the uh design";
+      cleaned.cleanupEnabled = true;
+      cleaned.cleanupStatus = "cleaned";
+      cleaned.cleanedText = "Open the design.";
+      cleaned.cleanupFallback = null;
+      const fallback = entry(2, null);
+      fallback.cleanupEnabled = true;
+      fallback.cleanupStatus = "fallback";
+      fallback.cleanedText = null;
+      fallback.cleanupFallback = "timeout";
+      state.update("run", cleaned);
+      state.update("run", fallback);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      showHistory(host);
+
+      const card = findChild(host, "history-utterance-1");
+      compare(findChild(card, "historyUtterance").text, "um so open the uh design", "Raw text stays the main text");
+      const line = findChild(card, "historyCleanup");
+      verify(line.visible);
+      compare(line.text, "Cleaned: Open the design.");
+      mouseMove(card, 10, 10);
+      tryCompare(card, "actionsVisible", true);
+      verify(findChild(card, "history-action-copy-cleaned").visible);
+
+      const other = findChild(host, "history-utterance-2");
+      compare(findChild(other, "historyCleanup").text, "Cleanup fell back to the raw transcript (timeout)");
+      mouseMove(other, 10, 10);
+      tryCompare(other, "actionsVisible", true);
+      compare(findChild(other, "history-action-copy-cleaned").visible, false);
+    }
+
     function test_collapsing_keeps_history_and_shortcuts_are_on_intent_cards() {
       const state = createTemporaryObject(stateComponent, scene);
       state.reset("run");

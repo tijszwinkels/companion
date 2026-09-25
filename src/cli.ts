@@ -2,6 +2,8 @@ import { parseArgs, styleText, stripVTControlCharacters } from 'node:util';
 
 import { loadConfig } from './config.ts';
 import { IntentDetector } from './core/intent-detector.ts';
+import { FixedRouteCleaner } from './core/transcription-cleanup/fixed-route-cleaner.ts';
+import { TranscriptionCleanupSetting } from './core/transcription-cleanup/setting.ts';
 import { UserSensorRouter } from './core/router.ts';
 import { Ignore } from './processors/ignore.ts';
 import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
@@ -157,6 +159,11 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let external: ExternalSessionServer | undefined;
   const pause = new PauseControl();
 
+  // Automatic transcription cleanup: off unless the desktop loads a saved
+  // "on" choice (~/companion/transcription-cleanup.json) or the user clicks
+  // the switch. Without the desktop service it stays off.
+  const cleanup = new TranscriptionCleanupSetting();
+
   if (values.paused) {
     pause.toggle();
   }
@@ -178,6 +185,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         sounds: !values['no-sounds'] && !values.preview,
         mediaPause: values.text === undefined && !values.wav,
         agents,
+        cleanup,
       });
       await desktop.start();
     }
@@ -198,7 +206,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
     const detector = new IntentDetector(config.llm, undefined, 'detector', activity);
-    const router = new UserSensorRouter({ detector }, log, activity);
+    const cleaner = new FixedRouteCleaner(config.llm);
+    const router = new UserSensorRouter({ detector, cleaner }, log, activity, 'router', cleanup);
     new SendTextToApplication(log, values.preview, command, activity).subscribe(router);
     new EnterTextToApplication(log, values.preview, command, activity).subscribe(router);
     new Ignore(log, activity).subscribe(router);

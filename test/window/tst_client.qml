@@ -103,6 +103,15 @@ TestCase {
     compare(reveals.count, 1)
     verify(!backend.requests.some(request => request.action === "send-agent"))
   }
+  function test_transcription_cleanup_state_follows_snapshots_and_clears_on_disconnect() {
+    snapshot([])
+    compare(client.transcriptionCleanup, null, "Older listeners send no cleanup state")
+    backend.received({type: "state", protocol: 1, ready: true, sessions: [],
+      activitySessionId: "activity", activityHistoryCount: 0, transcriptionCleanup: {enabled: true}})
+    compare(client.transcriptionCleanup.enabled, true)
+    backend.disconnected()
+    compare(client.transcriptionCleanup, null)
+  }
   function test_hidden_completion_and_saved_reopen() {
     snapshot([session("a"), session("b")])
     client.panelVisible = true

@@ -41,6 +41,7 @@ milestones. User instructions can waive review for a particular change.
 | Widget tools, durable state and browser views                | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
 | Native WebEngine profile/module                              | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
 | Application text delivery                                    | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
+| Automatic transcription cleanup (optional, default off)      | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -55,7 +56,8 @@ focus and skips ASR; it creates no WAV. Conversation composer text instead goes
 straight to that conversation's follow-up queue. Preserve this distinction.
 
 Permanent intent wording lives in `src/processors/`; system assembly and user
-JSON live in `src/core/intent-detector.ts`. Scoped choice instructions live in
+JSON live in `src/core/intent-detector.ts`. Transcription cleanup wording lives
+in `src/core/transcription-cleanup/prompt.ts`. Scoped choice instructions live in
 `src/agents/choice-intents.ts`. For an actual past classifier request, use
 `utterances.intent_request` and its screenshot reference as described in the
 [protocol guide](../src/desktop/README.md). Reassembling today's instructions is
@@ -68,6 +70,7 @@ call the classifier. Old design proposals contain historical prompt snapshots.
 | `~/companion/agents/companion-agent.json`                                   | Pi executable and coding model/thinking; nested `quickQuestion` model/thinking. Reloaded for each turn. |
 | Pi's provider configuration and credentials                                 | Providers used by Pi; quick questions require its local-Qwen provider to exist.                         |
 | `~/companion/disabled-intents.json`                                         | Independent persisted inference/shortcut switches.                                                      |
+| `~/companion/transcription-cleanup.json`                                    | Transcription cleanup switch; missing means off.                                                        |
 
 Do not edit literal user-approved prompts as part of an unrelated refactor.
 The live panel transcript currently has limits of **800 bubbles** and

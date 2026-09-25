@@ -20,6 +20,7 @@ Item {
   property bool animationsEnabled: true
   property var history: []
   property var intents: []
+  property var transcriptionCleanup: null
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
@@ -55,6 +56,7 @@ Item {
 
   property string shortcutLabel: ""
   signal intentEnabledRequested(string name, bool enabled, string mode)
+  signal transcriptionCleanupRequested(bool enabled)
   signal historyActionRequested(string action, string id, var value)
 
   property alias contentY: activityScroll.contentY
@@ -220,7 +222,9 @@ Item {
         fontFamily: root.fontFamily
         unit: root.unit
         textScale: root.textScale
+        transcriptionCleanup: root.transcriptionCleanup
         onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
+        onTranscriptionCleanupRequested: enabled => root.transcriptionCleanupRequested(enabled)
       }
 
       CollapsibleSection {

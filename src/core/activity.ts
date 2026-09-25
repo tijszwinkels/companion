@@ -1,6 +1,7 @@
 import type { DeliveryControl } from './delivery-control.ts';
 import type { InteractionContext, Screenshot } from './frame.ts';
 import type { TranscriptionDiagnostic } from '../sensors/audio/transcriber.ts';
+import type { TranscriptionCleanupRecord } from './transcription-cleanup/record.ts';
 
 /** Results describe actual delivery, rather than just the model's chosen intent. */
 export type UtteranceOutcome =
@@ -63,6 +64,12 @@ export interface Activity {
   /** Persist the finalized model request before transport; absent for shortcuts. */
   intentRequested?(id: number, serializedRequest: string): void;
   intentRecognized?(id: number, intent: string): void;
+  /**
+   * Exactly once per routed utterance: whether transcription cleanup was on
+   * and, for a text route, the cleaned text or why the raw text was used.
+   * Text routes report before dispatch; the raw transcript is `transcribed`.
+   */
+  transcriptionCleanup?(id: number, record: TranscriptionCleanupRecord): void;
   /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
   labelPrevious?(id: number, correct: boolean): string | undefined;
   outcome?(id: number, outcome: UtteranceOutcome, destination?: UtteranceDestination): void;

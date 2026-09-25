@@ -3,9 +3,15 @@ import type { Model, UserMessage } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
 
 import type { Intent, UserSensorFrame } from './frame.ts';
-import type { Detector } from './router.ts';
+import type { CleanupDetection, Detector } from './router.ts';
 import type { Activity } from './activity.ts';
 import { snapshotIntentRequest } from './intent-request.ts';
+import {
+  CLEANUP_PROMPT_VARIANT,
+  withCleanupResponseFormat,
+  type CleanupPromptVariant,
+} from './transcription-cleanup/prompt.ts';
+import { interpretInferredResponse } from './transcription-cleanup/response.ts';
 
 export interface LlmConfig {
   baseUrl: string;
@@ -15,6 +21,52 @@ export interface LlmConfig {
 
 // An intent name needs very little output; this bounds accidental long replies.
 export const MAX_OUTPUT_TOKENS = 32;
+
+// With transcription cleanup on, the reply also carries the cleaned text. This
+// is the output budget the json-cleanup-v1 experiment was measured with.
+export const CLEANUP_OUTPUT_TOKENS = 512;
+
+/**
+ * The local model description shared by the intent detector and the
+ * explicit-shortcut cleanup call. `maxTokens` is the only difference between
+ * the bare-name requests and the cleanup requests.
+ */
+export function localModel(config: LlmConfig, maxTokens: number): Model<'openai-completions'> {
+  return {
+    id: config.model,
+    name: config.model,
+    provider: 'companion',
+    api: 'openai-completions',
+    baseUrl: config.baseUrl,
+    // The model supports reasoning, but each agent below sets thinking to off.
+    reasoning: true,
+    input: ['text', 'image'],
+    contextWindow: 131072,
+    maxTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    compat: {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      maxTokensField: 'max_tokens',
+      thinkingFormat: 'qwen-chat-template',
+    },
+  };
+}
+
+/**
+ * Production transport for one local-model request: deterministic sampling,
+ * no retries, and the output budget of the model description it is given.
+ */
+export const localStream: StreamFn = (model, context, options) =>
+  streamSimple(model as Model<'openai-completions'>, context, {
+    ...options,
+    apiKey: process.env.COMPANION_LLM_API_KEY || 'local',
+    temperature: 0,
+    maxTokens: model.maxTokens,
+    maxRetries: 0,
+  });
 
 /** Compose the user's prompt with the instructions from subscribed processors. */
 export function buildPrompt(intents: readonly Intent[]): string {
@@ -56,12 +108,21 @@ export function frameMessage(frame: UserSensorFrame): UserMessage {
   };
 }
 
-/** Runs one Pi turn and returns only a validated, registered intent name. */
+/**
+ * Runs one Pi turn and returns only a validated, registered intent name.
+ *
+ * With transcription cleanup on, `detectWithCleanup` sends the json-cleanup-v1
+ * variant of the same request instead, and returns the intent together with
+ * the cleaned text from the same single call.
+ */
 export class IntentDetector implements Detector {
   readonly label = 'Intent detector';
   readonly dependencies = {};
 
+  /** Bare-name requests: unchanged when transcription cleanup is off. */
   private readonly model: Model<'openai-completions'>;
+  /** json-cleanup-v1 requests: the same model with the larger output budget. */
+  private readonly cleanupModel: Model<'openai-completions'>;
   private readonly stream: StreamFn;
 
   constructor(
@@ -70,45 +131,78 @@ export class IntentDetector implements Detector {
     readonly id = 'detector',
     private readonly activity: Activity = {},
   ) {
-    this.model = {
-      id: config.model,
-      name: config.model,
-      provider: 'companion',
-      api: 'openai-completions',
-      baseUrl: config.baseUrl,
-      // The model supports reasoning, but each agent below sets thinking to off.
-      reasoning: true,
-      input: ['text', 'image'],
-      contextWindow: 131072,
-      maxTokens: MAX_OUTPUT_TOKENS,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      compat: {
-        supportsStore: false,
-        supportsDeveloperRole: false,
-        supportsReasoningEffort: false,
-        supportsUsageInStreaming: false,
-        maxTokensField: 'max_tokens',
-        thinkingFormat: 'qwen-chat-template',
-      },
-    };
+    this.model = localModel(config, MAX_OUTPUT_TOKENS);
+    this.cleanupModel = localModel(config, CLEANUP_OUTPUT_TOKENS);
 
     // An injected stream makes transport tests possible without a live model.
     // Production uses the configured endpoint and does not retry failed frames.
-    this.stream =
-      stream ??
-      ((_model, context, options) =>
-        streamSimple(this.model, context, {
-          ...options,
-          apiKey: process.env.COMPANION_LLM_API_KEY || 'local',
-          temperature: 0,
-          maxTokens: MAX_OUTPUT_TOKENS,
-          maxRetries: 0,
-        }));
+    this.stream = stream ?? localStream;
   }
 
   async detect(
     frame: UserSensorFrame,
     intents: readonly Intent[],
+    signal: AbortSignal,
+  ): Promise<string> {
+    const reply = await this.requestReply(frame, buildPrompt(intents), this.model, null, signal);
+    const name = reply.trim();
+
+    if (!intents.some((intent) => intent.name === name)) {
+      throw Error(`Invalid intent response: ${JSON.stringify(name)}`);
+    }
+
+    return name;
+  }
+
+  /**
+   * One json-cleanup-v1 request: the intent and, for a text route, the cleaned
+   * text. Never repairs a response:
+   *
+   * - fully valid: the intent and its cleaned text (null for no-text intents);
+   * - a valid offered text route whose text broke the contract: the intent
+   *   with `text: null` and the reason, so the caller uses the raw ASR text;
+   * - anything else has no usable intent and throws, like any other
+   *   detection failure today. The error names only a fixed reason code,
+   *   never the response, which can echo private dictation.
+   */
+  async detectWithCleanup(
+    frame: UserSensorFrame,
+    intents: readonly Intent[],
+    signal: AbortSignal,
+  ): Promise<CleanupDetection> {
+    const offered = intents.map((intent) => intent.name);
+    const systemPrompt = withCleanupResponseFormat(buildPrompt(intents), offered);
+
+    // The raw reply is validated exactly as received: surrounding characters
+    // other than JSON whitespace make it invalid instead of being trimmed away.
+    const reply = await this.requestReply(
+      frame,
+      systemPrompt,
+      this.cleanupModel,
+      CLEANUP_PROMPT_VARIANT,
+      signal,
+    );
+    const decision = interpretInferredResponse(reply, offered);
+
+    if (decision.kind === 'no-intent') {
+      throw Error(`Invalid cleanup intent response (${decision.reason})`);
+    }
+    if (decision.kind === 'raw-text') {
+      return { intent: decision.intent, text: null, fallback: decision.reason };
+    }
+    return { intent: decision.intent, text: decision.text, fallback: null };
+  }
+
+  /**
+   * Send one frame with the given system prompt and return the complete text
+   * reply, untrimmed. `promptVariant` marks recorded requests that do not use
+   * the bare-name prompt (null for today's bare-name request).
+   */
+  private async requestReply(
+    frame: UserSensorFrame,
+    systemPrompt: string,
+    model: Model<'openai-completions'>,
+    promptVariant: CleanupPromptVariant | null,
     signal: AbortSignal,
   ): Promise<string> {
     // Either application shutdown or the per-frame deadline can stop inference.
@@ -118,8 +212,8 @@ export class IntentDetector implements Detector {
     // A fresh Pi agent keeps each request to one frame, with no growing history.
     const agent = new Agent({
       initialState: {
-        model: this.model,
-        systemPrompt: buildPrompt(intents),
+        model,
+        systemPrompt,
         thinkingLevel: 'off',
         tools: [],
       },
@@ -134,6 +228,7 @@ export class IntentDetector implements Detector {
               payload,
               frame.screenshot.png,
               this.config.baseUrl,
+              promptVariant,
             );
             this.activity.intentRequested!(frame.id, record);
           }
@@ -161,16 +256,7 @@ export class IntentDetector implements Detector {
         throw Error('Expected only an intent name');
       }
 
-      const name = reply.content
-        .map((part) => (part.type === 'text' ? part.text : ''))
-        .join('')
-        .trim();
-
-      if (!intents.some((intent) => intent.name === name)) {
-        throw Error(`Invalid intent response: ${JSON.stringify(name)}`);
-      }
-
-      return name;
+      return reply.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
     } finally {
       deadline.removeEventListener('abort', abort);
 

@@ -16,7 +16,10 @@ Item {
   required property string fontFamily
   property real unit: 1
   property real textScale: unit
+  // {enabled: bool} from the listener, or null when it has no cleanup support.
+  property var transcriptionCleanup: null
   signal intentEnabledRequested(string name, bool enabled, string mode)
+  signal transcriptionCleanupRequested(bool enabled)
 
   // Older listeners cannot honor independent switches; avoid silently changing
   // both modes if this UI was refreshed before its backend was restarted.
@@ -120,6 +123,92 @@ Item {
       fontFamily: root.fontFamily
       unit: root.unit
       textScale: root.textScale
+
+      // One switch for automatic transcription cleanup of every text route.
+      // Like the route chips, its state follows the backend snapshot only.
+      Rectangle {
+        id: cleanupChip
+        readonly property bool available: root.transcriptionCleanup !== null && root.transcriptionCleanup !== undefined
+        readonly property bool cleanupEnabled: available && root.transcriptionCleanup.enabled === true
+        readonly property bool active: root.online && cleanupEnabled
+        readonly property color cleanupColor: "#8fcf9f"
+        readonly property string stateText: cleanupEnabled ? "On · text routes get cleaned-up text" : "Off · raw transcript"
+        objectName: "transcriptionCleanupSwitch"
+        visible: available
+        width: parent.width
+        height: visible ? cleanupLabels.height + 28 * root.unit : 0
+        radius: 10 * root.unit
+        color: active ? Qt.rgba(cleanupColor.r, cleanupColor.g, cleanupColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
+        border.color: cleanupMouse.containsMouse ? cleanupColor : active ? Qt.rgba(cleanupColor.r, cleanupColor.g, cleanupColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
+
+        Rectangle {
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: 14 * root.unit
+          width: 6 * root.unit
+          height: width
+          radius: width / 2
+          color: cleanupChip.active ? cleanupChip.cleanupColor : root.muted
+          opacity: cleanupChip.active ? 1 : 0.4
+        }
+
+        Column {
+          id: cleanupLabels
+          x: 14 * root.unit
+          anchors.verticalCenter: parent.verticalCenter
+          width: Math.max(0, parent.width - 40 * root.unit)
+          spacing: 6 * root.unit
+          Text {
+            width: parent.width
+            text: "Clean up transcriptions"
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: cleanupChip.active ? root.foreground : root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 13 * root.textScale
+          }
+          Text {
+            objectName: "transcriptionCleanupState"
+            width: parent.width
+            text: "Cleanup · " + cleanupChip.stateText
+            wrapMode: Text.WordWrap
+            color: cleanupChip.active ? cleanupChip.cleanupColor : root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.textScale
+          }
+        }
+        MouseArea {
+          id: cleanupMouse
+          anchors.fill: parent
+          enabled: root.online && cleanupChip.available
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
+        }
+        ToolTip {
+          id: cleanupTip
+          visible: cleanupMouse.containsMouse
+          delay: 400
+          text: "Removes filler words and fixes punctuation before text is typed or sent.\nHistory keeps the raw transcript next to the cleaned text."
+          background: Rectangle {
+            color: root.selection
+            border.color: root.muted
+            radius: 4 * root.unit
+          }
+          contentItem: Text {
+            text: cleanupTip.text
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.textScale
+          }
+        }
+        Accessible.role: Accessible.CheckBox
+        Accessible.name: "Clean up transcriptions: " + cleanupChip.stateText
+        Accessible.checkable: true
+        Accessible.checked: cleanupChip.cleanupEnabled
+        Accessible.onToggleAction: if (root.online && cleanupChip.available)
+          root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
+      }
 
       GridLayout {
         width: parent.width
