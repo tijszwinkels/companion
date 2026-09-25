@@ -117,10 +117,13 @@ claude --print --verbose --input-format stream-json --output-format stream-json
      clamping, and the conversation's first turn shows a notice that the model
      ignores effort levels. Any other effort is drift.
    - On drift the turn fails and no prompt is sent.
-   - After a picker switch (`previousModel`), and only once the model is
-     confirmed, a notice says “Switched from A to B. Claude Code continues
-     the same conversation history.” The effort notice above is then repeated
-     for the first turn with a model that reports `null`.
+   - After a picker switch (`previousModel`), and only once both checks
+     pass, a notice says “Now using B (previous turn: A). Claude Code
+     continues the same conversation history.” The effort notice above is
+     then repeated for the first turn with a model that reports `null`.
+     `previousModel` is the model Companion requested for the previous turn
+     (`AgentSession.model`), even if that turn failed. A retry of a failed
+     switch with the same model therefore shows no second notice.
 4. Send one stream-json user message: the prompt text, plus (with a
    screenshot) `Captured window: {…}` and a base64 PNG image block.
 5. Verify the `system/init` event: the session ID, the model, permission
@@ -243,10 +246,12 @@ model ID is never reinterpreted, and nothing moves between harnesses.
 - **Catalogue.** `models.ts` holds a small allowlist of exact IDs
   (`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
   `claude-haiku-4-5-20251001`). The configured `claudeCode.model` is added
-  when it is not listed. `AgentSessions.models()` returns them as
-  `claudeCode: {models, model, effort}` next to Pi's catalogue, in the same
-  `agent-models` response. The conversation's current model is always shown
-  and accepted, even when it is not listed.
+  when it is not listed. `AgentSessions.claudeModels()` returns them as
+  `{models, model}` (`model` is the configured default) through the desktop
+  action `claude-models`. It only reads the configuration file and starts
+  neither Pi nor Claude Code, so a Claude tab never runs Pi discovery and a
+  Pi failure cannot hide the Claude list. The conversation's current model
+  is always shown and accepted, even when it is not listed.
 - **Validation.** `setModel` accepts only an exact listed ID or the current
   model. Aliases (`opus`), whitespace, case changes, `provider/` IDs, unknown
   names and the empty string are refused with a visible error, and nothing
@@ -257,9 +262,13 @@ model ID is never reinterpreted, and nothing moves between harnesses.
 - **Effort.** There is no Claude effort picker. A switch keeps the effort the
   conversation started with, and `get_settings` must still report it. Every
   listed model therefore accepts all five levels or none (`null`, accepted
-  with a notice). Models that silently lower a level (for example Opus 4.6
-  without `xhigh`) must not be listed; the startup check would report drift.
-  An effort picker is not needed for switching models, so none was added.
+  with a notice). Models that silently lower a level must not be listed; the
+  startup check would report drift. Verified with no-cost `get_settings`
+  probes (CLI 2.1.280, 2026-09-25), each listed ID with each of the five
+  levels: Fable 5.1, Opus 5.5 and Sonnet 5 report every level unchanged, and
+  Haiku 4.5 reports `null` for all. As a control, `claude-opus-4-6` reports
+  `xhigh` as `high`, so it is not listed. An effort picker is not needed for
+  switching models, so none was added.
 - **Persistence.** The choice replaces `claudeCode.model` in the archive. The
   shape stays `{model, effort}`, so older archives need no migration and an
   older listener reading a newer archive resumes with the chosen model.
@@ -273,11 +282,8 @@ model ID is never reinterpreted, and nothing moves between harnesses.
   The open menu is pinned to its conversation, so a tab change cannot
   retarget it.
 - **Compatibility.** An older UI keeps showing its fixed summary. A newer UI
-  on an older listener lists only the current model, and the listener
-  refuses changes.
-- **Limitation.** The Claude list arrives in the same response as Pi's
-  catalogue. If Pi discovery fails, the Claude menu shows only the current
-  model until the refresh succeeds.
+  on an older listener gets an error for `claude-models`, lists only the
+  current model, and the listener refuses changes.
 
 ## Pi-vs-Claude capability matrix
 

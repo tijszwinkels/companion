@@ -17,8 +17,9 @@ Item {
       property bool answerModels: true
       property bool initiallySelected: true
       property bool controlsEnabled: true
-      property var availableCatalog: ({models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local",
-        claudeCode: {models: ["claude-opus-5-5", "claude-sonnet-5"], model: "claude-opus-5-5", effort: "high"}})
+      property var availableCatalog: ({models: ["configured/alternate"], coding: "configured/coding", quickQuestion: "configured/local"})
+      property bool answerClaudeModels: true
+      property var claudeCatalog: ({models: ["claude-opus-5-5", "claude-sonnet-5"], model: "claude-opus-5-5"})
       Panel.AgentSessionState {
         id: state
         controlsAvailable: setup.controlsEnabled
@@ -28,6 +29,8 @@ Item {
           setup.requests = setup.requests.concat([request])
           if (request.action === "agent-models") {
             if (setup.answerModels) controlReceived({type: "result", action: request.action, result: setup.availableCatalog})
+          } else if (request.action === "claude-models") {
+            if (setup.answerClaudeModels) controlReceived({type: "result", action: request.action, result: setup.claudeCatalog})
           } else if (request.action === "move-agent") {
             const ids = sessions.map(entry => entry.id).filter(id => id !== request.id)
             ids.splice(request.beforeId ? ids.indexOf(request.beforeId) : ids.length, 0, request.id)
@@ -134,14 +137,19 @@ Item {
     function modelRequests(setup) {
       return setup.requests.filter(request => request.action === "agent-models").length
     }
+    function claudeModelRequests(setup) {
+      return setup.requests.filter(request => request.action === "claude-models").length
+    }
     function test_claude_code_conversation_chooses_claude_models_for_its_next_turn() {
-      const setup = createTemporaryObject(fixture, parent, {initiallySelected: false})
+      const setup = createTemporaryObject(fixture, parent, {initiallySelected: false, answerModels: false})
       const claude = Object.assign(setup.entry("claude"), {profile: "coding", harness: "claude-code",
         model: "claude-opus-5-5", claudeCode: {model: "claude-opus-5-5", effort: "high"}})
       setup.state.replace([claude, setup.entry("pi")])
       setup.state.select("claude")
       verify(waitForRendering(setup.panel))
-      tryVerify(() => modelRequests(setup) === 1, 1000, "The Claude list arrives with the shared catalogue")
+      tryVerify(() => claudeModelRequests(setup) === 1)
+      wait(20)
+      compare(modelRequests(setup), 0, "A Claude Code conversation never starts Pi discovery")
       const footer = findChild(setup.panel, "sessionModelFooter")
       const picker = findChild(setup.panel, "sessionModelPicker")
       verify(footer.visible)
@@ -166,11 +174,29 @@ Item {
       tryCompare(picker, "currentText", "claude-sonnet-5")
       compare(findChild(setup.panel, "claudeSessionEffort").text, "high · fixed", "The effort is unchanged")
 
-      // Pi conversations keep the Pi pickers and reuse the loaded catalogue.
+      // A Pi conversation loads Pi's catalogue; its failure stays on Pi tabs.
       setup.state.select("pi")
+      tryVerify(() => modelRequests(setup) === 1)
+      setup.state.controlReceived({type: "error", action: "agent-models", message: "Fixture Pi discovery failed"})
       verify(findChild(setup.panel, "sessionThinkingPicker").visible)
       compare(findChild(setup.panel, "claudeSessionEffort").visible, false)
       verify(picker.currentText.indexOf("Use quick-question default") === 0)
+      compare(footer.statusText, "Fixture Pi discovery failed")
+
+      // Back on the Claude tab: the cached Claude list is still usable, the Pi
+      // error is not shown, and neither catalogue is requested again.
+      setup.state.select("claude")
+      compare(footer.statusText, "")
+      verify(picker.enabled)
+      compare(picker.count, 2)
+      wait(20)
+      compare(claudeModelRequests(setup), 1)
+      compare(modelRequests(setup), 1)
+
+      // Refresh on a Claude tab reloads only the Claude list.
+      const refresh = findChild(setup.panel, "refreshSessionModels")
+      mouseClick(refresh, refresh.width / 2, refresh.height / 2)
+      compare(claudeModelRequests(setup), 2)
       compare(modelRequests(setup), 1)
     }
     function test_model_catalog_reused_across_selection_and_reconnect() {

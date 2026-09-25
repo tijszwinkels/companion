@@ -410,9 +410,14 @@ class ClaudeTurn {
     }
 
     const applied = object(object(response.response).applied);
+    // Notices follow both checks, so a turn that fails its startup check
+    // never claims to have switched model.
     this.verifyAppliedModel(applied.model);
+    const effortIgnored = this.verifyAppliedEffort(applied.effort);
     this.announceModelSwitch();
-    this.verifyAppliedEffort(applied.effort);
+    if (effortIgnored) {
+      this.announceIgnoredEffort();
+    }
 
     clearTimeout(startupTimer);
     this.promptSent = true;
@@ -440,7 +445,10 @@ class ClaudeTurn {
    * After the user chose another model for this resumed conversation, and
    * Claude Code has confirmed it, say so once in the transcript. Claude Code
    * keeps the same native session and its history; the new model also sees
-   * that earlier turns came from another model.
+   * that earlier turns came from another model. `previousModel` is the model
+   * Companion requested for the previous turn, which may have failed, so the
+   * notice names it as the previous turn's model rather than claiming that
+   * model answered.
    */
   private announceModelSwitch(): void {
     const previousModel = this.request.previousModel;
@@ -452,7 +460,7 @@ class ClaudeTurn {
       chatMessage(
         'model-notice',
         'notice',
-        `Switched from ${previousModel} to ${this.settings.model}. ` +
+        `Now using ${this.settings.model} (previous turn: ${previousModel}). ` +
           `Claude Code continues the same conversation history.`,
       ),
     );
@@ -461,14 +469,12 @@ class ClaudeTurn {
   /**
    * The effort must match exactly, with one deliberate exception: a model
    * without effort support reports null. Claude Code then ignores the
-   * setting, which is accepted without clamping. The user is told so on the
-   * first turn with that model: the conversation's first turn, or the first
-   * turn after switching to it. Any other difference is drift and fails the
-   * turn.
+   * setting, which is accepted without clamping; this returns true. Any other
+   * difference is drift and fails the turn.
    */
-  private verifyAppliedEffort(appliedEffort: unknown): void {
+  private verifyAppliedEffort(appliedEffort: unknown): boolean {
     if (appliedEffort === this.settings.effort) {
-      return;
+      return false;
     }
 
     if (appliedEffort !== null) {
@@ -476,7 +482,15 @@ class ClaudeTurn {
         `Claude Code selected effort ${String(appliedEffort)}; expected ${this.settings.effort}`,
       );
     }
+    return true;
+  }
 
+  /**
+   * Tell the user that the effort has no effect, on the first turn with a
+   * model that ignores it: the conversation's first turn, or the first turn
+   * after switching to that model.
+   */
+  private announceIgnoredEffort(): void {
     const firstTurnWithModel = !this.request.resume || this.request.previousModel !== undefined;
     if (firstTurnWithModel) {
       this.emit(

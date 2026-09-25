@@ -232,7 +232,7 @@ test('a resumed turn with another model announces the switch only once Claude Co
   assert.deepEqual(
     switched.filter((message) => message.kind === 'notice').map((message) => message.text),
     [
-      'Switched from claude-opus-5-5 to claude-sonnet-5. Claude Code continues the same conversation history.',
+      'Now using claude-sonnet-5 (previous turn: claude-opus-5-5). Claude Code continues the same conversation history.',
     ],
   );
   assert.equal(latest(switched).at(-1)?.text, '## Answer\n**42**');
@@ -251,7 +251,7 @@ test('a resumed turn with another model announces the switch only once Claude Co
   );
   const notices = toNoEffort.filter((message) => message.kind === 'notice');
   assert.equal(notices.length, 2);
-  assert.match(notices[0].text, /^Switched from claude-sonnet-5 to claude-no-effort\./);
+  assert.match(notices[0].text, /^Now using claude-no-effort \(previous turn: claude-sonnet-5\)\./);
   assert.match(notices[1].text, /claude-no-effort does not support effort levels/);
 
   // Later turns with the same model are silent again.
@@ -266,7 +266,24 @@ test('a resumed turn with another model announces the switch only once Claude Co
     false,
   );
 
-  // A switch Claude Code does not confirm fails before any notice or prompt.
+  // A switch Claude Code does not confirm fails before any notice or prompt,
+  // whether the model or the conversation's effort drifted.
+  const effortDrifted: AgentMessage[] = [];
+  await assert.rejects(
+    backend.run(
+      {
+        ...first,
+        settings: { ...settings, model: 'claude-effort-drift' },
+        resume: true,
+        previousModel: 'claude-no-effort',
+      },
+      signal(),
+      (message) => effortDrifted.push(message),
+    ),
+    /Claude Code selected effort low; expected high/,
+  );
+  assert.deepEqual(effortDrifted, []);
+
   const drifted: AgentMessage[] = [];
   await assert.rejects(
     backend.run(

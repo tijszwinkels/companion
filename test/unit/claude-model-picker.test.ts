@@ -5,8 +5,13 @@ import test from 'node:test';
 
 import { claudeCodeModelCatalog, claudeCodeModelChoices } from '../../src/agents/claude/models.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
+import { AgentSessions } from '../../src/agents/sessions.ts';
 import { defaultAgentSettings, defaultClaudeCodeSettings } from '../../src/agents/settings.ts';
-import type { ClaudeCodeSettings } from '../../src/agents/types.ts';
+import type {
+  AgentBackend,
+  ClaudeCodeAgentBackend,
+  ClaudeCodeSettings,
+} from '../../src/agents/types.ts';
 import { deferred, frame, signal } from '../helpers.ts';
 import { harnessFixture } from '../harness-fixture.ts';
 
@@ -283,4 +288,62 @@ test('an older archive without any choice keeps working and accepts one', async 
   });
   assert.equal(runs[1].previousModel, 'claude-sonnet-5');
   assert.equal(view(id).model, 'claude-fable-5-1');
+});
+
+test('the Claude catalogue and choices work while Pi discovery fails', async (context) => {
+  const { directory, sessions: fixtureSessions } = await harnessFixture(context, {
+    configuration: claudeDefault,
+  });
+  await fixtureSessions.close();
+
+  let discoveries = 0;
+  const pi: AgentBackend = {
+    id: 'failing-pi-discovery',
+    label: 'Pi without discovery',
+    dependencies: {},
+    async models() {
+      discoveries++;
+      throw Error('Synthetic Pi discovery failure');
+    },
+    async run() {},
+  };
+  const models: string[] = [];
+  const claude: ClaudeCodeAgentBackend = {
+    id: 'recording-claude',
+    label: 'Recording Claude Code',
+    dependencies: {},
+    async run(request) {
+      models.push(request.settings.model);
+    },
+  };
+  const sessions = new AgentSessions({ pi, 'claude-code': claude }, () => {}, directory);
+  context.after(() => sessions.close());
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+
+  await assert.rejects(sessions.models(signal()), /Synthetic Pi discovery failure/);
+  assert.deepEqual(await sessions.claudeModels(), {
+    models: [...claudeCodeModelChoices],
+    model: 'claude-sonnet-5',
+  });
+  await sessions.setModel(id, 'claude-opus-5-5', signal());
+  sessions.followUp(id, 'Next', signal());
+  await sessions.idle();
+  assert.deepEqual(models, ['claude-sonnet-5', 'claude-opus-5-5']);
+  assert.equal(discoveries, 1, 'only the explicit Pi catalogue request ran discovery');
+});
+
+test('a closing or closed Claude conversation refuses a model choice', async (context) => {
+  const { sessions, directory } = await harnessFixture(context, { configuration: claudeDefault });
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+
+  const removing = sessions.remove(id);
+  await assert.rejects(sessions.setModel(id, 'claude-opus-5-5', signal()), /unavailable/);
+  await removing;
+  await assert.rejects(sessions.setModel(id, 'claude-opus-5-5', signal()), /unavailable/);
+  assert.deepEqual((await savedJson(directory, id)).claudeCode, {
+    model: 'claude-sonnet-5',
+    effort: 'medium',
+  });
 });

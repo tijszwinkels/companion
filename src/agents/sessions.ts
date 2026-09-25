@@ -310,15 +310,11 @@ export class AgentSessions implements InspectableModule {
     this.publishOrder();
   }
 
-  /**
-   * The footer picker's catalogue. Pi's part comes from a bounded discovery
-   * process; the Claude part is the fixed allowlist plus the configured
-   * default model, read from the configuration without starting Claude Code.
-   */
   async models(signal: AbortSignal) {
     const coding = await loadAgentSettings(this.directory, 'coding', false);
     const quickQuestion = await loadAgentSettings(this.directory, 'quickQuestion', false);
-    const claudeCode = await loadClaudeCodeSettings(this.directory, false);
+    // Pi's catalogue only. The Claude picker has its own catalogue below, so a
+    // Pi discovery failure cannot stop a Claude Code conversation's choice.
     if (!this.backends.pi.models) {
       throw Error('This agent backend does not support model selection');
     }
@@ -326,20 +322,23 @@ export class AgentSessions implements InspectableModule {
     if (catalog.warning) {
       this.log('agent-models', catalog.warning);
     }
-
-    const claudeCatalog: ClaudeCodeModelCatalog = {
-      models: claudeCodeModelCatalog(claudeCode.model),
-      model: claudeCode.model,
-      effort: claudeCode.effort,
-    };
     return {
       ...catalog,
       coding: coding.model,
       quickQuestion: quickQuestion.model,
       codingThinking: coding.thinking,
       quickQuestionThinking: quickQuestion.thinking,
-      claudeCode: claudeCatalog,
     };
+  }
+
+  /**
+   * The Claude picker's catalogue: the fixed allowlist plus the configured
+   * default model. It only reads the configuration file; it starts neither
+   * Claude Code nor Pi, so it works even when Pi discovery fails.
+   */
+  async claudeModels(): Promise<ClaudeCodeModelCatalog> {
+    const { model } = await loadClaudeCodeSettings(this.directory, false);
+    return { models: claudeCodeModelCatalog(model), model };
   }
 
   /**
@@ -1678,7 +1677,7 @@ export class AgentSessions implements InspectableModule {
 }
 
 /**
- * Make `view` a Claude Code conversation with a fixed model and effort. The
+ * Make `view` a Claude Code conversation with its own model and effort. The
  * displayed model is the Claude model from the start, before any turn runs.
  */
 function adoptClaudeCode(view: AgentSession, settings: ClaudeCodeConversationSettings): void {

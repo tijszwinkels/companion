@@ -82,10 +82,10 @@ Item {
     function test_claude_code_session_lists_claude_models_with_fixed_effort() {
       const setup = createTemporaryObject(fixture, parent)
       const picker = setup.picker
-      const piHeight = picker.height
       picker.catalog = {models: ["configured/alternate"], coding: "configured/current",
-        claudeCode: {models: ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
-          model: "claude-opus-5-5", effort: "high"}}
+        warning: "Pi pinned models unavailable; showing all models."}
+      picker.claudeCatalog = {models: ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+        model: "claude-opus-5-5"}
       picker.session = {id: "claude", profile: "coding", harness: "claude-code", model: "claude-sonnet-5",
         claudeCode: {model: "claude-sonnet-5", effort: "medium"}}
       const model = findChild(setup, "sessionModelPicker")
@@ -103,7 +103,7 @@ Item {
       const note = findChild(setup, "claudeSessionModelNote")
       verify(note.visible)
       verify(note.y + note.height <= picker.height)
-      compare(picker.height, piHeight, "The footer keeps the Pi layout")
+      compare(picker.statusText, "", "Pi's pins warning does not concern Claude models")
 
       let choices = []
       picker.modelRequested.connect((id, value) => { choices.push({id: id, value: value}) })
@@ -123,8 +123,8 @@ Item {
       compare(model.currentText, "claude-opus-4-8")
       compare(effort.text, "max · fixed")
 
-      // An older listener sends no Claude list: only the current model shows.
-      picker.catalog = {models: ["configured/alternate"], coding: "configured/current"}
+      // An older listener has no Claude list: only the current model shows.
+      picker.claudeCatalog = {models: []}
       compare(model.count, 1)
       compare(model.currentText, "claude-opus-4-8")
 
@@ -135,12 +135,13 @@ Item {
       compare(note.visible, false)
       verify(findChild(setup, "showAllSessionModels").visible)
       verify(model.currentText.indexOf("Use coding default") === 0)
+      verify(picker.statusText.indexOf("showing all models") >= 0)
     }
 
     function test_claude_popup_rejects_a_changed_conversation() {
       const setup = createTemporaryObject(fixture, parent)
       const picker = setup.picker
-      picker.catalog = {models: [], claudeCode: {models: ["claude-opus-5-5", "claude-sonnet-5"], model: "claude-opus-5-5", effort: "high"}}
+      picker.claudeCatalog = {models: ["claude-opus-5-5", "claude-sonnet-5"], model: "claude-opus-5-5"}
       picker.session = {id: "first", profile: "coding", harness: "claude-code", claudeCode: {model: "claude-opus-5-5", effort: "high"}}
       const model = findChild(setup, "sessionModelPicker")
       let choices = []

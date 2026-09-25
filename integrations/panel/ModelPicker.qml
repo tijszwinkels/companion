@@ -12,10 +12,13 @@ Item {
   id: root
   property var session: null
   property var catalog: ({models: []})
+  // The Claude allowlist (`claude-models`): {models, model}.
+  property var claudeCatalog: ({models: []})
   property bool catalogLoaded: false
   property bool loading: false
   property string error: ""
-  readonly property string statusText: error || catalog.warning || ""
+  // Pi's pins warning concerns Pi's catalogue only.
+  readonly property string statusText: error || (!claudeConversation && catalog.warning) || ""
   property bool online: false
   required property color background
   required property color foreground
@@ -37,9 +40,8 @@ Item {
   // current model is always shown, even before the catalogue arrives or when
   // it is not listed (for example a model started by an agent tool).
   readonly property var claudeOptions: {
-    const claude = catalog.claudeCode || {}
-    const listed = claude.models || []
-    const entries = listed.map(model => ({label: model + (model === claude.model ? " · configured default" : ""), value: model}))
+    const listed = claudeCatalog.models || []
+    const entries = listed.map(model => ({label: model + (model === claudeCatalog.model ? " · configured default" : ""), value: model}))
     if (claudeModel && !listed.includes(claudeModel)) entries.push({label: claudeModel, value: claudeModel})
     return entries
   }

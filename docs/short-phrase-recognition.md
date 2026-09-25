@@ -28,15 +28,15 @@ external model service, desktop input or production database writes are involved
 
 Measured cases in `npm run asr:short-phrases`:
 
-| Case | Result |
-| --- | --- |
-| Normal-volume short phrase at offsets 0, 127 and 511 samples | All three reach the inert router with the expected words. |
-| Quiet phrase at offsets 0 and 511 | Both recover the expected words; both previously failed the RMS guard. |
-| Quiet phrase at offset 127 | Passes VAD (192 ms) and the corrected guard; native ASR returns empty. Explicitly reported as an acoustic limit. |
-| Same accepted quiet segment with 800 ms extra silence | Guard measurement is unchanged; native ASR still returns the expected words. |
-| Same accepted quiet segment with 3200 ms extra silence | Guard measurement is unchanged; native ASR returns empty. Guard invariance does not imply model invariance. |
-| Full five-second fixture, before and after short requests | Same words; direct ASR repeats the exact original transcript. |
-| Digital silence and deterministic broadband noise | No VAD segment, ASR job or routed text. |
+| Case                                                         | Result                                                                                                           |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Normal-volume short phrase at offsets 0, 127 and 511 samples | All three reach the inert router with the expected words.                                                        |
+| Quiet phrase at offsets 0 and 511                            | Both recover the expected words; both previously failed the RMS guard.                                           |
+| Quiet phrase at offset 127                                   | Passes VAD (192 ms) and the corrected guard; native ASR returns empty. Explicitly reported as an acoustic limit. |
+| Same accepted quiet segment with 800 ms extra silence        | Guard measurement is unchanged; native ASR still returns the expected words.                                     |
+| Same accepted quiet segment with 3200 ms extra silence       | Guard measurement is unchanged; native ASR returns empty. Guard invariance does not imply model invariance.      |
+| Full five-second fixture, before and after short requests    | Same words; direct ASR repeats the exact original transcript.                                                    |
+| Digital silence and deterministic broadband noise            | No VAD segment, ASR job or routed text.                                                                          |
 
 The two empty-output characterizations allow correct words if a future model
 improves; they do not require an incorrect transcript. They never allow an energy
@@ -66,21 +66,21 @@ fixed outcome names, numeric audio levels, durations and character counts. They
 do not add transcripts, PCM, file paths or screenshots to the logs. Existing
 transcript logging is unchanged; keep the complete CLI log private.
 
-| Stage | What it establishes |
-| --- | --- |
-| `asr-start` | Human-readable startup notice before loading the resident Parakeet worker. Per-utterance `asr` records remain JSON. |
-| `audio-levels` | Five-second aggregate (plus a final partial window): decoded duration, RMS, peak amplitude and peak VAD probability, including sounds that never start a candidate. Persistent low peak probability indicates no onset. |
-| `vad` / `too-short` | A candidate reached onset but had fewer than 128 ms of voiced frames; preroll and silence are excluded from that count. |
-| `vad` / `accepted` | Candidate duration, voiced duration, ending silence and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF. |
-| `audio-end` | `eof`, `cancelled` or `failed`; cancellation discards an unfinished candidate. Capture/framing errors still propagate with their existing error detail. |
-| `asr` / `silence` | Pre-ASR energy filter rejected the buffer. Includes whole-buffer and strongest-window RMS. No request was sent. |
-| `asr` / `empty` or `punctuation` | The worker answered, but its final result supplied no usable words. |
-| `asr` … `emptyRetry` | Present only when the first pass returned empty text: `recovered` (outcome `text`), `empty`, `punctuation` or `error` for the one padded retry, or `quiet` / `too-long` when none was sent. `retryMs` times a sent retry. |
-| `asr-recorded` | An eligible empty ASR result was saved as a WAV/metadata pair; links the job ID to the clip UUID. |
-| `asr` / `text` | Usable text, character count and ASR operation time (including any retry), excluding screen capture. |
-| `asr` / `error` | Worker startup, transport, native inference, timeout or cancellation failed. The accompanying existing error supplies the fixed description; no native stderr is forwarded. |
-| `error` / `transcription`, `capture`, `recording`, `routing` | Identifies the pipeline stage that failed. Errors in later stages are not speech-recognition failures. |
-| `dropped`, `filtered`, `intent`, delivery/outcome logs | Existing evidence for queue overload, missing text, classification and dispatch. |
+| Stage                                                        | What it establishes                                                                                                                                                                                                       |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `asr-start`                                                  | Human-readable startup notice before loading the resident Parakeet worker. Per-utterance `asr` records remain JSON.                                                                                                       |
+| `audio-levels`                                               | Five-second aggregate (plus a final partial window): decoded duration, RMS, peak amplitude and peak VAD probability, including sounds that never start a candidate. Persistent low peak probability indicates no onset.   |
+| `vad` / `too-short`                                          | A candidate reached onset but had fewer than 128 ms of voiced frames; preroll and silence are excluded from that count.                                                                                                   |
+| `vad` / `accepted`                                           | Candidate duration, voiced duration, ending silence and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF.                                                                               |
+| `audio-end`                                                  | `eof`, `cancelled` or `failed`; cancellation discards an unfinished candidate. Capture/framing errors still propagate with their existing error detail.                                                                   |
+| `asr` / `silence`                                            | Pre-ASR energy filter rejected the buffer. Includes whole-buffer and strongest-window RMS. No request was sent.                                                                                                           |
+| `asr` / `empty` or `punctuation`                             | The worker answered, but its final result supplied no usable words.                                                                                                                                                       |
+| `asr` … `emptyRetry`                                         | Present only when the first pass returned empty text: `recovered` (outcome `text`), `empty`, `punctuation` or `error` for the one padded retry, or `quiet` / `too-long` when none was sent. `retryMs` times a sent retry. |
+| `asr-recorded`                                               | An eligible empty ASR result was saved as a WAV/metadata pair; links the job ID to the clip UUID.                                                                                                                         |
+| `asr` / `text`                                               | Usable text, character count and ASR operation time (including any retry), excluding screen capture.                                                                                                                      |
+| `asr` / `error`                                              | Worker startup, transport, native inference, timeout or cancellation failed. The accompanying existing error supplies the fixed description; no native stderr is forwarded.                                               |
+| `error` / `transcription`, `capture`, `recording`, `routing` | Identifies the pipeline stage that failed. Errors in later stages are not speech-recognition failures.                                                                                                                    |
+| `dropped`, `filtered`, `intent`, delivery/outcome logs       | Existing evidence for queue overload, missing text, classification and dispatch.                                                                                                                                          |
 
 ASR and pipeline records carry the same job ID. VAD reports precede job creation
 and are ordered next to the existing utterance/submission logs. Capture summaries
@@ -188,13 +188,13 @@ Neither contains transcripts or samples.
 These measurements used the existing main-checkout helper binary in separate
 local processes. The live listener was not touched.
 
-| Input | Result |
-| --- | --- |
-| Private clip, 10 padding variants × 2 runs (lead 125–500 ms, trail 250–1000 ms) | Unpadded: empty both times. Every padded variant: 8 words, repeatable. All variants agreed except trailing-only padding of 500 ms or more, which gave slightly different words. |
-| Private clip through the changed transcriber, 6 runs | Recovered 6/6 with identical text; samples unchanged. Total 388–506 ms, of which the retry took 191–275 ms. |
+| Input                                                                                     | Result                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Private clip, 10 padding variants × 2 runs (lead 125–500 ms, trail 250–1000 ms)           | Unpadded: empty both times. Every padded variant: 8 words, repeatable. All variants agreed except trailing-only padding of 500 ms or more, which gave slightly different words. |
+| Private clip through the changed transcriber, 6 runs                                      | Recovered 6/6 with identical text; samples unchanged. Total 388–506 ms, of which the retry took 191–275 ms.                                                                     |
 | Public quiet phrases (gain 0.01, strongest-window RMS 0.0012) that decode empty, 11 cases | Padded retries mostly produced **wrong** words (for example single numbers); with 250/250 padding, 7 of 11 did. Hence the 0.005 retry floor: these stay empty and are retained. |
-| Public loud fixture fragments (1.2 s cut mid-word) with an empty first pass | The retry recovers leading words; `npm run asr:short-phrases` now checks one of them (“and says how do I get …”). The final clipped word can be misheard. |
-| Public loud/normal phrases and full fixture | First pass succeeds; no retry, one request, unchanged transcripts. Five-second request 250–346 ms. |
+| Public loud fixture fragments (1.2 s cut mid-word) with an empty first pass               | The retry recovers leading words; `npm run asr:short-phrases` now checks one of them (“and says how do I get …”). The final clipped word can be misheard.                       |
+| Public loud/normal phrases and full fixture                                               | First pass succeeds; no retry, one request, unchanged transcripts. Five-second request 250–346 ms.                                                                              |
 
 False-positive probes sent directly to ASR (bypassing VAD, so harsher than live):
 

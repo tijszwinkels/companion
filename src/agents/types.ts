@@ -89,13 +89,13 @@ export interface ClaudeCodeSettings {
 export type ClaudeCodeConversationSettings = Pick<ClaudeCodeSettings, 'model' | 'effort'>;
 
 /**
- * The Claude part of the footer picker's catalogue: the allowlisted exact
- * model IDs plus the configured default, and the configured defaults.
+ * The Claude picker's catalogue (`claude-models`): the allowlisted exact
+ * model IDs plus the configured default, and that configured default model.
+ * There is no effort field: a conversation's effort never changes.
  */
 export interface ClaudeCodeModelCatalog {
   models: string[];
   model: string;
-  effort: ClaudeCodeEffort;
 }
 
 export interface AgentSession {
@@ -183,7 +183,8 @@ export interface AgentRunRequest<Settings = AgentSettings> {
   /** False only for a conversation's first turn. A missing transcript then fails. */
   resume: boolean;
   /**
-   * Claude Code only: the model of this conversation's previous turn, when the
+   * Claude Code only: the model Companion requested for this conversation's
+   * previous turn (`AgentSession.model`, even if that turn failed), when the
    * user has since chosen another one. The backend announces the switch once
    * Claude Code has confirmed the new model. Pi ignores it.
    */

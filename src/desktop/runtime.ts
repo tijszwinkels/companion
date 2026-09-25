@@ -905,6 +905,15 @@ export class DesktopRuntime {
       return this.modelDiscovery;
     }
 
+    // A static allowlist plus one configuration read: no discovery process to
+    // coalesce, and independent of Pi so a Pi failure cannot block Claude.
+    if (request.action === 'claude-models') {
+      if (!this.options.agents) {
+        throw Error('Agent sessions are unavailable');
+      }
+      return this.options.agents.claudeModels();
+    }
+
     if (request.action === 'set-agent-model') {
       if (
         !this.options.agents ||

@@ -361,13 +361,17 @@ test('desktop clients receive the harness fields, the Claude catalogue and model
     ),
   );
 
-  desktop.send({ action: 'agent-models' });
-  const catalog = await desktop.reply('agent-models');
-  assert.deepEqual((catalog.result as unknown as Record<string, unknown>).claudeCode, {
+  // The Claude list has its own action; Pi's catalogue does not carry it.
+  desktop.send({ action: 'claude-models' });
+  const catalog = await desktop.reply('claude-models');
+  assert.equal(catalog.type, 'result');
+  assert.deepEqual(catalog.result, {
     models: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
     model: 'claude-sonnet-5',
-    effort: 'medium',
   });
+  desktop.send({ action: 'agent-models' });
+  const piCatalog = await desktop.reply('agent-models');
+  assert.equal('claudeCode' in (piCatalog.result as unknown as Record<string, unknown>), false);
 
   desktop.send({ action: 'set-agent-model', id, model: 'configured/one' });
   const refused = await desktop.reply('set-agent-model');

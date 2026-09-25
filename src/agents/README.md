@@ -92,8 +92,9 @@ Claude Code conversations get a Claude-only next-turn model picker and no
 effort picker. `setModel` accepts an exact allowlisted Claude ID (or the
 configured/current model) and replaces `claudeCode.model`, keeping its effort.
 Pi IDs, aliases and unknown names are refused visibly. `setThinking` refuses
-Claude conversations. `AgentSessions.models()` returns Pi's catalogue plus
-`claudeCode: {models, model, effort}`. The turn resumes the same Claude session
+Claude conversations. `AgentSessions.models()` remains Pi's catalogue;
+`claudeModels()` returns the Claude list `{models, model}` without starting Pi
+or Claude Code. The turn resumes the same Claude session
 with the new `--model`. See [the Claude picker contract](claude/README.md#next-turn-model-picker).
 
 The bottom model and effort pickers change **this conversation's next turn**,
