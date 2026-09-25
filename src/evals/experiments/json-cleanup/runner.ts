@@ -40,11 +40,14 @@ import {
 } from './checks.ts';
 import {
   diagnosticIntentSelection,
+  isTextRoute,
   parseExperimentResponse,
   PERCENTAGE_REASONS,
+  resolveEffectiveText,
   type InvalidReason,
   type ResponseExpectation,
   type TextRoute,
+  type TextSource,
 } from './contract.ts';
 import {
   loadFixedRouteDataset,
@@ -54,10 +57,12 @@ import {
 } from './fixed-routes.ts';
 import {
   buildFixedRouteRequest,
-  PERCENTAGES_VARIANT_ID,
+  isInferredOnly,
+  OPTIONAL_TEXT_VARIANT_ID,
   promptFingerprint,
   transformRecordedRequest,
   UnsupportedExampleError,
+  usesPercentages,
   validateOutputTokens,
   VARIANT_ID,
   type UnsupportedReason,
@@ -74,9 +79,9 @@ export interface ExperimentSource {
   /** `dataset.json` from an exact-replay export, or a fixed-route fixture file. */
   datasetPath: string;
   /**
-   * Prompt/contract variant; defaults to json-cleanup-v1. The percentages
-   * variant is inferred-only: fixed shortcut routes do not classify, so no
-   * per-intent percentages are requested or accepted for them.
+   * Prompt/contract variant; defaults to json-cleanup-v1. The percentages and
+   * optional-text variants are inferred-only: fixed shortcut routes do not
+   * classify, so no per-intent percentages are requested or accepted for them.
    */
   variant?: VariantId;
 }
@@ -89,7 +94,11 @@ interface PreparedRequest {
   /** Variant body without model: identical across targets, differs from inputHash. */
   variantInputHash: string;
   expectation: ResponseExpectation;
-  /** For the private review file only. */
+  /**
+   * The recorded utterance. For the private review file, and for the
+   * optional-text variant also the byte-exact fallback text (verified when
+   * preparing, so never null there).
+   */
   spokenText: string | null;
 }
 
@@ -156,8 +165,9 @@ export interface ExperimentResult {
   outputTokens: number | null;
   estimatedCost: number | null;
   /**
-   * json-cleanup-percentages-v1 only (absent in v1 rows). SELF-REPORTED
-   * integer percentages from a fully contract-valid response, null otherwise:
+   * json-cleanup-percentages-v1 and the optional-text variant only (absent in
+   * v1 rows). SELF-REPORTED integer percentages from a fully contract-valid
+   * response, null otherwise:
    * the chosen intent's value, the labeled intent's value, and whether another
    * intent shares the chosen intent's (highest) value. Not calibrated
    * probabilities; invalid distributions stay private.
@@ -165,6 +175,19 @@ export interface ExperimentResult {
   chosenPercentage?: number | null;
   expectedPercentage?: number | null;
   chosenTied?: boolean | null;
+  /**
+   * Optional-text variant only (absent in other rows). For a valid text-route
+   * response: whether the effective text is the model's text or the recorded
+   * transcript (text omitted); null for every other row. `hasText` means the
+   * valid response has effective text from either source.
+   */
+  textSource?: TextSource | null;
+  /**
+   * Optional-text variant only: for `textSource: "model"`, whether the model's
+   * text is identical to the transcript (text returned although nothing
+   * changed); null otherwise. A content-free flag; the texts stay private.
+   */
+  modelTextMatchesTranscript?: boolean | null;
 }
 
 /** Private per-request record for human review of cleanup quality. */
@@ -182,6 +205,14 @@ export interface PrivateOutput {
   literalCheck: LiteralCheckOutcome;
   /** Percentages variant only: the full validated distribution of a valid response. */
   percentages?: Readonly<Record<string, number>> | null;
+  /** Optional-text variant only: where `effectiveText` came from (see ExperimentResult). */
+  textSource?: TextSource | null;
+  /**
+   * Optional-text variant only: the text a later action would use. The
+   * model's `cleanedText`, or the recorded transcript byte for byte when the
+   * model left out the text. Null without a valid text-route response.
+   */
+  effectiveText?: string | null;
 }
 
 interface BatchTiming {
@@ -196,11 +227,17 @@ interface BatchTiming {
 // Planning (shared by dry-run and run; makes no network calls)
 // ---------------------------------------------------------------------------
 
-/** The recorded utterance, for the private review file. Null if not recognizable. */
-function recordedUtterance(record: IntentRequestRecord): string | null {
+/**
+ * Every `utterance` string of a frame part in the recorded request, in order:
+ * user text parts whose JSON has a string `utterance`. Other parts are skipped
+ * without reporting their contents.
+ */
+function frameUtterances(record: IntentRequestRecord): string[] {
+  const found: string[] = [];
+
   const messages = record.body.messages;
   if (!Array.isArray(messages)) {
-    return null;
+    return found;
   }
 
   for (const message of messages) {
@@ -212,16 +249,37 @@ function recordedUtterance(record: IntentRequestRecord): string | null {
         continue;
       }
       try {
-        const data = JSON.parse(part.text) as { utterance?: unknown };
-        if (typeof data.utterance === 'string') {
-          return data.utterance;
+        const data = JSON.parse(part.text) as { utterance?: unknown } | null;
+        if (typeof data?.utterance === 'string') {
+          found.push(data.utterance);
         }
       } catch {
         // Not the frame JSON; keep looking without reporting its contents.
       }
     }
   }
-  return null;
+  return found;
+}
+
+/** The recorded utterance, for the private review file. Null if not recognizable. */
+function recordedUtterance(record: IntentRequestRecord): string | null {
+  return frameUtterances(record)[0] ?? null;
+}
+
+/**
+ * The recorded utterance of the optional-text variant, which is also its
+ * fallback text, so it must be unambiguous: exactly one frame part in the
+ * whole request, with a nonempty utterance. Anything else aborts planning
+ * before any call, with a content-free message; the fallback is never guessed.
+ */
+function verifiedTranscript(record: IntentRequestRecord, exampleId: string): string {
+  const found = frameUtterances(record);
+  if (found.length !== 1 || found[0] === '') {
+    throw new SafeEvalError(
+      `Example ${exampleId}: ${OPTIONAL_TEXT_VARIANT_ID} needs exactly one nonempty recorded utterance as its fallback text`,
+    );
+  }
+  return found[0]!;
 }
 
 async function prepareInferred(
@@ -236,6 +294,13 @@ async function prepareInferred(
   const { model: _recordedModel, ...recordedInputs } = record.body;
   const { model: _variantModel, ...variantInputs } = transformed.body;
 
+  // The optional-text fallback must be the one recorded utterance; other
+  // variants keep the earlier best-effort lookup for the private file.
+  const optionalText = variant === OPTIONAL_TEXT_VARIANT_ID;
+  const spokenText = optionalText
+    ? verifiedTranscript(record, example.id)
+    : recordedUtterance(record);
+
   return {
     body: transformed.body,
     inputHash: fingerprint(recordedInputs),
@@ -243,9 +308,10 @@ async function prepareInferred(
     expectation: {
       allowedIntents: transformed.allowedIntents,
       fixedRoute: null,
-      ...(variant === PERCENTAGES_VARIANT_ID ? { percentages: true } : {}),
+      ...(usesPercentages(variant) ? { percentages: true } : {}),
+      ...(optionalText ? { optionalText: true } : {}),
     },
-    spokenText: recordedUtterance(record),
+    spokenText,
     recordedOutputTokens: transformed.recordedOutputTokens,
     textIntents: transformed.textIntents,
   };
@@ -289,11 +355,11 @@ export async function planExperiment(
   validateOutputTokens(outputTokens);
 
   const variant = source.variant ?? VARIANT_ID;
-  if (variant === PERCENTAGES_VARIANT_ID && source.mode !== 'inferred') {
+  if (isInferredOnly(variant) && source.mode !== 'inferred') {
     // Shortcuts fix the action without classification: there is nothing to
     // estimate, and no percentage may ever influence a fixed route.
     throw new SafeEvalError(
-      `${PERCENTAGES_VARIANT_ID} applies only to inferred --dataset runs; fixed-route shortcuts stay on ${VARIANT_ID}`,
+      `${variant} applies only to inferred --dataset runs; fixed-route shortcuts stay on ${VARIANT_ID}`,
     );
   }
 
@@ -381,14 +447,23 @@ export function describeVariant(plan: ExperimentPlan) {
     }
   }
 
-  const percentages = plan.variant === PERCENTAGES_VARIANT_ID;
+  const percentages = usesPercentages(plan.variant);
+  const optionalText = plan.variant === OPTIONAL_TEXT_VARIANT_ID;
+
+  let systemPromptChange =
+    'System prompt: two bare-intent-name sentences replaced; response-format and text-cleanup section appended.';
+  if (optionalText) {
+    systemPromptChange =
+      'System prompt: two bare-intent-name sentences replaced; response-format (including self-reported integer percentages for every offered intent, and optional text for text routes whose utterance needs no change) and text-cleanup section appended.';
+  } else if (percentages) {
+    systemPromptChange =
+      'System prompt: two bare-intent-name sentences replaced; response-format (including self-reported integer percentages for every offered intent) and text-cleanup section appended.';
+  }
 
   let modifications: string[];
   if (plan.mode === 'inferred') {
     modifications = [
-      percentages
-        ? 'System prompt: two bare-intent-name sentences replaced; response-format (including self-reported integer percentages for every offered intent) and text-cleanup section appended.'
-        : 'System prompt: two bare-intent-name sentences replaced; response-format and text-cleanup section appended.',
+      systemPromptChange,
       `max_tokens: recorded value replaced by the experimental budget ${plan.outputTokens}.`,
       'model: replaced by the target model.',
       'Unchanged: user message (utterance, application, conversation context), screenshot, offered intent names, temperature, streaming and all other recorded fields.',
@@ -406,6 +481,10 @@ export function describeVariant(plan: ExperimentPlan) {
   if (percentages) {
     contract =
       'One JSON object {"intent", "parameters", "percentages"}; parameters as in json-cleanup-v1; percentages has exactly the offered intent names as keys, unsigned integer literals 0-100 summing to exactly 100, and the chosen intent has the highest value (ties allowed). SELF-REPORTED estimates, not calibrated probabilities.';
+  }
+  if (optionalText) {
+    contract =
+      'One JSON object {"intent", "parameters", "percentages"}; percentages as in json-cleanup-percentages-v1; text routes require parameters {"text": nonempty string without surrounding whitespace} OR exactly {} (text omitted: the recorded transcript is used byte for byte, the only fallback); null, empty or wrong-type text and extra parameter keys stay invalid; all other intents require {}. Omission is the model\'s own judgement and does not prove that cleanup was unnecessary.';
   }
 
   return {
@@ -431,9 +510,12 @@ async function evaluateExample(
   planned: PlannedExample,
   target: EvalTarget,
   check: LiteralCheck | undefined,
-  percentages: boolean,
+  variant: VariantId,
   batchSignal: AbortSignal,
 ): Promise<{ result: ExperimentResult; privateOutput: PrivateOutput }> {
+  const percentages = usesPercentages(variant);
+  const optionalText = variant === OPTIONAL_TEXT_VARIANT_ID;
+
   // Restoring happens before the latency timer starts; it counts only toward wall time.
   const prepared = await planned.prepare();
   const body = { ...prepared.body, model: target.model };
@@ -481,6 +563,17 @@ async function evaluateExample(
     result.chosenTied = null;
     privateOutput.percentages = null;
   }
+  // Likewise, only optional-text rows carry the text source fields.
+  if (optionalText) {
+    result.textSource = null;
+    result.modelTextMatchesTranscript = null;
+    privateOutput.textSource = null;
+    privateOutput.effectiveText = null;
+  }
+
+  // The text literal checks judge: the effective text for the optional-text
+  // variant (what an action would use), the cleaned text otherwise.
+  let checkedText: string | null = null;
 
   // Per-request timeout that starts now, not while waiting for a free slot.
   const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -518,6 +611,21 @@ async function evaluateExample(
       }
       privateOutput.intent = parsed.intent;
       privateOutput.cleanedText = parsed.text;
+      checkedText = parsed.text;
+
+      if (optionalText) {
+        // The only fallback: an omitted text-route text becomes the verified
+        // recorded transcript, byte for byte. Invalid responses never get here.
+        const effective = resolveEffectiveText(parsed, prepared.spokenText!);
+        result.hasText = effective.text !== null;
+        result.textSource = effective.source;
+        if (effective.source === 'model') {
+          result.modelTextMatchesTranscript = parsed.text === prepared.spokenText;
+        }
+        privateOutput.textSource = effective.source;
+        privateOutput.effectiveText = effective.text;
+        checkedText = effective.text;
+      }
 
       if (percentages && parsed.percentages !== undefined) {
         result.chosenPercentage = parsed.percentages[parsed.intent]!;
@@ -544,8 +652,8 @@ async function evaluateExample(
 
   result.latencyMs = performance.now() - started;
 
-  // Literal checks run on valid cleaned text only; everything else is not evaluated.
-  privateOutput.literalCheck = evaluateLiteralCheck(check, privateOutput.cleanedText);
+  // Literal checks run on valid (effective) text only; everything else is not evaluated.
+  privateOutput.literalCheck = evaluateLiteralCheck(check, checkedText);
   result.literalCheck = privateOutput.literalCheck.status;
 
   return { result, privateOutput };
@@ -619,6 +727,66 @@ function summarizePercentages(rows: ExperimentResult[]) {
       ),
     },
     meanExpectedIntentPercentage: meanOrNull(valid.map((row) => row.expectedPercentage!)),
+  };
+}
+
+/** Mean of the reported output tokens, or null when any row has none. */
+function meanOutputTokens(rows: ExperimentResult[]): number | null {
+  if (rows.some((row) => row.outputTokens === null)) {
+    return null;
+  }
+  return meanOrNull(rows.map((row) => row.outputTokens!));
+}
+
+/**
+ * Optional-text variant only: how often valid text-route responses left out
+ * the text (the transcript fallback was used), per offered text route, and
+ * the latency and output tokens of both groups. Counts and timings only; the
+ * texts stay in the private file.
+ *
+ * Latency groups are descriptive, not a controlled comparison: utterances that
+ * need no change tend to be short, and the model chose the group itself.
+ */
+function summarizeOptionalText(rows: ExperimentResult[]) {
+  const textRows = rows.filter(
+    (row) => row.status === 'valid' && row.prediction !== null && isTextRoute(row.prediction),
+  );
+  const omitted = textRows.filter((row) => row.textSource === 'transcript');
+  const provided = textRows.filter((row) => row.textSource === 'model');
+
+  const byRoute: Record<string, { omitted: number; provided: number }> = Object.create(null);
+  for (const row of textRows) {
+    let counts = byRoute[row.prediction!];
+    if (counts === undefined) {
+      counts = { omitted: 0, provided: 0 };
+      byRoute[row.prediction!] = counts;
+    }
+    if (row.textSource === 'transcript') {
+      counts.omitted += 1;
+    } else {
+      counts.provided += 1;
+    }
+  }
+
+  return {
+    definition:
+      'Valid text-route responses that left out parameters.text ("omitted": the recorded transcript is used byte for byte, the only fallback) or returned text ("provided"). Omission is the model\'s own claim that nothing needed cleanup or formatting; it does NOT prove that. Review the private outputs by hand. Latency groups are descriptive, not controlled.',
+    validTextRouteResponses: textRows.length,
+    omittedUsingTranscript: omitted.length,
+    providedText: provided.length,
+    providedTextIdenticalToTranscript: provided.filter(
+      (row) => row.modelTextMatchesTranscript === true,
+    ).length,
+    omissionRate: textRows.length > 0 ? omitted.length / textRows.length : null,
+    byRoute,
+    latencyMs: {
+      omitted: latencyStatistics(omitted.map((row) => row.latencyMs)),
+      provided: latencyStatistics(provided.map((row) => row.latencyMs)),
+    },
+    meanOutputTokens: {
+      omitted: meanOutputTokens(omitted),
+      provided: meanOutputTokens(provided),
+    },
   };
 }
 
@@ -741,9 +909,8 @@ function summarizeTarget(
       note: 'No cleanup ground truth exists; review the private outputs file by hand.',
     },
     literalChecks,
-    ...(variant === PERCENTAGES_VARIANT_ID
-      ? { selfReportedPercentages: summarizePercentages(rows) }
-      : {}),
+    ...(usesPercentages(variant) ? { selfReportedPercentages: summarizePercentages(rows) } : {}),
+    ...(variant === OPTIONAL_TEXT_VARIANT_ID ? { optionalText: summarizeOptionalText(rows) } : {}),
     batch: {
       startedAt: batch.startedAt,
       completedAt: batch.completedAt,
@@ -812,7 +979,7 @@ export async function runExperiment(
           example,
           target,
           checks?.checks[example.id],
-          plan.variant === PERCENTAGES_VARIANT_ID,
+          plan.variant,
           batchSignal,
         );
       },

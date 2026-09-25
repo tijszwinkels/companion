@@ -42,7 +42,7 @@ import { validateTargets, type EvalTarget } from '../../transport.ts';
 import { assertChecksMatchExamples, type LiteralChecks } from './checks.ts';
 import { pairRuns, pairVariantRuns } from './pairing.ts';
 import { completedRunnerReport } from './report-schema.ts';
-import { VARIANT_ID, type VariantId } from './prompt.ts';
+import { OPTIONAL_TEXT_VARIANT_ID, usesPercentages, VARIANT_ID, type VariantId } from './prompt.ts';
 import {
   describeVariant,
   planExperiment,
@@ -85,6 +85,21 @@ const CAVEATS = [
 
 const PERCENTAGES_CAVEAT =
   'Percentages are SELF-REPORTED integer estimates from the model, not calibrated probabilities or log-probabilities; the percentages variant also asks for more output, so its comparison with json-cleanup-v1 measures that added requirement together.';
+
+const OPTIONAL_TEXT_CAVEAT =
+  'The optional-text variant lets text routes leave out parameters.text; the recorded transcript is then used byte for byte. Omission is the model’s own claim that nothing needed cleanup or formatting and does NOT prove it: review the private outputs by hand. Latency split by omission is descriptive, not controlled, because the model chose the group.';
+
+/** The caveats that apply to a set of compared variants. */
+function caveatsFor(variants: readonly VariantId[]): string[] {
+  const caveats = [...CAVEATS];
+  if (variants.some((variant) => usesPercentages(variant))) {
+    caveats.push(PERCENTAGES_CAVEAT);
+  }
+  if (variants.includes(OPTIONAL_TEXT_VARIANT_ID)) {
+    caveats.push(OPTIONAL_TEXT_CAVEAT);
+  }
+  return caveats;
+}
 
 type BaselineRun = Awaited<ReturnType<typeof runEvaluation>>;
 type VariantRun = Awaited<ReturnType<typeof runExperiment>>;
@@ -219,7 +234,7 @@ export async function runPairedComparison(options: PairedComparisonOptions) {
     order: options.order,
     datasetHash: baseline.datasetHash,
     arms: { baseline: BASELINE_ARM, variant: describeVariant(plans[0]!) },
-    caveats: variant === VARIANT_ID ? CAVEATS : [...CAVEATS, PERCENTAGES_CAVEAT],
+    caveats: caveatsFor([variant]),
     paired: pairWithBaseline(baseline, variantRun, options.targets, false),
     baselineReport: baseline,
     variantReport: variantRun.report,
@@ -263,7 +278,7 @@ export async function runVariantComparison(options: VariantComparisonOptions) {
       baseline: BASELINE_ARM,
       variants: plans.map((plan) => describeVariant(plan)),
     },
-    caveats: [...CAVEATS, PERCENTAGES_CAVEAT],
+    caveats: caveatsFor(options.variants),
     paired: [
       ...pairWithBaseline(baseline, left, options.targets, true),
       ...pairWithBaseline(baseline, right, options.targets, true),

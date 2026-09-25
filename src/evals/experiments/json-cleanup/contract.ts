@@ -33,6 +33,16 @@
  * repaired. These are the model's own estimates, not calibrated probabilities
  * or token log-probabilities.
  *
+ * Optional-text contract (variant json-cleanup-percentages-optional-text-v1,
+ * inferred only): the percentages contract, except that a TEXT ROUTE may also
+ * answer with `"parameters": {}`, meaning "the transcript needs no change".
+ * Only a missing `text` key counts as omission. `null`, `""`, whitespace-only,
+ * surrounding whitespace, wrong types and extra parameter keys stay invalid
+ * with their usual reasons. The deterministic fallback for an omitted text
+ * (the recorded transcript, byte for byte) is `resolveEffectiveText`; this
+ * module never invents or repairs text. Intents without text are unchanged:
+ * `parameters` must be exactly `{}`.
+ *
  * Invalid reasons are fixed codes. They never quote the response, because model
  * output can echo private dictation, context or screenshot text.
  *
@@ -77,6 +87,12 @@ export interface ResponseExpectation {
    * carry per-intent percentages. Absent or false is the unchanged v1 contract.
    */
   percentages?: boolean;
+  /**
+   * True for the optional-text contract (inferred only, always together with
+   * `percentages`): a text route may omit `parameters.text` to keep the
+   * recorded transcript unchanged. Absent or false: text routes require text.
+   */
+  optionalText?: boolean;
 }
 
 /** Fixed, content-free reasons why a response does not satisfy the contract. */
@@ -125,8 +141,17 @@ export type ParsedResponse =
   | {
       valid: true;
       intent: string;
-      /** Cleaned-up text for a text route; null for an intent without text. */
+      /**
+       * Cleaned-up text for a text route; null for an intent without text, and
+       * null for a text route that omitted its text (see `textOmitted`).
+       */
       text: string | null;
+      /**
+       * Optional-text contract only: true when a text route answered with
+       * `parameters: {}`, false otherwise. The caller then uses the recorded
+       * transcript unchanged (`resolveEffectiveText`).
+       */
+      textOmitted?: boolean;
       /** Percentages contract only: the validated self-reported distribution. */
       percentages?: Readonly<Record<string, number>>;
       /** Percentages contract only: another intent shares the chosen intent's value. */
@@ -273,13 +298,19 @@ export function parseExperimentResponse(
     if (parameterKeys.length > 0) {
       return invalid('unexpected-parameter');
     }
-    return withPercentages(value, responseText, expectation, intent, null);
+    return withPercentages(value, responseText, expectation, intent, null, false);
   }
 
   if (parameterKeys.some((key) => key !== 'text')) {
     return invalid('unexpected-parameter');
   }
   if (!('text' in parameters)) {
+    // Only the optional-text contract accepts a text route without text, and
+    // only as exactly `{}` (other keys were refused just above). Every other
+    // contract keeps requiring text.
+    if (expectation.optionalText) {
+      return withPercentages(value, responseText, expectation, intent, null, true);
+    }
     return invalid('text-missing');
   }
 
@@ -298,13 +329,15 @@ export function parseExperimentResponse(
     return invalid('text-surrounding-whitespace');
   }
 
-  return withPercentages(value, responseText, expectation, intent, text);
+  return withPercentages(value, responseText, expectation, intent, text, false);
 }
 
 /**
- * Finish a response that satisfied the v1 contract. For v1 this returns the
- * unchanged `{ valid, intent, text }` result; for the percentages contract it
- * additionally requires valid percentages.
+ * Finish a response that satisfied the v1 contract (or, for the optional-text
+ * contract, its parameters rules). For v1 this returns the unchanged
+ * `{ valid, intent, text }` result; for the percentages contract it
+ * additionally requires valid percentages. Only optional-text results carry
+ * `textOmitted`, so the other contracts keep their exact result shape.
  */
 function withPercentages(
   value: Record<string, unknown>,
@@ -312,9 +345,12 @@ function withPercentages(
   expectation: ResponseExpectation,
   intent: string,
   text: string | null,
+  textOmitted: boolean,
 ): ParsedResponse {
+  const omission = expectation.optionalText ? { textOmitted } : {};
+
   if (!expectation.percentages) {
-    return { valid: true, intent, text };
+    return { valid: true, intent, text, ...omission };
   }
 
   const checked = validatePercentages(value, responseText, expectation, intent);
@@ -325,9 +361,50 @@ function withPercentages(
     valid: true,
     intent,
     text,
+    ...omission,
     percentages: checked.percentages,
     chosenTied: checked.chosenTied,
   };
+}
+
+/** Where the effective text of a valid response comes from. */
+export type TextSource = 'model' | 'transcript';
+
+export const TEXT_SOURCES: readonly TextSource[] = ['model', 'transcript'];
+
+/**
+ * The text a later action would use for a VALID response, with the only
+ * fallback this experiment has. Pure and deterministic:
+ *
+ * - An intent without text: no text (`{ text: null, source: null }`).
+ * - A text route with model text: that text, exactly as returned.
+ * - A text route that omitted its text (optional-text contract only): the
+ *   recorded transcript, byte for byte. Nothing is trimmed, normalized or
+ *   cleaned, so the result is exactly what was recorded.
+ *
+ * The fallback reflects only the model's claim that the transcript needs no
+ * change. It does not prove that cleanup was unnecessary; only a manual
+ * review of the private outputs can judge that.
+ *
+ * Only call this for valid responses. `transcript` must be the verified
+ * recorded utterance of the same example.
+ */
+export function resolveEffectiveText(
+  parsed: Extract<ParsedResponse, { valid: true }>,
+  transcript: string,
+): { text: string | null; source: TextSource | null } {
+  if (!isTextRoute(parsed.intent)) {
+    return { text: null, source: null };
+  }
+  if (parsed.textOmitted === true) {
+    return { text: transcript, source: 'transcript' };
+  }
+  if (parsed.text === null) {
+    // Not reachable for a valid response: text routes either carry text or
+    // (optional-text contract only) were omitted.
+    throw Error('A valid text-route response has neither text nor an omission');
+  }
+  return { text: parsed.text, source: 'model' };
 }
 
 /**

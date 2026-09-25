@@ -33,7 +33,10 @@
  *   current prompt of that ID. json-cleanup-v1 rows keep their exact key set;
  *   json-cleanup-percentages-v1 rows have three more fields (chosen and
  *   labeled self-reported percentages, tie flag) with their own cross-field
- *   rules, and only they may carry percentage invalid reasons.
+ *   rules, and only percentages rows may carry percentage invalid reasons.
+ *   json-cleanup-percentages-optional-text-v1 rows have the percentages
+ *   fields plus two more (`textSource`, `modelTextMatchesTranscript`), which
+ *   must agree with the status and intent; `text-missing` is impossible there.
  *
  * Refusals are SafeEvalError messages naming only a field, a side, and (once
  * validated) an example UUID. They never quote a value, so a malformed file
@@ -51,15 +54,18 @@ import {
   INVALID_REASONS,
   isTextRoute,
   PERCENTAGE_REASONS,
+  TEXT_SOURCES,
   type InvalidReason,
+  type TextSource,
 } from './contract.ts';
 import {
   isVariantId,
   MAX_OUTPUT_TOKENS,
   MIN_OUTPUT_TOKENS,
-  PERCENTAGES_VARIANT_ID,
+  OPTIONAL_TEXT_VARIANT_ID,
   promptFingerprint,
   UNSUPPORTED_REASONS,
+  usesPercentages,
   type VariantId,
 } from './prompt.ts';
 
@@ -111,8 +117,21 @@ export interface ValidatedVariantRow {
   latencyMs: number;
   inputHash: string;
   outputTokens: number | null;
-  /** Percentages variant only; null for other rows and for non-valid responses. */
+  /** Percentages variants only; null for other rows and for non-valid responses. */
   percentages: ValidatedPercentages | null;
+  /**
+   * Optional-text variant only; null for other variants' rows. For its rows,
+   * always present (with null fields unless valid on a text route).
+   */
+  optionalText: ValidatedOptionalText | null;
+}
+
+/** Validated text-source fields of one optional-text-variant row. */
+export interface ValidatedOptionalText {
+  /** Valid text-route rows only: model text or the transcript fallback. */
+  textSource: TextSource | null;
+  /** Only for `textSource: "model"`: the model's text equals the transcript. */
+  modelTextMatchesTranscript: boolean | null;
 }
 
 /** Validated self-reported values of one valid percentages-variant row. */
@@ -425,6 +444,58 @@ const PERCENTAGES_VARIANT_ROW_KEYS = [
   'chosenTied',
 ] as const;
 
+/** Optional-text rows: the percentages rows plus the two text-source fields. */
+const OPTIONAL_TEXT_VARIANT_ROW_KEYS = [
+  ...PERCENTAGES_VARIANT_ROW_KEYS,
+  'textSource',
+  'modelTextMatchesTranscript',
+] as const;
+
+function rowKeysFor(variant: VariantId): readonly string[] {
+  if (variant === OPTIONAL_TEXT_VARIANT_ID) {
+    return OPTIONAL_TEXT_VARIANT_ROW_KEYS;
+  }
+  if (usesPercentages(variant)) {
+    return PERCENTAGES_VARIANT_ROW_KEYS;
+  }
+  return VARIANT_ROW_KEYS;
+}
+
+/**
+ * Cross-field rules for the text-source fields of an optional-text row:
+ * - a valid text-route row has `textSource` "model" or "transcript" (and
+ *   `hasText` true, checked by the caller);
+ * - every other row (no-text intent, invalid, error) has `textSource` null;
+ * - `modelTextMatchesTranscript` is a boolean exactly when `textSource` is
+ *   "model", and null otherwise.
+ */
+function validateRowOptionalText(
+  value: Record<string, unknown>,
+  status: VariantStatus,
+  prediction: string | null,
+  field: string,
+): ValidatedOptionalText {
+  const textSource =
+    value.textSource === null ? null : oneOf(value.textSource, TEXT_SOURCES, `${field} textSource`);
+
+  const validTextRoute = status === 'valid' && prediction !== null && isTextRoute(prediction);
+  if (validTextRoute !== (textSource !== null)) {
+    refuse(`${field} textSource must be set exactly for a valid text-route response`);
+  }
+
+  let modelTextMatchesTranscript: boolean | null = null;
+  if (textSource === 'model') {
+    modelTextMatchesTranscript = boolean(
+      value.modelTextMatchesTranscript,
+      `${field} modelTextMatchesTranscript`,
+    );
+  } else if (value.modelTextMatchesTranscript !== null) {
+    refuse(`${field} modelTextMatchesTranscript must be null unless the model returned text`);
+  }
+
+  return { textSource, modelTextMatchesTranscript };
+}
+
 function percentage(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 100) {
     refuse(`${field} must be an integer from 0 to 100`);
@@ -512,9 +583,10 @@ function validateVariantRow(
 ): ValidatedVariantRow {
   const id = matching(value.id, UUID, 'Variant row id');
   const field = `Variant row ${id}`;
-  const withPercentages = variant === PERCENTAGES_VARIANT_ID;
+  const withPercentages = usesPercentages(variant);
+  const withOptionalText = variant === OPTIONAL_TEXT_VARIANT_ID;
 
-  exactKeys(value, withPercentages ? PERCENTAGES_VARIANT_ROW_KEYS : VARIANT_ROW_KEYS, field);
+  exactKeys(value, rowKeysFor(variant), field);
   const expected = matching(value.expected, INTENT_NAME, `${field} expected label`);
   nullableMatching(value.originalPrediction, INTENT_NAME, `${field} originalPrediction`);
   if (value.fixedRoute !== null) {
@@ -568,8 +640,12 @@ function validateVariantRow(
     if (invalidReason === 'route-changed') {
       refuse(`${field} route-changed cannot occur in an inferred run`);
     }
-    // Only the percentages contract can fail on a percentage rule.
+    // Only the percentages contracts can fail on a percentage rule, and the
+    // optional-text contract accepts a text route without text.
     if (PERCENTAGE_REASONS.has(invalidReason) && !withPercentages) {
+      refuse(`${field} invalidReason is not possible for this variant`);
+    }
+    if (invalidReason === 'text-missing' && withOptionalText) {
       refuse(`${field} invalidReason is not possible for this variant`);
     }
     // The diagnostic must be one the parser could have produced for this reason.
@@ -602,6 +678,9 @@ function validateVariantRow(
   const percentages = withPercentages
     ? validateRowPercentages(value, status, correct, field)
     : null;
+  const optionalText = withOptionalText
+    ? validateRowOptionalText(value, status, prediction, field)
+    : null;
 
   return {
     id,
@@ -617,6 +696,7 @@ function validateVariantRow(
     inputHash,
     outputTokens,
     percentages,
+    optionalText,
   };
 }
 

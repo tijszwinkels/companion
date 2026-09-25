@@ -34,6 +34,7 @@ import { ARM_ORDERS, runPairedComparison, runVariantComparison, type ArmOrder } 
 import { TEXT_ROUTES } from './contract.ts';
 import { pairRuns, pairVariantRuns } from './pairing.ts';
 import {
+  OPTIONAL_TEXT_VARIANT_ID,
   PERCENTAGES_VARIANT_ID,
   fixedRouteSystemPrompt,
   isVariantId,
@@ -81,7 +82,12 @@ npm run eval:intent-cleanup -- pair-variants --left-report V1.json --left-target
 --variant ID     ${VARIANT_IDS.join(' | ')} (default ${VARIANT_ID}).
                 ${PERCENTAGES_VARIANT_ID} additionally asks for one SELF-REPORTED
                 integer percentage (0-100, total exactly 100) per offered intent;
-                inferred --dataset runs only. compare accepts --variant twice
+                inferred --dataset runs only. ${OPTIONAL_TEXT_VARIANT_ID}
+                is ${PERCENTAGES_VARIANT_ID} where a text route may leave out
+                parameters.text when the utterance needs no change; the recorded
+                transcript is then used byte for byte (the only fallback).
+                Omission does not prove cleanup was unnecessary: review the
+                private outputs by hand. Inferred only. compare accepts --variant twice
                 (e.g. v1 then percentages): each is paired with the baseline and
                 the second (right) with the first (left). Variant arms run in
                 --variant flag order; --order only puts the baseline before or
@@ -98,7 +104,8 @@ compare:  PRIMARY QUESTION. Runs the unmodified exact-replay baseline and the
           baseline-first; run again with the other order to check cache effects.
 run:      variant only (also for fixed-route shortcut fixtures).
 pair-variants: offline strict pairing of two inferred variant "run" reports
-          (for example json-cleanup-v1 left, percentages right). Zero model calls.
+          (for example json-cleanup-v1 left, percentages right, or percentages
+          left, optional-text right). Zero model calls.
 pair:     offline strict pairing of an existing "eval:intents run" report and an
           existing inferred "run" report, one selected target each. Requires the
           same frozen dataset; pairs one-to-one by example ID; restricts the
