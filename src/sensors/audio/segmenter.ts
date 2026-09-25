@@ -26,10 +26,28 @@ export const VAD_SETTINGS = {
  */
 export const ENDPOINT_MS = Math.ceil(VAD_SETTINGS.silenceMs / FRAME_MS) * FRAME_MS;
 
+/** The silence endpoint before provisional attempts were introduced. */
+export const LEGACY_ENDPOINT_MS = 800;
+
+/**
+ * Silence between two candidates that the preroll cannot hold, but that a
+ * merged utterance restores: 800 − 224 − 256 = 320 ms. With the previous
+ * segment's 224 ms of trailing silence and the next segment's 256 ms preroll,
+ * a merge then contains the real pause up to the legacy endpoint, so it is the
+ * same audio the old segmenter would have transcribed as one utterance.
+ */
+export const CONTINUATION_GAP_MS = LEGACY_ENDPOINT_MS - ENDPOINT_MS - VAD_SETTINGS.preRollMs;
+
 /** A complete utterance, with the reason its audio buffer was closed. */
 export interface Segment {
   samples: Float32Array;
   reason: 'silence' | 'limit' | 'end';
+  /**
+   * Up to CONTINUATION_GAP_MS of the audio that directly followed the previous
+   * candidate, before this segment's preroll. Used only when this segment is
+   * merged into a provisional attempt; otherwise it is ignored. It may be empty.
+   */
+  leadIn: Float32Array;
 }
 
 /** One report per completed candidate, including candidates rejected by VAD. */
@@ -46,6 +64,10 @@ export interface SegmentDiagnostic {
 export class Segmenter {
   // Before speech starts, retain a short lead-in so the first syllable is kept.
   private pre: Float32Array[] = [];
+
+  // Frames pushed out of `pre` since the previous candidate closed, keeping
+  // only the earliest CONTINUATION_GAP_MS. Bounded, and reset with each candidate.
+  private gap: Float32Array[] = [];
 
   // Once speech starts, include both voiced frames and brief pauses between them.
   private frames: Float32Array[] = [];
@@ -90,7 +112,11 @@ export class Segmenter {
       this.pre.push(frame.slice());
 
       if (this.pre.length * ms > VAD_SETTINGS.preRollMs) {
-        this.pre.shift();
+        const expired = this.pre.shift()!;
+
+        if (this.gap.length * ms < CONTINUATION_GAP_MS) {
+          this.gap.push(expired);
+        }
       }
 
       return;
@@ -120,9 +146,7 @@ export class Segmenter {
 
     // Short VAD triggers are discarded instead of sent to transcription.
     if (this.speechMs >= VAD_SETTINGS.minSpeechMs) {
-      const samples = new Float32Array(this.frames.length * FRAME_SAMPLES);
-      this.frames.forEach((frame, i) => samples.set(frame, i * FRAME_SAMPLES));
-      segment = { samples, reason };
+      segment = { samples: joinFrames(this.frames), reason, leadIn: joinFrames(this.gap) };
     }
 
     if (this.frames.length) {
@@ -139,6 +163,7 @@ export class Segmenter {
     // Start the next utterance with independent duration counters and buffers.
     this.frames = [];
     this.pre = [];
+    this.gap = [];
     this.speechMs = 0;
     this.silenceMs = 0;
     this.peakProbability = 0;
@@ -146,6 +171,17 @@ export class Segmenter {
 
     return segment;
   }
+}
+
+/** Copy whole frames into one contiguous buffer. */
+function joinFrames(frames: Float32Array[]): Float32Array {
+  const samples = new Float32Array(frames.length * FRAME_SAMPLES);
+
+  frames.forEach((frame, index) => {
+    samples.set(frame, index * FRAME_SAMPLES);
+  });
+
+  return samples;
 }
 
 /** Wrap samples in a mono, 16 kHz PCM16 WAV file for fixtures and file tools. */

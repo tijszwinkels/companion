@@ -63,7 +63,7 @@ export async function listen(
 
       if (segment) {
         log('utterance', `Speech ended (${segment.reason})`);
-        pipeline.submit(segment.samples, signal);
+        pipeline.submit(segment.samples, signal, segment.leadIn);
 
         // Files decode faster than real time. Keep every file segment by waiting
         // for the worker; microphone capture always continues independently.
@@ -78,7 +78,7 @@ export async function listen(
 
     if (tail) {
       log('utterance', 'Speech ended (end)');
-      pipeline.submit(tail.samples, signal);
+      pipeline.submit(tail.samples, signal, tail.leadIn);
     }
     completed = true;
   } finally {

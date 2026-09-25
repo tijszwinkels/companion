@@ -89,14 +89,22 @@ export class SensorPipeline implements InspectableModule {
   /**
    * Accept ownership of a complete utterance without blocking microphone input.
    * If this segment resumed speech during a held provisional attempt, it is
-   * merged with that attempt's audio instead of starting a new request.
+   * merged with that attempt's audio instead of starting a new request. The
+   * optional lead-in is the pause between the two that the segment's preroll
+   * could not hold (Segment.leadIn); it is used only for a merge, so the
+   * combined audio keeps the real pause up to the legacy endpoint.
    */
-  submit(samples: Float32Array, signal = this.signal): boolean {
+  submit(
+    samples: Float32Array,
+    signal = this.signal,
+    leadIn: Float32Array = new Float32Array(0),
+  ): boolean {
     const held = this.held;
     this.held = undefined;
 
-    if (held && this.continuable(held, samples)) {
-      return this.enqueue({ samples: concatenate(held.samples!, samples), replaces: held }, signal);
+    if (held && this.continuable(held, leadIn.length + samples.length)) {
+      const combined = concatenate([held.samples!, leadIn, samples]);
+      return this.enqueue({ samples: combined, replaces: held }, signal);
     }
 
     // Not a continuation (or not mergeable): the held attempt proceeds.
@@ -137,13 +145,13 @@ export class SensorPipeline implements InspectableModule {
   }
 
   /** Whether a finished candidate can be merged into the attempt it held. */
-  private continuable(held: Job, samples: Float32Array): boolean {
+  private continuable(held: Job, addedSamples: number): boolean {
     // Anything admitted since, such as typed input, separates the two.
     if (held !== this.newest || held.settled || !held.attempt || held.attempt.committed) {
       return false;
     }
 
-    if (held.samples!.length + samples.length > MAX_UTTERANCE_SAMPLES) {
+    if (held.samples!.length + addedSamples > MAX_UTTERANCE_SAMPLES) {
       this.log('continuation', 'Combined audio would exceed 30 s; starting a new request', held.id);
       return false;
     }
@@ -463,12 +471,19 @@ export class SensorPipeline implements InspectableModule {
   }
 }
 
-/** Join the raw audio of a provisional attempt and its continuation. */
-function concatenate(first: Float32Array, second: Float32Array): Float32Array {
-  const combined = new Float32Array(first.length + second.length);
+/** Join the raw audio of a provisional attempt, the pause and its continuation. */
+function concatenate(parts: Float32Array[]): Float32Array {
+  let length = 0;
+  for (const part of parts) {
+    length += part.length;
+  }
 
-  combined.set(first, 0);
-  combined.set(second, first.length);
+  const combined = new Float32Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.length;
+  }
 
   return combined;
 }

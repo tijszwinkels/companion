@@ -311,6 +311,31 @@ test('resumed speech during inference aborts it and retranscribes the combined r
   assert.deepEqual([...first], [...new Float32Array(1600)], 'The superseded buffer is cleared');
 });
 
+test('a merge restores the pause between the parts from the segment lead-in', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1));
+  await settle();
+  setup.transcriptions[0].answer('And says');
+  await settle();
+
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(audio(0.2), undefined, audio(0.05, 512));
+  await settle();
+  assert.deepEqual(setup.transcriptions[1].samples, [0.1, 0.05, 0.2]);
+  setup.transcriptions[1].answer('And says how do I get to Dublin');
+  await settle();
+  setup.detections[1].answer('SEND');
+
+  // Without a held attempt, the lead-in is not part of a new request.
+  setup.pipeline.submit(audio(0.3), undefined, audio(0.05, 512));
+  await settle();
+  assert.deepEqual(setup.transcriptions[2].samples, [0.3]);
+  setup.transcriptions[2].answer('Next');
+  await settle();
+  setup.detections[2].answer('SEND');
+  await setup.pipeline.idle();
+});
+
 test('resumed speech during ASR lets the request finish, then discards its result', async () => {
   const setup = harness();
   setup.pipeline.submit(audio(0.1));
