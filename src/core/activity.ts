@@ -76,6 +76,12 @@ export interface Activity {
   labelPrevious?(id: number, correct: boolean): string | undefined;
   outcome?(id: number, outcome: UtteranceOutcome, destination?: UtteranceDestination): void;
   /**
+   * A provisional attempt was replaced by a continuation (it will report the
+   * outcome `superseded`). Called once, at supersession, before its successor
+   * is admitted. Only attempts named here belong to a continuation chain.
+   */
+  attemptSuperseded?(id: number): void;
+  /**
    * The final attempt of a continued utterance has settled; `supersededIds`
    * are the attempts it replaced, oldest first. Called once per such chain,
    * immediately before `finished(finalId)`, whatever the final outcome. Every

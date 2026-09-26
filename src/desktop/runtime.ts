@@ -55,10 +55,14 @@ export class DesktopRuntime {
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
 
-  // One record per continued utterance (docs/speech-timing.md, D4). A
-  // superseded attempt's row waits here, unpublished, until the final attempt
-  // of its chain settles; it is then either retired or published as before.
-  // Entries leave when their chain settles, so the map stays small.
+  // One record per continued utterance (docs/speech-timing.md, D4). Frames
+  // the pipeline reported as superseded (attemptSuperseded) belong to a
+  // continuation chain; only they are deferred, never a row merely because of
+  // its outcome. A chain member's row waits in `supersededRows`, unpublished
+  // and held against paste/label/delete, until the final attempt of its chain
+  // settles; it is then retired or published as an ordinary row. Both
+  // collections are emptied when their chain settles, on every exit path.
+  private readonly chainMembers = new Set<number>();
   private readonly supersededRows = new Map<number, HistoryEntry>();
   // Superseded frames named by a settled chain before they finished. Not
   // expected (the sensor worker is serial); such a row is simply kept.
@@ -262,6 +266,9 @@ export class DesktopRuntime {
 
         this.server.broadcast();
       },
+      attemptSuperseded: (id) => {
+        this.chainMembers.add(id);
+      },
       continuationSettled: (finalId, supersededIds) => {
         this.settleContinuation(finalId, supersededIds);
       },
@@ -273,9 +280,10 @@ export class DesktopRuntime {
         const entry = this.history.finish(id);
         const chainSettled = this.unsettledSuperseded.delete(id);
 
-        if (entry?.outcome === 'superseded' && !chainSettled) {
+        if (entry && this.chainMembers.has(id) && !chainSettled) {
           // Its continuation normally owns the whole utterance; decide when
           // that chain settles (settleContinuation) rather than show it now.
+          this.history.holdForRetirement(entry.id);
           this.supersededRows.set(id, entry);
         } else if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
           this.publishActivity(entry);
@@ -572,6 +580,7 @@ export class DesktopRuntime {
 
     const predecessors: HistoryEntry[] = [];
     for (const id of supersededIds) {
+      this.chainMembers.delete(id);
       const entry = this.supersededRows.get(id);
       if (entry) {
         this.supersededRows.delete(id);
@@ -587,11 +596,13 @@ export class DesktopRuntime {
 
     if (!owned) {
       this.log(
-        'retention',
-        `Keeping ${predecessors.length} superseded attempt(s): the final attempt was not fully recorded`,
+        'retention-incomplete',
+        `Keeping superseded ${predecessors.map((entry) => entry.id).join(', ')}: ` +
+          'the final attempt was not fully recorded',
         finalId,
       );
       for (const entry of predecessors) {
+        this.history.releaseRetirement(entry.id);
         this.publishActivity(entry);
       }
       return;
@@ -605,14 +616,17 @@ export class DesktopRuntime {
 
   /**
    * Remove superseded rows and their recordings one at a time. A row that
-   * cannot be retired (for example, pasted or labeled meanwhile, or a failed
-   * file removal) stays and becomes a normal Activity card; nothing reports a
-   * removal that did not happen.
+   * cannot be retired (for example, one with an earlier paste reference, or a
+   * failed file or SQLite removal) stays as an explicit residual row, logged
+   * as `retention-incomplete` and shown as a normal Activity card; nothing
+   * reports a removal that did not happen. Files are removed first, so such a
+   * row may have lost some recordings; the final attempt owns the audio.
    */
   private async retire(entries: HistoryEntry[]): Promise<void> {
     for (const entry of entries) {
       try {
         await this.history.retireSuperseded(entry.id);
+        this.history.releaseRetirement(entry.id);
         this.log('retired', `Superseded attempt ${entry.id}; its continuation keeps the utterance`);
         this.server.publish({
           type: 'history-deleted',
@@ -620,8 +634,11 @@ export class DesktopRuntime {
           sessionId: this.activityHistory.sessionId,
         });
       } catch (error) {
+        // Kept as an explicit residual row. With files removed first, some of
+        // its recordings may already be gone; the final attempt owns the audio.
+        this.history.releaseRetirement(entry.id);
         const message = error instanceof Error ? error.message : String(error);
-        this.log('error', `retention: ${entry.id}: ${message}`);
+        this.log('retention-incomplete', `Keeping superseded ${entry.id}: ${message}`);
         const current = this.history.find(entry.id);
         if (current) {
           this.publishActivity(current);

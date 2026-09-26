@@ -67,6 +67,9 @@ export class UtteranceHistory {
   private database?: DatabaseSync;
   private readonly frameEntries = new Map<number, string>();
   private readonly deleting = new Set<string>();
+  // Superseded attempts whose continuation has not settled yet. The desktop
+  // runtime holds them from their `finished` until it retires or keeps them.
+  private readonly awaitingRetirement = new Set<string>();
 
   constructor(private readonly path: string) {}
 
@@ -280,7 +283,7 @@ export class UtteranceHistory {
    * files are harmless, including after a partially completed earlier attempt.
    */
   async delete(id: string): Promise<void> {
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -315,7 +318,10 @@ export class UtteranceHistory {
    * reporting success when the row was kept.
    */
   async retireSuperseded(id: string): Promise<void> {
-    this.assertNotDeleting(id);
+    // The retirement hold is expected here; only a concurrent deletion stops it.
+    if (this.deleting.has(id)) {
+      throw Error('This utterance is being deleted');
+    }
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -373,10 +379,28 @@ export class UtteranceHistory {
     }
   }
 
-  private assertNotDeleting(id: string): void {
+  /**
+   * No paste, label, history-agent question or user deletion may start from a
+   * row that is being deleted, or from a superseded attempt that is waiting
+   * for its continuation to settle (it is about to be retired or kept).
+   */
+  private assertAvailable(id: string): void {
     if (this.deleting.has(id)) {
       throw Error('This utterance is being deleted');
     }
+    if (this.awaitingRetirement.has(id)) {
+      throw Error('This attempt was replaced by a continuing utterance; use the final utterance');
+    }
+  }
+
+  /** Hold a finished superseded attempt until its continuation settles. */
+  holdForRetirement(id: string): void {
+    this.awaitingRetirement.add(id);
+  }
+
+  /** The continuation settled: the attempt was retired, or is kept as an ordinary row. */
+  releaseRetirement(id: string): void {
+    this.awaitingRetirement.delete(id);
   }
 
   add(transcript: Transcript): void {
@@ -534,7 +558,7 @@ export class UtteranceHistory {
 
   /** Explicit correction preserves the detected intent and delivery outcome. */
   label(id: string, correct: boolean, actualIntent: string | null = null): void {
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     const entry = this.find(id);
     if (!entry?.intent) {
       throw Error('This utterance has no detected intent to label');
@@ -559,7 +583,7 @@ export class UtteranceHistory {
 
   /** Start a question from its original observation, not today's active screen. */
   async recordedFrame(id: string): Promise<UserSensorFrame> {
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -579,7 +603,7 @@ export class UtteranceHistory {
     }
     // Reading the screenshot yields. Deletion may have begun or completed
     // since the first lookup; do not start a new agent from that stale read.
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     if (!this.find(id)) {
       throw Error('Utterance not found');
     }
@@ -647,7 +671,7 @@ export class UtteranceHistory {
 
   /** Failed recovery is not evidence that the user successfully corrected intent. */
   beginPaste(utteranceId: string, targetAddress: string): string {
-    this.assertNotDeleting(utteranceId);
+    this.assertAvailable(utteranceId);
     const id = randomUUID();
     this.db
       .prepare(

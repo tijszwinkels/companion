@@ -249,6 +249,7 @@ export class SensorPipeline implements InspectableModule {
     if (replaces) {
       replaces.attempt!.supersede();
       replaces.chain!.supersededAttempts.push(replaces.id);
+      this.activity.attemptSuperseded?.(replaces.id);
       this.log('superseded', `Speech resumed; continued as ${id}`, replaces.id);
     }
 

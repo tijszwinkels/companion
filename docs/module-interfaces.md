@@ -90,7 +90,8 @@ The desktop's `submit-utterance` action uses this path after restoring applicati
 focus. It records the utterance and PNG, with no WAV. See the
 [desktop contract](../src/desktop/README.md) for capabilities and acknowledgements.
 
-When a continued utterance's final attempt settles, the pipeline calls
+At each supersession the pipeline calls `Activity.attemptSuperseded(id)`. When a
+continued utterance's final attempt settles, the pipeline calls
 `Activity.continuationSettled(finalId, supersededIds)` just before
 `finished(finalId)`. The desktop runtime then keeps one record per utterance;
 see [final-only retention](speech-timing.md#final-only-retention).

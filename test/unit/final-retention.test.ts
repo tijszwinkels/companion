@@ -257,6 +257,53 @@ test('repeated continuations retire every superseded attempt once the last one i
   }
 });
 
+test('a superseded attempt cannot be deleted, pasted or labeled while its chain is open', async () => {
+  const setup = await chainFixture();
+  try {
+    const first = await supersededAttempt(setup);
+    // The first attempt has finished; the continuation is still in ASR.
+    await waitFor(() => setup.transcriptions.length === 2);
+
+    setup.fixture.send({ action: 'delete-history', id: first });
+    const deletion = await setup.fixture.reply('delete-history');
+    assert.equal(deletion.type, 'error');
+    assert.match(deletion.message!, /replaced by a continuing utterance/);
+    setup.fixture.send({ action: 'paste', id: first, target: '0xabc' });
+    const paste = await setup.fixture.reply('paste');
+    assert.equal(paste.type, 'error');
+    assert.match(paste.message!, /replaced by a continuing utterance/);
+
+    setup.transcriptions[1].resolve('Open the browser');
+    await waitFor(() => setup.detections.length === 2);
+    setup.detections[1].resolve('SEND');
+    await setup.idle();
+    await waitFor(() => setup.published('history-deleted').length === 1);
+    assert.equal(setup.rows().length, 1);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('only attempts reported as superseded by the pipeline are deferred, never by outcome', async () => {
+  const setup = await chainFixture();
+  try {
+    // A row whose outcome is `superseded` but that no continuation replaced
+    // (for example, recorded by another caller) is published as before.
+    const activity = setup.fixture.runtime.activity;
+    activity.processing!(900);
+    activity.transcribed!({ ...frame, id: 900, utterance: 'Not part of a chain' });
+    activity.outcome!(900, 'superseded');
+    activity.finished!(900);
+    await waitFor(() => setup.published('activity-entry').length === 1);
+    assert.deepEqual(
+      setup.rows().map((row) => [row.transcript, row.outcome]),
+      [['Not part of a chain', 'superseded']],
+    );
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
 test('earlier independent and historical records, including old superseded rows, are untouched', async () => {
   const setup = await chainFixture();
   try {
@@ -375,6 +422,12 @@ test('without a fully recorded final attempt, superseded attempts are kept and s
       assert.deepEqual(setup.published('activity-entry'), [first]);
       assert.deepEqual(setup.published('history-deleted'), []);
       assert.deepEqual(await setup.recorded('audio'), [first]);
+
+      // The kept row is released from its retirement hold: an ordinary row
+      // again, which the user can delete.
+      setup.fixture.send({ action: 'delete-history', id: first });
+      assert.equal((await setup.fixture.reply('delete-history')).type, 'result');
+      assert.deepEqual(setup.rows(), []);
     } finally {
       await setup.fixture.close();
     }
@@ -511,8 +564,17 @@ test('retirement is limited to finished, unreferenced superseded rows', async ()
     history.label(labeled, true);
     await assert.rejects(history.retireSuperseded(labeled), /pasted or labeled/);
 
+    // While held for retirement, the row refuses paste, label, questions and
+    // user deletion; retirement itself proceeds.
+    history.holdForRetirement(active);
+    assert.throws(() => history.beginPaste(active, '0xabc'), /continuing utterance/);
+    assert.throws(() => history.label(active, false), /continuing utterance/);
+    await assert.rejects(history.recordedFrame(active), /continuing utterance/);
+    await assert.rejects(history.delete(active), /continuing utterance/);
+
     // The first attempt, now finished, is retired with its recordings.
     await history.retireSuperseded(active);
+    history.releaseRetirement(active);
     assert.equal(history.find(active), undefined);
     assert.deepEqual(
       [ignored, pasted, labeled].map((id) => history.find(id)?.id),
