@@ -170,3 +170,16 @@ test('a stalled mutation times out with a replayable uncertain result', async (c
   assert.ok(reply.type === 'error' && reply.duplicate);
   assert.equal(executionCount, 1);
 });
+
+test('an authenticated heartbeat replies without forwarding a listener request', async (context) => {
+  let upstreamRequests = 0;
+  const setup = await fixture(context, (socket) => {
+    upstreamRequests++;
+    roleAccepted(socket);
+  });
+  const phone = await setup.phone();
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+  phone.socket.send(JSON.stringify({ type: 'ping' }));
+  await waitFor(() => phone.messages.some((message) => message.type === 'pong'));
+  assert.equal(upstreamRequests, 1, 'only the role declaration reaches the listener');
+});

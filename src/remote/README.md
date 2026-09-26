@@ -116,6 +116,12 @@ until the listener confirms the remote role. Reopen and Activity-based starts
 open in the background on the desktop, just like typed phone starts. Activity-based
 starts reuse an existing saved screenshot; they do not capture a new one.
 
+Authenticated `{ "type": "ping" }` messages receive `{ "type": "pong" }`
+without contacting the listener. The phone checks every 15 seconds and reconnects
+after 30 seconds without an incoming message, even if the browser still calls
+the socket OPEN and never emits an offline event. Pending mutations are reported
+as uncertain and never automatically resent.
+
 State-changing requests keep a **receipt per device for 10 minutes** (512 max,
 memory only). At capacity new mutations are refused until receipts expire;
 unexpired outcomes are never evicted to admit new work. Pending duplicate waiters

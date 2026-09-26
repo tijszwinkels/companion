@@ -91,6 +91,9 @@ network recovery, foregrounding the app, or Retry now opens a fresh connection
 and obtains current state. Requests awaiting a reply become uncertain and are
 never automatically resent. Drafts remain on this browser. A connection that
 fails to authenticate within ten seconds is retried with backoff.
+An application heartbeat also detects silently dead OPEN sockets within about
+30 seconds while browser timers run. Background timer suspension is recovered
+on foregrounding; this is not a promise of background connectivity on iOS.
 
 For a safe synthetic walkthrough and the current review/ownership limits, see
 [the finish audit](../../docs/mobile-panel-finish.md).

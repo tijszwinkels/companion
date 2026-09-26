@@ -154,6 +154,16 @@ export class Relay {
       return;
     }
 
+    // Browser WebSockets cannot send protocol ping frames. An authenticated
+    // application heartbeat detects silent network loss without touching the
+    // listener or replaying any operation. It shares the request rate limit.
+    if (value && typeof value === 'object' && (value as { type?: unknown }).type === 'ping') {
+      if (Object.keys(value).length === 1 && this.takeToken()) {
+        this.sendPhone({ type: 'pong' });
+      }
+      return;
+    }
+
     const parsed = parseRemoteRequest(value);
     if (!parsed.ok) {
       this.sendPhone({ type: 'error', requestId: parsed.requestId, message: parsed.message });

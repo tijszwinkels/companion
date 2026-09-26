@@ -111,6 +111,7 @@ export interface AuthMessage {
 
 /** Messages the gateway sends to the phone. */
 export type GatewayMessage =
+  | { type: 'pong' }
   | { type: 'authenticated'; deviceId: string; deviceName: string }
   | { type: 'engine'; message: EngineEvent }
   | {

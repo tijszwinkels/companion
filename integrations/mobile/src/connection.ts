@@ -110,6 +110,8 @@ export class Connection {
   private attempt = 0;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private connectTimer?: ReturnType<typeof setTimeout>;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private lastMessageAt = 0;
   private stopped = false;
 
   // A paired phone starts as "connecting" so it never flashes the pairing form.
@@ -294,8 +296,18 @@ export class Connection {
       return;
     }
 
+    if (!message || typeof message !== 'object') {
+      return;
+    }
+    this.lastMessageAt = Date.now();
+
+    if (message.type === 'pong') {
+      return;
+    }
+
     if (message.type === 'authenticated') {
       clearTimeout(this.connectTimer);
+      this.startHeartbeat();
       this.attempt = 0;
       this.setState({ status: 'online', message: '', retryAt: 0 });
       this.onOnline();
@@ -331,6 +343,7 @@ export class Connection {
     }
     this.socket = undefined;
     clearTimeout(this.connectTimer);
+    clearInterval(this.heartbeatTimer);
 
     this.rejectPending();
 
@@ -391,8 +404,27 @@ export class Connection {
     const socket = this.socket;
     this.socket = undefined;
     clearTimeout(this.connectTimer);
+    clearInterval(this.heartbeatTimer);
     this.rejectPending();
     socket?.close(1000, 'Reconnecting or signed out');
+  }
+
+  /** Detect half-open connections even when the browser still reports online. */
+  private startHeartbeat(): void {
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(() => {
+      const socket = this.socket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      if (Date.now() - this.lastMessageAt >= 30_000) {
+        this.retireSocket();
+        this.scheduleRetry('reconnecting', 'Companion stopped responding. Reconnecting…');
+        return;
+      }
+      socket.send(JSON.stringify({ type: 'ping' }));
+    }, 15_000);
   }
 
   private networkLost(): void {
