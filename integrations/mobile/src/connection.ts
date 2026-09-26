@@ -232,7 +232,8 @@ export class Connection {
     const requestId = newRequestId();
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const deadline = Date.now() + requestTimeoutMilliseconds;
+      const expire = () => {
         this.pending.delete(requestId);
         reject(
           new UncertainOutcome(
@@ -241,6 +242,21 @@ export class Connection {
         );
         this.retireSocket();
         this.scheduleRetry('reconnecting', 'Companion did not answer. Reconnecting…');
+      };
+      const timer = setTimeout(() => {
+        const pending = this.pending.get(requestId);
+        if (!pending) {
+          return;
+        }
+        // A suspended page can run overdue timers before buffered replies.
+        // Give those replies one bounded grace period, and probe without
+        // replaying the request. A pong alone never extends this new deadline.
+        if (document.visibilityState === 'hidden' || Date.now() > deadline + 1000) {
+          pending.timer = setTimeout(expire, 5000);
+          this.connectNow();
+          return;
+        }
+        expire();
       }, requestTimeoutMilliseconds);
 
       this.pending.set(requestId, { resolve, reject, timer });

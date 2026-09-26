@@ -78,15 +78,15 @@ function text(page: TestPage, selector: string): Promise<string> {
   );
 }
 
-/** Interactive elements that are smaller than a comfortable touch target. */
+/** Allow half a CSS pixel for animated/fractional layout, never a whole undersized target. */
 function smallTargets(page: TestPage, minimum: number): Promise<string[]> {
   return page.evaluate<
     string[]
-  >(`[...document.querySelectorAll('button, input, textarea, [role=switch]')]
+  >(`[...document.querySelectorAll('button, input, textarea, summary, [role=switch]')]
     .filter((element) => element.offsetParent !== null)
     .map((element) => ({ element, rect: element.getBoundingClientRect() }))
-    .filter(({ rect }) => rect.width > 0 && (rect.height < ${minimum} || rect.width < ${minimum}))
-    .map(({ element, rect }) => (element.getAttribute('aria-label') || element.textContent || element.tagName).trim().slice(0, 40) + ' ' + Math.round(rect.width) + 'x' + Math.round(rect.height))`);
+    .filter(({ rect }) => rect.width > 0 && (rect.height < ${minimum - 0.5} || rect.width < ${minimum - 0.5}))
+    .map(({ element, rect }) => (element.getAttribute('aria-label') || element.textContent || element.tagName).trim().slice(0, 40) + ' ' + rect.width.toFixed(2) + 'x' + rect.height.toFixed(2))`);
 }
 
 function unnamedControls(page: TestPage): Promise<string[]> {
@@ -145,6 +145,12 @@ test('pairing, navigation and layout at phone sizes', { skip }, async (context) 
     await page.waitFor(`document.querySelector('#composer')`);
     assert.ok((await horizontalOverflow(page)) <= 0, `conversation overflow at ${width}px`);
     assert.deepEqual(await unnamedControls(page), []);
+    assert.equal(
+      await page.evaluate(
+        `Boolean(document.querySelector('.controls-row .danger, .close-session'))`,
+      ),
+      false,
+    );
 
     // The viewport supports notches and keyboard-aware resizing.
     const viewport = await page.evaluate<string>(
@@ -532,14 +538,79 @@ test(
       true,
     );
     await replaceDraft(page, '#ask-text', 'A later unsent question');
+    await page.tap('#ask-text');
     await page.evaluate(`window.heldReplies.shift()()`);
-    await page.waitFor(`document.querySelector('#composer')`);
-    await page.tap('.rail-activity');
+    await page.waitFor(`!document.querySelector('.ask .action.primary').disabled`);
     assert.equal(
       await page.evaluate(`document.querySelector('#ask-text').value`),
       'A later unsent question',
     );
     assert.equal(fixture.sessions.snapshot().length, 1);
+    assert.equal(await page.evaluate(`document.activeElement.id`), 'ask-text');
+    assert.deepEqual(page.errors, []);
+  },
+);
+
+test(
+  'desktop arrivals and delayed phone starts preserve the active composer and focus',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const original = fixture.sessions.start(
+      { ...frame, utterance: 'Original conversation' },
+      signal(),
+    );
+    await waitFor(() => fixture.runs.length === 1);
+    const page = await pairedPhone(fixture, browser);
+    await holdMutationReplies(page, fixture.origin);
+    await replaceDraft(page, '#ask-text', 'Start a new conversation');
+    await page.tap('.ask .action.primary');
+    await page.waitFor(`window.heldReplies.length === 1`);
+    await page.tap('.session-tab');
+    await replaceDraft(page, '#composer', 'Keep typing in the original');
+    await page.tap('#composer');
+    await page.evaluate(`window.heldReplies.shift()()`);
+    fixture.sessions.start({ ...frame, utterance: 'Desktop arrival' }, signal());
+    await page.waitFor(`document.querySelectorAll('.session-tab').length === 3`);
+    assert.equal(await page.evaluate(`document.activeElement.id`), 'composer');
+    assert.equal(
+      await page.evaluate(`document.querySelector('#composer').value`),
+      'Keep typing in the original',
+    );
+    assert.equal(await page.evaluate(`history.state.companionPanel.selected`), original);
+    assert.equal(await page.evaluate(`document.querySelectorAll('.session-tab.unread').length`), 2);
+    assert.deepEqual(page.errors, []);
+  },
+);
+
+test(
+  'Activity deletion requires confirmation and cancel preserves the entry',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const runtime = fixture.desktop.runtime;
+    const observed = { ...frame, id: 42, utterance: 'Disposable deletion fixture' };
+    runtime.activity.transcribed?.(observed);
+    runtime.activity.intentRecognized?.(observed.id, 'IGNORE');
+    runtime.activity.outcome?.(observed.id, 'ignored');
+    runtime.activity.finished?.(observed.id);
+    const page = await pairedPhone(fixture, browser);
+    await page.waitFor(`document.querySelector('.history-card')`);
+    await page.tap('[aria-label="Delete utterance, screenshot and audio"]');
+    await page.waitFor(`document.querySelector('.confirm-delete')`);
+    assert.equal(await page.evaluate(`document.querySelectorAll('.history-card').length`), 1);
+    assert.match(await text(page, '.sheet'), /cannot be undone/);
+    await page.tap('.sheet-body .action:not(.danger)');
+    await page.waitFor(
+      `!document.querySelector('.sheet') && !document.querySelector('#app').inert`,
+    );
+    assert.equal(await page.evaluate(`document.querySelectorAll('.history-card').length`), 1);
+    await page.tap('[aria-label="Delete utterance, screenshot and audio"]');
+    await page.tap('.confirm-delete');
+    await page.waitFor(
+      `!document.querySelector('.history-card') && !document.querySelector('.sheet')`,
+    );
+    assert.equal(await page.evaluate(`document.querySelector('#app').inert`), false);
     assert.deepEqual(page.errors, []);
   },
 );
@@ -620,6 +691,7 @@ test(
     await waitFor(() => fixture.sessions.snapshot()[0]?.status === 'completed');
     const page = await pairedPhone(fixture, browser);
     await page.tap('.session-tab');
+    await page.tap('.model-disclosure > summary');
     await page.waitFor(`document.querySelector('.model-picker select.model:not([disabled])')`);
     assert.equal(
       await page.evaluate(`document.querySelectorAll('.model-picker select').length`),
@@ -705,25 +777,35 @@ test(
     const { fixture, browser } = await setup(context);
     fixture.sessions.start({ ...frame, utterance: 'Short viewport fixture' }, signal());
     await waitFor(() => fixture.runs.length === 1);
-    const page = await pairedPhone(fixture, browser, 390, 400);
-    await page.tap('.session-tab');
-    await page.waitFor(`document.querySelector('.message-area')`);
-    assert.ok(
-      (await page.evaluate<number>(
-        `document.querySelector('.message-area').getBoundingClientRect().height`,
-      )) >= 140,
-    );
-    await page.tap('#composer');
-    await page.type('A short-viewport follow-up');
-    await page.tap('.send');
-    await page.waitFor(`document.querySelector('#composer').value === ''`);
-    await page.tap('[aria-label="Refresh available Pi models"]');
-    const visible = await page.evaluate<boolean>(`(() => {
+    for (const [width, height] of [
+      [320, 568],
+      [390, 560],
+      [360, 640],
+      [390, 400],
+    ]) {
+      const page = await pairedPhone(fixture, browser, width, height);
+      await page.tap('.session-tab');
+      await page.waitFor(`document.querySelector('.message-area')`);
+      assert.ok(
+        (await page.evaluate<number>(
+          `document.querySelector('.message-area').getBoundingClientRect().height`,
+        )) >= (height > 540 ? 200 : 140),
+        `transcript too small at ${width}×${height}`,
+      );
+      await page.tap('#composer');
+      await page.type('A short-viewport follow-up');
+      await page.tap('.send');
+      await page.waitFor(`document.querySelector('#composer').value === ''`);
+      await page.tap('.model-disclosure > summary');
+      await page.tap('[aria-label="Refresh available Pi models"]');
+      const visible = await page.evaluate<boolean>(`(() => {
     const rect = document.querySelector('[aria-label="Refresh available Pi models"]').getBoundingClientRect();
     return rect.top >= 0 && rect.bottom <= innerHeight;
   })()`);
-    assert.ok(visible);
-    assert.ok((await horizontalOverflow(page)) <= 0);
-    assert.deepEqual(page.errors, []);
+      assert.ok(visible);
+      assert.ok((await horizontalOverflow(page)) <= 0);
+      assert.deepEqual(page.errors, []);
+      await page.close();
+    }
   },
 );

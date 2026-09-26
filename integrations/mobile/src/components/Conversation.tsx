@@ -1,8 +1,8 @@
 /**
  * A conversation page, laid out like the desktop panel's SessionView and
  * ModelPicker: a collapsible Activity strip, the transcript, choices, the
- * composer, a row of Send/Queue · Stop · Close session with a status line,
- * and "This session · next turn model" with Effort at the bottom.
+ * composer, a row of Send/Queue · Stop with a status line, and expandable
+ * model/effort controls. Closing a session is a separate rail-menu action.
  *
  * Composer rules match the desktop panel: a draft is cleared only after its
  * send succeeds, and only if nothing more was typed since; failed sends keep
@@ -41,11 +41,14 @@ export function ConversationPage(props: { session: AgentSession }) {
         stopRunId={actions?.stopRunId ?? ''}
         choices={actions?.choices ?? []}
       />
-      {session.harness === 'claude-code' ? (
-        <ClaudeModelPicker session={session} />
-      ) : (
-        <ModelPicker session={session} />
-      )}
+      <details class="model-disclosure">
+        <summary>Model &amp; effort</summary>
+        {session.harness === 'claude-code' ? (
+          <ClaudeModelPicker session={session} />
+        ) : (
+          <ModelPicker session={session} />
+        )}
+      </details>
     </div>
   );
 }
@@ -262,13 +265,6 @@ function InputSection(props: {
             Stop
           </button>
         )}
-        <button
-          class="action close-session"
-          disabled={!props.online}
-          onClick={() => void store.request('close-agent', { id: session.id }).catch(() => {})}
-        >
-          Close session
-        </button>
         <span class="status-text" aria-live="polite">
           {statusText}
         </span>

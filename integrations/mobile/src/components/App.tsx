@@ -81,6 +81,9 @@ export function App() {
             <button
               class="icon-button"
               aria-label={railOpen ? 'Hide sessions' : 'Show sessions'}
+              aria-description={
+                !railOpen && unreadCount > 0 ? `${unreadCount} unread sessions` : undefined
+              }
               aria-expanded={railOpen}
               onClick={() => setRailOpen(!railOpen)}
             >
@@ -164,7 +167,7 @@ function Toasts() {
   const store = useStore();
 
   return (
-    <div class="toasts" aria-live="assertive">
+    <div class="toasts">
       {state.toasts.map((toast) => (
         <div
           key={toast.id}

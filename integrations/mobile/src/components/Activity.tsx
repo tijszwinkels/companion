@@ -17,6 +17,7 @@ import { clockTime, copyText, intentLabel } from '../format.ts';
 import { useAppState, useStore } from '../hooks.ts';
 import type { AppState } from '../store.ts';
 import { MicIcon, MicOffIcon } from './icons.tsx';
+import { Sheet } from './Sheet.tsx';
 
 /** Listening title/description with the desktop StatusView's wording. */
 export function listeningStatus(state: AppState): {
@@ -388,6 +389,7 @@ function HistoryCard(props: {
   const { entry } = props;
   const [choosing, setChoosing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function act(action: () => Promise<unknown>) {
@@ -435,7 +437,12 @@ function HistoryCard(props: {
         <button
           class="action small"
           disabled={!props.online || busy}
-          onClick={() => act(() => store.request('start-history-agent', { id: entry.id }))}
+          onClick={() =>
+            act(async () => {
+              await store.request('start-history-agent', { id: entry.id });
+              store.toast('Coding session started. Open it from the sessions rail.', 'success');
+            })
+          }
         >
           New coding session
         </button>
@@ -469,13 +476,35 @@ function HistoryCard(props: {
             class="action small danger"
             disabled={!props.online || busy || entry.outcome === 'processing'}
             aria-label="Delete utterance, screenshot and audio"
-            onClick={() => act(() => store.request('delete-history', { id: entry.id }))}
+            onClick={() => setConfirmDelete(true)}
           >
             ×
           </button>
         )}
       </div>
 
+      {confirmDelete && (
+        <Sheet title="Delete Activity entry?" onClose={() => setConfirmDelete(false)}>
+          <p>This permanently deletes the utterance, screenshot and audio. It cannot be undone.</p>
+          <div class="actions">
+            <button class="action" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </button>
+            <button
+              class="action danger confirm-delete"
+              disabled={!props.online || busy || entry.outcome === 'processing'}
+              onClick={() =>
+                void act(async () => {
+                  await store.request('delete-history', { id: entry.id });
+                  setConfirmDelete(false);
+                })
+              }
+            >
+              Delete permanently
+            </button>
+          </div>
+        </Sheet>
+      )}
       {choosing && (
         <div class="intent-picker">
           <div class="hint">What should it have been?</div>

@@ -180,3 +180,30 @@ test('a foreground probe refuses new mutations until the connection answers', as
   assert.equal(connection.state.status, 'reconnecting');
   assert.equal(connection.paired, true);
 });
+
+test('an overdue request deadline permits a buffered reply but grants only one grace period', async (context) => {
+  const { connection, socket } = connectedBrowser(context);
+  const delivered = connection.request('toggle-sounds', {});
+  const request = socket.sent.at(-1)!;
+  context.mock.timers.tick(15_000);
+  socket.message({ type: 'pong' });
+
+  context.mock.method(Date, 'now', () => 60_000);
+  context.mock.timers.tick(5000);
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  assert.equal(socket.sent.at(-1)?.type, 'ping');
+  socket.message({ type: 'result', requestId: request.requestId, result: 'sounds-enabled' });
+  assert.equal(await delivered, 'sounds-enabled');
+
+  const unacknowledged = connection.request('toggle-pause', {});
+  const uncertain = assert.rejects(unacknowledged, UncertainOutcome);
+  context.mock.timers.tick(15_000);
+  socket.message({ type: 'pong' });
+  context.mock.method(Date, 'now', () => 120_000);
+  context.mock.timers.tick(5000);
+  socket.message({ type: 'pong' });
+  context.mock.timers.tick(5000);
+  await uncertain;
+  assert.equal(connection.state.status, 'reconnecting');
+  assert.equal(socket.sent.filter((message) => message.type === 'request').length, 2);
+});

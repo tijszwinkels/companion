@@ -96,9 +96,11 @@ export class Store {
   private readonly draftRevisions = new Map<string, number>();
   /** Invalidates async completions when the paired identity is forgotten. */
   private identityRevision = 0;
+  /** Changes on phone navigation, including Back/Forward and modal dismissal. */
+  private pageRevision = 0;
   /** Latest completed turn per conversation, for unread marking. */
   private readonly completedTurns = new Map<string, string>();
-  /** Conversations seen in any snapshot or event; newly seen ones are selected. */
+  /** Conversations seen in any snapshot or event; new arrivals are marked unread. */
   private readonly seen = new Set<string>();
   private receivedSnapshot = false;
   /** Set just before this phone asks to reopen a conversation. */
@@ -195,6 +197,7 @@ export class Store {
   }
 
   private applyPage(page: PhonePage): void {
+    this.pageRevision += 1;
     const id = this.state.sessions.has(page.selected) ? page.selected : '';
     const unread = new Set(this.state.unread);
     unread.delete(id);
@@ -300,6 +303,7 @@ export class Store {
       return;
     }
     const revision = this.draftRevisions.get(id) ?? 0;
+    const pageRevision = this.pageRevision;
     const identity = this.identityRevision;
     const sending = { pending: true, error: '' };
     this.update({ sends: new Map(this.state.sends).set(id, sending) });
@@ -311,13 +315,22 @@ export class Store {
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
         return;
       }
-      if ((this.draftRevisions.get(id) ?? 0) === revision) {
+      const unchangedDraft = (this.draftRevisions.get(id) ?? 0) === revision;
+      if (unchangedDraft) {
         this.setDraft(id, '');
       }
       const sends = new Map(this.state.sends);
       sends.delete(id);
       this.update({ sends });
-      if (id === 'new') {
+      // A delayed result must not take the user away from another page or
+      // dismiss the keyboard while they compose a newer question.
+      if (
+        id === 'new' &&
+        unchangedDraft &&
+        pageRevision === this.pageRevision &&
+        !this.state.selected &&
+        !this.state.showingPrevious
+      ) {
         this.open((result as { id: string }).id);
       }
     } catch (error) {
@@ -533,16 +546,16 @@ export class Store {
       ? this.state.order
       : [...this.state.order, update.id];
 
-    // A newly seen conversation opens and is selected once, unless an agent
-    // tool opened it in the background (desktop protocol rule). Reopening is
-    // explicit: `agent-restored` with reveal selects it again.
+    // Desktop arrivals never navigate this phone. Only a restore requested
+    // here may reveal a session; phone-start replies are handled by sendDraft.
     const newlySeen = !this.seen.has(update.id);
     this.seen.add(update.id);
-    const reveal =
-      this.receivedSnapshot &&
-      ((newlySeen && !update.openInBackground) || (complete && revealRestored));
+    const reveal = this.receivedSnapshot && complete && revealRestored;
 
-    const unread = this.observeCompletions([session], reveal ? update.id : this.state.selected);
+    let unread = this.observeCompletions([session], reveal ? update.id : this.state.selected);
+    if (newlySeen && !reveal && update.id !== this.state.selected) {
+      unread = new Set(unread).add(update.id);
+    }
     this.update({ sessions, order, unread });
 
     if (reveal) {

@@ -16,7 +16,7 @@
   --fg: #a9b1d6;
   --strong: #c0caf5;
   --accent: #7aa2f7;
-  --muted: #8992b5;
+  --muted: #929bbd;
   --selection: #292e42;
   --rail-bg: rgba(169, 177, 214, 0.035);
   --border: rgba(115, 123, 156, 0.22);
@@ -386,9 +386,28 @@ button {
   display: flex;
 }
 
-/* A keyboard-sized viewport must still expose both the transcript and footer.
-   Let the conversation page scroll instead of squeezing messages to zero. */
-@media (max-height: 540px) {
+/* The page may scroll when expanded controls or a keyboard leave too little
+   room. Keep a readable transcript at intermediate phone heights as well. */
+.conversation-page {
+  overflow-y: auto;
+}
+
+.conversation-page > .message-area {
+  min-height: 200px;
+}
+
+.model-disclosure {
+  flex: none;
+}
+
+.model-disclosure > summary {
+  min-height: var(--tap);
+  padding: 12px 0;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+@media (max-height: 700px) {
   .conversation-page {
     overflow-y: auto;
   }
