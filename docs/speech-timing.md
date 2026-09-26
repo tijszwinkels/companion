@@ -83,22 +83,25 @@ day and never the model's completion time.
 
 - **Admission.** The segmenter reports the silence it actually counted after the
   last voiced frame (`Segment.trailingSilenceMs`) and the listener submits the
-  segment in the same tick. The attempt's speech end is admission time minus that
+  segment in the same tick; `submit` requires this (a later submission would only
+  anchor the floor late). The attempt's speech end is admission time minus that
   silence. A silence endpoint measured 224 ms; a segment closed by the 30-second
   `limit` or at end of input measured less, often 0, and owes the rest of the
   800 ms. No silence is assumed that was not heard.
-- **Queueing, ASR and inference** after admission count toward the floor: the
+- **Queueing, ASR and inference** after admission (processing-queue delay, not a
+  delay before admission) count toward the floor: the
   user was silent throughout. A job that waited 2 s behind another dispatches as
   soon as it is decided.
 - **Merged attempt.** Its speech ends with the continuation segment, so it gets
   a fresh floor measured from that segment's own trailing silence.
 - **Rejected burst.** A too-short candidate (cough, click) was still the latest
   VAD speech. The listener passes its measured trailing silence to
-  `speechDiscarded`, and both quiet periods restart from it: the floor 800 ms
+  `speechDiscarded`, including for a too-short tail still open at end of input
+  (often 0 ms), and both quiet periods restart from it: the floor 800 ms
   after the burst ended, the empty window 1200 ms after the burst was rejected,
   exactly as they count from an endpoint.
-- **Other releases** (typed input as a boundary, listening ended by EOF, pause or
-  failure, a continuation over the 30-second cap) end a hold because no later
+- **Other releases** (typed input as a boundary, pause, capture or VAD failure,
+  shutdown, a continuation over the 30-second cap) end a hold because no later
   sound can join the attempt any more. Waiting longer could not change the
   outcome, so the attempt keeps its deadlines. (Previously every release
   restarted the shortcut and empty windows.)

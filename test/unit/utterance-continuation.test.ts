@@ -704,6 +704,30 @@ test('a rejected burst releases the held attempt at a floor measured from the bu
   await finish(setup);
 });
 
+test('a too-short tail at the end of the input delays an earlier result until 800 ms after it', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  await advanceTo(setup, spoke + 300);
+  setup.detections[0].answer('SEND');
+
+  // A candidate opens at +500; the input ends at +600 while it is still too
+  // short. The listener rejects it with no trailing silence: its sound was
+  // the latest speech, heard until +600.
+  await advanceTo(setup, spoke + 500);
+  setup.pipeline.speechResumed();
+  await advanceTo(setup, spoke + 600);
+  setup.pipeline.speechDiscarded(0);
+
+  await advanceTo(setup, spoke + 1399);
+  assert.deepEqual(setup.dispatched, [], 'Not before the tail ended + 800 ms');
+  await advanceTo(setup, spoke + 1400);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+  await finish(setup);
+});
+
 test('a segment closed by EOF or the 30-second limit owes the floor it did not measure', async () => {
   for (const trailingSilenceMs of [0, 96]) {
     const setup = harness();

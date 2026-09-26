@@ -99,7 +99,18 @@ const candidateEndings = {
   rejected: { voiced: 2, expected: ['resumed', 'discarded after 224 ms'] },
   accepted: { voiced: 6, expected: ['resumed', 'submit after 224 ms'] },
   'eof-accepted': { voiced: Infinity, expected: ['resumed', 'submit after 0 ms'] },
-  'eof-rejected': { voiced: Infinity, startAtEnd: true, expected: ['resumed', 'discarded'] },
+  // A too-short tail still open at the end of the input is a rejected burst:
+  // its measured trailing silence restarts the held attempt's floor.
+  'eof-rejected': {
+    voiced: Infinity,
+    startAtEnd: true,
+    expected: ['resumed', 'discarded after 0 ms'],
+  },
+  'eof-rejected-after-silence': {
+    voiced: 2,
+    onsetFromEnd: 5,
+    expected: ['resumed', 'discarded after 96 ms'],
+  },
   // Five voiced frames, then three silent frames (96 ms) before the input
   // ends: exactly the silence that was heard is credited, not 0 or 224 ms.
   'eof-after-silence': { voiced: 5, onsetFromEnd: 8, expected: ['resumed', 'submit after 96 ms'] },

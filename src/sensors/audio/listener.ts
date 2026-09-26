@@ -84,18 +84,24 @@ export async function listen(
     }
 
     signal.throwIfAborted();
+    const tailWasOpen = segmenter.collecting;
     const tail = segmenter.finish();
 
     if (tail) {
       log('utterance', 'Speech ended (end)');
       pipeline.submit(tail.samples, signal, tail.leadIn, tail.trailingSilenceMs);
+    } else if (tailWasOpen) {
+      // A too-short tail at the end of the input is a rejected burst like any
+      // other: its sound was the latest speech, so the held attempt's floor
+      // restarts from the tail's measured end (often 0 ms before EOF).
+      pipeline.speechDiscarded(closedTrailingSilenceMs);
     }
     completed = true;
   } finally {
-    // EOF without speech, pause, capture or VAD failure, and shutdown: any
-    // candidate still open will never be submitted. Idempotent after submit.
-    // No sound after this can continue the held attempt, so its deadlines
-    // stay as they were (no trailing silence is passed).
+    // Pause, capture or VAD failure, and shutdown: any candidate still open
+    // will never be submitted. Idempotent after submit or a rejected tail.
+    // Listening has stopped, so no sound can continue the held attempt, and
+    // its deadlines stay as they were (no trailing silence is passed).
     pipeline.speechDiscarded();
 
     captureDiagnostics.finish();

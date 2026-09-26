@@ -103,9 +103,12 @@ export class SensorPipeline implements InspectableModule {
    * combined audio keeps the real pause up to the legacy endpoint.
    *
    * `trailingSilenceMs` is the silence the segmenter measured at the end of
-   * this segment (Segment.trailingSilenceMs). Admission happens in the same
-   * tick as the segment closes, so the speech ended that long before now; the
-   * attempt's commitment floor counts from there. A merged attempt ends in the
+   * this segment (Segment.trailingSilenceMs). Contract: call `submit` in the
+   * same tick as the segment closes, as the listener does. The speech then
+   * ended that long before now, and the attempt's commitment floor counts from
+   * there. A caller that submitted later would anchor the floor late (a longer
+   * wait, never a shorter one); no caller does. Delay after admission, such as
+   * waiting in the queue, counts as quiet time. A merged attempt ends in the
    * new segment, so the same value applies. Callers without VAD pass nothing:
    * no silence is assumed, and the full floor counts from admission.
    */
@@ -153,9 +156,10 @@ export class SensorPipeline implements InspectableModule {
    * held attempt. Idempotent; safe on every exit path.
    *
    * The listener passes `burstTrailingSilenceMs` for a candidate rejected as
-   * too short: that sound ended this long ago, and the held attempt's quiet
-   * period restarts from it. Without it (listening ended), no later sound can
-   * continue the attempt, so its deadlines are unchanged.
+   * too short, including a too-short tail at the end of the input: that sound
+   * ended this long ago, and the held attempt's quiet period restarts from it.
+   * Without it (pause, capture or VAD failure, shutdown), listening has stopped,
+   * no later sound can continue the attempt, and its deadlines are unchanged.
    */
   speechDiscarded(burstTrailingSilenceMs?: number): void {
     this.releaseHold('Resumed sound was not speech; continuing', burstTrailingSilenceMs);
