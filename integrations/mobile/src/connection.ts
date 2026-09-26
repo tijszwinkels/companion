@@ -111,6 +111,7 @@ export class Connection {
   private retryTimer?: ReturnType<typeof setTimeout>;
   private connectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private probeTimer?: ReturnType<typeof setTimeout>;
   private lastMessageAt = 0;
   private stopped = false;
 
@@ -162,19 +163,26 @@ export class Connection {
 
   /** Exchange a pairing code for a device token and connect. */
   async pair(code: string, name: string, server: string): Promise<void> {
-    const response = await fetch(gatewayUrl('api/pair', server), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, name }),
-      credentials: 'omit',
-    });
-    const body = (await response.json().catch(() => ({}))) as {
-      token?: string;
-      deviceId?: string;
-      deviceName?: string;
-      error?: string;
-    };
-
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    let response: Response;
+    let body: { token?: string; deviceId?: string; deviceName?: string; error?: string };
+    try {
+      response = await fetch(gatewayUrl('api/pair', server), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, name }),
+        credentials: 'omit',
+        signal: controller.signal,
+      });
+      body = await response.json();
+    } catch {
+      throw Error(
+        'Could not reach Companion. Check the connection and create a new pairing code if this one was consumed.',
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok || !body.token || !body.deviceId) {
       throw Error(body.error || `Pairing failed (HTTP ${response.status})`);
     }
@@ -225,6 +233,8 @@ export class Connection {
             'Companion has not answered yet. It may still complete; check before retrying.',
           ),
         );
+        this.retireSocket();
+        this.scheduleRetry('reconnecting', 'Companion did not answer. Reconnecting…');
       }, requestTimeoutMilliseconds);
 
       this.pending.set(requestId, { resolve, reject, timer });
@@ -300,6 +310,8 @@ export class Connection {
       return;
     }
     this.lastMessageAt = Date.now();
+    clearTimeout(this.probeTimer);
+    this.probeTimer = undefined;
 
     if (message.type === 'pong') {
       return;
@@ -344,6 +356,8 @@ export class Connection {
     this.socket = undefined;
     clearTimeout(this.connectTimer);
     clearInterval(this.heartbeatTimer);
+    clearTimeout(this.probeTimer);
+    this.probeTimer = undefined;
 
     this.rejectPending();
 
@@ -405,6 +419,8 @@ export class Connection {
     this.socket = undefined;
     clearTimeout(this.connectTimer);
     clearInterval(this.heartbeatTimer);
+    clearTimeout(this.probeTimer);
+    this.probeTimer = undefined;
     this.rejectPending();
     socket?.close(1000, 'Reconnecting or signed out');
   }
@@ -414,7 +430,7 @@ export class Connection {
     clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
       const socket = this.socket;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
+      if (!socket || socket.readyState !== WebSocket.OPEN || this.probeTimer) {
         return;
       }
 
@@ -453,9 +469,22 @@ export class Connection {
     if (!this.credential || this.stopped) {
       return;
     }
-    // Browsers can retain OPEN on a suspended, dead connection. A foreground
-    // or network transition deliberately obtains a fresh snapshot and selection.
-    // Pending mutations become uncertain and are never resent.
+    if (this.socket?.readyState === WebSocket.OPEN && this.state.status === 'online') {
+      // Foregrounding a healthy socket must not turn an admitted send into an
+      // uncertain outcome. Probe first, retaining pending requests and replies.
+      // Browsers may still call a dead socket OPEN, so bound that probe.
+      if (!this.probeTimer) {
+        this.probeTimer = setTimeout(() => {
+          this.retireSocket();
+          this.scheduleRetry('reconnecting', 'Companion stopped responding. Reconnecting…');
+        }, 5000);
+        this.socket.send(JSON.stringify({ type: 'ping' }));
+      }
+      return;
+    }
+    if (this.socket && this.socket.readyState <= WebSocket.OPEN) {
+      return;
+    }
     this.retireSocket();
     this.open();
   }

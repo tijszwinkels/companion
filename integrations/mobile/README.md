@@ -87,8 +87,9 @@ steps.
 ## Connection behavior
 
 Sign out and pair again without reloading. Network loss retires the old socket;
-network recovery, foregrounding the app, or Retry now opens a fresh connection
-and obtains current state. Requests awaiting a reply become uncertain and are
+network recovery opens a fresh connection and obtains current state. Foregrounding
+or Retry now probes an existing OPEN connection first, preserving pending replies
+when it is healthy; a failed five-second probe reconnects. Requests awaiting a reply become uncertain and are
 never automatically resent. Drafts remain on this browser. A connection that
 fails to authenticate within ten seconds is retried with backoff.
 An application heartbeat also detects silently dead OPEN sockets within about

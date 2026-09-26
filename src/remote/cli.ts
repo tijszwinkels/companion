@@ -23,7 +23,7 @@ serve     Run the phone gateway until interrupted.
   --tls-key PATH        PEM private key for that certificate.
   --origin URL          Allowed app origin, exactly scheme://host[:port]; repeatable.
                         Loopback HTTP defaults to http://127.0.0.1:PORT and
-                        http://localhost:PORT.
+                        http://localhost:PORT and http://[::1]:PORT.
   --control-socket PATH Listener socket (default $XDG_RUNTIME_DIR/companion/control.sock).
   --sessions-directory PATH
                         Saved conversations, for screenshots

@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import WebSocket from 'ws';
 
 import { Gateway, checkGatewayOptions } from '../../src/remote/gateway.ts';
 import { parseRemoteRequest } from '../../src/remote/protocol.ts';
@@ -117,11 +119,43 @@ test('the socket refuses other origins, missing tokens and unknown tokens', asyn
   await assert.rejects(fixture.phone(undefined, 'https://evil.example'), /HTTP 403/);
 
   const silent = await fixture.phone(undefined);
-  assert.equal((await silent.closed).code, 4401);
+  assert.equal((await silent.closed).code, 4408);
 
   const wrong = await fixture.phone('x'.repeat(43));
   assert.equal((await wrong.closed).code, 4401);
   assert.equal(wrong.messages.length, 0);
+});
+
+test('a transient device-store failure refuses control without invalidating the credential', async (context) => {
+  const fixture = await withFixture(context);
+  const { token } = await fixture.pair();
+  const path = join(fixture.directory, 'remote-state', 'devices.json');
+  const stored = await readFile(path);
+  await writeFile(path, 'invalid synthetic JSON');
+  const unavailable = await fixture.phone(token);
+  assert.equal((await unavailable.closed).code, 4503);
+  await writeFile(path, stored);
+  const recovered = await fixture.phone(token);
+  await recovered.engine('state');
+});
+
+test('the gateway frees vanished phone slots while responsive phones stay connected', async (context) => {
+  const fixture = await withFixture(context, { gateway: { heartbeatMilliseconds: 100 } });
+  const { token } = await fixture.pair();
+  const healthy = await fixture.phone(token);
+  await healthy.engine('state');
+  const vanished = new WebSocket(`ws://127.0.0.1:${fixture.port}/api/socket`, {
+    headers: { Origin: fixture.origin },
+    autoPong: false,
+  });
+  context.after(async () => vanished.terminate());
+  const closed = once(vanished, 'close');
+  await once(vanished, 'open');
+  vanished.send(JSON.stringify({ type: 'auth', token }));
+  await closed;
+  assert.equal(healthy.socket.readyState, WebSocket.OPEN);
+  const replacement = await fixture.phone(token);
+  await replacement.engine('state');
 });
 
 test('an authenticated phone receives state and gets correlated replies', async (context) => {

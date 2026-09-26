@@ -60,7 +60,10 @@ page a secure context.
 
 - **Network reachability is not authorization.** Every WebSocket must send
   `{"type":"auth","token":"…"}` as its first message within 5 seconds. Tokens are
-  never put in URLs (which leak into logs and history).
+  never put in URLs (which leak into logs and history). Native clients can forge
+  Host/Origin: those checks defend browser boundaries, not pairing authority.
+  Reachable unauthorized peers can consume global pairing/connection limits;
+  restrict tailnet access with ACLs as well as pairing.
 - **Pairing.** `pair` writes a random 10-character code (≈50 bits, confusable
   letters removed) to `pairing.json` as a SHA-256 hash, valid for 10 minutes and
   5 wrong guesses, single use. `POST /api/pair {code, name}` returns a 256-bit
@@ -133,8 +136,13 @@ listener disconnects first, the receipt records an explicit uncertain-outcome
 error. The phone app never resends an unconfirmed mutation automatically; the
 receipt is a second guard, not an exactly-once guarantee across gateway restarts.
 
-Close codes: 4401 not paired/timeout, 4403 revoked, 4429 too many phones, 4408
-too slow, 4503 listener unavailable or lacks the remote role, 4001 gateway stopped.
+Close codes: 4401 definitively not paired, 4403 revoked, 4429 too many phones,
+4408 slow connection/authentication timeout, 4503 listener or device authorization
+unavailable (including unsupported remote role), 4001 gateway stopped. Transient
+4408/4503 failures do not discard the phone credential. Gateway protocol pings
+every 20 seconds terminate peers missing the next pong and release their slots.
+TLS certificates are read once at startup; installing a renewed certificate
+requires an explicitly arranged gateway restart.
 
 ## Tests
 

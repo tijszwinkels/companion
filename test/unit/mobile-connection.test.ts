@@ -96,4 +96,22 @@ test('a silently dead OPEN socket reconnects and cannot replay mutations or appl
   second.message({ type: 'authenticated', deviceId: 'fixture', deviceName: 'Fixture' });
   assert.equal(connection.state.status, 'online');
   assert.equal(second.sent.filter((message) => message.type === 'request').length, 0);
+
+  // Foregrounding a healthy connection probes without losing a pending reply.
+  const delivered = connection.request('toggle-sounds', {});
+  const request = second.sent.at(-1)!;
+  window.dispatchEvent(new Event('online'));
+  assert.equal(SilentSocket.instances.length, 2);
+  assert.equal(second.readyState, WebSocket.OPEN);
+  assert.equal(second.sent.at(-1)?.type, 'ping');
+  second.message({ type: 'pong' });
+  second.message({
+    type: 'result',
+    requestId: request.requestId,
+    action: 'toggle-sounds',
+    result: 'sounds-enabled',
+  });
+  assert.equal(await delivered, 'sounds-enabled');
+  context.mock.timers.tick(5001);
+  assert.equal(connection.state.status, 'online');
 });

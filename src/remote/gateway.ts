@@ -63,6 +63,8 @@ export interface GatewayOptions {
   log(message: string): void;
   /** How often device revocations are checked for live connections. */
   revocationCheckMilliseconds?: number;
+  /** Protocol ping interval; clients missing the next pong are disconnected. */
+  heartbeatMilliseconds?: number;
 }
 
 /** Concurrent authenticated phones and not-yet-authenticated sockets. */
@@ -131,7 +133,7 @@ export function checkGatewayOptions(options: GatewayOptions): void {
 
 /** Default origins for a loopback-only HTTP gateway. */
 export function loopbackOrigins(port: number): string[] {
-  return [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
+  return [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`];
 }
 
 export class Gateway {
@@ -152,6 +154,8 @@ export class Gateway {
   private pairingWindowStart = 0;
   private pairingRequests = 0;
   private revocationTimer?: ReturnType<typeof setInterval>;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private readonly alive = new Map<WebSocket, boolean>();
 
   constructor(private readonly options: GatewayOptions) {
     checkGatewayOptions(options);
@@ -197,10 +201,24 @@ export class Gateway {
       () => void this.closeRevoked(),
       this.options.revocationCheckMilliseconds ?? 5000,
     );
+    this.heartbeatTimer = setInterval(() => {
+      for (const [phone, answered] of this.alive) {
+        if (phone.readyState !== phone.OPEN) {
+          continue;
+        }
+        if (!answered) {
+          phone.terminate();
+          continue;
+        }
+        this.alive.set(phone, false);
+        phone.ping();
+      }
+    }, this.options.heartbeatMilliseconds ?? 20_000);
   }
 
   async close(): Promise<void> {
     clearInterval(this.revocationTimer);
+    clearInterval(this.heartbeatTimer);
 
     for (const relay of this.relays.keys()) {
       relay.terminate(closeCodes.shutdown, 'Gateway stopped');
@@ -479,6 +497,9 @@ export class Gateway {
     // Protocol errors (oversized payload, invalid UTF-8, bad frame) are emitted
     // on the WebSocket even before authentication. Contain them to this client.
     phone.on('error', () => phone.terminate());
+    this.alive.set(phone, true);
+    phone.on('pong', () => this.alive.set(phone, true));
+    phone.once('close', () => this.alive.delete(phone));
     this.unauthenticated++;
     let settled = false;
 
@@ -492,7 +513,8 @@ export class Gateway {
 
     const timer = setTimeout(() => {
       finish();
-      phone.close(closeCodes.unauthorized, 'Authentication timed out');
+      // Slow transport is not evidence that the stored credential is invalid.
+      phone.close(closeCodes.slowConsumer, 'Authentication timed out');
     }, authenticationMilliseconds);
 
     phone.once('close', finish);
@@ -510,6 +532,9 @@ export class Gateway {
         device = await this.devices.authenticate(token);
       } catch (error) {
         this.options.log(`Device store error: ${String(error)}`);
+        finish();
+        phone.close(closeCodes.engineUnavailable, 'Device authorization is unavailable');
+        return;
       }
       finish();
 

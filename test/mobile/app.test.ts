@@ -379,3 +379,33 @@ test(
     assert.deepEqual(page.errors, []);
   },
 );
+
+test(
+  'foregrounding during a send preserves its reply and clears only the sent draft',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Foreground fixture' }, signal());
+    const page = await pairedPhone(fixture, browser);
+    await page.waitFor(`document.querySelector('.conversation-card')`);
+    await page.tap('.conversation-card');
+    await page.tap('#composer');
+    await page.type('Send once while foregrounding');
+    await page.evaluate(`(() => {
+    document.querySelector('.send:not(.stop)').click();
+    document.dispatchEvent(new Event('visibilitychange'));
+  })()`);
+    await page.waitFor(`document.querySelector('#composer').value === ''`);
+    assert.equal(
+      fixture.sessions
+        .snapshot()[0]
+        .messages.filter((message) => message.text === 'Send once while foregrounding').length,
+      1,
+    );
+    assert.equal(
+      await page.evaluate(`Boolean(document.querySelector('.composer-note.error'))`),
+      false,
+    );
+    assert.deepEqual(page.errors, []);
+  },
+);
