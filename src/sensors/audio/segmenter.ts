@@ -48,6 +48,14 @@ export interface Segment {
    * merged into a provisional attempt; otherwise it is ignored. It may be empty.
    */
   leadIn: Float32Array;
+  /**
+   * Silence counted at the end of `samples`, in milliseconds: ENDPOINT_MS for a
+   * `silence` endpoint, and whatever silence had accumulated (often 0) when the
+   * 30-second `limit` or the end of the input closed the segment. The speech
+   * ended this long before the segment was returned; the commitment floor is
+   * measured from that moment (core/utterance-continuation.ts).
+   */
+  trailingSilenceMs: number;
 }
 
 /** One report per completed candidate, including candidates rejected by VAD. */
@@ -146,7 +154,12 @@ export class Segmenter {
 
     // Short VAD triggers are discarded instead of sent to transcription.
     if (this.speechMs >= VAD_SETTINGS.minSpeechMs) {
-      segment = { samples: joinFrames(this.frames), reason, leadIn: joinFrames(this.gap) };
+      segment = {
+        samples: joinFrames(this.frames),
+        reason,
+        leadIn: joinFrames(this.gap),
+        trailingSilenceMs: this.silenceMs,
+      };
     }
 
     if (this.frames.length) {

@@ -6,6 +6,14 @@ inference. Now it closes a **provisional** segment after a short silence and
 starts work immediately. If the user keeps talking before the attempt commits
 to an action, the provisional attempt is replaced by the whole utterance.
 
+**800 ms commitment floor** (Tijs, 2026-09-26). Work still starts at the
+provisional endpoint, but a spoken decision (the intent LLM's answer or a
+shortcut) commits only when it is ready **and** at least 800 ms have passed
+since the latest VAD-detected speech:
+`commit time = max(speech end + 800 ms, decision ready)`. It is not the decision
+time plus 800 ms. An early answer stays provisional and continuable until the
+floor; a slow answer commits as soon as it arrives.
+
 Source: `src/sensors/audio/segmenter.ts` (endpoint), `src/sensors/audio/listener.ts`
 (candidate events), `src/core/utterance-continuation.ts` (hold/commit state and
 the product constants), `src/core/pipeline.ts` (merge, supersession, cleanup) and
@@ -16,7 +24,7 @@ the product constants), `src/core/pipeline.ts` (merge, supersession, cleanup) an
 | Value | Setting | Effective |
 | --- | --- | --- |
 | Provisional endpoint | `VAD_SETTINGS.silenceMs = 200` | **224 ms**: silence is counted in whole 32 ms frames; 7 frames is the smallest count ≥ 200 ms (6 frames = 192 ms). Exported as `ENDPOINT_MS`. |
-| Shortcut quiet window | `SHORTCUT_QUIET_MS = 800 − ENDPOINT_MS` | **576 ms** after the provisional endpoint, i.e. the legacy 800 ms after speech end. Derived from both constants. |
+| Spoken commitment floor | `SPEECH_QUIET_MS = LEGACY_ENDPOINT_MS` | **800 ms** after the latest VAD-detected speech ended, for inference and shortcuts. After a silence endpoint 224 ms have already passed at admission, so **576 ms** remain. |
 | Empty-transcript window | `EMPTY_QUIET_MS` | **1200 ms** after the provisional endpoint (see the evaluation). |
 | Restored pause | `CONTINUATION_GAP_MS = 800 − 224 − 256` | **320 ms** of audio after the previous candidate that the preroll cannot hold (`Segment.leadIn`). |
 | Combined audio cap | `MAX_UTTERANCE_SAMPLES` | 30 s, the segmenter's existing `maxMs`. |
@@ -30,7 +38,7 @@ the 30-second segment cap are unchanged.
    As before, admission plays the `processing` cue, copies the interaction
    context and starts the screenshot. ASR starts as soon as the worker is free,
    and the intent LLM starts as soon as the transcript is ready. There is no
-   additional waiting period.
+   waiting period before either; only the commitment (step 4) waits.
 2. **Resumed speech.** When the listener's segmenter opens a new candidate
    (the first frame at probability ≥ 0.65), `SensorPipeline.speechResumed()`
    _holds_ the newest job if it is an uncommitted speech attempt. A hold stops
@@ -46,7 +54,8 @@ the 30-second segment cap are unchanged.
      LLM runs on that transcript. This repeats for further pauses.
 4. **Commitment.** `ProvisionalAttempt.commit()` is awaited immediately before
    the first externally visible decision: dispatch or skip on every router path,
-   and filtering an empty transcript in the pipeline. After it returns, the
+   and filtering an empty transcript in the pipeline. It returns once no hold is
+   open and the route's deadline has passed (see below). After it returns, the
    attempt can no longer be held or superseded; any later speech is a new
    request. Side effects are never undone or replayed.
 
@@ -58,13 +67,44 @@ closed by the 30-second `limit` is an accepted segment and follows `submit`.
 
 | Route | Commits | Rationale |
 | --- | --- | --- |
-| Intent LLM (permanent or contextual intent) | As soon as inference returns, unless a hold is open. | Tijs: no additional wait. Resumed speech during inference replaces it. |
-| Prefix and exact-label shortcuts, including their skips | After routing **and** 576 ms of quiet after the provisional endpoint (restarted by a released hold). | Product choice D1. Shortcuts have no inference time in which a pause can be bridged; without the window, "go to session ‹pause› three" would dispatch the bare prefix. This keeps today's 800 ms semantics. Shortcuts are still faster than before: ASR overlaps the window. |
-| Empty transcript (no earlier text) | After 1200 ms of quiet after the provisional endpoint, before the empty clip is retained. | A fragment cut by a pause can be unreadable alone (see the evaluation). No action or cue is involved, so the wait is invisible; the window is comparable to how long an attempt with text stays continuable during inference. Costs: typed input queued behind it waits up to 1.2 s, and speech within the window is joined with the unreadable sound. |
+| Intent LLM (permanent or contextual intent; cleanup on or off) | When inference has returned **and** 800 ms have passed since the latest speech, and no hold is open. | Tijs (2026-09-26): an answer that arrives within 800 ms of speech stays continuable, so a short pause no longer splits a request just because the model was fast. No time is added after a slower answer. Resumed speech during inference or during the floor replaces the attempt. |
+| Prefix and exact-label shortcuts, including their skips | After routing **and** the same 800 ms floor. With cleanup on, a text shortcut's separate cleanup call starts after commitment, as before. | Product choice D1. Shortcuts have no inference time in which a pause can be bridged; without the floor, "go to session ‹pause› three" would dispatch the bare prefix. Shortcuts are still faster than before provisional endpoints: ASR overlaps the floor. |
+| Empty transcript (no earlier text) | After 1200 ms of quiet after the provisional endpoint, before the empty clip is retained. | A fragment cut by a pause can be unreadable alone (see the evaluation). No action or cue is involved, so the wait is invisible; the window is comparable to how long an attempt with text stays continuable (the 800 ms floor, or longer during slow inference). Costs: typed input queued behind it waits up to 1.2 s, and speech within the window is joined with the unreadable sound. |
 | Typed input | Never held, and has no quiet window of its own; it waits only in FIFO order behind earlier jobs (for example up to 1.2 s behind an empty attempt). | Typed input has no VAD. A typed job admitted (or dropped as overload) after a speech attempt is a boundary: later speech cannot merge past it. Text typed while a VAD candidate is open therefore also releases that candidate's hold, so neither the earlier attempt nor the text waits for the candidate to close; the order stays attempt, text, then the resumed speech as a new request. |
 
-Direct `submit()` callers without a listener never hold an attempt; only their
-shortcut and empty decisions wait for their quiet windows.
+Direct `submit()` callers without a listener never hold an attempt. They pass no
+measured silence, so their spoken decisions wait the full 800 ms after admission,
+and empty decisions 1200 ms.
+
+### Measuring the speech end
+
+All deadlines use one monotonic clock (`performance.now()`), never the time of
+day and never the model's completion time.
+
+- **Admission.** The segmenter reports the silence it actually counted after the
+  last voiced frame (`Segment.trailingSilenceMs`) and the listener submits the
+  segment in the same tick. The attempt's speech end is admission time minus that
+  silence. A silence endpoint measured 224 ms; a segment closed by the 30-second
+  `limit` or at end of input measured less, often 0, and owes the rest of the
+  800 ms. No silence is assumed that was not heard.
+- **Queueing, ASR and inference** after admission count toward the floor: the
+  user was silent throughout. A job that waited 2 s behind another dispatches as
+  soon as it is decided.
+- **Merged attempt.** Its speech ends with the continuation segment, so it gets
+  a fresh floor measured from that segment's own trailing silence.
+- **Rejected burst.** A too-short candidate (cough, click) was still the latest
+  VAD speech. The listener passes its measured trailing silence to
+  `speechDiscarded`, and both quiet periods restart from it: the floor 800 ms
+  after the burst ended, the empty window 1200 ms after the burst was rejected,
+  exactly as they count from an endpoint.
+- **Other releases** (typed input as a boundary, listening ended by EOF, pause or
+  failure, a continuation over the 30-second cap) end a hold because no later
+  sound can join the attempt any more. Waiting longer could not change the
+  outcome, so the attempt keeps its deadlines. (Previously every release
+  restarted the shortcut and empty windows.)
+- **Latency of VAD itself.** The speech end is taken when the listener processes
+  the frame. If VAD falls behind the microphone, onsets are observed with the same
+  delay, so the floor is late rather than early.
 
 ## Cancellation and ownership
 
@@ -75,10 +115,13 @@ shortcut and empty decisions wait for their quiet windows.
   `routeSignal` (also supersession), used for capture, recordings, inference
   and dispatch. Supersession aborts the intent LLM request.
 - **Ordering.** JavaScript runs these callbacks on one thread. `commit` checks
-  for a hold and marks the attempt committed without an intervening `await`, so
-  a VAD onset and an inference result are ordered, never interleaved. An onset
-  reported in the same tick as the model's answer, before the router resumes,
-  still holds the dispatch.
+  for a hold and the deadline and marks the attempt committed without an
+  intervening `await`, so a VAD onset, the deadline timer and an inference
+  result are ordered, never interleaved. An onset reported in the same tick as
+  the model's answer or the deadline timer, before the waiting commitment
+  resumes, still holds the dispatch. A timer alone never commits: the
+  commitment re-examines hold, supersession and cancellation first. Each wait's
+  timer and abort listener are removed when it ends.
 - **Queue bound.** Only the newest job can be continued. A merged job replaces
   the superseded one in place: a waiting job is swapped at its queue position
   and retired without ASR (outcome, capture settlement and `finished` run as
@@ -107,7 +150,8 @@ shortcut and empty decisions wait for their quiet windows.
 Approved by Tijs on 2026-09-25 as recommended. Each is isolated behind one
 constant or one branch:
 
-- **D1** Shortcut commitment waits for the legacy quiet window (`SHORTCUT_QUIET_MS`).
+- **D1** Shortcut commitment waits for the legacy 800 ms of quiet. Since
+  2026-09-26 inference shares the same floor (`SPEECH_QUIET_MS`).
 - **D2** If the combined retranscription is empty after the padded retry, but
   an earlier attempt of the same utterance had usable text, that latest earlier
   transcript is routed with a fresh LLM (`TranscriptChain`, pipeline `fallback`
@@ -128,11 +172,11 @@ The `processing` cue plays at every provisional endpoint, including a merged one
 Tijs's requirement (2026-09-25): the pending LLM is cancelled when a shortcut
 arrives. Supersession aborts the old attempt's inference at once, whatever the
 combined utterance routes to. A late answer from the old request cannot pass
-the commitment gate, and the new route's 576 ms shortcut window is never a grace
-period for it. Tests cover a merge that routes to a prefix, an exact contextual
-label and inference again (old request aborted, zero stale dispatches, exactly
-one new dispatch), both orders of inference completion and resumed speech, and
-the shortcut window with a cancelled inference.
+the commitment gate, and the new route's 800 ms floor is never a grace period
+for it. Tests cover a merge that routes to a prefix, an exact contextual label
+and inference again (old request aborted, zero stale dispatches, exactly one new
+dispatch), both orders of inference completion and resumed speech, and the
+shortcut floor with a cancelled inference.
 
 **Pending with Tijs:** what happens when the continuation *on its own* is a
 shortcut while the earlier inference is pending, for example "Can you help me"
@@ -149,7 +193,7 @@ choosing a route for it requires transcribing it separately first.
 | Stage | Meaning |
 | --- | --- |
 | `hold` | Speech resumed before dispatch; the job is held. |
-| `release` | The resumed sound was rejected; the held job continues. |
+| `release` | The resumed sound was rejected, or can no longer join the job; the held job continues. |
 | `superseded` | On the old job: replaced by the named continuation, then again when its processing ends. |
 | `queued … (continues N)` | The combined job and the attempt it replaces. |
 | `continuation` | The combined audio would exceed 30 s; the segment is a new request. |
@@ -161,9 +205,16 @@ File input (`--wav`, `asr:short-phrases`) still waits for each segment to finish
 processing before reading further frames, so it never merges. A file with pauses
 of 224 ms or more is now processed as several requests. The public fixture's
 natural 640 ms pause between its two sentences, one segment before, is now two.
-`npm run asr:speech-timing` paces frames in real time to reproduce live timing.
+Files decode faster than real time, but the floor is measured on the monotonic
+clock, so each spoken decision from a file still waits until 800 ms after its
+segment was read (576 ms after a silence endpoint), as file shortcuts already
+did. `npm run asr:speech-timing` paces frames in real time to reproduce live timing.
 
 ## Measured comparison (2026-09-25)
+
+These measurements predate the 800 ms commitment floor. With the floor, the
+intent LLM rows can no longer dispatch earlier than about 800 ms after speech
+end, and pauses shorter than the floor join at every model latency.
 
 `npm run asr:speech-timing` (`test/bench/speech-timing.ts`) plays clips built
 from the public `test/fixtures/speech.wav` in real time through the production

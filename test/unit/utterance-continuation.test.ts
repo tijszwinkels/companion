@@ -9,18 +9,28 @@ import {
   EMPTY_QUIET_MS,
   MAX_UTTERANCE_SAMPLES,
   ProvisionalAttempt,
-  SHORTCUT_QUIET_MS,
+  SPEECH_QUIET_MS,
   UtteranceSupersededError,
 } from '../../src/core/utterance-continuation.ts';
+import type { CleanupDetection } from '../../src/core/router.ts';
 import { ENDPOINT_MS } from '../../src/sensors/audio/segmenter.ts';
 import type { TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
-import { deferred, processor, screenshot, testDetector, testSensors } from '../helpers.ts';
+import {
+  deferred,
+  ManualClock,
+  processor,
+  screenshot,
+  signal,
+  testDetector,
+  testSensors,
+} from '../helpers.ts';
 
 // These tests drive the pipeline's continuation interface directly, in the
 // order the listener calls it: submit (provisional endpoint), speechResumed
 // (a new VAD candidate), then submit (accepted) or speechDiscarded (rejected).
-// Transcription and inference are controlled promises, so every race is
-// reproduced deterministically without audio devices or models.
+// Transcription and inference are controlled promises, and commitment deadlines
+// run on a ManualClock, so every race and every deadline is reproduced exactly,
+// without audio devices, models or real waiting.
 
 /** Recognizable audio: every sample of a segment carries the same marker value. */
 function audio(marker: number, samples = 1600): Float32Array {
@@ -47,6 +57,41 @@ async function settle(): Promise<void> {
   for (let index = 0; index < 20; index++) {
     await new Promise((resolve) => setImmediate(resolve));
   }
+}
+
+type Harness = ReturnType<typeof harness>;
+
+/**
+ * Admit a segment closed by an ordinary silence endpoint, as the listener does:
+ * the speech ended ENDPOINT_MS (224 ms) before admission. Returns the clock
+ * time at which the speech ended, the origin of its 800 ms floor.
+ */
+function endpoint(setup: Harness, marker: number, leadIn?: Float32Array): number {
+  setup.pipeline.submit(audio(marker), undefined, leadIn, ENDPOINT_MS);
+  return setup.clock.now() - ENDPOINT_MS;
+}
+
+/** Move the controlled clock to `time`, then let the woken work run. */
+async function advanceTo(setup: Harness, time: number): Promise<void> {
+  setup.clock.advanceTo(time);
+  await settle();
+}
+
+/** Let every outstanding deadline pass, then wait until the pipeline is idle. */
+async function finish(setup: Harness): Promise<void> {
+  let idle = false;
+  const idled = setup.pipeline.idle().then(() => {
+    idle = true;
+  });
+
+  for (let round = 0; !idle; round++) {
+    assert.ok(round < 50, 'The pipeline settles once its deadlines have passed');
+    setup.clock.advance(EMPTY_QUIET_MS + SPEECH_QUIET_MS);
+    await settle();
+  }
+
+  await idled;
+  assert.equal(setup.clock.pendingTimers, 0, 'No commitment timer outlives its attempt');
 }
 
 const textDiagnostic: TranscriptionDiagnostic = {
@@ -78,9 +123,17 @@ function harness(
     exactLabel?: string;
     /** A model client that ignores cancellation and still answers late. */
     ignoresAbort?: boolean;
+    /**
+     * Transcription cleanup on: inference uses the json-cleanup call and the
+     * processor is a text route, whose prefix text is cleaned after commitment.
+     */
+    cleanup?: boolean;
   } = {},
 ) {
   const controller = new AbortController();
+  const clock = new ManualClock();
+  const send = options.cleanup ? 'SEND_TEXT_TO_APPLICATION' : 'SEND';
+  const cleanerCalls: string[] = [];
   const events: string[] = [];
   const outcomes = new Map<number, UtteranceOutcome>();
   const transcribed = new Map<number, string>();
@@ -99,41 +152,64 @@ function harness(
   const detections: { utterance: string; answer: (intent: string) => void }[] = [];
   let dispatchGate: Promise<void> | undefined;
 
+  const detect = async (frame: UserSensorFrame, signal: AbortSignal): Promise<string> => {
+    detectSignals.push(signal);
+    const known = options.intent?.(frame);
+    if (known) {
+      return known;
+    }
+
+    const reply = deferred<string>();
+    detections.push({ utterance: frame.utterance, answer: reply.resolve });
+    if (options.ignoresAbort) {
+      return reply.promise;
+    }
+    const aborted = new Promise<never>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    return Promise.race([reply.promise, aborted]);
+  };
+
+  const detector = testDetector({
+    detect: async (frame, _intents, signal) => detect(frame, signal),
+  });
+  if (options.cleanup) {
+    // One call returns the intent and the cleaned text, as json-cleanup-v1 does.
+    detector.detectWithCleanup = async (frame, _intents, signal): Promise<CleanupDetection> => {
+      const intent = await detect(frame, signal);
+      return { intent, text: `${frame.utterance} (cleaned)`, fallback: null };
+    };
+  }
+
   const router = new UserSensorRouter(
     {
-      detector: testDetector({
-        detect: async (frame, _intents, signal) => {
-          detectSignals.push(signal);
-          const known = options.intent?.(frame);
-          if (known) {
-            return known;
-          }
-
-          const reply = deferred<string>();
-          detections.push({ utterance: frame.utterance, answer: reply.resolve });
-          if (options.ignoresAbort) {
-            return reply.promise;
-          }
-          const aborted = new Promise<never>((_resolve, reject) => {
-            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-          });
-          return Promise.race([reply.promise, aborted]);
+      detector,
+      cleaner: {
+        id: 'test-cleaner',
+        label: 'Test cleaner',
+        dependencies: {},
+        clean: async (_route, text) => {
+          cleanerCalls.push(text);
+          return { kind: 'cleaned', text: `${text} (cleaned)` };
         },
-      }),
+      },
     },
     () => {},
+    {},
+    'router',
+    { enabled: options.cleanup ?? false },
   );
 
   processor('IGNORE').subscribe(router);
-  const send = processor('SEND', async (frame) => {
+  const sendProcessor = processor(send, async (frame) => {
     events.push(`dispatch ${frame.id}`);
     dispatched.push({ id: frame.id, utterance: frame.utterance });
     await dispatchGate;
   });
   if (options.prefixes) {
-    Object.assign(send, { prefixes: options.prefixes, acceptsEmptyPrefix: true });
+    Object.assign(sendProcessor, { prefixes: options.prefixes, acceptsEmptyPrefix: true });
   }
-  send.subscribe(router);
+  sendProcessor.subscribe(router);
 
   if (options.exactLabel) {
     const label = options.exactLabel;
@@ -201,11 +277,16 @@ function harness(
         events.push(`finished ${id}`);
       },
     },
+    'pipeline',
+    clock,
   );
 
   return {
     pipeline,
     controller,
+    clock,
+    send,
+    cleanerCalls,
     events,
     outcomes,
     transcribed,
@@ -224,75 +305,589 @@ function harness(
   };
 }
 
-test('the provisional endpoint is the smallest whole-frame silence of at least 200 ms', () => {
+// ---------------------------------------------------------------------------
+// ProvisionalAttempt on its own
+// ---------------------------------------------------------------------------
+
+test('spoken decisions commit 800 ms after speech: 576 ms after the provisional endpoint', () => {
   assert.equal(ENDPOINT_MS, 224);
-  assert.equal(SHORTCUT_QUIET_MS, 800 - 224);
+  assert.equal(SPEECH_QUIET_MS, 800);
+  assert.equal(SPEECH_QUIET_MS - ENDPOINT_MS, 576);
+  assert.equal(EMPTY_QUIET_MS, 1200, 'The empty-transcript window is unchanged');
   assert.equal(MAX_UTTERANCE_SAMPLES, 16000 * 30);
-  assert.ok(EMPTY_QUIET_MS > SHORTCUT_QUIET_MS);
 });
 
-test('an attempt commits at once for inference and is final afterwards', async () => {
-  const attempt = new ProvisionalAttempt();
-  await attempt.commit('inference', new AbortController().signal);
+for (const route of ['inference', 'shortcut'] as const) {
+  test(`a ${route} decision commits at the speech floor and is final afterwards`, async () => {
+    const clock = new ManualClock();
+    const attempt = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+    let committed = false;
+    const commit = attempt.commit(route, signal()).then(() => {
+      committed = true;
+    });
+
+    // Admission is at the endpoint: speech ended 224 ms ago, 576 ms remain.
+    clock.advance(575);
+    await settle();
+    assert.equal(committed, false, 'Still provisional 799 ms after speech');
+
+    clock.advance(1);
+    await settle();
+    assert.equal(committed, true, 'Committed 800 ms after speech');
+    await commit;
+    assert.equal(attempt.committed, true);
+    assert.equal(clock.pendingTimers, 0);
+
+    assert.equal(attempt.hold(), false, 'Speech after commitment is a new request');
+    assert.equal(attempt.supersede(), false);
+    assert.equal(attempt.signal.aborted, false);
+  });
+}
+
+test('a decision that is ready after the floor commits at once, without a timer', async () => {
+  const clock = new ManualClock();
+  const attempt = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+
+  clock.advance(1100 - ENDPOINT_MS);
+  void attempt.commit('inference', signal());
+  await settle();
 
   assert.equal(attempt.committed, true);
-  assert.equal(attempt.hold(), false, 'Speech after commitment is a new request');
-  assert.equal(attempt.supersede(), false);
-  assert.equal(attempt.signal.aborted, false);
+  assert.equal(clock.now(), 1100 - ENDPOINT_MS, 'Not 800 ms after the decision');
+  assert.equal(clock.pendingTimers, 0);
 });
 
-test('a hold delays commitment until released, and supersession rejects it', async () => {
-  const released = new ProvisionalAttempt();
+test('no silence is assumed that was not measured', async () => {
+  // EOF or the 30-second limit can close a segment with little or no trailing
+  // silence, and direct callers have no VAD: the whole floor still applies.
+  for (const trailingSilenceMs of [undefined, 0, 96, -50, Number.NaN, Infinity]) {
+    const clock = new ManualClock();
+    const attempt = new ProvisionalAttempt({ clock, trailingSilenceMs });
+    let committed = false;
+    const commit = attempt.commit('inference', signal()).then(() => {
+      committed = true;
+    });
+
+    const measured = trailingSilenceMs === 96 ? 96 : 0;
+    clock.advance(SPEECH_QUIET_MS - measured - 1);
+    await settle();
+    assert.equal(committed, false, `Not early for ${trailingSilenceMs}`);
+
+    clock.advance(1);
+    await settle();
+    assert.equal(committed, true, `Committed at the floor for ${trailingSilenceMs}`);
+    await commit;
+  }
+});
+
+test('a hold delays commitment past its deadline until released, and supersession rejects it', async () => {
+  const clock = new ManualClock();
+  const released = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
   assert.equal(released.hold(), true);
   let committed = false;
-  const waiting = released.commit('inference', new AbortController().signal).then(() => {
+  const waiting = released.commit('inference', signal()).then(() => {
     committed = true;
   });
 
+  clock.advance(5000);
   await settle();
-  assert.equal(committed, false);
+  assert.equal(committed, false, 'An open candidate holds the attempt however long it lasts');
+
+  // Released without a measured burst (typed input, listening ended): the
+  // deadline is unchanged and has long passed, so it commits at once.
   released.release();
   await waiting;
   assert.equal(committed, true);
+  assert.equal(clock.pendingTimers, 0);
 
-  const replaced = new ProvisionalAttempt();
-  replaced.hold();
-  const rejected = replaced.commit('inference', new AbortController().signal);
+  const replaced = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  const rejected = replaced.commit('inference', signal());
   await settle();
+  assert.equal(clock.pendingTimers, 1, 'Waiting for the floor');
   assert.equal(replaced.supersede(), true);
   await assert.rejects(rejected, UtteranceSupersededError);
   assert.equal(replaced.committed, false);
   assert.equal(replaced.hold(), false);
+  assert.equal(clock.pendingTimers, 0, 'Supersession cancels the deadline timer');
 });
 
-test('shortcut commitment waits for the quiet window, restarted by a released hold', async () => {
-  const attempt = new ProvisionalAttempt(60);
-  const started = performance.now();
+test('a rejected burst restarts both quiet periods from the burst', async () => {
+  const clock = new ManualClock();
+  const spoken = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  const empty = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  const spokenCommit = spoken.commit('shortcut', signal());
+  const emptyCommit = empty.commit('empty', signal());
 
-  await attempt.commit('shortcut', new AbortController().signal);
-  assert.ok(performance.now() - started >= 55, 'Waits for the quiet window');
+  // A cough opens a candidate 400 ms after admission; VAD rejects it 200 ms
+  // later, after measuring 224 ms of silence behind it.
+  clock.advance(400);
+  spoken.hold();
+  empty.hold();
+  clock.advance(200);
+  spoken.release(ENDPOINT_MS);
+  empty.release(ENDPOINT_MS);
+  const releasedAt = clock.now();
 
-  const restarted = new ProvisionalAttempt(60);
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  restarted.hold();
-  const commit = restarted.commit('shortcut', new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  const releasedAt = performance.now();
-  restarted.release();
-  await commit;
-  assert.ok(performance.now() - releasedAt >= 55, 'The rejected burst restarts the window');
+  let spokenDone = false;
+  let emptyDone = false;
+  void spokenCommit.then(() => {
+    spokenDone = true;
+  });
+  void emptyCommit.then(() => {
+    emptyDone = true;
+  });
+
+  // The burst is the latest speech: 800 ms after it ended, i.e. 576 ms after
+  // the release. The empty window restarts 1200 ms after the release.
+  clock.advanceTo(releasedAt + 575);
+  await settle();
+  assert.equal(spokenDone, false);
+  clock.advanceTo(releasedAt + 576);
+  await settle();
+  assert.equal(spokenDone, true);
+
+  clock.advanceTo(releasedAt + EMPTY_QUIET_MS - 1);
+  await settle();
+  assert.equal(emptyDone, false);
+  clock.advanceTo(releasedAt + EMPTY_QUIET_MS);
+  await settle();
+  assert.equal(emptyDone, true);
+  assert.equal(clock.pendingTimers, 0);
 });
 
-test('cancellation rejects a commitment waiting on a hold without leaving timers', async () => {
-  const attempt = new ProvisionalAttempt();
-  const controller = new AbortController();
-  attempt.hold();
-  const commit = attempt.commit('shortcut', controller.signal);
+test('cancellation rejects a waiting commitment at once and leaves no timer', async () => {
+  const clock = new ManualClock();
 
-  controller.abort(Error('Paused'));
-  await assert.rejects(commit, /Paused/);
-  assert.equal(attempt.committed, false);
+  const held = new ProvisionalAttempt({ clock });
+  const heldController = new AbortController();
+  held.hold();
+  const heldCommit = held.commit('shortcut', heldController.signal);
+  heldController.abort(Error('Paused'));
+  await assert.rejects(heldCommit, /Paused/);
+  assert.equal(held.committed, false);
+
+  const timed = new ProvisionalAttempt({ clock });
+  const timedController = new AbortController();
+  const timedCommit = timed.commit('inference', timedController.signal);
+  await settle();
+  assert.equal(clock.pendingTimers, 1);
+  timedController.abort(Error('Shutdown'));
+  await assert.rejects(timedCommit, /Shutdown/);
+  assert.equal(timed.committed, false);
+  assert.equal(clock.pendingTimers, 0);
 });
+
+// ---------------------------------------------------------------------------
+// The 800 ms floor through the pipeline and router
+// ---------------------------------------------------------------------------
+
+test('a result 500 ms after speech waits through 799 ms and dispatches at 800 ms', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  assert.deepEqual(setup.events, ['processing 1'], 'The processing cue plays at the endpoint');
+
+  // ASR and inference start at once: no added wait before either.
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  assert.equal(setup.detections.length, 1, 'Inference starts as soon as the transcript is ready');
+
+  await advanceTo(setup, spoke + 500);
+  setup.detections[0].answer('SEND');
+  await settle();
+  assert.deepEqual(setup.dispatched, [], 'The early result is provisional');
+
+  await advanceTo(setup, spoke + 799);
+  assert.deepEqual(setup.dispatched, []);
+  assert.equal(setup.outcomes.has(1), false, 'No outcome is reported while provisional');
+
+  await advanceTo(setup, spoke + 800);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+
+  await finish(setup);
+  assert.equal(setup.pipeline.failures, 0);
+});
+
+test('a result 1100 ms after speech dispatches when it is ready, not 800 ms later', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  await advanceTo(setup, spoke + 1100);
+  assert.deepEqual(setup.dispatched, [], 'Inference is still running');
+  setup.detections[0].answer('SEND');
+  await settle();
+
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+  assert.equal(setup.clock.now(), spoke + 1100);
+  assert.equal(setup.clock.pendingTimers, 0);
+  await finish(setup);
+});
+
+test('speech 700 ms after speech end replaces a completed early result and retranscribes it all', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the');
+  await settle();
+  await advanceTo(setup, spoke + 500);
+  setup.detections[0].answer('SEND');
+  await settle();
+
+  // The user resumes 700 ms after the first part; the candidate is accepted
+  // when it closes. The old result's deadline passes in the meantime.
+  await advanceTo(setup, spoke + 700);
+  setup.pipeline.speechResumed();
+  await advanceTo(setup, spoke + 1500);
+  assert.deepEqual(setup.dispatched, [], 'The held result cannot dispatch at its deadline');
+
+  const resumedSpoke = endpoint(setup, 0.2, audio(0.05, 512));
+  await settle();
+  assert.equal(setup.outcomes.get(1), 'superseded');
+  assert.deepEqual(setup.transcriptions[1].samples, [0.1, 0.05, 0.2], 'Whole raw audio');
+  assert.deepEqual(
+    setup.asrSignals.map((asrSignal) => asrSignal.aborted),
+    [false, false],
+  );
+
+  setup.transcriptions[1].answer('Open the browser');
+  await settle();
+  assert.equal(setup.detections.length, 2, 'A fresh inference for the whole transcript');
+  assert.equal(setup.detections[1].utterance, 'Open the browser');
+  setup.detections[1].answer('SEND');
+
+  // The new attempt has its own floor, from the end of the resumed speech.
+  await advanceTo(setup, resumedSpoke + 799);
+  assert.deepEqual(setup.dispatched, []);
+  await advanceTo(setup, resumedSpoke + 800);
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
+
+  await finish(setup);
+  assert.deepEqual(
+    setup.events.filter((event) => event.startsWith('processing')),
+    ['processing 1', 'processing 2'],
+  );
+});
+
+test('speech more than 800 ms after speech end still continues a pending inference', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the');
+  await settle();
+
+  // A slow model: nothing has committed 900 ms after the speech ended.
+  await advanceTo(setup, spoke + 900);
+  setup.pipeline.speechResumed();
+  endpoint(setup, 0.2);
+  await settle();
+
+  assert.equal(setup.detectSignals[0].aborted, true, 'The pending inference is aborted');
+  assert.equal(setup.outcomes.get(1), 'superseded');
+  assert.deepEqual(setup.transcriptions[1].samples, [0.1, 0.2]);
+  setup.transcriptions[1].answer('Open the browser');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await finish(setup);
+
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
+});
+
+test('a VAD onset in the same tick as the deadline holds the dispatch', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  await advanceTo(setup, spoke + 500);
+  setup.detections[0].answer('SEND');
+  await settle();
+
+  // The deadline timer fires; the listener reports speech before the waiting
+  // commitment resumes. The commitment re-examines the hold and waits.
+  setup.clock.advanceTo(spoke + 800);
+  setup.pipeline.speechResumed();
+  await settle();
+  assert.deepEqual(setup.dispatched, []);
+
+  // The sound was a burst: rejected at +1000 after 224 ms of silence, so it
+  // ended at +776 and the floor now ends at +1576.
+  await advanceTo(setup, spoke + 1000);
+  setup.pipeline.speechDiscarded(ENDPOINT_MS);
+  await advanceTo(setup, spoke + 1575);
+  assert.deepEqual(setup.dispatched, []);
+  await advanceTo(setup, spoke + 1576);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+
+  assert.equal(setup.transcriptions.length, 1, 'The burst repeated no work');
+  assert.equal(setup.detections.length, 1);
+  await finish(setup);
+});
+
+test('when the deadline wins the race, the resumed speech is a new request', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  setup.detections[0].answer('SEND');
+
+  // The commitment resumes and dispatches before the listener reports speech.
+  await advanceTo(setup, spoke + 800);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+  setup.pipeline.speechResumed();
+  endpoint(setup, 0.2);
+  await settle();
+
+  assert.equal(setup.logs.filter((entry) => entry.stage === 'hold').length, 0);
+  assert.deepEqual(setup.transcriptions[1].samples, [0.2], 'Never merged after commitment');
+  setup.transcriptions[1].answer('and close it');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.id),
+    [1, 2],
+  );
+});
+
+test('speech detected in the same tick as inference completion still holds dispatch', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the');
+  await settle();
+
+  // A late answer: the floor has passed, so the router would commit at once.
+  // Its continuation has not run yet when the listener reports speech.
+  await advanceTo(setup, spoke + 1200);
+  setup.detections[0].answer('SEND');
+  setup.pipeline.speechResumed();
+  endpoint(setup, 0.2);
+  await settle();
+
+  assert.deepEqual(setup.dispatched, [], 'No stale dispatch');
+  assert.equal(setup.outcomes.get(1), 'superseded');
+  setup.transcriptions[1].answer('Open the browser');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
+});
+
+test('a rejected burst releases the held attempt at a floor measured from the burst', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  await advanceTo(setup, spoke + 300);
+  setup.detections[0].answer('SEND');
+  await settle();
+
+  await advanceTo(setup, spoke + 400);
+  setup.pipeline.speechResumed();
+  await advanceTo(setup, spoke + 700);
+  setup.pipeline.speechDiscarded(ENDPOINT_MS);
+
+  // The burst ended at +476: dispatch at +1276, not at the original +800.
+  await advanceTo(setup, spoke + 1275);
+  assert.deepEqual(setup.dispatched, [], 'Inference completed, but the burst restarted the floor');
+  await advanceTo(setup, spoke + 1276);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+
+  assert.equal(setup.transcriptions.length, 1, 'Nothing is lost or repeated');
+  assert.equal(setup.detections.length, 1);
+  assert.ok(setup.logs.some((entry) => entry.stage === 'release' && entry.id === 1));
+  await finish(setup);
+});
+
+test('a segment closed by EOF or the 30-second limit owes the floor it did not measure', async () => {
+  for (const trailingSilenceMs of [0, 96]) {
+    const setup = harness();
+    setup.pipeline.submit(audio(0.1), undefined, undefined, trailingSilenceMs);
+    const admitted = setup.clock.now();
+    await settle();
+    setup.transcriptions[0].answer('Open the browser');
+    await settle();
+    setup.detections[0].answer('SEND');
+
+    const deadline = admitted - trailingSilenceMs + SPEECH_QUIET_MS;
+    await advanceTo(setup, deadline - 1);
+    assert.deepEqual(setup.dispatched, [], `No 224 ms endpoint is assumed (${trailingSilenceMs})`);
+    await advanceTo(setup, deadline);
+    assert.equal(setup.dispatched.length, 1);
+    await finish(setup);
+  }
+});
+
+test('time spent queued behind another job counts as quiet time', async () => {
+  const setup = harness();
+  const delivery = deferred<void>();
+  setup.holdDispatch(delivery.promise);
+
+  // Job 1 dispatches at its floor and then takes 2 s to deliver.
+  const firstSpoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('First');
+  await settle();
+  setup.detections[0].answer('SEND');
+  await advanceTo(setup, firstSpoke + 800);
+  assert.equal(setup.dispatched.length, 1);
+
+  // Job 2 is admitted while job 1 delivers, and waits in the queue.
+  const secondSpoke = endpoint(setup, 0.2);
+  await advanceTo(setup, secondSpoke + 2000);
+  delivery.resolve();
+  await settle();
+  setup.transcriptions[1].answer('Second');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await settle();
+
+  // The user has been silent for 2 s: no further wait.
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.utterance),
+    ['First', 'Second'],
+  );
+  assert.equal(setup.clock.pendingTimers, 0);
+  await finish(setup);
+});
+
+for (const route of ['prefix', 'exact label'] as const) {
+  test(`a spoken ${route} shortcut waits for the same 800 ms floor`, async () => {
+    const setup = harness({
+      prefixes: route === 'prefix' ? ['insert'] : undefined,
+      exactLabel: route === 'exact label' ? 'Option two' : undefined,
+    });
+    const spoke = endpoint(setup, 0.1);
+    await settle();
+    setup.transcriptions[0].answer(route === 'prefix' ? 'Insert hello' : 'Option two');
+
+    await advanceTo(setup, spoke + 799);
+    assert.deepEqual(setup.dispatched, []);
+    await advanceTo(setup, spoke + 800);
+    assert.deepEqual(setup.dispatched, [
+      { id: 1, utterance: route === 'prefix' ? 'hello' : 'CHOICE Option two' },
+    ]);
+    assert.equal(setup.detections.length, 0, 'Shortcuts need no inference');
+    await finish(setup);
+  });
+}
+
+for (const route of ['inference', 'prefix'] as const) {
+  test(`with transcription cleanup on, ${route} commits at the same floor`, async () => {
+    const setup = harness({ cleanup: true, prefixes: ['insert'] });
+    const spoke = endpoint(setup, 0.1);
+    await settle();
+    setup.transcriptions[0].answer(route === 'prefix' ? 'Insert hello' : 'Hello there');
+    await settle();
+
+    if (route === 'inference') {
+      await advanceTo(setup, spoke + 500);
+      assert.equal(setup.detections.length, 1, 'The json-cleanup call starts at once');
+      setup.detections[0].answer(setup.send);
+    }
+
+    await advanceTo(setup, spoke + 799);
+    assert.deepEqual(setup.dispatched, []);
+    assert.deepEqual(setup.cleanerCalls, [], 'Shortcut text is cleaned only after commitment');
+
+    await advanceTo(setup, spoke + 800);
+    assert.deepEqual(setup.dispatched, [
+      { id: 1, utterance: route === 'prefix' ? 'hello (cleaned)' : 'Hello there (cleaned)' },
+    ]);
+    assert.deepEqual(setup.cleanerCalls, route === 'prefix' ? ['hello'] : []);
+    await finish(setup);
+  });
+}
+
+test('an empty transcript is still filtered 1200 ms after the endpoint', async () => {
+  const setup = harness();
+  endpoint(setup, 0.1);
+  const admitted = setup.clock.now();
+  await settle();
+  setup.transcriptions[0].answer('');
+
+  await advanceTo(setup, admitted + EMPTY_QUIET_MS - 1);
+  assert.deepEqual(setup.emptyClips, [], 'Still continuable');
+  await advanceTo(setup, admitted + EMPTY_QUIET_MS);
+  assert.deepEqual(setup.emptyClips, [[0.1]]);
+  assert.ok(setup.logs.some((entry) => entry.stage === 'filtered'));
+  assert.deepEqual(setup.dispatched, []);
+  await finish(setup);
+});
+
+test('pausing during the floor cancels the early result without dispatch or timers', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  setup.detections[0].answer('SEND');
+  await advanceTo(setup, spoke + 500);
+  assert.equal(setup.clock.pendingTimers, 1, 'Waiting for the floor');
+
+  setup.controller.abort();
+  await settle();
+  await setup.pipeline.idle();
+
+  assert.deepEqual(setup.dispatched, []);
+  assert.equal(setup.outcomes.get(1), 'cancelled');
+  assert.equal(setup.pipeline.failures, 0);
+  assert.equal(setup.clock.pendingTimers, 0);
+});
+
+test('typed input during an open candidate releases the hold without moving the deadline', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  setup.detections[0].answer('SEND');
+
+  // Speech opens a candidate, then text is typed while it is still open. The
+  // candidate can no longer continue the attempt, so waiting would gain nothing.
+  await advanceTo(setup, spoke + 600);
+  setup.pipeline.speechResumed();
+  await advanceTo(setup, spoke + 700);
+  assert.equal(setup.pipeline.submitText('typed words'), true);
+
+  await advanceTo(setup, spoke + 799);
+  assert.equal(setup.dispatched.length, 0);
+  await advanceTo(setup, spoke + 800);
+  setup.detections[1].answer('SEND');
+  await settle();
+
+  // Typed input has no speech timer: it dispatches as soon as it is decided.
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.utterance),
+    ['Open the browser', 'typed words'],
+    'Both dispatch before the candidate closes',
+  );
+  assert.equal(setup.clock.now(), spoke + 800);
+  assert.ok(setup.logs.some((entry) => entry.stage === 'release' && entry.id === 1));
+
+  // When the candidate is accepted, it is a new request after the typed text.
+  endpoint(setup, 0.2);
+  await settle();
+  assert.deepEqual(setup.transcriptions[1].samples, [0.2]);
+  setup.transcriptions[1].answer('and close it');
+  await settle();
+  setup.detections[2].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.utterance),
+    ['Open the browser', 'typed words', 'and close it'],
+  );
+  assert.notEqual(setup.outcomes.get(1), 'superseded');
+});
+
+// ---------------------------------------------------------------------------
+// Continuation behavior (unchanged by the floor)
+// ---------------------------------------------------------------------------
 
 test('resumed speech during inference aborts it and retranscribes the combined raw audio', async () => {
   const setup = harness();
@@ -320,7 +915,7 @@ test('resumed speech during inference aborts it and retranscribes the combined r
   await settle();
   assert.equal(setup.detections[1].utterance, 'Open the browser');
   setup.detections[1].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
   assert.deepEqual(setup.audioSaved.get(2), [0.1, 0.2]);
@@ -351,12 +946,12 @@ test('a merge restores the pause between the parts from the segment lead-in', as
 
   // Without a held attempt, the lead-in is not part of a new request.
   setup.pipeline.submit(audio(0.3), undefined, audio(0.05, 512));
-  await settle();
+  await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
   assert.deepEqual(setup.transcriptions[2].samples, [0.3]);
   setup.transcriptions[2].answer('Next');
   await settle();
   setup.detections[2].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
 });
 
 test('resumed speech during ASR lets the request finish, then discards its result', async () => {
@@ -382,48 +977,7 @@ test('resumed speech during ASR lets the request finish, then discards its resul
   setup.transcriptions[1].answer('Open the browser');
   await settle();
   setup.detections[0].answer('SEND');
-  await setup.pipeline.idle();
-  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
-});
-
-test('a rejected burst releases the held attempt without repeating any work', async () => {
-  const setup = harness();
-  setup.pipeline.submit(audio(0.1));
-  await settle();
-  setup.transcriptions[0].answer('Open the browser');
-  await settle();
-
-  setup.pipeline.speechResumed();
-  setup.detections[0].answer('SEND');
-  await settle();
-  assert.deepEqual(setup.dispatched, [], 'Inference completed, but the hold prevents dispatch');
-
-  setup.pipeline.speechDiscarded();
-  await setup.pipeline.idle();
-  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
-  assert.equal(setup.transcriptions.length, 1);
-  assert.equal(setup.detections.length, 1);
-});
-
-test('speech detected in the same tick as inference completion still holds dispatch', async () => {
-  const setup = harness();
-  setup.pipeline.submit(audio(0.1));
-  await settle();
-  setup.transcriptions[0].answer('Open the');
-  await settle();
-
-  // The router's continuation has not run yet when the listener reports speech.
-  setup.detections[0].answer('SEND');
-  setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
-  await settle();
-
-  assert.deepEqual(setup.dispatched, [], 'No stale dispatch');
-  assert.equal(setup.outcomes.get(1), 'superseded');
-  setup.transcriptions[1].answer('Open the browser');
-  await settle();
-  setup.detections[1].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
 });
 
@@ -436,7 +990,7 @@ test('speech after dispatch has started is a new request and never replays the a
   setup.transcriptions[0].answer('Open the browser');
   await settle();
   setup.detections[0].answer('SEND');
-  await settle();
+  await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
   assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
 
   setup.pipeline.speechResumed();
@@ -449,7 +1003,7 @@ test('speech after dispatch has started is a new request and never replays the a
   setup.transcriptions[1].answer('and close it');
   await settle();
   setup.detections[1].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
   assert.deepEqual(
     setup.dispatched.map((entry) => entry.utterance),
     ['Open the browser', 'and close it'],
@@ -467,7 +1021,7 @@ test('a waiting attempt is replaced in place before ASR, even when the queue is 
   setup.transcriptions[0].answer('First');
   await settle();
   setup.detections[0].answer('SEND');
-  await settle();
+  await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
   setup.pipeline.submit(audio(0.2));
   setup.pipeline.submit(audio(0.3));
 
@@ -493,8 +1047,9 @@ test('a waiting attempt is replaced in place before ASR, even when the queue is 
     setup.transcriptions.at(-1)!.answer(text);
     await settle();
     setup.detections.at(-1)!.answer('SEND');
+    await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
   }
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.asrInputs, [[0.1], [0.2], [0.3, 0.4]], 'Job 3 never reached ASR');
   assert.deepEqual(
@@ -504,30 +1059,38 @@ test('a waiting attempt is replaced in place before ASR, even when the queue is 
   assert.ok(setup.logs.some((entry) => entry.stage === 'dropped' && entry.id === 5));
 });
 
-test('repeated pauses keep merging the whole utterance until it commits', async () => {
+test('repeated pauses keep merging the whole utterance, each with a fresh floor', async () => {
   const setup = harness();
-  setup.pipeline.submit(audio(0.1));
+  endpoint(setup, 0.1);
   await settle();
   setup.transcriptions[0].answer('One');
   await settle();
+  setup.detections[0].answer('SEND');
 
+  // Each part resumes 700 ms after the previous one ended: always in time.
+  await advanceTo(setup, setup.clock.now() + 700 - ENDPOINT_MS);
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
+  endpoint(setup, 0.2);
   await settle();
   setup.transcriptions[1].answer('One two');
   await settle();
+  setup.detections[1].answer('SEND');
 
+  await advanceTo(setup, setup.clock.now() + 700 - ENDPOINT_MS);
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.3));
+  const lastSpoke = endpoint(setup, 0.3);
   await settle();
   assert.deepEqual(setup.transcriptions[2].samples, [0.1, 0.2, 0.3]);
   setup.transcriptions[2].answer('One two three');
   await settle();
   setup.detections.at(-1)!.answer('SEND');
-  await setup.pipeline.idle();
 
+  await advanceTo(setup, lastSpoke + 799);
+  assert.deepEqual(setup.dispatched, []);
+  await advanceTo(setup, lastSpoke + 800);
   assert.deepEqual(setup.dispatched, [{ id: 3, utterance: 'One two three' }]);
   assert.deepEqual([setup.outcomes.get(1), setup.outcomes.get(2)], ['superseded', 'superseded']);
+  await finish(setup);
 });
 
 test('an empty combined transcript falls back to the earlier words and keeps the clip', async () => {
@@ -546,7 +1109,7 @@ test('an empty combined transcript falls back to the earlier words and keeps the
   assert.deepEqual(setup.emptyClips, [[0.1, 0.2]], 'The empty combined clip is retained');
   assert.equal(setup.detections.at(-1)!.utterance, 'Open the browser');
   setup.detections.at(-1)!.answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
   assert.ok(setup.logs.some((entry) => entry.stage === 'fallback' && entry.id === 2));
 });
@@ -554,7 +1117,7 @@ test('an empty combined transcript falls back to the earlier words and keeps the
 test('an empty first attempt has no fallback and is still filtered', async () => {
   const setup = harness({ transcript: () => '' });
   setup.pipeline.submit(audio(0.1));
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.dispatched, []);
   assert.deepEqual(setup.emptyClips, [[0.1]]);
@@ -567,7 +1130,7 @@ test('an unreadable fragment stays continuable and is retranscribed with its con
   await settle();
 
   // The decoder cannot read the first fragment alone. Nothing is filtered or
-  // retained yet: speech may still resume within the legacy quiet window.
+  // retained yet: speech may still resume within the empty-transcript window.
   setup.transcriptions[0].answer('');
   await settle();
   assert.deepEqual(setup.emptyClips, []);
@@ -584,7 +1147,7 @@ test('an unreadable fragment stays continuable and is retranscribed with its con
   setup.transcriptions[1].answer('How do I get to Dublin');
   await settle();
   setup.detections[0].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'How do I get to Dublin' }]);
   assert.deepEqual(setup.emptyClips, [], 'A superseded fragment is not retained as empty');
@@ -603,11 +1166,11 @@ test('a continuation beyond the 30-second cap becomes a separate request', async
   assert.equal(setup.detectSignals[0].aborted, false);
 
   setup.detections[0].answer('SEND');
-  await settle();
+  await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
   setup.transcriptions[1].answer('More');
   await settle();
   setup.detections[1].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.asrInputs, [[0.1], [0.2]]);
   assert.deepEqual(
@@ -618,7 +1181,7 @@ test('a continuation beyond the 30-second cap becomes a separate request', async
 
 test('typed input is a boundary and never waits for speech holds or quiet windows', async () => {
   const setup = harness({ prefixes: ['insert'] });
-  setup.pipeline.submit(audio(0.1));
+  const spoke = endpoint(setup, 0.1);
   await settle();
   setup.transcriptions[0].answer('Open the browser');
   await settle();
@@ -627,44 +1190,42 @@ test('typed input is a boundary and never waits for speech holds or quiet window
   // cannot reach back past the typed request.
   setup.pipeline.submitText('insert typed words');
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
+  endpoint(setup, 0.2);
   setup.detections[0].answer('SEND');
   await settle();
   assert.notEqual(setup.outcomes.get(1), 'superseded');
 
-  const typedStarted = performance.now();
-  await settle();
-  assert.equal(setup.dispatched[1]?.utterance, 'typed words');
-  assert.ok(performance.now() - typedStarted < SHORTCUT_QUIET_MS / 2, 'Typed prefix is immediate');
+  // The typed prefix dispatches at the same instant as the attempt before it.
+  await advanceTo(setup, spoke + 800);
+  assert.equal(setup.dispatched[1]?.utterance, 'typed words', 'Typed prefix is immediate');
+  assert.equal(setup.clock.now(), spoke + 800);
 
   setup.transcriptions[1].answer('Something else');
   await settle();
   setup.detections[1].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
   assert.deepEqual(
     setup.dispatched.map((entry) => entry.utterance),
     ['Open the browser', 'typed words', 'Something else'],
   );
 });
 
-test('a spoken prefix waits for the legacy quiet window, so a paused command merges', async () => {
+test('a spoken prefix waits for the speech floor, so a paused command merges', async () => {
   const setup = harness({ prefixes: ['go to session'] });
-  setup.pipeline.submit(audio(0.1));
+  const spoke = endpoint(setup, 0.1);
   await settle();
-  const answered = performance.now();
   setup.transcriptions[0].answer('Go to session.');
-  await settle();
+  await advanceTo(setup, spoke + 700);
   assert.deepEqual(setup.dispatched, [], 'The bare prefix does not dispatch at once');
 
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
+  endpoint(setup, 0.2);
   await settle();
   setup.transcriptions[1].answer('Go to session three.');
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'three.' }]);
   assert.equal(setup.outcomes.get(1), 'superseded');
-  assert.ok(performance.now() - answered >= SHORTCUT_QUIET_MS - 20);
 });
 
 test('pausing the listener cancels a held attempt instead of leaving it waiting', async () => {
@@ -683,6 +1244,7 @@ test('pausing the listener cancels a held attempt instead of leaving it waiting'
   assert.deepEqual(setup.dispatched, []);
   assert.equal(setup.outcomes.get(1), 'cancelled');
   assert.equal(setup.pipeline.failures, 0);
+  assert.equal(setup.clock.pendingTimers, 0);
 });
 
 // Tijs (2026-09-25): "don't forget to cancel the LLM if a shortcut arrives".
@@ -713,7 +1275,7 @@ for (const route of ['prefix', 'exact label', 'inference'] as const) {
 
     // The old model answers anyway, after it was cancelled.
     setup.detections[0].answer('SEND');
-    await settle();
+    await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
     assert.deepEqual(setup.dispatched, []);
     assert.equal(setup.outcomes.get(1), 'superseded');
 
@@ -728,7 +1290,7 @@ for (const route of ['prefix', 'exact label', 'inference'] as const) {
     if (route === 'inference') {
       setup.detections[1].answer('SEND');
     }
-    await setup.pipeline.idle();
+    await finish(setup);
 
     const expected =
       route === 'prefix'
@@ -746,56 +1308,29 @@ for (const route of ['prefix', 'exact label', 'inference'] as const) {
   });
 }
 
-test('the shortcut quiet window is never a grace period for the cancelled inference', async () => {
+test('the shortcut floor is never a grace period for the cancelled inference', async () => {
   const setup = harness({ prefixes: ['go to session'] });
-  setup.pipeline.submit(audio(0.1));
+  endpoint(setup, 0.1);
   await settle();
   setup.transcriptions[0].answer('Go to');
   await settle();
 
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
+  const resumedSpoke = endpoint(setup, 0.2);
   await settle();
   assert.equal(setup.detectSignals[0].aborted, true, 'Cancelled before the new attempt routes');
 
-  const routed = performance.now();
   setup.transcriptions[1].answer('Go to session three');
-  await settle();
 
-  // The combined attempt waits in its 576 ms window with no dispatch at all.
+  // The combined attempt waits for its floor with no dispatch at all.
+  await advanceTo(setup, resumedSpoke + 799);
   assert.deepEqual(setup.dispatched, []);
   assert.equal(setup.outcomes.get(1), 'superseded');
 
-  await setup.pipeline.idle();
+  await advanceTo(setup, resumedSpoke + 800);
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'three' }]);
-  assert.ok(performance.now() - routed >= SHORTCUT_QUIET_MS - 50);
   assert.equal(setup.detections.length, 1, 'The shortcut needs no new inference');
-});
-
-test('when commitment wins the race, the resumed speech is a new request', async () => {
-  const setup = harness();
-  setup.pipeline.submit(audio(0.1));
-  await settle();
-  setup.transcriptions[0].answer('Open the browser');
-  await settle();
-
-  // Inference completes and the router commits before the listener reports speech.
-  setup.detections[0].answer('SEND');
-  await settle();
-  setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
-  await settle();
-
-  assert.equal(setup.logs.filter((entry) => entry.stage === 'hold').length, 0);
-  assert.deepEqual(setup.transcriptions[1].samples, [0.2], 'Never merged after commitment');
-  setup.transcriptions[1].answer('and close it');
-  await settle();
-  setup.detections[1].answer('SEND');
-  await setup.pipeline.idle();
-  assert.deepEqual(
-    setup.dispatched.map((entry) => entry.id),
-    [1, 2],
-  );
+  await finish(setup);
 });
 
 test('a paused listener releases an empty attempt waiting in its quiet window', async () => {
@@ -806,11 +1341,12 @@ test('a paused listener releases an empty attempt waiting in its quiet window', 
   await settle();
   assert.deepEqual(setup.emptyClips, [], 'Still inside the quiet window');
 
-  const paused = performance.now();
+  const paused = setup.clock.now();
   setup.controller.abort();
   await setup.pipeline.idle();
 
-  assert.ok(performance.now() - paused < SHORTCUT_QUIET_MS / 2, 'Pause ends the wait at once');
+  assert.equal(setup.clock.now(), paused, 'Pause ends the wait at once');
+  assert.equal(setup.clock.pendingTimers, 0);
   assert.deepEqual(setup.emptyClips, [[0.1]], 'Retained once, as a paused empty result was before');
   assert.equal(setup.pipeline.failures, 0);
 });
@@ -826,73 +1362,36 @@ test('only the combined attempt is retained when both parts transcribe empty', a
   setup.pipeline.submit(audio(0.2));
   await settle();
   setup.transcriptions[1].answer('');
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.emptyClips, [[0.1, 0.2]], 'The superseded fragment is not retained');
   assert.deepEqual(setup.dispatched, []);
 });
 
-test('an unreadable fragment stays continuable beyond the shortcut window', async () => {
+test('an unreadable fragment stays continuable beyond the speech floor', async () => {
   const setup = harness();
-  setup.pipeline.submit(audio(0.1));
+  endpoint(setup, 0.1);
+  const admitted = setup.clock.now();
   await settle();
   setup.transcriptions[0].answer('');
 
-  // Speech resumes after the 576 ms shortcut window, within EMPTY_QUIET_MS.
-  await new Promise((resolve) => setTimeout(resolve, SHORTCUT_QUIET_MS + 150));
+  // Speech resumes after the 800 ms floor, within EMPTY_QUIET_MS.
+  await advanceTo(setup, admitted + SPEECH_QUIET_MS + 150);
   assert.equal(
     setup.logs.some((entry) => entry.stage === 'filtered'),
     false,
   );
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2));
+  endpoint(setup, 0.2);
   await settle();
   assert.deepEqual(setup.transcriptions[1].samples, [0.1, 0.2]);
   setup.transcriptions[1].answer('How do I get to Dublin');
   await settle();
   setup.detections[0].answer('SEND');
-  await setup.pipeline.idle();
+  await finish(setup);
 
   assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'How do I get to Dublin' }]);
   assert.deepEqual(setup.emptyClips, []);
-});
-
-test('typed input during an open speech candidate waits for neither', async () => {
-  const setup = harness();
-  setup.pipeline.submit(audio(0.1));
-  await settle();
-  setup.transcriptions[0].answer('Open the browser');
-  await settle();
-
-  // Speech (or background sound) opens a candidate, then text is typed while
-  // it is still open. The candidate can no longer continue the attempt.
-  setup.pipeline.speechResumed();
-  assert.equal(setup.pipeline.submitText('typed words'), true);
-  setup.detections[0].answer('SEND');
-  await settle();
-  setup.detections[1].answer('SEND');
-  await settle();
-
-  assert.deepEqual(
-    setup.dispatched.map((entry) => entry.utterance),
-    ['Open the browser', 'typed words'],
-    'Both dispatch before the candidate closes',
-  );
-  assert.ok(setup.logs.some((entry) => entry.stage === 'release' && entry.id === 1));
-
-  // When the candidate is accepted, it is a new request after the typed text.
-  setup.pipeline.submit(audio(0.2));
-  await settle();
-  assert.deepEqual(setup.transcriptions[1].samples, [0.2]);
-  setup.transcriptions[1].answer('and close it');
-  await settle();
-  setup.detections[2].answer('SEND');
-  await setup.pipeline.idle();
-  assert.deepEqual(
-    setup.dispatched.map((entry) => entry.utterance),
-    ['Open the browser', 'typed words', 'and close it'],
-  );
-  assert.notEqual(setup.outcomes.get(1), 'superseded');
 });
 
 for (const earlierText of [true, false]) {
@@ -911,6 +1410,8 @@ for (const earlierText of [true, false]) {
           throw Error('Disk full');
         },
       },
+      'pipeline',
+      setup.clock,
     );
     assert.equal(pipeline.dependencies.router, router);
 
@@ -928,7 +1429,7 @@ for (const earlierText of [true, false]) {
     if (earlierText) {
       setup.detections.at(-1)!.answer('SEND');
     }
-    await pipeline.idle();
+    await finish({ ...setup, pipeline });
 
     assert.ok(logs.includes('error: recording: Disk full'));
     assert.equal(pipeline.failures, 1);

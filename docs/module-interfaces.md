@@ -67,15 +67,21 @@ The pipeline likewise calls `this.dependencies.screen.capture(...)`,
 properties. `ActiveWindowSensor` gives the existing capture function an object
 identity; the capture algorithm is unchanged.
 
-`SensorPipeline.submit(samples, signal)` and `submitText(text, signal, target?)`
-share one bounded FIFO: one active job and two waiting jobs. Speech segments are
-provisional attempts. The listener also calls `speechResumed()` when a VAD
-candidate opens and `speechDiscarded()` when it closes without a segment or
-listening ends; a `submit` that follows a hold merges the raw audio into a new
-attempt that replaces the held one in place. The router receives that attempt as
-an optional third argument, `route(frame, signal, commitment?)`, and awaits
-`commitment.commit(...)` immediately before dispatching or skipping. Typed input
-and direct callers pass none. See [speech timing](speech-timing.md). Both capture the
+`SensorPipeline.submit(samples, signal, leadIn?, trailingSilenceMs?)` and
+`submitText(text, signal, target?)` share one bounded FIFO: one active job and
+two waiting jobs. Speech segments are provisional attempts. The listener passes
+each segment's measured trailing silence (`Segment.trailingSilenceMs`; direct
+callers omit it, meaning none). It also calls `speechResumed()` when a VAD
+candidate opens and `speechDiscarded(burstTrailingSilenceMs?)` when it closes
+without a segment (with its measured silence) or listening ends (without); a
+`submit` that follows a hold merges the raw audio into a new attempt that
+replaces the held one in place. The router receives that attempt as an optional
+third argument, `route(frame, signal, commitment?)`, and awaits
+`commitment.commit(...)` immediately before dispatching or skipping. A spoken
+decision commits at `max(speech end + 800 ms, decision ready)`. Typed input and
+direct callers pass no commitment. The pipeline's optional sixth constructor
+argument is the monotonic `CommitClock` for these deadlines; tests pass a
+controlled clock. See [speech timing](speech-timing.md). Both capture the
 screen and interaction context on admission; only audio invokes transcription.
 Typed input accepts nonblank text up to 4000 UTF-16 code units. An optional target
 address must match the captured window. Admission returns `false` for cancellation
@@ -255,7 +261,8 @@ The refactor preserves the existing execution owners:
 
 - The listener runs serial VAD while the pipeline processes accepted utterances.
   (Since the provisional endpoint, it also reports candidate onsets and
-  rejections, and the router awaits a commitment before dispatch.)
+  rejections with their measured trailing silence, and the router awaits a
+  commitment, including the 800 ms speech floor, before dispatch.)
 - `submit` synchronously starts capture and retains the one-active/two-pending
   FIFO limit. Graph generation introduces no promises or extra queues.
 - Cancellation travels through the same `AbortSignal` arguments, including pause

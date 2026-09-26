@@ -10,6 +10,8 @@ import { MIN_SPEECH_WINDOW_RMS } from '../sensors/audio/levels.ts';
 import {
   MAX_UTTERANCE_SAMPLES,
   ProvisionalAttempt,
+  systemClock,
+  type CommitClock,
   type TranscriptChain,
 } from './utterance-continuation.ts';
 
@@ -51,10 +53,13 @@ interface Job {
   settled: boolean;
 }
 
-/** Input for admission; a continuation also names the attempt it replaces. */
+/**
+ * Input for admission. Speech carries the silence measured after its last
+ * voiced frame (see `submit`); a continuation also names the attempt it replaces.
+ */
 type JobInput =
-  | { samples: Float32Array; text?: never; replaces?: Job }
-  | { text: string; samples?: never; replaces?: never };
+  | { samples: Float32Array; trailingSilenceMs: number; text?: never; replaces?: Job }
+  | { text: string; samples?: never; trailingSilenceMs?: never; replaces?: never };
 
 /** Audio/VAD continues independently; one worker routes frames in speech order. */
 export class SensorPipeline implements InspectableModule {
@@ -84,6 +89,9 @@ export class SensorPipeline implements InspectableModule {
     private readonly signal: AbortSignal,
     private readonly activity: Activity = {},
     readonly id = 'pipeline',
+    // Monotonic time for the commitment deadlines of speech attempts. Tests
+    // substitute a controlled clock; production uses performance.now().
+    private readonly clock: CommitClock = systemClock,
   ) {}
 
   /**
@@ -93,23 +101,32 @@ export class SensorPipeline implements InspectableModule {
    * optional lead-in is the pause between the two that the segment's preroll
    * could not hold (Segment.leadIn); it is used only for a merge, so the
    * combined audio keeps the real pause up to the legacy endpoint.
+   *
+   * `trailingSilenceMs` is the silence the segmenter measured at the end of
+   * this segment (Segment.trailingSilenceMs). Admission happens in the same
+   * tick as the segment closes, so the speech ended that long before now; the
+   * attempt's commitment floor counts from there. A merged attempt ends in the
+   * new segment, so the same value applies. Callers without VAD pass nothing:
+   * no silence is assumed, and the full floor counts from admission.
    */
   submit(
     samples: Float32Array,
     signal = this.signal,
     leadIn: Float32Array = new Float32Array(0),
+    trailingSilenceMs = 0,
   ): boolean {
     const held = this.held;
     this.held = undefined;
 
     if (held && this.continuable(held, leadIn.length + samples.length)) {
       const combined = concatenate([held.samples!, leadIn, samples]);
-      return this.enqueue({ samples: combined, replaces: held }, signal);
+      return this.enqueue({ samples: combined, trailingSilenceMs, replaces: held }, signal);
     }
 
-    // Not a continuation (or not mergeable): the held attempt proceeds.
+    // Not a continuation (or not mergeable): the held attempt proceeds with
+    // its own deadlines, because this speech can no longer join it.
     held?.attempt!.release();
-    return this.enqueue({ samples }, signal);
+    return this.enqueue({ samples, trailingSilenceMs }, signal);
   }
 
   /**
@@ -118,7 +135,7 @@ export class SensorPipeline implements InspectableModule {
    * `submit` (speech) or `speechDiscarded` (too short, or listening ended).
    */
   speechResumed(): void {
-    this.speechDiscarded();
+    this.releaseHold('Resumed sound was not speech; continuing');
 
     const job = this.newest;
     if (!job?.attempt || job.settled) {
@@ -134,13 +151,22 @@ export class SensorPipeline implements InspectableModule {
   /**
    * The open candidate did not become speech, or can no longer continue the
    * held attempt. Idempotent; safe on every exit path.
+   *
+   * The listener passes `burstTrailingSilenceMs` for a candidate rejected as
+   * too short: that sound ended this long ago, and the held attempt's quiet
+   * period restarts from it. Without it (listening ended), no later sound can
+   * continue the attempt, so its deadlines are unchanged.
    */
-  speechDiscarded(reason = 'Resumed sound was not speech; continuing'): void {
+  speechDiscarded(burstTrailingSilenceMs?: number): void {
+    this.releaseHold('Resumed sound was not speech; continuing', burstTrailingSilenceMs);
+  }
+
+  private releaseHold(reason: string, burstTrailingSilenceMs?: number): void {
     const job = this.held;
     this.held = undefined;
 
     if (job) {
-      job.attempt!.release();
+      job.attempt!.release(burstTrailingSilenceMs);
       if (!job.settled) {
         this.log('release', reason, job.id);
       }
@@ -174,16 +200,17 @@ export class SensorPipeline implements InspectableModule {
     // `continuable`). A hold from a VAD candidate that is still open therefore
     // cannot change that attempt's outcome any more; release it now, so
     // neither the attempt nor this text waits for the candidate to close.
+    // The attempt keeps its own deadline; typed input adds no speech timer.
     // Order is unchanged: attempt, text, then the resumed speech.
     if (this.held && this.held !== this.newest) {
-      this.speechDiscarded('Typed input ends the continuation; continuing');
+      this.releaseHold('Typed input ends the continuation; continuing');
     }
 
     return admitted;
   }
 
   private enqueue(input: JobInput, signal: AbortSignal, target?: string): boolean {
-    const { replaces, ...observation } = input;
+    const { replaces, trailingSilenceMs, ...observation } = input;
 
     if (signal.aborted || this.signal.aborted) {
       replaces?.attempt!.release();
@@ -206,7 +233,11 @@ export class SensorPipeline implements InspectableModule {
 
     const observedAt = Date.now();
     const jobSignal = AbortSignal.any([signal, this.signal]);
-    const attempt = observation.samples ? new ProvisionalAttempt() : undefined;
+    // Speech is a provisional attempt. Its quiet periods start now, at the
+    // provisional endpoint, and its speech ended `trailingSilenceMs` earlier.
+    const attempt = observation.samples
+      ? new ProvisionalAttempt({ trailingSilenceMs, clock: this.clock })
+      : undefined;
     const routeSignal = attempt ? AbortSignal.any([jobSignal, attempt.signal]) : jobSignal;
 
     // Supersede before admitting the replacement: the old attempt's routing is
