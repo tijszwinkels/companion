@@ -248,6 +248,7 @@ export class SensorPipeline implements InspectableModule {
     // aborted now, and its samples were already copied into the combined buffer.
     if (replaces) {
       replaces.attempt!.supersede();
+      replaces.chain!.supersededAttempts.push(replaces.id);
       this.log('superseded', `Speech resumed; continued as ${id}`, replaces.id);
     }
 
@@ -286,7 +287,7 @@ export class SensorPipeline implements InspectableModule {
       routeSignal,
       interaction,
       attempt,
-      chain: attempt ? (replaces?.chain ?? {}) : undefined,
+      chain: attempt ? (replaces?.chain ?? { supersededAttempts: [] }) : undefined,
       settled: false,
     };
     this.newest = job;
@@ -527,6 +528,15 @@ export class SensorPipeline implements InspectableModule {
         job.samples?.fill(0);
 
         await job.capture; // Settle capture before shutdown releases the job.
+
+        // The final attempt of a continued utterance names the attempts it
+        // replaced. The worker is serial, so each of them that reached ASR has
+        // already finished, and none can record anything any more.
+        const chain = job.chain;
+        if (chain && !job.attempt!.superseded && chain.supersededAttempts.length) {
+          this.activity.continuationSettled?.(job.id, [...chain.supersededAttempts]);
+        }
+
         this.activity.finished?.(job.id);
       }
     }

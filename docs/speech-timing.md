@@ -163,10 +163,14 @@ constant or one branch:
   transcript is still routed.
 - **D3** A continuation that would make the combined audio exceed 30 s is not
   merged: the held attempt proceeds and the continuation is a new request.
-- **D4** A superseded attempt whose transcript was already recorded keeps its
-  history row with the neutral outcome `superseded` (no sound; not shown as a
-  failure). An attempt superseded before its ASR result arrived writes no row,
-  WAV or empty clip. The combined attempt has its own row.
+- **D4** (revised by Tijs, 2026-09-27: one retained final utterance per
+  continuation chain, prospectively). An attempt superseded before its ASR
+  result arrived writes no row, WAV or empty clip, as before. An attempt
+  superseded after its transcript was recorded still gets a row, WAV, PNG and
+  possibly an intent request while it is live, with the neutral outcome
+  `superseded`. It is then removed once the final attempt of its utterance
+  owns the whole utterance; see [final-only retention](#final-only-retention).
+  The combined attempt's row, with its normal outcome, is the one record.
 
 The `processing` cue plays at every provisional endpoint, including a merged one.
 
@@ -191,6 +195,59 @@ as a separate request. Either would change only the merge decision in
 `SensorPipeline.submit`. The continuation's own segment is available there, but
 choosing a route for it requires transcribing it separately first.
 
+## Final-only retention
+
+Each utterance ends with one record in SQLite, recordings and the current-run
+Activity list, even when pauses made it several provisional attempts. Source:
+`TranscriptChain.supersededAttempts` and `Activity.continuationSettled` in the
+pipeline, `DesktopRuntime.settleContinuation`/`retire` and
+`UtteranceHistory.retireSuperseded`.
+
+1. **Chain.** Each supersession appends the replaced attempt's frame id to the
+   utterance's chain. When the chain's final attempt settles, whatever its
+   outcome, the pipeline calls `continuationSettled(finalId, supersededIds)`
+   just before `finished(finalId)`. The sensor worker is serial, so every
+   superseded attempt that reached ASR has already finished; its frame no
+   longer maps to a row, so no late write can recreate its row or files.
+2. **Deferred card.** A superseded attempt's Activity card is not published at
+   `finished`; the runtime holds its row until the chain settles. The recent
+   database list may still show it for the second or so until then.
+3. **Ownership.** The final attempt owns the utterance when its row exists and
+   both its WAV and PNG were published. Its WAV contains every earlier part's raw
+   audio (and the restored pause), and a D2 fallback row carries the earlier
+   words. Its outcome does not matter: sent, ignored, error or cancelled is the
+   record to recover from.
+4. **Retirement.** Only then is each superseded row removed, after dispatch and
+   off the sensor worker: files first, then the row, in the same way as a user
+   deletion, and `history-deleted` is published. `retireSuperseded` is
+   narrower than user deletion: the row must be finished, have outcome exactly
+   `superseded`, and have no paste attempt or feedback. Shutdown waits for
+   pending retirements before closing the database.
+5. **Otherwise, keep.** If the final attempt does not own the utterance (its ASR
+   failed, pause cancelled it before its transcript, a recording write failed,
+   or capture failed), the superseded rows stay as before and their cards are
+   published. A row that cannot be retired (pasted or labeled meanwhile, or a
+   file that cannot be removed) also stays, with an `error` log; nothing reports
+   a removal that did not happen.
+
+Only rows this listener run created and linked in memory are touched. There is
+no migration, startup sweep, outcome filter or hiding: `superseded` rows from
+earlier runs, and rows kept under step 5, remain. Preview mode records rows too,
+so retirement applies there as well.
+
+**Side effects.** Removed with a superseded row: its partial transcript, its
+screenshot and window title from the earlier endpoint (the only copy of that
+earlier screen), and its `intent_request` (a partial-transcript prompt that was
+never acted on). Its audio is contained in the final WAV. Paste recovery and
+history-agent questions can no longer start from a partial row once it is
+retired. How often speech was superseded is now visible only in listener logs,
+and `inspectDatabase().recorded` no longer counts those prompts. ASR and model
+work are unchanged: nothing is saved in compute. Retirement costs two file
+removals and one small transaction after dispatch. A crash before or during
+retirement leaves the superseded row (possibly without its files), which is not
+cleaned up later. Listener logs, SQLite WAL/free pages and backups can still
+contain the removed text; nothing is purged.
+
 ## Logs
 
 | Stage | Meaning |
@@ -201,6 +258,8 @@ choosing a route for it requires transcribing it separately first.
 | `queued … (continues N)` | The combined job and the attempt it replaces. |
 | `continuation` | The combined audio would exceed 30 s; the segment is a new request. |
 | `fallback` | Combined audio had no text; the earlier transcript is routed (D2). |
+| `retired` | Desktop: a superseded row and its recordings were removed; its continuation keeps the utterance. |
+| `retention` | Desktop: the final attempt was not fully recorded, so the superseded rows are kept. |
 
 ## File input
 

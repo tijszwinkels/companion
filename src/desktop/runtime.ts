@@ -12,7 +12,7 @@ import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
 import { command } from '../system/command.ts';
 import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
-import { UtteranceHistory } from './history.ts';
+import { UtteranceHistory, type HistoryEntry } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
 import { DesktopServer } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
@@ -54,6 +54,21 @@ export class DesktopRuntime {
   private readonly server: DesktopServer;
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
+
+  // One record per continued utterance (docs/speech-timing.md, D4). A
+  // superseded attempt's row waits here, unpublished, until the final attempt
+  // of its chain settles; it is then either retired or published as before.
+  // Entries leave when their chain settles, so the map stays small.
+  private readonly supersededRows = new Map<number, HistoryEntry>();
+  // Superseded frames named by a settled chain before they finished. Not
+  // expected (the sensor worker is serial); such a row is simply kept.
+  private readonly unsettledSuperseded = new Set<number>();
+  // Recordings published for each frame still in progress, so a chain's final
+  // attempt is known to own the whole utterance before anything is removed.
+  private readonly recordedFrames = new Map<number, { audio: boolean; screenshot: boolean }>();
+  // Retirements run after dispatch, off the sensor worker; close() awaits them.
+  private readonly retirements = new Set<Promise<void>>();
+
   // Reports belong to their connections, so a vanished adapter cannot leave
   // listening paused forever or clear another adapter's active playback.
   private readonly mediaClients = new Set<number>();
@@ -208,8 +223,16 @@ export class DesktopRuntime {
         this.history.add(transcript);
         this.server.broadcast();
       },
-      screenshotCaptured: (id, screenshot) => this.history.saveScreenshot(id, screenshot),
-      audioCaptured: (id, samples) => this.history.saveAudio(id, samples),
+      screenshotCaptured: async (id, screenshot) => {
+        if (await this.history.saveScreenshot(id, screenshot)) {
+          this.markRecorded(id, 'screenshot');
+        }
+      },
+      audioCaptured: async (id, samples) => {
+        if (await this.history.saveAudio(id, samples)) {
+          this.markRecorded(id, 'audio');
+        }
+      },
       emptyAudioCaptured: (clip) => saveEmptyAudioClip(dirname(options.database), clip),
       intentRequested: (id, request) => this.history.saveIntentRequest(id, request),
       intentRecognized: (id, intent) => {
@@ -239,17 +262,23 @@ export class DesktopRuntime {
 
         this.server.broadcast();
       },
+      continuationSettled: (finalId, supersededIds) => {
+        this.settleContinuation(finalId, supersededIds);
+      },
       finished: (id) => {
         this.frameComposerRevisions.delete(id);
         this.processing.delete(id);
         this.delivery.finish(id);
+        this.recordedFrames.delete(id);
         const entry = this.history.finish(id);
-        if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
-          this.server.publish({
-            type: 'activity-entry',
-            sessionId: this.activityHistory.sessionId,
-            entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
-          });
+        const chainSettled = this.unsettledSuperseded.delete(id);
+
+        if (entry?.outcome === 'superseded' && !chainSettled) {
+          // Its continuation normally owns the whole utterance; decide when
+          // that chain settles (settleContinuation) rather than show it now.
+          this.supersededRows.set(id, entry);
+        } else if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
+          this.publishActivity(entry);
         }
         this.server.broadcast();
       },
@@ -508,6 +537,98 @@ export class DesktopRuntime {
       return true;
     }
     return false;
+  }
+
+  private publishActivity(entry: HistoryEntry): void {
+    this.server.publish({
+      type: 'activity-entry',
+      sessionId: this.activityHistory.sessionId,
+      entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
+    });
+  }
+
+  private markRecorded(frameId: number, kind: 'audio' | 'screenshot'): void {
+    const recorded = this.recordedFrames.get(frameId) ?? { audio: false, screenshot: false };
+    recorded[kind] = true;
+    this.recordedFrames.set(frameId, recorded);
+  }
+
+  /**
+   * The final attempt of a continued utterance has settled, just before its
+   * own `finished`. Its superseded predecessors are retired only when the final
+   * attempt owns the whole utterance: its row exists and both its WAV (which
+   * contains every earlier part's raw audio) and its PNG were published. Its
+   * outcome does not matter; an error, cancellation or ignored result is the
+   * record the user recovers from. Otherwise, for example when the final
+   * attempt's ASR failed or pause cancelled it before its row was written, the
+   * predecessors are kept and published exactly as before.
+   */
+  private settleContinuation(finalId: number, supersededIds: readonly number[]): void {
+    const recorded = this.recordedFrames.get(finalId);
+    const owned =
+      this.history.entryId(finalId) !== undefined &&
+      recorded?.audio === true &&
+      recorded.screenshot === true;
+
+    const predecessors: HistoryEntry[] = [];
+    for (const id of supersededIds) {
+      const entry = this.supersededRows.get(id);
+      if (entry) {
+        this.supersededRows.delete(id);
+        predecessors.push(entry);
+      } else if (this.processing.has(id)) {
+        this.unsettledSuperseded.add(id);
+      }
+    }
+
+    if (!predecessors.length) {
+      return;
+    }
+
+    if (!owned) {
+      this.log(
+        'retention',
+        `Keeping ${predecessors.length} superseded attempt(s): the final attempt was not fully recorded`,
+        finalId,
+      );
+      for (const entry of predecessors) {
+        this.publishActivity(entry);
+      }
+      return;
+    }
+
+    const retirement = this.retire(predecessors).finally(() => {
+      this.retirements.delete(retirement);
+    });
+    this.retirements.add(retirement);
+  }
+
+  /**
+   * Remove superseded rows and their recordings one at a time. A row that
+   * cannot be retired (for example, pasted or labeled meanwhile, or a failed
+   * file removal) stays and becomes a normal Activity card; nothing reports a
+   * removal that did not happen.
+   */
+  private async retire(entries: HistoryEntry[]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        await this.history.retireSuperseded(entry.id);
+        this.log('retired', `Superseded attempt ${entry.id}; its continuation keeps the utterance`);
+        this.server.publish({
+          type: 'history-deleted',
+          id: entry.id,
+          sessionId: this.activityHistory.sessionId,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log('error', `retention: ${entry.id}: ${message}`);
+        const current = this.history.find(entry.id);
+        if (current) {
+          this.publishActivity(current);
+        }
+      }
+    }
+    this.server.broadcast();
   }
 
   private publishFeedback(id: string): void {
@@ -1119,6 +1240,9 @@ export class DesktopRuntime {
     this.options.cleanup?.off('change', this.cleanupChanged);
 
     try {
+      // The pipeline is idle by now; let pending retirements finish while the
+      // database and clients are still available.
+      await Promise.allSettled([...this.retirements]);
       await this.server.close();
       await this.sounds.close();
     } finally {

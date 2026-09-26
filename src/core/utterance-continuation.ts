@@ -144,6 +144,14 @@ export class UtteranceSupersededError extends Error {
 export interface TranscriptChain {
   /** Product choice D2: fallback text if a combined retranscription is empty. */
   latestTranscript?: string;
+
+  /**
+   * Frame ids of this utterance's attempts that were superseded, oldest first.
+   * The chain's final attempt reports them when it settles, so the desktop can
+   * keep one record per utterance (Activity.continuationSettled). Bounded by
+   * the number of pauses within the 30-second combined audio cap.
+   */
+  supersededAttempts: number[];
 }
 
 /**

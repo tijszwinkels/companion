@@ -75,5 +75,14 @@ export interface Activity {
   /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
   labelPrevious?(id: number, correct: boolean): string | undefined;
   outcome?(id: number, outcome: UtteranceOutcome, destination?: UtteranceDestination): void;
+  /**
+   * The final attempt of a continued utterance has settled; `supersededIds`
+   * are the attempts it replaced, oldest first. Called once per such chain,
+   * immediately before `finished(finalId)`, whatever the final outcome. Every
+   * superseded attempt has already reported `finished`, except one replaced
+   * while still waiting in the queue, which never reached ASR and recorded
+   * nothing. The desktop uses this to keep a single record per utterance.
+   */
+  continuationSettled?(finalId: number, supersededIds: readonly number[]): void;
   finished?(id: number): void;
 }

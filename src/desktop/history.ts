@@ -297,16 +297,72 @@ export class UtteranceHistory {
       throw Error('Wait for this utterance to finish processing or pasting before deleting it');
     }
 
-    // Claim the row before filesystem awaits. No paste, label or history-agent
-    // request may begin using it while its recordings are being removed.
+    await this.removeClaimed(id, () => {
+      this.db.prepare('DELETE FROM intent_feedback WHERE id = ?').run(id);
+      this.db.prepare('DELETE FROM paste_events WHERE utterance_id = ?').run(id);
+      this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id);
+    });
+  }
+
+  /**
+   * Remove a provisional attempt that a continuation replaced, once the
+   * continuation's own record owns the whole utterance (the desktop runtime
+   * decides that). This is not a user deletion and is deliberately narrower:
+   * only a finished row whose outcome is exactly `superseded`, with no paste
+   * attempt and no feedback, is removed. Anything the user has already used
+   * or referenced stays, and the caller keeps it visible. The same claim,
+   * files-first order and transaction as `delete` apply. Throws instead of
+   * reporting success when the row was kept.
+   */
+  async retireSuperseded(id: string): Promise<void> {
+    this.assertNotDeleting(id);
+    const entry = this.find(id);
+    if (!entry) {
+      throw Error('Utterance not found');
+    }
+    if (entry.outcome !== 'superseded' || this.activeFrameId(id) !== undefined) {
+      throw Error('Only a finished superseded attempt can be retired');
+    }
+    if (this.referenced(id)) {
+      throw Error('This superseded attempt was pasted or labeled; keeping it');
+    }
+
+    await this.removeClaimed(id, () => {
+      // The claim blocks new pastes and labels, so these conditions still hold;
+      // the statement checks them again rather than relying on that.
+      const result = this.db
+        .prepare(
+          `DELETE FROM utterances WHERE id = ? AND outcome = 'superseded'
+          AND NOT EXISTS (SELECT 1 FROM paste_events WHERE utterance_id = ?)
+          AND NOT EXISTS (SELECT 1 FROM intent_feedback WHERE id = ?)`,
+        )
+        .run(id, id, id);
+      if (result.changes !== 1) {
+        throw Error('The superseded attempt changed while it was being retired');
+      }
+    });
+  }
+
+  private referenced(id: string): boolean {
+    const paste = this.db
+      .prepare('SELECT 1 FROM paste_events WHERE utterance_id = ? LIMIT 1')
+      .get(id);
+    const feedback = this.db.prepare('SELECT 1 FROM intent_feedback WHERE id = ?').get(id);
+    return paste !== undefined || feedback !== undefined;
+  }
+
+  /**
+   * Claim the row before filesystem awaits, so no paste, label or history-agent
+   * request may begin using it while its recordings are removed. Files go
+   * first; `removeRows` then runs in one SQLite transaction.
+   */
+  private async removeClaimed(id: string, removeRows: () => void): Promise<void> {
     this.deleting.add(id);
     try {
       await removeArtifacts(dirname(this.path), id);
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        this.db.prepare('DELETE FROM intent_feedback WHERE id = ?').run(id);
-        this.db.prepare('DELETE FROM paste_events WHERE utterance_id = ?').run(id);
-        this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id);
+        removeRows();
         this.db.exec('COMMIT');
       } catch (error) {
         this.db.exec('ROLLBACK');
@@ -403,22 +459,25 @@ export class UtteranceHistory {
     }
   }
 
-  async saveScreenshot(frameId: number, screenshot: Screenshot): Promise<void> {
+  /** Resolves true once the PNG is published; false when the frame has no row. */
+  async saveScreenshot(frameId: number, screenshot: Screenshot): Promise<boolean> {
     const id = this.frameEntries.get(frameId);
 
     if (!id) {
-      return;
+      return false;
     }
 
     const entry = this.find(id)!;
     await saveArtifact(dirname(this.path), id, entry.observedAt, 'screenshots', screenshot.png);
+    return true;
   }
 
-  async saveAudio(frameId: number, samples: Float32Array): Promise<void> {
+  /** Resolves true once the WAV is published; false when the frame has no row. */
+  async saveAudio(frameId: number, samples: Float32Array): Promise<boolean> {
     const id = this.frameEntries.get(frameId);
 
     if (!id) {
-      return;
+      return false;
     }
 
     const entry = this.find(id)!;
@@ -426,6 +485,12 @@ export class UtteranceHistory {
     // trimming. The pipeline retains ownership until this write settles.
     const wav = encodeWav(samples);
     await saveArtifact(dirname(this.path), id, entry.observedAt, 'audio', wav);
+    return true;
+  }
+
+  /** The row UUID of a frame that is still being processed. */
+  entryId(frameId: number): string | undefined {
+    return this.frameEntries.get(frameId);
   }
 
   /**

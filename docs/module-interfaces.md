@@ -90,6 +90,13 @@ The desktop's `submit-utterance` action uses this path after restoring applicati
 focus. It records the utterance and PNG, with no WAV. See the
 [desktop contract](../src/desktop/README.md) for capabilities and acknowledgements.
 
+When a continued utterance's final attempt settles, the pipeline calls
+`Activity.continuationSettled(finalId, supersededIds)` just before
+`finished(finalId)`. The desktop runtime then keeps one record per utterance;
+see [final-only retention](speech-timing.md#final-only-retention).
+`screenshotCaptured`/`audioCaptured` resolve after the file is published; the
+runtime records that per frame to decide ownership.
+
 Confirmed empty ASR results (after the transcriber's single padded retry, when
 eligible) that meet the existing duration/energy floors call
 `Activity.emptyAudioCaptured` when available. This observer saves a separate

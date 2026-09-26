@@ -273,6 +273,9 @@ function harness(
       outcome: (id, outcome) => {
         outcomes.set(id, outcome);
       },
+      continuationSettled: (finalId, supersededIds) => {
+        events.push(`settled ${finalId} replacing ${supersededIds.join(',')}`);
+      },
       finished: (id) => {
         events.push(`finished ${id}`);
       },
@@ -1077,6 +1080,11 @@ test('a waiting attempt is replaced in place before ASR, even when the queue is 
 
   assert.deepEqual(setup.asrInputs, [[0.1], [0.2], [0.3, 0.4]], 'Job 3 never reached ASR');
   assert.deepEqual(
+    setup.events.filter((event) => event.startsWith('settled')),
+    ['settled 4 replacing 3'],
+    'Only the continued utterance reports a chain',
+  );
+  assert.deepEqual(
     setup.dispatched.map((entry) => entry.id),
     [1, 2, 4],
   );
@@ -1115,6 +1123,13 @@ test('repeated pauses keep merging the whole utterance, each with a fresh floor'
   assert.deepEqual(setup.dispatched, [{ id: 3, utterance: 'One two three' }]);
   assert.deepEqual([setup.outcomes.get(1), setup.outcomes.get(2)], ['superseded', 'superseded']);
   await finish(setup);
+
+  // The final attempt names every attempt it replaced, once, after they have
+  // finished and just before its own `finished`.
+  assert.deepEqual(
+    setup.events.filter((event) => /^(settled|finished)/.test(event)),
+    ['finished 1', 'finished 2', 'settled 3 replacing 1,2', 'finished 3'],
+  );
 });
 
 test('an empty combined transcript falls back to the earlier words and keeps the clip', async () => {

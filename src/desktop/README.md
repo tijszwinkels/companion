@@ -120,7 +120,8 @@ opaque request ID so a delayed focus reply cannot submit a replacement draft.
 The Activity panel has a separate **current listener run** history. An utterance
 joins it only at the pipeline's `finished` callback, after its outcome is known.
 There is no 100-row cap here. The in-memory index lasts until listener shutdown;
-SQLite records and recordings remain until explicitly deleted.
+SQLite records and recordings remain until explicitly deleted, except the
+superseded attempts of a continued utterance (see the `superseded` outcome below).
 Closing/reopening the panel or reconnecting its socket does not begin a new run.
 
 `activity-history` returns an object in `result`: `{sessionId, entries, removed,
@@ -306,9 +307,10 @@ The shared keyboard queue stays occupied through typing and any explicit Enter;
 cancellation still interrupts the keyboard process. Longer text therefore has
 time to complete without extending a stalled focus lookup's deadline.
 
-SQLite lives at `~/companion/utterances.sqlite`. It uses WAL and has no automatic
-deletion. `utterances` stores the exact transcript, speech-end timestamp, active
-application/window identity, recognized intent, and final processing outcome.
+SQLite lives at `~/companion/utterances.sqlite`. It uses WAL. Its only automatic
+deletion is the retirement of superseded attempts described below. `utterances`
+stores the exact transcript, speech-end timestamp, active application/window
+identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
@@ -319,8 +321,13 @@ has been saved and removed; it does not delete its conversation archive.
 The `superseded` outcome marks a provisional speech attempt that was replaced
 because the user resumed speaking before it committed to an action. It plays no
 sound and is not a failure. The retranscribed whole utterance follows as its own
-row. An attempt replaced before its transcript arrived has no row at all. See
-[speech timing](../../docs/speech-timing.md).
+row. An attempt replaced before its transcript arrived has no row at all. Since
+2026-09-27 a superseded row is removed, with its PNG/WAV, once the final attempt
+of its utterance has its own row, WAV and PNG; its Activity card is never
+published then, and `history-deleted` (without `removed`) is sent. It is kept,
+and shown, when the final attempt is not fully recorded or the row was pasted
+or labeled. Older `superseded` rows are not touched. See
+[final-only retention](../../docs/speech-timing.md#final-only-retention).
 
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
