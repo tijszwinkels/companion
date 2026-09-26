@@ -210,11 +210,31 @@ clock, so each spoken decision from a file still waits until 800 ms after its
 segment was read (576 ms after a silence endpoint), as file shortcuts already
 did. `npm run asr:speech-timing` paces frames in real time to reproduce live timing.
 
+## Measured with the 800 ms floor (2026-09-26)
+
+`npm run asr:speech-timing -- --quick` (pauses 300, 700 and 1200 ms; 44 runs)
+at the floor's implementation commit, with the same public fixture, real Silero
+and Parakeet, simulated LLM and inert processor as the comparison below. No
+failures; no superseded attempt dispatched.
+
+| Measure | LLM 300 ms | LLM 700 ms | LLM 1500 ms |
+| --- | --- | --- | --- |
+| Single sentence, speech end → dispatch | 803 ms (was 726) | 1082 ms (was 1118) | 1935 ms (was 1902) |
+| All one-request results | 801–860 ms | 1082–1264 ms | 1888–2158 ms |
+| Pauses joined (comma / two sentences) | ≤ 700 ms (was ≤ 450) | ≤ 700 ms | ≤ 1200 ms |
+
+A fast answer now waits for the floor; slower answers are unchanged, as the
+design intends. Pauses up to 700 ms join at every latency, and 1200 ms joins
+only while a slow model is still running. The mid-sentence 1200 ms pause joined
+at all latencies through the unchanged empty-transcript window. Shortcuts
+dispatched at 801 ms, as before. The processing cue at gains 1, 0.3 and 0.1
+never opened a candidate. A burst that opened and released a hold now restarts
+the floor from the burst: 1281–1538 ms instead of about 1100 ms at LLM 700.
+One quick run on one machine; the full matrix below was not repeated.
+
 ## Measured comparison (2026-09-25)
 
-These measurements predate the 800 ms commitment floor. With the floor, the
-intent LLM rows can no longer dispatch earlier than about 800 ms after speech
-end, and pauses shorter than the floor join at every model latency.
+These measurements predate the 800 ms commitment floor; see the section above.
 
 `npm run asr:speech-timing` (`test/bench/speech-timing.ts`) plays clips built
 from the public `test/fixtures/speech.wav` in real time through the production
