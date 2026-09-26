@@ -90,6 +90,8 @@ for `drain`. Events, replies, errors, `agent-select` and `agent-draft` keep thei
 order and are never dropped individually. An unwritten `state` is superseded by
 the next one: the newer snapshot is appended after the events it already
 reflects, so a client never receives a snapshot older than a preceding event.
+A client under backpressure may therefore not see every intermediate state (for
+example a brief `speaking: true`); the latest state is always delivered.
 One slow client does not delay others. Bounds: a connection whose unwritten
 ordered backlog exceeds 16 MiB, or whose socket does not drain for 30 seconds,
 is closed; the UI reconnects and hydrates. A single message larger than the
@@ -880,8 +882,9 @@ Reading another call or explicitly refreshing uses the current group revision.
 `next` is `{index, offset}` or null. Index selects a call;
 offset counts UTF-16 units in its name, input and result, separated by blank lines.
 Each page contains at most 8,192 units (under 50 KiB even with worst-case JSON
-escaping), against the socket's existing 2 MiB write-backpressure threshold.
-Requests remain under its 32 KiB input bound and 16 outstanding-control limit.
+escaping), far below each connection's 16 MiB ordered-backlog bound (see
+[state stream](#state-stream-conversation-sync-and-backpressure)). Requests
+remain under its 32 KiB input bound and 16 outstanding-control limit.
 Replies go only to the requester, never through session broadcasts.
 
 The portable panel and native client create the details reader only on expansion.

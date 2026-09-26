@@ -43,7 +43,7 @@ interface OutboundLine {
  * Per-connection outbound queue. Node buffers everything passed to
  * `socket.write`, so a burst of large state snapshots used to grow the buffer
  * past the old 2 MiB limit and drop even a normally reading client. Instead we
- * hand the socket one batch at a time and hold the rest here until `drain`.
+ * write one line at a time and hold the rest here until `drain`.
  */
 interface Connection {
   readonly id: number;
@@ -253,9 +253,13 @@ export class DesktopServer {
     if (kind === 'state') {
       // Remove (not just skip) the older state so a stalled connection holds
       // at most one snapshot string however many broadcasts it misses.
+      // Invariant: `pendingState` is always in the queue (cleared when it is
+      // shifted out). Guard anyway: splice(-1) would drop an ordered line.
       if (connection.pendingState) {
         const index = connection.queue.indexOf(connection.pendingState);
-        connection.queue.splice(index, 1);
+        if (index >= 0) {
+          connection.queue.splice(index, 1);
+        }
       }
       connection.pendingState = entry;
     } else {
