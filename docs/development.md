@@ -43,6 +43,8 @@ milestones. User instructions can waive review for a particular change.
 | Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
 | Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
 | Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
+| Opt-in phone gateway and phone panel | `src/remote/`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [phone app](../integrations/mobile/README.md) |
+
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -157,3 +159,13 @@ use temporary session stores, real subprocesses and sockets, and synthetic agent
 backends. Never point these tests at the live listener or personal session store.
 The feature is off unless the listener is explicitly started with
 `--external-sessions`; activation remains a separate user decision.
+
+## Phone panel development
+
+`bin/companion-remote` is an opt-in gateway for the phone app in
+`integrations/mobile/`; nothing starts it automatically. `npm run mobile:build`
+builds the app, `npm run mobile:demo` runs a fully synthetic listener and gateway
+on loopback, and `npm run test:mobile` drives the built app in headless Chromium.
+Gateway and remote-role unit tests use temporary state and synthetic backends.
+Pairing a real phone, serving on a Tailscale address and running the production
+listener with this protocol are separate user decisions.

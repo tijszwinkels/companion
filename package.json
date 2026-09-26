@@ -13,7 +13,7 @@
     "asr:bench": "tsx test/bench/asr.ts",
     "asr:short-phrases": "tsx test/bench/short-phrases.ts",
     "asr:speech-timing": "tsx test/bench/speech-timing.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc --noEmit -p integrations/mobile",
     "eval:intents": "tsx src/evals/cli.ts",
     "eval:intent-cleanup": "tsx src/evals/experiments/json-cleanup/cli.ts",
     "test": "tsx --test test/unit/*.test.ts",
@@ -31,7 +31,11 @@
     "test:widgets-native": "tsx --test test/widgets/native.test.ts",
     "ui:build": "tsx native/window/build.ts",
     "ui": "native/window/build/companion-ui",
-    "test:window": "tsx --test test/window/*.test.ts"
+    "test:window": "tsx --test test/window/*.test.ts",
+    "mobile:build": "tsx integrations/mobile/build.ts",
+    "remote": "tsx src/remote/cli.ts",
+    "test:mobile": "tsx --test test/mobile/*.test.ts",
+    "mobile:demo": "tsx integrations/mobile/demo.ts"
   },
   "keywords": [],
   "author": "",
@@ -41,10 +45,14 @@
     "@earendil-works/pi-agent-core": "0.85.1",
     "@earendil-works/pi-ai": "0.85.1",
     "ajv": "8.17.1",
-    "onnxruntime-node": "1.30.0"
+    "onnxruntime-node": "1.30.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/node": "26.5.1",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
+    "preact": "10.29.8",
     "prettier": "3.9.7",
     "tsx": "4.23.13",
     "typescript": "7.0.2"

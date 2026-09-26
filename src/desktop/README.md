@@ -880,3 +880,42 @@ sources **external (unverified)**, retains existing composer text by default,
 and preserves the existing no-focus/explicit-focus behavior. Internal sources
 and turn leases keep their current shape and semantics. Update the listener and
 shared UI together to display the explicit external attribution.
+
+### Remote panels
+
+A socket client that relays another device's panel, such as the phone gateway in
+[`src/remote/`](../remote/README.md), first sends
+`{"action":"client-role","role":"remote"}` and receives `role-recorded`. The role
+must be declared before that connection reports any desktop panel, focus,
+navigation, draft-host or media state; the listener refuses it afterwards.
+Existing clients never send it and keep their current behavior.
+
+For a remote connection:
+
+- `panel-state` records only which conversation **that connection** shows (`id`,
+  empty for other pages). Focus, `visible`, `navigationToken` and `draftHost` are
+  ignored. It never changes the desktop's selected conversation, speech routing,
+  `go to session` navigation, keyboard delivery guards or draft hosting.
+- `choose-agent`, `stop-agent-run` and `agent-tool-page` check that connection's
+  own selection instead of the desktop selection. The desktop cannot act on a
+  conversation merely because a phone shows it, and vice versa.
+- Choice and stop controls for its selection arrive only on that connection as
+  `{"type":"remote-agent-actions","actions":{...}}`, in the `agentActions` shape,
+  and only when they change. Global `agent-actions` still describe the desktop
+  selection; remote clients should ignore them.
+- `paste`, `submit-utterance`, `media-playback`, `composer-focus` and
+  `agent-draft-result` are refused: they act on the desktop's focused window,
+  keyboard, media or composer drafts.
+- `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
+  starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
+  the ordinary tab/concurrency limits, opens in the background on desktop panels,
+  and returns `{outcome: "started", id}`. Desktop clients cannot use this action.
+- `start-history-agent` reuses the selected utterance's saved screenshot and opens
+  the conversation in the desktop background. `reopen-agent` also suppresses
+  desktop reveal. Neither path changes desktop dictation selection or captures
+  a new screenshot.
+
+Every result/error envelope now echoes a string `requestId` of at most 128
+characters when the request carried one, for correlation of concurrent replies.
+The Unix socket remains the only listener transport; network access, pairing and
+authentication belong to the separate gateway process.

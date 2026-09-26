@@ -15,5 +15,6 @@
     "integrations/**/*.ts",
     "native/widget-renderer/*.ts",
     "native/window/*.ts"
-  ]
+  ],
+  "exclude": ["integrations/mobile/src"]
 }

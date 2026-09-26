@@ -30,6 +30,33 @@ import type { AgentDraftOutcome, AgentDraftRequest } from '../agents/types.ts';
 /** A connected panel must confirm a forwarded draft within this time. */
 const draftConfirmationMilliseconds = 5000;
 
+/**
+ * Actions that act on the desktop itself: the compositor's focused window,
+ * keyboard delivery, media playback reports, composer focus and composer
+ * drafts. A remote panel (such as the phone gateway) cannot observe or own
+ * any of these, so the listener refuses them for remote connections.
+ */
+const desktopOnlyActions = new Set([
+  'paste',
+  'submit-utterance',
+  'media-playback',
+  'composer-focus',
+  'agent-draft-result',
+]);
+
+/**
+ * A remote panel observes and controls conversations without becoming the
+ * desktop's selected conversation. Its selection is private to its connection,
+ * so looking at a chat on the phone never redirects desktop dictation, voice
+ * navigation, keyboard focus guards or agent drafts.
+ */
+interface RemoteClient {
+  /** Conversation shown by this remote panel, or empty for other pages. */
+  selection: string;
+  /** Last actions sent to this client, to avoid resending unchanged controls. */
+  lastActionsKey: string;
+}
+
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
   const runtime = process.env.XDG_RUNTIME_DIR;
@@ -89,6 +116,8 @@ export class DesktopRuntime {
   // latest panel report. The most recently active panel receives a draft.
   private readonly draftHosts = new Map<number, number>();
   private draftReportSequence = 0;
+  // Connections that declared the remote role, keyed by server client ID.
+  private readonly remoteClients = new Map<number, RemoteClient>();
   private readonly pendingDrafts = new Map<
     string,
     { clientId: number; finish(outcome: AgentDraftOutcome): void }
@@ -124,6 +153,10 @@ export class DesktopRuntime {
       () => this.snapshot(),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        // A remote panel never owned desktop routing state; only forget it.
+        if (this.remoteClients.delete(clientId)) {
+          return;
+        }
         this.draftHosts.delete(clientId);
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
         const navigationRemoved = this.navigation?.clientId === clientId;
@@ -162,6 +195,7 @@ export class DesktopRuntime {
       }
       this.server.publish(event);
       this.publishAgentActions();
+      this.publishRemoteAgentActions();
     });
 
     this.activity = {
@@ -279,7 +313,62 @@ export class DesktopRuntime {
   private readonly routingChanged = () => {
     this.routingRevision++;
     this.server.broadcast();
+    this.publishRemoteAgentActions();
   };
+
+  /**
+   * Choice and stop controls for one remote client's own selection. Built from
+   * the same interaction data and voice-collision rules as the desktop panel,
+   * but never from the desktop's selected conversation.
+   */
+  private remoteAgentActions(selection: string): AgentActions {
+    const id = this.options.agents?.has(selection) ? selection : '';
+    const interaction: InteractionContext = {
+      agentSessionId: id,
+      agentComposerFocused: false,
+      revision: this.interactionRevision,
+      ...(id ? this.options.agents?.interaction(id) : {}),
+    };
+    return {
+      sessionId: id,
+      choices: agentChoiceStates({ interaction }, this.router?.reservedPrefixes() ?? []),
+      stopRunId: interaction.agentRunId ?? '',
+    };
+  }
+
+  /** Send each remote client its controls when they change; skip unchanged ones. */
+  private publishRemoteAgentActions(onlyClientId?: number): void {
+    for (const [clientId, remote] of this.remoteClients) {
+      if (onlyClientId !== undefined && clientId !== onlyClientId) {
+        continue;
+      }
+
+      const actions = this.remoteAgentActions(remote.selection);
+
+      // Choice sets are small and immutable; serializing them is the simplest
+      // exact change check, and it runs once per remote client per event.
+      const key = JSON.stringify(actions);
+      if (key === remote.lastActionsKey) {
+        continue;
+      }
+
+      remote.lastActionsKey = key;
+      this.server.publishTo(clientId, { type: 'remote-agent-actions', actions });
+    }
+  }
+
+  /**
+   * Choice, stop-run and tool-page requests must come from the panel that is
+   * showing that conversation. Desktop panels use the global selection;
+   * remote panels use their own connection's selection.
+   */
+  private showsConversation(clientId: number, id: unknown): boolean {
+    const remote = this.remoteClients.get(clientId);
+    if (remote) {
+      return typeof id === 'string' && id !== '' && remote.selection === id;
+    }
+    return clientId === this.panelClient && id === this.panelSession;
+  }
 
   private agentActions(): AgentActions {
     const interaction = this.interactionContext();
@@ -617,6 +706,54 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+    const remote = this.remoteClients.get(clientId);
+
+    if (request.action === 'client-role') {
+      // Declared once, before any other report, so this connection never
+      // becomes a desktop selection, navigation owner or draft host.
+      if (request.role !== 'remote') {
+        throw Error('Expected role "remote"');
+      }
+      if (remote) {
+        return 'role-recorded';
+      }
+      if (
+        this.panelClient === clientId ||
+        this.composerClient === clientId ||
+        this.navigation?.clientId === clientId ||
+        this.draftHosts.has(clientId) ||
+        this.mediaClients.has(clientId)
+      ) {
+        throw Error('Declare the remote role before reporting desktop panel state');
+      }
+      this.remoteClients.set(clientId, { selection: '', lastActionsKey: '' });
+      this.publishRemoteAgentActions(clientId);
+      return 'role-recorded';
+    }
+
+    if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
+      throw Error('This action is only available on the desktop');
+    }
+
+    if (request.action === 'start-agent') {
+      if (!remote) {
+        throw Error('Only remote panels start typed conversations this way');
+      }
+      if (!this.options.agents) {
+        throw Error('Agent sessions are unavailable');
+      }
+      if (typeof request.text !== 'string') {
+        throw Error('Enter between 1 and 4000 characters');
+      }
+      if (request.profile !== 'coding' && request.profile !== 'quickQuestion') {
+        throw Error('Expected profile "coding" or "quickQuestion"');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      const id = this.options.agents.startRemote(request.text, request.profile, this.signal);
+      return { outcome: 'started', id };
+    }
 
     if (request.action === 'delete-history') {
       if (typeof request.id !== 'string') {
@@ -653,7 +790,7 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected a tool group, revision and page position');
       }
-      if (clientId !== this.panelClient || request.id !== this.panelSession) {
+      if (!this.showsConversation(clientId, request.id)) {
         throw Error('This conversation is no longer selected');
       }
       return this.options.agents.toolPage({
@@ -713,7 +850,8 @@ export class DesktopRuntime {
         return 'preview';
       }
       const frame = await this.history.recordedFrame(request.id);
-      this.options.agents.start(frame, this.signal);
+      // A phone may reuse the saved frame, but must not redirect desktop focus.
+      this.options.agents.start(frame, this.signal, 'coding', undefined, Boolean(remote));
       return 'started';
     }
 
@@ -795,6 +933,20 @@ export class DesktopRuntime {
       return 'draft-recorded';
     }
 
+    if (request.action === 'panel-state' && remote) {
+      // Remote panels report only which conversation they show. Focus,
+      // navigation and draft fields describe the desktop and are ignored.
+      if (
+        typeof request.id !== 'string' ||
+        (request.id !== '' && !this.options.agents?.has(request.id))
+      ) {
+        throw Error('Expected a visible agent session id (or empty id)');
+      }
+      remote.selection = request.id;
+      this.publishRemoteAgentActions(clientId);
+      return 'panel-recorded';
+    }
+
     if (request.action === 'panel-state') {
       if (
         typeof request.id !== 'string' ||
@@ -865,7 +1017,7 @@ export class DesktopRuntime {
         throw Error('Expected a conversation, choice revision, and option index');
       }
       // A queued click from a tab that has since been hidden cannot submit.
-      if (clientId !== this.panelClient || request.id !== this.panelSession) {
+      if (!this.showsConversation(clientId, request.id)) {
         throw Error('This conversation is no longer selected');
       }
       this.options.agents.selectChoice(
@@ -886,8 +1038,7 @@ export class DesktopRuntime {
         throw Error('Expected a conversation and running turn id');
       }
       if (
-        clientId !== this.panelClient ||
-        request.id !== this.panelSession ||
+        !this.showsConversation(clientId, request.id) ||
         !(await this.options.agents.stopRun(request.id, request.runId))
       ) {
         throw Error('This agent run is no longer current');
@@ -1005,7 +1156,7 @@ export class DesktopRuntime {
       if (request.action === 'close-agent') {
         await this.options.agents.remove(request.id);
       } else if (request.action === 'reopen-agent') {
-        await this.options.agents.reopen(request.id);
+        await this.options.agents.reopen(request.id, !remote);
         return 'reopened';
       } else {
         await this.options.agents.stop(request.id);

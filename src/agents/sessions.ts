@@ -586,17 +586,41 @@ export class AgentSessions implements InspectableModule {
   /**
    * `harness` is the explicitly requested harness; omitting it uses the
    * configured `codingDefaultHarness`. Quick questions always use Pi.
+   * Remote history starts preserve the saved frame but suppress desktop reveal.
    */
   start(
     frame: UserSensorFrame,
     signal: AbortSignal,
     profile: AgentProfile = 'coding',
     harness?: AgentHarness,
+    openInBackground = false,
   ): string {
     return this.create(
-      { text: frame.utterance, screenshot: frame.screenshot, frameId: frame.id, profile, harness },
+      {
+        text: frame.utterance,
+        screenshot: frame.screenshot,
+        frameId: frame.id,
+        profile,
+        harness,
+        openInBackground,
+      },
       signal,
     );
+  }
+
+  /**
+   * A typed question from a remote panel (for example the phone app). It has
+   * no screenshot: the phone cannot capture the desktop, and substituting a
+   * current desktop capture would attach a screen the user did not choose.
+   * The tab opens in the background so a desktop panel keeps its selection;
+   * the remote client selects the returned ID itself.
+   */
+  startRemote(text: string, profile: AgentProfile, signal: AbortSignal): string {
+    if (!text.trim() || text.length > 4000) {
+      throw new SessionToolError('rejected', 'Enter between 1 and 4000 characters');
+    }
+
+    return this.create({ text, profile, openInBackground: true }, signal);
   }
 
   /**
