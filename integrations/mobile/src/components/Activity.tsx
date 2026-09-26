@@ -97,29 +97,15 @@ function Section(props: { title: string; detail?: string; children: ComponentChi
 function AskBox() {
   const store = useStore();
   const state = useAppState();
-  const [text, setText] = useState(() => store.draft('new'));
+  const text = store.draft('new');
   const [profile, setProfile] = useState<'coding' | 'quickQuestion'>('coding');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const busy = state.sends.get('new')?.pending ?? false;
+  const error = state.sends.get('new')?.error ?? '';
   const online = state.connection.status === 'online';
   const available = state.engine?.sessionControlsAvailable !== false;
 
   async function start() {
-    setBusy(true);
-    setError('');
-    try {
-      const result = (await store.request('start-agent', { text, profile }, { quiet: true })) as {
-        id: string;
-      };
-      setText('');
-      store.setDraft('new', '');
-      store.open(result.id);
-    } catch (failure) {
-      // Keep the text; never resend automatically.
-      setError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setBusy(false);
-    }
+    await store.sendDraft('new', profile);
   }
 
   return (
@@ -134,7 +120,6 @@ function AskBox() {
         maxLength={4000}
         placeholder="Ask Companion…"
         onInput={(event) => {
-          setText(event.currentTarget.value);
           store.setDraft('new', event.currentTarget.value);
         }}
       />
@@ -160,7 +145,7 @@ function AskBox() {
       </div>
       {error ? (
         <div class="input-error" role="alert">
-          {error} Your text was kept.
+          {error}
         </div>
       ) : (
         <p class="hint">

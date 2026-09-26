@@ -81,6 +81,7 @@ export function Pairing() {
           class="field code-input"
           autoComplete="one-time-code"
           autoCapitalize="characters"
+          autoCorrect="off"
           spellcheck={false}
           placeholder="XXXXX-XXXXX"
           maxLength={16}

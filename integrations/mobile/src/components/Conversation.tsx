@@ -27,7 +27,7 @@ export function ConversationPage(props: { session: AgentSession }) {
   const actions = state.actions?.sessionId === session.id ? state.actions : undefined;
 
   return (
-    <div class="page">
+    <div class="page conversation-page">
       <ActivityStrip />
       <MessageList session={session} />
       {session.error && (
@@ -41,7 +41,11 @@ export function ConversationPage(props: { session: AgentSession }) {
         stopRunId={actions?.stopRunId ?? ''}
         choices={actions?.choices ?? []}
       />
-      <ModelPicker session={session} />
+      {session.harness === 'claude-code' ? (
+        <ClaudeModelPicker session={session} />
+      ) : (
+        <ModelPicker session={session} />
+      )}
     </div>
   );
 }
@@ -113,15 +117,8 @@ function MessageList(props: { session: AgentSession }) {
   }
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex' }}>
-      <div
-        class="scroll"
-        ref={scroller}
-        onScroll={scrolled}
-        role="log"
-        aria-live="polite"
-        aria-label="Messages"
-      >
+    <div class="message-area">
+      <div class="scroll" ref={scroller} onScroll={scrolled} role="region" aria-label="Messages">
         <div class="messages">
           {session.messages.map((message) => (
             <Message
@@ -150,19 +147,11 @@ function InputSection(props: {
 }) {
   const store = useStore();
   const { session } = props;
-  const [text, setText] = useState(() => store.draft(session.id));
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState('');
+  const state = useAppState();
+  const text = store.draft(session.id);
+  const sending = state.sends.get(session.id)?.pending ?? false;
+  const error = state.sends.get(session.id)?.error ?? '';
   const field = useRef<HTMLTextAreaElement>(null);
-  const latestText = useRef(text);
-
-  useEffect(() => {
-    const draft = store.draft(session.id);
-    setText(draft);
-    latestText.current = draft;
-    setError('');
-  }, [session.id]);
-
   // Grow with the content up to the CSS max-height; borders included so no
   // scrollbar appears before that.
   useLayoutEffect(() => {
@@ -175,30 +164,11 @@ function InputSection(props: {
   }, [text]);
 
   function edit(value: string) {
-    setText(value);
-    latestText.current = value;
     store.setDraft(session.id, value);
   }
 
   async function send() {
-    const submitted = text;
-    if (!submitted.trim() || sending) {
-      return;
-    }
-    setSending(true);
-    setError('');
-
-    try {
-      await store.request('send-agent', { id: session.id, text: submitted }, { quiet: true });
-      // Clear only what was sent; newer typing survives an older reply.
-      if (latestText.current === submitted) {
-        edit('');
-      }
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setSending(false);
-    }
+    await store.sendDraft(session.id);
   }
 
   function keydown(event: KeyboardEvent) {
@@ -265,7 +235,7 @@ function InputSection(props: {
       />
       {error && (
         <div class="input-error" role="alert">
-          {error} Your message was kept.
+          {error}
         </div>
       )}
 
@@ -424,6 +394,72 @@ function ModelPicker(props: { session: AgentSession }) {
           ↻
         </button>
         <span class="status-text">{statusText}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Claude keeps its creation-time effort and has its own exact model catalogue. */
+function ClaudeModelPicker(props: { session: AgentSession }) {
+  const store = useStore();
+  const state = useAppState();
+  const { session } = props;
+  const [busy, setBusy] = useState(false);
+  const online = state.connection.status === 'online';
+  const catalog = state.claudeModels;
+  const selected = session.claudeCode?.model || session.model;
+  const models = [...new Set([selected, ...(catalog?.models ?? [])])].filter(Boolean);
+
+  useEffect(() => {
+    if (online && !catalog && !state.claudeModelsLoading && !state.claudeModelsError) {
+      void store.loadClaudeModels();
+    }
+  }, [online]);
+
+  async function choose(model: string) {
+    setBusy(true);
+    try {
+      await store.request('set-agent-model', { id: session.id, model });
+    } catch {
+      // The store reports the failure and the engine remains authoritative.
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div class="model-picker">
+      <div class="caption">Claude Code · next turn model</div>
+      <div class="selects">
+        <select
+          class="model"
+          aria-label="Model for this conversation's next turn"
+          value={selected}
+          disabled={!catalog || !online || busy}
+          onChange={(event) => void choose(event.currentTarget.value)}
+        >
+          {models.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div class="hint">
+        Effort · {session.claudeCode?.effort ?? 'unknown'} · fixed for this conversation
+      </div>
+      <div class="controls-row">
+        <button
+          class="action small"
+          aria-label="Refresh available Claude models"
+          disabled={!online || state.claudeModelsLoading}
+          onClick={() => void store.loadClaudeModels()}
+        >
+          ↻
+        </button>
+        <span class="status-text">
+          {state.claudeModelsLoading ? 'Loading models…' : state.claudeModelsError}
+        </span>
       </div>
     </div>
   );

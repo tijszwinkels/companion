@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import WebSocket from 'ws';
 
 import { AgentSessions } from '../src/agents/sessions.ts';
-import type { AgentBackend } from '../src/agents/types.ts';
+import type { AgentBackend, ClaudeCodeAgentBackend } from '../src/agents/types.ts';
 import { DeviceStore } from '../src/remote/devices.ts';
 import { Gateway, type GatewayOptions } from '../src/remote/gateway.ts';
 import type { GatewayMessage } from '../src/remote/protocol.ts';
@@ -40,6 +40,7 @@ export async function remoteFixture(
   options: {
     appDirectory?: string;
     backend?: AgentBackend['run'];
+    claudeBackend?: ClaudeCodeAgentBackend['run'];
     gateway?: Partial<GatewayOptions>;
   } = {},
 ) {
@@ -72,6 +73,16 @@ export async function remoteFixture(
           };
         },
       },
+      ...(options.claudeBackend
+        ? {
+            'claude-code': {
+              id: 'claude-remote-fixture',
+              label: 'Synthetic Claude fixture',
+              dependencies: {},
+              run: options.claudeBackend,
+            },
+          }
+        : {}),
     },
     () => {},
     directory,

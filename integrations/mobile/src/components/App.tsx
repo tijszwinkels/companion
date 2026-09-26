@@ -6,7 +6,7 @@
  * button.
  */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { useAppState, useStore } from '../hooks.ts';
 import { ActivityPage } from './Activity.tsx';
@@ -36,6 +36,16 @@ export function App() {
   const state = useAppState();
   const [railOpen, setRailOpen] = useState(initialRailOpen);
   const [settings, setSettings] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const paired = state.connection.status !== 'unpaired';
+
+  useLayoutEffect(() => {
+    if (paired) {
+      heading.current?.focus({ preventScroll: true });
+    } else {
+      setSettings(false);
+    }
+  }, [paired, state.selected, state.showingPrevious]);
 
   useEffect(() => {
     try {
@@ -77,7 +87,9 @@ export function App() {
               <MenuIcon />
               {!railOpen && unreadCount > 0 && <span class="menu-dot" aria-hidden="true" />}
             </button>
-            <h1>{title}</h1>
+            <h1 ref={heading} tabIndex={-1} data-page-heading>
+              {title}
+            </h1>
             <button
               class="icon-button"
               aria-label="Phone settings"
@@ -91,7 +103,7 @@ export function App() {
           {state.showingPrevious ? (
             <PreviousPage />
           ) : selected ? (
-            <ConversationPage session={selected} />
+            <ConversationPage key={selected.id} session={selected} />
           ) : (
             <ActivityPage />
           )}
@@ -158,9 +170,15 @@ function Toasts() {
           key={toast.id}
           class={`toast ${toast.tone}`}
           role={toast.tone === 'error' ? 'alert' : 'status'}
-          onClick={() => store.dismissToast(toast.id)}
         >
-          {toast.text}
+          <span>{toast.text}</span>
+          <button
+            class="icon-button"
+            aria-label="Dismiss notification"
+            onClick={() => store.dismissToast(toast.id)}
+          >
+            ×
+          </button>
         </div>
       ))}
     </div>

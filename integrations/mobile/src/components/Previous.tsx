@@ -38,7 +38,9 @@ function PreviousRow(props: { session: PreviousSession; disabled: boolean }) {
     try {
       await store.request('reopen-agent', { id: props.session.id });
     } catch {
-      store.revealNextRestore = '';
+      if (store.revealNextRestore === props.session.id) {
+        store.revealNextRestore = '';
+      }
       // The toast explains; the entry stays available for another try.
     } finally {
       setBusy(false);

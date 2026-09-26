@@ -66,9 +66,9 @@ export function SettingsSheet(props: { onClose(): void }) {
         )}
       </div>
       <p class="hint">
-        Also run <code>companion-remote revoke</code> on the computer to remove this phone. Speech,
-        screen context and agents run on the computer; this app talks only to your Companion
-        gateway.
+        Signing out removes this browser's saved drafts and cached conversation content. Also run{' '}
+        <code>companion-remote revoke</code> on the computer to remove this phone. Speech, screen
+        context and agents run on the computer; this app talks only to your Companion gateway.
       </p>
     </Sheet>
   );

@@ -1,7 +1,8 @@
 /** Preact binding for the framework-free store. */
 
 import { createContext } from 'preact';
-import { useContext, useEffect, useState } from 'preact/hooks';
+import { useSyncExternalStore } from 'preact/compat';
+import { useContext } from 'preact/hooks';
 
 import type { AppState, Store } from './store.ts';
 
@@ -18,11 +19,11 @@ export function useStore(): Store {
 /** Re-render on every store change and return the current state. */
 export function useAppState(): AppState {
   const store = useStore();
-  const [, setVersion] = useState(0);
-
-  useEffect(() => {
-    return store.subscribe(() => setVersion((version) => version + 1));
-  }, [store]);
-
-  return store.state;
+  // Re-check after subscribing: a loopback authentication/snapshot can arrive
+  // between render and the subscription, especially when reloading a paired
+  // phone. A passive effect alone could leave the first snapshot invisible.
+  return useSyncExternalStore(
+    (listener) => store.subscribe(listener),
+    () => store.state,
+  );
 }

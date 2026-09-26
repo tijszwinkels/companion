@@ -8,7 +8,7 @@
  * Move later, using the same close-agent and move-agent requests.
  */
 
-import { useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
 import { useAppState, useStore } from '../hooks.ts';
@@ -49,7 +49,7 @@ export function Rail() {
         Activity
       </button>
 
-      <div class="rail-tabs" role="tablist" aria-label="Open conversations">
+      <div class="rail-tabs" role="group" aria-label="Open conversations">
         {sessions.map((session, index) => (
           <SessionTab
             key={session.id}
@@ -114,6 +114,7 @@ function SessionTab(props: {
   const longPressed = useRef(false);
   const { glyph, caption, emoji } = tabGlyph(session.title, props.number);
   const running = session.status === 'running' || session.status === 'starting';
+  useEffect(() => () => clearTimeout(timer.current), []);
 
   function pressStart() {
     longPressed.current = false;
@@ -135,15 +136,21 @@ function SessionTab(props: {
   return (
     <button
       class={classes}
-      role="tab"
-      aria-selected={props.selected}
       aria-current={props.selected ? 'page' : undefined}
       aria-label={label}
+      aria-description="Long press or press Shift+F10 for session actions."
       title={session.title}
       onPointerDown={pressStart}
       onPointerUp={pressEnd}
       onPointerLeave={pressEnd}
       onPointerCancel={pressEnd}
+      onKeyDown={(event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          event.preventDefault();
+          pressEnd();
+          props.onMenu();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         pressEnd();

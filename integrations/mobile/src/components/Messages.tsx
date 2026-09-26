@@ -14,6 +14,7 @@ import { copyText } from '../format.ts';
 import { useStore } from '../hooks.ts';
 import { renderMarkdown } from '../markdown.ts';
 import { ChevronIcon, CloseIcon, ToolIcon } from './icons.tsx';
+import { Modal } from './Modal.tsx';
 
 /**
  * Props are the message plus the two session fields tool pages need, so a
@@ -185,20 +186,20 @@ function Screenshot(props: { url?: string }) {
         )}
       </button>
       {viewing && (
-        <div class="viewer" role="dialog" aria-modal="true" aria-label="Screenshot">
-          <div class="viewer-bar">
-            <button
-              class="icon-button"
-              onClick={() => setViewing(false)}
-              aria-label="Close screenshot"
-            >
-              <CloseIcon />
-            </button>
-          </div>
-          <div class="viewer-image">
-            <img src={objectUrl} alt="Screenshot attached to this question" />
-          </div>
-        </div>
+        <Modal className="viewer" title="Screenshot" onClose={() => setViewing(false)}>
+          {(dismiss) => (
+            <>
+              <div class="viewer-bar">
+                <button class="icon-button" onClick={dismiss} aria-label="Close screenshot">
+                  <CloseIcon />
+                </button>
+              </div>
+              <div class="viewer-image">
+                <img src={objectUrl} alt="Screenshot attached to this question" />
+              </div>
+            </>
+          )}
+        </Modal>
       )}
     </>
   );

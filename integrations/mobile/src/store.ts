@@ -12,7 +12,12 @@
  * every change replaces the top-level state object so identity checks work.
  */
 
-import type { AgentMessage, AgentSession, PreviousSession } from '../../../src/agents/types.ts';
+import type {
+  AgentMessage,
+  AgentSession,
+  ClaudeCodeModelCatalog,
+  PreviousSession,
+} from '../../../src/agents/types.ts';
 import type {
   ActivityEntry,
   ActivityPage,
@@ -24,6 +29,7 @@ import type {
   RemoteAgentActions,
 } from '../../../src/remote/protocol.ts';
 import { Connection, UncertainOutcome, type ConnectionState } from './connection.ts';
+import { Navigation, type PhonePage } from './navigation.ts';
 
 export interface Toast {
   id: number;
@@ -63,6 +69,10 @@ export interface AppState {
   models?: ModelCatalog;
   modelsError: string;
   modelsLoading: boolean;
+  claudeModels?: ClaudeCodeModelCatalog;
+  claudeModelsError: string;
+  claudeModelsLoading: boolean;
+  sends: Map<string, { pending: boolean; error: string }>;
   toasts: Toast[];
 }
 
@@ -83,6 +93,9 @@ export class Store {
   private listeners = new Set<() => void>();
   private nextToast = 0;
   private drafts = new Map<string, string>();
+  private readonly draftRevisions = new Map<string, number>();
+  /** Invalidates async completions when the paired identity is forgotten. */
+  private identityRevision = 0;
   /** Latest completed turn per conversation, for unread marking. */
   private readonly completedTurns = new Map<string, string>();
   /** Conversations seen in any snapshot or event; newly seen ones are selected. */
@@ -91,6 +104,7 @@ export class Store {
   /** Set just before this phone asks to reopen a conversation. */
   revealNextRestore = '';
   readonly connection: Connection;
+  readonly navigation: Navigation;
 
   state: AppState = {
     connection: { status: 'unpaired', message: '', retryAt: 0, deviceName: '' },
@@ -104,17 +118,25 @@ export class Store {
     unread: new Set(),
     modelsError: '',
     modelsLoading: false,
+    claudeModelsError: '',
+    claudeModelsLoading: false,
+    sends: new Map(),
     toasts: [],
   };
 
   constructor() {
-    this.loadDrafts();
     this.connection = new Connection(
       (event) => this.apply(event),
-      (connection) => this.update({ connection }),
+      (connection) => this.connectionChanged(connection),
       () => this.online(),
     );
+    this.navigation = new Navigation((page) => this.applyPage(page));
     this.state = { ...this.state, connection: this.connection.state };
+    if (this.connection.paired) {
+      this.loadDrafts();
+    } else {
+      this.clearPrivateState();
+    }
   }
 
   subscribe(listener: () => void): () => void {
@@ -137,17 +159,18 @@ export class Store {
 
   /**
    * Send a request; show failures as a toast unless the caller handles them.
-   * Uncertain outcomes are always surfaced, never retried.
+   * Quiet callers own their error display. No request is automatically retried.
    */
   async request<Action extends RemoteAction>(
     action: Action,
     parameters: RemoteActionParameters[Action],
     options: { quiet?: boolean } = {},
   ): Promise<unknown> {
+    const identity = this.identityRevision;
     try {
       return await this.connection.request(action, parameters);
     } catch (error) {
-      if (!options.quiet || error instanceof UncertainOutcome) {
+      if (!options.quiet && identity === this.identityRevision) {
         this.toast(error instanceof Error ? error.message : String(error), 'error');
       }
       throw error;
@@ -168,18 +191,20 @@ export class Store {
 
   /** Show a conversation (or Activity for an empty ID); marks it read. */
   open(id: string): void {
+    this.navigation.navigate({ selected: id, showingPrevious: false });
+  }
+
+  private applyPage(page: PhonePage): void {
+    const id = this.state.sessions.has(page.selected) ? page.selected : '';
     const unread = new Set(this.state.unread);
     unread.delete(id);
     this.update({
       selected: id,
-      showingPrevious: false,
+      showingPrevious: this.connection.paired && page.showingPrevious,
       actions: id === this.state.selected ? this.state.actions : undefined,
       unread,
     });
     this.reportSelection();
-    if (id && !this.state.models && !this.state.modelsLoading && !this.state.modelsError) {
-      void this.loadModels();
-    }
   }
 
   showActivity(): void {
@@ -187,8 +212,7 @@ export class Store {
   }
 
   showPrevious(): void {
-    this.update({ selected: '', showingPrevious: true, actions: undefined });
-    this.reportSelection();
+    this.navigation.navigate({ selected: '', showingPrevious: true });
   }
 
   /**
@@ -204,8 +228,52 @@ export class Store {
   }
 
   private online(): void {
-    // A new connection has no selection on the listener side yet.
-    this.reportSelection();
+    // Wait for this connection's authoritative snapshot before reporting a
+    // selection: the old conversation may have been closed while offline.
+    this.receivedSnapshot = false;
+  }
+
+  private connectionChanged(connection: ConnectionState): void {
+    if (connection.status === 'unpaired') {
+      this.clearPrivateState();
+    }
+    this.update({ connection });
+  }
+
+  private clearPrivateState(): void {
+    this.identityRevision += 1;
+    this.drafts.clear();
+    this.draftRevisions.clear();
+    this.completedTurns.clear();
+    this.seen.clear();
+    this.receivedSnapshot = false;
+    this.revealNextRestore = '';
+    this.navigation.reset();
+    try {
+      localStorage.removeItem(draftKey);
+    } catch {
+      // In-memory content is still cleared when browser storage is unavailable.
+    }
+    this.update({
+      engine: undefined,
+      sessions: new Map(),
+      order: [],
+      orderRevision: '',
+      previous: [],
+      actions: undefined,
+      activity: emptyActivity(),
+      selected: '',
+      showingPrevious: false,
+      unread: new Set(),
+      models: undefined,
+      modelsError: '',
+      modelsLoading: false,
+      claudeModels: undefined,
+      claudeModelsError: '',
+      claudeModelsLoading: false,
+      sends: new Map(),
+      toasts: [],
+    });
   }
 
   // ---- Drafts (per conversation, kept on this phone only) ------------------
@@ -215,12 +283,68 @@ export class Store {
   }
 
   setDraft(id: string, text: string): void {
+    this.draftRevisions.set(id, (this.draftRevisions.get(id) ?? 0) + 1);
     if (text) {
       this.drafts.set(id, text);
     } else {
       this.drafts.delete(id);
     }
     this.saveDrafts();
+    this.update({});
+  }
+
+  /** One admitted send per draft, even when its component unmounts/remounts. */
+  async sendDraft(id: string, profile: 'coding' | 'quickQuestion' = 'coding'): Promise<void> {
+    const text = this.draft(id);
+    if (!text.trim() || this.state.sends.get(id)?.pending) {
+      return;
+    }
+    const revision = this.draftRevisions.get(id) ?? 0;
+    const identity = this.identityRevision;
+    const sending = { pending: true, error: '' };
+    this.update({ sends: new Map(this.state.sends).set(id, sending) });
+    try {
+      const result =
+        id === 'new'
+          ? await this.request('start-agent', { text, profile }, { quiet: true })
+          : await this.request('send-agent', { id, text }, { quiet: true });
+      if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
+        return;
+      }
+      if ((this.draftRevisions.get(id) ?? 0) === revision) {
+        this.setDraft(id, '');
+      }
+      const sends = new Map(this.state.sends);
+      sends.delete(id);
+      this.update({ sends });
+      if (id === 'new') {
+        this.open((result as { id: string }).id);
+      }
+    } catch (error) {
+      if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
+        return;
+      }
+      const explanation = error instanceof Error ? error.message : String(error);
+      const message =
+        error instanceof UncertainOutcome
+          ? `${explanation} The draft remains here; check the conversation before sending it again.`
+          : `${explanation} The draft remains here.`;
+      this.update({ sends: new Map(this.state.sends).set(id, { pending: false, error: message }) });
+    }
+  }
+
+  /** Only open conversations and the new-conversation composer retain drafts. */
+  private pruneDrafts(active: Set<string>): void {
+    for (const id of this.drafts.keys()) {
+      if (id !== 'new' && !active.has(id)) {
+        this.drafts.delete(id);
+        this.draftRevisions.delete(id);
+      }
+    }
+    this.saveDrafts();
+    this.update({
+      sends: new Map([...this.state.sends].filter(([id]) => id === 'new' || active.has(id))),
+    });
   }
 
   private loadDrafts(): void {
@@ -247,15 +371,44 @@ export class Store {
   // ---- Models ---------------------------------------------------------------
 
   async loadModels(): Promise<void> {
+    const identity = this.identityRevision;
     this.update({ modelsLoading: true, modelsError: '' });
     try {
       const models = (await this.request('agent-models', {}, { quiet: true })) as ModelCatalog;
+      if (identity !== this.identityRevision) {
+        return;
+      }
       this.update({ models, modelsLoading: false });
     } catch (error) {
+      if (identity !== this.identityRevision) {
+        return;
+      }
       this.update({
         modelsLoading: false,
         modelsError: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  async loadClaudeModels(): Promise<void> {
+    const identity = this.identityRevision;
+    this.update({ claudeModelsLoading: true, claudeModelsError: '' });
+    try {
+      const claudeModels = (await this.request(
+        'claude-models',
+        {},
+        { quiet: true },
+      )) as ClaudeCodeModelCatalog;
+      if (identity === this.identityRevision) {
+        this.update({ claudeModels, claudeModelsLoading: false });
+      }
+    } catch (error) {
+      if (identity === this.identityRevision) {
+        this.update({
+          claudeModelsLoading: false,
+          claudeModelsError: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -273,7 +426,9 @@ export class Store {
         // Only reopen requests from this phone reveal the tab here; the
         // desktop's reveal flag describes the desktop panel.
         this.upsertSession(event.session, true, this.revealNextRestore === event.session.id);
-        this.revealNextRestore = '';
+        if (this.revealNextRestore === event.session.id) {
+          this.revealNextRestore = '';
+        }
         return;
       case 'agent-removed':
         this.removeSession(event.id);
@@ -308,6 +463,9 @@ export class Store {
 
     let selected = this.state.selected;
     if (selected && !map.has(selected)) {
+      this.toast(
+        'The selected conversation was closed while disconnected. It is in Previous sessions.',
+      );
       selected = '';
     }
 
@@ -316,6 +474,7 @@ export class Store {
     for (const session of sessions) {
       this.seen.add(session.id);
     }
+    const firstSnapshot = !this.receivedSnapshot;
     this.receivedSnapshot = true;
     const unread = this.observeCompletions(sessions, selected);
 
@@ -334,7 +493,13 @@ export class Store {
       selected,
       activity,
       unread,
+      actions: firstSnapshot ? undefined : this.state.actions,
     });
+
+    this.pruneDrafts(new Set(map.keys()));
+    if (firstSnapshot) {
+      this.reportSelection();
+    }
 
     void this.syncActivity();
   }
@@ -421,6 +586,7 @@ export class Store {
       this.toast(`“${removed?.title ?? 'Conversation'}” was closed. It is in Previous sessions.`);
     }
     this.update(change);
+    this.pruneDrafts(new Set(sessions.keys()));
   }
 
   private turnCompleted(id: string): void {
@@ -447,6 +613,7 @@ export class Store {
     }
 
     const sessionId = activity.sessionId;
+    const identity = this.identityRevision;
     const through = engine.activityHistoryCount;
     this.setActivity({ syncing: true, error: '' });
 
@@ -459,7 +626,7 @@ export class Store {
           { quiet: true },
         )) as ActivityPage;
 
-        if (this.state.activity.sessionId !== sessionId) {
+        if (identity !== this.identityRevision || this.state.activity.sessionId !== sessionId) {
           return;
         }
         this.applyActivityPage(page);
@@ -467,6 +634,9 @@ export class Store {
       }
       this.setActivity({ read: through, syncing: false });
     } catch (error) {
+      if (identity !== this.identityRevision || this.state.activity.sessionId !== sessionId) {
+        return;
+      }
       this.setActivity({
         syncing: false,
         error: error instanceof Error ? error.message : String(error),

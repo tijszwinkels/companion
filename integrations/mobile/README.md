@@ -11,7 +11,7 @@ deletion and new sessions, listening/sound/intent switches. The
 [parity matrix](PARITY.md) lists exactly what matches the desktop panel, what differs,
 and what is missing.
 
-## Build and try
+## Build and author checks
 
 ```sh
 npm ci
@@ -21,7 +21,7 @@ npm run mobile:demo      # synthetic listener + gateway on http://127.0.0.1:8787
 
 The demo prints a pairing code. Open the URL in a desktop browser with device
 emulation or a narrow window, enter the code, and try the chats, Activity and
-Settings. Everything is synthetic: a scripted backend streams Markdown, tool calls
+the rail, Previous sessions and Phone settings. Everything is synthetic: a scripted backend streams Markdown, tool calls
 and choices, and no model, microphone, screen capture or personal data is involved.
 Ctrl+C stops the demo and deletes its temporary directory. Use `--port N` for another
 port.
@@ -31,6 +31,10 @@ for Tailscale/TLS options) with a listener built from this branch. Doing that wi
 the production listener, pairing a real phone or exposing it on the tailnet is a
 separate, explicitly approved step.
 
+The next user demo is a separately approved **live-session trial**, not this
+synthetic fixture. See [the trial plan](../../docs/mobile-live-trial.md) for its
+activation, pairing, cleanup and validation limits.
+
 ## Structure
 
 | File                           | Responsibility                                                     |
@@ -38,8 +42,8 @@ separate, explicitly approved step.
 | `src/connection.ts`            | WebSocket, authentication, backoff, request correlation, no resend |
 | `src/store.ts`                 | Protocol state: snapshots, incremental messages, Activity paging   |
 | `src/markdown.ts`              | The desktop panel's vendored markdown-it, same safety settings     |
-| `src/components/*.tsx`         | Screens: pairing, chats, conversation, Activity, settings          |
-| `src/styles.css`               | Light/dark tokens, safe areas, touch sizes, keyboard-aware layout  |
+| `src/components/*.tsx`         | Screens: pairing, rail, Previous, conversation, Activity, settings |
+| `src/styles.css`               | Desktop dark theme, safe areas, touch sizes, keyboard-aware layout |
 | `build.ts`                     | esbuild bundle (Preact) plus static files                          |
 | `demo.ts`                      | Synthetic end-to-end demo                                          |
 | `../../src/remote/protocol.ts` | Typed wire contract shared with the gateway                        |
@@ -53,11 +57,13 @@ self-contained static files. `npm run check` typechecks the app with its own
 `npm run test:mobile` runs the built app in headless Chromium with phone emulation
 (touch, 320/390/430 px wide, 3× density), against the real gateway and listener
 control socket with a synthetic agent backend. It checks pairing, layout without
-horizontal overflow, accessible names and ≥32 px touch targets, streaming and
+horizontal overflow, accessible names and ≥44 px touch targets, streaming and
 escaped Markdown, queued follow-ups, the 8-message queue refusal keeping the
 draft, choices, stop, tool pages, Activity labels and pause, reconnect after a
 gateway restart without replaying requests, revocation, and that no request goes
-to another origin.
+to another origin. Additional tests cover draft/send races across navigation,
+sign-out/revocation clearing, browser Back, modal focus/Escape, Claude models
+with fixed effort, rail reorder/close/reopen and a short 390×400 viewport.
 
 Not tested: real iOS Safari/WebKit, the on-screen keyboard, actual safe-area insets,
 a real phone on Tailscale, or long-running battery/network behavior.
@@ -90,12 +96,31 @@ Sign out and pair again without reloading. Network loss retires the old socket;
 network recovery opens a fresh connection and obtains current state. Foregrounding
 or Retry now probes an existing OPEN connection first, preserving pending replies
 when it is healthy; a failed five-second probe reconnects. Requests awaiting a reply become uncertain and are
-never automatically resent. Drafts remain on this browser. A connection that
+never automatically resent. Drafts for open conversations and the new-conversation composer remain on this
+browser across ordinary reconnects. Closing a conversation prunes its draft.
+Sign-out/revocation clears saved drafts and cached conversation content; late
+replies cannot restore them. Pending send state belongs to the shared store, so
+changing pages cannot re-enable a second send or let an old acknowledgment clear
+newer text. A connection that
 fails to authenticate within ten seconds is retried with backoff.
 An application heartbeat also detects silently dead OPEN sockets within about
 35 seconds while browser timers run, including a final five-second probe. New
 mutations are refused while that probe waits for a reply. Background timer suspension is recovered
 on foregrounding; this is not a promise of background connectivity on iOS.
 
-For a safe synthetic walkthrough and the current review/ownership limits, see
+For the initial audit and review history, see
 [the finish audit](../../docs/mobile-panel-finish.md).
+
+## Navigation and accessibility
+
+The preserved Rail/Previous design follows the desktop panel. The menu button
+shows/hides the rail; long press, right click or Shift+F10 opens session actions.
+Browser Back returns through pages and dismisses the top sheet/viewer first.
+Forward restores pages, not already closed ephemeral dialogs. Dialogs keep focus
+inside and make the underlying app inert; closure restores the opener or the
+current page heading. Streaming transcripts are readable regions rather than
+announcing every partial token. Notifications reserve layout space so they do
+not cover navigation or send controls.
+
+The small-height layout keeps the transcript and footer scrollable. Automated
+Chromium viewport resizing is not evidence of real iOS keyboard behavior.
