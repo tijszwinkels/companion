@@ -100,6 +100,9 @@ const candidateEndings = {
   accepted: { voiced: 6, expected: ['resumed', 'submit after 224 ms'] },
   'eof-accepted': { voiced: Infinity, expected: ['resumed', 'submit after 0 ms'] },
   'eof-rejected': { voiced: Infinity, startAtEnd: true, expected: ['resumed', 'discarded'] },
+  // Five voiced frames, then three silent frames (96 ms) before the input
+  // ends: exactly the silence that was heard is credited, not 0 or 224 ms.
+  'eof-after-silence': { voiced: 5, onsetFromEnd: 8, expected: ['resumed', 'submit after 96 ms'] },
   abort: { voiced: 6, stopAt: 13, expected: ['resumed', 'discarded'] },
   failure: { voiced: 6, stopAt: 13, expected: ['resumed', 'discarded'] },
 } as const;
@@ -111,7 +114,12 @@ for (const [ending, script] of Object.entries(candidateEndings)) {
     const controller = new AbortController();
     const calls: string[] = [];
     const totalFrames = 157; // The five-second fixture, including its padded final frame.
-    const onset = 'startAtEnd' in script ? totalFrames - 2 : 10;
+    let onset = 10;
+    if ('startAtEnd' in script) {
+      onset = totalFrames - 2;
+    } else if ('onsetFromEnd' in script) {
+      onset = totalFrames - script.onsetFromEnd;
+    }
     let frames = 0;
 
     context.mock.method(vad, 'probability', async () => {
