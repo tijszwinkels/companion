@@ -251,9 +251,17 @@ pipeline, `DesktopRuntime.settleContinuation`/`retire`, and
 
 ### Exceptions: residual records
 
-Ordinary failures end in one record (step 3). More than one record remains only
-in these explicit cases, each logged as `retention-incomplete` with the row
-UUIDs and reason; nothing publishes a removal that did not happen:
+A chain in which **no** attempt recorded a transcript ends like any failed
+single utterance under the existing empty-result and ASR-error policy. This
+happens when every earlier part was replaced while its ASR was still running, or
+had no text. If the final attempt then also fails or is cancelled before its
+text, nothing is recorded and there is nothing to retire. No transcript is
+fabricated, and no audio-only failure record is written. Recording such
+failures would change ASR-failure handling generally and is a separate decision.
+
+Otherwise, failures end in one record (step 3). More than one record remains
+only in these explicit cases, each logged as `retention-incomplete` with the
+row UUIDs and reason; nothing publishes a removal that did not happen:
 
 - **Failed ownership.** The final attempt's row or WAV could not be written. The
   superseded rows are kept as ordinary rows, beside a final row if one exists.
