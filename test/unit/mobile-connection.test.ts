@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 
 import { Connection, UncertainOutcome } from '../../integrations/mobile/src/connection.ts';
 
@@ -34,7 +34,12 @@ class SilentSocket extends EventTarget {
   }
 }
 
-test('a silently dead OPEN socket reconnects and cannot replay mutations or apply stale events', async (context) => {
+/** Install synthetic browser globals and restore them after each isolated test. */
+function connectedBrowser(context: TestContext): {
+  connection: Connection;
+  socket: SilentSocket;
+  events: unknown[];
+} {
   context.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
   const originals = new Map<string, PropertyDescriptor | undefined>();
   let connection: Connection | undefined;
@@ -76,6 +81,11 @@ test('a silently dead OPEN socket reconnects and cannot replay mutations or appl
   first.open();
   first.message({ type: 'authenticated', deviceId: 'fixture', deviceName: 'Fixture' });
   assert.equal(connection.state.status, 'online');
+  return { connection, socket: first, events };
+}
+
+test('a silently dead OPEN socket reconnects and cannot replay mutations or apply stale events', async (context) => {
+  const { connection, socket: first, events } = connectedBrowser(context);
 
   context.mock.timers.tick(15_000);
   assert.equal(first.sent.at(-1)?.type, 'ping');
@@ -84,6 +94,8 @@ test('a silently dead OPEN socket reconnects and cannot replay mutations or appl
 
   // No offline/close event arrives, and the heartbeat gets no reply.
   context.mock.timers.tick(15_000);
+  assert.equal(first.readyState, WebSocket.OPEN);
+  context.mock.timers.tick(5000);
   await uncertain;
   assert.equal(connection.state.status, 'reconnecting');
   first.message({ type: 'engine', message: { type: 'agent-removed', id: 'stale' } });
@@ -114,4 +126,57 @@ test('a silently dead OPEN socket reconnects and cannot replay mutations or appl
   assert.equal(await delivered, 'sounds-enabled');
   context.mock.timers.tick(5001);
   assert.equal(connection.state.status, 'online');
+});
+
+test('an overdue heartbeat probes before discarding a buffered reply on resume', async (context) => {
+  const { connection, socket } = connectedBrowser(context);
+  const delivered = connection.request('toggle-sounds', {});
+  const request = socket.sent.at(-1)!;
+
+  // Simulate a wall-clock jump while JS was suspended. The heartbeat is the
+  // first resumed callback; visibilitychange and a buffered reply arrive next.
+  context.mock.method(Date, 'now', () => 60_000);
+  context.mock.timers.tick(15_000);
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  assert.equal(connection.state.status, 'online');
+  assert.equal(socket.sent.at(-1)?.type, 'ping');
+  const sentBeforeVisibility = socket.sent.length;
+  document.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(socket.sent.length, sentBeforeVisibility);
+
+  socket.message({
+    type: 'result',
+    requestId: request.requestId,
+    action: 'toggle-sounds',
+    result: 'sounds-enabled',
+  });
+  assert.equal(await delivered, 'sounds-enabled');
+  context.mock.timers.tick(5001);
+  assert.equal(socket.readyState, WebSocket.OPEN);
+  assert.equal(SilentSocket.instances.length, 1);
+});
+
+test('a foreground probe refuses new mutations until the connection answers', async (context) => {
+  const { connection, socket } = connectedBrowser(context);
+  document.dispatchEvent(new Event('visibilitychange'));
+
+  await assert.rejects(connection.request('toggle-pause', {}), (error: Error) => {
+    assert.ok(!(error instanceof UncertainOutcome));
+    assert.match(error.message, /Checking connection/);
+    return true;
+  });
+  assert.equal(socket.sent.filter((message) => message.type === 'request').length, 0);
+
+  socket.message({ type: 'pong' });
+  const delivered = connection.request('toggle-pause', {});
+  const request = socket.sent.at(-1)!;
+  socket.message({ type: 'result', requestId: request.requestId, result: 'paused' });
+  assert.equal(await delivered, 'paused');
+
+  // A later probe with no reply must still retire an idle, half-open socket.
+  connection.connectNow();
+  context.mock.timers.tick(5000);
+  assert.equal(socket.readyState, 3);
+  assert.equal(connection.state.status, 'reconnecting');
+  assert.equal(connection.paired, true);
 });

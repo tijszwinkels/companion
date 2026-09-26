@@ -93,7 +93,8 @@ when it is healthy; a failed five-second probe reconnects. Requests awaiting a r
 never automatically resent. Drafts remain on this browser. A connection that
 fails to authenticate within ten seconds is retried with backoff.
 An application heartbeat also detects silently dead OPEN sockets within about
-30 seconds while browser timers run. Background timer suspension is recovered
+35 seconds while browser timers run, including a final five-second probe. New
+mutations are refused while that probe waits for a reply. Background timer suspension is recovered
 on foregrounding; this is not a promise of background connectivity on iOS.
 
 For a safe synthetic walkthrough and the current review/ownership limits, see

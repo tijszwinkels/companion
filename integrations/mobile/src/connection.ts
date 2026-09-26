@@ -19,6 +19,7 @@ import type {
   RemoteAction,
   RemoteActionParameters,
 } from '../../../src/remote/protocol.ts';
+import { mutatingActions } from '../../../src/remote/protocol.ts';
 
 export type ConnectionStatus =
   'unpaired' | 'connecting' | 'online' | 'reconnecting' | 'engine-unavailable' | 'offline';
@@ -221,6 +222,11 @@ export class Connection {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN || this.state.status !== 'online') {
       return Promise.reject(Error('Not connected to Companion'));
+    }
+    if (this.probeTimer && mutatingActions.has(action)) {
+      // An OPEN socket can be dead after sleep. Refuse a new mutation before
+      // sending it, so its outcome stays known while we check the connection.
+      return Promise.reject(Error('Checking connection… Please try again in a moment.'));
     }
 
     const requestId = newRequestId();
@@ -435,12 +441,28 @@ export class Connection {
       }
 
       if (Date.now() - this.lastMessageAt >= 30_000) {
-        this.retireSocket();
-        this.scheduleRetry('reconnecting', 'Companion stopped responding. Reconnecting…');
+        // A suspended page may run an overdue tick before visibilitychange or
+        // buffered socket messages. Give those replies the same bounded grace
+        // period as an explicit foreground probe, preserving pending requests.
+        this.probeConnection();
         return;
       }
       socket.send(JSON.stringify({ type: 'ping' }));
     }, 15_000);
+  }
+
+  /** Keep existing requests alive while checking a possibly stale OPEN socket. */
+  private probeConnection(): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN || this.probeTimer) {
+      return;
+    }
+
+    this.probeTimer = setTimeout(() => {
+      this.retireSocket();
+      this.scheduleRetry('reconnecting', 'Companion stopped responding. Reconnecting…');
+    }, 5000);
+    socket.send(JSON.stringify({ type: 'ping' }));
   }
 
   private networkLost(): void {
@@ -473,13 +495,7 @@ export class Connection {
       // Foregrounding a healthy socket must not turn an admitted send into an
       // uncertain outcome. Probe first, retaining pending requests and replies.
       // Browsers may still call a dead socket OPEN, so bound that probe.
-      if (!this.probeTimer) {
-        this.probeTimer = setTimeout(() => {
-          this.retireSocket();
-          this.scheduleRetry('reconnecting', 'Companion stopped responding. Reconnecting…');
-        }, 5000);
-        this.socket.send(JSON.stringify({ type: 'ping' }));
-      }
+      this.probeConnection();
       return;
     }
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) {

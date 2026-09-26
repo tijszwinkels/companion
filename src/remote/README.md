@@ -120,10 +120,13 @@ open in the background on the desktop, just like typed phone starts. Activity-ba
 starts reuse an existing saved screenshot; they do not capture a new one.
 
 Authenticated `{ "type": "ping" }` messages receive `{ "type": "pong" }`
-without contacting the listener. The phone checks every 15 seconds and reconnects
-after 30 seconds without an incoming message, even if the browser still calls
-the socket OPEN and never emits an offline event. Pending mutations are reported
-as uncertain and never automatically resent.
+without contacting the listener. The phone checks every 15 seconds. After 30
+seconds without an incoming message it allows a final five-second probe before
+reconnecting, even if the browser still calls the socket OPEN and never emits
+an offline event. This grace period lets buffered replies arrive after page
+suspension. New mutations are refused during the probe; existing pending
+mutations become uncertain only if their request or connection deadline expires.
+They are never automatically resent.
 
 State-changing requests keep a **receipt per device for 10 minutes** (512 max,
 memory only). At capacity new mutations are refused until receipts expire;
