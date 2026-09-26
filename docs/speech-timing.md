@@ -225,7 +225,8 @@ pipeline, `DesktopRuntime.settleContinuation`/`retire`, and
 3. **The final record.** Normally the final attempt records its own transcript,
    combined WAV and PNG, with its real outcome (sent, ignored, error, cancelled).
    If it fails *before* recording a transcript while an earlier attempt had
-   recorded one (ASR error, pause or shutdown during ASR), the pipeline records
+   produced usable text (ASR error, pause or shutdown during ASR), the pipeline
+   records
    a **recovered failure** instead: the latest usable earlier text, marked
    `transcript_source = 'earlier-attempt'`, with the combined WAV, the final
    attempt's own PNG if its capture succeeded, and the true `error` or
@@ -251,13 +252,14 @@ pipeline, `DesktopRuntime.settleContinuation`/`retire`, and
 
 ### Exceptions: residual records
 
-A chain in which **no** attempt recorded a transcript ends like any failed
-single utterance under the existing empty-result and ASR-error policy. This
-happens when every earlier part was replaced while its ASR was still running, or
-had no text. If the final attempt then also fails or is cancelled before its
-text, nothing is recorded and there is nothing to retire. No transcript is
-fabricated, and no audio-only failure record is written. Recording such
-failures would change ASR-failure handling generally and is a separate decision.
+A chain in which **no** attempt produced usable text (every earlier part was
+empty, or its ASR never returned) ends like any failed single utterance under
+the existing empty-result and ASR-error policy. If the final attempt then also
+fails or is cancelled before its text, nothing is recorded and there is nothing
+to retire. No transcript is fabricated, and no audio-only failure record is
+written. Recording such failures would change ASR-failure handling generally and
+is a separate decision. Earlier text that arrived after its attempt was
+superseded (so it never had a row) does count as usable text.
 
 Otherwise, failures end in one record (step 3). More than one record remains
 only in these explicit cases, each logged as `retention-incomplete` with the

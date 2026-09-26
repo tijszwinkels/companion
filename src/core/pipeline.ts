@@ -288,9 +288,7 @@ export class SensorPipeline implements InspectableModule {
       routeSignal,
       interaction,
       attempt,
-      chain: attempt
-        ? (replaces?.chain ?? { supersededAttempts: [], recordedAttempt: false })
-        : undefined,
+      chain: attempt ? (replaces?.chain ?? { supersededAttempts: [] }) : undefined,
       settled: false,
     };
     this.newest = job;
@@ -353,7 +351,8 @@ export class SensorPipeline implements InspectableModule {
   /**
    * A continued utterance's final attempt that can still record the words the
    * user said: it holds the combined samples (cleared only in `finally`), and
-   * an earlier attempt of the chain recorded usable text.
+   * an earlier attempt produced usable text. That text counts even when it
+   * arrived after its attempt was superseded and so never got a row of its own.
    */
   private recoverable(job: Job): boolean {
     const chain = job.chain;
@@ -361,7 +360,7 @@ export class SensorPipeline implements InspectableModule {
       chain !== undefined &&
       job.samples !== undefined &&
       !job.attempt!.superseded &&
-      chain.recordedAttempt &&
+      chain.supersededAttempts.length > 0 &&
       chain.latestTranscript !== undefined
     );
   }
@@ -535,9 +534,6 @@ export class SensorPipeline implements InspectableModule {
           source,
         });
         recorded = true;
-        if (job.chain) {
-          job.chain.recordedAttempt = true;
-        }
 
         // Preserve each available input independently, including a late ASR
         // result after cancellation. One failed write must not discard the
@@ -581,10 +577,10 @@ export class SensorPipeline implements InspectableModule {
         this.log('done', `${Date.now() - job.observedAt} ms since speech end`, job.id);
       } catch (error) {
         // The final attempt of a continued utterance failed before recording
-        // anything (ASR error, pause or shutdown, or no usable text), while an
-        // earlier attempt did. Record the earlier words with the combined
-        // audio, so the utterance still ends in one record, with its true
-        // outcome below. This record is never routed.
+        // anything (ASR error, pause or shutdown), while an earlier attempt
+        // produced usable text. Record those words with the combined audio, so
+        // the utterance still ends in one record, with its true outcome below.
+        // This record is never routed.
         if (!recorded && this.recoverable(job)) {
           await this.recordRecoveredFailure(job);
         }

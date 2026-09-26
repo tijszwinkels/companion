@@ -336,14 +336,43 @@ test('a replaced attempt that is still finishing already refuses manual paste', 
   }
 });
 
-test('a chain that never recorded a transcript records nothing when its final ASR fails', async () => {
+test('earlier words that arrived after supersession are recovered when the final ASR fails', async () => {
   const setup = await chainFixture();
   try {
-    // The first part is replaced while its ASR is still running: no record.
+    // The first part is replaced while its ASR is still running; its text
+    // arrives afterwards, so it never gets a row of its own.
     setup.speak(0.1);
     await waitFor(() => setup.transcriptions.length === 1);
     setup.continueWith(0.2);
     setup.transcriptions[0].resolve('Open the');
+    await waitFor(() => setup.transcriptions.length === 2);
+    assert.deepEqual(setup.rows(), []);
+
+    setup.transcriptions[1].reject(Error('ASR worker failed'));
+    await setup.idle();
+    await waitFor(() => setup.published('activity-entry').length === 1);
+
+    const rows = setup.rows();
+    assert.deepEqual(
+      rows.map((row) => [row.transcript, row.outcome, row.source]),
+      [['Open the', 'error', 'earlier-attempt']],
+    );
+    assert.deepEqual(await setup.recorded('audio'), [rows[0].id], 'The combined WAV');
+    assert.deepEqual(setup.published('history-deleted'), [], 'No predecessor row existed');
+    assert.deepEqual(setup.dispatched, []);
+    assert.equal(setup.detections.length, 0, 'Never routed');
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('a chain without any usable text records nothing when its final ASR fails', async () => {
+  const setup = await chainFixture();
+  try {
+    setup.speak(0.1);
+    await waitFor(() => setup.transcriptions.length === 1);
+    setup.continueWith(0.2);
+    setup.transcriptions[0].resolve('');
     await waitFor(() => setup.transcriptions.length === 2);
     setup.transcriptions[1].reject(Error('ASR worker failed'));
     await setup.idle();

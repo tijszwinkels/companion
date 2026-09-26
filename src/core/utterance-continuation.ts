@@ -152,14 +152,6 @@ export interface TranscriptChain {
    * the number of pauses within the 30-second combined audio cap.
    */
   supersededAttempts: number[];
-
-  /**
-   * Whether any attempt of this utterance has written a history record. If
-   * so, and the final attempt fails before writing its own, the final attempt
-   * records the latest usable text with the combined audio instead, so that
-   * the utterance still ends in one record (SensorPipeline.recordRecoveredFailure).
-   */
-  recordedAttempt: boolean;
 }
 
 /**
