@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
+import type { Transcript, TranscriptSource, UtteranceOutcome } from '../core/activity.ts';
 import type { Screenshot, UserSensorFrame } from '../core/frame.ts';
 import type {
   CleanupFallbackReason,
@@ -38,6 +38,13 @@ export interface HistoryEntry {
   cleanedText: string | null;
   /** Why a text route received the raw text although cleanup was on. */
   cleanupFallback: CleanupFallbackReason | null;
+  /**
+   * `earlier-attempt` when the text is an earlier attempt's transcript stored
+   * beside a continued utterance's combined audio (D2 fallback, or a failed
+   * final attempt). Null means unspecified: older rows, typed input and fresh
+   * ASR all read null, so it is not proof the whole recording was transcribed.
+   */
+  transcriptSource: TranscriptSource | null;
 }
 
 /** Row shape before booleans are decoded; SQLite stores them as integers. */
@@ -47,7 +54,8 @@ type HistoryRow = Omit<HistoryEntry, 'cleanupEnabled'> & { cleanupEnabled: numbe
 const ENTRY_COLUMNS = `id, observed_at AS observedAt, transcript AS utterance,
       application, recognized_intent AS intent, outcome,
       cleanup_enabled AS cleanupEnabled, cleanup_status AS cleanupStatus,
-      cleaned_text AS cleanedText, cleanup_fallback AS cleanupFallback`;
+      cleaned_text AS cleanedText, cleanup_fallback AS cleanupFallback,
+      transcript_source AS transcriptSource`;
 
 function decodeEntry(row: HistoryRow): HistoryEntry {
   return {
@@ -147,19 +155,21 @@ export class UtteranceHistory {
         this.database.exec('ALTER TABLE utterances DROP COLUMN audio_path');
       }
 
-      // Transcription cleanup, stored beside the unchanged raw transcript.
+      // Transcription cleanup, stored beside the unchanged raw transcript, and
+      // the transcript source of continued utterances (see HistoryEntry).
       // These nullable columns are additive and deliberately do not change
       // the schema version: older checkouts keep opening this database and
       // simply ignore them (their new rows read as "unknown"), so switching
       // back to a build without cleanup needs no migration. They live in the
       // utterances row itself, so deleting an utterance also deletes them.
-      const cleanupColumns: [string, string][] = [
+      const additiveColumns: [string, string][] = [
         ['cleanup_enabled', 'INTEGER CHECK (cleanup_enabled IN (0, 1))'],
         ['cleanup_status', "TEXT CHECK (cleanup_status IN ('cleaned', 'fallback', 'no-text'))"],
         ['cleaned_text', 'TEXT'],
         ['cleanup_fallback', 'TEXT'],
+        ['transcript_source', "TEXT CHECK (transcript_source IN ('earlier-attempt'))"],
       ];
-      for (const [name, definition] of cleanupColumns) {
+      for (const [name, definition] of additiveColumns) {
         if (!utteranceColumns.some((column) => column.name === name)) {
           this.database.exec(`ALTER TABLE utterances ADD COLUMN ${name} ${definition}`);
         }
@@ -414,8 +424,8 @@ export class UtteranceHistory {
     this.db
       .prepare(
         `INSERT INTO utterances
-      (id, observed_at, transcript, application, window_title, window_address)
-      VALUES (?, ?, ?, ?, ?, ?)`,
+      (id, observed_at, transcript, application, window_title, window_address, transcript_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -424,6 +434,7 @@ export class UtteranceHistory {
         application?.app ?? null,
         application?.title ?? null,
         application?.address ?? null,
+        transcript.source ?? null,
       );
 
     this.frameEntries.set(transcript.id, id);

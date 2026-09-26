@@ -67,9 +67,9 @@ export class DesktopRuntime {
   // Superseded frames named by a settled chain before they finished. Not
   // expected (the sensor worker is serial); such a row is simply kept.
   private readonly unsettledSuperseded = new Set<number>();
-  // Recordings published for each frame still in progress, so a chain's final
+  // Frames still in progress whose WAV has been published, so a chain's final
   // attempt is known to own the whole utterance before anything is removed.
-  private readonly recordedFrames = new Map<number, { audio: boolean; screenshot: boolean }>();
+  private readonly recordedAudio = new Set<number>();
   // Retirements run after dispatch, off the sensor worker; close() awaits them.
   private readonly retirements = new Set<Promise<void>>();
 
@@ -228,13 +228,11 @@ export class DesktopRuntime {
         this.server.broadcast();
       },
       screenshotCaptured: async (id, screenshot) => {
-        if (await this.history.saveScreenshot(id, screenshot)) {
-          this.markRecorded(id, 'screenshot');
-        }
+        await this.history.saveScreenshot(id, screenshot);
       },
       audioCaptured: async (id, samples) => {
         if (await this.history.saveAudio(id, samples)) {
-          this.markRecorded(id, 'audio');
+          this.recordedAudio.add(id);
         }
       },
       emptyAudioCaptured: (clip) => saveEmptyAudioClip(dirname(options.database), clip),
@@ -276,7 +274,7 @@ export class DesktopRuntime {
         this.frameComposerRevisions.delete(id);
         this.processing.delete(id);
         this.delivery.finish(id);
-        this.recordedFrames.delete(id);
+        this.recordedAudio.delete(id);
         const entry = this.history.finish(id);
         const chainSettled = this.unsettledSuperseded.delete(id);
 
@@ -555,28 +553,20 @@ export class DesktopRuntime {
     });
   }
 
-  private markRecorded(frameId: number, kind: 'audio' | 'screenshot'): void {
-    const recorded = this.recordedFrames.get(frameId) ?? { audio: false, screenshot: false };
-    recorded[kind] = true;
-    this.recordedFrames.set(frameId, recorded);
-  }
-
   /**
    * The final attempt of a continued utterance has settled, just before its
    * own `finished`. Its superseded predecessors are retired only when the final
-   * attempt owns the whole utterance: its row exists and both its WAV (which
-   * contains every earlier part's raw audio) and its PNG were published. Its
-   * outcome does not matter; an error, cancellation or ignored result is the
-   * record the user recovers from. Otherwise, for example when the final
-   * attempt's ASR failed or pause cancelled it before its row was written, the
-   * predecessors are kept and published exactly as before.
+   * attempt owns the whole utterance: its row exists and its WAV, which
+   * contains every earlier part's raw audio, was published. Its outcome does
+   * not matter; an error, cancellation or ignored result is the record the
+   * user recovers from, including the pipeline's recovered-failure record with
+   * the earlier words. A fresh PNG is not required: without one, the earlier
+   * screen is lost with its attempt rather than attached to the final record.
+   * If the final attempt does not own the utterance (its WAV or row could not
+   * be written), the predecessors are kept as explicit residual rows.
    */
   private settleContinuation(finalId: number, supersededIds: readonly number[]): void {
-    const recorded = this.recordedFrames.get(finalId);
-    const owned =
-      this.history.entryId(finalId) !== undefined &&
-      recorded?.audio === true &&
-      recorded.screenshot === true;
+    const owned = this.history.entryId(finalId) !== undefined && this.recordedAudio.has(finalId);
 
     const predecessors: HistoryEntry[] = [];
     for (const id of supersededIds) {
@@ -603,7 +593,11 @@ export class DesktopRuntime {
       );
       for (const entry of predecessors) {
         this.history.releaseRetirement(entry.id);
-        this.publishActivity(entry);
+        // Publish only a row that still exists: never recreate a card.
+        const current = this.history.find(entry.id);
+        if (current) {
+          this.publishActivity(current);
+        }
       }
       return;
     }

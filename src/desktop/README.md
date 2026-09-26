@@ -322,12 +322,20 @@ The `superseded` outcome marks a provisional speech attempt that was replaced
 because the user resumed speaking before it committed to an action. It plays no
 sound and is not a failure. The retranscribed whole utterance follows as its own
 row. An attempt replaced before its transcript arrived has no row at all. Since
-2026-09-27 a superseded row is removed, with its PNG/WAV, once the final attempt
-of its utterance has its own row, WAV and PNG; its Activity card is never
-published then, and `history-deleted` (without `removed`) is sent. It is kept,
-and shown, when the final attempt is not fully recorded or the row was pasted
-or labeled. Older `superseded` rows are not touched. See
-[final-only retention](../../docs/speech-timing.md#final-only-retention).
+2026-09-27 a superseded row is removed, with its PNG/WAV, once the final record
+of its utterance has its own row and WAV; its Activity card is never published
+then, and `history-deleted` (without `removed`) is sent. A final attempt that
+failed before its transcript records the earlier words with the combined WAV
+and its true outcome. Residual superseded rows remain only after a failed write
+or removal, a crash, or a paste/feedback reference. Older `superseded` rows are
+not touched. See [final-only retention](../../docs/speech-timing.md#final-only-retention).
+
+`utterances.transcript_source` (nullable, additive, no schema version change) is
+`earlier-attempt` when the stored text came from an earlier attempt of the same
+continued utterance: a recovered failure or a D2 fallback. NULL means
+unspecified, including all older rows and typed input; it does not prove that
+the whole recording was transcribed. History entries carry it as
+`transcriptSource`.
 
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists

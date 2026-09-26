@@ -22,12 +22,22 @@ export type UtteranceOutcome =
 /** Delivery feedback describes acceptance, not eventual agent-turn completion. */
 export type UtteranceDestination = 'application' | 'agent-session' | 'new-agent-session';
 
+/**
+ * Where a record's text came from when it is not this attempt's own ASR result.
+ * `earlier-attempt`: the latest usable text of an earlier attempt of the same
+ * spoken utterance, stored beside the combined audio; the final part of the
+ * speech may be missing from it. Absent means unspecified, not proof that the
+ * whole recording was transcribed.
+ */
+export type TranscriptSource = 'earlier-attempt';
+
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {
   id: number;
   observedAt: number;
   utterance: string;
   application?: { address: string; app: string; title: string };
+  source?: TranscriptSource;
 }
 
 /** A failed recognition attempt, without a transcript or associated screenshot. */

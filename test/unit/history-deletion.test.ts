@@ -173,6 +173,7 @@ test('removed Activity entries keep paging positions and carry no transcript in 
         cleanupStatus: null,
         cleanedText: null,
         cleanupFallback: null,
+        transcriptSource: null,
       },
       { correct: null, actualIntent: null },
     );

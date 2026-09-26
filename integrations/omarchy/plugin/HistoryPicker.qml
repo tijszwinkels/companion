@@ -112,6 +112,7 @@ PanelWindow {
               text: Qt.formatDateTime(new Date(row.modelData.observedAt), "ddd HH:mm")
                 + " · " + (row.modelData.application || "Unknown application")
                 + " · " + row.modelData.outcome
+                + (row.modelData.transcriptSource === "earlier-attempt" ? " · earlier words" : "")
               textFormat: Text.PlainText
               elide: Text.ElideRight
               color: row.textColor

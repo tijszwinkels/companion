@@ -44,6 +44,8 @@ async function chainFixture(
     captureFails?: number[];
     /** The router's text processor throws for these utterances. */
     dispatchFails?: string[];
+    /** WAV writes that fail, by call number (1 = the first attempt's). */
+    audioFails?: number[];
   } = {},
 ) {
   const fixture = await desktopFixture(async () => Buffer.alloc(0));
@@ -52,6 +54,7 @@ async function chainFixture(
   const detections: Detection[] = [];
   const dispatched: string[] = [];
   let captures = 0;
+  let audioWrites = 0;
 
   const router = new UserSensorRouter(
     {
@@ -107,7 +110,16 @@ async function chainFixture(
     },
     () => {},
     fixture.controller.signal,
-    fixture.runtime.activity,
+    {
+      ...fixture.runtime.activity,
+      audioCaptured: async (id, samples) => {
+        audioWrites++;
+        if (options.audioFails?.includes(audioWrites)) {
+          throw Error('Disk full');
+        }
+        await fixture.runtime.activity.audioCaptured!(id, samples);
+      },
+    },
     'pipeline',
     clock,
   );
@@ -137,10 +149,12 @@ async function chainFixture(
     await finished;
   }
 
-  function rows(): { id: string; transcript: string; outcome: string }[] {
+  function rows(): { id: string; transcript: string; outcome: string; source: string | null }[] {
     return fixture.database
-      .prepare('SELECT id, transcript, outcome FROM utterances ORDER BY rowid')
-      .all() as { id: string; transcript: string; outcome: string }[];
+      .prepare(
+        'SELECT id, transcript, outcome, transcript_source AS source FROM utterances ORDER BY rowid',
+      )
+      .all() as { id: string; transcript: string; outcome: string; source: string | null }[];
   }
 
   /** UUIDs with a recording of `kind`, across all date folders. */
@@ -373,8 +387,9 @@ test('an empty combined transcript keeps the earlier words in the final record (
 
     const rows = setup.rows();
     assert.deepEqual(
-      rows.map((row) => [row.transcript, row.outcome]),
-      [['Open the browser', 'sent']],
+      rows.map((row) => [row.transcript, row.outcome, row.source]),
+      [['Open the browser', 'sent', 'earlier-attempt']],
+      'The text is marked as an earlier attempt: the combined audio had none',
     );
     assert.notEqual(rows[0].id, first, 'The combined attempt owns the record');
     assert.deepEqual(await setup.recorded('audio'), [rows[0].id]);
@@ -405,75 +420,176 @@ test('a failed final dispatch is still the one record: its error outcome is kept
   }
 });
 
-test('without a fully recorded final attempt, superseded attempts are kept and shown', async (context) => {
-  await context.test('the final ASR request fails', async () => {
-    const setup = await chainFixture();
-    try {
-      const first = await supersededAttempt(setup);
-      await waitFor(() => setup.transcriptions.length === 2);
-      setup.transcriptions[1].reject(Error('ASR worker failed'));
-      await setup.idle();
-      await delay(20);
+/**
+ * The final attempt fails before recording its own transcript. It records the
+ * latest earlier words with the combined audio and its true outcome, never
+ * routed, and the superseded attempt is retired: still one record.
+ */
+async function expectRecoveredFailure(
+  setup: ChainFixture,
+  first: string,
+  outcome: 'error' | 'cancelled',
+): Promise<void> {
+  await waitFor(() => setup.published('history-deleted').length === 1);
 
-      assert.deepEqual(
-        setup.rows().map((row) => [row.id, row.outcome]),
-        [[first, 'superseded']],
-      );
-      assert.deepEqual(setup.published('activity-entry'), [first]);
-      assert.deepEqual(setup.published('history-deleted'), []);
-      assert.deepEqual(await setup.recorded('audio'), [first]);
+  const rows = setup.rows();
+  assert.deepEqual(
+    rows.map((row) => [row.transcript, row.outcome, row.source]),
+    [['Open the', outcome, 'earlier-attempt']],
+  );
+  assert.notEqual(rows[0].id, first);
+  assert.deepEqual(setup.published('history-deleted'), [first]);
+  assert.deepEqual(setup.published('activity-entry'), [rows[0].id]);
+  assert.deepEqual(await setup.recorded('audio'), [rows[0].id], 'The combined WAV is kept');
+  assert.deepEqual(setup.dispatched, [], 'A recovered record is never routed');
+  assert.equal(setup.detections.length, 1, 'No inference on earlier words');
+}
 
-      // The kept row is released from its retirement hold: an ordinary row
-      // again, which the user can delete.
-      setup.fixture.send({ action: 'delete-history', id: first });
-      assert.equal((await setup.fixture.reply('delete-history')).type, 'result');
-      assert.deepEqual(setup.rows(), []);
-    } finally {
-      await setup.fixture.close();
-    }
-  });
+test('a final ASR error records the earlier words with the combined audio, as one error record', async () => {
+  const setup = await chainFixture();
+  try {
+    const first = await supersededAttempt(setup);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].reject(Error('ASR worker failed'));
+    await setup.idle();
+    await expectRecoveredFailure(setup, first, 'error');
+  } finally {
+    await setup.fixture.close();
+  }
+});
 
-  await context.test('the final attempt has no screenshot', async () => {
-    const setup = await chainFixture({ captureFails: [2] });
-    try {
-      const first = await supersededAttempt(setup);
-      await waitFor(() => setup.transcriptions.length === 2);
-      setup.transcriptions[1].resolve('Open the browser');
-      await setup.idle();
-      await delay(20);
+test('pause before the final transcript records the earlier words as one cancelled record', async () => {
+  const setup = await chainFixture();
+  try {
+    const first = await supersededAttempt(setup);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.fixture.controller.abort();
+    await setup.pipeline.idle();
+    await expectRecoveredFailure(setup, first, 'cancelled');
+  } finally {
+    await setup.fixture.close();
+  }
+});
 
-      assert.deepEqual(
-        setup.rows().map((row) => [row.transcript, row.outcome]),
-        [
-          ['Open the', 'superseded'],
-          ['Open the browser', 'error'],
-        ],
-      );
-      assert.deepEqual(setup.published('history-deleted'), []);
-      assert.ok(setup.published('activity-entry').includes(first));
-    } finally {
-      await setup.fixture.close();
-    }
-  });
+test('a final attempt without a screenshot keeps its own words and error, and no earlier screen', async () => {
+  const setup = await chainFixture({ captureFails: [2] });
+  try {
+    const first = await supersededAttempt(setup);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('Open the browser');
+    await setup.idle();
+    await waitFor(() => setup.published('history-deleted').length === 1);
 
-  await context.test('pause cancels the final attempt before its transcript', async () => {
-    const setup = await chainFixture();
-    try {
-      const first = await supersededAttempt(setup);
-      await waitFor(() => setup.transcriptions.length === 2);
-      setup.fixture.controller.abort();
-      await setup.pipeline.idle();
-      await delay(20);
+    const rows = setup.rows();
+    assert.deepEqual(
+      rows.map((row) => [row.transcript, row.outcome, row.source]),
+      [['Open the browser', 'error', null]],
+    );
+    assert.deepEqual(setup.published('history-deleted'), [first]);
+    assert.deepEqual(await setup.recorded('audio'), [rows[0].id]);
+    assert.deepEqual(await setup.recorded('screenshots'), [], 'The earlier PNG is not reused');
+    assert.deepEqual(setup.dispatched, []);
+  } finally {
+    await setup.fixture.close();
+  }
+});
 
-      assert.deepEqual(
-        setup.rows().map((row) => [row.id, row.outcome]),
-        [[first, 'superseded']],
-      );
-      assert.deepEqual(setup.published('activity-entry'), [first]);
-    } finally {
-      await setup.fixture.close();
-    }
-  });
+test('if the final WAV cannot be written, the superseded attempt is kept as a residual record', async () => {
+  const setup = await chainFixture({ audioFails: [2] });
+  try {
+    const first = await supersededAttempt(setup);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('Open the browser');
+    await setup.idle();
+    await waitFor(() => setup.published('activity-entry').includes(first));
+
+    assert.deepEqual(
+      setup.rows().map((row) => [row.transcript, row.outcome]),
+      [
+        ['Open the', 'superseded'],
+        ['Open the browser', 'error'],
+      ],
+    );
+    assert.deepEqual(setup.published('history-deleted'), [], 'No removal is reported');
+    assert.deepEqual(await setup.recorded('audio'), [first], 'The only complete WAV stays');
+
+    // Released from its hold: an ordinary row again.
+    setup.fixture.send({ action: 'delete-history', id: first });
+    assert.equal((await setup.fixture.reply('delete-history')).type, 'result');
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('a provisional attempt pasted before it was superseded is kept as user evidence', async () => {
+  const setup = await chainFixture();
+  try {
+    setup.speak(0.1);
+    await waitFor(() => setup.transcriptions.length === 1);
+    setup.transcriptions[0].resolve('Open the');
+    await waitFor(() => setup.detections.length === 1);
+
+    // The row is visible while it is classified; manual recovery is allowed
+    // then (it supersedes the automatic delivery). This fixture's desktop
+    // commands fail, but the paste attempt is recorded either way.
+    const first = setup.rows()[0].id;
+    setup.fixture.send({ action: 'paste', id: first, target: '0xabc' });
+    await setup.fixture.reply('paste');
+
+    setup.continueWith(0.2);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('Open the browser');
+    await waitFor(() => setup.detections.length === 2);
+    setup.detections[1].resolve('SEND');
+    await setup.idle();
+    await waitFor(() => setup.published('activity-entry').includes(first));
+
+    assert.deepEqual(
+      setup.rows().map((row) => [row.transcript, row.outcome]),
+      [
+        ['Open the', 'superseded'],
+        ['Open the browser', 'sent'],
+      ],
+    );
+    assert.deepEqual(setup.published('history-deleted'), []);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('a continuation that replaces a queued attempt leaves earlier requests alone', async () => {
+  const setup = await chainFixture();
+  try {
+    // Request 1 is being classified; request 2 waits; speech continues 2.
+    setup.speak(0.05);
+    await waitFor(() => setup.transcriptions.length === 1);
+    setup.transcriptions[0].resolve('First request');
+    await waitFor(() => setup.detections.length === 1);
+    setup.speak(0.1);
+    setup.continueWith(0.2);
+
+    setup.detections[0].resolve('SEND');
+    await delay(5);
+    setup.clock.advance(2000); // Past request 1's 800 ms floor.
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('Second request');
+    await waitFor(() => setup.detections.length === 2);
+    setup.detections[1].resolve('SEND');
+    await setup.idle();
+    await delay(20);
+
+    assert.deepEqual(
+      setup.rows().map((row) => [row.transcript, row.outcome]),
+      [
+        ['First request', 'sent'],
+        ['Second request', 'sent'],
+      ],
+    );
+    assert.deepEqual(setup.published('history-deleted'), [], 'The queued attempt had no record');
+    assert.equal(setup.published('activity-entry').length, 2);
+  } finally {
+    await setup.fixture.close();
+  }
 });
 
 test('pause after the final attempt is recorded keeps its cancelled record only', async () => {

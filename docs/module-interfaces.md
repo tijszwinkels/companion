@@ -95,8 +95,9 @@ continued utterance's final attempt settles, the pipeline calls
 `Activity.continuationSettled(finalId, supersededIds)` just before
 `finished(finalId)`. The desktop runtime then keeps one record per utterance;
 see [final-only retention](speech-timing.md#final-only-retention).
-`screenshotCaptured`/`audioCaptured` resolve after the file is published; the
-runtime records that per frame to decide ownership.
+`audioCaptured` resolves after the WAV is published; the runtime records that
+per frame to decide ownership. `Transcript.source` is `earlier-attempt` when the
+text is an earlier attempt's (D2 fallback or a recovered failed final attempt).
 
 Confirmed empty ASR results (after the transcriber's single padded retry, when
 eligible) that meet the existing duration/energy floors call

@@ -1,6 +1,6 @@
 import type { InteractionContext, Log, Screenshot } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
-import type { Activity } from './activity.ts';
+import type { Activity, TranscriptSource } from './activity.ts';
 import { failureOutcome } from './delivery-error.ts';
 import type { InspectableModule } from './module.ts';
 import type { ScreenSensor } from '../sensors/screen/sensor.ts';
@@ -288,7 +288,9 @@ export class SensorPipeline implements InspectableModule {
       routeSignal,
       interaction,
       attempt,
-      chain: attempt ? (replaces?.chain ?? { supersededAttempts: [] }) : undefined,
+      chain: attempt
+        ? (replaces?.chain ?? { supersededAttempts: [], recordedAttempt: false })
+        : undefined,
       settled: false,
     };
     this.newest = job;
@@ -348,10 +350,69 @@ export class SensorPipeline implements InspectableModule {
     this.retiring.add(cleanup);
   }
 
+  /**
+   * A continued utterance's final attempt that can still record the words the
+   * user said: it holds the combined samples (cleared only in `finally`), and
+   * an earlier attempt of the chain recorded usable text.
+   */
+  private recoverable(job: Job): boolean {
+    const chain = job.chain;
+    return (
+      chain !== undefined &&
+      job.samples !== undefined &&
+      !job.attempt!.superseded &&
+      chain.recordedAttempt &&
+      chain.latestTranscript !== undefined
+    );
+  }
+
+  /**
+   * Record a failed final attempt of a continued utterance: the latest usable
+   * earlier text, marked `earlier-attempt`, with the combined audio and only
+   * this attempt's own screenshot (an earlier screen is never substituted).
+   * It is recorded, not routed. Writes are awaited before `finally` clears the
+   * samples; they take no cancellation signal, because pause and shutdown are
+   * exactly when the record is needed, and the CLI waits for the pipeline to
+   * be idle before closing desktop storage. A failed write is logged and
+   * counted; the job's own failure is still reported by the caller.
+   */
+  private async recordRecoveredFailure(job: Job): Promise<void> {
+    const capture = await job.capture;
+
+    try {
+      this.log('recovered', 'Final attempt failed; recording the earlier words', job.id);
+      this.activity.transcribed?.({
+        id: job.id,
+        observedAt: job.observedAt,
+        utterance: job.chain!.latestTranscript!,
+        application: capture.application ?? capture.screenshot?.window,
+        source: 'earlier-attempt',
+      });
+
+      const recordings = await Promise.allSettled([
+        this.activity.audioCaptured?.(job.id, job.samples!),
+        capture.screenshot
+          ? this.activity.screenshotCaptured?.(job.id, capture.screenshot)
+          : undefined,
+      ]);
+      for (const recording of recordings) {
+        if (recording.status === 'rejected') {
+          throw recording.reason;
+        }
+      }
+    } catch (error) {
+      this.failures++;
+      const message = error instanceof Error ? error.message : String(error);
+      this.log('error', `recording: ${message}`, job.id);
+    }
+  }
+
   private async drain(): Promise<void> {
     while (this.pending.length) {
       const job = this.pending.shift()!;
       let stage = 'transcription';
+      // Whether this job has handed a transcript to the history observer.
+      let recorded = false;
 
       try {
         // A superseded attempt that has not started ASR needs no transcription.
@@ -375,6 +436,8 @@ export class SensorPipeline implements InspectableModule {
         ]);
 
         let utterance = transcript;
+        // Set only when the text is not this attempt's own ASR result (D2).
+        let source: TranscriptSource | undefined;
 
         this.log(
           'transcript',
@@ -457,6 +520,7 @@ export class SensorPipeline implements InspectableModule {
           }
 
           utterance = fallback;
+          source = 'earlier-attempt';
           this.log('fallback', 'Combined audio had no text; using the earlier transcript', job.id);
         }
 
@@ -468,7 +532,12 @@ export class SensorPipeline implements InspectableModule {
           observedAt: job.observedAt,
           utterance,
           application: capture.application ?? capture.screenshot?.window,
+          source,
         });
+        recorded = true;
+        if (job.chain) {
+          job.chain.recordedAttempt = true;
+        }
 
         // Preserve each available input independently, including a late ASR
         // result after cancellation. One failed write must not discard the
@@ -511,6 +580,15 @@ export class SensorPipeline implements InspectableModule {
 
         this.log('done', `${Date.now() - job.observedAt} ms since speech end`, job.id);
       } catch (error) {
+        // The final attempt of a continued utterance failed before recording
+        // anything (ASR error, pause or shutdown, or no usable text), while an
+        // earlier attempt did. Record the earlier words with the combined
+        // audio, so the utterance still ends in one record, with its true
+        // outcome below. This record is never routed.
+        if (!recorded && this.recoverable(job)) {
+          await this.recordRecoveredFailure(job);
+        }
+
         // A failed frame should not stop listening. A requested shutdown is
         // expected control flow and does not count as a processing failure.
         this.activity.outcome?.(job.id, failureOutcome(error, job.routeSignal));

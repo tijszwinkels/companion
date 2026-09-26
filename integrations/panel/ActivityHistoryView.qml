@@ -59,6 +59,7 @@ Item {
       cleanedText: model.cleanedText
       cleanupStatus: model.cleanupStatus
       cleanupFallback: model.cleanupFallback
+      transcriptSource: model.transcriptSource
       intents: root.intents
       online: root.online
       historyDeletionAvailable: root.historyDeletionAvailable

@@ -16,6 +16,9 @@ Rectangle {
   property string cleanedText: ""
   property string cleanupStatus: ""
   property string cleanupFallback: ""
+  // "earlier-attempt": the text is from an earlier part of a continued
+  // utterance, kept with the whole recording; the last words may be missing.
+  property string transcriptSource: ""
   required property var intents
   required property bool online
   property bool historyDeletionAvailable: false
@@ -148,6 +151,19 @@ Rectangle {
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: 14 * root.textScale
+      lineHeight: 1.3
+    }
+
+    Text {
+      objectName: "historyTranscriptSource"
+      width: parent.width
+      visible: root.transcriptSource === "earlier-attempt"
+      text: "Text from an earlier part of this utterance; the full recording was not transcribed"
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.textScale
       lineHeight: 1.3
     }
 
