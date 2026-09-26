@@ -336,6 +336,30 @@ test('a replaced attempt that is still finishing already refuses manual paste', 
   }
 });
 
+test('a chain that never recorded a transcript records nothing when its final ASR fails', async () => {
+  const setup = await chainFixture();
+  try {
+    // The first part is replaced while its ASR is still running: no record.
+    setup.speak(0.1);
+    await waitFor(() => setup.transcriptions.length === 1);
+    setup.continueWith(0.2);
+    setup.transcriptions[0].resolve('Open the');
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].reject(Error('ASR worker failed'));
+    await setup.idle();
+    await delay(20);
+
+    // As for any failed single utterance: no row, recording or card, and no
+    // words are fabricated.
+    assert.deepEqual(setup.rows(), []);
+    assert.deepEqual(await setup.recorded('audio'), []);
+    assert.deepEqual(setup.published('activity-entry'), []);
+    assert.deepEqual(setup.published('history-deleted'), []);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
 test('a repeated chain whose final ASR fails keeps the latest earlier words', async () => {
   const setup = await chainFixture();
   try {
