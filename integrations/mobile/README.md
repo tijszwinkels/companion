@@ -68,8 +68,9 @@ The app is structured for a wrapper such as Capacitor but no wrapper exists yet:
 
 - Static, relative asset paths; `dist/` can be bundled as the wrapper's web assets.
 - When loaded from a non-HTTP origin (e.g. `capacitor://localhost`) the pairing
-  screen asks for the gateway address; the gateway must then list that origin with
-  `--origin capacitor://localhost` (not done by default).
+  screen has an address field, but bundled/custom origins are **not supported**
+  by the gateway today. A wrapper requires an explicit CORS, transport and secure
+  credential design; adding an origin alone does not enable it.
 - `viewport-fit=cover` with `env(safe-area-inset-*)` padding and
   `interactive-widget=resizes-content` with dynamic viewport units for the keyboard.
 - The device token currently lives in `localStorage`; a wrapper should move it to
@@ -82,3 +83,14 @@ The app is structured for a wrapper such as Capacitor but no wrapper exists yet:
 
 Signing, installing on a device and App Store distribution are separate, approved
 steps.
+
+## Connection behavior
+
+Sign out and pair again without reloading. Network loss retires the old socket;
+network recovery, foregrounding the app, or Retry now opens a fresh connection
+and obtains current state. Requests awaiting a reply become uncertain and are
+never automatically resent. Drafts remain on this browser. A connection that
+fails to authenticate within ten seconds is retried with backoff.
+
+For a safe synthetic walkthrough and the current review/ownership limits, see
+[the finish audit](../../docs/mobile-panel-finish.md).

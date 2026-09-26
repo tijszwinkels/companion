@@ -825,7 +825,8 @@ export class DesktopRuntime {
         return 'preview';
       }
       const frame = await this.history.recordedFrame(request.id);
-      this.options.agents.start(frame, this.signal);
+      // A phone may reuse the saved frame, but must not redirect desktop focus.
+      this.options.agents.start(frame, this.signal, 'coding', Boolean(remote));
       return 'started';
     }
 
@@ -1110,7 +1111,7 @@ export class DesktopRuntime {
       if (request.action === 'close-agent') {
         await this.options.agents.remove(request.id);
       } else if (request.action === 'reopen-agent') {
-        await this.options.agents.reopen(request.id);
+        await this.options.agents.reopen(request.id, !remote);
         return 'reopened';
       } else {
         await this.options.agents.stop(request.id);

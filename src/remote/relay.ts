@@ -23,7 +23,7 @@ import { basename, dirname, resolve } from 'node:path';
 import type { WebSocket } from 'ws';
 
 import {
-  desktopOnlyEvents,
+  remoteEvents,
   mutatingActions,
   parseRemoteRequest,
   type GatewayMessage,
@@ -44,6 +44,11 @@ export const closeCodes = {
 /** Most time the upstream stays open after the phone leaves, for replies. */
 const drainMilliseconds = 15_000;
 
+/** Bound role negotiation and requests even when the Unix peer stops replying. */
+const roleMilliseconds = 5000;
+const requestMilliseconds = 15_000;
+const maximumPendingRequests = 32;
+
 /** Close a phone whose unsent backlog exceeds this many bytes. */
 const maximumBufferedBytes = 16 * 1024 * 1024;
 
@@ -60,6 +65,7 @@ type Reply = Extract<GatewayMessage, { type: 'result' | 'error' }>;
 
 interface PendingRequest {
   request: RemoteRequest;
+  timer: ReturnType<typeof setTimeout>;
   finish(reply: Reply): void;
 }
 
@@ -71,6 +77,8 @@ export interface RelayOptions {
   receipts: ReceiptBook;
   /** Remember that this device may fetch a session's screenshot. */
   allowScreenshot(deviceId: string, sessionId: string): void;
+  /** The gateway retains draining relays until their upstream is really closed. */
+  onClosed(): void;
   log(message: string): void;
 }
 
@@ -82,6 +90,11 @@ export class Relay {
   private ready = false;
   /** Upstream IDs accepted before the listener confirmed the remote role. */
   private readonly queued: string[] = [];
+  private readonly initialEvents: Record<string, unknown>[] = [];
+  private initialEventCharacters = 0;
+  private readonly duplicateWaiters = new Set<() => void>();
+  private readonly roleTimer: ReturnType<typeof setTimeout>;
+  private terminated = false;
   private phoneOpen = true;
   private drainTimer?: ReturnType<typeof setTimeout>;
   private tokens = requestBurst;
@@ -93,6 +106,10 @@ export class Relay {
   ) {
     this.upstream = createConnection(options.controlSocket);
     this.upstream.setEncoding('utf8');
+    this.roleTimer = setTimeout(
+      () => this.terminate(closeCodes.engineUnavailable, 'Companion did not confirm remote access'),
+      roleMilliseconds,
+    );
 
     this.upstream.on('connect', () => {
       // Declare the role before anything else so this connection can never
@@ -109,7 +126,9 @@ export class Relay {
 
   /** Close both sides, for revocation or gateway shutdown. */
   terminate(code: number, reason: string): void {
+    this.terminated = true;
     this.phoneOpen = false;
+    clearTimeout(this.roleTimer);
     if (this.phone.readyState === this.phone.OPEN) {
       this.phone.close(code, reason);
     }
@@ -119,6 +138,9 @@ export class Relay {
   // ---- Phone side ---------------------------------------------------------
 
   private phoneMessage(data: unknown, isBinary: boolean): void {
+    if (this.terminated || !this.phoneOpen) {
+      return;
+    }
     if (isBinary) {
       this.sendPhone({ type: 'error', message: 'Expected a text message' });
       return;
@@ -171,7 +193,11 @@ export class Relay {
       return;
     }
     if (receipt.kind === 'pending') {
-      receipt.wait((settled) => reply({ ...settled, duplicate: true }));
+      const cancel = receipt.wait((settled) => {
+        this.duplicateWaiters.delete(cancel);
+        reply({ ...settled, duplicate: true });
+      });
+      this.duplicateWaiters.add(cancel);
       return;
     }
     if (receipt.kind === 'conflict') {
@@ -188,7 +214,7 @@ export class Relay {
         type: 'error',
         requestId: request.requestId,
         action: request.action,
-        message: 'Too many unfinished requests; wait for earlier ones',
+        message: 'Request receipt capacity reached; wait before sending another change',
       });
       return;
     }
@@ -202,8 +228,24 @@ export class Relay {
   }
 
   private forward(request: RemoteRequest, finish: (reply: Reply) => void): void {
+    if (this.pending.size >= maximumPendingRequests) {
+      finish({
+        type: 'error',
+        requestId: request.requestId,
+        action: request.action,
+        message: 'Too many unfinished requests; wait for earlier ones',
+      });
+      return;
+    }
+
     const upstreamId = `r${++this.nextUpstreamId}`;
-    this.pending.set(upstreamId, { request, finish });
+    // Do not merely expire a receipt: the underlying operation may still run.
+    // Closing upstream settles every outstanding mutation as uncertain instead.
+    const timer = setTimeout(
+      () => this.terminate(closeCodes.engineUnavailable, 'Companion did not answer in time'),
+      requestMilliseconds,
+    );
+    this.pending.set(upstreamId, { request, finish, timer });
 
     if (this.ready) {
       this.sendRequest(upstreamId, request);
@@ -248,6 +290,10 @@ export class Relay {
 
   private phoneClosed(): void {
     this.phoneOpen = false;
+    for (const cancel of this.duplicateWaiters) {
+      cancel();
+    }
+    this.duplicateWaiters.clear();
 
     if (this.pending.size === 0) {
       this.upstream.destroy();
@@ -286,11 +332,17 @@ export class Relay {
       } catch {
         continue;
       }
+      if (!message || typeof message !== 'object' || Array.isArray(message)) {
+        continue;
+      }
       this.upstreamMessage(message);
     }
   }
 
   private upstreamMessage(message: Record<string, unknown>): void {
+    if (this.terminated) {
+      return;
+    }
     const isReply = message.type === 'result' || message.type === 'error';
 
     if (isReply && message.requestId === 'role') {
@@ -304,12 +356,28 @@ export class Relay {
         return;
       }
       this.pending.delete(message.requestId);
+      clearTimeout(pending.timer);
       pending.finish(this.replyFor(pending.request, message));
       this.drainedIfDone();
       return;
     }
 
-    if (isReply || typeof message.type !== 'string' || desktopOnlyEvents.has(message.type)) {
+    if (isReply || typeof message.type !== 'string' || !remoteEvents.has(message.type)) {
+      return;
+    }
+
+    if (!this.ready) {
+      // The listener sends its snapshot immediately on connect, before role
+      // negotiation. Hold it locally until the boundary is confirmed.
+      this.initialEventCharacters += JSON.stringify(message).length;
+      if (
+        this.initialEvents.length >= 32 ||
+        this.initialEventCharacters > maximumUpstreamLineCharacters
+      ) {
+        this.terminate(closeCodes.engineUnavailable, 'Too much data before remote access');
+        return;
+      }
+      this.initialEvents.push(message);
       return;
     }
 
@@ -318,7 +386,8 @@ export class Relay {
   }
 
   private roleAnswered(message: Record<string, unknown>): void {
-    if (message.type !== 'result') {
+    clearTimeout(this.roleTimer);
+    if (message.type !== 'result' || message.result !== 'role-recorded') {
       // An older listener without the remote role would treat this phone as
       // a desktop panel. Refuse to relay rather than weaken that boundary.
       this.options.log(`Listener refused the remote role: ${String(message.message)}`);
@@ -327,6 +396,11 @@ export class Relay {
     }
 
     this.ready = true;
+
+    for (const event of this.initialEvents.splice(0)) {
+      this.upstreamMessage(event);
+    }
+    this.initialEventCharacters = 0;
 
     // Requests sent while the role was being declared keep their order.
     for (const upstreamId of this.queued.splice(0)) {
@@ -362,11 +436,13 @@ export class Relay {
   }
 
   private upstreamClosed(): void {
+    clearTimeout(this.roleTimer);
     clearTimeout(this.drainTimer);
 
     // Requests that never answered have an unknown outcome. Record that in
     // their receipts: a repeat must not execute them a second time.
     for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
       pending.finish({
         type: 'error',
         requestId: pending.request.requestId,
@@ -376,10 +452,13 @@ export class Relay {
       });
     }
     this.pending.clear();
+    this.initialEvents.length = 0;
+    this.queued.length = 0;
 
     if (this.phoneOpen) {
       this.terminate(closeCodes.engineUnavailable, 'Companion is not running');
     }
+    this.options.onClosed();
   }
 
   // ---- Rewriting ----------------------------------------------------------

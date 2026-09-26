@@ -424,9 +424,20 @@ export class AgentSessions implements InspectableModule {
     return () => this.listeners.delete(listener);
   }
 
-  start(frame: UserSensorFrame, signal: AbortSignal, profile: AgentProfile = 'coding'): string {
+  start(
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+    profile: AgentProfile = 'coding',
+    openInBackground = false,
+  ): string {
     return this.create(
-      { text: frame.utterance, screenshot: frame.screenshot, frameId: frame.id, profile },
+      {
+        text: frame.utterance,
+        screenshot: frame.screenshot,
+        frameId: frame.id,
+        profile,
+        openInBackground,
+      },
       signal,
     );
   }

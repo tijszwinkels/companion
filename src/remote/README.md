@@ -67,14 +67,17 @@ page a secure context.
   device token once; only its hash is stored in `devices.json`. The endpoint also
   has a global limit of 10 requests per minute. State lives in
   `~/companion/remote/` (0700; files 0600, atomic rename). The directory must
-  already be private if it exists.
+  already be private if it exists. CLI/gateway writes hold a shared Linux `flock`
+  through the complete transaction, preventing double redemption or revocation
+  being overwritten by a concurrent pair/revoke. Requires util-linux `flock`.
 - **Revocation.** `revoke` removes the hash; the gateway rechecks every 5 seconds
   and closes that device's live connections (close code 4403).
 - **Origins and hosts.** The WebSocket upgrade and pairing endpoint require an
   `Origin` in the exact allowlist; every request requires a `Host` matching an
   allowed origin. This blocks cross-site WebSocket hijacking and DNS rebinding.
-  A future iOS wrapper that loads bundled files must add its own origin (for
-  Capacitor, e.g. `capacitor://localhost`) explicitly.
+  Only HTTPS and loopback HTTP app origins are supported. Bundled wrapper origins
+  and cross-origin browser clients need a separate CORS/credential design; they
+  are not supported by adding a custom origin today.
 - **Actions.** Requests are validated field by field in
   [`protocol.ts`](protocol.ts); unknown actions/fields are refused before reaching
   the listener. Desktop-bound actions (paste, typed Activity submission with a
@@ -92,7 +95,10 @@ page a secure context.
   the phone shows only the current run's Activity.
 - **Limits.** 4 phones, 8 unauthenticated sockets, 32 KiB messages, 30-request
   bursts at 10/s per phone, 16 MiB unsent backlog before disconnecting a stalled
-  phone. Compression is disabled.
+  phone. A relay admits at most 32 pending requests, waits at most 5 seconds for
+  remote-role confirmation and 15 seconds for a request reply. Draining relays
+  continue counting toward capacity and remain subject to revocation. Malformed
+  WebSocket frames disconnect only that client. Compression is disabled.
 
 Credential storage: the web app keeps the device token in `localStorage` for its
 origin. That is readable by any script running on that origin, which the CSP limits
@@ -104,10 +110,16 @@ unlocks the phone and opens the app can use Companion; revoke a lost phone.
 Phone messages are `{"type":"request","requestId":"…","action":"…",…}`; replies
 echo `requestId`. Listener events arrive as `{"type":"engine","message":{…}}`.
 Desktop-selection events (`agent-actions`, `agent-draft`, `agent-select`) are not
-relayed; the phone uses `remote-agent-actions` for its own selection.
+relayed; the phone uses `remote-agent-actions` for its own selection. Only the
+declared remote event set is forwarded, and initial snapshots stay at the gateway
+until the listener confirms the remote role. Reopen and Activity-based starts
+open in the background on the desktop, just like typed phone starts. Activity-based
+starts reuse an existing saved screenshot; they do not capture a new one.
 
 State-changing requests keep a **receipt per device for 10 minutes** (512 max,
-memory only). Repeating the same `requestId` with identical arguments returns the
+memory only). At capacity new mutations are refused until receipts expire;
+unexpired outcomes are never evicted to admit new work. Pending duplicate waiters
+are bounded and removed on disconnect. Repeating the same `requestId` with identical arguments returns the
 original reply with `duplicate: true`, or waits for it; different arguments are
 refused. If the phone disconnects mid-request, the gateway keeps that upstream
 socket open up to 15 seconds so the receipt records the real outcome. If the

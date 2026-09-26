@@ -360,6 +360,12 @@ test('unsafe network configurations are refused before binding', () => {
     () => checkGatewayOptions({ ...base, host: '0.0.0.0', tls: { cert: 'x', key: 'y' } }),
     /specific address/,
   );
+  for (const host of ['0', '::0', '0:0:0:0:0:0:0:0', '::ffff:0.0.0.0']) {
+    assert.throws(
+      () => checkGatewayOptions({ ...base, host, tls: { cert: 'x', key: 'y' } }),
+      /literal IP|specific address/,
+    );
+  }
   assert.throws(
     () =>
       checkGatewayOptions({
@@ -378,6 +384,12 @@ test('unsafe network configurations are refused before binding', () => {
     () => checkGatewayOptions({ ...base, host: '127.0.0.1', origins: ['http://127.0.0.1:1/'] }),
     /exactly scheme/,
   );
+  for (const origin of ['ftp://desk.example', 'ws://desk.example', 'wss://desk.example']) {
+    assert.throws(
+      () => checkGatewayOptions({ ...base, host: '127.0.0.1', origins: [origin] }),
+      /Origins must use/,
+    );
+  }
 });
 
 test('TLS mode serves the socket over wss with a supplied certificate', async (context) => {

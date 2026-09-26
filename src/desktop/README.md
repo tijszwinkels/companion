@@ -845,6 +845,10 @@ For a remote connection:
   starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
   the ordinary tab/concurrency limits, opens in the background on desktop panels,
   and returns `{outcome: "started", id}`. Desktop clients cannot use this action.
+- `start-history-agent` reuses the selected utterance's saved screenshot and opens
+  the conversation in the desktop background. `reopen-agent` also suppresses
+  desktop reveal. Neither path changes desktop dictation selection or captures
+  a new screenshot.
 
 Every result/error envelope now echoes a string `requestId` of at most 128
 characters when the request carried one, for correlation of concurrent replies.

@@ -16,7 +16,7 @@ import type { GatewayMessage } from './protocol.ts';
 
 export const receiptLifetimeMilliseconds = 10 * 60 * 1000;
 
-/** Bound memory per device; the oldest settled receipts are dropped first. */
+/** Refuse admission at capacity; never discard still-valid replay protection. */
 const maximumReceiptsPerDevice = 512;
 
 type Reply = Extract<GatewayMessage, { type: 'result' | 'error' }>;
@@ -31,7 +31,7 @@ interface Receipt {
 export type ReceiptLookup =
   | { kind: 'new'; settle(reply: Reply): void }
   | { kind: 'replay'; reply: Reply }
-  | { kind: 'pending'; wait(listener: (reply: Reply) => void): void }
+  | { kind: 'pending'; wait(listener: (reply: Reply) => void): () => void }
   | { kind: 'conflict' }
   | { kind: 'full' };
 
@@ -56,13 +56,21 @@ export class ReceiptBook {
       if (existing.reply) {
         return { kind: 'replay', reply: existing.reply };
       }
+      if (existing.waiters.length >= 32) {
+        return { kind: 'full' };
+      }
       return {
         kind: 'pending',
-        wait: (listener) => existing.waiters.push(listener),
+        wait: (listener) => {
+          existing.waiters.push(listener);
+          return () => {
+            existing.waiters = existing.waiters.filter((waiter) => waiter !== listener);
+          };
+        },
       };
     }
 
-    if (receipts.size >= maximumReceiptsPerDevice && !this.dropOldestSettled(receipts)) {
+    if (receipts.size >= maximumReceiptsPerDevice) {
       return { kind: 'full' };
     }
 
@@ -113,14 +121,14 @@ export class ReceiptBook {
     }
   }
 
-  private dropOldestSettled(receipts: Map<string, Receipt>): boolean {
-    for (const [id, receipt] of receipts) {
-      if (receipt.reply) {
-        receipts.delete(id);
-        return true;
+  /** Periodic collection also covers devices that never reconnect. */
+  prune(currentDevices: ReadonlySet<string>): void {
+    for (const [id, receipts] of this.devices) {
+      this.expire(receipts);
+      if (!currentDevices.has(id) || receipts.size === 0) {
+        this.devices.delete(id);
       }
     }
-    return false;
   }
 }
 

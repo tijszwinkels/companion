@@ -326,3 +326,30 @@ test('every reply echoes a bounded request ID', async (context) => {
   const reply = await remote.reply('toggle-sounds');
   assert.equal(reply.requestId, undefined);
 });
+
+test('phone history starts and reopens never request desktop reveal', async (context) => {
+  const { desktop, remote, declareRemote, sessions, runs } = await fixture(context);
+  await declareRemote();
+
+  const utteranceId = desktop.seed();
+  await desktop.runtime.activity.screenshotCaptured?.(frame.id, frame.screenshot);
+  desktop.runtime.activity.outcome?.(frame.id, 'ignored');
+  desktop.runtime.activity.finished?.(frame.id);
+  remote.send({ action: 'start-history-agent', id: utteranceId, requestId: 'history' });
+  const started = await remote.reply('start-history-agent', 'history');
+  assert.equal(started.result, 'started', JSON.stringify(started));
+  await waitFor(() => runs.length === 1);
+  const session = sessions.snapshot()[0];
+  assert.equal(session.openInBackground, true);
+  assert.equal(session.messages[0].screenshot, true, 'uses the existing synthetic saved frame');
+
+  runs[0].finish();
+  await waitFor(() => sessions.interaction(session.id).agentAcceptsFollowUp);
+  await sessions.remove(session.id);
+  remote.send({ action: 'reopen-agent', id: session.id, requestId: 'reopen' });
+  assert.equal((await remote.reply('reopen-agent', 'reopen')).result, 'reopened');
+  await waitFor(() => desktop.messages.some((message) => message.type === 'agent-restored'));
+  const restored = desktop.messages.find((message) => message.type === 'agent-restored')!;
+  assert.equal((restored as Message).reveal, false);
+  assert.equal(sessions.snapshot()[0].openInBackground, true);
+});

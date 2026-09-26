@@ -24,7 +24,7 @@ Nothing here has been validated on a real iPhone, in Safari, or over Tailscale.
 | Recent history snapshot (latest 100, earlier runs)  | Gap          | Only this run's history is shown.                                             |
 | Card: Copy                                          | Implemented  | Phone clipboard.                                                              |
 | Card: Insert into application                       | Desktop-only | Pastes into a desktop window.                                                 |
-| Card: New coding session from utterance             | Implemented  | Uses the saved screenshot on the computer; opens on the desktop as there.     |
+| Card: New coding session from utterance             | Implemented  | Uses the saved screenshot on the computer; opens in the desktop background.   |
 | Card: Label correct / incorrect / actual intent     | Implemented  | Browser: label correct.                                                       |
 | Card: Delete utterance and recordings               | Implemented  | Only when the listener advertises deletion.                                   |
 | Type an utterance to the focused application        | Desktop-only | Needs a compositor window target. Phone substitute: start a conversation.     |
@@ -59,10 +59,10 @@ Nothing here has been validated on a real iPhone, in Safari, or over Tailscale.
 
 ## Phone-only
 
-| Capability                                                                           | Status                                                      |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| Pairing with one-time code; sign out; revocation handling                            | Implemented (browser, gateway)                              |
-| Connection, reconnecting, listener unavailable, offline states with retry            | Implemented (browser reconnect, gateway 4503)               |
-| No automatic resend of unconfirmed requests; server receipts                         | Implemented (gateway)                                       |
-| Light/dark themes, safe areas, keyboard-aware layout                                 | Implemented; safe area and keyboard not verifiable headless |
-| Push notifications, background connection, share sheet, haptics, on-phone microphone | Gap (need a native wrapper and design)                      |
+| Capability                                                                           | Status                                                        |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| Pairing with one-time code; sign out; revocation handling                            | Implemented (browser, gateway)                                |
+| Connection, reconnecting, listener unavailable, offline states with retry            | Implemented (browser reconnect/offline/re-pair, gateway 4503) |
+| No automatic resend of unconfirmed requests; server receipts                         | Implemented (gateway)                                         |
+| Light/dark themes, safe areas, keyboard-aware layout                                 | Implemented; safe area and keyboard not verifiable headless   |
+| Push notifications, background connection, share sheet, haptics, on-phone microphone | Gap (need a native wrapper and design)                        |

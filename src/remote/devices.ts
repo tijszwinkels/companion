@@ -9,14 +9,16 @@
  * Both are written 0600 by atomic rename. The `companion-remote pair` command
  * and a running gateway share these files; the gateway rereads them for each
  * decision, so a code created or a device revoked from another terminal takes
- * effect without restarting the gateway. Writes within one process are
- * serialized; the CLI and gateway can interleave, which at worst consumes a
- * pairing attempt twice — never grants access without the code.
+ * effect without restarting the gateway. Every read-modify-write transaction
+ * holds a kernel lock shared by CLI and gateway processes, including consuming
+ * a pairing code and issuing its token. Reads see an atomic old or new file.
  */
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+import { withStateLock } from './state-lock.ts';
 
 /** How long a newly printed pairing code remains valid. */
 export const pairingLifetimeMilliseconds = 10 * 60 * 1000;
@@ -128,18 +130,29 @@ export class DeviceStore {
     }
   }
 
-  /** Serialize writers in this process so read-modify-write cycles never overlap. */
+  /** Queue local writers, then lock against every other gateway/CLI process. */
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.writes.then(operation, operation);
+    const locked = async () => {
+      await this.prepare();
+      return withStateLock(join(this.directory, 'state.lock'), operation);
+    };
+    const result = this.writes.then(locked, locked);
     this.writes = result.catch(() => {});
     return result;
   }
 
   private async writePrivate(path: string, value: unknown): Promise<void> {
     const temporary = `${path}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-    await chmod(temporary, 0o600);
-    await rename(temporary, path);
+    try {
+      await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', {
+        mode: 0o600,
+        flag: 'wx',
+      });
+      await chmod(temporary, 0o600);
+      await rename(temporary, path);
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
 
   async devices(): Promise<PairedDevice[]> {

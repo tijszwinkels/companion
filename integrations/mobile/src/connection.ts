@@ -109,6 +109,7 @@ export class Connection {
   private readonly pending = new Map<string, Pending>();
   private attempt = 0;
   private retryTimer?: ReturnType<typeof setTimeout>;
+  private connectTimer?: ReturnType<typeof setTimeout>;
   private stopped = false;
 
   // A paired phone starts as "connecting" so it never flashes the pairing form.
@@ -183,6 +184,8 @@ export class Connection {
       server,
     };
     writeCredential(this.credential);
+    this.retireSocket();
+    this.stopped = false;
     this.attempt = 0;
     this.open();
   }
@@ -193,7 +196,7 @@ export class Connection {
     writeCredential(undefined);
     this.stopped = true;
     clearTimeout(this.retryTimer);
-    this.socket?.close(1000, 'Signed out');
+    this.retireSocket();
     this.setState({ status: 'unpaired', message: 'This phone was signed out.', retryAt: 0 });
   }
 
@@ -262,11 +265,24 @@ export class Connection {
 
     const socket = new WebSocket(url.href);
     this.socket = socket;
+    this.connectTimer = setTimeout(() => {
+      if (this.socket !== socket) {
+        return;
+      }
+      this.retireSocket();
+      this.scheduleRetry('reconnecting', 'Connection timed out. Retrying…');
+    }, 10_000);
 
     socket.addEventListener('open', () => {
-      socket.send(JSON.stringify({ type: 'auth', token: this.credential?.token ?? '' }));
+      if (this.socket === socket) {
+        socket.send(JSON.stringify({ type: 'auth', token: this.credential?.token ?? '' }));
+      }
     });
-    socket.addEventListener('message', (event) => this.message(event.data));
+    socket.addEventListener('message', (event) => {
+      if (this.socket === socket) {
+        this.message(event.data);
+      }
+    });
     socket.addEventListener('close', (event) => this.closed(socket, event.code, event.reason));
   }
 
@@ -279,6 +295,7 @@ export class Connection {
     }
 
     if (message.type === 'authenticated') {
+      clearTimeout(this.connectTimer);
       this.attempt = 0;
       this.setState({ status: 'online', message: '', retryAt: 0 });
       this.onOnline();
@@ -313,17 +330,9 @@ export class Connection {
       return;
     }
     this.socket = undefined;
+    clearTimeout(this.connectTimer);
 
-    // Replies that did not arrive have an unknown outcome. Never resend.
-    for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer);
-      pending.reject(
-        new UncertainOutcome(
-          'The connection dropped before Companion answered. Check the result before retrying.',
-        ),
-      );
-      this.pending.delete(id);
-    }
+    this.rejectPending();
 
     if (this.stopped) {
       return;
@@ -343,6 +352,11 @@ export class Connection {
       return;
     }
 
+    if (!navigator.onLine) {
+      this.networkLost();
+      return;
+    }
+
     if (code === closeCodes.engineUnavailable) {
       this.scheduleRetry(
         'engine-unavailable',
@@ -359,8 +373,31 @@ export class Connection {
     this.scheduleRetry('reconnecting', 'Connection lost. Reconnecting…');
   }
 
+  private rejectPending(): void {
+    // Replies that did not arrive have an unknown outcome. Never resend.
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(
+        new UncertainOutcome(
+          'The connection dropped before Companion answered. Check the result before retrying.',
+        ),
+      );
+      this.pending.delete(id);
+    }
+  }
+
+  /** Retired sockets may still deliver close/message events; identity guards ignore them. */
+  private retireSocket(): void {
+    const socket = this.socket;
+    this.socket = undefined;
+    clearTimeout(this.connectTimer);
+    this.rejectPending();
+    socket?.close(1000, 'Reconnecting or signed out');
+  }
+
   private networkLost(): void {
     clearTimeout(this.retryTimer);
+    this.retireSocket();
     if (this.credential) {
       this.setState({ status: 'offline', message: 'This phone is offline.', retryAt: 0 });
     }
@@ -384,9 +421,10 @@ export class Connection {
     if (!this.credential || this.stopped) {
       return;
     }
-    if (this.socket && this.socket.readyState <= WebSocket.OPEN) {
-      return;
-    }
+    // Browsers can retain OPEN on a suspended, dead connection. A foreground
+    // or network transition deliberately obtains a fresh snapshot and selection.
+    // Pending mutations become uncertain and are never resent.
+    this.retireSocket();
     this.open();
   }
 }

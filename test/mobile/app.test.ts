@@ -323,3 +323,59 @@ test('a revoked phone returns to pairing with an explanation', { skip }, async (
     'the revoked credential is forgotten',
   );
 });
+
+test('sign out then pair again connects without a page reload', { skip }, async (context) => {
+  const { fixture, browser } = await setup(context);
+  const page = await pairedPhone(fixture, browser);
+  await page.tap('.tabbar button:nth-child(3)');
+  await page.evaluate(
+    `Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === 'Sign out…').click()`,
+  );
+  await page.evaluate(
+    `Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === 'Sign out').click()`,
+  );
+  await page.waitFor(`document.querySelector('#code')`);
+  const { code } = await fixture.devices.createPairingCode();
+  await page.tap('#code');
+  await page.type(code);
+  await page.tap('button[type=submit]');
+  await page.waitFor(`document.querySelector('.tabbar') && !document.querySelector('.banner')`);
+  await page.tap('.tabbar button:nth-child(2)');
+  await page.tap('.mic');
+  await waitFor(() => fixture.desktop.pause.paused);
+  assert.deepEqual(page.errors, []);
+});
+
+test(
+  'network loss retires an OPEN socket and reconnects with the draft intact',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Network fixture' }, signal());
+    const page = await pairedPhone(fixture, browser);
+    await page.waitFor(`document.querySelector('.conversation-card')`);
+    await page.tap('.conversation-card');
+    await page.tap('#composer');
+    await page.type('Keep this unsent draft');
+
+    // Reproduce browsers that report offline while WebSocket.readyState is
+    // still OPEN. Synthetic browser events; no machine networking is changed.
+    await page.evaluate(`window.dispatchEvent(new Event('offline'))`);
+    await page.waitFor(`document.querySelector('.banner')?.textContent.includes('offline')`);
+    await page.evaluate(`window.dispatchEvent(new Event('online'))`);
+    await page.waitFor(`!document.querySelector('.banner')`);
+    assert.equal(
+      await page.evaluate(`document.querySelector('#composer').value`),
+      'Keep this unsent draft',
+    );
+    await page.tap('.send:not(.stop)');
+    await page.waitFor(`document.querySelector('#composer').value === ''`);
+    assert.equal(
+      fixture.sessions
+        .snapshot()[0]
+        .messages.filter((message) => message.text === 'Keep this unsent draft').length,
+      1,
+    );
+    assert.deepEqual(page.errors, []);
+  },
+);

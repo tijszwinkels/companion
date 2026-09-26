@@ -33,6 +33,7 @@ import {
 } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import type { Server } from 'node:http';
+import { isIP } from 'node:net';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -99,7 +100,16 @@ export function checkGatewayOptions(options: GatewayOptions): void {
         '(for example from `tailscale cert`), or bind 127.0.0.1 behind `tailscale serve`.',
     );
   }
-  if (options.host === '0.0.0.0' || options.host === '::') {
+  if (options.host !== 'localhost' && !isIP(options.host)) {
+    throw Error('Bind a literal IP address or localhost, not a hostname or numeric alias');
+  }
+  const normalizedHost =
+    isIP(options.host) === 6 ? new URL(`http://[${options.host}]`).hostname : options.host;
+  if (
+    normalizedHost === '0.0.0.0' ||
+    normalizedHost === '[::]' ||
+    normalizedHost === '[::ffff:0:0]'
+  ) {
     throw Error('Bind a specific address (such as the Tailscale IP), not every interface');
   }
   if (options.origins.length === 0) {
@@ -109,6 +119,9 @@ export function checkGatewayOptions(options: GatewayOptions): void {
     const parsed = new URL(origin);
     if (parsed.origin !== origin) {
       throw Error(`Origin must be exactly scheme://host[:port]: ${origin}`);
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw Error(`Origins must use https or loopback http: ${origin}`);
     }
     if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname.replace(/^\[|\]$/g, ''))) {
       throw Error(`Non-loopback origins must use https: ${origin}`);
@@ -315,6 +328,9 @@ export class Gateway {
     let body: { code?: unknown; name?: unknown };
     try {
       body = JSON.parse(await readBody(request, 2048));
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw Error('Expected an object');
+      }
     } catch {
       this.sendJson(response, 400, { error: 'Invalid request' });
       return;
@@ -428,7 +444,13 @@ export class Gateway {
       socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
 
-    const url = new URL(request.url ?? '/', 'http://gateway.invalid');
+    let url: URL;
+    try {
+      url = new URL(request.url ?? '/', 'http://gateway.invalid');
+    } catch {
+      reject(400, 'Bad Request');
+      return;
+    }
     if (url.pathname !== '/api/socket') {
       reject(404, 'Not Found');
       return;
@@ -441,7 +463,10 @@ export class Gateway {
       reject(403, 'Forbidden');
       return;
     }
-    if (this.unauthenticated >= maximumUnauthenticated) {
+    if (
+      this.unauthenticated >= maximumUnauthenticated ||
+      this.sockets.clients.size >= maximumPhones + maximumUnauthenticated
+    ) {
       reject(503, 'Service Unavailable');
       return;
     }
@@ -451,6 +476,9 @@ export class Gateway {
 
   /** Wait for the first message: it must carry a valid device token. */
   private authenticate(phone: WebSocket): void {
+    // Protocol errors (oversized payload, invalid UTF-8, bad frame) are emitted
+    // on the WebSocket even before authentication. Contain them to this client.
+    phone.on('error', () => phone.terminate());
     this.unauthenticated++;
     let settled = false;
 
@@ -468,11 +496,11 @@ export class Gateway {
     }, authenticationMilliseconds);
 
     phone.once('close', finish);
-    phone.once('message', async (data) => {
+    phone.once('message', async (data, isBinary) => {
       let token: unknown;
       try {
         const message = JSON.parse(String(data));
-        token = message?.type === 'auth' ? message.token : undefined;
+        token = !isBinary && message?.type === 'auth' ? message.token : undefined;
       } catch {
         token = undefined;
       }
@@ -519,32 +547,36 @@ export class Gateway {
         }
         allowed.add(sessionId);
       },
+      onClosed: () => this.relays.delete(relay),
       log: this.options.log,
     });
 
     this.relays.set(relay, device.id);
-    phone.once('close', () => this.relays.delete(relay));
   }
 
   /** Close live connections whose device has since been revoked. */
   private async closeRevoked(): Promise<void> {
-    if (this.relays.size === 0) {
-      return;
-    }
-
     let current: Set<string>;
     try {
       current = new Set((await this.devices.devices()).map((device) => device.id));
     } catch (error) {
       this.options.log(`Device store error: ${String(error)}`);
+      // Continuing authenticated control without a readable authorization
+      // source would turn a storage failure into indefinite access.
+      for (const relay of this.relays.keys()) {
+        relay.terminate(closeCodes.engineUnavailable, 'Device authorization is unavailable');
+      }
       return;
     }
 
     for (const [relay, deviceId] of this.relays) {
       if (!current.has(deviceId)) {
         relay.terminate(closeCodes.revoked, 'Device revoked');
-        this.relays.delete(relay);
-        this.receipts.forget(deviceId);
+      }
+    }
+    this.receipts.prune(current);
+    for (const deviceId of this.screenshots.keys()) {
+      if (!current.has(deviceId)) {
         this.screenshots.delete(deviceId);
       }
     }

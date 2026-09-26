@@ -202,6 +202,20 @@ export const desktopOnlyEvents: ReadonlySet<string> = new Set([
   'agent-select',
 ]);
 
+/** Explicit event boundary: new desktop events are private until reviewed. */
+export const remoteEvents: ReadonlySet<string> = new Set([
+  'state',
+  'agent-session',
+  'agent-removed',
+  'agent-restored',
+  'agent-order',
+  'agent-history',
+  'agent-turn-completed',
+  'remote-agent-actions',
+  'activity-entry',
+  'history-deleted',
+]);
+
 // ---------------------------------------------------------------------------
 // Validation. Each action lists its exact fields and their types. Unknown
 // fields are refused rather than silently forwarded.
