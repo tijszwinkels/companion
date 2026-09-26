@@ -66,6 +66,37 @@ servers omit this optional field; adapters should treat absence as false.
 It is a view limit, not a database retention policy. Snapshot the rows when
 opening a picker so new utterances cannot displace its selected item.
 
+### State stream, conversation sync and backpressure
+
+The **first** `state` message on every connection is complete and authoritative,
+including `sessions`, `sessionOrderRevision` and `previousSessions`. A client that
+applies the ordered conversation events (`agent-session`, `agent-order`,
+`agent-history`, `agent-removed`, `agent-restored`) to its retained conversations
+declares so with `incrementalSessions: true` in `panel-state`. From then on, for
+the rest of that connection, routine `state` messages **omit** those three fields:
+absence means "unchanged since the connect snapshot and the events after it".
+Activity/status fields (`speaking`, `processing`, `history`, `intents`,
+`agentActions`, …) are still complete in every `state`. Speech, processing,
+cleanup and outcome updates therefore no longer resend every open transcript.
+Reconnects hydrate from a full snapshot again. Treat absent conversation fields
+in the first `state` after connecting as empty, as for older listeners without
+sessions. Adapters that do not send the field (older installed shells) keep
+receiving complete snapshots. An older listener ignores the field and always
+sends complete snapshots, which new clients apply as before.
+
+The listener has one ordered queue per connection. A line is written directly
+while the socket is idle; after `write` reports backpressure, later lines wait
+for `drain`. Events, replies, errors, `agent-select` and `agent-draft` keep their
+order and are never dropped individually. An unwritten `state` is superseded by
+the next one: the newer snapshot is appended after the events it already
+reflects, so a client never receives a snapshot older than a preceding event.
+One slow client does not delay others. Bounds: a connection whose unwritten
+ordered backlog exceeds 16 MiB, or whose socket does not drain for 30 seconds,
+is closed; the UI reconnects and hydrates. A single message larger than the
+backlog bound (such as a large connect snapshot) is still written when the
+connection is idle. Queued lines belong to their connection and are never
+replayed to a later one.
+
 Commands:
 
 ```json
@@ -82,7 +113,7 @@ Commands:
 {"action":"choose-agent","id":"question-uuid","revision":"choice-set-uuid","index":0}
 {"action":"stop-agent-run","id":"question-uuid","runId":"running-turn-uuid"}
 {"action":"composer-focus","id":"question-uuid"}
-{"action":"panel-state","id":"question-uuid","composerFocused":true}
+{"action":"panel-state","id":"question-uuid","composerFocused":true,"incrementalSessions":true}
 {"action":"agent-draft-result","requestId":"draft-request-uuid","outcome":"inserted","reason":""}
 {"action":"activity-history","sessionId":"listener-run-uuid","after":0,"through":1}
 {"action":"label-history","id":"utterance-uuid","correct":true}
@@ -568,8 +599,9 @@ Session tabs scroll independently. On surfaces shorter than 305 theme-scaled
 pixels, the whole rail can also scroll to keep its controls reachable without
 overlap.
 
-The optional `sessions` array in each state snapshot contains complete chat
-state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
+The optional `sessions` array in the connect state snapshot (and in every state
+snapshot for a client that did not declare `incrementalSessions`) contains
+complete chat state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
 `updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,
 `completed`, `cancelled`, or `error`.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
@@ -583,7 +615,9 @@ Between snapshots, `{"type":"agent-session","session":{...}}` carries current
 session metadata and **only changed messages**. Upsert by session/message ID in
 arrival order; do not replace the entire conversation with this partial array.
 Streaming updates are coalesced every 40 ms; a terminal status flushes pending
-messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
+messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab. The
+listener never publishes `agent-session` for a conversation that is no longer
+open, so a late flush cannot add a closed tab back to an incremental client.
 Session metadata may carry `harness: "claude-code"` with
 `claudeCode: {model, effort}`; absence means a Pi conversation. `claudeCode.model`
 is the next turn's model. The panel and standalone window then list the
@@ -662,7 +696,7 @@ New clients also include `visible` and `navigationToken` in `panel-state`.
 `visible: true` covers Activity and Previous as well as conversations; their `id`
 stays empty. Tokens are unique to the UI instance and change when selection,
 Previous visibility, panel visibility or connection changes. Token-only reports
-update routing without sending a full snapshot. Selection or navigation
+update routing without sending a state snapshot. Selection or navigation
 availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
 ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
@@ -676,8 +710,10 @@ and order revision. It sends only that connection
 `{"type":"agent-select","id":"...","token":"...","orderRevision":"..."}`.
 The UI rechecks visibility, token, revision and membership before selecting the
 conversation, preventing even a socket-delayed command from changing a newer
-selection. Successful dispatch records `selected`; this indicates delivery to
-the owning UI, not a separate UI acknowledgement. No panel is opened by a hidden
+selection. Successful dispatch records `selected`; this indicates admission to the
+owning connection's ordered stream, not a separate UI acknowledgement. If that
+connection is closed before the line is written, the command is lost with it and
+the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
 target, and a disconnected client cannot retain navigation ownership.
 
 The optional `previousSessions` snapshot array and
@@ -714,6 +750,11 @@ a hidden panel, Activity, or another non-conversation page. Send changes to eith
 field and resend after connecting; the response is `panel-recorded`. The owning
 connection's loss clears this state. Unknown session IDs and a focused empty ID
 are rejected. These reports also update the keyboard delivery focus guard.
+Optional `incrementalSessions: true` is a sticky per-connection capability (see
+[state stream](#state-stream-conversation-sync-and-backpressure)); a non-boolean
+value is rejected. A shell observer while the native window owns the panel sends
+it in a neutral report (`id: ""`, no `visible`/`navigationToken`/`draftHost`),
+which never changes another connection's selection, focus or navigation.
 
 At speech end, the sensor frame captures the session ID, focus, and a local
 generation. `CONTINUE_OPEN_AGENT_CONVERSATION` is available whenever an agent

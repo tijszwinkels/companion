@@ -60,7 +60,22 @@ QtObject {
     root.controlRequested({action: "claude-models"})
   }
 
+  // The first state message after (re)connecting is authoritative for the
+  // conversation fields, including an older listener that omits them. Later
+  // state messages may omit them after this client declares
+  // `incrementalSessions` in panel-state; absence then means unchanged.
+  property bool hydrated: false
+
+  function applyState(message) {
+    if (message.sessions === undefined && root.hydrated) return
+    root.replace(message.sessions || [])
+    root.orderRevision = message.sessionOrderRevision || ""
+    root.previousSessions = message.previousSessions || []
+    root.hydrated = true
+  }
+
   function disconnectControls() {
+    root.hydrated = false
     root.controlsAvailable = false
     root.modelsLoading = false
     root.modelsRequested = false

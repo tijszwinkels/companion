@@ -73,7 +73,7 @@ Item {
       composerFocused: id !== "" && root.composerFocusId === id,
       keyboardFocused: root.keyboardFocused,
       visible: root.panelVisible, navigationToken: sessions.navigationToken,
-      draftHost: true})
+      draftHost: true, incrementalSessions: true})
   }
 
   function answerDraft(requestId, result) {
@@ -166,10 +166,8 @@ Item {
       if (JSON.stringify(cleanup) !== JSON.stringify(root.transcriptionCleanup)) root.transcriptionCleanup = cleanup
       const actions = message.agentActions || {}
       if (JSON.stringify(actions) !== JSON.stringify(root.agentActions)) root.agentActions = actions
-      sessions.replace(message.sessions || [])
-      sessions.orderRevision = message.sessionOrderRevision || ""
+      sessions.applyState(message)
       sessions.controlsAvailable = message.sessionControlsAvailable === true
-      sessions.previousSessions = message.previousSessions || []
       root.online = message.ready === true
       if (root.online) activity.observe(message.activitySessionId, message.activityHistoryCount)
     } else if (message.type === "agent-session") {

@@ -14,7 +14,7 @@ import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
 import { UtteranceHistory, type HistoryEntry } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
-import { DesktopServer } from './server.ts';
+import { DesktopServer, type SnapshotOptions } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
@@ -140,7 +140,7 @@ export class DesktopRuntime {
     this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview, run);
     this.server = new DesktopServer(
       options.socket,
-      () => this.snapshot(),
+      (snapshotOptions) => this.snapshot(snapshotOptions),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
         this.draftHosts.delete(clientId);
@@ -178,6 +178,13 @@ export class DesktopRuntime {
       }
       if (event.type === 'agent-removed' && event.id === this.panelSession) {
         this.setPanelState('', false, this.panelClient);
+      }
+      // Clients upsert `agent-session` by ID, so a late flush for a closed
+      // conversation (for example a rolled-back model choice) would add its
+      // tab back. Incremental clients no longer receive the periodic full
+      // snapshot that used to remove it again, so never publish that delta.
+      if (event.type === 'agent-session' && !options.agents?.has(event.session.id)) {
+        return;
       }
       this.server.publish(event);
       this.publishAgentActions();
@@ -436,7 +443,22 @@ export class DesktopRuntime {
     this.server.broadcast();
   }
 
-  private snapshot(): object {
+  /**
+   * The UI state message body. With `sessions: false` (a connection that keeps
+   * conversations from incremental agent events), the conversation fields are
+   * omitted rather than resent: absence means "unchanged since the connect
+   * snapshot and the events that followed it".
+   */
+  private snapshot(options: SnapshotOptions): object {
+    const agents = this.options.agents;
+    const conversations = options.sessions
+      ? {
+          sessions: agents?.snapshot() ?? [],
+          sessionOrderRevision: agents?.order().revision ?? '',
+          previousSessions: agents?.previousSnapshot() ?? [],
+        }
+      : {};
+
     return {
       protocol: 1,
       ready: this.ready,
@@ -452,10 +474,8 @@ export class DesktopRuntime {
       activityHistoryCount: this.activityHistory.count,
       historyDeletionAvailable: !this.options.preview,
       textInputAvailable: Boolean(this.pipeline),
-      sessions: this.options.agents?.snapshot() ?? [],
-      sessionOrderRevision: this.options.agents?.order().revision ?? '',
-      sessionControlsAvailable: Boolean(this.options.agents),
-      previousSessions: this.options.agents?.previousSnapshot() ?? [],
+      ...conversations,
+      sessionControlsAvailable: Boolean(agents),
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
       // Null hides the switch (no cleanup support in this listener).
       transcriptionCleanup: this.options.cleanup ? { enabled: this.options.cleanup.enabled } : null,
@@ -945,10 +965,18 @@ export class DesktopRuntime {
           (typeof request.navigationToken !== 'string' || request.navigationToken.length > 128)) ||
         typeof request.composerFocused !== 'boolean' ||
         (request.keyboardFocused !== undefined && typeof request.keyboardFocused !== 'boolean') ||
+        (request.incrementalSessions !== undefined &&
+          typeof request.incrementalSessions !== 'boolean') ||
         (!request.id && request.composerFocused) ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
         throw Error('Expected a visible agent session id (or empty id) and composerFocused');
+      }
+      // Clients that apply agent-session/order/history/removed/restored events
+      // to retained conversations say so once; routine state messages to them
+      // then omit transcripts. Older adapters keep receiving full snapshots.
+      if (request.incrementalSessions === true) {
+        this.server.enableIncrementalSessions(clientId);
       }
       // New clients report Activity/Previous visibility too. Older adapters
       // keep their existing conversation behavior, without voice navigation.

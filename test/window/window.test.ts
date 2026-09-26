@@ -12,6 +12,7 @@ import test from 'node:test';
 import { defaultViewport, widgetDocument } from '../../src/widgets/document.ts';
 import { WidgetRegistry } from '../../src/widgets/registry.ts';
 import { WidgetService } from '../../src/widgets/service.ts';
+import { DesktopServer, type SnapshotOptions } from '../../src/desktop/server.ts';
 import type { WidgetAttachment } from '../../src/widgets/types.ts';
 
 const execute = promisify(execFile);
@@ -357,6 +358,115 @@ test('Qt window connects, hands off ownership, reconnects and accepts a single-i
   }
 });
 
+test('native UI stays connected through completion bursts with ~0.8 MB of conversations', async () => {
+  const setup = await fixture();
+  const backendPath = join(setup.directory, 'backend.sock');
+  const requests: any[] = [];
+  const disconnected: number[] = [];
+  let revision = 0;
+  const conversation = {
+    id: 'one',
+    title: 'Synthetic session',
+    status: 'idle',
+    messages: [
+      {
+        id: 'long',
+        kind: 'assistant',
+        text: 'Synthetic paragraph. '.repeat(37_700),
+        toolName: '',
+        input: '',
+        state: 'done',
+        screenshot: false,
+      },
+    ],
+  };
+  const server: DesktopServer = new DesktopServer(
+    backendPath,
+    (options: SnapshotOptions) => ({
+      protocol: 1,
+      ready: true,
+      revision,
+      speaking: revision % 2 === 1,
+      activitySessionId: 'test',
+      activityHistoryCount: 0,
+      sessionControlsAvailable: true,
+      ...(options.sessions ? { sessions: [conversation], sessionOrderRevision: 'order' } : {}),
+    }),
+    async (request: any, clientId) => {
+      requests.push(request);
+      // As the listener does: a declared capability is recorded per connection.
+      if (request.action === 'panel-state' && request.incrementalSessions === true) {
+        server.enableIncrementalSessions(clientId);
+      }
+      return 'recorded';
+    },
+    (clientId) => disconnected.push(clientId),
+  );
+  await server.start();
+  const child = spawn(join(build, 'companion-ui'), ['--socket', backendPath], {
+    env: setup.env,
+  });
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  let output = '';
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    output += chunk;
+  });
+  try {
+    await until(
+      () =>
+        requests.some(
+          (entry) =>
+            entry.action === 'panel-state' &&
+            entry.id === 'one' &&
+            entry.incrementalSessions === true,
+        ),
+      () => output,
+    );
+
+    // Five utterances of speaking/processing/intent/cleanup/outcome/finish
+    // broadcasts, separated by microtasks, with a streamed message between.
+    for (let utterance = 0; utterance < 5; utterance++) {
+      for (let update = 0; update < 6; update++) {
+        revision++;
+        server.broadcast();
+        await Promise.resolve();
+      }
+      server.publish({
+        type: 'agent-session',
+        session: {
+          ...conversation,
+          messages: [{ ...conversation.messages[0], id: `streamed-${utterance}`, text: 'Delta' }],
+        },
+      });
+    }
+
+    // The UI still has the conversation selected after session-less state:
+    // hiding and showing reports the retained selection on the same connection.
+    await delay(300);
+    const env = { ...setup.env };
+    await execute(join(build, 'companion-ui'), ['--command', 'hide'], { env, timeout: 5000 });
+    await until(
+      () => requests.at(-1)?.action === 'panel-state' && requests.at(-1)?.id === '',
+      () => output,
+    );
+    await execute(join(build, 'companion-ui'), ['--command', 'show'], { env, timeout: 5000 });
+    await until(
+      () => requests.at(-1)?.action === 'panel-state' && requests.at(-1)?.id === 'one',
+      () => output,
+    );
+    assert.deepEqual(disconnected, [], 'The native connection was never dropped');
+    assert.doesNotMatch(output, /ReferenceError|TypeError|Binding loop|Required property/);
+  } finally {
+    child.kill('SIGTERM');
+    await exited;
+    await server.close();
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
 test('portable client handles ordered replies and reconnects', async () => {
   const setup = await fixture();
   try {
@@ -369,7 +479,7 @@ test('portable client handles ordered replies and reconnects', async () => {
         killSignal: 'SIGKILL',
       },
     );
-    assert.match(result.stdout, /10 passed, 0 failed/);
+    assert.match(result.stdout, /11 passed, 0 failed/);
   } finally {
     await rm(setup.directory, { recursive: true, force: true });
   }

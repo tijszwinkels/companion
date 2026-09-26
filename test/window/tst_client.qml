@@ -71,7 +71,8 @@ TestCase {
     wait(0)
     backend.requests = []
     client.choose("a", "revision", 1)
-    compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true, visible: true, navigationToken: client.sessions.navigationToken, draftHost: true})
+    compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true, visible: true, navigationToken: client.sessions.navigationToken, draftHost: true,
+      incrementalSessions: true})
     compare(backend.requests[1], {action: "choose-agent", id: "a", revision: "revision", index: 1})
     backend.received({type: "result", action: "choose-agent"})
     compare(Array.from(choices.signalArguments[0]), ["a", "revision", 1, ""])
@@ -147,6 +148,61 @@ TestCase {
     compare(client.sessions.sessions.length, 2)
     compare(client.sessions.conversationId, "a")
     compare(reveals.count, 0)
+  }
+  function test_session_less_state_retains_conversations_controls_and_navigation() {
+    // Routine state after the incrementalSessions report omits conversations.
+    backend.received({type: "state", protocol: 1, ready: true,
+      sessions: [session("a"), session("b")], sessionOrderRevision: "order-1",
+      previousSessions: [{id: "saved", title: "Saved"}], sessionControlsAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0})
+    client.panelVisible = true
+    client.sessions.select("b")
+    client.sessions.modelCatalog = ({models: ["synthetic/model"]})
+    backend.received({type: "agent-session", session: {id: "b", title: "b", status: "running",
+      messages: [{id: "streamed", kind: "assistant", text: "Streamed", state: "running"}]}})
+    backend.received({type: "agent-actions", actions: {sessionId: "b", choices: [], stopRunId: "run"}})
+    const entries = client.sessions.sessions
+    const token = client.sessions.navigationToken
+    reveals.clear()
+
+    for (let index = 0; index < 5; index++) {
+      backend.received({type: "state", protocol: 1, ready: true, speaking: index % 2 === 0,
+        processing: 1, history: [{id: "utterance-" + index}], sessionControlsAvailable: true,
+        agentActions: {sessionId: "b", choices: [], stopRunId: "run"},
+        activitySessionId: "activity", activityHistoryCount: index})
+    }
+
+    verify(client.sessions.sessions === entries, "The conversation array is not rebuilt")
+    compare(client.sessions.sessions[1].messages[0].text, "Streamed")
+    compare(client.sessions.orderRevision, "order-1")
+    compare(client.sessions.previousSessions.length, 1)
+    compare(client.sessions.conversationId, "b")
+    compare(client.sessions.navigationToken, token, "Voice navigation stays valid")
+    compare(client.sessions.controlsAvailable, true)
+    compare(client.sessions.modelCatalog.models[0], "synthetic/model")
+    compare(client.agentActions.stopRunId, "run")
+    compare(client.history[0].id, "utterance-4", "Activity fields still update")
+    compare(reveals.count, 0)
+
+    // Ordered agent events keep applying between session-less states.
+    backend.received({type: "agent-order", ids: ["b", "a"], revision: "order-2"})
+    backend.received({type: "state", protocol: 1, ready: true, sessionControlsAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 5})
+    compare(client.sessions.sessions.map(entry => entry.id), ["b", "a"])
+    compare(client.sessions.orderRevision, "order-2")
+    backend.received({type: "agent-removed", id: "a"})
+    backend.received({type: "state", protocol: 1, ready: true, sessionControlsAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 5})
+    compare(client.sessions.sessions.length, 1)
+
+    // The first state after reconnecting is authoritative, including an
+    // older listener that has no conversation fields at all.
+    backend.disconnected()
+    backend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0})
+    compare(client.sessions.sessions.length, 0)
+    compare(client.sessions.previousSessions.length, 0)
+    compare(client.sessions.orderRevision, "")
   }
   function test_history_deletion_survives_delayed_pages_and_reconnect() {
     const entry = {id: "utterance", sequence: 1, revision: 1,
