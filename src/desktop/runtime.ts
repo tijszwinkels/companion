@@ -266,6 +266,15 @@ export class DesktopRuntime {
       },
       attemptSuperseded: (id) => {
         this.chainMembers.add(id);
+
+        // Hold its row at once if it already has one: the replaced attempt can
+        // still be finishing (for example, a model ignoring cancellation), and
+        // no paste, label or question may start from it meanwhile. A row that
+        // appears later is held at `finished`.
+        const row = this.history.entryId(id);
+        if (row) {
+          this.history.holdForRetirement(row);
+        }
       },
       continuationSettled: (finalId, supersededIds) => {
         this.settleContinuation(finalId, supersededIds);

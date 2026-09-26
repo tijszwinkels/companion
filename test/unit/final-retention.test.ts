@@ -46,6 +46,8 @@ async function chainFixture(
     dispatchFails?: string[];
     /** WAV writes that fail, by call number (1 = the first attempt's). */
     audioFails?: number[];
+    /** A model client that ignores cancellation, so a replaced attempt stays active. */
+    ignoresAbort?: boolean;
   } = {},
 ) {
   const fixture = await desktopFixture(async () => Buffer.alloc(0));
@@ -62,6 +64,9 @@ async function chainFixture(
         detect: async (frame, _intents, signal) => {
           const reply = deferred<string>();
           detections.push({ utterance: frame.utterance, resolve: reply.resolve });
+          if (options.ignoresAbort) {
+            return reply.promise;
+          }
           const aborted = new Promise<never>((_resolve, reject) => {
             signal.addEventListener('abort', () => reject(signal.reason), { once: true });
           });
@@ -293,6 +298,87 @@ test('a superseded attempt cannot be deleted, pasted or labeled while its chain 
     await setup.idle();
     await waitFor(() => setup.published('history-deleted').length === 1);
     assert.equal(setup.rows().length, 1);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('a replaced attempt that is still finishing already refuses manual paste', async () => {
+  const setup = await chainFixture({ ignoresAbort: true });
+  try {
+    const first = await supersededAttempt(setup);
+
+    // Its model ignores the cancellation: the old frame is still active, and
+    // the serial worker has not started the continuation's ASR yet.
+    await delay(20);
+    assert.equal(setup.transcriptions.length, 1);
+    setup.fixture.send({ action: 'paste', id: first, target: '0xabc' });
+    const paste = await setup.fixture.reply('paste');
+    assert.equal(paste.type, 'error');
+    assert.match(paste.message!, /replaced by a continuing utterance/);
+
+    // The stale answer arrives late and cannot dispatch.
+    setup.detections[0].resolve('SEND');
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('Open the browser');
+    await waitFor(() => setup.detections.length === 2);
+    setup.detections[1].resolve('SEND');
+    await setup.idle();
+    await waitFor(() => setup.published('history-deleted').length === 1);
+
+    assert.deepEqual(setup.dispatched, ['Open the browser']);
+    assert.deepEqual(
+      setup.rows().map((row) => row.transcript),
+      ['Open the browser'],
+    );
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('a repeated chain whose final ASR fails keeps the latest earlier words', async () => {
+  const setup = await chainFixture();
+  try {
+    await supersededAttempt(setup, 'One');
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('One two');
+    await waitFor(() => setup.detections.length === 2);
+    setup.continueWith(0.3);
+    await waitFor(() => setup.transcriptions.length === 3);
+    setup.transcriptions[2].reject(Error('ASR worker failed'));
+    await setup.idle();
+    await waitFor(() => setup.published('history-deleted').length === 2);
+
+    assert.deepEqual(
+      setup.rows().map((row) => [row.transcript, row.outcome, row.source]),
+      [['One two', 'error', 'earlier-attempt']],
+    );
+    assert.equal((await setup.recorded('audio')).length, 1);
+    assert.deepEqual(setup.dispatched, []);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('a recovered failure whose WAV cannot be written keeps the earlier record too', async () => {
+  const setup = await chainFixture({ audioFails: [2] });
+  try {
+    const first = await supersededAttempt(setup);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].reject(Error('ASR worker failed'));
+    await setup.idle();
+    await waitFor(() => setup.published('activity-entry').includes(first));
+
+    assert.deepEqual(
+      setup.rows().map((row) => [row.transcript, row.outcome, row.source]),
+      [
+        ['Open the', 'superseded', null],
+        ['Open the', 'error', 'earlier-attempt'],
+      ],
+    );
+    assert.deepEqual(setup.published('history-deleted'), [], 'Unowned: nothing is removed');
+    assert.deepEqual(await setup.recorded('audio'), [first], 'The only WAV stays');
+    assert.equal(setup.pipeline.failures, 2, 'The ASR error and the failed write are both counted');
   } finally {
     await setup.fixture.close();
   }

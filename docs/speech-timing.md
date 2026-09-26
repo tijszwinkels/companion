@@ -214,9 +214,11 @@ pipeline, `DesktopRuntime.settleContinuation`/`retire`, and
    superseded attempt that reached ASR has already finished; its frame no longer
    maps to a row, so no late write can recreate its row or files. An attempt
    replaced while queued never reached ASR and recorded nothing.
-2. **Deferred card and hold.** A chain member's Activity card is not published
-   at `finished`; the runtime holds its row until the chain settles. The recent
-   database list may still show it for the second or so until then, but paste,
+2. **Deferred card and hold.** A chain member's row is held from the moment it
+   is superseded (or from its `finished`, if its row appeared later) until the
+   chain settles, and its Activity card is not published at `finished`. The
+   replaced attempt may still be finishing, and the recent database list may
+   show its row for the second or so until the chain settles, but paste,
    label, history-agent questions and user deletion of a held row are refused
    ("replaced by a continuing utterance"), so it cannot be used or race the
    retirement. The hold ends when the chain settles, on every path.
