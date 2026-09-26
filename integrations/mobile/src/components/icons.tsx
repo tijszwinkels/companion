@@ -113,3 +113,9 @@ export const ToolIcon = (props: IconProps) => (
     <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4Z" />
   </Icon>
 );
+
+export const MenuIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M4 6h16M4 12h16M4 18h16" />
+  </Icon>
+);

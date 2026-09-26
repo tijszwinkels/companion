@@ -25,8 +25,6 @@ import type {
 } from '../../../src/remote/protocol.ts';
 import { Connection, UncertainOutcome, type ConnectionState } from './connection.ts';
 
-export type Tab = 'chats' | 'activity' | 'settings';
-
 export interface Toast {
   id: number;
   text: string;
@@ -54,9 +52,14 @@ export interface AppState {
   previous: PreviousSession[];
   actions?: RemoteAgentActions;
   activity: ActivityState;
-  tab: Tab;
-  /** Conversation shown full-screen, or empty. */
+  /**
+   * Page shown, as in the desktop panel: a selected conversation, else the
+   * Previous sessions library when `showingPrevious`, else Activity.
+   */
   selected: string;
+  showingPrevious: boolean;
+  /** Conversations whose turn completed while they were not being viewed. */
+  unread: Set<string>;
   models?: ModelCatalog;
   modelsError: string;
   modelsLoading: boolean;
@@ -80,6 +83,13 @@ export class Store {
   private listeners = new Set<() => void>();
   private nextToast = 0;
   private drafts = new Map<string, string>();
+  /** Latest completed turn per conversation, for unread marking. */
+  private readonly completedTurns = new Map<string, string>();
+  /** Conversations seen in any snapshot or event; newly seen ones are selected. */
+  private readonly seen = new Set<string>();
+  private receivedSnapshot = false;
+  /** Set just before this phone asks to reopen a conversation. */
+  revealNextRestore = '';
   readonly connection: Connection;
 
   state: AppState = {
@@ -89,8 +99,9 @@ export class Store {
     orderRevision: '',
     previous: [],
     activity: emptyActivity(),
-    tab: 'chats',
     selected: '',
+    showingPrevious: false,
+    unread: new Set(),
     modelsError: '',
     modelsLoading: false,
     toasts: [],
@@ -155,21 +166,28 @@ export class Store {
 
   // ---- Navigation -----------------------------------------------------------
 
-  setTab(tab: Tab): void {
-    this.update({ tab, selected: tab === 'chats' ? this.state.selected : '' });
-    this.reportSelection();
-  }
-
+  /** Show a conversation (or Activity for an empty ID); marks it read. */
   open(id: string): void {
-    this.update({ tab: 'chats', selected: id, actions: undefined });
+    const unread = new Set(this.state.unread);
+    unread.delete(id);
+    this.update({
+      selected: id,
+      showingPrevious: false,
+      actions: id === this.state.selected ? this.state.actions : undefined,
+      unread,
+    });
     this.reportSelection();
     if (id && !this.state.models && !this.state.modelsLoading && !this.state.modelsError) {
       void this.loadModels();
     }
   }
 
-  close(): void {
-    this.update({ selected: '', actions: undefined });
+  showActivity(): void {
+    this.open('');
+  }
+
+  showPrevious(): void {
+    this.update({ selected: '', showingPrevious: true, actions: undefined });
     this.reportSelection();
   }
 
@@ -252,7 +270,10 @@ export class Store {
         this.upsertSession(event.session, false);
         return;
       case 'agent-restored':
-        this.upsertSession(event.session, true);
+        // Only reopen requests from this phone reveal the tab here; the
+        // desktop's reveal flag describes the desktop panel.
+        this.upsertSession(event.session, true, this.revealNextRestore === event.session.id);
+        this.revealNextRestore = '';
         return;
       case 'agent-removed':
         this.removeSession(event.id);
@@ -290,6 +311,14 @@ export class Store {
       selected = '';
     }
 
+    // Reconnect snapshots can reveal conversations started meanwhile; like the
+    // desktop they are only added to the rail, never selected, on a snapshot.
+    for (const session of sessions) {
+      this.seen.add(session.id);
+    }
+    this.receivedSnapshot = true;
+    const unread = this.observeCompletions(sessions, selected);
+
     // A new listener run starts a new Activity history.
     let activity = this.state.activity;
     if (activity.sessionId !== engine.activitySessionId) {
@@ -304,12 +333,13 @@ export class Store {
       previous: previousSessions,
       selected,
       activity,
+      unread,
     });
 
     void this.syncActivity();
   }
 
-  private upsertSession(update: AgentSession, complete: boolean): void {
+  private upsertSession(update: AgentSession, complete: boolean, revealRestored = false): void {
     const sessions = new Map(this.state.sessions);
     const existing = sessions.get(update.id);
 
@@ -337,7 +367,39 @@ export class Store {
     const order = this.state.order.includes(update.id)
       ? this.state.order
       : [...this.state.order, update.id];
-    this.update({ sessions, order });
+
+    // A newly seen conversation opens and is selected once, unless an agent
+    // tool opened it in the background (desktop protocol rule). Reopening is
+    // explicit: `agent-restored` with reveal selects it again.
+    const newlySeen = !this.seen.has(update.id);
+    this.seen.add(update.id);
+    const reveal =
+      this.receivedSnapshot &&
+      ((newlySeen && !update.openInBackground) || (complete && revealRestored));
+
+    const unread = this.observeCompletions([session], reveal ? update.id : this.state.selected);
+    this.update({ sessions, order, unread });
+
+    if (reveal) {
+      this.open(update.id);
+    }
+  }
+
+  /** Mark conversations unread when a new turn completed out of view. */
+  private observeCompletions(sessions: AgentSession[], viewed: string): Set<string> {
+    let unread = this.state.unread;
+    for (const session of sessions) {
+      const turn = session.completedTurnId;
+      if (!turn || this.completedTurns.get(session.id) === turn) {
+        continue;
+      }
+      this.completedTurns.set(session.id, turn);
+      if (session.id !== viewed || document.visibilityState !== 'visible') {
+        unread = new Set(unread);
+        unread.add(session.id);
+      }
+    }
+    return unread;
   }
 
   private removeSession(id: string): void {
@@ -349,10 +411,14 @@ export class Store {
       sessions,
       order: this.state.order.filter((candidate) => candidate !== id),
     };
+    const unread = new Set(this.state.unread);
+    unread.delete(id);
+    change.unread = unread;
+    this.completedTurns.delete(id);
     if (this.state.selected === id) {
       change.selected = '';
       change.actions = undefined;
-      this.toast(`“${removed?.title ?? 'Conversation'}” was closed. It is in Previous.`);
+      this.toast(`“${removed?.title ?? 'Conversation'}” was closed. It is in Previous sessions.`);
     }
     this.update(change);
   }

@@ -37,7 +37,9 @@ export function Pairing() {
   return (
     <main class="pairing">
       <div class="logo" aria-hidden="true">
-        ◐
+        <span style={{ height: '12px' }} />
+        <span style={{ height: '30px' }} />
+        <span style={{ height: '20px' }} />
       </div>
       <h1>Pair this phone</h1>
       <p>
@@ -60,7 +62,7 @@ export function Pairing() {
             </label>
             <input
               id="server"
-              class="text-input"
+              class="field"
               type="url"
               inputMode="url"
               placeholder="https://desk.your-tailnet.ts.net:8443"
@@ -76,7 +78,7 @@ export function Pairing() {
         </label>
         <input
           id="code"
-          class="text-input code-input"
+          class="field code-input"
           autoComplete="one-time-code"
           autoCapitalize="characters"
           spellcheck={false}
@@ -92,7 +94,7 @@ export function Pairing() {
         </label>
         <input
           id="device-name"
-          class="text-input"
+          class="field"
           maxLength={60}
           value={name}
           onInput={(event) => setName(event.currentTarget.value)}
@@ -104,8 +106,7 @@ export function Pairing() {
           </p>
         )}
 
-        <div style={{ height: '18px' }} />
-        <button class="button primary block" type="submit" disabled={busy || !code.trim()}>
+        <button class="action primary submit" type="submit" disabled={busy || !code.trim()}>
           {busy ? 'Pairing…' : 'Pair phone'}
         </button>
       </form>

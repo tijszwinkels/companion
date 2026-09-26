@@ -1,17 +1,49 @@
-/** Top-level layout: pairing, or tabs with a full-screen conversation view. */
+/**
+ * Top-level layout, following the desktop panel: a session rail on the left
+ * and the selected page on the right (Activity, Previous sessions or a
+ * conversation). The page header has a menu button that shows or hides the
+ * rail, the page title, and phone settings where the desktop has its close
+ * button.
+ */
 
 import { useEffect, useState } from 'preact/hooks';
 
 import { useAppState, useStore } from '../hooks.ts';
-import { Activity } from './Activity.tsx';
-import { ChatList } from './ChatList.tsx';
-import { Conversation } from './Conversation.tsx';
-import { ActivityIcon, ChatIcon, SettingsIcon } from './icons.tsx';
+import { ActivityPage } from './Activity.tsx';
+import { ConversationPage } from './Conversation.tsx';
+import { MenuIcon, SettingsIcon } from './icons.tsx';
 import { Pairing } from './Pairing.tsx';
-import { Settings } from './Settings.tsx';
+import { PreviousPage } from './Previous.tsx';
+import { Rail } from './Rail.tsx';
+import { SettingsSheet } from './Settings.tsx';
+
+const railKey = 'companion.remote.rail';
+
+/** Remembered per phone; defaults to open unless the screen is very narrow. */
+function initialRailOpen(): boolean {
+  try {
+    const saved = localStorage.getItem(railKey);
+    if (saved === 'open' || saved === 'closed') {
+      return saved === 'open';
+    }
+  } catch {
+    // Storage unavailable: fall through to the width default.
+  }
+  return window.innerWidth >= 360;
+}
 
 export function App() {
   const state = useAppState();
+  const [railOpen, setRailOpen] = useState(initialRailOpen);
+  const [settings, setSettings] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(railKey, railOpen ? 'open' : 'closed');
+    } catch {
+      // A convenience only.
+    }
+  }, [railOpen]);
 
   if (state.connection.status === 'unpaired') {
     return (
@@ -22,56 +54,52 @@ export function App() {
   }
 
   const selected = state.selected ? state.sessions.get(state.selected) : undefined;
+  const title = state.showingPrevious
+    ? 'Previous sessions'
+    : selected
+      ? selected.title || 'Untitled'
+      : 'Companion';
+  const unreadCount = state.unread.size;
 
   return (
     <div class="app">
       <ConnectionBanner />
-      {selected ? (
-        <Conversation session={selected} />
-      ) : (
-        <>
-          {state.tab === 'chats' && <ChatList />}
-          {state.tab === 'activity' && <Activity />}
-          {state.tab === 'settings' && <Settings />}
-          <TabBar />
-        </>
-      )}
+      <div class="shell">
+        {railOpen && <Rail />}
+        <main class="body">
+          <header class="page-header">
+            <button
+              class="icon-button"
+              aria-label={railOpen ? 'Hide sessions' : 'Show sessions'}
+              aria-expanded={railOpen}
+              onClick={() => setRailOpen(!railOpen)}
+            >
+              <MenuIcon />
+              {!railOpen && unreadCount > 0 && <span class="menu-dot" aria-hidden="true" />}
+            </button>
+            <h1>{title}</h1>
+            <button
+              class="icon-button"
+              aria-label="Phone settings"
+              aria-haspopup="dialog"
+              onClick={() => setSettings(true)}
+            >
+              <SettingsIcon size={20} />
+            </button>
+          </header>
+
+          {state.showingPrevious ? (
+            <PreviousPage />
+          ) : selected ? (
+            <ConversationPage session={selected} />
+          ) : (
+            <ActivityPage />
+          )}
+        </main>
+      </div>
+      {settings && <SettingsSheet onClose={() => setSettings(false)} />}
       <Toasts />
     </div>
-  );
-}
-
-function TabBar() {
-  const state = useAppState();
-  const store = useStore();
-  const working = [...state.sessions.values()].filter(
-    (session) => session.status === 'running' || session.status === 'starting',
-  ).length;
-
-  const tabs = [
-    { id: 'chats', label: 'Chats', icon: <ChatIcon />, badge: working },
-    { id: 'activity', label: 'Activity', icon: <ActivityIcon />, badge: 0 },
-    { id: 'settings', label: 'Settings', icon: <SettingsIcon />, badge: 0 },
-  ] as const;
-
-  return (
-    <nav class="tabbar" aria-label="Sections">
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          aria-current={state.tab === tab.id ? 'page' : undefined}
-          onClick={() => store.setTab(tab.id)}
-        >
-          {tab.icon}
-          {tab.label}
-          {tab.badge > 0 && (
-            <span class="badge" aria-label={`${tab.badge} working`}>
-              {tab.badge}
-            </span>
-          )}
-        </button>
-      ))}
-    </nav>
   );
 }
 
