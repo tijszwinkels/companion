@@ -30,6 +30,7 @@ import {
   type RemoteRequest,
 } from './protocol.ts';
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
+import { PhoneOutput } from './outbound.ts';
 
 /** WebSocket close codes the phone app understands. */
 export const closeCodes = {
@@ -48,9 +49,6 @@ const drainMilliseconds = 15_000;
 const roleMilliseconds = 5000;
 const requestMilliseconds = 15_000;
 const maximumPendingRequests = 32;
-
-/** Close a phone whose unsent backlog exceeds this many bytes. */
-const maximumBufferedBytes = 16 * 1024 * 1024;
 
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
@@ -75,6 +73,8 @@ export interface RelayOptions {
   sessionsDirectory: string;
   deviceId: string;
   receipts: ReceiptBook;
+  /** Negotiated by the gateway, never forwarded as a desktop panel request. */
+  incrementalSessions?: boolean;
   /** Remember that this device may fetch a session's screenshot. */
   allowScreenshot(deviceId: string, sessionId: string): void;
   /** The gateway retains draining relays until their upstream is really closed. */
@@ -84,6 +84,8 @@ export interface RelayOptions {
 
 export class Relay {
   private readonly upstream: Socket;
+  private readonly output: PhoneOutput;
+  private sentSnapshot = false;
   private readonly pending = new Map<string, PendingRequest>();
   private nextUpstreamId = 0;
   private buffered = '';
@@ -104,6 +106,10 @@ export class Relay {
     private readonly phone: WebSocket,
     private readonly options: RelayOptions,
   ) {
+    this.output = new PhoneOutput(phone, () => {
+      this.options.log('Closing a phone connection that stopped reading');
+      this.terminate(closeCodes.slowConsumer, 'Connection too slow');
+    });
     this.upstream = createConnection(options.controlSocket);
     this.upstream.setEncoding('utf8');
     this.roleTimer = setTimeout(
@@ -128,6 +134,7 @@ export class Relay {
   terminate(code: number, reason: string): void {
     this.terminated = true;
     this.phoneOpen = false;
+    this.output.close();
     clearTimeout(this.roleTimer);
     if (this.phone.readyState === this.phone.OPEN) {
       this.phone.close(code, reason);
@@ -282,24 +289,17 @@ export class Relay {
     return true;
   }
 
-  private sendPhone(message: GatewayMessage): void {
+  private sendPhone(message: GatewayMessage, replaceable = false): void {
     if (!this.phoneOpen || this.phone.readyState !== this.phone.OPEN) {
       return;
     }
 
-    // A phone that cannot keep up (for example stalled on a bad network)
-    // would otherwise make the gateway buffer every streaming update.
-    if (this.phone.bufferedAmount > maximumBufferedBytes) {
-      this.options.log('Closing a phone connection that stopped reading');
-      this.terminate(closeCodes.slowConsumer, 'Connection too slow');
-      return;
-    }
-
-    this.phone.send(JSON.stringify(message));
+    this.output.send(message, replaceable);
   }
 
   private phoneClosed(): void {
     this.phoneOpen = false;
+    this.output.close();
     for (const cancel of this.duplicateWaiters) {
       cancel();
     }
@@ -391,8 +391,22 @@ export class Relay {
       return;
     }
 
+    const routineState = message.type === 'state' && this.sentSnapshot;
+    if (routineState && this.options.incrementalSessions) {
+      // The existing listener already emits ordered message deltas, removals,
+      // restores, history and tab-order events. Repeating every transcript on
+      // speech/settings broadcasts wastes cellular bandwidth. Keep the first
+      // full snapshot on EVERY socket, then omit only those event-owned fields.
+      // Old phone clients that did not negotiate this still receive full state.
+      delete message.sessions;
+      delete message.previousSessions;
+      delete message.sessionOrderRevision;
+    }
     this.rewriteEvent(message);
-    this.sendPhone({ type: 'engine', message: message as never });
+    if (message.type === 'state') {
+      this.sentSnapshot = true;
+    }
+    this.sendPhone({ type: 'engine', message: message as never }, routineState);
   }
 
   private roleAnswered(message: Record<string, unknown>): void {

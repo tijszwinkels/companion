@@ -51,6 +51,11 @@ this implementation:
    `tailscale serve` to proxy to it. The gateway sees loopback connections but
    still requires the configured origin/host and a paired device token.
 
+See [the supervised tailnet trial](../../docs/mobile-tailnet-trial.md) for the
+locally audited Serve setup, exact origin policy, validation and rollback gates.
+The gateway never uses `Forwarded`, `X-Forwarded-*` or Tailscale identity headers
+as authentication or to replace the request's actual Host/Origin.
+
 Plain HTTP on a non-loopback address, binding every interface, and non-HTTPS
 non-loopback origins are refused at startup. Browsers need HTTPS for a secure
 context; Tailscale's WireGuard encryption alone does not make an `http://100.x`
@@ -77,7 +82,9 @@ page a secure context.
   and closes that device's live connections (close code 4403).
 - **Origins and hosts.** The WebSocket upgrade and pairing endpoint require an
   `Origin` in the exact allowlist; every request requires a `Host` matching an
-  allowed origin. This blocks cross-site WebSocket hijacking and DNS rebinding.
+  allowed origin. Pairing and WebSocket requests also require that Host to match
+  their Origin, even when both localhost and HTTPS are configured. This blocks
+  cross-site WebSocket hijacking and DNS rebinding.
   Only HTTPS and loopback HTTP app origins are supported. Bundled wrapper origins
   and cross-origin browser clients need a separate CORS/credential design; they
   are not supported by adding a custom origin today.
@@ -96,9 +103,15 @@ page a secure context.
 - **Data minimization.** The desktop's recent-utterance list (latest 100 across
   earlier runs, used for paste recovery) is emptied before snapshots reach phones;
   the phone shows only the current run's Activity.
-- **Limits.** 4 phones, 8 unauthenticated sockets, 32 KiB messages, 30-request
-  bursts at 10/s per phone, 16 MiB unsent backlog before disconnecting a stalled
-  phone. A relay admits at most 32 pending requests, waits at most 5 seconds for
+- **Limits.** 2 phone relays including draining connections, leaving six of the
+  listener's eight slots for desktop clients. Eight unauthenticated sockets,
+  32 KiB client messages, 30-request bursts at 10/s per phone. Phone output writes
+  one message at a time and bounds the waiting queue to 16 MiB / 256 messages;
+  a write stalled for 30 seconds disconnects the phone. Routine state snapshots
+  coalesce behind a pending write; ordered events and receipts never do. The
+  initial full snapshot is ordered and is not subject to the waiting-queue size
+  cap (the upstream line limit still applies). A relay admits at most 32 pending
+  requests, waits at most 5 seconds for
   remote-role confirmation and 15 seconds for a request reply. Draining relays
   continue counting toward capacity and remain subject to revocation. Malformed
   WebSocket frames disconnect only that client. Compression is disabled.
@@ -112,6 +125,18 @@ unlocks the phone and opens the app can use Companion; revoke a lost phone.
 
 Phone messages are `{"type":"request","requestId":"…","action":"…",…}`; replies
 echo `requestId`. Listener events arrive as `{"type":"engine","message":{…}}`.
+
+The current phone authenticates with `incrementalSessions: true`. The gateway
+always sends the first full state on each connection, then omits `sessions`,
+`previousSessions` and `sessionOrderRevision` from routine state. Their absence
+means unchanged: the phone retains those fields from ordered `agent-session`,
+`agent-restored`, `agent-removed`, `agent-order` and `agent-history` events.
+Reconnect starts with a full authoritative snapshot again. Older clients that
+omit this capability continue receiving full snapshots. This negotiation is
+local to the gateway; it does not forward desktop incremental/focus/navigation
+fields to the listener, and requires no listener restart. The desktop protocol
+and its per-client selection remain unchanged. No compression is enabled.
+
 Desktop-selection events (`agent-actions`, `agent-draft`, `agent-select`) are not
 relayed; the phone uses `remote-agent-actions` for its own selection. Only the
 declared remote event set is forwarded, and initial snapshots stay at the gateway

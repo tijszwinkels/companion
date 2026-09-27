@@ -469,6 +469,23 @@ export class Store {
 
   private applyState(event: EngineState & { type: 'state' }): void {
     const { type: _type, sessions, previousSessions, ...engine } = event;
+
+    // After hydration the gateway can send only engine metadata. Conversations,
+    // order and Previous then belong to the ordered agent events. Absence means
+    // unchanged, not an empty library; never prune drafts on a partial state.
+    if (sessions === undefined) {
+      if (!this.receivedSnapshot) {
+        return;
+      }
+      const activity =
+        this.state.activity.sessionId === engine.activitySessionId
+          ? this.state.activity
+          : emptyActivity(engine.activitySessionId);
+      this.update({ engine: { ...this.state.engine, ...engine }, activity });
+      void this.syncActivity();
+      return;
+    }
+
     const map = new Map<string, AgentSession>();
     for (const session of sessions) {
       map.set(session.id, session);
@@ -501,8 +518,8 @@ export class Store {
       engine,
       sessions: map,
       order: sessions.map((session) => session.id),
-      orderRevision: engine.sessionOrderRevision,
-      previous: previousSessions,
+      orderRevision: engine.sessionOrderRevision ?? '',
+      previous: previousSessions ?? [],
       selected,
       activity,
       unread,

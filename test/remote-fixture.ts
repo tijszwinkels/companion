@@ -124,8 +124,17 @@ export async function remoteFixture(
 
   const opened: PhoneClient[] = [];
 
-  async function phone(token: string | undefined, phoneOrigin = origin): Promise<PhoneClient> {
-    const client = await connectPhone(`ws://127.0.0.1:${port}/api/socket`, token, phoneOrigin);
+  async function phone(
+    token: string | undefined,
+    phoneOrigin = origin,
+    incrementalSessions = false,
+  ): Promise<PhoneClient> {
+    const client = await connectPhone(
+      `ws://127.0.0.1:${port}/api/socket`,
+      token,
+      phoneOrigin,
+      incrementalSessions,
+    );
     opened.push(client);
     return client;
   }
@@ -168,6 +177,7 @@ export async function connectPhone(
   url: string,
   token: string | undefined,
   origin: string,
+  incrementalSessions = false,
 ): Promise<PhoneClient> {
   const socket = new WebSocket(url, { headers: { Origin: origin } });
   const messages: GatewayMessage[] = [];
@@ -186,7 +196,7 @@ export async function connectPhone(
   });
 
   if (token !== undefined) {
-    socket.send(JSON.stringify({ type: 'auth', token }));
+    socket.send(JSON.stringify({ type: 'auth', token, incrementalSessions }));
   }
 
   return {

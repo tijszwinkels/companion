@@ -107,6 +107,8 @@ export const mutatingActions: ReadonlySet<RemoteAction> = new Set<RemoteAction>(
 export interface AuthMessage {
   type: 'auth';
   token: string;
+  /** Retain conversations from ordered agent events after the connect snapshot. */
+  incrementalSessions?: true;
 }
 
 /** Messages the gateway sends to the phone. */
@@ -161,10 +163,11 @@ export interface EngineState {
   activitySessionId: string;
   activityHistoryCount: number;
   historyDeletionAvailable?: boolean;
-  sessions: AgentSession[];
-  sessionOrderRevision: string;
+  /** Connect snapshots include these; negotiated routine state omits them. */
+  sessions?: AgentSession[];
+  sessionOrderRevision?: string;
   sessionControlsAvailable: boolean;
-  previousSessions: PreviousSession[];
+  previousSessions?: PreviousSession[];
   intents: IntentState[];
 }
 

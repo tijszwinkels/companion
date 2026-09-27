@@ -309,7 +309,13 @@ export class Connection {
 
     socket.addEventListener('open', () => {
       if (this.socket === socket) {
-        socket.send(JSON.stringify({ type: 'auth', token: this.credential?.token ?? '' }));
+        socket.send(
+          JSON.stringify({
+            type: 'auth',
+            token: this.credential?.token ?? '',
+            incrementalSessions: true,
+          }),
+        );
       }
     });
     socket.addEventListener('message', (event) => {

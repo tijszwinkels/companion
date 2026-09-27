@@ -78,6 +78,34 @@ function roleAccepted(socket: Socket): void {
   );
 }
 
+test('two relay slots include draining phones and leave listener capacity for desktop clients', async (context) => {
+  let forwarded = false;
+  const setup = await fixture(context, (socket, request) => {
+    if (request.action === 'client-role') {
+      roleAccepted(socket);
+    } else {
+      forwarded = true;
+    }
+  });
+  const first = await setup.phone();
+  await waitFor(() => first.messages.some((message) => message.type === 'authenticated'));
+  first.send({ action: 'toggle-pause', requestId: 'draining' });
+  await waitFor(() => forwarded);
+  first.socket.terminate();
+  await first.closed;
+  const second = await setup.phone();
+  await waitFor(() => second.messages.some((message) => message.type === 'authenticated'));
+  const third = await setup.phone();
+  assert.equal((await third.closed).code, 4429);
+  assert.equal(setup.sockets.size, 2);
+  second.socket.close();
+  await second.closed;
+  await waitFor(() => setup.sockets.size === 1);
+  const replacement = await setup.phone();
+  await waitFor(() => replacement.messages.some((message) => message.type === 'authenticated'));
+  assert.equal(setup.sockets.size, 2);
+});
+
 test('a listener that rejects the role cannot leak its initial snapshot', async (context) => {
   const setup = await fixture(context, (socket) => {
     socket.write(

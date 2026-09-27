@@ -68,7 +68,9 @@ export interface GatewayOptions {
 }
 
 /** Concurrent authenticated phones and not-yet-authenticated sockets. */
-const maximumPhones = 4;
+// Include draining relays: at most two of the listener's eight client slots
+// belong to this gateway, leaving room for desktop panels during reconnects.
+const maximumPhones = 2;
 const maximumUnauthenticated = 8;
 
 /** A new socket must authenticate within this time. */
@@ -242,7 +244,11 @@ export class Gateway {
 
   private originAllowed(request: IncomingMessage): boolean {
     const origin = request.headers.origin;
-    return typeof origin === 'string' && this.options.origins.includes(origin);
+    return (
+      typeof origin === 'string' &&
+      this.options.origins.includes(origin) &&
+      new URL(origin).host === request.headers.host
+    );
   }
 
   private bearerToken(request: IncomingMessage): string | undefined {
@@ -520,9 +526,11 @@ export class Gateway {
     phone.once('close', finish);
     phone.once('message', async (data, isBinary) => {
       let token: unknown;
+      let incrementalSessions = false;
       try {
         const message = JSON.parse(String(data));
         token = !isBinary && message?.type === 'auth' ? message.token : undefined;
+        incrementalSessions = !isBinary && message?.incrementalSessions === true;
       } catch {
         token = undefined;
       }
@@ -550,11 +558,11 @@ export class Gateway {
         return;
       }
 
-      this.startRelay(phone, device);
+      this.startRelay(phone, device, incrementalSessions);
     });
   }
 
-  private startRelay(phone: WebSocket, device: PairedDevice): void {
+  private startRelay(phone: WebSocket, device: PairedDevice, incrementalSessions: boolean): void {
     phone.send(
       JSON.stringify({ type: 'authenticated', deviceId: device.id, deviceName: device.name }),
     );
@@ -564,6 +572,7 @@ export class Gateway {
       sessionsDirectory: this.options.sessionsDirectory,
       deviceId: device.id,
       receipts: this.receipts,
+      incrementalSessions,
       allowScreenshot: (deviceId, sessionId) => {
         let allowed = this.screenshots.get(deviceId);
         if (!allowed) {
