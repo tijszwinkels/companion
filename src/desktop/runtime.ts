@@ -16,6 +16,7 @@ import { UtteranceHistory, type HistoryEntry } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
 import { DesktopServer, type SnapshotOptions } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
+import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
@@ -623,7 +624,7 @@ export class DesktopRuntime {
       !order ||
       !Number.isInteger(index) ||
       index < 0 ||
-      index > 8 ||
+      index >= MAX_OPEN_AGENT_SESSIONS ||
       captured.clientId !== this.navigation.clientId ||
       captured.token !== this.navigation.token ||
       captured.orderRevision !== order.revision ||

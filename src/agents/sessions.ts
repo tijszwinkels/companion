@@ -13,6 +13,7 @@ import {
   loadClaudeCodeSettings,
 } from './settings.ts';
 import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
+import { MAX_OPEN_AGENT_SESSIONS } from './session-limit.ts';
 import { SessionStore } from './session-store.ts';
 import { panelMessageLimit, panelTextLimit } from './transcript-limits.ts';
 import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
@@ -650,10 +651,10 @@ export class AgentSessions implements InspectableModule {
     if (this.closed) {
       throw new SessionToolError('rejected', 'Agent sessions are shutting down');
     }
-    if (this.sessions.size + this.restoring.size >= 12) {
+    if (this.sessions.size + this.restoring.size >= MAX_OPEN_AGENT_SESSIONS) {
       throw new SessionToolError(
         'rejected',
-        'Close a question tab before starting another (12 tabs maximum)',
+        `Close a question tab before starting another (${MAX_OPEN_AGENT_SESSIONS} tabs maximum)`,
       );
     }
     if (this.activeRuns() >= 4) {
@@ -1370,10 +1371,10 @@ export class AgentSessions implements InspectableModule {
     if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
       throw new SessionToolError('rejected', 'Previous session is unavailable');
     }
-    if (this.sessions.size + this.restoring.size >= 12) {
+    if (this.sessions.size + this.restoring.size >= MAX_OPEN_AGENT_SESSIONS) {
       throw new SessionToolError(
         'rejected',
-        'Close a question tab before reopening another (12 tabs maximum)',
+        `Close a question tab before reopening another (${MAX_OPEN_AGENT_SESSIONS} tabs maximum)`,
       );
     }
     this.restoring.add(id);

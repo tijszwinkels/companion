@@ -40,7 +40,7 @@ processor. Registration does not deliver a message, and the router does not
 broadcast frames to every subscriber.
 
 The prefix-only `GoToSession` processor reserves `go to session` and has no LLM
-instruction. It parses one exact digit or number word from 1–9, then calls
+instruction. It parses one exact numeral or cardinal number word from 1–16, then calls
 `Activity.selectSession(context, index)`. The desktop runtime validates the
 captured `InteractionContext.agentNavigation` client/token/order against current
 state before sending a targeted UI selection event. Invalid, disabled, hidden,

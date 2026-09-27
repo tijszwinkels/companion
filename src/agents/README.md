@@ -344,7 +344,7 @@ Summaries contain `id`, `title`, `status`, `profile`, `harness` (`pi` or
 | `busy`                    | Close refused: another conversation is running, closing or has queued messages; nothing was stopped.      |
 | `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                 |
 | `expired`                 | The calling turn ended; its lease is gone.                                                                |
-| `rejected`                | An existing lifecycle limit: 12 tabs, 4 running agents, 8 queued messages, or a stopping/closing tab.     |
+| `rejected`                | An existing lifecycle limit: 16 tabs, 4 running agents, 8 queued messages, or a stopping/closing tab.     |
 | `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or 4000 chars. |
 | `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                          |
 | `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                 |

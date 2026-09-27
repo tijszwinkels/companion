@@ -256,6 +256,48 @@ test('a refused send keeps the draft and explains why', { skip }, async (context
   assert.equal(await page.evaluate(`document.querySelector('#composer').value`), 'Follow-up 9');
 });
 
+test(
+  'sixteen phone tabs stay reachable and a refused seventeenth keeps its draft',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context, {
+      backend: async (_request, _signal, emit) => {
+        emit({ ...chatMessage('answer', 'assistant', 'Completed fixture'), state: 'done' });
+      },
+    });
+    for (let number = 1; number <= 16; number++) {
+      const id = fixture.sessions.start({ ...frame, utterance: `Fixture ${number}` }, signal());
+      await waitFor(() => fixture.sessions.interaction(id).agentAcceptsFollowUp);
+    }
+
+    for (const width of [320, 390]) {
+      const page = await pairedPhone(fixture, browser, width, 568);
+      await page.waitFor(`document.querySelectorAll('.session-tab').length === 16`);
+      await page.tap('.session-tab:nth-child(16)');
+      await page.waitFor(`document.querySelector('.session-tab:nth-child(16)[aria-current=page]')`);
+      await page.waitFor(
+        `document.querySelector('.message.user')?.textContent.includes('Fixture 16')`,
+      );
+      assert.ok((await horizontalOverflow(page)) <= 0, `sixteenth tab overflow at ${width}px`);
+
+      await page.tap('.rail-activity');
+      await page.tap('#ask-text');
+      await page.type('Keep this seventeenth question');
+      await page.tap('.ask .action.primary');
+      await page.waitFor(
+        `document.querySelector('.ask .input-error')?.textContent.includes('16 tabs maximum')`,
+      );
+      assert.equal(
+        await page.evaluate(`document.querySelector('#ask-text').value`),
+        'Keep this seventeenth question',
+      );
+      assert.equal(fixture.sessions.snapshot().length, 16);
+      assert.deepEqual(page.errors, []);
+      await page.close();
+    }
+  },
+);
+
 test('tool groups expand into paged details on demand', { skip }, async (context) => {
   const { fixture, browser } = await setup(context);
   fixture.sessions.start({ ...frame, utterance: 'Use tools' }, signal());
