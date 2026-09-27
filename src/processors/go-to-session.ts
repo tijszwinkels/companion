@@ -3,12 +3,34 @@ import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '.
 import type { UserSensorRouter } from '../core/router.ts';
 import { voiceLabel } from '../core/voice-shortcut.ts';
 
-const spokenNumbers = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+// Accept only complete cardinal labels, never a partial or ambiguous navigation request.
+const spokenNumbers = [
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+  'eleven',
+  'twelve',
+  'thirteen',
+  'fourteen',
+  'fifteen',
+  'sixteen',
+  'seventeen',
+  'eighteen',
+  'nineteen',
+  'twenty',
+];
 
 /** Reserve the entire command prefix, including invalid/out-of-range requests. */
 export class GoToSession implements UserSensorProcessor {
   readonly id = 'go-to-session';
-  readonly label = 'Go to session 1–9';
+  readonly label = 'Go to session 1–20';
   readonly name = 'GO_TO_SESSION';
   readonly prefixes = ['go to session'];
   readonly acceptsEmptyPrefix = true;
@@ -31,12 +53,14 @@ export class GoToSession implements UserSensorProcessor {
   async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     const label = voiceLabel(frame.utterance);
-    const index = /^[1-9]$/u.test(label) ? Number(label) - 1 : spokenNumbers.indexOf(label);
+    const index = /^(?:[1-9]|1[0-9]|20)$/u.test(label)
+      ? Number(label) - 1
+      : spokenNumbers.indexOf(label);
     const context = frame.interaction;
     if (index < 0 || !context?.agentNavigation?.ids[index]) {
       this.log(
         'skipped',
-        'Go to session requires an existing session number from 1 to 9',
+        'Go to session requires an existing session number from 1 to 20',
         frame.id,
       );
       this.activity.outcome?.(frame.id, 'skipped');

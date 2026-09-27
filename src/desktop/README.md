@@ -703,10 +703,12 @@ update routing without sending a state snapshot. Selection or navigation
 availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
 ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
-“go to session 1” through “go to session 9”, also one through nine, with ordinary
-ASR casing/spacing/terminal punctuation. Invalid/missing/out-of-range suffixes and
-disabled shortcuts remain consumed, never passed to inference or conversation
-text. This processor has its own shortcut toggle and no inference toggle.
+“go to session 1” through “go to session 20”, also one through twenty, with ordinary
+ASR casing/spacing/terminal punctuation. Ordinals, partial, missing, and
+out-of-range suffixes are consumed, as are disabled shortcuts; none is passed
+to inference or conversation text. The open-tab limit is currently 12, so positions 13–20 are recognized but
+cannot be selected unless a future change increases that separate limit. This
+processor has its own shortcut toggle and no inference toggle.
 
 Immediately before dispatch the runtime rechecks the client, token, membership
 and order revision. It sends only that connection

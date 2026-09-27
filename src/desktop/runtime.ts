@@ -534,7 +534,7 @@ export class DesktopRuntime {
       !order ||
       !Number.isInteger(index) ||
       index < 0 ||
-      index > 8 ||
+      index >= 20 ||
       captured.clientId !== this.navigation.clientId ||
       captured.token !== this.navigation.token ||
       captured.orderRevision !== order.revision ||
