@@ -29,15 +29,6 @@
  *   diagnostic intent must be possible for its reason
  *   (`DIAGNOSTIC_FOR_INVALID_REASON` in contract.ts).
  *
- * - Variants: the variant ID must be known and its prompt hash must equal the
- *   current prompt of that ID. json-cleanup-v1 rows keep their exact key set;
- *   json-cleanup-percentages-v1 rows have three more fields (chosen and
- *   labeled self-reported percentages, tie flag) with their own cross-field
- *   rules, and only percentages rows may carry percentage invalid reasons.
- *   json-cleanup-percentages-optional-text-v1 rows have the percentages
- *   fields plus two more (`textSource`, `modelTextMatchesTranscript`), which
- *   must agree with the status and intent; `text-missing` is impossible there.
- *
  * Refusals are SafeEvalError messages naming only a field, a side, and (once
  * validated) an example UUID. They never quote a value, so a malformed file
  * cannot move private text into stderr or a report. Error strings are
@@ -53,26 +44,15 @@ import {
   diagnosticConsistentWithReason,
   INVALID_REASONS,
   isTextRoute,
-  PERCENTAGE_REASONS,
-  TEXT_SOURCES,
   type InvalidReason,
-  type TextSource,
 } from './contract.ts';
-import {
-  isVariantId,
-  MAX_OUTPUT_TOKENS,
-  MIN_OUTPUT_TOKENS,
-  OPTIONAL_TEXT_VARIANT_ID,
-  promptFingerprint,
-  UNSUPPORTED_REASONS,
-  usesPercentages,
-  type VariantId,
-} from './prompt.ts';
+import { MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, UNSUPPORTED_REASONS } from './prompt.ts';
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 /** Registered intent names follow the router's identifier rule. */
 const INTENT_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const VARIANT_ID_SHAPE = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 
 const MAX_ERROR_CHARACTERS = 600;
 const MAX_TARGET_FIELD_CHARACTERS = 2_000;
@@ -117,28 +97,6 @@ export interface ValidatedVariantRow {
   latencyMs: number;
   inputHash: string;
   outputTokens: number | null;
-  /** Percentages variants only; null for other rows and for non-valid responses. */
-  percentages: ValidatedPercentages | null;
-  /**
-   * Optional-text variant only; null for other variants' rows. For its rows,
-   * always present (with null fields unless valid on a text route).
-   */
-  optionalText: ValidatedOptionalText | null;
-}
-
-/** Validated text-source fields of one optional-text-variant row. */
-export interface ValidatedOptionalText {
-  /** Valid text-route rows only: model text or the transcript fallback. */
-  textSource: TextSource | null;
-  /** Only for `textSource: "model"`: the model's text equals the transcript. */
-  modelTextMatchesTranscript: boolean | null;
-}
-
-/** Validated self-reported values of one valid percentages-variant row. */
-export interface ValidatedPercentages {
-  chosen: number;
-  expected: number;
-  chosenTied: boolean;
 }
 
 export interface ValidatedBaselineReport {
@@ -151,7 +109,7 @@ export interface ValidatedBaselineReport {
 export interface ValidatedVariantReport {
   startedAt: string;
   datasetHash: string;
-  variantId: VariantId;
+  variantId: string;
   promptHash: string;
   outputTokens: number;
   supportedIds: string[];
@@ -436,157 +394,11 @@ const VARIANT_ROW_KEYS = [
   'estimatedCost',
 ] as const;
 
-/** Percentages-variant rows carry exactly three more fields. */
-const PERCENTAGES_VARIANT_ROW_KEYS = [
-  ...VARIANT_ROW_KEYS,
-  'chosenPercentage',
-  'expectedPercentage',
-  'chosenTied',
-] as const;
-
-/** Optional-text rows: the percentages rows plus the two text-source fields. */
-const OPTIONAL_TEXT_VARIANT_ROW_KEYS = [
-  ...PERCENTAGES_VARIANT_ROW_KEYS,
-  'textSource',
-  'modelTextMatchesTranscript',
-] as const;
-
-function rowKeysFor(variant: VariantId): readonly string[] {
-  if (variant === OPTIONAL_TEXT_VARIANT_ID) {
-    return OPTIONAL_TEXT_VARIANT_ROW_KEYS;
-  }
-  if (usesPercentages(variant)) {
-    return PERCENTAGES_VARIANT_ROW_KEYS;
-  }
-  return VARIANT_ROW_KEYS;
-}
-
-/**
- * Cross-field rules for the text-source fields of an optional-text row:
- * - a valid text-route row has `textSource` "model" or "transcript" (and
- *   `hasText` true, checked by the caller);
- * - every other row (no-text intent, invalid, error) has `textSource` null;
- * - `modelTextMatchesTranscript` is a boolean exactly when `textSource` is
- *   "model", and null otherwise.
- */
-function validateRowOptionalText(
-  value: Record<string, unknown>,
-  status: VariantStatus,
-  prediction: string | null,
-  field: string,
-): ValidatedOptionalText {
-  const textSource =
-    value.textSource === null ? null : oneOf(value.textSource, TEXT_SOURCES, `${field} textSource`);
-
-  const validTextRoute = status === 'valid' && prediction !== null && isTextRoute(prediction);
-  if (validTextRoute !== (textSource !== null)) {
-    refuse(`${field} textSource must be set exactly for a valid text-route response`);
-  }
-
-  let modelTextMatchesTranscript: boolean | null = null;
-  if (textSource === 'model') {
-    modelTextMatchesTranscript = boolean(
-      value.modelTextMatchesTranscript,
-      `${field} modelTextMatchesTranscript`,
-    );
-  } else if (value.modelTextMatchesTranscript !== null) {
-    refuse(`${field} modelTextMatchesTranscript must be null unless the model returned text`);
-  }
-
-  return { textSource, modelTextMatchesTranscript };
-}
-
-function percentage(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 100) {
-    refuse(`${field} must be an integer from 0 to 100`);
-  }
-  return value;
-}
-
-/**
- * Cross-field rules for the self-reported values of a valid row, implied by
- * the contract (integers 0-100, total exactly 100, chosen intent highest,
- * ties flagged). The full distribution is private, so only these are checkable.
- */
-function validateRowPercentages(
-  value: Record<string, unknown>,
-  status: VariantStatus,
-  correct: boolean,
-  field: string,
-): ValidatedPercentages | null {
-  if (status !== 'valid') {
-    if (
-      value.chosenPercentage !== null ||
-      value.expectedPercentage !== null ||
-      value.chosenTied !== null
-    ) {
-      refuse(`${field} percentages must be null unless the response was valid`);
-    }
-    return null;
-  }
-
-  const chosen = percentage(value.chosenPercentage, `${field} chosenPercentage`);
-  const expected = percentage(value.expectedPercentage, `${field} expectedPercentage`);
-  const chosenTied = boolean(value.chosenTied, `${field} chosenTied`);
-
-  // The highest of values summing to 100 is at least 1.
-  if (chosen < 1) {
-    refuse(`${field} chosenPercentage cannot be the highest of a total of 100`);
-  }
-  if (correct && expected !== chosen) {
-    refuse(`${field} expectedPercentage must equal chosenPercentage when correct`);
-  }
-  if (!correct && expected > chosen) {
-    refuse(`${field} expectedPercentage cannot exceed the chosen (highest) percentage`);
-  }
-  // Another intent at the same value as a wrong choice is a tie by definition.
-  if (!correct && expected === chosen && !chosenTied) {
-    refuse(`${field} chosenTied must be true when the labeled intent shares the highest value`);
-  }
-
-  // Joint mass: the values that these three fields prove to exist on DISTINCT
-  // intents must fit in a total of 100. Only logically necessary values are
-  // counted; unknown other intents are never guessed (they can be 0).
-  // - Correct: the chosen (= labeled) intent, plus one more intent at the same
-  //   value when tied.
-  // - Wrong: the chosen and the labeled intent are different intents. When
-  //   tied and the labeled value is lower, the tie partner is a third intent at
-  //   the chosen value; when the labeled value equals the chosen value, the
-  //   labeled intent itself can be the tie partner.
-  let necessaryTotal = chosen;
-  if (correct) {
-    if (chosenTied) {
-      necessaryTotal += chosen;
-    }
-  } else {
-    necessaryTotal += expected;
-    if (chosenTied && expected < chosen) {
-      necessaryTotal += chosen;
-    }
-  }
-  if (necessaryTotal > 100) {
-    refuse(`${field} percentages on distinct intents would total more than 100`);
-  }
-  // An untied highest value of 1 forces every other intent to 0, so the total
-  // would be 1. Other lower bounds depend on how many intents were offered,
-  // which the row does not record, so they are not guessed.
-  if (chosen === 1 && !chosenTied) {
-    refuse(`${field} an untied highest percentage of 1 cannot total 100`);
-  }
-
-  return { chosen, expected, chosenTied };
-}
-
-function validateVariantRow(
-  value: Record<string, unknown>,
-  variant: VariantId,
-): ValidatedVariantRow {
+function validateVariantRow(value: Record<string, unknown>): ValidatedVariantRow {
   const id = matching(value.id, UUID, 'Variant row id');
   const field = `Variant row ${id}`;
-  const withPercentages = usesPercentages(variant);
-  const withOptionalText = variant === OPTIONAL_TEXT_VARIANT_ID;
 
-  exactKeys(value, rowKeysFor(variant), field);
+  exactKeys(value, VARIANT_ROW_KEYS, field);
   const expected = matching(value.expected, INTENT_NAME, `${field} expected label`);
   nullableMatching(value.originalPrediction, INTENT_NAME, `${field} originalPrediction`);
   if (value.fixedRoute !== null) {
@@ -640,14 +452,6 @@ function validateVariantRow(
     if (invalidReason === 'route-changed') {
       refuse(`${field} route-changed cannot occur in an inferred run`);
     }
-    // Only the percentages contracts can fail on a percentage rule, and the
-    // optional-text contract accepts a text route without text.
-    if (PERCENTAGE_REASONS.has(invalidReason) && !withPercentages) {
-      refuse(`${field} invalidReason is not possible for this variant`);
-    }
-    if (invalidReason === 'text-missing' && withOptionalText) {
-      refuse(`${field} invalidReason is not possible for this variant`);
-    }
     // The diagnostic must be one the parser could have produced for this reason.
     if (!diagnosticConsistentWithReason(invalidReason, selectedIntent)) {
       refuse(`${field} selectedIntent is impossible for its invalid reason`);
@@ -675,13 +479,6 @@ function validateVariantRow(
     refuse(`${field} literalCheck cannot be evaluated without valid cleaned text`);
   }
 
-  const percentages = withPercentages
-    ? validateRowPercentages(value, status, correct, field)
-    : null;
-  const optionalText = withOptionalText
-    ? validateRowOptionalText(value, status, prediction, field)
-    : null;
-
   return {
     id,
     expected,
@@ -695,8 +492,6 @@ function validateVariantRow(
     latencyMs,
     inputHash,
     outputTokens,
-    percentages,
-    optionalText,
   };
 }
 
@@ -717,14 +512,6 @@ export function validateVariantReport(value: unknown, targetName: string): Valid
   const variant = object(report.variant, 'Variant metadata');
   if (variant.exactReplay !== false) {
     refuse('Variant metadata must declare exactReplay false');
-  }
-  // A known variant ID with its exact prompt hash: a changed prompt must use a new ID.
-  if (!isVariantId(variant.id)) {
-    refuse('Variant id is not a known experiment variant');
-  }
-  const variantId = variant.id;
-  if (variant.promptHash !== promptFingerprint(variantId)) {
-    refuse('Variant promptHash does not match the prompt of its variant id');
   }
   const outputTokens = object(variant.outputTokens, 'Variant outputTokens').experimental;
   if (
@@ -749,15 +536,13 @@ export function validateVariantReport(value: unknown, targetName: string): Valid
   return {
     startedAt: timestamp(report.startedAt, 'Variant startedAt'),
     datasetHash: matching(report.datasetHash, HASH, 'Variant datasetHash'),
-    variantId,
-    promptHash: variant.promptHash as string,
+    variantId: matching(variant.id, VARIANT_ID_SHAPE, 'Variant id'),
+    promptHash: matching(variant.promptHash, HASH, 'Variant promptHash'),
     outputTokens,
     supportedIds: uuidList(examples.supportedIds, 'Variant supportedIds'),
     exclusions,
     target: selectTarget(report, targetName, 'Variant'),
-    rows: selectedRows(report, targetName, 'Variant').map((row) =>
-      validateVariantRow(row, variantId),
-    ),
+    rows: selectedRows(report, targetName, 'Variant').map((row) => validateVariantRow(row)),
   };
 }
 

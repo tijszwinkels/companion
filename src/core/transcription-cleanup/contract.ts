@@ -22,30 +22,6 @@
  * labels, closing a session and so on) requires exactly `{}`: no text is
  * fabricated for an action that does not take any.
  *
- * Percentages contract (variant json-cleanup-percentages-v1, inferred only):
- * the same object with a third key, "percentages", holding one SELF-REPORTED
- * integer percentage per offered intent:
- *
- *   {"intent":"IGNORE","parameters":{},"percentages":{"IGNORE":70,"SEND_TEXT_TO_APPLICATION":30}}
- *
- * Rules (see `validatePercentages`): exactly the offered intent names as keys
- * (order is not significant), every value an unsigned integer literal from 0
- * to 100 as written in the raw response (no decimals, signs, exponents or
- * leading zeros), a total of exactly 100, and the chosen intent must have the
- * highest value (ties allowed and flagged). Nothing is rounded, normalized or
- * repaired. These are the model's own estimates, not calibrated probabilities
- * or token log-probabilities.
- *
- * Optional-text contract (variant json-cleanup-percentages-optional-text-v1,
- * inferred only): the percentages contract, except that a TEXT ROUTE may also
- * answer with `"parameters": {}`, meaning "the transcript needs no change".
- * Only a missing `text` key counts as omission. `null`, `""`, whitespace-only,
- * surrounding whitespace, wrong types and extra parameter keys stay invalid
- * with their usual reasons. The deterministic fallback for an omitted text
- * (the recorded transcript, byte for byte) is `resolveEffectiveText`; this
- * module never invents or repairs text. Intents without text are unchanged:
- * `parameters` must be exactly `{}`.
- *
  * Invalid reasons are fixed codes. They never quote the response, because model
  * output can echo private dictation, context or screenshot text.
  *
@@ -85,17 +61,6 @@ export interface ResponseExpectation {
   allowedIntents: readonly string[];
   /** When set, the route was fixed by an explicit shortcut and must be echoed unchanged. */
   fixedRoute: TextRoute | null;
-  /**
-   * True for the percentages contract (inferred only): the response must also
-   * carry per-intent percentages. Absent or false is the unchanged v1 contract.
-   */
-  percentages?: boolean;
-  /**
-   * True for the optional-text contract (inferred only, always together with
-   * `percentages`): a text route may omit `parameters.text` to keep the
-   * recorded transcript unchanged. Absent or false: text routes require text.
-   */
-  optionalText?: boolean;
 }
 
 /** Fixed, content-free reasons why a response does not satisfy the contract. */
@@ -115,50 +80,16 @@ export const INVALID_REASONS = [
   'text-empty',
   'text-surrounding-whitespace',
   'text-on-no-text-intent',
-  // Percentages contract only; checked after everything above passed.
-  'percentages-missing',
-  'percentages-not-an-object',
-  'percentages-keys-mismatch',
-  'percentage-not-a-number',
-  'percentage-not-integer-literal',
-  'percentage-out-of-range',
-  'percentages-sum-not-100',
-  'chosen-intent-not-highest',
 ] as const;
 
 export type InvalidReason = (typeof INVALID_REASONS)[number];
-
-/** Reasons that only the percentages contract can produce. */
-export const PERCENTAGE_REASONS: ReadonlySet<InvalidReason> = new Set<InvalidReason>([
-  'percentages-missing',
-  'percentages-not-an-object',
-  'percentages-keys-mismatch',
-  'percentage-not-a-number',
-  'percentage-not-integer-literal',
-  'percentage-out-of-range',
-  'percentages-sum-not-100',
-  'chosen-intent-not-highest',
-]);
 
 export type ParsedResponse =
   | {
       valid: true;
       intent: string;
-      /**
-       * Cleaned-up text for a text route; null for an intent without text, and
-       * null for a text route that omitted its text (see `textOmitted`).
-       */
+      /** Cleaned-up text for a text route; null for an intent without text. */
       text: string | null;
-      /**
-       * Optional-text contract only: true when a text route answered with
-       * `parameters: {}`, false otherwise. The caller then uses the recorded
-       * transcript unchanged (`resolveEffectiveText`).
-       */
-      textOmitted?: boolean;
-      /** Percentages contract only: the validated self-reported distribution. */
-      percentages?: Readonly<Record<string, number>>;
-      /** Percentages contract only: another intent shares the chosen intent's value. */
-      chosenTied?: boolean;
     }
   | {
       valid: false;
@@ -262,11 +193,8 @@ export function parseExperimentResponse(
     return invalid('duplicate-key');
   }
 
-  const allowedTopLevelKeys = expectation.percentages
-    ? ['intent', 'parameters', 'percentages']
-    : ['intent', 'parameters'];
   const topLevelKeys = Object.keys(value);
-  if (topLevelKeys.some((key) => !allowedTopLevelKeys.includes(key))) {
+  if (topLevelKeys.some((key) => key !== 'intent' && key !== 'parameters')) {
     return invalid('unexpected-top-level-key');
   }
 
@@ -301,19 +229,13 @@ export function parseExperimentResponse(
     if (parameterKeys.length > 0) {
       return invalid('unexpected-parameter');
     }
-    return withPercentages(value, responseText, expectation, intent, null, false);
+    return { valid: true, intent, text: null };
   }
 
   if (parameterKeys.some((key) => key !== 'text')) {
     return invalid('unexpected-parameter');
   }
   if (!('text' in parameters)) {
-    // Only the optional-text contract accepts a text route without text, and
-    // only as exactly `{}` (other keys were refused just above). Every other
-    // contract keeps requiring text.
-    if (expectation.optionalText) {
-      return withPercentages(value, responseText, expectation, intent, null, true);
-    }
     return invalid('text-missing');
   }
 
@@ -332,204 +254,7 @@ export function parseExperimentResponse(
     return invalid('text-surrounding-whitespace');
   }
 
-  return withPercentages(value, responseText, expectation, intent, text, false);
-}
-
-/**
- * Finish a response that satisfied the v1 contract (or, for the optional-text
- * contract, its parameters rules). For v1 this returns the unchanged
- * `{ valid, intent, text }` result; for the percentages contract it
- * additionally requires valid percentages. Only optional-text results carry
- * `textOmitted`, so the other contracts keep their exact result shape.
- */
-function withPercentages(
-  value: Record<string, unknown>,
-  responseText: string,
-  expectation: ResponseExpectation,
-  intent: string,
-  text: string | null,
-  textOmitted: boolean,
-): ParsedResponse {
-  const omission = expectation.optionalText ? { textOmitted } : {};
-
-  if (!expectation.percentages) {
-    return { valid: true, intent, text, ...omission };
-  }
-
-  const checked = validatePercentages(value, responseText, expectation, intent);
-  if (!checked.valid) {
-    return invalid(checked.reason);
-  }
-  return {
-    valid: true,
-    intent,
-    text,
-    ...omission,
-    percentages: checked.percentages,
-    chosenTied: checked.chosenTied,
-  };
-}
-
-/** Where the effective text of a valid response comes from. */
-export type TextSource = 'model' | 'transcript';
-
-export const TEXT_SOURCES: readonly TextSource[] = ['model', 'transcript'];
-
-/**
- * The text a later action would use for a VALID response, with the only
- * fallback this experiment has. Pure and deterministic:
- *
- * - An intent without text: no text (`{ text: null, source: null }`).
- * - A text route with model text: that text, exactly as returned.
- * - A text route that omitted its text (optional-text contract only): the
- *   recorded transcript, byte for byte. Nothing is trimmed, normalized or
- *   cleaned, so the result is exactly what was recorded.
- *
- * The fallback reflects only the model's claim that the transcript needs no
- * change. It does not prove that cleanup was unnecessary; only a manual
- * review of the private outputs can judge that.
- *
- * Only call this for valid responses. `transcript` must be the verified
- * recorded utterance of the same example.
- */
-export function resolveEffectiveText(
-  parsed: Extract<ParsedResponse, { valid: true }>,
-  transcript: string,
-): { text: string | null; source: TextSource | null } {
-  if (!isTextRoute(parsed.intent)) {
-    return { text: null, source: null };
-  }
-  if (parsed.textOmitted === true) {
-    return { text: transcript, source: 'transcript' };
-  }
-  if (parsed.text === null) {
-    // Not reachable for a valid response: text routes either carry text or
-    // (optional-text contract only) were omitted.
-    throw Error('A valid text-route response has neither text nor an omission');
-  }
-  return { text: parsed.text, source: 'model' };
-}
-
-/**
- * Every number literal outside strings in already-validated JSON text, exactly
- * as written. `JSON.parse` turns `50.0`, `5e1` and `50` into the same number,
- * so "zero decimal places" can only be checked on the raw text.
- */
-export function numberLiterals(json: string): string[] {
-  const literals: string[] = [];
-
-  let index = 0;
-  while (index < json.length) {
-    const character = json[index]!;
-
-    if (character === '"') {
-      // Skip the whole string, including escaped characters.
-      index += 1;
-      while (json[index] !== '"') {
-        index += json[index] === '\\' ? 2 : 1;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (character === '-' || (character >= '0' && character <= '9')) {
-      let end = index + 1;
-      while (end < json.length && /[0-9eE.+-]/.test(json[end]!)) {
-        end += 1;
-      }
-      literals.push(json.slice(index, end));
-      index = end;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return literals;
-}
-
-/** An unsigned integer literal without leading zeros: `0`, `7`, `100`, never `07`, `7.0`, `-7`, `7e0`. */
-const INTEGER_LITERAL = /^(?:0|[1-9][0-9]*)$/;
-
-/**
- * Check the percentages object of a response that already satisfied the v1
- * contract. Order of checks, each with its own reason:
- *
- * 1. present (`percentages-missing`) and a plain object (`percentages-not-an-object`);
- * 2. exactly the offered intent names as keys, in any order (`percentages-keys-mismatch`);
- * 3. every value a JSON number (`percentage-not-a-number`);
- * 4. every number written as an unsigned integer literal (`percentage-not-integer-literal`).
- *    In this contract the percentages are the only numbers a valid response
- *    can contain (intent and text are strings), so every number literal in
- *    the raw text is checked;
- * 5. every value from 0 to 100 (`percentage-out-of-range`);
- * 6. a total of exactly 100 (`percentages-sum-not-100`). No rounding
- *    tolerance: the prompt tells the model how to make the total exact;
- * 7. the chosen intent has the highest value (`chosen-intent-not-highest`).
- *    Ties at the top are allowed when the chosen intent is one of them, and
- *    reported as `chosenTied`.
- */
-function validatePercentages(
-  value: Record<string, unknown>,
-  responseText: string,
-  expectation: ResponseExpectation,
-  intent: string,
-):
-  | { valid: true; percentages: Readonly<Record<string, number>>; chosenTied: boolean }
-  | { valid: false; reason: InvalidReason } {
-  if (!('percentages' in value)) {
-    return { valid: false, reason: 'percentages-missing' };
-  }
-  const percentages = value.percentages;
-  if (!isPlainObject(percentages)) {
-    return { valid: false, reason: 'percentages-not-an-object' };
-  }
-
-  const keys = Object.keys(percentages);
-  const offered = expectation.allowedIntents;
-  if (keys.length !== offered.length || offered.some((name) => !keys.includes(name))) {
-    return { valid: false, reason: 'percentages-keys-mismatch' };
-  }
-
-  for (const name of offered) {
-    if (typeof percentages[name] !== 'number') {
-      return { valid: false, reason: 'percentage-not-a-number' };
-    }
-  }
-  if (numberLiterals(responseText).some((literal) => !INTEGER_LITERAL.test(literal))) {
-    return { valid: false, reason: 'percentage-not-integer-literal' };
-  }
-
-  // Copy in offered order into a null-prototype object: names are data.
-  const distribution: Record<string, number> = Object.create(null);
-  let total = 0;
-  for (const name of offered) {
-    const percentage = percentages[name] as number;
-    if (percentage < 0 || percentage > 100) {
-      return { valid: false, reason: 'percentage-out-of-range' };
-    }
-    distribution[name] = percentage;
-    total += percentage;
-  }
-  if (total !== 100) {
-    return { valid: false, reason: 'percentages-sum-not-100' };
-  }
-
-  const chosen = distribution[intent]!;
-  let chosenTied = false;
-  for (const name of offered) {
-    if (name === intent) {
-      continue;
-    }
-    if (distribution[name]! > chosen) {
-      return { valid: false, reason: 'chosen-intent-not-highest' };
-    }
-    if (distribution[name] === chosen) {
-      chosenTied = true;
-    }
-  }
-
-  return { valid: true, percentages: distribution, chosenTied };
+  return { valid: true, intent, text };
 }
 
 /**
@@ -607,16 +332,6 @@ export const DIAGNOSTIC_FOR_INVALID_REASON: Readonly<Record<InvalidReason, Diagn
   'text-empty': 'text-route',
   'text-surrounding-whitespace': 'text-route',
   'text-on-no-text-intent': 'no-text-intent',
-  // Percentage checks run only after the whole v1 contract passed, so the
-  // diagnostic always finds the (allowed) intent.
-  'percentages-missing': 'present',
-  'percentages-not-an-object': 'present',
-  'percentages-keys-mismatch': 'present',
-  'percentage-not-a-number': 'present',
-  'percentage-not-integer-literal': 'present',
-  'percentage-out-of-range': 'present',
-  'percentages-sum-not-100': 'present',
-  'chosen-intent-not-highest': 'present',
 };
 
 /** Whether an invalid row's diagnostic intent is possible for its reason. */

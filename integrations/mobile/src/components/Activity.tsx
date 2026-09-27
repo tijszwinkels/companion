@@ -375,6 +375,8 @@ const outcomeLabels: Record<string, string> = {
   cancelled: 'Cancelled',
   interrupted: 'Interrupted',
   failed: 'Failed',
+  error: 'Failed',
+  superseded: 'Continued',
   preview: 'Preview',
 };
 
@@ -387,6 +389,7 @@ function HistoryCard(props: {
 }) {
   const store = useStore();
   const { entry } = props;
+  const audioOnly = entry.transcriptSource === 'audio-only';
   const [choosing, setChoosing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -410,6 +413,13 @@ function HistoryCard(props: {
   return (
     <article class="history-card" aria-label={`Utterance at ${clockTime(entry.observedAt)}`}>
       <div class="utterance">{entry.utterance}</div>
+      {(audioOnly || entry.transcriptSource === 'earlier-attempt') && (
+        <p class="hint transcript-source">
+          {audioOnly
+            ? 'Audio only: no speech was recognized, so nothing was sent.'
+            : 'Text from an earlier part of this utterance; the full recording was not transcribed.'}
+        </p>
+      )}
       <div class="facts">
         <span>{clockTime(entry.observedAt)}</span>
         {entry.application && <span class="pill">{entry.application}</span>}
@@ -427,6 +437,7 @@ function HistoryCard(props: {
       <div class="actions">
         <button
           class="action small"
+          disabled={audioOnly}
           onClick={async () => {
             setCopied(await copyText(entry.utterance));
             setTimeout(() => setCopied(false), 1500);
@@ -436,7 +447,7 @@ function HistoryCard(props: {
         </button>
         <button
           class="action small"
-          disabled={!props.online || busy}
+          disabled={!props.online || busy || audioOnly}
           onClick={() =>
             act(async () => {
               await store.request('start-history-agent', { id: entry.id });

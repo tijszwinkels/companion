@@ -51,6 +51,7 @@ Item {
   onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
   onOnlineChanged: {
     if (online) {
+      if (native.ready) Qt.callLater(root.reportObserverState)
       Qt.callLater(root.reportPanelState)
       Qt.callLater(root.reportMediaPlayback)
     }
@@ -72,7 +73,7 @@ Item {
       root.pendingHistoryInsert = null
       playback.resumePaused()
       if (ready) {
-        root.send({action: "panel-state", id: "", composerFocused: false, keyboardFocused: false})
+        root.reportObserverState()
         native.send({action: "claim"})
       }
     }
@@ -135,6 +136,14 @@ Item {
     onPageRequested: request => root.send(request)
   }
 
+  // While the native window owns the panel, this observer still keeps its own
+  // conversations. Declare once per connection that routine state messages
+  // may omit them; this neutral report never claims selection or focus.
+  function reportObserverState() {
+    root.send({action: "panel-state", id: "", composerFocused: false, keyboardFocused: false,
+      incrementalSessions: true})
+  }
+
   function reportPanelState() {
     if (native.ready) return
     // A retained selection without a displayed panel is not a voice target.
@@ -143,7 +152,7 @@ Item {
       composerFocused: id !== "" && sidePanel.composerFocusId === id,
       keyboardFocused: sidePanel.keyboardFocused,
       visible: agentSessions.panelVisible, navigationToken: agentSessions.navigationToken,
-      draftHost: true})
+      draftHost: true, incrementalSessions: true})
   }
 
   // The listener only asks the panel that advertised draftHost. Apply the text
@@ -350,10 +359,8 @@ Item {
         const cleanup = message.transcriptionCleanup || null
         if (JSON.stringify(root.transcriptionCleanup) !== JSON.stringify(cleanup)) root.transcriptionCleanup = cleanup
         root.updateAgentActions(message.agentActions)
-        agentSessions.replace(message.sessions || [])
-        agentSessions.orderRevision = message.sessionOrderRevision || ""
+        agentSessions.applyState(message)
         agentSessions.controlsAvailable = message.sessionControlsAvailable === true
-        agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready

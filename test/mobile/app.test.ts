@@ -301,6 +301,51 @@ test('activity shows this run and labels feedback', { skip }, async (context) =>
 });
 
 test(
+  'Activity explains audio-only and recovered records without offering an empty question',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const activity = fixture.desktop.runtime.activity;
+    activity.transcribed?.({ ...frame, id: 91, utterance: '', source: 'audio-only' });
+    activity.outcome?.(91, 'error');
+    activity.finished?.(91);
+    const page = await pairedPhone(fixture, browser);
+    await page.waitFor(`document.querySelector('.transcript-source')`);
+    assert.match(await text(page, '.transcript-source'), /Audio only.*nothing was sent/);
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('.history-card .actions button:nth-child(1)').disabled`,
+      ),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('.history-card .actions button:nth-child(2)').disabled`,
+      ),
+      true,
+    );
+
+    activity.transcribed?.({
+      ...frame,
+      id: 92,
+      utterance: 'Earlier supplied words',
+      source: 'earlier-attempt',
+    });
+    activity.outcome?.(92, 'error');
+    activity.finished?.(92);
+    await page.waitFor(`document.querySelectorAll('.history-card').length === 2`);
+    assert.match(await text(page, '.history-card:first-child .transcript-source'), /earlier part/);
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('.history-card .actions button:nth-child(2)').disabled`,
+      ),
+      false,
+    );
+    assert.deepEqual(page.errors, []);
+  },
+);
+
+test(
   'reconnects after the gateway returns, without replaying requests',
   { skip },
   async (context) => {

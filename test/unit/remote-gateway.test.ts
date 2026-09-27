@@ -513,3 +513,39 @@ test('the request parser returns only declared fields', () => {
   assert.equal(parseRemoteRequest({ type: 'request', requestId: 'bad id', action: 'x' }).ok, false);
   assert.equal(parseRemoteRequest([1, 2]).ok, false);
 });
+
+test('desktop incremental state does not remove phone snapshots or expose desktop controls', async (context) => {
+  const fixture = await withFixture(context);
+  const id = fixture.sessions.start(
+    { ...frame, utterance: 'Independent snapshot variants' },
+    signal(),
+  );
+  await waitFor(() => fixture.runs.length === 1);
+  fixture.desktop.send({
+    action: 'panel-state',
+    id,
+    composerFocused: true,
+    incrementalSessions: true,
+  });
+  await fixture.desktop.reply('panel-state');
+
+  const { token } = await fixture.pair();
+  const phone = await fixture.phone(token);
+  await phone.engine('state');
+  phone.send({ type: 'request', requestId: 'select-phone', action: 'panel-state', id });
+  await phone.reply('select-phone');
+  fixture.desktop.messages.length = 0;
+  phone.messages.length = 0;
+  fixture.desktop.pause.toggle();
+
+  const state = await phone.engine('state');
+  assert.equal(state.sessions.length, 1);
+  assert.equal(state.sessions[0].id, id);
+  assert.ok(Array.isArray(state.previousSessions));
+  assert.deepEqual(state.history, []);
+  assert.equal(state.agentActions, undefined);
+  await waitFor(() => fixture.desktop.messages.some((message) => message.type === 'state'));
+  const desktopState = fixture.desktop.messages.find((message) => message.type === 'state')!;
+  assert.equal(Object.hasOwn(desktopState, 'sessions'), false);
+  assert.equal(fixture.desktop.runtime.activity.interactionContext!().agentSessionId, id);
+});

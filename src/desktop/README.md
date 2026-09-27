@@ -59,12 +59,46 @@ On connection and state changes, the server sends:
 }
 ```
 
-The recent view contains the latest 100 nonempty transcripts, newest first.
+The recent view contains the latest 100 records, newest first, including
+audio-only failures (an empty transcript with `transcriptSource: "audio-only"`).
 `speaking` is the current VAD speech state, independent of the processing count.
 It returns to false on silence, pause, end of input, or capture failure. Older
 servers omit this optional field; adapters should treat absence as false.
 It is a view limit, not a database retention policy. Snapshot the rows when
 opening a picker so new utterances cannot displace its selected item.
+
+### State stream, conversation sync and backpressure
+
+The **first** `state` message on every connection is complete and authoritative,
+including `sessions`, `sessionOrderRevision` and `previousSessions`. A client that
+applies the ordered conversation events (`agent-session`, `agent-order`,
+`agent-history`, `agent-removed`, `agent-restored`) to its retained conversations
+declares so with `incrementalSessions: true` in `panel-state`. From then on, for
+the rest of that connection, routine `state` messages **omit** those three fields:
+absence means "unchanged since the connect snapshot and the events after it".
+Activity/status fields (`speaking`, `processing`, `history`, `intents`,
+`agentActions`, …) are still complete in every `state`. Speech, processing,
+cleanup and outcome updates therefore no longer resend every open transcript.
+Reconnects hydrate from a full snapshot again. Treat absent conversation fields
+in the first `state` after connecting as empty, as for older listeners without
+sessions. Adapters that do not send the field (older installed shells) keep
+receiving complete snapshots. An older listener ignores the field and always
+sends complete snapshots, which new clients apply as before.
+
+The listener has one ordered queue per connection. A line is written directly
+while the socket is idle; after `write` reports backpressure, later lines wait
+for `drain`. Events, replies, errors, `agent-select` and `agent-draft` keep their
+order and are never dropped individually. An unwritten `state` is superseded by
+the next one: the newer snapshot is appended after the events it already
+reflects, so a client never receives a snapshot older than a preceding event.
+A client under backpressure may therefore not see every intermediate state (for
+example a brief `speaking: true`); the latest state is always delivered.
+One slow client does not delay others. Bounds: a connection whose unwritten
+ordered backlog exceeds 16 MiB, or whose socket does not drain for 30 seconds,
+is closed; the UI reconnects and hydrates. A single message larger than the
+backlog bound (such as a large connect snapshot) is still written when the
+connection is idle. Queued lines belong to their connection and are never
+replayed to a later one.
 
 Commands:
 
@@ -82,7 +116,7 @@ Commands:
 {"action":"choose-agent","id":"question-uuid","revision":"choice-set-uuid","index":0}
 {"action":"stop-agent-run","id":"question-uuid","runId":"running-turn-uuid"}
 {"action":"composer-focus","id":"question-uuid"}
-{"action":"panel-state","id":"question-uuid","composerFocused":true}
+{"action":"panel-state","id":"question-uuid","composerFocused":true,"incrementalSessions":true}
 {"action":"agent-draft-result","requestId":"draft-request-uuid","outcome":"inserted","reason":""}
 {"action":"activity-history","sessionId":"listener-run-uuid","after":0,"through":1}
 {"action":"label-history","id":"utterance-uuid","correct":true}
@@ -120,7 +154,8 @@ opaque request ID so a delayed focus reply cannot submit a replacement draft.
 The Activity panel has a separate **current listener run** history. An utterance
 joins it only at the pipeline's `finished` callback, after its outcome is known.
 There is no 100-row cap here. The in-memory index lasts until listener shutdown;
-SQLite records and recordings remain until explicitly deleted.
+SQLite records and recordings remain until explicitly deleted, except the
+superseded attempts of a continued utterance (see the `superseded` outcome below).
 Closing/reopening the panel or reconnecting its socket does not begin a new run.
 
 `activity-history` returns an object in `result`: `{sessionId, entries, removed,
@@ -306,9 +341,10 @@ The shared keyboard queue stays occupied through typing and any explicit Enter;
 cancellation still interrupts the keyboard process. Longer text therefore has
 time to complete without extending a stalled focus lookup's deadline.
 
-SQLite lives at `~/companion/utterances.sqlite`. It uses WAL and has no automatic
-deletion. `utterances` stores the exact transcript, speech-end timestamp, active
-application/window identity, recognized intent, and final processing outcome.
+SQLite lives at `~/companion/utterances.sqlite`. It uses WAL. Its only automatic
+deletion is the retirement of superseded attempts described below. `utterances`
+stores the exact transcript, speech-end timestamp, active application/window
+identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
@@ -319,8 +355,24 @@ has been saved and removed; it does not delete its conversation archive.
 The `superseded` outcome marks a provisional speech attempt that was replaced
 because the user resumed speaking before it committed to an action. It plays no
 sound and is not a failure. The retranscribed whole utterance follows as its own
-row. An attempt replaced before its transcript arrived has no row at all. See
-[speech timing](../../docs/speech-timing.md).
+row. An attempt replaced before its transcript arrived has no row at all. Since
+2026-09-27 a superseded row is removed, with its PNG/WAV, once the final record
+of its utterance has its own row and WAV; its Activity card is never published
+then, and `history-deleted` (without `removed`) is sent. A final attempt that
+failed before its transcript records the earlier words with the combined WAV
+and its true outcome. Residual superseded rows remain only after a failed write
+or removal, a crash, or a paste/feedback reference. Older `superseded` rows are
+not touched. See [final-only retention](../../docs/speech-timing.md#final-only-retention).
+
+`utterances.transcript_source` (nullable, additive, no schema version change) is
+`earlier-attempt` when the stored text came from an earlier attempt of the same
+continued utterance: a recovered failure or a D2 fallback. It is `audio-only`
+for a failed continued utterance that yielded no usable text: the transcript is
+empty, the WAV is kept, and paste recovery and history-agent questions refuse
+the row. Older checkouts would show such a row as an empty utterance. NULL means
+unspecified, including all older rows and typed input; it does not prove that
+the whole recording was transcribed. History entries carry it as
+`transcriptSource`.
 
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
@@ -550,8 +602,9 @@ Session tabs scroll independently. On surfaces shorter than 305 theme-scaled
 pixels, the whole rail can also scroll to keep its controls reachable without
 overlap.
 
-The optional `sessions` array in each state snapshot contains complete chat
-state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
+The optional `sessions` array in the connect state snapshot (and in every state
+snapshot for a client that did not declare `incrementalSessions`) contains
+complete chat state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
 `updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,
 `completed`, `cancelled`, or `error`.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
@@ -565,7 +618,9 @@ Between snapshots, `{"type":"agent-session","session":{...}}` carries current
 session metadata and **only changed messages**. Upsert by session/message ID in
 arrival order; do not replace the entire conversation with this partial array.
 Streaming updates are coalesced every 40 ms; a terminal status flushes pending
-messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
+messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab. The
+listener never publishes `agent-session` for a conversation that is no longer
+open, so a late flush cannot add a closed tab back to an incremental client.
 Session metadata may carry `harness: "claude-code"` with
 `claudeCode: {model, effort}`; absence means a Pi conversation. `claudeCode.model`
 is the next turn's model. The panel and standalone window then list the
@@ -644,7 +699,7 @@ New clients also include `visible` and `navigationToken` in `panel-state`.
 `visible: true` covers Activity and Previous as well as conversations; their `id`
 stays empty. Tokens are unique to the UI instance and change when selection,
 Previous visibility, panel visibility or connection changes. Token-only reports
-update routing without sending a full snapshot. Selection or navigation
+update routing without sending a state snapshot. Selection or navigation
 availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
 ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
@@ -658,8 +713,10 @@ and order revision. It sends only that connection
 `{"type":"agent-select","id":"...","token":"...","orderRevision":"..."}`.
 The UI rechecks visibility, token, revision and membership before selecting the
 conversation, preventing even a socket-delayed command from changing a newer
-selection. Successful dispatch records `selected`; this indicates delivery to
-the owning UI, not a separate UI acknowledgement. No panel is opened by a hidden
+selection. Successful dispatch records `selected`; this indicates admission to the
+owning connection's ordered stream, not a separate UI acknowledgement. If that
+connection is closed before the line is written, the command is lost with it and
+the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
 target, and a disconnected client cannot retain navigation ownership.
 
 The optional `previousSessions` snapshot array and
@@ -696,6 +753,11 @@ a hidden panel, Activity, or another non-conversation page. Send changes to eith
 field and resend after connecting; the response is `panel-recorded`. The owning
 connection's loss clears this state. Unknown session IDs and a focused empty ID
 are rejected. These reports also update the keyboard delivery focus guard.
+Optional `incrementalSessions: true` is a sticky per-connection capability (see
+[state stream](#state-stream-conversation-sync-and-backpressure)); a non-boolean
+value is rejected. A shell observer while the native window owns the panel sends
+it in a neutral report (`id: ""`, no `visible`/`navigationToken`/`draftHost`),
+which never changes another connection's selection, focus or navigation.
 
 At speech end, the sensor frame captures the session ID, focus, and a local
 generation. `CONTINUE_OPEN_AGENT_CONVERSATION` is available whenever an agent
@@ -821,8 +883,9 @@ Reading another call or explicitly refreshing uses the current group revision.
 `next` is `{index, offset}` or null. Index selects a call;
 offset counts UTF-16 units in its name, input and result, separated by blank lines.
 Each page contains at most 8,192 units (under 50 KiB even with worst-case JSON
-escaping), against the socket's existing 2 MiB write-backpressure threshold.
-Requests remain under its 32 KiB input bound and 16 outstanding-control limit.
+escaping), far below each connection's 16 MiB ordered-backlog bound (see
+[state stream](#state-stream-conversation-sync-and-backpressure)). Requests
+remain under its 32 KiB input bound and 16 outstanding-control limit.
 Replies go only to the requester, never through session broadcasts.
 
 The portable panel and native client create the details reader only on expansion.

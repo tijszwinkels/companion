@@ -408,8 +408,9 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         continue;
       }
 
-      // Shortcuts have no inference time in which a pause can be bridged, so
-      // their commitment also waits for the legacy quiet window.
+      // Shortcuts have no inference time in which a pause can be bridged. Like
+      // inference, they commit only after the speech quiet floor (800 ms since
+      // the latest speech), so "go to session ‹pause› three" still merges.
       await commitment?.commit('shortcut', signal);
 
       const intentSignal = this.intentControllers.get(processor.name)!.shortcut.signal;
@@ -533,8 +534,10 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     // Cancellation during inference must prevent the processor's side effect.
     signal.throwIfAborted();
 
-    // Dispatch immediately unless the user resumed speaking; then wait until
-    // that speech is either merged into a new attempt or rejected as noise.
+    // Commit once 800 ms have passed since the latest speech; a slower answer
+    // commits at once. If the user resumed speaking, wait until that speech is
+    // either merged into a new attempt (this one is then superseded) or
+    // rejected as noise. The same point covers cleanup on and off.
     await commitment?.commit('inference', signal);
 
     const contextual = scopedByName.get(name);

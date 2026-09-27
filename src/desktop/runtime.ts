@@ -12,9 +12,9 @@ import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
 import { command } from '../system/command.ts';
 import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
-import { UtteranceHistory } from './history.ts';
+import { UtteranceHistory, type HistoryEntry } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
-import { DesktopServer } from './server.ts';
+import { DesktopServer, type SnapshotOptions } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
@@ -81,6 +81,25 @@ export class DesktopRuntime {
   private readonly server: DesktopServer;
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
+
+  // One record per continued utterance (docs/speech-timing.md, D4). Frames
+  // the pipeline reported as superseded (attemptSuperseded) belong to a
+  // continuation chain; only they are deferred, never a row merely because of
+  // its outcome. A chain member's row waits in `supersededRows`, unpublished
+  // and held against paste/label/delete, until the final attempt of its chain
+  // settles; it is then retired or published as an ordinary row. Both
+  // collections are emptied when their chain settles, on every exit path.
+  private readonly chainMembers = new Set<number>();
+  private readonly supersededRows = new Map<number, HistoryEntry>();
+  // Superseded frames named by a settled chain before they finished. Not
+  // expected (the sensor worker is serial); such a row is simply kept.
+  private readonly unsettledSuperseded = new Set<number>();
+  // Frames still in progress whose WAV has been published, so a chain's final
+  // attempt is known to own the whole utterance before anything is removed.
+  private readonly recordedAudio = new Set<number>();
+  // Retirements run after dispatch, off the sensor worker; close() awaits them.
+  private readonly retirements = new Set<Promise<void>>();
+
   // Reports belong to their connections, so a vanished adapter cannot leave
   // listening paused forever or clear another adapter's active playback.
   private readonly mediaClients = new Set<number>();
@@ -150,7 +169,7 @@ export class DesktopRuntime {
     this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview, run);
     this.server = new DesktopServer(
       options.socket,
-      () => this.snapshot(),
+      (snapshotOptions) => this.snapshot(snapshotOptions),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
         // A remote panel never owned desktop routing state; only forget it.
@@ -192,6 +211,13 @@ export class DesktopRuntime {
       }
       if (event.type === 'agent-removed' && event.id === this.panelSession) {
         this.setPanelState('', false, this.panelClient);
+      }
+      // Clients upsert `agent-session` by ID, so a late flush for a closed
+      // conversation (for example a rolled-back model choice) would add its
+      // tab back. Incremental clients no longer receive the periodic full
+      // snapshot that used to remove it again, so never publish that delta.
+      if (event.type === 'agent-session' && !options.agents?.has(event.session.id)) {
+        return;
       }
       this.server.publish(event);
       this.publishAgentActions();
@@ -242,8 +268,14 @@ export class DesktopRuntime {
         this.history.add(transcript);
         this.server.broadcast();
       },
-      screenshotCaptured: (id, screenshot) => this.history.saveScreenshot(id, screenshot),
-      audioCaptured: (id, samples) => this.history.saveAudio(id, samples),
+      screenshotCaptured: async (id, screenshot) => {
+        await this.history.saveScreenshot(id, screenshot);
+      },
+      audioCaptured: async (id, samples) => {
+        if (await this.history.saveAudio(id, samples)) {
+          this.recordedAudio.add(id);
+        }
+      },
       emptyAudioCaptured: (clip) => saveEmptyAudioClip(dirname(options.database), clip),
       intentRequested: (id, request) => this.history.saveIntentRequest(id, request),
       intentRecognized: (id, intent) => {
@@ -273,17 +305,36 @@ export class DesktopRuntime {
 
         this.server.broadcast();
       },
+      attemptSuperseded: (id) => {
+        this.chainMembers.add(id);
+
+        // Hold its row at once if it already has one: the replaced attempt can
+        // still be finishing (for example, a model ignoring cancellation), and
+        // no paste, label or question may start from it meanwhile. A row that
+        // appears later is held at `finished`.
+        const row = this.history.entryId(id);
+        if (row) {
+          this.history.holdForRetirement(row);
+        }
+      },
+      continuationSettled: (finalId, supersededIds) => {
+        this.settleContinuation(finalId, supersededIds);
+      },
       finished: (id) => {
         this.frameComposerRevisions.delete(id);
         this.processing.delete(id);
         this.delivery.finish(id);
+        this.recordedAudio.delete(id);
         const entry = this.history.finish(id);
-        if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
-          this.server.publish({
-            type: 'activity-entry',
-            sessionId: this.activityHistory.sessionId,
-            entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
-          });
+        const chainSettled = this.unsettledSuperseded.delete(id);
+
+        if (entry && this.chainMembers.has(id) && !chainSettled) {
+          // Its continuation normally owns the whole utterance; decide when
+          // that chain settles (settleContinuation) rather than show it now.
+          this.history.holdForRetirement(entry.id);
+          this.supersededRows.set(id, entry);
+        } else if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
+          this.publishActivity(entry);
         }
         this.server.broadcast();
       },
@@ -481,7 +532,22 @@ export class DesktopRuntime {
     this.server.broadcast();
   }
 
-  private snapshot(): object {
+  /**
+   * The UI state message body. With `sessions: false` (a connection that keeps
+   * conversations from incremental agent events), the conversation fields are
+   * omitted rather than resent: absence means "unchanged since the connect
+   * snapshot and the events that followed it".
+   */
+  private snapshot(options: SnapshotOptions): object {
+    const agents = this.options.agents;
+    const conversations = options.sessions
+      ? {
+          sessions: agents?.snapshot() ?? [],
+          sessionOrderRevision: agents?.order().revision ?? '',
+          previousSessions: agents?.previousSnapshot() ?? [],
+        }
+      : {};
+
     return {
       protocol: 1,
       ready: this.ready,
@@ -497,10 +563,8 @@ export class DesktopRuntime {
       activityHistoryCount: this.activityHistory.count,
       historyDeletionAvailable: !this.options.preview,
       textInputAvailable: Boolean(this.pipeline),
-      sessions: this.options.agents?.snapshot() ?? [],
-      sessionOrderRevision: this.options.agents?.order().revision ?? '',
-      sessionControlsAvailable: Boolean(this.options.agents),
-      previousSessions: this.options.agents?.previousSnapshot() ?? [],
+      ...conversations,
+      sessionControlsAvailable: Boolean(agents),
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
       // Null hides the switch (no cleanup support in this listener).
       transcriptionCleanup: this.options.cleanup ? { enabled: this.options.cleanup.enabled } : null,
@@ -597,6 +661,103 @@ export class DesktopRuntime {
       return true;
     }
     return false;
+  }
+
+  private publishActivity(entry: HistoryEntry): void {
+    this.server.publish({
+      type: 'activity-entry',
+      sessionId: this.activityHistory.sessionId,
+      entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
+    });
+  }
+
+  /**
+   * The final attempt of a continued utterance has settled, just before its
+   * own `finished`. Its superseded predecessors are retired only when the final
+   * attempt owns the whole utterance: its row exists and its WAV, which
+   * contains every earlier part's raw audio, was published. Its outcome does
+   * not matter; an error, cancellation or ignored result is the record the
+   * user recovers from, including the pipeline's recovered-failure record with
+   * the earlier words. A fresh PNG is not required: without one, the earlier
+   * screen is lost with its attempt rather than attached to the final record.
+   * If the final attempt does not own the utterance (its WAV or row could not
+   * be written), the predecessors are kept as explicit residual rows.
+   */
+  private settleContinuation(finalId: number, supersededIds: readonly number[]): void {
+    const owned = this.history.entryId(finalId) !== undefined && this.recordedAudio.has(finalId);
+
+    const predecessors: HistoryEntry[] = [];
+    for (const id of supersededIds) {
+      this.chainMembers.delete(id);
+      const entry = this.supersededRows.get(id);
+      if (entry) {
+        this.supersededRows.delete(id);
+        predecessors.push(entry);
+      } else if (this.processing.has(id)) {
+        this.unsettledSuperseded.add(id);
+      }
+    }
+
+    if (!predecessors.length) {
+      return;
+    }
+
+    if (!owned) {
+      this.log(
+        'retention-incomplete',
+        `Keeping superseded ${predecessors.map((entry) => entry.id).join(', ')}: ` +
+          'the final attempt was not fully recorded',
+        finalId,
+      );
+      for (const entry of predecessors) {
+        this.history.releaseRetirement(entry.id);
+        // Publish only a row that still exists: never recreate a card.
+        const current = this.history.find(entry.id);
+        if (current) {
+          this.publishActivity(current);
+        }
+      }
+      return;
+    }
+
+    const retirement = this.retire(predecessors).finally(() => {
+      this.retirements.delete(retirement);
+    });
+    this.retirements.add(retirement);
+  }
+
+  /**
+   * Remove superseded rows and their recordings one at a time. A row that
+   * cannot be retired (for example, one with an earlier paste reference, or a
+   * failed file or SQLite removal) stays as an explicit residual row, logged
+   * as `retention-incomplete` and shown as a normal Activity card; nothing
+   * reports a removal that did not happen. Files are removed first, so such a
+   * row may have lost some recordings; the final attempt owns the audio.
+   */
+  private async retire(entries: HistoryEntry[]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        await this.history.retireSuperseded(entry.id);
+        this.history.releaseRetirement(entry.id);
+        this.log('retired', `Superseded attempt ${entry.id}; its continuation keeps the utterance`);
+        this.server.publish({
+          type: 'history-deleted',
+          id: entry.id,
+          sessionId: this.activityHistory.sessionId,
+        });
+      } catch (error) {
+        // Kept as an explicit residual row. With files removed first, some of
+        // its recordings may already be gone; the final attempt owns the audio.
+        this.history.releaseRetirement(entry.id);
+        const message = error instanceof Error ? error.message : String(error);
+        this.log('retention-incomplete', `Keeping superseded ${entry.id}: ${message}`);
+        const current = this.history.find(entry.id);
+        if (current) {
+          this.publishActivity(current);
+        }
+      }
+    }
+    this.server.broadcast();
   }
 
   private publishFeedback(id: string): void {
@@ -956,10 +1117,18 @@ export class DesktopRuntime {
           (typeof request.navigationToken !== 'string' || request.navigationToken.length > 128)) ||
         typeof request.composerFocused !== 'boolean' ||
         (request.keyboardFocused !== undefined && typeof request.keyboardFocused !== 'boolean') ||
+        (request.incrementalSessions !== undefined &&
+          typeof request.incrementalSessions !== 'boolean') ||
         (!request.id && request.composerFocused) ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
         throw Error('Expected a visible agent session id (or empty id) and composerFocused');
+      }
+      // Clients that apply agent-session/order/history/removed/restored events
+      // to retained conversations say so once; routine state messages to them
+      // then omit transcripts. Older adapters keep receiving full snapshots.
+      if (request.incrementalSessions === true) {
+        this.server.enableIncrementalSessions(clientId);
       }
       // New clients report Activity/Previous visibility too. Older adapters
       // keep their existing conversation behavior, without voice navigation.
@@ -1270,6 +1439,9 @@ export class DesktopRuntime {
     this.options.cleanup?.off('change', this.cleanupChanged);
 
     try {
+      // The pipeline is idle by now; let pending retirements finish while the
+      // database and clients are still available.
+      await Promise.allSettled([...this.retirements]);
       await this.server.close();
       await this.sounds.close();
     } finally {

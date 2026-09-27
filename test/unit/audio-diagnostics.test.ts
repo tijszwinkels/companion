@@ -6,6 +6,7 @@ import { audioLevels } from '../../src/sensors/audio/levels.ts';
 import {
   ENDPOINT_MS,
   Segmenter,
+  type Segment,
   type SegmentDiagnostic,
 } from '../../src/sensors/audio/segmenter.ts';
 
@@ -79,6 +80,46 @@ test('VAD reports rejected duration separately from accepted silence, EOF and li
   assert.equal(reports.at(-1)?.audioMs, 30016);
   segmenter.finish();
   assert.equal(reports.length, 4, 'Empty EOF does not repeat the last report');
+});
+
+test('a segment carries the silence measured after its speech, never an assumed endpoint', () => {
+  const frame = new Float32Array(512);
+
+  // Silence endpoint: seven silent 32 ms frames.
+  const endpointed = new Segmenter();
+  let segment: Segment | undefined;
+  for (let index = 0; index < 5; index++) {
+    endpointed.push(0.9, frame);
+  }
+  for (let index = 0; !segment; index++) {
+    segment = endpointed.push(0, frame);
+  }
+  assert.equal(segment.reason, 'silence');
+  assert.equal(segment.trailingSilenceMs, ENDPOINT_MS);
+
+  // End of input two frames after the speech: only 64 ms were heard.
+  const ended = new Segmenter();
+  for (let index = 0; index < 5; index++) {
+    ended.push(0.9, frame);
+  }
+  ended.push(0, frame);
+  ended.push(0, frame);
+  segment = ended.finish();
+  assert.equal(segment?.reason, 'end');
+  assert.equal(segment?.trailingSilenceMs, 64);
+
+  // The 30-second limit three frames after the speech: 96 ms.
+  const limited = new Segmenter();
+  segment = undefined;
+  for (let index = 0; index < 935; index++) {
+    assert.equal(limited.push(0.9, frame), undefined);
+  }
+  for (let index = 0; !segment; index++) {
+    assert.ok(index < 3);
+    segment = limited.push(0, frame);
+  }
+  assert.equal(segment.reason, 'limit');
+  assert.equal(segment.trailingSilenceMs, 96);
 });
 
 test('speech energy measurement is independent of position and rejects nonfinite audio', () => {

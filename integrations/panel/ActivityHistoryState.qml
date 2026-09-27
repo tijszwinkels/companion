@@ -63,7 +63,11 @@ QtObject {
       // Transcription cleanup; empty strings when it was off or unknown.
       cleanedText: entry.cleanedText || "",
       cleanupStatus: entry.cleanupStatus || "",
-      cleanupFallback: entry.cleanupFallback || ""
+      cleanupFallback: entry.cleanupFallback || "",
+      // "earlier-attempt" when the text came from an earlier attempt of a
+      // continued utterance, "audio-only" when there is no text; empty when
+      // unspecified.
+      transcriptSource: entry.transcriptSource || ""
     };
     // New completions normally insert at zero; feedback/pages locate their
     // stable sequence by binary search without scanning the whole session.

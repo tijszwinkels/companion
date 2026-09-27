@@ -45,7 +45,6 @@ milestones. User instructions can waive review for a particular change.
 | Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
 | Opt-in phone gateway and phone panel | `src/remote/`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [phone app](../integrations/mobile/README.md) |
 
-
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
 it is not required to build or run the standalone host. Stock Quickshell still

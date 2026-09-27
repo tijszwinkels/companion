@@ -1,7 +1,7 @@
 # Phone panel parity with the desktop panel
 
 Source basis: `integrations/panel/*.qml`, `integrations/window/*.qml` and the
-desktop protocol in `src/desktop/README.md` at live baseline `416b6b5`, with the authorized Rail/Previous draft integrated from `5afab73`. Status meanings:
+desktop protocol in `src/desktop/README.md` at live baseline `3fdc5d0`, with the authorized Rail/Previous draft integrated from `5afab73`. Status meanings:
 
 - **Implemented**: works in the phone app, covered by the named automated check
   where noted (browser = `test/mobile/app.test.ts`, gateway =
@@ -15,21 +15,21 @@ Nothing here has been validated on a real iPhone, in Safari, or over Tailscale.
 
 ## Activity
 
-| Desktop capability                                  | Phone        | Notes                                                                         |
-| --------------------------------------------------- | ------------ | ----------------------------------------------------------------------------- |
-| Listening state, pause reason, speaking, processing | Implemented  | Status card; speaking ring. Browser: pause toggle.                            |
-| Pause / resume listening                            | Implemented  | Mic button and Settings switch. Receipts prevent a replayed toggle (gateway). |
-| Sound feedback toggle                               | Implemented  | Settings; sounds play on the computer.                                        |
-| Current-run history, paged, live updates, removals  | Implemented  | Revision-guarded like the desktop. Browser: Activity.                         |
-| Recent history snapshot (latest 100, earlier runs)  | Gap          | Only this run's history is shown.                                             |
-| Card: Copy                                          | Implemented  | Phone clipboard.                                                              |
-| Card: Insert into application                       | Desktop-only | Pastes into a desktop window.                                                 |
-| Card: New coding session from utterance             | Implemented  | Uses the saved screenshot on the computer; opens in the desktop background.   |
-| Card: Label correct / incorrect / actual intent     | Implemented  | Browser: label correct.                                                       |
-| Card: Delete utterance and recordings               | Implemented  | Confirmation required; only when the listener advertises deletion.            |
-| Type an utterance to the focused application        | Desktop-only | Needs a compositor window target. Phone substitute: start a conversation.     |
-| Intent and shortcut switches (independent)          | Implemented  | Activity; older listeners shown as read-only with a restart note.             |
-| Keyboard shortcut help, phrase animation            | Different    | Not applicable on a phone; simple speaking indicator.                         |
+| Desktop capability                                  | Phone        | Notes                                                                                                         |
+| --------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
+| Listening state, pause reason, speaking, processing | Implemented  | Status card; speaking ring. Browser: pause toggle.                                                            |
+| Pause / resume listening                            | Implemented  | Mic button and Settings switch. Receipts prevent a replayed toggle (gateway).                                 |
+| Sound feedback toggle                               | Implemented  | Settings; sounds play on the computer.                                                                        |
+| Current-run history, paged, live updates, removals  | Implemented  | Revision-guarded like the desktop. Browser: Activity, including audio-only/recovered transcript explanations. |
+| Recent history snapshot (latest 100, earlier runs)  | Gap          | Only this run's history is shown.                                                                             |
+| Card: Copy                                          | Implemented  | Phone clipboard.                                                                                              |
+| Card: Insert into application                       | Desktop-only | Pastes into a desktop window.                                                                                 |
+| Card: New coding session from utterance             | Implemented  | Uses the saved screenshot on the computer; opens in the desktop background.                                   |
+| Card: Label correct / incorrect / actual intent     | Implemented  | Browser: label correct.                                                                                       |
+| Card: Delete utterance and recordings               | Implemented  | Confirmation required; only when the listener advertises deletion.                                            |
+| Type an utterance to the focused application        | Desktop-only | Needs a compositor window target. Phone substitute: start a conversation.                                     |
+| Intent and shortcut switches (independent)          | Implemented  | Activity; older listeners shown as read-only with a restart note.                                             |
+| Keyboard shortcut help, phrase animation            | Different    | Not applicable on a phone; simple speaking indicator.                                                         |
 
 ## Conversations
 

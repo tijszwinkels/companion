@@ -90,11 +90,30 @@ for (const ending of ['silence', 'abort', 'failure', 'eof']) {
 // Each scripted VAD run opens one candidate at frame 10. The listener must
 // report it, then either submit it or release the hold on every exit path:
 // rejection, EOF, pause and failure. A leaked hold would stall dispatch.
+//
+// Each resolution carries the silence measured after the candidate's speech,
+// from which the commitment floor counts: 224 ms after a silence endpoint,
+// none when the input ended mid-speech. A release without a measurement
+// (listening ended) leaves the held attempt's deadlines unchanged.
 const candidateEndings = {
-  rejected: { voiced: 2, expected: ['resumed', 'discarded'] },
-  accepted: { voiced: 6, expected: ['resumed', 'submit'] },
-  'eof-accepted': { voiced: Infinity, expected: ['resumed', 'submit'] },
-  'eof-rejected': { voiced: Infinity, startAtEnd: true, expected: ['resumed', 'discarded'] },
+  rejected: { voiced: 2, expected: ['resumed', 'discarded after 224 ms'] },
+  accepted: { voiced: 6, expected: ['resumed', 'submit after 224 ms'] },
+  'eof-accepted': { voiced: Infinity, expected: ['resumed', 'submit after 0 ms'] },
+  // A too-short tail still open at the end of the input is a rejected burst:
+  // its measured trailing silence restarts the held attempt's floor.
+  'eof-rejected': {
+    voiced: Infinity,
+    startAtEnd: true,
+    expected: ['resumed', 'discarded after 0 ms'],
+  },
+  'eof-rejected-after-silence': {
+    voiced: 2,
+    onsetFromEnd: 5,
+    expected: ['resumed', 'discarded after 96 ms'],
+  },
+  // Five voiced frames, then three silent frames (96 ms) before the input
+  // ends: exactly the silence that was heard is credited, not 0 or 224 ms.
+  'eof-after-silence': { voiced: 5, onsetFromEnd: 8, expected: ['resumed', 'submit after 96 ms'] },
   abort: { voiced: 6, stopAt: 13, expected: ['resumed', 'discarded'] },
   failure: { voiced: 6, stopAt: 13, expected: ['resumed', 'discarded'] },
 } as const;
@@ -106,7 +125,12 @@ for (const [ending, script] of Object.entries(candidateEndings)) {
     const controller = new AbortController();
     const calls: string[] = [];
     const totalFrames = 157; // The five-second fixture, including its padded final frame.
-    const onset = 'startAtEnd' in script ? totalFrames - 2 : 10;
+    let onset = 10;
+    if ('startAtEnd' in script) {
+      onset = totalFrames - 2;
+    } else if ('onsetFromEnd' in script) {
+      onset = totalFrames - script.onsetFromEnd;
+    }
     let frames = 0;
 
     context.mock.method(vad, 'probability', async () => {
@@ -135,17 +159,30 @@ for (const [ending, script] of Object.entries(candidateEndings)) {
       () => {},
       controller.signal,
     );
-    context.mock.method(pipeline, 'submit', () => {
-      calls.push('submit');
-      return true;
-    });
+    context.mock.method(
+      pipeline,
+      'submit',
+      (
+        _samples: Float32Array,
+        _signal: AbortSignal,
+        _leadIn: Float32Array,
+        trailingSilenceMs: number,
+      ) => {
+        calls.push(`submit after ${trailingSilenceMs} ms`);
+        return true;
+      },
+    );
     context.mock.method(pipeline, 'speechResumed', () => {
       calls.push('resumed');
     });
-    context.mock.method(pipeline, 'speechDiscarded', () => {
+    context.mock.method(pipeline, 'speechDiscarded', (burstTrailingSilenceMs?: number) => {
       // Releasing is idempotent; record only the first release after an onset.
       if (calls.at(-1) === 'resumed') {
-        calls.push('discarded');
+        calls.push(
+          burstTrailingSilenceMs === undefined
+            ? 'discarded'
+            : `discarded after ${burstTrailingSilenceMs} ms`,
+        );
       }
     });
 

@@ -16,6 +16,11 @@ Rectangle {
   property string cleanedText: ""
   property string cleanupStatus: ""
   property string cleanupFallback: ""
+  // "earlier-attempt": the text is from an earlier part of a continued
+  // utterance, kept with the whole recording; the last words may be missing.
+  // "audio-only": no speech was recognized; only the recording is kept.
+  property string transcriptSource: ""
+  readonly property bool audioOnly: transcriptSource === "audio-only"
   required property var intents
   required property bool online
   property bool historyDeletionAvailable: false
@@ -152,6 +157,19 @@ Rectangle {
     }
 
     Text {
+      objectName: "historyTranscriptSource"
+      width: parent.width
+      visible: root.transcriptSource === "earlier-attempt" || root.audioOnly
+      text: root.audioOnly ? "Audio only: no speech was recognized, so nothing was sent" : "Text from an earlier part of this utterance; the full recording was not transcribed"
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.textScale
+      lineHeight: 1.3
+    }
+
+    Text {
       objectName: "historyCleanup"
       width: parent.width
       visible: root.cleanupStatus === "cleaned" || root.cleanupStatus === "fallback"
@@ -222,7 +240,8 @@ Rectangle {
           PanelAction {
             required property var modelData
             objectName: "history-action-" + modelData.action
-            visible: modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned"
+            // An audio-only record has no text to copy, insert or ask about.
+            visible: (modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned") && !(root.audioOnly && ["copy", "paste", "start-history-agent"].includes(modelData.action))
             text: modelData.title
             foreground: root.foreground
             selection: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.12)

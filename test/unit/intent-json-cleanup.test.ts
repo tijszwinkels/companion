@@ -2480,25 +2480,7 @@ test('reason-to-diagnostic table matches the actual parsers on a response corpus
       }
     }
   }
-  // Percentages-contract responses (judged under the percentages expectation).
-  for (const percentages of [
-    undefined,
-    [],
-    { IGNORE: 100 },
-    { IGNORE: 60, CHOOSE_AGENT_OPTION_1: 30, SEND_TEXT_TO_APPLICATION: 10 },
-    { IGNORE: '60', CHOOSE_AGENT_OPTION_1: 30, SEND_TEXT_TO_APPLICATION: 10 },
-    { IGNORE: 160, CHOOSE_AGENT_OPTION_1: 0, SEND_TEXT_TO_APPLICATION: 0 },
-    { IGNORE: 60, CHOOSE_AGENT_OPTION_1: 30, SEND_TEXT_TO_APPLICATION: 9 },
-    { IGNORE: 10, CHOOSE_AGENT_OPTION_1: 60, SEND_TEXT_TO_APPLICATION: 30 },
-  ]) {
-    const response: Record<string, unknown> = { intent: 'IGNORE', parameters: {} };
-    if (percentages !== undefined) {
-      response.percentages = percentages;
-    }
-    corpus.push(JSON.stringify(response));
-  }
   corpus.push(
-    '{"intent":"IGNORE","parameters":{},"percentages":{"IGNORE":60.0,"CHOOSE_AGENT_OPTION_1":30,"SEND_TEXT_TO_APPLICATION":10}}',
     '{"parameters":{}}',
     'IGNORE',
     '["IGNORE"]',
@@ -2508,8 +2490,7 @@ test('reason-to-diagnostic table matches the actual parsers on a response corpus
   );
 
   const observed = new Map<string, Set<string>>();
-  const inferredWithPercentages: ResponseExpectation = { ...inferred, percentages: true };
-  for (const expectation of [inferred, fixed, inferredWithPercentages]) {
+  for (const expectation of [inferred, fixed]) {
     for (const response of corpus) {
       const parsed = parseExperimentResponse(response, expectation);
       const selected = diagnosticIntentSelection(response, expectation);
