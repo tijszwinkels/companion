@@ -7,8 +7,8 @@
  *
  * Validation is the offline experiment's parser, unchanged
  * (`parseExperimentResponse` in ./contract.ts, shared with the experiment;
- * a pure module without imports or I/O), used with the plain json-cleanup-v1
- * contract: no percentages and no optional text. So the live app accepts
+ * a pure module without imports or I/O), used with the json-cleanup-v1
+ * contract. So the live app accepts
  * exactly the responses the eval counted as valid: one bare JSON object, exact
  * keys, no duplicate keys, an offered intent, and for a text route a nonempty
  * `text` without leading or trailing whitespace (a trailing line break could
