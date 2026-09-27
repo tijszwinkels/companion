@@ -739,6 +739,24 @@ test(
       `document.querySelector('.session-tab').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`,
     );
     await page.waitFor(`document.querySelector('.sheet')`);
+    // A target measured at the beginning of the opening animation must still
+    // hit Move down at its end. A sliding sheet previously hit Close instead.
+    const targetMotion = await page.evaluate<number>(`(() => {
+      const sheet = document.querySelector('.sheet');
+      const target = document.querySelector('.menu-list button:nth-child(2)');
+      const animation = sheet.getAnimations()[0];
+      if (!animation) {
+        throw Error('Expected the menu opening animation');
+      }
+      animation.pause();
+      animation.currentTime = 0;
+      const first = target.getBoundingClientRect();
+      animation.currentTime = animation.effect.getTiming().duration;
+      const last = target.getBoundingClientRect();
+      animation.finish();
+      return Math.max(Math.abs(first.x - last.x), Math.abs(first.y - last.y));
+    })()`);
+    assert.ok(targetMotion <= 0.5, `menu target moved ${targetMotion}px while opening`);
     await page.tap('.menu-list button:nth-child(2)');
     await waitFor(() => fixture.sessions.order().ids[0] === second);
     await page.waitFor(
