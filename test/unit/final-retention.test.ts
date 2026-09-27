@@ -247,6 +247,56 @@ test('a continued utterance keeps only its final record, recordings and Activity
   }
 });
 
+test('an incremental-sessions client sees the retirement in order and never the retired card', async () => {
+  const setup = await chainFixture();
+  try {
+    // The client declares incremental conversations, as the native window does.
+    setup.fixture.send({
+      action: 'panel-state',
+      id: '',
+      composerFocused: false,
+      incrementalSessions: true,
+    });
+    assert.equal((await setup.fixture.reply('panel-state')).type, 'result');
+    const start = setup.fixture.messages.length;
+
+    const first = await supersededAttempt(setup);
+    await waitFor(() => setup.transcriptions.length === 2);
+    setup.transcriptions[1].resolve('Open the browser');
+    await waitFor(() => setup.detections.length === 2);
+    setup.detections[1].resolve('SEND');
+    await setup.idle();
+    await waitFor(() => setup.published('history-deleted').length === 1);
+    const final = setup.rows()[0].id;
+    await waitFor(() => {
+      const last = setup.fixture.messages.filter((message) => message.type === 'state').at(-1);
+      return last?.history?.length === 1 && last.history[0].id === final;
+    });
+
+    const stream = setup.fixture.messages.slice(start);
+    const deletedAt = stream.findIndex(
+      (message) => message.type === 'history-deleted' && message.id === first,
+    );
+    assert.ok(deletedAt >= 0);
+
+    // Routine states stay incremental, and none after the deletion lists the
+    // retired row; no card is ever published for it.
+    const states = stream.filter((message) => message.type === 'state');
+    assert.ok(states.every((message) => !('sessions' in message)));
+    for (const message of stream.slice(deletedAt + 1)) {
+      if (message.type === 'state') {
+        assert.equal(
+          message.history!.some((row) => row.id === first),
+          false,
+        );
+      }
+    }
+    assert.deepEqual(setup.published('activity-entry'), [final]);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
 test('repeated continuations retire every superseded attempt once the last one is recorded', async () => {
   const setup = await chainFixture();
   try {
