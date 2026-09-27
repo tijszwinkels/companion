@@ -59,7 +59,8 @@ On connection and state changes, the server sends:
 }
 ```
 
-The recent view contains the latest 100 nonempty transcripts, newest first.
+The recent view contains the latest 100 records, newest first, including
+audio-only failures (an empty transcript with `transcriptSource: "audio-only"`).
 `speaking` is the current VAD speech state, independent of the processing count.
 It returns to false on silence, pause, end of input, or capture failure. Older
 servers omit this optional field; adapters should treat absence as false.
