@@ -249,7 +249,7 @@ test('save errors remain visible and cancellation before startup never launches 
 
 test('concurrent restores reserve the tab limit and cannot restore one conversation twice', async (context) => {
   const { directory, store } = await fixture(context);
-  const saved = Array.from({ length: 13 }, savedSession);
+  const saved = Array.from({ length: 17 }, savedSession);
   for (const session of saved) {
     await store.save(session);
   }
@@ -263,7 +263,7 @@ test('concurrent restores reserve the tab limit and cannot restore one conversat
     saved.slice(1).map((session) => sessions.reopen(session.id)),
   );
   assert.equal(attempts.filter((result) => result.status === 'rejected').length, 1);
-  assert.equal(sessions.snapshot().length, 12);
+  assert.equal(sessions.snapshot().length, 16);
   assert.equal(sessions.previousSnapshot().length, 1);
-  assert.throws(() => sessions.start(frame, signal()), /12 tabs maximum/);
+  assert.throws(() => sessions.start(frame, signal()), /16 tabs maximum/);
 });

@@ -295,7 +295,7 @@ the partial answer; a hard crash may lose the current turn's unsaved output, but
 its saved question is recovered as stopped. A missing Pi transcript still permits
 viewing history, but continuing it fails visibly instead of starting without context.
 This first version permits four simultaneous
-questions and twelve tabs, with a 256 KiB/200-message display limit per session.
+questions and sixteen tabs, with a 256 KiB/200-message display limit per session.
 Tool output is clipped to 16 KiB in a bubble. Interactive Pi extension dialogs
 are cancelled with a visible explanation rather than left waiting for a terminal.
 Per-session speech routing remains for the next iteration.

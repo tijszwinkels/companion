@@ -546,9 +546,8 @@ test('close session rejects hidden/stale targets and extra text, honors preview 
 
 test('go to session uses captured visible order and reserves invalid, disabled and stale commands', async (context) => {
   const setup = await fixture(context);
-  // The product currently permits at most 12 open tabs; higher numbers are parsed
-  // separately below without changing that session-creation limit.
-  for (let index = 1; index < 12; index++) {
+  // Cover the last real UI position, not just the parser with a mock target.
+  for (let index = 1; index < 16; index++) {
     setup.sessions.start({ ...frame, utterance: `Session ${index + 1}` }, signal());
     await setup.sessions.idle();
   }
@@ -596,12 +595,8 @@ test('go to session uses captured visible order and reserves invalid, disabled a
     'fourteen',
     'fifteen',
     'sixteen',
-    'seventeen',
-    'eighteen',
-    'nineteen',
-    'twenty',
   ];
-  for (let index = 0; index < 12; index++) {
+  for (let index = 0; index < 16; index++) {
     for (const number of [String(index + 1), numbers[index]]) {
       const targetId = captured.agentNavigation!.ids[index];
       const selectedBefore = setup.desktop.messages.filter(
@@ -625,8 +620,9 @@ test('go to session uses captured visible order and reserves invalid, disabled a
     'Go to session',
     'Go to session 0',
     'Go to session zero',
-    'Go to session 13',
+    'Go to session 17',
     'Go to session 20',
+    'Go to session seventeen',
     'Go to session 21',
     'Go to session twenty one',
     'Go to session twenty-one',
@@ -641,7 +637,7 @@ test('go to session uses captured visible order and reserves invalid, disabled a
     assert.equal(setup.outcomes.at(-1), 'skipped', utterance);
   }
   router.setEnabled(navigation.name, false, 'shortcut');
-  for (const utterance of ['Go to session 1', 'Go to session 20']) {
+  for (const utterance of ['Go to session 1', 'Go to session 16']) {
     await router.route({ ...frame, utterance, interaction: captured }, signal());
     assert.equal(setup.outcomes.at(-1), 'skipped');
   }
@@ -657,13 +653,13 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   const reordered = await visible('second-page');
   assert.equal(reordered.agentNavigation!.ids[0], order.ids[1]);
   await router.route(
-    { ...frame, utterance: 'Go to session twelve', interaction: reordered },
+    { ...frame, utterance: 'Go to session sixteen', interaction: reordered },
     signal(),
   );
   assert.equal(setup.outcomes.at(-1), 'selected');
   await visible('another-page');
   await router.route(
-    { ...frame, utterance: 'Go to session twelve', interaction: reordered },
+    { ...frame, utterance: 'Go to session sixteen', interaction: reordered },
     signal(),
   );
   assert.equal(setup.outcomes.at(-1), 'skipped', 'Changing pages invalidates captured navigation');
@@ -680,7 +676,7 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   assert.equal(setup.outcomes.at(-1), 'skipped');
   const shortList = await visible('short-list');
   await router.route(
-    { ...frame, utterance: 'Go to session twelve', interaction: shortList },
+    { ...frame, utterance: 'Go to session sixteen', interaction: shortList },
     signal(),
   );
   assert.equal(
@@ -690,7 +686,7 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   );
 });
 
-test('go to session parses cardinals 13–20 when those positions are present', async () => {
+test('go to session rejects positions above 16 even if a client reports extra IDs', async () => {
   const selectedIndexes: number[] = [];
   const outcomes: string[] = [];
   const navigation = {
@@ -723,24 +719,16 @@ test('go to session parses cardinals 13–20 when those positions are present', 
     outcome: (_id, outcome) => outcomes.push(outcome),
   }).subscribe(router);
 
-  const words = [
-    'thirteen',
-    'fourteen',
-    'fifteen',
-    'sixteen',
-    'seventeen',
-    'eighteen',
-    'nineteen',
-    'twenty',
-  ];
-  for (let index = 12; index < 20; index++) {
-    for (const label of [String(index + 1), words[index - 12]]) {
-      await router.route({ ...frame, utterance: `Go to session ${label}!`, interaction }, signal());
-      assert.equal(outcomes.at(-1), 'selected');
-      assert.equal(selectedIndexes.at(-1), index);
-    }
+  for (const label of ['16', 'sixteen']) {
+    await router.route({ ...frame, utterance: `Go to session ${label}!`, interaction }, signal());
+    assert.equal(outcomes.at(-1), 'selected');
+    assert.equal(selectedIndexes.at(-1), 15);
   }
-  assert.equal(selectedIndexes.length, 16);
+  for (const label of ['17', 'seventeen', '18', 'eighteen', '19', 'nineteen', '20', 'twenty']) {
+    await router.route({ ...frame, utterance: `Go to session ${label}!`, interaction }, signal());
+    assert.equal(outcomes.at(-1), 'skipped');
+  }
+  assert.deepEqual(selectedIndexes, [15, 15]);
 });
 
 test('navigation is delivered only to the captured UI connection and disconnect invalidates it', async (context) => {

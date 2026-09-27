@@ -17,10 +17,9 @@ The shared panel also provides per-conversation next-turn model selection, tab
 dragging and Alt+Shift+Up/Down reordering, and a draggable rail divider. These
 controls remain in the same QML body across Window/Sidebar/Dock. Open-tab order
 is owned by the listener and survives reconnects; rail width lasts for the UI
-process. “Go to session one” through twenty (also numerals 1–20) follows that
-visible order and only selects the UI/order captured before transcription. At
-most 12 conversation tabs can currently be open, so positions 13–20 cannot
-exist yet. See the
+process. “Go to session one” through sixteen (also numerals 1–16) follows
+that visible order and only selects the UI/order captured before transcription.
+At most 16 conversation tabs can be open. See the
 [desktop contract](../../src/desktop/README.md#model-selection-ordering-and-spoken-navigation)
 for scope, persistence and stale-request handling.
 

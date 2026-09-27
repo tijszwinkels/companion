@@ -1,3 +1,4 @@
+import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import type { Activity } from '../core/activity.ts';
 import type { IntentContext, Log, UserSensorFrame, UserSensorProcessor } from '../core/frame.ts';
 import type { UserSensorRouter } from '../core/router.ts';
@@ -21,16 +22,12 @@ const spokenNumbers = [
   'fourteen',
   'fifteen',
   'sixteen',
-  'seventeen',
-  'eighteen',
-  'nineteen',
-  'twenty',
 ];
 
 /** Reserve the entire command prefix, including invalid/out-of-range requests. */
 export class GoToSession implements UserSensorProcessor {
   readonly id = 'go-to-session';
-  readonly label = 'Go to session 1–20';
+  readonly label = `Go to session 1–${MAX_OPEN_AGENT_SESSIONS}`;
   readonly name = 'GO_TO_SESSION';
   readonly prefixes = ['go to session'];
   readonly acceptsEmptyPrefix = true;
@@ -53,14 +50,14 @@ export class GoToSession implements UserSensorProcessor {
   async process(frame: UserSensorFrame, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     const label = voiceLabel(frame.utterance);
-    const index = /^(?:[1-9]|1[0-9]|20)$/u.test(label)
+    const index = /^(?:[1-9]|[1-9][0-9])$/u.test(label)
       ? Number(label) - 1
       : spokenNumbers.indexOf(label);
     const context = frame.interaction;
-    if (index < 0 || !context?.agentNavigation?.ids[index]) {
+    if (index < 0 || index >= MAX_OPEN_AGENT_SESSIONS || !context?.agentNavigation?.ids[index]) {
       this.log(
         'skipped',
-        'Go to session requires an existing session number from 1 to 20',
+        `Go to session requires an existing session number from 1 to ${MAX_OPEN_AGENT_SESSIONS}`,
         frame.id,
       );
       this.activity.outcome?.(frame.id, 'skipped');

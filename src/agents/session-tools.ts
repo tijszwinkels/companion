@@ -1,5 +1,7 @@
 import { StringEnum, Type } from '@earendil-works/pi-ai';
 
+import { MAX_OPEN_AGENT_SESSIONS } from './session-limit.ts';
+
 const sessionId = Type.String({
   minLength: 36,
   maxLength: 36,
@@ -89,7 +91,7 @@ export function sessionTools(endpoint: string, token: string) {
         'conversation’s model, otherwise the configured default applies: for Pi an available provider/model, for ' +
         'Claude Code a Claude model ID without provider such as claude-opus-5-5. A Claude Code conversation keeps ' +
         'its model for its lifetime and fails visibly if Claude Code does not run exactly that model. The tab opens ' +
-        'in the background unless focus is true. Returns the new session. At most 12 tabs and 4 running agents ' +
+        `in the background unless focus is true. Returns the new session. At most ${MAX_OPEN_AGENT_SESSIONS} tabs and 4 running agents ` +
         'exist at once.',
       parameters: Type.Object({
         text,
