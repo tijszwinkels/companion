@@ -65,8 +65,7 @@ needed to update this adapter.
   use this same order. Spoken navigation works from any visible panel page, has
   its own shortcut toggle, and rejects stale/invalid targets without sending
   text to an agent. There are currently at most 12 open conversation tabs.
-  Order survives UI
-  reconnects for this listener run; new/reopened tabs append.
+  Order survives UI reconnects for this listener run; new/reopened tabs append.
 - Drag the divider beside the tab rail to widen it. The larger tab heights,
   icons and text remain unchanged; captions use the extra width. The rail stays
   between 80 and 280 theme units and leaves at least 320 units for the body where

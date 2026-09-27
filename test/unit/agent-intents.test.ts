@@ -603,16 +603,21 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   ];
   for (let index = 0; index < 12; index++) {
     for (const number of [String(index + 1), numbers[index]]) {
+      const targetId = captured.agentNavigation!.ids[index];
+      const selectedBefore = setup.desktop.messages.filter(
+        (message) => message.type === 'agent-select' && message.id === targetId,
+      ).length;
       await router.route(
         { ...frame, utterance: `Go to session ${number}!`, interaction: captured },
         signal(),
       );
       assert.equal(setup.outcomes.at(-1), 'selected');
-      await waitFor(() =>
-        setup.desktop.messages.some(
-          (message) =>
-            message.type === 'agent-select' && message.id === captured.agentNavigation!.ids[index],
-        ),
+      await waitFor(
+        () =>
+          setup.desktop.messages.filter(
+            (message) => message.type === 'agent-select' && message.id === targetId,
+          ).length ===
+          selectedBefore + 1,
       );
     }
   }
