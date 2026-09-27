@@ -41,8 +41,10 @@ export interface HistoryEntry {
   /**
    * `earlier-attempt` when the text is an earlier attempt's transcript stored
    * beside a continued utterance's combined audio (D2 fallback, or a failed
-   * final attempt). Null means unspecified: older rows, typed input and fresh
-   * ASR all read null, so it is not proof the whole recording was transcribed.
+   * final attempt); `audio-only` when such a failed utterance had no usable
+   * text at all (empty transcript, WAV kept). Null means unspecified: older
+   * rows, typed input and fresh ASR all read null, so it is not proof the
+   * whole recording was transcribed.
    */
   transcriptSource: TranscriptSource | null;
 }
@@ -167,7 +169,10 @@ export class UtteranceHistory {
         ['cleanup_status', "TEXT CHECK (cleanup_status IN ('cleaned', 'fallback', 'no-text'))"],
         ['cleaned_text', 'TEXT'],
         ['cleanup_fallback', 'TEXT'],
-        ['transcript_source', "TEXT CHECK (transcript_source IN ('earlier-attempt'))"],
+        [
+          'transcript_source',
+          "TEXT CHECK (transcript_source IN ('earlier-attempt', 'audio-only'))",
+        ],
       ];
       for (const [name, definition] of additiveColumns) {
         if (!utteranceColumns.some((column) => column.name === name)) {
@@ -403,6 +408,13 @@ export class UtteranceHistory {
     }
   }
 
+  /** An audio-only record has nothing to paste or ask about. */
+  private assertHasText(id: string): void {
+    if (this.find(id)?.transcriptSource === 'audio-only') {
+      throw Error('This record has audio only; no speech was recognized');
+    }
+  }
+
   /** Hold a finished superseded attempt until its continuation settles. */
   holdForRetirement(id: string): void {
     this.awaitingRetirement.add(id);
@@ -414,7 +426,13 @@ export class UtteranceHistory {
   }
 
   add(transcript: Transcript): void {
-    if (!transcript.utterance.trim() || this.frameEntries.has(transcript.id)) {
+    if (this.frameEntries.has(transcript.id)) {
+      return;
+    }
+
+    // Only an explicitly audio-only record has no text; it never invents any.
+    const audioOnly = transcript.source === 'audio-only';
+    if (audioOnly ? transcript.utterance !== '' : !transcript.utterance.trim()) {
       return;
     }
 
@@ -595,6 +613,7 @@ export class UtteranceHistory {
   /** Start a question from its original observation, not today's active screen. */
   async recordedFrame(id: string): Promise<UserSensorFrame> {
     this.assertAvailable(id);
+    this.assertHasText(id);
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -683,6 +702,7 @@ export class UtteranceHistory {
   /** Failed recovery is not evidence that the user successfully corrected intent. */
   beginPaste(utteranceId: string, targetAddress: string): string {
     this.assertAvailable(utteranceId);
+    this.assertHasText(utteranceId);
     const id = randomUUID();
     this.db
       .prepare(

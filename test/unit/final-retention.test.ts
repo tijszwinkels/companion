@@ -366,7 +366,69 @@ test('earlier words that arrived after supersession are recovered when the final
   }
 });
 
-test('a chain without any usable text records nothing when its final ASR fails', async () => {
+for (const ending of ['ASR error', 'pause'] as const) {
+  test(`a chain without usable text keeps one audio-only record after a final ${ending}`, async () => {
+    const setup = await chainFixture();
+    try {
+      setup.speak(0.1);
+      await waitFor(() => setup.transcriptions.length === 1);
+      setup.continueWith(0.2);
+      setup.transcriptions[0].resolve('');
+      await waitFor(() => setup.transcriptions.length === 2);
+      if (ending === 'ASR error') {
+        setup.transcriptions[1].reject(Error('ASR worker failed'));
+        await setup.idle();
+      } else {
+        setup.fixture.controller.abort();
+        await setup.pipeline.idle();
+      }
+      await waitFor(() => setup.published('activity-entry').length === 1);
+
+      // Tijs (2026-09-27): one clearly marked audio-only record; no words are
+      // invented and nothing is routed.
+      const rows = setup.rows();
+      assert.deepEqual(
+        rows.map((row) => [row.transcript, row.outcome, row.source]),
+        [['', ending === 'pause' ? 'cancelled' : 'error', 'audio-only']],
+      );
+      assert.deepEqual(await setup.recorded('audio'), [rows[0].id], 'The combined WAV');
+      assert.equal(setup.detections.length, 0);
+      assert.deepEqual(setup.dispatched, []);
+
+      // There is no text to insert.
+      if (ending === 'ASR error') {
+        setup.fixture.send({ action: 'paste', id: rows[0].id, target: '0xabc' });
+        const paste = await setup.fixture.reply('paste');
+        assert.equal(paste.type, 'error');
+        assert.match(paste.message!, /audio only/);
+        assert.equal(
+          setup.fixture.database.prepare('SELECT COUNT(*) AS count FROM paste_events').get()!.count,
+          0,
+        );
+      }
+    } finally {
+      await setup.fixture.close();
+    }
+  });
+}
+
+test('a single utterance whose ASR fails still records nothing', async () => {
+  const setup = await chainFixture();
+  try {
+    setup.speak(0.1);
+    await waitFor(() => setup.transcriptions.length === 1);
+    setup.transcriptions[0].reject(Error('ASR worker failed'));
+    await setup.idle();
+    await delay(20);
+
+    assert.deepEqual(setup.rows(), [], 'Audio-only records are for continued utterances only');
+    assert.deepEqual(await setup.recorded('audio'), []);
+  } finally {
+    await setup.fixture.close();
+  }
+});
+
+test('an empty combined transcript without earlier text keeps the empty-result policy', async () => {
   const setup = await chainFixture();
   try {
     setup.speak(0.1);
@@ -374,16 +436,13 @@ test('a chain without any usable text records nothing when its final ASR fails',
     setup.continueWith(0.2);
     setup.transcriptions[0].resolve('');
     await waitFor(() => setup.transcriptions.length === 2);
-    setup.transcriptions[1].reject(Error('ASR worker failed'));
+    setup.transcriptions[1].resolve('');
     await setup.idle();
     await delay(20);
 
-    // As for any failed single utterance: no row, recording or card, and no
-    // words are fabricated.
+    // ASR returned (empty); it did not fail. No history record, as before;
+    // qualifying empty clips are retained separately (asr-empty).
     assert.deepEqual(setup.rows(), []);
-    assert.deepEqual(await setup.recorded('audio'), []);
-    assert.deepEqual(setup.published('activity-entry'), []);
-    assert.deepEqual(setup.published('history-deleted'), []);
   } finally {
     await setup.fixture.close();
   }
@@ -826,6 +885,18 @@ test('retirement is limited to finished, unreferenced superseded rows', async ()
     assert.throws(() => history.label(active, false), /continuing utterance/);
     await assert.rejects(history.recordedFrame(active), /continuing utterance/);
     await assert.rejects(history.delete(active), /continuing utterance/);
+
+    // An audio-only record keeps its empty transcript, but offers no text.
+    history.add({ ...frame, id: 5, utterance: '', source: 'audio-only' });
+    const audioOnly = history.entryId(5)!;
+    history.finish(5);
+    assert.equal(history.find(audioOnly)?.transcriptSource, 'audio-only');
+    assert.throws(() => history.beginPaste(audioOnly, '0xabc'), /audio only/);
+    await assert.rejects(history.recordedFrame(audioOnly), /audio only/);
+    history.add({ ...frame, id: 6, utterance: '' });
+    history.add({ ...frame, id: 7, utterance: 'Invented', source: 'audio-only' });
+    assert.equal(history.entryId(6), undefined, 'Empty text needs the audio-only marker');
+    assert.equal(history.entryId(7), undefined, 'An audio-only record has no text');
 
     // The first attempt, now finished, is retired with its recordings.
     await history.retireSuperseded(active);

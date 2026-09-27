@@ -26,10 +26,12 @@ export type UtteranceDestination = 'application' | 'agent-session' | 'new-agent-
  * Where a record's text came from when it is not this attempt's own ASR result.
  * `earlier-attempt`: the latest usable text of an earlier attempt of the same
  * spoken utterance, stored beside the combined audio; the final part of the
- * speech may be missing from it. Absent means unspecified, not proof that the
- * whole recording was transcribed.
+ * speech may be missing from it. `audio-only`: a continued utterance whose
+ * final ASR failed and none of whose parts yielded usable text; the record has
+ * the combined audio and an empty transcript, never invented words. Absent
+ * means unspecified, not proof that the whole recording was transcribed.
  */
-export type TranscriptSource = 'earlier-attempt';
+export type TranscriptSource = 'earlier-attempt' | 'audio-only';
 
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {

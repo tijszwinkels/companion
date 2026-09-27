@@ -97,7 +97,9 @@ continued utterance's final attempt settles, the pipeline calls
 see [final-only retention](speech-timing.md#final-only-retention).
 `audioCaptured` resolves after the WAV is published; the runtime records that
 per frame to decide ownership. `Transcript.source` is `earlier-attempt` when the
-text is an earlier attempt's (D2 fallback or a recovered failed final attempt).
+text is an earlier attempt's (D2 fallback or a recovered failed final attempt),
+and `audio-only` (with an empty `utterance`) for a failed continued utterance
+without any usable text.
 
 Confirmed empty ASR results (after the transcriber's single padded retry, when
 eligible) that meet the existing duration/energy floors call

@@ -364,6 +364,30 @@ Item {
       compare(findChild(findChild(host, "history-utterance-2"), "historyTranscriptSource").visible, false);
     }
 
+    function test_an_audio_only_record_is_labeled_and_offers_no_text_actions() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const audioOnly = entry(1, null);
+      audioOnly.utterance = "";
+      audioOnly.intent = null;
+      audioOnly.outcome = "error";
+      audioOnly.transcriptSource = "audio-only";
+      state.update("run", audioOnly);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      showHistory(host);
+
+      const card = findChild(host, "history-utterance-1");
+      const line = findChild(card, "historyTranscriptSource");
+      verify(line.visible);
+      compare(line.text, "Audio only: no speech was recognized, so nothing was sent");
+      mouseMove(card, 10, 10);
+      tryCompare(card, "actionsVisible", true);
+      for (const action of ["copy", "paste", "start-history-agent"])
+        compare(findChild(card, "history-action-" + action).visible, false, action);
+    }
+
     function test_collapsing_keeps_history_and_shortcuts_are_on_intent_cards() {
       const state = createTemporaryObject(stateComponent, scene);
       state.reset("run");

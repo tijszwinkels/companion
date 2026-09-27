@@ -349,10 +349,9 @@ export class SensorPipeline implements InspectableModule {
   }
 
   /**
-   * A continued utterance's final attempt that can still record the words the
-   * user said: it holds the combined samples (cleared only in `finally`), and
-   * an earlier attempt produced usable text. That text counts even when it
-   * arrived after its attempt was superseded and so never got a row of its own.
+   * The final attempt of a continued utterance, still holding the combined
+   * samples (cleared only in `finally`). Single utterances are not affected:
+   * a failed single attempt still records nothing, as before.
    */
   private recoverable(job: Job): boolean {
     const chain = job.chain;
@@ -360,32 +359,43 @@ export class SensorPipeline implements InspectableModule {
       chain !== undefined &&
       job.samples !== undefined &&
       !job.attempt!.superseded &&
-      chain.supersededAttempts.length > 0 &&
-      chain.latestTranscript !== undefined
+      chain.supersededAttempts.length > 0
     );
   }
 
   /**
-   * Record a failed final attempt of a continued utterance: the latest usable
-   * earlier text, marked `earlier-attempt`, with the combined audio and only
-   * this attempt's own screenshot (an earlier screen is never substituted).
-   * It is recorded, not routed. Writes are awaited before `finally` clears the
-   * samples; they take no cancellation signal, because pause and shutdown are
-   * exactly when the record is needed, and the CLI waits for the pipeline to
-   * be idle before closing desktop storage. A failed write is logged and
-   * counted; the job's own failure is still reported by the caller.
+   * Record a failed final attempt of a continued utterance, with the combined
+   * audio and only this attempt's own screenshot (an earlier screen is never
+   * substituted). The text is the latest usable earlier text, marked
+   * `earlier-attempt`; if no part of the utterance yielded usable text, the
+   * record is `audio-only` with an empty transcript (Tijs, 2026-09-27): no
+   * words are invented. It is recorded, not routed. Writes are awaited before
+   * `finally` clears the samples; they take no cancellation signal, because
+   * pause and shutdown are exactly when the record is needed, and the CLI
+   * waits for the pipeline to be idle before closing desktop storage. A failed
+   * write is logged and counted; the job's own failure is still reported by
+   * the caller.
    */
   private async recordRecoveredFailure(job: Job): Promise<void> {
     const capture = await job.capture;
+    const earlierText = job.chain!.latestTranscript;
 
     try {
-      this.log('recovered', 'Final attempt failed; recording the earlier words', job.id);
+      if (earlierText !== undefined) {
+        this.log('recovered', 'Final attempt failed; recording the earlier words', job.id);
+      } else {
+        this.log(
+          'recovered',
+          'Final attempt failed with no usable text; recording audio only',
+          job.id,
+        );
+      }
       this.activity.transcribed?.({
         id: job.id,
         observedAt: job.observedAt,
-        utterance: job.chain!.latestTranscript!,
+        utterance: earlierText ?? '',
         application: capture.application ?? capture.screenshot?.window,
-        source: 'earlier-attempt',
+        source: earlierText !== undefined ? 'earlier-attempt' : 'audio-only',
       });
 
       const recordings = await Promise.allSettled([
@@ -577,9 +587,9 @@ export class SensorPipeline implements InspectableModule {
         this.log('done', `${Date.now() - job.observedAt} ms since speech end`, job.id);
       } catch (error) {
         // The final attempt of a continued utterance failed before recording
-        // anything (ASR error, pause or shutdown), while an earlier attempt
-        // produced usable text. Record those words with the combined audio, so
-        // the utterance still ends in one record, with its true outcome below.
+        // anything (ASR error, pause or shutdown). Record the earlier words, or
+        // audio only if there were none, with the combined audio, so the
+        // utterance still ends in one record, with its true outcome below.
         // This record is never routed.
         if (!recorded && this.recoverable(job)) {
           await this.recordRecoveredFailure(job);

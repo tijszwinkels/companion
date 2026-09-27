@@ -332,7 +332,10 @@ not touched. See [final-only retention](../../docs/speech-timing.md#final-only-r
 
 `utterances.transcript_source` (nullable, additive, no schema version change) is
 `earlier-attempt` when the stored text came from an earlier attempt of the same
-continued utterance: a recovered failure or a D2 fallback. NULL means
+continued utterance: a recovered failure or a D2 fallback. It is `audio-only`
+for a failed continued utterance that yielded no usable text: the transcript is
+empty, the WAV is kept, and paste recovery and history-agent questions refuse
+the row. Older checkouts would show such a row as an empty utterance. NULL means
 unspecified, including all older rows and typed input; it does not prove that
 the whole recording was transcribed. History entries carry it as
 `transcriptSource`.

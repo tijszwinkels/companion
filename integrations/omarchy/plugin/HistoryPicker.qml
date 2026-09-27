@@ -99,7 +99,7 @@ PanelWindow {
 
             Text {
               width: parent.width
-              text: row.modelData.utterance
+              text: row.modelData.transcriptSource === "audio-only" ? "(audio only)" : row.modelData.utterance
               textFormat: Text.PlainText
               elide: Text.ElideRight
               color: row.textColor
@@ -112,7 +112,8 @@ PanelWindow {
               text: Qt.formatDateTime(new Date(row.modelData.observedAt), "ddd HH:mm")
                 + " · " + (row.modelData.application || "Unknown application")
                 + " · " + row.modelData.outcome
-                + (row.modelData.transcriptSource === "earlier-attempt" ? " · earlier words" : "")
+                + (row.modelData.transcriptSource === "earlier-attempt" ? " · earlier words"
+                  : row.modelData.transcriptSource === "audio-only" ? " · audio only, cannot be inserted" : "")
               textFormat: Text.PlainText
               elide: Text.ElideRight
               color: row.textColor

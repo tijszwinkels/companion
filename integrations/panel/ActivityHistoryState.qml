@@ -65,7 +65,8 @@ QtObject {
       cleanupStatus: entry.cleanupStatus || "",
       cleanupFallback: entry.cleanupFallback || "",
       // "earlier-attempt" when the text came from an earlier attempt of a
-      // continued utterance; empty when unspecified.
+      // continued utterance, "audio-only" when there is no text; empty when
+      // unspecified.
       transcriptSource: entry.transcriptSource || ""
     };
     // New completions normally insert at zero; feedback/pages locate their

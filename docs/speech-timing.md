@@ -230,7 +230,8 @@ pipeline, `DesktopRuntime.settleContinuation`/`retire`, and
    a **recovered failure** instead: the latest usable earlier text, marked
    `transcript_source = 'earlier-attempt'`, with the combined WAV, the final
    attempt's own PNG if its capture succeeded, and the true `error` or
-   `cancelled` outcome. It is written in the failure path and is never routed,
+   `cancelled` outcome (or an audio-only record, below, when there is no
+   usable earlier text). It is written in the failure path and is never routed,
    so earlier text or an earlier screen can never drive an action. The D2
    fallback (empty combined transcript routed with earlier text) is marked the
    same way. The Activity card shows "Text from an earlier part of this
@@ -252,14 +253,18 @@ pipeline, `DesktopRuntime.settleContinuation`/`retire`, and
 
 ### Exceptions: residual records
 
-A chain in which **no** attempt produced usable text (every earlier part was
-empty, or its ASR never returned) ends like any failed single utterance under
-the existing empty-result and ASR-error policy. If the final attempt then also
-fails or is cancelled before its text, nothing is recorded and there is nothing
-to retire. No transcript is fabricated, and no audio-only failure record is
-written. Recording such failures would change ASR-failure handling generally and
-is a separate decision. Earlier text that arrived after its attempt was
-superseded (so it never had a row) does count as usable text.
+**No usable text at all** (Tijs, 2026-09-27). If no part of a continued
+utterance yielded usable text (every earlier part was empty, or its ASR never
+returned) and the final ASR fails or is cancelled, the final attempt records
+one **audio-only** record instead: an empty transcript marked
+`transcript_source = 'audio-only'`, the combined WAV, its own PNG if captured,
+and the true outcome. No words are invented, it is never routed, and paste
+recovery and history-agent questions refuse it ("audio only"). The Activity card
+reads "Audio only: no speech was recognized, so nothing was sent" and offers no
+copy, insert or new-session action; the picker shows "(audio only)". This
+applies only to continued utterances: a single utterance whose ASR fails still
+records nothing, and an ASR result that *returns* empty keeps the existing
+empty-result policy (no history record; qualifying clips go to `asr-empty`).
 
 Otherwise, failures end in one record (step 3). More than one record remains
 only in these explicit cases, each logged as `retention-incomplete` with the
@@ -306,7 +311,7 @@ pages and backups can still contain the removed text; nothing is purged.
 | `continuation` | The combined audio would exceed 30 s; the segment is a new request. |
 | `fallback` | Combined audio had no text; the earlier transcript is routed (D2). |
 | `retired` | Desktop: a superseded row and its recordings were removed; its continuation keeps the utterance. |
-| `recovered` | The final attempt failed before its own transcript; the earlier words are recorded with the combined audio. |
+| `recovered` | The final attempt failed before its own transcript; the earlier words (or audio only, if there were none) are recorded with the combined audio. |
 | `retention-incomplete` | Desktop: superseded rows kept, because the final record could not be written or a retirement failed. |
 
 ## File input
