@@ -413,8 +413,10 @@ button {
   }
 
   .conversation-page > .message-area {
-    flex: none;
-    height: 40dvh;
+    /* Keep a readable minimum when the page must scroll, but let the transcript
+       absorb spare space. Safari's browser bars can put an otherwise tall phone
+       below this breakpoint; a fixed height leaves a large gap under the composer. */
+    flex: 1 0 40dvh;
     min-height: 140px;
   }
 }

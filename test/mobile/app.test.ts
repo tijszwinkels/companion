@@ -876,6 +876,77 @@ test(
 );
 
 test(
+  'conversation fills browser viewport space below the short-screen breakpoint',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Composer spacing fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    fixture.runs[0].finish();
+    const page = await pairedPhone(fixture, browser);
+    await page.tap('.session-tab');
+    await page.waitFor(`document.querySelector('#composer')`);
+    await page.tap('#composer');
+    await page.type('Keep this draft through viewport changes');
+
+    // Safari's toolbars can put a tall phone below the 700px CSS breakpoint.
+    // Resize the same page to cover toolbar/rotation and keyboard-sized layouts,
+    // including restoration after shrinking. This is not native iOS keyboard emulation.
+    for (const [width, height, bottomInset] of [
+      [390, 664, 0],
+      [390, 700, 0],
+      [390, 701, 0],
+      [320, 568, 0],
+      [390, 664, 34],
+      [390, 400, 0],
+      [844, 390, 21],
+      [390, 844, 34],
+      [390, 664, 0],
+    ]) {
+      await page.call('Emulation.setDeviceMetricsOverride', {
+        width,
+        height,
+        deviceScaleFactor: 3,
+        mobile: true,
+      });
+      await page.call('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: bottomInset } });
+      await page.evaluate(`new Promise(resolve => requestAnimationFrame(resolve))`);
+
+      const metrics = await page.evaluate<{
+        blank: number;
+        bottomInset: number;
+        draft: string;
+      }>(`(() => {
+        const page = document.querySelector('.conversation-page');
+        const footer = document.querySelector('.model-disclosure');
+        page.scrollTop = 0;
+        return {
+          blank: page.getBoundingClientRect().bottom - footer.getBoundingClientRect().bottom,
+          bottomInset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')),
+          draft: document.querySelector('#composer').value,
+        };
+      })()`);
+      assert.ok(metrics.blank <= 0.5, `unused space at ${width}×${height}: ${metrics.blank}px`);
+      assert.equal(metrics.bottomInset, bottomInset);
+      assert.equal(metrics.draft, 'Keep this draft through viewport changes');
+
+      // On a keyboard-sized viewport, scrolling must still reach the footer.
+      // Enlarging again must not leave stale root/page scroll or a blank tail.
+      await page.tap('.model-disclosure > summary');
+      await page.tap('[aria-label="Refresh available Pi models"]');
+      const visible = await page.evaluate<boolean>(`(() => {
+        const rect = document.querySelector('[aria-label="Refresh available Pi models"]').getBoundingClientRect();
+        return rect.top >= 0 && rect.bottom <= innerHeight;
+      })()`);
+      assert.ok(visible, `model controls unreachable at ${width}×${height}`);
+      await page.tap('.model-disclosure > summary');
+      assert.ok((await horizontalOverflow(page)) <= 0);
+    }
+    assert.deepEqual(page.errors, []);
+  },
+);
+
+test(
   'a short viewport keeps the transcript, composer and model controls reachable',
   { skip },
   async (context) => {

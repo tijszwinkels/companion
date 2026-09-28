@@ -65,7 +65,7 @@ to another origin. Additional tests cover draft/send races across navigation,
 sign-out/revocation clearing, browser Back, modal focus/Escape, Claude models
 with fixed effort, rail reorder/close/reopen and a short 390×400 viewport.
 
-Not tested: real iOS Safari/WebKit, the on-screen keyboard, actual safe-area insets,
+Not tested by this suite: physical iOS Safari, the on-screen keyboard, actual safe-area insets,
 a real phone on Tailscale, or long-running battery/network behavior.
 
 ## iPhone wrapper (later)
@@ -77,8 +77,9 @@ The app is structured for a wrapper such as Capacitor but no wrapper exists yet:
   screen has an address field, but bundled/custom origins are **not supported**
   by the gateway today. A wrapper requires an explicit CORS, transport and secure
   credential design; adding an origin alone does not enable it.
-- `viewport-fit=cover` with `env(safe-area-inset-*)` padding and
-  `interactive-widget=resizes-content` with dynamic viewport units for the keyboard.
+- `viewport-fit=cover` with `env(safe-area-inset-*)` padding. Dynamic viewport units
+  track the browser's available layout height. `interactive-widget=resizes-content`
+  requests keyboard resizing where supported; it does not guarantee it on Safari.
 - The device token currently lives in `localStorage`; a wrapper should move it to
   the Keychain.
 - Not available to a web app and therefore not implemented: push notifications
@@ -124,3 +125,21 @@ not cover navigation or send controls.
 
 The small-height layout keeps the transcript and footer scrollable. Automated
 Chromium viewport resizing is not evidence of real iOS keyboard behavior.
+
+## Composer spacing on short browser viewports
+
+At heights of 700 CSS pixels or less, the transcript starts at 40dvh (at least
+140px) and grows into spare space. Keeping it fixed at 40dvh left a 144px blank
+tail below the conversation controls at 390×664, reproduced in both Chromium
+and Linux WebKitGTK. Safari's browser chrome can put a tall iPhone inside this
+short-height layout even while its keyboard is closed. The regression checks the
+700/701px boundary, resize/rotation, draft retention, expanded model controls and
+simulated 0/21/34px bottom insets. Existing safe-area padding is retained.
+
+This fixes unused flex-layout space; it does not infer keyboard height from a
+safe-area inset or subtract a second viewport offset. Safari can resize/pan its
+visual viewport when the keyboard opens without resizing the layout viewport;
+see [WebKit's interactive-widget issue](https://bugs.webkit.org/show_bug.cgi?id=259770).
+Real toolbar, keyboard-open/close and home-indicator behavior still need a
+supervised iPhone check after an approved reload. No live gateway or Tailscale
+change is part of the isolated regression tests.
