@@ -68,5 +68,7 @@ Nothing here has been validated on a real iPhone, in Safari, or over Tailscale.
 | Push notifications, background connection, share sheet, haptics, on-phone microphone | Gap (need a native wrapper and design)                        |
 
 Browser Back/modal focus, 44 px targets and short-viewport controls have Chromium
-automated coverage. Real screen-reader, iPhone/Safari and keyboard validation
-remain outstanding.
+automated coverage. Tijs reported initial iPhone Safari access and confirmed the
+composer gap/home-indicator spacing fix on 2026-09-28. Physical keyboard states,
+screen-reader behavior, network handover and the complete live interaction matrix
+remain unvalidated; initial phone use is not blanket parity acceptance.

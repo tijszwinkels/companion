@@ -33,8 +33,11 @@ protocol; an older listener refuses the role and the gateway refuses to relay.
 
 ### Reaching it from a phone over Tailscale
 
-Pick one; both are **user decisions** and have not been performed or validated by
-this implementation:
+Both modes are **user decisions**. The supervised trial used loopback plus
+Tailscale Serve; initial iPhone access was user-confirmed on 2026-09-28. Direct
+gateway TLS has automated coverage but was not the live phone trial route. See
+[the current dated status](../../integrations/mobile/README.md#trial-and-merge-status--2026-09-28)
+before changing an existing installation.
 
 1. **Gateway terminates TLS.** Obtain a certificate for the machine's MagicDNS name
    with `tailscale cert` (requires HTTPS certificates to be enabled for the

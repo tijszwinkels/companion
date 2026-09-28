@@ -11,6 +11,30 @@ deletion and new sessions, listening/sound/intent switches. The
 [parity matrix](PARITY.md) lists exactly what matches the desktop panel, what differs,
 and what is missing.
 
+## Trial and merge status — 2026-09-28
+
+The supervised trial is running with listener/UI `522b85c` and gateway/app
+`166bbb2` in separate worktrees. Tijs reported successful iPhone Safari access,
+then confirmed the composer gap was gone and the footer clear after the reviewed
+spacing fix. He said he is liking the panel and explicitly approved merging this
+phone feature. Final whole-feature integration clearance and the lead's guarded
+merge are separate from that approval; this document does not claim the merge
+has happened. The separate widget parity work is not included.
+
+Independent Claude Opus 5.5/high reviews cover the full feature at `522b85c`,
+the tailnet changes through `a7858f1`, and the combined spacing fix at `166bbb2`.
+Automated evidence includes Chromium, isolated real-backend checks and Linux
+WebKitGTK. User-reported phone access and layout results do not establish native
+keyboard behavior, network handover, screen readers or every live send/reconnect/
+revoke path. Those remain explicit trial limits.
+
+The switcher owns the running processes. A Git merge does not restart, redeploy,
+re-pair or change Tailscale. Keep worktrees used by live processes until a later
+coordinated shutdown; preserve the original dirty frontend worktree. The dated
+[localhost](../../docs/mobile-live-trial.md) and
+[tailnet](../../docs/mobile-tailnet-trial.md) plans retain their original setup
+and rollback context; do not replay their activation commands on the active trial.
+
 ## Build and author checks
 
 ```sh
@@ -31,9 +55,9 @@ for Tailscale/TLS options) with a listener built from this branch. Doing that wi
 the production listener, pairing a real phone or exposing it on the tailnet is a
 separate, explicitly approved step.
 
-The next user demo is a separately approved **live-session trial**, not this
-synthetic fixture. See [the trial plan](../../docs/mobile-live-trial.md) for its
-activation, pairing, cleanup and validation limits.
+The live-session trial is separate from this synthetic fixture. See the status
+above and [the trial record](../../docs/mobile-live-trial.md) for its activation,
+pairing, cleanup and validation limits.
 
 ## Structure
 
