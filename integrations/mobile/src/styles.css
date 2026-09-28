@@ -398,6 +398,9 @@ button {
 
 .model-disclosure {
   flex: none;
+  /* The collapsed summary is the bottom control too. Own the home-indicator
+     inset here so both states are protected without padding the picker twice. */
+  padding-bottom: var(--safe-bottom);
 }
 
 .model-disclosure > summary {
@@ -1264,7 +1267,7 @@ button {
 
 .model-picker {
   flex: none;
-  padding: 10px 0 calc(10px + var(--safe-bottom));
+  padding: 10px 0;
   border-top: 1px solid var(--border);
   margin-top: 10px;
 }

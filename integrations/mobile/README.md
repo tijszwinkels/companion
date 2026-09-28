@@ -134,7 +134,10 @@ tail below the conversation controls at 390×664, reproduced in both Chromium
 and Linux WebKitGTK. Safari's browser chrome can put a tall iPhone inside this
 short-height layout even while its keyboard is closed. The regression checks the
 700/701px boundary, resize/rotation, draft retention, expanded model controls and
-simulated 0/21/34px bottom insets. Existing safe-area padding is retained.
+simulated 0/21/34px bottom insets. The footer owns the bottom safe-area padding,
+so the collapsed summary stays above the home indicator too; expanding the
+picker does not add the inset a second time. Tests check the actual control
+position, not just the CSS inset value.
 
 This fixes unused flex-layout space; it does not infer keyboard height from a
 safe-area inset or subtract a second viewport offset. Safari can resize/pan its

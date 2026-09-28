@@ -930,15 +930,36 @@ test(
       assert.equal(metrics.bottomInset, bottomInset);
       assert.equal(metrics.draft, 'Keep this draft through viewport changes');
 
+      // The collapsed footer must stay above the home indicator too, not just
+      // the picker inside the expanded details. Include its padding when scrolling.
+      await page.evaluate(
+        `document.querySelector('.model-disclosure').scrollIntoView({ block: 'end' })`,
+      );
+      const summaryBottom = await page.evaluate<number>(
+        `document.querySelector('.model-disclosure > summary').getBoundingClientRect().bottom`,
+      );
+      assert.ok(
+        summaryBottom <= height - bottomInset + 0.5,
+        `collapsed footer overlaps the ${bottomInset}px inset at ${width}×${height}`,
+      );
+
       // On a keyboard-sized viewport, scrolling must still reach the footer.
       // Enlarging again must not leave stale root/page scroll or a blank tail.
       await page.tap('.model-disclosure > summary');
       await page.tap('[aria-label="Refresh available Pi models"]');
       const visible = await page.evaluate<boolean>(`(() => {
         const rect = document.querySelector('[aria-label="Refresh available Pi models"]').getBoundingClientRect();
-        return rect.top >= 0 && rect.bottom <= innerHeight;
+        const inset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom'));
+        return rect.top >= 0 && rect.bottom <= innerHeight - inset;
       })()`);
       assert.ok(visible, `model controls unreachable at ${width}×${height}`);
+      const footerPadding = await page.evaluate<number>(`(() => {
+        const footer = document.querySelector('.model-disclosure');
+        const picker = document.querySelector('.model-picker');
+        return parseFloat(getComputedStyle(footer).paddingBottom) +
+          parseFloat(getComputedStyle(picker).paddingBottom);
+      })()`);
+      assert.equal(footerPadding, bottomInset + 10, 'apply the inset once plus picker spacing');
       await page.tap('.model-disclosure > summary');
       assert.ok((await horizontalOverflow(page)) <= 0);
     }
