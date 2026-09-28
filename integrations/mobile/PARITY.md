@@ -11,7 +11,9 @@ desktop protocol in `src/desktop/README.md` at live baseline `3fdc5d0`, with the
   intentionally not exposed (refused by gateway and listener).
 - **Gap**: not implemented yet.
 
-Nothing here has been validated on a real iPhone, in Safari, or over Tailscale.
+Initial iPhone Safari access over Tailscale and the composer gap and footer fixes
+were user-confirmed on 2026-09-28. The rows below have not each been validated on
+a physical device.
 
 ## Activity
 
