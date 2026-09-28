@@ -176,19 +176,17 @@ export class AppProxy {
    */
   async phoneApps(): Promise<PhoneApp[]> {
     const apps = await this.options.sources.apps();
-    const result: PhoneApp[] = [];
+    const offered = apps.filter((app) => app.phoneAccess && this.origins.has(app.id));
 
-    for (const app of apps) {
-      const origin = this.origins.get(app.id);
-      if (!app.phoneAccess || origin === undefined) {
-        continue;
-      }
-
-      const running = await portAcceptsConnections(parseUpstream(app.upstream), 300);
-      result.push({ id: app.id, name: app.name, origin, running });
-    }
-
-    return result;
+    // Probe all backends at once so one slow port does not delay the list.
+    return Promise.all(
+      offered.map(async (app) => ({
+        id: app.id,
+        name: app.name,
+        origin: this.origins.get(app.id)!,
+        running: await portAcceptsConnections(parseUpstream(app.upstream), 300),
+      })),
+    );
   }
 
   /**
@@ -433,6 +431,10 @@ export class AppProxy {
     });
 
     upstream.once('error', () => {
+      if (finished) {
+        // The phone already went away (we destroyed the upstream for it).
+        return;
+      }
       if (response.headersSent) {
         // Mid-response failure: the phone sees a truncated response.
         response.destroy();
