@@ -4,11 +4,12 @@
  * The phone gateway authenticates the device with its bearer token (which only
  * ever travels to the gateway's own origin). It then asks this book for a grant:
  *
- *   grant    256-bit, single use, 60 seconds, bound to device + app + revision.
+ *   grant    256-bit, single use, 60 seconds, bound to device + app registration
+ *            (its never-reused registrationId) + revision.
  *            Travels once in the top-level URL the phone opens on the app origin.
  *   session  256-bit, stored by the browser only as an HttpOnly, Secure,
  *            SameSite=Strict, host-only cookie on that app origin. Bound to the
- *            same device + app + revision, 8-hour absolute lifetime.
+ *            same device + registration + revision, 8-hour absolute lifetime.
  *
  * Only SHA-256 hashes of both tokens are kept, in memory. A gateway restart
  * therefore ends every phone app session; the user opens the app again from
@@ -29,6 +30,12 @@ export interface AuthorizationSources {
   apps(): Promise<RegisteredApp[]>;
   /** IDs of devices that are currently paired; reread for each decision. */
   pairedDeviceIds(): Promise<Set<string>>;
+  /**
+   * Whether a value is a paired device's gateway bearer token. The proxy
+   * refuses requests carrying one, so a Companion credential can never be
+   * forwarded to an app backend even if a client mistakenly sends it there.
+   */
+  isDeviceCredential?(value: string): Promise<boolean>;
 }
 
 export interface GrantBookOptions {
@@ -40,6 +47,8 @@ export interface GrantBookOptions {
 interface Binding {
   deviceId: string;
   appId: string;
+  /** Distinguishes a removed and re-added app with the same id and revision. */
+  registrationId: string;
   revision: number;
   expiresAt: number;
 }
@@ -125,7 +134,13 @@ export class GrantBook {
 
     const grant = newToken();
     const expiresAt = this.now() + this.grantLifetime;
-    this.grants.set(hashToken(grant), { deviceId, appId, revision: app.revision, expiresAt });
+    this.grants.set(hashToken(grant), {
+      deviceId,
+      appId,
+      registrationId: app.registrationId,
+      revision: app.revision,
+      expiresAt,
+    });
     return { grant, expiresAt };
   }
 
@@ -166,6 +181,7 @@ export class GrantBook {
     const session: AppSession = {
       deviceId: binding.deviceId,
       appId: binding.appId,
+      registrationId: binding.registrationId,
       revision: binding.revision,
       createdAt: now,
       expiresAt: now + this.sessionLifetime,
@@ -310,7 +326,7 @@ function judge(
   }
 
   const app = apps.find((candidate) => candidate.id === binding.appId);
-  if (!app) {
+  if (!app || app.registrationId !== binding.registrationId) {
     return { ok: false, reason: 'unknown' };
   }
   if (!app.phoneAccess) {

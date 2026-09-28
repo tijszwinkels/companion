@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,8 +114,9 @@ async function setup(context: { after(callback: () => Promise<void>): void }) {
   }
 
   /** The production desktop arguments, minus window-only flags headless cannot use. */
-  function desktopBrowser(app: RegisteredApp): HeadlessChromium {
-    const profileArguments = appBrowserArguments(app, registry.profileDirectory(app.id)).filter(
+  async function desktopBrowser(app: RegisteredApp): Promise<HeadlessChromium> {
+    const profile = await registry.prepareProfile(app);
+    const profileArguments = appBrowserArguments(app, profile).filter(
       (argument) => !argument.startsWith('--app=') && !argument.startsWith('--ozone-platform'),
     );
     return browser(profileArguments);
@@ -158,7 +160,7 @@ test('desktop app profiles are separate, persistent and sandboxed', { skip }, as
   await backend(beta);
 
   // Alpha in its own profile.
-  let alphaBrowser = desktopBrowser(alpha);
+  let alphaBrowser = await desktopBrowser(alpha);
   let alphaPage = await alphaBrowser.page();
   await openNotebook(alphaPage, alpha.upstream);
   assert.equal(await visits(alphaPage), '1');
@@ -172,7 +174,7 @@ test('desktop app profiles are separate, persistent and sandboxed', { skip }, as
   assert.match(sandbox, /You are adequately sandboxed/);
 
   // Beta's profile sees nothing of alpha, even when it opens alpha's very origin.
-  const betaBrowser = desktopBrowser(beta);
+  const betaBrowser = await desktopBrowser(beta);
   const betaPage = await betaBrowser.page();
   await openNotebook(betaPage, alpha.upstream);
   assert.equal(await visits(betaPage), '1');
@@ -182,14 +184,14 @@ test('desktop app profiles are separate, persistent and sandboxed', { skip }, as
 
   // Closing and reopening alpha's window keeps its storage and cookies.
   await alphaBrowser.close();
-  alphaBrowser = desktopBrowser(alpha);
+  alphaBrowser = await desktopBrowser(alpha);
   alphaPage = await alphaBrowser.page();
   await openNotebook(alphaPage, alpha.upstream);
   assert.equal(await visits(alphaPage), '2');
   assert.equal(await visitor(alphaPage), alphaVisitor);
 
   // Profiles live in the private apps directory, one per app.
-  assert.notEqual(registry.profileDirectory('alpha'), registry.profileDirectory('beta'));
+  assert.notEqual(registry.profileDirectory(alpha), registry.profileDirectory(beta));
 });
 
 test(
@@ -200,7 +202,7 @@ test(
     const app = await register('notebook');
     let running = await backend(app);
 
-    const page = await desktopBrowser(app).page();
+    const page = await (await desktopBrowser(app)).page();
     await openNotebook(page, app.upstream);
     const firstStart = await page.evaluate<string>('document.body.dataset.backendStartedAt');
 
@@ -281,6 +283,16 @@ test(
     await phone.waitFor(`document.querySelector('#status').dataset.state === 'connected'`);
     assert.equal(await phone.evaluate<string>('document.cookie'), '');
 
+    // The one-time grant URL was replaced in the tab's history before the app ran.
+    const history = await phone.call('Page.getNavigationHistory');
+    const visited = (history.entries as Array<{ url: string }>).map((entry) => entry.url);
+    assert.equal(
+      visited.some((url) => url.includes('__companion_app_grant')),
+      false,
+      visited.join(' '),
+    );
+    assert.equal(visited.at(-1), notebookOrigin + '/');
+
     // The same grant URL does not work twice (for example from history).
     const replay = await proxy.openForDevice('phone-1', 'notebook');
     const replayPage = await browser([
@@ -327,5 +339,82 @@ test(
       await phone.evaluate<string>('document.body.innerText'),
       /Open this app from Companion/,
     );
+  },
+);
+
+test(
+  'app pages reach other loopback services only as an ordinary web page would',
+  { skip },
+  async (context) => {
+    const { register, backend, desktopBrowser } = await setup(context);
+    const app = await register('alpha');
+    await backend(app);
+
+    // A synthetic stand-in for a privileged local service (like Companion's
+    // gateway): bearer token plus exact Origin. And one careless service
+    // that acts on any request. No real local port is probed.
+    const actions = { protected: 0, careless: 0 };
+    const service = createHttpServer((request, response) => {
+      const url = request.url ?? '';
+      if (url === '/protected') {
+        const origin = request.headers.origin;
+        const token = request.headers.authorization;
+        if (token === 'Bearer stand-in-secret' && origin === `http://127.0.0.1:${port}`) {
+          actions.protected += 1;
+        }
+      }
+      if (url === '/careless') {
+        actions.careless += 1;
+      }
+      response.end('ok');
+    });
+    await new Promise<void>((resolve) => service.listen(0, '127.0.0.1', resolve));
+    const port = (service.address() as { port: number }).port;
+    context.after(() => new Promise<void>((resolve) => service.close(() => resolve())));
+
+    const page = await (await desktopBrowser(app)).page();
+    const base = `http://127.0.0.1:${port}`;
+    const probe = `(async () => {
+      const result = {};
+      try {
+        await fetch('${base}/protected', { method: 'POST', mode: 'no-cors', body: 'x' });
+        result.noCors = 'sent';
+      } catch (error) { result.noCors = 'blocked'; }
+      try {
+        const reply = await fetch('${base}/protected', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer guessed' },
+          body: 'x',
+        });
+        result.cors = 'read ' + (await reply.text());
+      } catch (error) { result.cors = 'blocked'; }
+      try {
+        await fetch('${base}/careless', { method: 'POST', mode: 'no-cors', body: 'x' });
+        result.careless = 'sent';
+      } catch (error) { result.careless = 'blocked'; }
+      return result;
+    })()`;
+
+    // The fixture sends its own CSP (connect-src 'self'), which already stops
+    // its page from contacting other local services.
+    await openNotebook(page, app.upstream);
+    const withAppCsp = await page.evaluate<Record<string, string>>(probe);
+    assert.deepEqual(withAppCsp, { noCors: 'blocked', cors: 'blocked', careless: 'blocked' });
+    assert.deepEqual(actions, { protected: 0, careless: 0 });
+
+    // Model an app without such a CSP: only ordinary browser rules remain.
+    await page.call('Page.setBypassCSP', { enabled: true });
+    await openNotebook(page, app.upstream);
+    const withoutCsp = await page.evaluate<Record<string, string>>(probe);
+
+    // The protected service never acted: no token, and the credentialed
+    // request needs a CORS preflight the service does not grant.
+    assert.equal(withoutCsp.cors, 'blocked');
+    assert.equal(actions.protected, 0);
+
+    // Documented limit: a service that acts on credential-less simple
+    // requests is reachable from any page on this computer, apps included.
+    assert.equal(withoutCsp.careless, 'sent');
+    assert.equal(actions.careless, 1);
   },
 );

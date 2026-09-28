@@ -5,7 +5,12 @@
  * computer with the OS user's full trust. The registry records only what
  * Companion needs to present it:
  *
- *   id           stable slug; also names the app's browser profile directory
+ *   id           stable slug chosen by the user
+ *   registrationId
+ *                random UUID created when the app is added and never reused.
+ *                Removing and re-adding the same id creates a new registration:
+ *                phone grants/sessions and the desktop profile of the old one
+ *                never carry over to it.
  *   name         display label
  *   upstream     the exact loopback origin its backend listens on, for
  *                example `http://127.0.0.1:8123` (literal address, no DNS)
@@ -18,7 +23,8 @@
  *
  *   registry.json   this registry, 0600, replaced by atomic rename
  *   state.lock      permanent flock file serializing CLI writers
- *   profiles/<id>/  each app's persistent desktop browser profile
+ *   profiles/<id>-<registrationId>/
+ *                   each registration's persistent desktop browser profile
  *
  * Only the local `companion-app` CLI writes the registry. Nothing derived from a
  * transcript, widget, phone request or page navigation can register an app,
@@ -27,7 +33,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
@@ -43,6 +49,8 @@ export interface AppLaunch {
 
 export interface RegisteredApp {
   id: string;
+  /** Random UUID of this registration; see the module comment. */
+  registrationId: string;
   name: string;
   /** Exact origin such as `http://127.0.0.1:8123` or `http://[::1]:8123`. */
   upstream: string;
@@ -91,6 +99,8 @@ export interface AppChanges {
  * such as `budget.localhost`, so they follow DNS label rules.
  */
 const idPattern = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+
+const registrationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const maximumArguments = 64;
 const maximumArgumentLength = 4096;
@@ -207,8 +217,16 @@ function checkStoredApp(value: unknown): RegisteredApp {
   }
 
   const entry = value as Record<string, unknown>;
+  if (
+    typeof entry.registrationId !== 'string' ||
+    !registrationIdPattern.test(entry.registrationId)
+  ) {
+    throw Error('App entry has an invalid registrationId');
+  }
+
   const app: RegisteredApp = {
     id: checkAppId(entry.id),
+    registrationId: entry.registrationId,
     name: checkAppName(entry.name),
     upstream: parseUpstream(entry.upstream).origin,
     phoneAccess: entry.phoneAccess === true,
@@ -236,9 +254,39 @@ export class AppRegistry {
     return join(this.directory, 'registry.json');
   }
 
-  /** Persistent browser profile for one app's desktop window. */
-  profileDirectory(id: string): string {
-    return join(this.directory, 'profiles', checkAppId(id));
+  /**
+   * Persistent browser profile for one registration's desktop window. It is
+   * keyed by the registration, not just the id: a re-added app with the same
+   * id starts with a fresh profile instead of inheriting the old app's cookies,
+   * while the old profile stays on disk.
+   */
+  profileDirectory(app: Pick<RegisteredApp, 'id' | 'registrationId'>): string {
+    const name = `${checkAppId(app.id)}-${app.registrationId}`;
+    if (!registrationIdPattern.test(app.registrationId)) {
+      throw Error('Invalid registrationId');
+    }
+
+    return join(this.directory, 'profiles', name);
+  }
+
+  /**
+   * Create (or check) the profile directory and its parent as private,
+   * owned, real directories. A symlink anywhere below the apps directory is
+   * refused, so a profile cannot be redirected to, for example, a personal
+   * browser profile.
+   */
+  async prepareProfile(app: Pick<RegisteredApp, 'id' | 'registrationId'>): Promise<string> {
+    await this.prepare();
+
+    const profiles = join(this.directory, 'profiles');
+    await mkdirIfMissing(profiles);
+    await checkPrivateDirectory(profiles);
+
+    const profile = this.profileDirectory(app);
+    await mkdirIfMissing(profile);
+    await checkPrivateDirectory(profile);
+
+    return profile;
   }
 
   /**
@@ -279,6 +327,7 @@ export class AppRegistry {
   async add(app: NewApp, now = Date.now()): Promise<RegisteredApp> {
     const entry: RegisteredApp = {
       id: checkAppId(app.id),
+      registrationId: randomUUID(),
       name: checkAppName(app.name),
       upstream: parseUpstream(app.upstream).origin,
       phoneAccess: false,
@@ -390,10 +439,27 @@ export class AppRegistry {
   }
 }
 
-/** Refuse directories that are not ours or that other users can read. */
-export async function checkPrivateDirectory(path: string): Promise<void> {
-  const info = await stat(path);
+/** Create one directory level as 0700 unless it already exists. */
+async function mkdirIfMissing(path: string): Promise<void> {
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw error;
+    }
+  }
+}
 
+/**
+ * Refuse directories that are symlinks, not ours, or readable by other users.
+ * `lstat` inspects the final path component itself, not a link's target.
+ */
+export async function checkPrivateDirectory(path: string): Promise<void> {
+  const info = await lstat(path);
+
+  if (info.isSymbolicLink()) {
+    throw Error(`${path} is a symbolic link; use a real directory`);
+  }
   if (!info.isDirectory()) {
     throw Error(`${path} is not a directory`);
   }

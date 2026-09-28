@@ -28,6 +28,7 @@
  * unavailable.
  */
 
+import { createHash } from 'node:crypto';
 import {
   createServer,
   request as httpRequest,
@@ -41,6 +42,7 @@ import type { Duplex } from 'node:stream';
 import { GrantBook, type AppSession, type AuthorizationSources } from './grants.ts';
 import {
   checkBrowserRequest,
+  filterHandshakeResponse,
   grantPath,
   isSafeMethod,
   phoneResponseHeaders,
@@ -214,6 +216,27 @@ export class AppProxy {
 
   // ---- HTTP -----------------------------------------------------------------
 
+  /**
+   * True when the Authorization header's credential (with or without a
+   * scheme such as `Bearer`) is a paired device's gateway token.
+   */
+  private async carriesDeviceCredential(request: IncomingMessage): Promise<boolean> {
+    const header = request.headers.authorization;
+    const check = this.options.sources.isDeviceCredential;
+    if (typeof header !== 'string' || !check) {
+      return false;
+    }
+
+    const parts = header.trim().split(/\s+/);
+    for (const candidate of parts) {
+      if (candidate.length > 0 && (await check(candidate))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private appForRequest(request: IncomingMessage): { id: string; origin: string } | undefined {
     const host = String(request.headers.host ?? '').toLowerCase();
     const id = this.appsByHost.get(host);
@@ -249,6 +272,15 @@ export class AppProxy {
       sendPage(response, 403, 'Blocked', 'This request did not come from the app itself.');
       return;
     }
+    if (await this.carriesDeviceCredential(request)) {
+      sendPage(
+        response,
+        400,
+        'Refused',
+        'This request carries a Companion device credential, which is never sent to apps.',
+      );
+      return;
+    }
 
     const authorized = await this.grants.authorize(
       sessionCookieValues(request.headers.cookie),
@@ -270,10 +302,11 @@ export class AppProxy {
 
   /**
    * GET /__companion_app_grant?grant=… : exchange the grant for the session
-   * cookie, then continue to `/` with a same-origin refresh. A 3xx redirect is
-   * not used because a SameSite=Strict cookie is withheld from a redirect chain
-   * that began on another site (the gateway), which would bounce the first
-   * load to the "open from Companion" page.
+   * cookie, then continue to `/` from this page (see sendGrantBootstrap). A 3xx
+   * redirect is not used: a SameSite=Strict cookie is withheld from a redirect
+   * chain that began on another site (the gateway), and the redirected request
+   * would not be `Sec-Fetch-Site: same-origin`, so the first load would bounce
+   * to the "open from Companion" page.
    */
   private async redeemGrant(
     request: IncomingMessage,
@@ -303,8 +336,7 @@ export class AppProxy {
       `Max-Age=${this.grants.sessionMaxAgeSeconds}`;
 
     response.setHeader('Set-Cookie', cookie);
-    response.setHeader('Refresh', '0; url=/');
-    sendPage(response, 200, 'Opening app…', 'Opening the app.', '<a href="/">Continue</a>');
+    sendGrantBootstrap(response);
   }
 
   /** Stream one request to the backend and its response back. Never retried. */
@@ -458,6 +490,10 @@ export class AppProxy {
       refuse(403, 'Forbidden');
       return;
     }
+    if (await this.carriesDeviceCredential(request)) {
+      refuse(400, 'Bad Request');
+      return;
+    }
 
     const authorized = await this.grants.authorize(
       sessionCookieValues(request.headers.cookie),
@@ -492,7 +528,11 @@ export class AppProxy {
     let connected = false;
     upstream.once('error', () => {
       if (!connected) {
+        // Let the refusal flush before the client socket is closed.
+        session.sockets.delete(socket);
+        upstream.destroy();
         refuse(502, 'Bad Gateway');
+        return;
       }
       release();
     });
@@ -503,11 +543,72 @@ export class AppProxy {
       if (head.length > 0) {
         upstream.write(head);
       }
-      // From here on both directions are opaque WebSocket bytes.
-      socket.pipe(upstream);
-      upstream.pipe(socket);
+
+      // The backend's handshake response gets the same header policy as any
+      // other response (no Companion cookie, host-only cookies, public
+      // Location), whether it accepts the upgrade or not. Only then do both
+      // directions become opaque WebSocket bytes.
+      readResponseHead(upstream).then(
+        ({ responseHead, rest }) => {
+          const filtered = filterHandshakeResponse(responseHead, endpoint.origin, target.origin);
+          if (filtered === undefined) {
+            release();
+            return;
+          }
+
+          socket.write(filtered);
+          if (rest.length > 0) {
+            socket.write(rest);
+          }
+          socket.pipe(upstream);
+          upstream.pipe(socket);
+        },
+        () => release(),
+      );
     });
   }
+}
+
+/** Largest handshake response head accepted from a backend. */
+const maximumResponseHeadBytes = 16 * 1024;
+
+/**
+ * Read bytes until the end of an HTTP response head. Resolves with the head
+ * (without its final blank line) and any bytes already received after it;
+ * the stream is left paused for the caller to pipe.
+ */
+function readResponseHead(stream: Duplex): Promise<{ responseHead: string; rest: Buffer }> {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+
+    const onData = (chunk: Buffer) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const end = buffered.indexOf('\r\n\r\n');
+
+      if (end >= 0) {
+        cleanup();
+        stream.pause();
+        resolve({
+          responseHead: buffered.subarray(0, end).toString('latin1'),
+          rest: buffered.subarray(end + 4),
+        });
+      } else if (buffered.length > maximumResponseHeadBytes) {
+        cleanup();
+        reject(Error('Backend handshake response is too large'));
+      }
+    };
+    const onEnd = () => {
+      cleanup();
+      reject(Error('Backend closed during the handshake'));
+    };
+    const cleanup = () => {
+      stream.removeListener('data', onData);
+      stream.removeListener('end', onEnd);
+    };
+
+    stream.on('data', onData);
+    stream.once('end', onEnd);
+  });
 }
 
 /** The handshake request line and sanitized headers for the backend. */
@@ -525,6 +626,39 @@ function upgradeRequestHead(request: IncomingMessage, path: string): string {
   return lines.join('\r\n') + '\r\n\r\n';
 }
 
+/**
+ * The page that follows a successful grant redemption. Its only script is
+ * `location.replace('/')`, pinned by hash in the CSP: replacing (rather than
+ * adding) the history entry removes the one-time grant URL from the tab's
+ * history before any app code runs, and the navigation is same-origin, so the
+ * new Strict cookie is sent. No referrer is sent, nothing is cached, and no
+ * other resource is loaded. Without JavaScript a refresh and a link continue.
+ */
+function sendGrantBootstrap(response: ServerResponse): void {
+  const script = "location.replace('/');";
+  const scriptHash = createHash('sha256').update(script, 'utf8').digest('base64');
+
+  const body =
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<title>Opening app…</title>' +
+    `<script>${script}</script>` +
+    '<noscript><meta http-equiv="refresh" content="0;url=/"></noscript>' +
+    '</head><body style="font-family: system-ui; padding: 1.5rem">' +
+    '<p>Opening the app… <a href="/">Continue</a></p></body></html>';
+
+  response.setHeader(
+    'Content-Security-Policy',
+    `default-src 'none'; script-src 'sha256-${scriptHash}'; style-src 'unsafe-inline'; ` +
+      "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  );
+  response.setHeader('Cache-Control', 'no-store');
+  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  response.end(body);
+}
+
 /** A small self-contained HTML page for proxy-generated answers. */
 function sendPage(
   response: ServerResponse,
@@ -540,7 +674,10 @@ function sendPage(
     `<h1 style="font-size: 1.25rem">${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>` +
     `${extraHtml}</body></html>`;
 
-  response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
+  response.setHeader(
+    'Content-Security-Policy',
+    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  );
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Content-Type-Options', 'nosniff');

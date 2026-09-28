@@ -9,9 +9,10 @@
  * Browsers scope cookies by host name, not by port: `https://desk:8444` and
  * `https://desk:8445` share cookies and `document.cookie`. Two apps on one host
  * name could read and overwrite each other's cookies and forward them to each
- * other's backends, so this configuration refuses it. An app may share the
- * gateway's host name on another port: the gateway authenticates with bearer
- * tokens and exact Origin checks, never cookies.
+ * other's backends, so this configuration refuses it. The same applies to the
+ * gateway: even though it authenticates with bearer tokens rather than cookies
+ * today, arbitrary app cookies must not be coupled to the privileged origin's
+ * host name, so an app may not use the gateway's host name on any port.
  */
 
 import { checkAppId } from './registry.ts';
@@ -58,6 +59,7 @@ export function checkAppOrigins(
 ): Map<string, string> {
   const result = new Map<string, string>();
   const hostnameOwners = new Map<string, string>();
+  const gatewayHostnames = new Set(gatewayOrigins.map((origin) => new URL(origin).hostname));
 
   for (const [id, origin] of entries) {
     checkAppId(id);
@@ -66,8 +68,11 @@ export function checkAppOrigins(
     if (result.has(id)) {
       throw Error(`App ${id} has more than one origin`);
     }
-    if (gatewayOrigins.includes(origin)) {
-      throw Error(`App ${id} cannot use the Companion gateway's own origin ${origin}`);
+    if (gatewayHostnames.has(parsed.hostname)) {
+      throw Error(
+        `App ${id} cannot use the Companion gateway's host name ${parsed.hostname}, on any port. ` +
+          'Give each phone app its own host name.',
+      );
     }
 
     const owner = hostnameOwners.get(parsed.hostname);

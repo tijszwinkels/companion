@@ -68,6 +68,7 @@ async function fixture(context: { after(callback: () => Promise<void>): void }, 
 
   const app: RegisteredApp = {
     id: 'fixture',
+    registrationId: '00000000-0000-4000-8000-000000000001',
     name: 'Fixture',
     upstream: `http://127.0.0.1:${port}`,
     launch: {

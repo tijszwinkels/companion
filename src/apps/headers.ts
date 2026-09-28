@@ -168,10 +168,59 @@ function setCookieName(line: string): string {
 }
 
 /**
- * Response headers for the phone, from Node's flat `rawHeaders` list.
- * Hop-by-hop headers are dropped, an app cannot set or clear Companion's
- * session cookie, and a `Location` naming the loopback upstream is rewritten
- * to the app's public origin. Redirects are never followed by the proxy.
+ * An app's `Set-Cookie` without any `Domain` attribute, which makes the
+ * cookie host-only on the app's own host name. A backend therefore cannot
+ * widen a cookie to a parent domain shared with sibling apps or the gateway.
+ * (Page JavaScript can still set such cookies through `document.cookie`; see
+ * docs/local-apps.md.) Other attributes are kept as sent.
+ */
+export function withoutDomainAttribute(line: string): string {
+  const [pair, ...attributes] = line.split(';');
+  const kept = attributes.filter((attribute) => {
+    const name = attribute.split('=', 1)[0].trim().toLowerCase();
+    return name !== 'domain';
+  });
+
+  return [pair, ...kept].join(';');
+}
+
+/**
+ * One response header as the phone may see it, or undefined to drop it.
+ * Shared by ordinary responses and WebSocket handshake responses:
+ *
+ * - an app can neither set nor clear Companion's session cookie;
+ * - app cookies lose any `Domain` attribute (host-only);
+ * - `Location` and `Refresh` URLs naming the loopback upstream are shown with
+ *   the app's public origin. Redirects are never followed by the proxy.
+ */
+export function phoneResponseHeader(
+  name: string,
+  value: string,
+  upstreamOrigin: string,
+  publicOrigin: string,
+): string | undefined {
+  const lower = name.toLowerCase();
+
+  if (lower === 'set-cookie') {
+    if (isCompanionCookie(setCookieName(value))) {
+      return undefined;
+    }
+    return withoutDomainAttribute(value);
+  }
+  if (lower === 'location') {
+    return rewriteLocation(value, upstreamOrigin, publicOrigin);
+  }
+  if (lower === 'refresh') {
+    return rewriteRefresh(value, upstreamOrigin, publicOrigin);
+  }
+
+  return value;
+}
+
+/**
+ * Response headers for the phone, from Node's flat `rawHeaders` list:
+ * hop-by-hop headers are dropped and every other header passes through
+ * `phoneResponseHeader`.
  */
 export function phoneResponseHeaders(
   rawHeaders: string[],
@@ -191,22 +240,72 @@ export function phoneResponseHeaders(
   for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
     const name = rawHeaders[index];
     const lower = name.toLowerCase();
-    let value = rawHeaders[index + 1];
 
     if (hopByHopHeaders.has(lower) || namedInConnection.has(lower)) {
       continue;
     }
-    if (lower === 'set-cookie' && isCompanionCookie(setCookieName(value))) {
-      continue;
-    }
-    if (lower === 'location') {
-      value = rewriteLocation(value, upstreamOrigin, publicOrigin);
-    }
 
-    result.push(name, value);
+    const value = phoneResponseHeader(name, rawHeaders[index + 1], upstreamOrigin, publicOrigin);
+    if (value !== undefined) {
+      result.push(name, value);
+    }
   }
 
   return result;
+}
+
+/**
+ * A backend's WebSocket handshake response head (status line and headers,
+ * without the final blank line), rewritten with `phoneResponseHeader`. Upgrade
+ * headers such as `Connection`, `Upgrade` and `Sec-WebSocket-Accept` are kept
+ * because they belong to this handshake. Returns undefined for a malformed
+ * head (including obsolete line folding), which closes the connection.
+ */
+export function filterHandshakeResponse(
+  head: string,
+  upstreamOrigin: string,
+  publicOrigin: string,
+): string | undefined {
+  const [statusLine, ...lines] = head.split('\r\n');
+  if (!/^HTTP\/1\.[01] \d{3}(?: [^\r\n]*)?$/.test(statusLine)) {
+    return undefined;
+  }
+
+  const output = [statusLine];
+  for (const line of lines) {
+    const separator = line.indexOf(':');
+    if (separator <= 0 || /^[ \t]/.test(line) || line.includes('\n') || line.includes('\r')) {
+      return undefined;
+    }
+
+    const name = line.slice(0, separator);
+    const value = line.slice(separator + 1).trim();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
+      return undefined;
+    }
+
+    const filtered = phoneResponseHeader(name, value, upstreamOrigin, publicOrigin);
+    if (filtered !== undefined) {
+      output.push(`${name}: ${filtered}`);
+    }
+  }
+
+  return output.join('\r\n') + '\r\n\r\n';
+}
+
+/** `Refresh: 5; url=http://127.0.0.1:8123/x` gets the same treatment as `Location`. */
+export function rewriteRefresh(
+  value: string,
+  upstreamOrigin: string,
+  publicOrigin: string,
+): string {
+  const match = /^(.*?url\s*=\s*)(['"]?)(.*?)\2\s*$/i.exec(value);
+  if (!match) {
+    return value;
+  }
+
+  const [, prefix, quote, target] = match;
+  return prefix + quote + rewriteLocation(target, upstreamOrigin, publicOrigin) + quote;
 }
 
 /**

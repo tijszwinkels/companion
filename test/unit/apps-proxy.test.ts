@@ -14,9 +14,12 @@ import WebSocket, { WebSocketServer } from 'ws';
 
 import {
   checkBrowserRequest,
+  filterHandshakeResponse,
   phoneResponseHeaders,
+  rewriteRefresh,
   sessionCookieName,
   upstreamRequestHeaders,
+  withoutDomainAttribute,
 } from '../../src/apps/headers.ts';
 import { checkAppOrigins } from '../../src/apps/origins.ts';
 import { AppProxy } from '../../src/apps/proxy.ts';
@@ -31,19 +34,27 @@ import { AppRegistry } from '../../src/apps/registry.ts';
 
 // ---- Pure policy ---------------------------------------------------------------
 
-test('app origins need their own host names and never reuse the gateway origin', () => {
-  const gateway = ['https://desk.example.ts.net', 'http://127.0.0.1:8787'];
+test('app origins need host names distinct from each other and from the gateway', () => {
+  const gateway = ['https://desk.example.ts.net', 'http://127.0.0.1:8787', 'http://localhost:8787'];
 
   const valid = checkAppOrigins(
     [
       ['budget', 'https://budget.example.ts.net'],
       ['notes', 'http://notes.localhost:8790'],
-      // Same host name as the gateway on another port: allowed (no gateway cookies).
-      ['single', 'https://desk.example.ts.net:8444'],
     ],
     gateway,
   );
-  assert.equal(valid.size, 3);
+  assert.equal(valid.size, 2);
+
+  // The gateway's host name is refused on every port.
+  assert.throws(
+    () => checkAppOrigins([['single', 'https://desk.example.ts.net:8444']], gateway),
+    /gateway's host name/,
+  );
+  assert.throws(
+    () => checkAppOrigins([['local', 'http://localhost:8790']], gateway),
+    /gateway's host name/,
+  );
 
   assert.throws(
     () =>
@@ -54,6 +65,7 @@ test('app origins need their own host names and never reuse the gateway origin',
     /share the host name/,
   );
   assert.throws(() => checkAppOrigins([['a', 'https://desk.example.ts.net']], gateway), /gateway/);
+  assert.throws(() => checkAppOrigins([['a', 'http://127.0.0.1:8790']], gateway), /gateway/);
   assert.throws(() => checkAppOrigins([['a', 'http://budget.example.com']]), /https/);
   assert.throws(() => checkAppOrigins([['a', 'https://budget.example.com/app']]), /exactly/);
   assert.throws(() => checkAppOrigins([['a', 'ftp://budget.example.com']]), /https/);
@@ -151,6 +163,88 @@ test('responses cannot set Companion cookies and loopback redirects become publi
   assert.deepEqual(elsewhere, ['Location', 'https://bank.example/login']);
 });
 
+test('app cookies become host-only and Refresh targets are rewritten like Location', () => {
+  const upstream = 'http://127.0.0.1:8123';
+  const origin = 'https://budget.example.ts.net';
+
+  assert.equal(
+    withoutDomainAttribute('sid=1; Path=/; Domain=example.ts.net; HttpOnly; domain = .ts.net'),
+    'sid=1; Path=/; HttpOnly',
+  );
+  assert.deepEqual(
+    phoneResponseHeaders(
+      [
+        'Set-Cookie',
+        'sid=1; Domain=example.ts.net; Secure',
+        'Refresh',
+        '3; url=http://127.0.0.1:8123/next',
+      ],
+      upstream,
+      origin,
+    ),
+    ['Set-Cookie', 'sid=1; Secure', 'Refresh', '3; url=https://budget.example.ts.net/next'],
+  );
+  assert.equal(rewriteRefresh('0', upstream, origin), '0');
+  assert.equal(
+    rewriteRefresh("0; URL='http://127.0.0.1:8123/a'", upstream, origin),
+    "0; URL='https://budget.example.ts.net/a'",
+  );
+  assert.equal(
+    rewriteRefresh('0; url=https://elsewhere.example/', upstream, origin),
+    '0; url=https://elsewhere.example/',
+  );
+});
+
+test('WebSocket handshake responses get the same header policy and must be well formed', () => {
+  const upstream = 'http://127.0.0.1:8123';
+  const origin = 'https://budget.example.ts.net';
+
+  const accepted = filterHandshakeResponse(
+    [
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      'Sec-WebSocket-Accept: abc=',
+      `Set-Cookie: ${sessionCookieName}=forged; Path=/; Secure`,
+      'Set-Cookie: ws=1; Domain=ts.net',
+    ].join('\r\n'),
+    upstream,
+    origin,
+  );
+  assert.equal(
+    accepted,
+    [
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      'Sec-WebSocket-Accept: abc=',
+      'Set-Cookie: ws=1',
+      '',
+      '',
+    ].join('\r\n'),
+  );
+
+  const refused = filterHandshakeResponse(
+    'HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8123/login',
+    upstream,
+    origin,
+  );
+  assert.equal(
+    refused,
+    'HTTP/1.1 302 Found\r\nLocation: https://budget.example.ts.net/login\r\n\r\n',
+  );
+
+  for (const malformed of [
+    'HTTP/2 101',
+    'HTTP/1.1 101 OK\r\n folded: continuation',
+    'HTTP/1.1 101 OK\r\nno-colon',
+    'HTTP/1.1 101 OK\r\nbad name: x',
+    'HTTP/1.1 101 OK\r\nX: a\nInjected: b',
+  ]) {
+    assert.equal(filterHandshakeResponse(malformed, upstream, origin), undefined, malformed);
+  }
+});
+
 test('fetch metadata and Origin decide whether a browser request may use the session', () => {
   const origin = 'https://budget.example.ts.net';
 
@@ -235,8 +329,25 @@ async function syntheticBackend() {
     response.end(JSON.stringify({ path: request.url, bodyBytes }));
   });
 
+  // Extra handshake headers for /ws-cookie, to check the proxy filters them.
+  events.on('headers', (headers, request) => {
+    if (request.url === '/ws-cookie') {
+      headers.push(`Set-Cookie: ${sessionCookieName}=forged; Path=/; Secure`);
+      headers.push('Set-Cookie: ws=1; Domain=localhost; Path=/');
+    }
+  });
+
   server.on('upgrade', (request, socket, head) => {
     sockets.connections += 1;
+    if (request.url === '/ws-refuse') {
+      socket.end(
+        'HTTP/1.1 403 Forbidden\r\n' +
+          `Set-Cookie: ${sessionCookieName}=forged; Path=/; Secure\r\n` +
+          `Location: http://127.0.0.1:${port}/login\r\n` +
+          'Content-Length: 0\r\n\r\n',
+      );
+      return;
+    }
     events.handleUpgrade(request, socket, head, (client) => {
       client.send(JSON.stringify({ hello: request.headers.cookie ?? '' }));
       client.on('message', (data) => client.send(String(data)));
@@ -353,6 +464,7 @@ async function proxyFixture(
   await registry.add({ id: 'private', name: 'Private', upstream: 'http://127.0.0.1:9' });
 
   const paired = new Set(['phone-1', 'phone-2']);
+  const deviceToken = 'D'.repeat(43);
   const budgetOrigin = `http://budget.localhost:${port}`;
   const notesOrigin = `http://notes.localhost:${port}`;
 
@@ -368,6 +480,7 @@ async function proxyFixture(
     sources: {
       apps: () => registry.list(),
       pairedDeviceIds: async () => new Set(paired),
+      isDeviceCredential: async (value) => value === deviceToken,
     },
     log: () => {},
     // Sweeps are triggered explicitly in these tests.
@@ -408,6 +521,7 @@ async function proxyFixture(
     notesOrigin,
     budgetHost,
     notesHost,
+    deviceToken,
     openApp,
   };
 }
@@ -421,7 +535,10 @@ test('grants are single-use, app-bound, short-lived and become an HttpOnly Stric
 
   const redeemed = await send(fixture.port, { host: fixture.budgetHost, path });
   assert.equal(redeemed.status, 200);
-  assert.equal(redeemed.headers.refresh, '0; url=/');
+  assert.match(redeemed.body, /location\.replace\('\/'\)/);
+  assert.match(String(redeemed.headers['content-security-policy']), /script-src 'sha256-/);
+  assert.equal(redeemed.headers['referrer-policy'], 'no-referrer');
+  assert.equal(redeemed.headers['cache-control'], 'no-store');
   const cookie = String(redeemed.headers['set-cookie']?.[0]);
   assert.match(cookie, new RegExp(`^${sessionCookieName}=[A-Za-z0-9_-]{43}; `));
   for (const attribute of ['Path=/', 'Secure', 'HttpOnly', 'SameSite=Strict', 'Max-Age=']) {
@@ -667,18 +784,27 @@ test('large uploads stream through, and oversized bodies are refused', async (co
 function openSocket(
   fixture: Awaited<ReturnType<typeof proxyFixture>>,
   headers: Record<string, string>,
-): Promise<{ socket: WebSocket; first: Promise<string> }> {
+  path = '/events',
+): Promise<{ socket: WebSocket; first: Promise<string>; upgradeHeaders: IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}/events`, {
+    const socket = new WebSocket(`ws://127.0.0.1:${fixture.port}${path}`, {
       headers: { host: fixture.budgetHost, ...headers },
+    });
+    let upgradeHeaders: IncomingHttpHeaders = {};
+    socket.once('upgrade', (response) => {
+      upgradeHeaders = response.headers;
     });
     const first = new Promise<string>((resolveFirst) =>
       socket.once('message', (data) => resolveFirst(String(data))),
     );
-    socket.once('open', () => resolve({ socket, first }));
-    socket.once('unexpected-response', (_request, response) =>
-      reject(Error(`HTTP ${response.statusCode}`)),
-    );
+    socket.once('open', () => resolve({ socket, first, upgradeHeaders }));
+    socket.once('unexpected-response', (_request, response) => {
+      const error = Error(`HTTP ${response.statusCode}`) as Error & {
+        headers?: IncomingHttpHeaders;
+      };
+      error.headers = response.headers;
+      reject(error);
+    });
     socket.once('error', reject);
   });
 }
@@ -718,6 +844,63 @@ test('WebSockets need the exact Origin and a session, and never see the session 
   socket.send('ping through proxy');
   assert.equal(await echoed, 'ping through proxy');
   socket.close();
+});
+
+test('WebSocket handshake responses from the backend are filtered too', async (context) => {
+  const fixture = await proxyFixture(context);
+  const cookie = await fixture.openApp();
+
+  const { socket, upgradeHeaders } = await openSocket(
+    fixture,
+    { cookie, origin: fixture.budgetOrigin },
+    '/ws-cookie',
+  );
+  assert.deepEqual(upgradeHeaders['set-cookie'], ['ws=1; Path=/']);
+  socket.close();
+
+  const refused = await openSocket(fixture, { cookie, origin: fixture.budgetOrigin }, '/ws-refuse')
+    .then(() => undefined)
+    .catch((error: Error & { headers?: IncomingHttpHeaders }) => error);
+  assert.ok(refused);
+  assert.match(refused.message, /HTTP 403/);
+  assert.equal(refused.headers?.['set-cookie'], undefined);
+  assert.equal(refused.headers?.location, `${fixture.budgetOrigin}/login`);
+});
+
+test('a Companion device credential is never forwarded to an app backend', async (context) => {
+  const fixture = await proxyFixture(context);
+  const cookie = await fixture.openApp();
+
+  for (const authorization of [
+    `Bearer ${fixture.deviceToken}`,
+    fixture.deviceToken,
+    `Basic  ${fixture.deviceToken} `,
+  ]) {
+    const reply = await send(fixture.port, {
+      host: fixture.budgetHost,
+      headers: { cookie, authorization },
+    });
+    assert.equal(reply.status, 400, authorization);
+  }
+
+  await assert.rejects(
+    openSocket(fixture, {
+      cookie,
+      origin: fixture.budgetOrigin,
+      authorization: `Bearer ${fixture.deviceToken}`,
+    }),
+    /HTTP 400/,
+  );
+
+  assert.equal(fixture.budgetBackend.requests.length, 0);
+  assert.equal(fixture.budgetBackend.sockets.connections, 0);
+
+  // An app's own Authorization still passes.
+  const own = await send(fixture.port, {
+    host: fixture.budgetHost,
+    headers: { cookie, authorization: 'Bearer app-issued-token' },
+  });
+  assert.equal(own.status, 200);
 });
 
 test('revoking the device ends HTTP and WebSocket authority, including open streams', async (context) => {
@@ -798,6 +981,38 @@ test('turning phone access off, or changing the registration, ends existing sess
     401,
   );
   assert.equal(fixture.proxy.sessionCount, 0);
+});
+
+test('removing and re-adding an app id never carries sessions or grants over', async (context) => {
+  const fixture = await proxyFixture(context);
+  const session = await fixture.openApp();
+  const pending = await fixture.proxy.openForDevice('phone-1', 'budget');
+  const before = (await fixture.registry.get('budget'))!;
+
+  // Re-register the same id with the same revision number but another backend.
+  await fixture.registry.remove('budget');
+  await fixture.registry.add({
+    id: 'budget',
+    name: 'Replacement',
+    upstream: `http://127.0.0.1:${fixture.notesBackend.port}`,
+  });
+  const after = await fixture.registry.update('budget', { phoneAccess: true });
+  assert.equal(after.revision, before.revision);
+  assert.notEqual(after.registrationId, before.registrationId);
+
+  // Checked per request, without waiting for a sweep to notice the gap.
+  const reused = await send(fixture.port, {
+    host: fixture.budgetHost,
+    headers: { cookie: session },
+  });
+  assert.equal(reused.status, 401);
+
+  const pendingPath = new URL(pending.url).pathname + new URL(pending.url).search;
+  const redeemed = await send(fixture.port, { host: fixture.budgetHost, path: pendingPath });
+  assert.equal(redeemed.status, 401);
+
+  assert.equal(fixture.notesBackend.requests.length, 0);
+  assert.equal(fixture.budgetBackend.requests.length, 0);
 });
 
 test('an unreadable registry ends every session instead of continuing', async (context) => {

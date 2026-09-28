@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -100,18 +100,64 @@ test('apps are stored privately, start without phone access and advance revision
   await assert.rejects(registry.update('missing', { phoneAccess: true }), /No app/);
 });
 
-test('removing an app keeps its browser profile and data', async (context) => {
+test('removing an app keeps its profile; re-adding the id starts a new registration', async (context) => {
   const { registry } = await temporaryRegistry(context);
-  await registry.add({ id: 'notes', name: 'Notes', upstream: 'http://127.0.0.1:8124' });
+  const original = await registry.add({
+    id: 'notes',
+    name: 'Notes',
+    upstream: 'http://127.0.0.1:8124',
+  });
 
-  const profile = registry.profileDirectory('notes');
-  await mkdir(profile, { recursive: true, mode: 0o700 });
+  const profile = await registry.prepareProfile(original);
+  assert.equal((await stat(profile)).mode & 0o777, 0o700);
   await writeFile(join(profile, 'marker'), 'kept');
 
   assert.equal(await registry.remove('notes'), true);
   assert.equal(await registry.remove('notes'), false);
   assert.equal(await readFile(join(profile, 'marker'), 'utf8'), 'kept');
   assert.deepEqual(await registry.list(), []);
+
+  // Same id, same revision number, but a different registration and profile.
+  const replacement = await registry.add({
+    id: 'notes',
+    name: 'Other notes',
+    upstream: 'http://127.0.0.1:8125',
+  });
+  assert.equal(replacement.revision, original.revision);
+  assert.notEqual(replacement.registrationId, original.registrationId);
+  assert.notEqual(registry.profileDirectory(replacement), profile);
+  await assert.rejects(readFile(join(await registry.prepareProfile(replacement), 'marker')));
+});
+
+test('symlinked or shared profile directories are refused', async (context) => {
+  const { root, registry } = await temporaryRegistry(context);
+  const app = await registry.add({ id: 'notes', name: 'Notes', upstream: 'http://127.0.0.1:8124' });
+
+  // A profile path that is a symlink (for example to a personal profile).
+  const personal = join(root, 'personal-chromium-profile');
+  await mkdir(personal, { mode: 0o700 });
+  await mkdir(join(root, 'apps', 'profiles'), { mode: 0o700 });
+  await symlink(personal, registry.profileDirectory(app));
+  await assert.rejects(registry.prepareProfile(app), /symbolic link/);
+
+  // The profiles parent itself as a symlink.
+  const second = await new AppRegistry(join(root, 'second')).add({
+    id: 'x',
+    name: 'X',
+    upstream: 'http://127.0.0.1:8126',
+  });
+  await symlink(personal, join(root, 'second', 'profiles'));
+  await assert.rejects(
+    new AppRegistry(join(root, 'second')).prepareProfile(second),
+    /symbolic link/,
+  );
+
+  // A profile readable by other users.
+  const third = new AppRegistry(join(root, 'third'));
+  const thirdApp = await third.add({ id: 'y', name: 'Y', upstream: 'http://127.0.0.1:8127' });
+  const thirdProfile = await third.prepareProfile(thirdApp);
+  await chmod(thirdProfile, 0o755);
+  await assert.rejects(third.prepareProfile(thirdApp), /chmod 700/);
 });
 
 test('an existing directory readable by others is refused, not repaired', async (context) => {
@@ -139,6 +185,7 @@ test('hand-edited entries are validated when read', async (context) => {
       apps: [
         {
           id: 'evil',
+          registrationId: '00000000-0000-4000-8000-000000000001',
           name: 'Evil',
           upstream: 'http://example.com:8080',
           phoneAccess: true,

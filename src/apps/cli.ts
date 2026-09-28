@@ -164,9 +164,12 @@ async function runForeground(
     onReady: () => {
       console.error(`[companion-app] Open ${app.upstream}/ (Ctrl+C stops the backend)`);
       if (openWindow) {
-        openAppWindow(app, registry.profileDirectory(app.id), chromium).catch((error) => {
-          console.error(`[companion-app] Could not open the window: ${String(error)}`);
-        });
+        registry
+          .prepareProfile(app)
+          .then((profile) => openAppWindow(app, profile, chromium))
+          .catch((error) => {
+            console.error(`[companion-app] Could not open the window: ${String(error)}`);
+          });
       }
     },
   });
@@ -289,13 +292,18 @@ async function main(): Promise<number> {
   }
 
   if (action === 'remove') {
+    const existing = await registry.get(id);
     const removed = await registry.remove(id);
+    if (!existing || !removed) {
+      console.log(`No app ${id}`);
+      return 1;
+    }
+
     console.log(
-      removed
-        ? `Removed ${id}. Its browser profile (${registry.profileDirectory(id)}) and data were kept.`
-        : `No app ${id}`,
+      `Removed ${id}. Its browser profile (${registry.profileDirectory(existing)}) and data ` +
+        'were kept; adding the same ID again starts a new registration with a fresh profile.',
     );
-    return removed ? 0 : 1;
+    return 0;
   }
 
   if (action === 'set-launch') {
@@ -346,8 +354,8 @@ async function main(): Promise<number> {
       return 1;
     }
 
-    await registry.prepare();
-    await openAppWindow(app, registry.profileDirectory(id), chromium);
+    const profile = await registry.prepareProfile(app);
+    await openAppWindow(app, profile, chromium);
     return 0;
   }
 

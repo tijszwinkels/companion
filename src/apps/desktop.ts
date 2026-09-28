@@ -1,7 +1,7 @@
 /**
  * Desktop presentation: a dedicated Chromium app window per registered app.
  *
- * Each app gets its own persistent browser profile under the apps directory,
+ * Each registration gets its own persistent browser profile under the apps directory,
  * so its cookies, localStorage, IndexedDB, service workers and permissions are
  * separate from every other app, from the user's personal browser and from
  * Companion's own UI (which uses Qt WebEngine profiles, not Chromium). The
@@ -20,7 +20,6 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
 
 import { checkPrivateDirectory, parseUpstream, type RegisteredApp } from './registry.ts';
 
@@ -91,14 +90,16 @@ export function appBrowserCommand(
 /**
  * Open the app window and return once Chromium has been started. The browser
  * is detached: it is the user's window from then on and outlives this command.
+ *
+ * `profileDirectory` comes from `AppRegistry.prepareProfile`; it is checked
+ * again here so a directory swapped for a symlink or opened up to other users
+ * in the meantime is refused rather than used.
  */
 export async function openAppWindow(
   app: RegisteredApp,
   profileDirectory: string,
   executable = defaultChromium,
 ): Promise<void> {
-  // The profile holds the app's cookies and storage; keep it private.
-  await mkdir(profileDirectory, { recursive: true, mode: 0o700 });
   await checkPrivateDirectory(profileDirectory);
 
   const command = appBrowserCommand(app, profileDirectory, executable);

@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { appBrowserArguments, browserEnvironment, openAppWindow } from '../../src/apps/desktop.ts';
-import type { RegisteredApp } from '../../src/apps/registry.ts';
+import { AppRegistry, type RegisteredApp } from '../../src/apps/registry.ts';
 
 /** The desktop window command, with a stand-in executable instead of Chromium. */
 
 const app: RegisteredApp = {
   id: 'budget',
+  registrationId: '00000000-0000-4000-8000-000000000001',
   name: 'Budget',
   upstream: 'http://127.0.0.1:8123',
   phoneAccess: false,
@@ -60,7 +61,21 @@ test('the browser environment drops Companion and Chromium override variables', 
   });
 });
 
-test('opening creates a private persistent profile and starts the browser detached', async (context) => {
+test('opening refuses a profile that is not a private real directory', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-apps-desktop-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+
+  const target = join(root, 'target');
+  await mkdir(target, { mode: 0o700 });
+  const link = join(root, 'link');
+  await symlink(target, link);
+  await assert.rejects(openAppWindow(app, link, '/bin/false'), /symbolic link/);
+
+  await chmod(target, 0o755);
+  await assert.rejects(openAppWindow(app, target, '/bin/false'), /chmod 700/);
+});
+
+test('opening uses a private persistent profile and starts the browser detached', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'companion-apps-desktop-'));
   context.after(() => rm(root, { recursive: true, force: true }));
 
@@ -69,10 +84,12 @@ test('opening creates a private persistent profile and starts the browser detach
   await writeFile(fakeBrowser, `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\n`);
   await chmod(fakeBrowser, 0o755);
 
-  const profile = join(root, 'apps', 'profiles', 'budget');
+  const registry = new AppRegistry(join(root, 'apps'));
+  const profile = await registry.prepareProfile(app);
   await openAppWindow(app, profile, fakeBrowser);
 
   assert.equal((await stat(profile)).mode & 0o777, 0o700);
+  assert.equal(profile, join(root, 'apps', 'profiles', `budget-${app.registrationId}`));
 
   const deadline = Date.now() + 5000;
   let recorded = '';
