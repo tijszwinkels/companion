@@ -35,7 +35,9 @@
     "mobile:build": "tsx integrations/mobile/build.ts",
     "remote": "tsx src/remote/cli.ts",
     "test:mobile": "tsx --test test/mobile/*.test.ts",
-    "mobile:demo": "tsx integrations/mobile/demo.ts"
+    "mobile:demo": "tsx integrations/mobile/demo.ts",
+    "apps:demo": "tsx src/apps/cli.ts demo",
+    "test:apps": "tsx --test test/apps/*.test.ts"
   },
   "keywords": [],
   "author": "",

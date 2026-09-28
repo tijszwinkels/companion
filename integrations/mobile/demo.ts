@@ -6,7 +6,10 @@
  *     few registered intents and seeded Activity entries,
  *   - real agent sessions driven by a scripted backend that streams Markdown,
  *     tool calls and choices (no model, no network),
- *   - the real remote gateway on loopback, serving the built phone app.
+ *   - the real remote gateway on loopback, serving the built phone app,
+ *   - with `--apps`: the synthetic CSV notebook local app, started by the real
+ *     lifecycle code and offered to the phone through the app proxy on the
+ *     synthetic origin http://csv-notebook.localhost:PORT+3 (docs/local-apps.md).
  *
  * It prints the URL and a pairing code. Open the URL in a desktop browser with
  * a phone-sized window (or device emulation). Nothing reads personal data,
@@ -29,6 +32,8 @@ import { chatMessage, type AgentBackend, type AgentMessage } from '../../src/age
 import type { UserSensorFrame, UserSensorProcessor } from '../../src/core/frame.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
+import { runApp } from '../../src/apps/launcher.ts';
+import { AppRegistry } from '../../src/apps/registry.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
@@ -36,6 +41,7 @@ import { Gateway } from '../../src/remote/gateway.ts';
 const { values } = parseArgs({
   options: {
     port: { type: 'string', default: '8787' },
+    apps: { type: 'boolean', default: false },
   },
 });
 
@@ -317,6 +323,40 @@ const port = Number(values.port);
 const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
 const stateDirectory = join(directory, 'remote');
 
+// Optional synthetic local app: registered with phone access, started by the
+// real lifecycle code, served to the phone by the gateway's app proxy.
+const appsPort = port + 3;
+const notebookPort = port + 4;
+const notebookOrigin = `http://csv-notebook.localhost:${appsPort}`;
+const checkout = join(root, '..', '..');
+
+if (values.apps) {
+  const registry = new AppRegistry(join(directory, 'apps'));
+  await registry.add({
+    id: 'csv-notebook',
+    name: 'CSV notebook (demo)',
+    upstream: `http://127.0.0.1:${notebookPort}`,
+    launch: {
+      argv: [
+        join(checkout, 'node_modules', '.bin', 'tsx'),
+        join(checkout, 'src', 'apps', 'demo', 'fixture-app.ts'),
+        '--port',
+        String(notebookPort),
+        '--data',
+        join(directory, 'csv-notebook-data'),
+      ],
+      cwd: directory,
+    },
+  });
+  const notebook = await registry.update('csv-notebook', { phoneAccess: true });
+
+  await new Promise<void>((resolve, reject) => {
+    runApp(notebook, { signal: controller.signal, output: 'ignore', onReady: resolve }).catch(
+      reject,
+    );
+  });
+}
+
 const gateway = new Gateway({
   host: '127.0.0.1',
   port,
@@ -325,6 +365,14 @@ const gateway = new Gateway({
   controlSocket: join(directory, 'control.sock'),
   sessionsDirectory: join(directory, '.companion-sessions'),
   appDirectory,
+  apps: values.apps
+    ? {
+        host: '127.0.0.1',
+        port: appsPort,
+        origins: [['csv-notebook', notebookOrigin]],
+        registryDirectory: join(directory, 'apps'),
+      }
+    : undefined,
   log: (message) => console.error(`[remote] ${message}`),
 });
 await gateway.start();
@@ -339,7 +387,15 @@ Companion phone demo (synthetic data only)
 
 Use a phone-sized browser window or device emulation. New pairing code:
   bin/companion-remote pair --state-directory ${stateDirectory}
-
+${
+  values.apps
+    ? `
+  Local app:     CSV notebook at ${notebookOrigin} (Apps button in the header).
+                 It opens in a new tab through the app proxy; *.localhost
+                 names resolve to this computer in Chromium-based browsers.
+`
+    : ''
+}
 Temporary data: ${directory}
 Press Ctrl+C to stop and delete it.
 `);

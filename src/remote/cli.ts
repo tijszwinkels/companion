@@ -11,8 +11,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
+import { parseAppOriginOption } from '../apps/origins.ts';
+import { defaultAppsDirectory } from '../apps/registry.ts';
 import { DeviceStore } from './devices.ts';
-import { Gateway, isLoopbackHost, loopbackOrigins } from './gateway.ts';
+import { Gateway, isLoopbackHost, loopbackOrigins, type GatewayAppOptions } from './gateway.ts';
 
 const help = `Usage: companion-remote <serve|pair|devices|revoke> [options]
 
@@ -29,6 +31,13 @@ serve     Run the phone gateway until interrupted.
                         Saved conversations, for screenshots
                         (default ~/companion/agents/.companion-sessions).
   --app-directory PATH  Built phone app (default: this checkout's integrations/mobile/dist).
+  --apps-listen HOST:PORT
+                        Serve registered local apps to paired phones from a separate
+                        loopback listener (off unless given). See docs/local-apps.md.
+  --app-origin ID=URL   Public origin for one app, exactly scheme://host[:port]; repeatable.
+                        Each app needs its own host name, distinct from this gateway's.
+                        Only apps with \`companion-app phone ID on\` are offered.
+  --apps-directory PATH App registry (default ~/companion/apps).
 
 pair      Print a one-time pairing code (10 minutes, 5 attempts).
 devices   List paired devices as JSON.
@@ -56,6 +65,9 @@ async function main(): Promise<number> {
       'control-socket': { type: 'string' },
       'sessions-directory': { type: 'string' },
       'app-directory': { type: 'string' },
+      'apps-listen': { type: 'string' },
+      'app-origin': { type: 'string', multiple: true },
+      'apps-directory': { type: 'string' },
       'state-directory': { type: 'string' },
     },
   });
@@ -130,6 +142,26 @@ async function main(): Promise<number> {
   const origins =
     values.origin ?? (isLoopbackHost(values.host) && !tls ? loopbackOrigins(port) : []);
 
+  let apps: GatewayAppOptions | undefined;
+  if (values['apps-listen']) {
+    const listen = /^(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/.exec(values['apps-listen']);
+    const appsPort = Number(listen?.[2]);
+    if (!listen || !Number.isInteger(appsPort) || appsPort < 1 || appsPort > 65535) {
+      console.error('--apps-listen must be a loopback HOST:PORT such as 127.0.0.1:8790');
+      return 2;
+    }
+
+    apps = {
+      host: listen[1] === '[::1]' ? '::1' : listen[1],
+      port: appsPort,
+      origins: (values['app-origin'] ?? []).map(parseAppOriginOption),
+      registryDirectory: values['apps-directory'] ?? defaultAppsDirectory(),
+    };
+  } else if (values['app-origin'] || values['apps-directory']) {
+    console.error('--app-origin and --apps-directory need --apps-listen');
+    return 2;
+  }
+
   const gateway = new Gateway({
     host: values.host,
     port,
@@ -140,12 +172,19 @@ async function main(): Promise<number> {
     sessionsDirectory:
       values['sessions-directory'] ?? join(homedir(), 'companion', 'agents', '.companion-sessions'),
     appDirectory: values['app-directory'] ?? join(checkout, 'integrations', 'mobile', 'dist'),
+    apps,
     log: (message) => console.error(`[remote] ${message}`),
   });
 
   await gateway.start();
   console.error(`[remote] Serving on ${tls ? 'https' : 'http'}://${values.host}:${gateway.port}`);
   console.error(`[remote] Allowed origins: ${origins.join(', ')}`);
+  if (apps && gateway.apps) {
+    console.error(`[remote] Local apps on ${values['apps-listen']} (port ${gateway.apps.port})`);
+    for (const [id, origin] of apps.origins) {
+      console.error(`[remote]   ${id}: ${origin}`);
+    }
+  }
   console.error('[remote] Pair a phone with: companion-remote pair');
 
   await new Promise<void>((resolveStop) => {
