@@ -1,0 +1,547 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import WebSocket from 'ws';
+
+import { DeviceStore } from '../../src/remote/devices.ts';
+import {
+  checkGatewayOptions,
+  Gateway,
+  type GatewayServiceOptions,
+} from '../../src/remote/gateway.ts';
+import { claimUnixSocket } from '../../src/remote/unix-socket-claim.ts';
+import { remoteFixture, waitFor } from '../remote-fixture.ts';
+
+/**
+ * Unix socket mode for Tailscale Serve (`--listen unix:PATH`) and the
+ * Tailscale header checks. Everything runs in temporary directories with
+ * synthetic sockets; nothing touches the live gateway, its runtime directory,
+ * the listener's real control socket or Tailscale.
+ */
+
+const tailnetOrigin = 'https://desk.example-tailnet.ts.net';
+const tailnetHost = 'desk.example-tailnet.ts.net';
+
+async function temporaryDirectory(context: { after(callback: () => Promise<void>): void }) {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-unix-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+}
+
+/**
+ * Leave a stale socket behind, as a crashed gateway would: a child process
+ * listens on the path and is killed before it can unlink it.
+ */
+async function staleSocket(path: string): Promise<void> {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `require('node:net').createServer().listen(${JSON.stringify(path)}, () => console.log('ready'))`,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] },
+  );
+  await once(child.stdout!, 'data');
+  child.kill('SIGKILL');
+  await once(child, 'exit');
+  assert.ok((await lstat(path)).isSocket());
+}
+
+/** A plain HTTP request over the Unix socket with explicit headers. */
+function unixRequest(
+  socketPath: string,
+  options: { method?: string; path: string; headers: Record<string, string>; body?: string },
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      { socketPath, method: options.method ?? 'GET', path: options.path, headers: options.headers },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () =>
+          resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString() }),
+        );
+      },
+    );
+    request.on('error', reject);
+    request.end(options.body);
+  });
+}
+
+type UnixPhone = {
+  socket: WebSocket;
+  messages: { type: string }[];
+  closed: Promise<{ code: number }>;
+};
+
+/**
+ * Open the phone WebSocket over the Unix socket, as Tailscale Serve would:
+ * Host and Origin name the tailnet HTTPS origin. Resolves once upgraded
+ * (HTTP 101) or rejects with the HTTP status.
+ */
+async function unixPhone(
+  socketPath: string,
+  token: string | undefined,
+  headers: Record<string, string> = {},
+): Promise<UnixPhone> {
+  const socket = new WebSocket(`ws+unix:${socketPath}:/api/socket`, {
+    headers: { Host: tailnetHost, Origin: tailnetOrigin, ...headers },
+  });
+  const messages: { type: string }[] = [];
+  const closed = new Promise<{ code: number }>((resolve) => {
+    socket.once('close', (code) => resolve({ code }));
+  });
+  socket.on('message', (data) => messages.push(JSON.parse(String(data))));
+
+  await new Promise<void>((resolve, reject) => {
+    socket.once('open', () => resolve());
+    socket.once('error', reject);
+    socket.once('unexpected-response', (_request, response) => {
+      reject(Error(`HTTP ${response.statusCode}`));
+    });
+  });
+
+  if (token !== undefined) {
+    socket.send(JSON.stringify({ type: 'auth', token }));
+  }
+  return { socket, messages, closed };
+}
+
+/**
+ * A real listener, device store and TCP gateway from the shared fixture, plus
+ * a second gateway on a Unix socket sharing the same state. Pairing happens
+ * over the TCP gateway; the token is then used over the socket.
+ */
+async function unixFixture(
+  context: { after(callback: () => Promise<void>): void },
+  extra: Partial<GatewayServiceOptions> = {},
+) {
+  const fixture = await remoteFixture();
+  context.after(() => fixture.close());
+
+  const socketDirectory = join(fixture.directory, 'phone');
+  await mkdir(socketDirectory, { mode: 0o700 });
+  const socketPath = join(socketDirectory, 'gateway.sock');
+  const logs: string[] = [];
+
+  const gateway = new Gateway({
+    socketPath,
+    origins: [tailnetOrigin],
+    stateDirectory: join(fixture.directory, 'remote-state'),
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    log: (message) => logs.push(message),
+    ...extra,
+  });
+  await gateway.start();
+  context.after(() => gateway.close());
+
+  return { fixture, gateway, socketPath, socketDirectory, logs };
+}
+
+// ---- Claiming the socket path ------------------------------------------------
+
+test('a group- or world-accessible socket directory is refused', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const shared = join(directory, 'shared');
+  await mkdir(shared, { mode: 0o700 });
+  await chmod(shared, 0o750);
+
+  await assert.rejects(
+    claimUnixSocket(join(shared, 'gateway.sock')),
+    /must not be accessible to other users/,
+  );
+  await chmod(shared, 0o701);
+  await assert.rejects(
+    claimUnixSocket(join(shared, 'gateway.sock')),
+    /must not be accessible to other users/,
+  );
+});
+
+test('a symlinked socket directory is refused', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const real = join(directory, 'real');
+  await mkdir(real, { mode: 0o700 });
+  await symlink(real, join(directory, 'link'));
+
+  await assert.rejects(claimUnixSocket(join(directory, 'link', 'gateway.sock')), /symbolic link/);
+});
+
+test('a missing socket directory is created private; relative paths are refused', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const created = join(directory, 'created');
+
+  const claim = await claimUnixSocket(join(created, 'gateway.sock'));
+  const info = await lstat(created);
+  assert.equal(info.mode & 0o777, 0o700);
+  await claim.release();
+
+  await assert.rejects(claimUnixSocket('relative/gateway.sock'), /must be absolute/);
+});
+
+test('a socket that answers is never replaced', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const socketPath = join(directory, 'gateway.sock');
+  const other = createServer();
+  await new Promise<void>((resolve) => other.listen(socketPath, resolve));
+  context.after(() => new Promise<void>((resolve) => other.close(() => resolve())));
+
+  await assert.rejects(claimUnixSocket(socketPath), /already listening/);
+  assert.ok((await lstat(socketPath)).isSocket());
+});
+
+test('a stale socket from a crashed gateway is removed', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const socketPath = join(directory, 'gateway.sock');
+  await staleSocket(socketPath);
+
+  const claim = await claimUnixSocket(socketPath);
+  await assert.rejects(lstat(socketPath), { code: 'ENOENT' });
+  await claim.release();
+});
+
+test('a socket that cannot be probed is left alone', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const socketPath = join(directory, 'gateway.sock');
+  await staleSocket(socketPath);
+
+  // Without write permission, connect() fails with EACCES instead of
+  // ECONNREFUSED: we cannot tell whether it is in use, so we refuse.
+  await chmod(socketPath, 0o000);
+  await assert.rejects(claimUnixSocket(socketPath), /Could not tell whether/);
+  assert.ok((await lstat(socketPath)).isSocket());
+});
+
+test('regular files and symlinks at the socket path are left alone', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const socketPath = join(directory, 'gateway.sock');
+
+  await writeFile(socketPath, 'not a socket');
+  await assert.rejects(claimUnixSocket(socketPath), /not a socket/);
+  assert.equal(await readFile(socketPath, 'utf8'), 'not a socket');
+  await rm(socketPath);
+
+  // Even a symlink to a genuinely stale socket is not followed or unlinked.
+  const target = join(directory, 'target.sock');
+  await staleSocket(target);
+  await symlink(target, socketPath);
+  await assert.rejects(claimUnixSocket(socketPath), /not a socket/);
+  assert.ok((await lstat(socketPath)).isSymbolicLink());
+  assert.ok((await lstat(target)).isSocket());
+});
+
+test('the lifetime lock admits one gateway and refuses a symlinked lock file', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const socketPath = join(directory, 'gateway.sock');
+
+  const first = await claimUnixSocket(socketPath);
+  await assert.rejects(claimUnixSocket(socketPath), /Another phone gateway/);
+  await first.release();
+  const again = await claimUnixSocket(socketPath);
+  await again.release();
+
+  const other = join(directory, 'other');
+  await mkdir(other, { mode: 0o700 });
+  await writeFile(join(directory, 'elsewhere.lock'), '');
+  await symlink(join(directory, 'elsewhere.lock'), join(other, 'gateway.sock.lock'));
+  await assert.rejects(claimUnixSocket(join(other, 'gateway.sock')), /symbolic link/);
+});
+
+test('the device store refuses a symlinked state directory', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const real = join(directory, 'real-state');
+  await mkdir(real, { mode: 0o700 });
+  await symlink(real, join(directory, 'state'));
+
+  await assert.rejects(new DeviceStore(join(directory, 'state')).prepare(), /symbolic link/);
+
+  // The existing permission check still applies.
+  await chmod(real, 0o755);
+  await assert.rejects(new DeviceStore(real).prepare(), /must not be accessible/);
+});
+
+// ---- Options ---------------------------------------------------------------------
+
+test('Unix socket mode requires https origins and no TCP settings', () => {
+  const base = {
+    stateDirectory: '/nonexistent',
+    controlSocket: '/nonexistent',
+    sessionsDirectory: '/nonexistent',
+    appDirectory: '/nonexistent',
+    log: () => {},
+  };
+
+  checkGatewayOptions({ ...base, socketPath: '/run/x/gateway.sock', origins: [tailnetOrigin] });
+
+  assert.throws(
+    () => checkGatewayOptions({ ...base, socketPath: '/run/x/gateway.sock', origins: [] }),
+    /at least one https origin/,
+  );
+  assert.throws(
+    () =>
+      checkGatewayOptions({
+        ...base,
+        socketPath: '/run/x/gateway.sock',
+        origins: ['http://127.0.0.1:8787'],
+      }),
+    /https origins only/,
+  );
+  assert.throws(
+    () => checkGatewayOptions({ ...base, socketPath: 'gateway.sock', origins: [tailnetOrigin] }),
+    /must be absolute/,
+  );
+  assert.throws(
+    () =>
+      checkGatewayOptions({
+        ...base,
+        socketPath: '/run/x/gateway.sock',
+        origins: [tailnetOrigin],
+        host: '127.0.0.1',
+      } as never),
+    /no host, port or TLS/,
+  );
+  for (const login of ['', ' ', 'user @github', 'user@github\n']) {
+    assert.throws(
+      () =>
+        checkGatewayOptions({
+          ...base,
+          socketPath: '/run/x/gateway.sock',
+          origins: [tailnetOrigin],
+          requireTailscaleLogin: login,
+        }),
+      /required Tailscale login/,
+    );
+  }
+});
+
+// ---- Serving over the socket --------------------------------------------------
+
+test('the socket is private and removed on close; a second gateway is refused', async (context) => {
+  const { fixture, gateway, socketPath } = await unixFixture(context);
+
+  const info = await lstat(socketPath);
+  assert.ok(info.isSocket());
+  assert.equal(info.mode & 0o777, 0o600);
+  assert.equal(gateway.address, `unix:${socketPath}`);
+
+  const second = new Gateway({
+    socketPath,
+    origins: [tailnetOrigin],
+    stateDirectory: join(fixture.directory, 'remote-state'),
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    log: () => {},
+  });
+  await assert.rejects(second.start(), /Another phone gateway/);
+  assert.ok((await lstat(socketPath)).isSocket());
+
+  await gateway.close();
+  await assert.rejects(lstat(socketPath), { code: 'ENOENT' });
+});
+
+test('Host, Origin and authentication are enforced over the socket', async (context) => {
+  const { fixture, socketPath } = await unixFixture(context);
+
+  // HTTP: a foreign Host is misdirected; the tailnet Host is served.
+  const rebound = await unixRequest(socketPath, {
+    path: '/',
+    headers: { Host: 'rebound.example' },
+  });
+  assert.equal(rebound.status, 421);
+  const served = await unixRequest(socketPath, { path: '/', headers: { Host: tailnetHost } });
+  assert.equal(served.status, 503); // no app built in the fixture, but routed
+
+  // Pairing needs the allowed Origin.
+  const pairing = await unixRequest(socketPath, {
+    method: 'POST',
+    path: '/api/pair',
+    headers: {
+      Host: tailnetHost,
+      Origin: 'https://evil.example',
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+  });
+  assert.equal(pairing.status, 403);
+
+  // WebSocket: 421 for a foreign Host, 403 for a foreign Origin.
+  await assert.rejects(unixPhone(socketPath, undefined, { Host: 'rebound.example' }), /HTTP 421/);
+  await assert.rejects(
+    unixPhone(socketPath, undefined, { Origin: 'https://evil.example' }),
+    /HTTP 403/,
+  );
+
+  // Upgraded (101) but unauthenticated or wrongly authenticated: no data.
+  const silent = await unixPhone(socketPath, undefined);
+  assert.equal((await silent.closed).code, 4408);
+  assert.equal(silent.messages.length, 0);
+  const wrong = await unixPhone(socketPath, 'x'.repeat(43));
+  assert.equal((await wrong.closed).code, 4401);
+  assert.equal(wrong.messages.length, 0);
+
+  // A paired device authenticates and receives state.
+  const { token } = await fixture.pair();
+  const phone = await unixPhone(socketPath, token);
+  context.after(async () => {
+    phone.socket.terminate();
+  });
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+  await waitFor(() => phone.messages.some((message) => message.type === 'engine'));
+});
+
+test('Funnel requests are refused in Unix socket and TCP modes', async (context) => {
+  const { fixture, socketPath, logs } = await unixFixture(context);
+  const funnel = { 'Tailscale-Funnel-Request': '?1' };
+
+  const http = await unixRequest(socketPath, {
+    path: '/',
+    headers: { Host: tailnetHost, ...funnel },
+  });
+  assert.equal(http.status, 403);
+  await assert.rejects(unixPhone(socketPath, undefined, funnel), /HTTP 403/);
+  assert.ok(logs.some((line) => line.includes('Funnel')));
+
+  // TCP loopback mode gets the same protection behind a TCP Serve route.
+  const tcp = await fetch(`${fixture.origin}/`, { headers: funnel });
+  assert.equal(tcp.status, 403);
+  const plain = await fetch(`${fixture.origin}/`);
+  assert.equal(plain.status, 503);
+});
+
+test('a required Tailscale login must match exactly', async (context) => {
+  const login = 'synthetic-user@github';
+  const { fixture, socketPath, logs } = await unixFixture(context, {
+    requireTailscaleLogin: login,
+  });
+
+  // Missing, different and differently cased logins are refused.
+  const refused: Record<string, string>[] = [
+    {},
+    { 'Tailscale-User-Login': 'someone-else@github' },
+    { 'Tailscale-User-Login': login.toUpperCase() },
+  ];
+  for (const headers of refused) {
+    const response = await unixRequest(socketPath, {
+      path: '/',
+      headers: { Host: tailnetHost, ...headers },
+    });
+    assert.equal(response.status, 403);
+    await assert.rejects(unixPhone(socketPath, undefined, headers), /HTTP 403/);
+  }
+
+  // The offered login is never written to the log.
+  assert.ok(logs.some((line) => line.includes('Tailscale login')));
+  assert.ok(logs.every((line) => !line.includes('someone-else')));
+
+  // The right login reaches the normal checks and a paired device connects.
+  const allowed = await unixRequest(socketPath, {
+    path: '/',
+    headers: { Host: tailnetHost, 'Tailscale-User-Login': login },
+  });
+  assert.equal(allowed.status, 503);
+
+  const { token } = await fixture.pair();
+  const phone = await unixPhone(socketPath, token, { 'Tailscale-User-Login': login });
+  context.after(async () => {
+    phone.socket.terminate();
+  });
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+});
+
+test('a duplicated login header is refused', async (context) => {
+  const login = 'synthetic-user@github';
+  const { socketPath } = await unixFixture(context, { requireTailscaleLogin: login });
+
+  // Raw request so the header really appears twice on the wire.
+  const status = await new Promise<number>((resolve, reject) => {
+    const request = httpRequest({ socketPath, path: '/', method: 'GET' }, (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    request.setHeader('Host', tailnetHost);
+    request.setHeader('Tailscale-User-Login', [login, login]);
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(status, 403);
+});
+
+test('Funnel and login refusals cover the app routes and every upgrade path', async (context) => {
+  const login = 'synthetic-user@github';
+  const { socketPath } = await unixFixture(context, { requireTailscaleLogin: login });
+  const allowed = { Host: tailnetHost, 'Tailscale-User-Login': login };
+
+  // The phone app list and app-open endpoints: refused before authentication.
+  const funnelList = await unixRequest(socketPath, {
+    path: '/api/apps',
+    headers: { ...allowed, 'Tailscale-Funnel-Request': '?1' },
+  });
+  assert.equal(funnelList.status, 403);
+  const strangerOpen = await unixRequest(socketPath, {
+    method: 'POST',
+    path: '/api/apps/notebook/open',
+    headers: { Host: tailnetHost, Origin: tailnetOrigin, 'Tailscale-User-Login': 'x@github' },
+  });
+  assert.equal(strangerOpen.status, 403);
+
+  // With the right login they reach the normal device-token check.
+  const unpaired = await unixRequest(socketPath, { path: '/api/apps', headers: allowed });
+  assert.equal(unpaired.status, 401);
+
+  // An upgrade to any path is refused with 403 when marked as Funnel.
+  const status = await new Promise<number>((resolve, reject) => {
+    const request = httpRequest({
+      socketPath,
+      path: '/not-the-socket',
+      headers: {
+        ...allowed,
+        'Tailscale-Funnel-Request': '?1',
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+      },
+    });
+    request.on('upgrade', () => reject(Error('unexpected upgrade')));
+    request.on('response', (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(status, 403);
+});
+
+test('a start that fails after claiming the socket releases the lock', async (context) => {
+  const fixture = await remoteFixture();
+  context.after(() => fixture.close());
+
+  // A socket path longer than the kernel's sun_path limit: the claim works
+  // (it never binds), then listen() fails with EINVAL.
+  const directory = join(fixture.directory, 'x'.repeat(120));
+  await mkdir(directory, { mode: 0o700 });
+  const socketPath = join(directory, 'gateway.sock');
+
+  const gateway = new Gateway({
+    socketPath,
+    origins: [tailnetOrigin],
+    stateDirectory: join(fixture.directory, 'remote-state'),
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    log: () => {},
+  });
+  await assert.rejects(gateway.start());
+
+  // The lifetime lock was released by the rollback, so a new claim succeeds.
+  const claim = await claimUnixSocket(socketPath);
+  await claim.release();
+  await gateway.close();
+});

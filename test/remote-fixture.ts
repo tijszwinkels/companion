@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import { AgentSessions } from '../src/agents/sessions.ts';
 import type { AgentBackend, ClaudeCodeAgentBackend } from '../src/agents/types.ts';
 import { DeviceStore } from '../src/remote/devices.ts';
-import { Gateway, type GatewayOptions } from '../src/remote/gateway.ts';
+import { Gateway, type GatewayServiceOptions } from '../src/remote/gateway.ts';
 import type { GatewayMessage } from '../src/remote/protocol.ts';
 import { desktopFixture, stopped, waitFor } from './desktop-fixture.ts';
 import { deferred } from './helpers.ts';
@@ -41,7 +41,7 @@ export async function remoteFixture(
     appDirectory?: string;
     backend?: AgentBackend['run'];
     claudeBackend?: ClaudeCodeAgentBackend['run'];
-    gateway?: Partial<GatewayOptions>;
+    gateway?: Partial<GatewayServiceOptions>;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-remote-'));

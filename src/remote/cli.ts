@@ -2,7 +2,8 @@
  * `companion-remote`: run the opt-in phone gateway and manage paired devices.
  *
  * Nothing here starts, restarts or reconfigures the listener, Tailscale or
- * any system service. `serve` binds only the address and port it is given.
+ * any system service. `serve` binds only the address and port, or the Unix
+ * socket, it is given. `--check-tailscale-serve` only reads Serve status.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -14,7 +15,37 @@ import { parseArgs } from 'node:util';
 import { parseAppOriginOption } from '../apps/origins.ts';
 import { defaultAppsDirectory } from '../apps/registry.ts';
 import { DeviceStore } from './devices.ts';
-import { Gateway, isLoopbackHost, loopbackOrigins, type GatewayAppOptions } from './gateway.ts';
+import {
+  Gateway,
+  isLoopbackHost,
+  loopbackOrigins,
+  type GatewayAppOptions,
+  type GatewayListenOptions,
+} from './gateway.ts';
+import {
+  checkServeRouteAtStartup,
+  expectedServeRoute,
+  ServeRouteWatch,
+  type ExpectedServeRoute,
+} from './tailscale-serve-check.ts';
+
+/** How often `--check-tailscale-serve` re-reads the Serve configuration. */
+const serveCheckIntervalMilliseconds = 60_000;
+
+/**
+ * Unreadable Serve status (e.g. tailscaled restarting) is retried before
+ * giving up: at startup 5 reads 3 s apart, at runtime 3 minute-ticks in a row.
+ * A readable status that does not match is never retried.
+ */
+const serveStartupRetry = { attempts: 5, delayMilliseconds: 3000 };
+const serveMaximumConsecutiveUnreadable = 3;
+
+/**
+ * After shutdown the process normally exits once its event loop drains. A
+ * leftover handle must not keep a stopped gateway looking alive to a
+ * supervisor, so exit anyway after this grace period.
+ */
+const exitGraceMilliseconds = 5000;
 
 const help = `Usage: companion-remote <serve|pair|devices|revoke> [options]
 
@@ -23,9 +54,21 @@ serve     Run the phone gateway until interrupted.
   --port N              Port (default 8787).
   --tls-cert PATH       PEM certificate, e.g. from \`tailscale cert\`.
   --tls-key PATH        PEM private key for that certificate.
+  --listen unix:PATH    Listen on a Unix socket instead of --host/--port, for
+                        \`tailscale serve ... unix:PATH\`. The directory must be
+                        owned by you and private (0700); the socket is 0600.
+                        Requires at least one https --origin; no loopback defaults.
   --origin URL          Allowed app origin, exactly scheme://host[:port]; repeatable.
                         Loopback HTTP defaults to http://127.0.0.1:PORT and
                         http://localhost:PORT and http://[::1]:PORT.
+  --require-tailscale-login LOGIN
+                        Refuse requests whose Tailscale-User-Login header (set by
+                        Tailscale Serve) is not exactly LOGIN, e.g. user@github.
+                        Only trustworthy with --listen unix:.
+  --check-tailscale-serve
+                        With --listen unix: and one https origin, refuse to start
+                        and stop serving (exit 1) unless \`tailscale serve status\`
+                        shows exactly that one route. Rechecked every minute.
   --control-socket PATH Listener socket (default $XDG_RUNTIME_DIR/companion/control.sock).
   --sessions-directory PATH
                         Saved conversations, for screenshots
@@ -48,7 +91,8 @@ Common:
   --help
 
 The gateway is off unless you run \`serve\`. It never changes Tailscale settings.
-Tailscale restricts who can reach the port; pairing decides which device may act.`;
+Tailscale restricts who can reach the port; pairing decides which device may act.
+Requests marked as Tailscale Funnel (public internet) are always refused.`;
 
 const checkout = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -57,11 +101,16 @@ async function main(): Promise<number> {
     allowPositionals: true,
     options: {
       help: { type: 'boolean', short: 'h' },
-      host: { type: 'string', default: '127.0.0.1' },
-      port: { type: 'string', default: '8787' },
+      // host and port have no parser defaults so that --listen can tell
+      // whether they were given; the TCP defaults are applied below.
+      host: { type: 'string' },
+      port: { type: 'string' },
       'tls-cert': { type: 'string' },
       'tls-key': { type: 'string' },
+      listen: { type: 'string' },
       origin: { type: 'string', multiple: true },
+      'require-tailscale-login': { type: 'string' },
+      'check-tailscale-serve': { type: 'boolean' },
       'control-socket': { type: 'string' },
       'sessions-directory': { type: 'string' },
       'app-directory': { type: 'string' },
@@ -112,13 +161,9 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const port = Number(values.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    console.error('--port must be 1–65535');
-    return 2;
-  }
-  if (Boolean(values['tls-cert']) !== Boolean(values['tls-key'])) {
-    console.error('--tls-cert and --tls-key must be given together');
+  const listenAddress = await listenOptions(values);
+  if (typeof listenAddress === 'string') {
+    console.error(listenAddress);
     return 2;
   }
 
@@ -131,16 +176,30 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const tls =
-    values['tls-cert'] && values['tls-key']
-      ? {
-          cert: await readFile(values['tls-cert'], 'utf8'),
-          key: await readFile(values['tls-key'], 'utf8'),
-        }
-      : undefined;
+  // Loopback HTTP gets its own origins by default. A Unix socket is only
+  // reached through Tailscale Serve, so it gets no defaults at all.
+  let origins: string[] = [];
+  if (values.origin) {
+    origins = values.origin;
+  } else if (
+    listenAddress.host !== undefined &&
+    isLoopbackHost(listenAddress.host) &&
+    !listenAddress.tls
+  ) {
+    origins = loopbackOrigins(listenAddress.port);
+  }
 
-  const origins =
-    values.origin ?? (isLoopbackHost(values.host) && !tls ? loopbackOrigins(port) : []);
+  // Resolve the expected Serve route before binding anything, so a wrong
+  // flag combination fails fast.
+  let serveRoute: ExpectedServeRoute | undefined;
+  if (values['check-tailscale-serve']) {
+    try {
+      serveRoute = expectedServeRoute(origins, listenAddress.socketPath);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
+  }
 
   let apps: GatewayAppOptions | undefined;
   if (values['apps-listen']) {
@@ -163,10 +222,9 @@ async function main(): Promise<number> {
   }
 
   const gateway = new Gateway({
-    host: values.host,
-    port,
-    tls,
+    ...listenAddress,
     origins,
+    requireTailscaleLogin: values['require-tailscale-login'],
     stateDirectory,
     controlSocket,
     sessionsDirectory:
@@ -176,9 +234,19 @@ async function main(): Promise<number> {
     log: (message) => console.error(`[remote] ${message}`),
   });
 
+  // Never serve under a Serve configuration we have not verified.
+  if (serveRoute) {
+    const check = await checkServeRouteAtStartup(serveRoute, 'tailscale', serveStartupRetry);
+    if (check.status !== 'match') {
+      console.error(`[remote] Not starting: ${check.reason}`);
+      return 1;
+    }
+  }
+
   await gateway.start();
-  console.error(`[remote] Serving on ${tls ? 'https' : 'http'}://${values.host}:${gateway.port}`);
+  console.error(`[remote] Serving on ${gateway.address}`);
   console.error(`[remote] Allowed origins: ${origins.join(', ')}`);
+  logTailscaleSafeguards(values, listenAddress, serveRoute !== undefined);
   if (apps && gateway.apps) {
     console.error(`[remote] Local apps on ${values['apps-listen']} (port ${gateway.apps.port})`);
     for (const [id, origin] of apps.origins) {
@@ -187,17 +255,115 @@ async function main(): Promise<number> {
   }
   console.error('[remote] Pair a phone with: companion-remote pair');
 
-  await new Promise<void>((resolveStop) => {
-    process.once('SIGINT', resolveStop);
-    process.once('SIGTERM', resolveStop);
+  // Run until a signal, or until the Serve route stops matching. The exit
+  // code tells a supervisor (systemd Restart=on-failure) which one happened.
+  let watch: ServeRouteWatch | undefined;
+  const exitCode = await new Promise<number>((resolveStop) => {
+    process.once('SIGINT', () => resolveStop(0));
+    process.once('SIGTERM', () => resolveStop(0));
+
+    if (serveRoute) {
+      watch = new ServeRouteWatch(serveRoute, {
+        tailscaleCommand: 'tailscale',
+        intervalMilliseconds: serveCheckIntervalMilliseconds,
+        maximumConsecutiveUnreadable: serveMaximumConsecutiveUnreadable,
+        onMismatch: (reason) => {
+          console.error(`[remote] Stopping: ${reason}`);
+          resolveStop(1);
+        },
+      });
+      watch.start();
+    }
   });
+
+  // The watch timer would otherwise keep the process alive after close.
+  watch?.stop();
   await gateway.close();
-  return 0;
+  return exitCode;
+}
+
+/**
+ * Turn --listen or --host/--port/--tls-* into gateway listen options, or a
+ * usage error message. The two forms cannot be mixed.
+ */
+async function listenOptions(values: {
+  host?: string;
+  port?: string;
+  'tls-cert'?: string;
+  'tls-key'?: string;
+  listen?: string;
+}): Promise<GatewayListenOptions | string> {
+  if (values.listen !== undefined) {
+    if (!values.listen.startsWith('unix:')) {
+      return '--listen must be unix:/absolute/path';
+    }
+    const usesTcpFlags =
+      values.host !== undefined ||
+      values.port !== undefined ||
+      values['tls-cert'] !== undefined ||
+      values['tls-key'] !== undefined;
+    if (usesTcpFlags) {
+      return '--listen cannot be combined with --host, --port, --tls-cert or --tls-key';
+    }
+    return { socketPath: values.listen.slice('unix:'.length) };
+  }
+
+  const host = values.host ?? '127.0.0.1';
+  const port = Number(values.port ?? '8787');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return '--port must be 1–65535';
+  }
+  if (Boolean(values['tls-cert']) !== Boolean(values['tls-key'])) {
+    return '--tls-cert and --tls-key must be given together';
+  }
+
+  if (values['tls-cert'] && values['tls-key']) {
+    const tls = {
+      cert: await readFile(values['tls-cert'], 'utf8'),
+      key: await readFile(values['tls-key'], 'utf8'),
+    };
+    return { host, port, tls };
+  }
+  return { host, port };
+}
+
+/**
+ * Say which Tailscale safeguards are active, and warn where a flag gives less
+ * protection than it seems. The login itself is never printed.
+ */
+function logTailscaleSafeguards(
+  values: { 'require-tailscale-login'?: string },
+  listenAddress: GatewayListenOptions,
+  checkingServe: boolean,
+): void {
+  const requiresLogin = values['require-tailscale-login'] !== undefined;
+
+  if (requiresLogin && listenAddress.socketPath === undefined) {
+    console.error(
+      '[remote] Warning: --require-tailscale-login on a TCP port is only a second layer; ' +
+        'any local user can connect and send that header. Use --listen unix: for a real check.',
+    );
+  } else if (requiresLogin) {
+    console.error('[remote] Requiring the configured Tailscale login');
+  }
+
+  if (listenAddress.socketPath !== undefined && (!requiresLogin || !checkingServe)) {
+    console.error(
+      '[remote] Warning: serving a Unix socket without --require-tailscale-login and ' +
+        '--check-tailscale-serve; any tailnet device Serve admits can reach pairing.',
+    );
+  }
+
+  if (checkingServe) {
+    console.error('[remote] Tailscale Serve route verified; rechecking every minute');
+  }
 }
 
 main().then(
   (code) => {
     process.exitCode = code;
+    // Normally the process has nothing left to do and exits right away.
+    setTimeout(() => process.exit(code), exitGraceMilliseconds).unref();
   },
   (error) => {
     console.error(`companion-remote: ${error instanceof Error ? error.message : String(error)}`);

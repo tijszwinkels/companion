@@ -19,7 +19,12 @@
  * Security model (see README.md in this directory):
  * - Transport: HTTPS with a user-supplied certificate for any non-loopback
  *   address. Plain HTTP is only allowed on loopback, for local tests or for a
- *   user-configured `tailscale serve` that terminates TLS in front of it.
+ *   user-configured `tailscale serve` that terminates TLS in front of it, or
+ *   on a Unix socket in a private directory (`socketPath`), which only this
+ *   user and root (tailscaled) can connect to. See unix-socket-claim.ts.
+ * - Behind Tailscale Serve: requests marked as Funnel (public internet) are
+ *   refused, and an optional required Tailscale login must match. See
+ *   tailscale-headers.ts.
  * - Tailscale limits who can reach the port, but every request still needs a
  *   device token issued through pairing. Tokens are stored hashed and can be
  *   revoked; revocation also closes live connections.
@@ -31,7 +36,7 @@
  *   other origin.
  */
 
-import { readFile } from 'node:fs/promises';
+import { chmod, readFile } from 'node:fs/promises';
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -50,19 +55,47 @@ import { DeviceStore, type PairedDevice } from './devices.ts';
 import { maximumClientMessageBytes } from './protocol.ts';
 import { ReceiptBook } from './receipts.ts';
 import { closeCodes, Relay } from './relay.ts';
+import { tailscaleRefusal } from './tailscale-headers.ts';
+import { claimUnixSocket, type UnixSocketClaim } from './unix-socket-claim.ts';
 
-export interface GatewayOptions {
-  /** Address to bind, e.g. 127.0.0.1 or the host's Tailscale 100.x address. */
-  host: string;
-  port: number;
-  /** PEM certificate and key; required for any non-loopback host. */
-  tls?: { cert: string; key: string };
+/**
+ * Where the gateway accepts connections: either a TCP address and port, or a
+ * Unix socket path (for Tailscale Serve's `unix:` target). Never both.
+ */
+export type GatewayListenOptions =
+  | {
+      /** Address to bind, e.g. 127.0.0.1 or the host's Tailscale 100.x address. */
+      host: string;
+      port: number;
+      /** PEM certificate and key; required for any non-loopback host. */
+      tls?: { cert: string; key: string };
+      socketPath?: undefined;
+    }
+  | {
+      /**
+       * Absolute Unix socket path. Its directory must be private to this
+       * user; the socket is created 0600. TLS is terminated by Tailscale Serve.
+       */
+      socketPath: string;
+      host?: undefined;
+      port?: undefined;
+      tls?: undefined;
+    };
+
+/** Everything except the listening address. */
+export interface GatewayServiceOptions {
   /**
    * Exact origins the phone app is loaded from, e.g.
    * `https://desk.tailnet-name.ts.net:8443`. Loopback HTTP defaults to the
-   * gateway's own loopback origins when omitted.
+   * gateway's own loopback origins when omitted. Unix socket mode accepts
+   * https origins only.
    */
   origins: string[];
+  /**
+   * When set, every request must carry this exact `Tailscale-User-Login`
+   * header, as added by Tailscale Serve for a tailnet user's device.
+   */
+  requireTailscaleLogin?: string;
   stateDirectory: string;
   controlSocket: string;
   sessionsDirectory: string;
@@ -76,6 +109,8 @@ export interface GatewayOptions {
   /** Optional phone access to registered local apps; off when omitted. */
   apps?: GatewayAppOptions;
 }
+
+export type GatewayOptions = GatewayListenOptions & GatewayServiceOptions;
 
 /**
  * The separate loopback listener that serves local apps to paired phones.
@@ -124,6 +159,45 @@ export function isLoopbackHost(host: string): boolean {
 
 /** Validate options once, before binding anything. */
 export function checkGatewayOptions(options: GatewayOptions): void {
+  if (options.socketPath !== undefined) {
+    checkUnixSocketOptions(options);
+  } else {
+    checkTcpOptions(options);
+  }
+  checkOrigins(options.origins);
+
+  if (options.requireTailscaleLogin !== undefined) {
+    // A login is an e-mail-like name (e.g. `user@github`); refuse blanks and
+    // anything with whitespace or control characters, which could never match.
+    if (!/^[^\s\p{Cc}]+$/u.test(options.requireTailscaleLogin)) {
+      throw Error('The required Tailscale login must be a non-empty name without spaces');
+    }
+  }
+}
+
+/**
+ * Unix socket mode: an absolute path and https origins only. There are no
+ * loopback defaults; the only expected client is Tailscale Serve, which
+ * forwards the tailnet HTTPS name.
+ */
+function checkUnixSocketOptions(options: GatewayOptions & { socketPath: string }): void {
+  if (!options.socketPath.startsWith('/')) {
+    throw Error(`The Unix socket path must be absolute: ${options.socketPath}`);
+  }
+  if (options.host !== undefined || options.port !== undefined || options.tls !== undefined) {
+    throw Error('A Unix socket gateway takes no host, port or TLS certificate');
+  }
+  if (options.origins.length === 0) {
+    throw Error('A Unix socket gateway needs at least one https origin (--origin)');
+  }
+  for (const origin of options.origins) {
+    if (!origin.startsWith('https://')) {
+      throw Error(`A Unix socket gateway accepts https origins only: ${origin}`);
+    }
+  }
+}
+
+function checkTcpOptions(options: GatewayOptions & { host: string }): void {
   if (!isLoopbackHost(options.host) && !options.tls) {
     throw Error(
       'Refusing plain HTTP on a non-loopback address. Provide --tls-cert/--tls-key ' +
@@ -142,10 +216,13 @@ export function checkGatewayOptions(options: GatewayOptions): void {
   ) {
     throw Error('Bind a specific address (such as the Tailscale IP), not every interface');
   }
-  if (options.origins.length === 0) {
+}
+
+function checkOrigins(origins: string[]): void {
+  if (origins.length === 0) {
     throw Error('At least one allowed origin is required (--origin)');
   }
-  for (const origin of options.origins) {
+  for (const origin of origins) {
     const parsed = new URL(origin);
     if (parsed.origin !== origin) {
       throw Error(`Origin must be exactly scheme://host[:port]: ${origin}`);
@@ -166,6 +243,8 @@ export function loopbackOrigins(port: number): string[] {
 
 export class Gateway {
   private server?: Server;
+  /** Held while listening on a Unix socket; see unix-socket-claim.ts. */
+  private socketClaim?: UnixSocketClaim;
   private readonly sockets = new WebSocketServer({
     noServer: true,
     maxPayload: maximumClientMessageBytes,
@@ -211,10 +290,20 @@ export class Gateway {
     }
   }
 
-  /** Bound port (useful when started with port 0 in tests). */
+  /** Bound port (useful when started with port 0 in tests); 0 on a Unix socket. */
   get port(): number {
     const address = this.server?.address();
-    return address && typeof address === 'object' ? address.port : this.options.port;
+    return address && typeof address === 'object' ? address.port : (this.options.port ?? 0);
+  }
+
+  /** Human-readable listening address for logs, e.g. `unix:/run/…/gateway.sock`. */
+  get address(): string {
+    if (this.options.socketPath !== undefined) {
+      return `unix:${this.options.socketPath}`;
+    }
+    const scheme = this.options.tls ? 'https' : 'http';
+    const host = isIP(this.options.host) === 6 ? `[${this.options.host}]` : this.options.host;
+    return `${scheme}://${host}:${this.port}`;
   }
 
   async start(): Promise<void> {
@@ -249,6 +338,7 @@ export class Gateway {
       server.closeAllConnections();
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
+    await this.releaseSocketClaim();
 
     try {
       await this.apps?.close();
@@ -257,7 +347,7 @@ export class Gateway {
     }
   }
 
-  /** Create and bind the gateway's own HTTP(S) server and its timers. */
+  /** Create and bind the gateway's own HTTP(S) server (TCP or Unix socket) and its timers. */
   private async startServer(): Promise<void> {
     const handler = (request: IncomingMessage, response: ServerResponse) => {
       this.handleHttp(request, response).catch((error) => {
@@ -277,13 +367,12 @@ export class Gateway {
 
     server.on('upgrade', (request, socket, head) => this.handleUpgrade(request, socket, head));
 
-    await new Promise<void>((resolveListen, rejectListen) => {
-      server.once('error', rejectListen);
-      server.listen(this.options.port, this.options.host, () => {
-        server.removeListener('error', rejectListen);
-        resolveListen();
-      });
-    });
+    if (this.options.socketPath !== undefined) {
+      await this.listenOnUnixSocket(server, this.options.socketPath);
+    } else {
+      const { host, port } = this.options;
+      await listen(server, (callback) => server.listen(port, host, callback));
+    }
 
     this.revocationTimer = setInterval(
       () => void this.closeRevoked(),
@@ -304,6 +393,42 @@ export class Gateway {
     }, this.options.heartbeatMilliseconds ?? 20_000);
   }
 
+  /**
+   * Claim the socket path (private directory, lifetime lock, stale-socket
+   * cleanup), then bind with a 0177 umask so the socket is created 0600, and
+   * chmod it again in case the platform ignored the umask for sockets.
+   *
+   * The claim is recorded before binding, so a failure anywhere after this
+   * point is undone by releaseFailedStart(): it closes the server (which
+   * unlinks the socket) and then releases the lock.
+   *
+   * process.umask() is process-wide; the bind happens synchronously inside
+   * listen(), so the restrictive umask is in effect only for that call.
+   */
+  private async listenOnUnixSocket(server: Server, socketPath: string): Promise<void> {
+    this.socketClaim = await claimUnixSocket(socketPath);
+
+    await listen(server, (callback) => {
+      const previousUmask = process.umask(0o177);
+      try {
+        server.listen(socketPath, callback);
+      } finally {
+        process.umask(previousUmask);
+      }
+    });
+    await chmod(socketPath, 0o600);
+  }
+
+  /**
+   * Give up the socket's lifetime lock. Call only after the server has
+   * closed, so a new gateway never finds our socket still answering.
+   */
+  private async releaseSocketClaim(): Promise<void> {
+    const claim = this.socketClaim;
+    this.socketClaim = undefined;
+    await claim?.release();
+  }
+
   async close(): Promise<void> {
     clearInterval(this.revocationTimer);
     clearInterval(this.heartbeatTimer);
@@ -320,8 +445,10 @@ export class Gateway {
     this.server = undefined;
     if (server?.listening) {
       server.closeAllConnections();
+      // Closing a Unix socket server also unlinks the socket file.
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
+    await this.releaseSocketClaim();
   }
 
   // ---- Request guards -------------------------------------------------------
@@ -380,9 +507,37 @@ export class Gateway {
     response.end(JSON.stringify(value));
   }
 
+  /**
+   * Funnel and Tailscale-login checks (see tailscale-headers.ts). Returns the
+   * refusal message, or undefined when the request may continue. The offered
+   * login is not logged: it is personal data and says nothing an operator
+   * could not see in Tailscale itself.
+   */
+  private tailscaleRefusalMessage(request: IncomingMessage): string | undefined {
+    const refusal = tailscaleRefusal(request.headers, this.options.requireTailscaleLogin);
+    if (refusal === 'funnel') {
+      this.options.log('Refused a request that arrived through Tailscale Funnel');
+      return 'Public (Funnel) requests are not allowed';
+    }
+    if (refusal === 'login') {
+      this.options.log('Refused a request without the required Tailscale login');
+      return 'Tailscale user not allowed';
+    }
+    return undefined;
+  }
+
   // ---- HTTP routes ----------------------------------------------------------
 
+  /**
+   * Every route, including pairing, screenshots, the app list/open endpoints
+   * and static files, passes the Tailscale checks first, then the Host check.
+   */
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const refusal = this.tailscaleRefusalMessage(request);
+    if (refusal !== undefined) {
+      this.sendJson(response, 403, { error: refusal });
+      return;
+    }
     if (!this.hostAllowed(request)) {
       this.sendJson(response, 421, { error: 'Unknown host' });
       return;
@@ -623,6 +778,13 @@ export class Gateway {
       socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     };
 
+    // Funnel/login refusals come first, as for plain HTTP, so every upgrade
+    // path answers them with the same 403.
+    if (this.tailscaleRefusalMessage(request) !== undefined) {
+      reject(403, 'Forbidden');
+      return;
+    }
+
     let url: URL;
     try {
       url = new URL(request.url ?? '/', 'http://gateway.invalid');
@@ -770,6 +932,20 @@ export class Gateway {
       }
     }
   }
+}
+
+/**
+ * Start listening and resolve once bound; reject on a bind error such as
+ * EADDRINUSE. `bind` must call `server.listen(..., callback)`.
+ */
+function listen(server: Server, bind: (callback: () => void) => void): Promise<void> {
+  return new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    bind(() => {
+      server.removeListener('error', rejectListen);
+      resolveListen();
+    });
+  });
 }
 
 function readBody(request: IncomingMessage, limit: number): Promise<string> {
