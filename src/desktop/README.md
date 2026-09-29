@@ -223,9 +223,15 @@ unavailable. `inferenceEnabled` and `shortcutEnabled` are independent saved
 switches; `inferenceAvailable` and `prefixAvailable` describe context eligibility.
 `prefixes` identifies the supported voice commands. Listening must also be active.
 `enabled` remains a compatibility summary: at least one supported route is enabled.
-`IGNORE` is required and cannot be disabled. The UI renders separate accent-colored
-Intent and amber Shortcut cards and greys out disabled/unavailable routes. If the
-server lacks these independent fields, the refreshed UI requests a listener restart.
+`IGNORE` is required and cannot be disabled. The UI renders one card per registered
+activity, in router order, containing only its supported modes: an accent-colored
+(blue) intent-recognition control and an amber voice-shortcut control that keeps its
+phrases visible. Each control toggles only its own mode, shows explicit On/Off (or
+Always on) text, and waits for the next snapshot rather than changing optimistically;
+the card title is not a control. An enabled route without context stays On and says
+it needs conversation context. Cards form a responsive grid that adds columns in wide
+panels and wraps at enlarged reader zoom. If the server lacks these independent
+fields, the refreshed UI requests a listener restart and disables the controls.
 
 `set-intent-enabled` accepts `mode: "inference"` or `mode: "shortcut"`. Omitting
 mode preserves the old combined toggle for older clients. Unknown/unsupported
