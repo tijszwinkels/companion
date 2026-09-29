@@ -1,0 +1,53 @@
+import QtQuick
+import QtTest
+import "../../integrations/panel" as Panel
+
+// Portable hosts (stock Quickshell, this plain qmltestrunner) have no
+// initialized Qt WebEngine. They must never show the browser entry or load
+// PanelBrowser.qml, even when the experimental native-widget marker is set.
+// The native window suite covers the browser inside the standalone host.
+Item {
+  width: 620
+  height: 600
+
+  Component {
+    id: contentComponent
+    Panel.PanelContent {
+      width: 620
+      height: 600
+      online: true
+      paused: false
+      speaking: false
+      processing: 0
+      foreground: "white"
+      muted: "gray"
+      accent: "cyan"
+      selection: "#333333"
+      fontFamily: "sans-serif"
+      sessions: [{id: "one", title: "Synthetic", status: "idle", messages: []}]
+      selectedSessionId: "one"
+    }
+  }
+
+  TestCase {
+    name: "PanelBrowserEntry"
+    when: windowShown
+
+    function test_portable_host_has_no_browser() {
+      for (const nativeWidgets of [false, true]) {
+        const panel = createTemporaryObject(contentComponent, parent, {nativeWidgets: nativeWidgets})
+        verify(panel !== null)
+        const button = findChild(panel, "panelBrowserButton")
+        verify(button !== null)
+        verify(!button.visible, "no entry without browserAvailable")
+
+        panel.openBrowser()
+        verify(!panel.browsing)
+        verify(!panel.browserStarted)
+        compare(findChild(panel, "panelBrowserLoader").item, null)
+        compare(findChild(panel, "panelBrowser"), null)
+        verify(findChild(panel, "sessionView").visible, "the chat stays visible")
+      }
+    }
+  }
+}

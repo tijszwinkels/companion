@@ -35,12 +35,14 @@ FocusScope {
   id: root
   objectName: "panelBrowser"
 
-  required property color foreground
-  required property color muted
-  required property color accent
-  required property color selection
-  required property color background
-  required property string fontFamily
+  // PanelContent loads this file by URL and binds the theme after creation,
+  // so these have neutral defaults instead of being required.
+  property color foreground: "#dce5ef"
+  property color muted: "#8ba0b8"
+  property color accent: "#9fc0f7"
+  property color selection: "#293a51"
+  property color background: "#161e2b"
+  property string fontFamily: "sans-serif"
   property real unit: 1
 
   // PanelContent sets this while the browser replaces the chat. A hidden page

@@ -19,9 +19,13 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type IncomingMessage, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
+import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
+
+import { WidgetService } from '../../src/widgets/service.ts';
+import type { WidgetAttachment } from '../../src/widgets/types.ts';
 
 const execute = promisify(execFile);
 const build = resolve('native/window/build');
@@ -165,6 +169,54 @@ async function close(server: Server) {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
+// Isolated environment for one runner process: temporary HOME, XDG and
+// runtime directories, offscreen Qt and software rendering.
+async function environment(directory: string) {
+  const runtime = join(directory, 'runtime');
+  await mkdir(runtime, { mode: 0o700 });
+
+  return {
+    PATH: process.env.PATH,
+    HOME: directory,
+    XDG_CONFIG_HOME: join(directory, 'config'),
+    XDG_CACHE_HOME: join(directory, 'cache'),
+    XDG_DATA_HOME: join(directory, 'data'),
+    XDG_RUNTIME_DIR: runtime,
+    QT_QPA_PLATFORM: 'offscreen',
+    QT_QUICK_BACKEND: 'software',
+    QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu',
+    QML_IMPORT_PATH: join(build, 'qml'),
+    LD_LIBRARY_PATH: join(build, 'staged/usr/lib'),
+  };
+}
+
+// Run one generated QML test file with a bounded timeout. Its output is kept
+// under the build's artifacts directory whether it passes or fails.
+async function runQml(
+  path: string,
+  env: Record<string, string | undefined>,
+  name: string,
+  expected: RegExp,
+) {
+  let output = '';
+
+  try {
+    const result = await execute(
+      'prlimit',
+      ['--core=0', '--', join(build, 'companion-window-tests'), '-input', path, '-nocrashhandler'],
+      { env, timeout: 90000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 },
+    );
+    output = result.stdout + result.stderr;
+    assert.match(result.stdout, expected);
+  } catch (error) {
+    output = output || [String(error), (error as any).stdout, (error as any).stderr].join('\n');
+    throw Error(output, { cause: error });
+  } finally {
+    await mkdir(evidence, { recursive: true });
+    await writeFile(join(evidence, `${name}.log`), output);
+  }
+}
+
 test(
   'panel browser navigates, refuses privileged features and persists its own profile',
   { timeout: 180000 },
@@ -173,21 +225,7 @@ test(
     const servers: Server[] = [];
 
     try {
-      const runtime = join(directory, 'runtime');
-      await mkdir(runtime, { mode: 0o700 });
-      const env = {
-        PATH: process.env.PATH,
-        HOME: directory,
-        XDG_CONFIG_HOME: join(directory, 'config'),
-        XDG_CACHE_HOME: join(directory, 'cache'),
-        XDG_DATA_HOME: join(directory, 'data'),
-        XDG_RUNTIME_DIR: runtime,
-        QT_QPA_PLATFORM: 'offscreen',
-        QT_QUICK_BACKEND: 'software',
-        QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu',
-        QML_IMPORT_PATH: join(build, 'qml'),
-        LD_LIBRARY_PATH: join(build, 'staged/usr/lib'),
-      };
+      const env = await environment(directory);
 
       // A self-signed certificate that Chromium must refuse, never bypass.
       await execute(
@@ -238,34 +276,10 @@ test(
             .replaceAll('@HTTPS_ORIGIN@', JSON.stringify(httpsOrigin))
             .replaceAll('@PHASE@', JSON.stringify(phase)),
         );
-        let output = '';
-        try {
-          const result = await execute(
-            'prlimit',
-            [
-              '--core=0',
-              '--',
-              join(build, 'companion-window-tests'),
-              '-input',
-              path,
-              '-nocrashhandler',
-            ],
-            { env, timeout: 90000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 },
-          );
-          output = result.stdout + result.stderr;
-          assert.match(result.stdout, expected);
-        } catch (error) {
-          output =
-            output || [String(error), (error as any).stdout, (error as any).stderr].join('\n');
-          throw Error(output, { cause: error });
-        } finally {
-          // Keep the runner output for failure analysis and review.
-          await mkdir(evidence, { recursive: true });
-          await writeFile(join(evidence, `panel-browser-${phase}.log`), output);
-        }
+        await runQml(path, env, `panel-browser-${phase}`, expected);
       }
 
-      await run('first', /Totals: \d+ passed, 0 failed, 1 skipped/);
+      await run('first', /Totals: 14 passed, 0 failed, 1 skipped/);
 
       // Chromium created the named profile under the temporary data directory,
       // privately, and nowhere near widget, app or personal browser storage.
@@ -302,7 +316,7 @@ test(
       assert.deepEqual(httpsVisits, []);
 
       const reached = visits.length;
-      await run('second', /Totals: \d+ passed, 0 failed, \d+ skipped/);
+      await run('second', /Totals: 3 passed, 0 failed, 12 skipped/);
       const echoes = visits.slice(reached).filter((visit) => visit.path === '/echo');
       assert.deepEqual(
         echoes.map((visit) => visit.cookie),
@@ -312,6 +326,67 @@ test(
     } finally {
       for (const server of servers) {
         await close(server);
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'panel browser replaces and restores the chat inside the native window body',
+  { timeout: 120000 },
+  async () => {
+    const directory = await mkdtemp('/tmp/companion-panel-browser-host-test-');
+    let service: WidgetService | undefined;
+    let server: Server | undefined;
+
+    try {
+      const env = await environment(directory);
+
+      // A real pinned native widget, served by the ordinary widget service.
+      let reference: WidgetAttachment | undefined;
+      service = new WidgetService(join(directory, 'widgets'), async (_, value) => {
+        reference = value;
+      });
+      const lease = await service.lease(randomUUID(), new AbortController().signal);
+      const response = await fetch(lease.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+        body: JSON.stringify({
+          method: 'publish',
+          widget: 'todo',
+          requestId: 'panel-browser-host',
+          props: {
+            title: 'Pinned while browsing',
+            items: [{ id: 'one', text: 'Retained widget', completed: false }],
+          },
+        }),
+      });
+      assert.equal(response.status, 200, await response.text());
+      assert.ok(reference);
+
+      server = createHttpServer(site([]));
+      const origin = `http://127.0.0.1:${await listen(server)}`;
+
+      const template = await readFile(
+        new URL('./panel-browser-host.qml.in', import.meta.url),
+        'utf8',
+      );
+      const path = join(directory, 'tst_panel_browser_host.qml');
+      await writeFile(
+        path,
+        template
+          .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
+          .replace('@ORIGIN@', JSON.stringify(origin))
+          .replace('@REFERENCE@', JSON.stringify(reference)),
+      );
+      await runQml(path, env, 'panel-browser-host', /Totals: 5 passed, 0 failed/);
+    } finally {
+      if (server) {
+        await close(server);
+      }
+      if (service) {
+        await service.close();
       }
       await rm(directory, { recursive: true, force: true });
     }

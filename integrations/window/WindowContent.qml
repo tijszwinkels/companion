@@ -265,6 +265,7 @@ Item {
     anchors.right: parent.right
     anchors.margins: 2 * root.theme.unit
     nativeWidgets: root.nativeWidgets
+    browserAvailable: root.nativeWidgets
     online: client.online
     paused: client.paused
     pauseReason: client.pauseReason

@@ -45,6 +45,18 @@ keeps the outer window at the previous size. The shortcut regression executes
 the shipped Lua with inert compositor objects; live geometry still needs a
 coordinated check after updating the installed adapter's bindings.
 
+## Panel browser
+
+The header's **Browser** control shows a minimal web browser in place of the
+chat, inside the same persistent body, so it survives Window/Sidebar/Dock moves
+and returns to the same conversation, draft and pins. Its controls are hidden
+behind a slim status strip (hover, click or Ctrl+L). It uses its own named,
+persistent WebEngine profile, separate from the restricted widget profile, and
+refuses pop-ups, downloads, permissions and non-web schemes with a visible
+notice. Only this standalone host enables it; the portable Quickshell panel
+never loads it. See [the panel browser guide](../../docs/panel-browser.md) for
+behaviour, storage, limits and tests.
+
 ## Build without activating
 
 Build dependencies: CMake, a C++17 compiler, Qt 6.8+ Quick, QuickControls2,
