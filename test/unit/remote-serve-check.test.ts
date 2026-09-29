@@ -15,7 +15,7 @@ import {
   ServeRouteWatch,
   serveConfigMismatch,
 } from '../../src/remote/tailscale-serve-check.ts';
-import { freePort, waitFor } from '../remote-fixture.ts';
+import { freePort, readStatusLine, waitFor, within } from '../remote-fixture.ts';
 
 /**
  * The read-only Tailscale Serve check (`--check-tailscale-serve`) and the
@@ -513,14 +513,14 @@ test('a runtime Serve mismatch stops serving with exit 1 despite open connection
   // Proceed only once each connection is known to have reached the gateway:
   // the upgrade has been answered, and a probe request on the half-request's
   // server shows the connection was accepted before it.
-  const refusal = once(refusedUpgrade, 'data');
+  const refusal = readStatusLine(refusedUpgrade);
   refusedUpgrade.write(
     'GET /elsewhere HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
   );
-  assert.match(String((await refusal)[0]), /^HTTP\/1\.1 404/);
-  await halfRequestConnected;
+  assert.match(await refusal, /^HTTP\/1\.1 404/);
+  await within(halfRequestConnected, 5000, 'the idle connection');
   halfRequest.write('GET / HTTP/1.1\r\nHost: ');
-  const probe = await new Promise<number>((resolve, reject) => {
+  const probeResponse = new Promise<number>((resolve, reject) => {
     const request = httpRequest({ socketPath: socket, path: '/', headers: { Host: hostname } });
     request.on('response', (response) => {
       response.resume();
@@ -529,7 +529,7 @@ test('a runtime Serve mismatch stops serving with exit 1 despite open connection
     request.on('error', reject);
     request.end();
   });
-  assert.equal(probe, 503);
+  assert.equal(await within(probeResponse, 5000, 'the probe request'), 503);
 
   // Funnel gets switched on: the next check stops the gateway, promptly and
   // by closing normally rather than through the shutdown deadline.

@@ -17,7 +17,7 @@ import {
   type GatewayServiceOptions,
 } from '../../src/remote/gateway.ts';
 import { claimUnixSocket } from '../../src/remote/unix-socket-claim.ts';
-import { freePort, remoteFixture, waitFor } from '../remote-fixture.ts';
+import { freePort, readStatusLine, remoteFixture, waitFor } from '../remote-fixture.ts';
 
 /**
  * Unix socket mode for Tailscale Serve (`--listen unix:PATH`) and the
@@ -577,9 +577,9 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
   // the app proxy's close() waiting until the peer lets go.
   const holder = createConnection({ host: '127.0.0.1', port: appsPort, allowHalfOpen: true });
   holder.on('error', () => {});
-  const refusal = once(holder, 'data');
+  const refusal = readStatusLine(holder);
   holder.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
-  assert.match(String((await refusal)[0]), /^HTTP\/1\.1 405/);
+  assert.match(await refusal, /^HTTP\/1\.1 405/);
 
   const closing = gateway.close();
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -234,6 +234,42 @@ export async function connectPhone(
       return found.message;
     },
   };
+}
+
+/** Reject with `what` if `work` has not settled within `milliseconds`. */
+export async function within<T>(work: Promise<T>, milliseconds: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(Error(`Timed out: ${what}`)), milliseconds);
+  });
+
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Read a raw socket until the first HTTP status line is complete (it may
+ * arrive split across several chunks) and return it, e.g. `HTTP/1.1 404 Not
+ * Found`. Bounded, so a missing response fails instead of hanging.
+ */
+export function readStatusLine(socket: Socket, milliseconds = 5000): Promise<string> {
+  const statusLine = new Promise<string>((resolve, reject) => {
+    let received = '';
+    const onData = (chunk: Buffer) => {
+      received += chunk.toString('latin1');
+      const end = received.indexOf('\r\n');
+      if (end !== -1) {
+        socket.off('data', onData);
+        resolve(received.slice(0, end));
+      }
+    };
+    socket.on('data', onData);
+    socket.once('close', () => reject(Error('Connection closed before a status line')));
+  });
+  return within(statusLine, milliseconds, 'an HTTP status line');
 }
 
 export { delay, waitFor };
