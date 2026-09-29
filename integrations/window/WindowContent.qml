@@ -188,6 +188,20 @@ Item {
     onInputFinished: (id, text, error) => panel.submitted(id, text, error)
     onToolPageReceived: message => panel.toolPageReceived(message)
     onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
+    browserHost: panel.browserAvailable
+    // The panel answers once, when the page loaded or failed, or after a
+    // bounded wait. A hidden window is never shown or activated for an agent,
+    // and a page the user cannot see is not opened: it answers panel-hidden.
+    onBrowserOpenRequested: message => {
+      if (!root.host.opened) {
+        client.answerBrowserOpen(message.requestId, {outcome: "panel-hidden",
+          reason: "The Companion panel is hidden."})
+        return
+      }
+      panel.openBrowserFromAgent(message, function(result) {
+        client.answerBrowserOpen(message.requestId, result)
+      })
+    }
     onDraftRequested: message => {
       const result = panel.applyDraft(message)
       client.answerDraft(message.requestId, result)
@@ -265,6 +279,7 @@ Item {
     anchors.right: parent.right
     anchors.margins: 2 * root.theme.unit
     nativeWidgets: root.nativeWidgets
+    browserAvailable: root.nativeWidgets
     online: client.online
     paused: client.paused
     pauseReason: client.pauseReason

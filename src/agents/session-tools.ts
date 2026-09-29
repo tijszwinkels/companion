@@ -168,6 +168,34 @@ export function sessionTools(endpoint: string, token: string) {
       }),
       method: 'draft',
     },
+    {
+      name: 'companion_browser_open',
+      label: 'Open in Companion browser',
+      promptSnippet:
+        'Show a web page in the browser built into the Companion panel, in place of this conversation.',
+      promptGuidelines: [
+        'Use companion_browser_open when the user asks to see or open a web page in Companion. It only shows the page to the user; you cannot read, click or type in it, and none of its content (not even its title) is returned to you.',
+        'Pass a complete https:// address (or http://localhost… for a local app). Do not retry after "unconfirmed" or a refusal; tell the user instead.',
+      ],
+      description:
+        'Open an absolute https:// URL (or http:// on localhost) in the Companion panel’s built-in browser, ' +
+        'which replaces this conversation’s view until the user returns to chat; drafts and pins are kept. ' +
+        'It works only while the Companion panel is showing and this conversation is the one selected in it; ' +
+        'a hidden panel is never shown for you. Returns outcome "loaded", "loading" (still loading when the ' +
+        'panel answered), "load-failed" (with the reason, such as an invalid certificate or a refused ' +
+        'redirect) or "superseded", and the address shown after redirects. Failures: panel-hidden, ' +
+        'not-selected, busy (the user is typing an address or answering a page dialog), unsupported (no ' +
+        'native browser), refused, offline, or unconfirmed (do not retry; ask the user). Pop-ups, downloads ' +
+        'and permissions stay blocked, and signing in to sites is up to the user.',
+      parameters: Type.Object({
+        url: Type.String({
+          minLength: 1,
+          maxLength: 2048,
+          description: 'Absolute https:// URL, or http://localhost:PORT/… for a local app',
+        }),
+      }),
+      method: 'browser-open',
+    },
   ];
 
   return definitions.map(({ method, ...definition }) => ({

@@ -113,21 +113,39 @@ Item {
     message.widget && message.widget.viewUrl && message.widget.presentation.placement === "pinned"
       && !root.isLocallyUnpinned(message.widget)) || null
   readonly property bool fullWidget: pinnedMessage !== null && pinnedMessage.widget.presentation.heightPercent === 100
+  // The in-panel browser (PanelBrowser.qml) needs an initialized Qt WebEngine
+  // and belongs in the standalone native window, so only that host sets
+  // browserAvailable. The nativeWidgets marker alone is not enough: the
+  // experimental Quickshell host sets it too. While browsing, the browser
+  // replaces the page area; the selected conversation, drafts, pins and
+  // widgets stay in place underneath, hidden, and reappear on return.
+  property bool browserAvailable: false
+  property bool browserOpen: false
+  // Set on first open; the browser item then lives as long as this body.
+  property bool browserStarted: false
+  // PanelBrowser.qml needs Qt WebEngine 6.9+ (WebEngineProfilePrototype); the
+  // rest of the panel builds with 6.8. A failed load shows a message instead.
+  property url browserSource: Qt.resolvedUrl("PanelBrowser.qml")
+  readonly property bool browsing: browserOpen && browserAvailable
   readonly property bool inputFocused: root.keyboardFocused && (root.composerFocusId !== "" || activityView.inputFocused)
-  readonly property string composerFocusId: fullWidget ? "" : chat.composerFocusId
+  readonly property string composerFocusId: fullWidget || browsing ? "" : chat.composerFocusId
   onFullWidgetChanged: if (fullWidget) chat.releaseComposerFocus()
+  onBrowsingChanged: if (browsing) root.releaseComposerFocus()
   readonly property bool keyboardFocused: root.Window.window !== null && root.Window.window.active
   // Activity and the session library share the conversation's reader zoom.
   // Keep geometry in theme units; only text and its measured layout grow.
   property alias zoomPercent: chat.zoomPercent
-  readonly property bool pageZoomEnabled: root.visible && root.animationsEnabled && root.keyboardFocused && (root.selectedSession === null || root.fullWidget)
+  readonly property bool pageZoomEnabled: root.visible && root.animationsEnabled && root.keyboardFocused
+    && !root.browsing && (root.selectedSession === null || root.fullWidget)
 
   // Activity has its own explicit text submission, never an agent composer
   // or an automatic dictation destination. Clear the hidden composer when leaving a conversation.
   onSelectedSessionChanged: {
     if (selectedSession === null) {
       chat.releaseComposerFocus()
-      if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
+      // While browsing, the page or address field keeps focus: a conversation
+      // closed in the background must not take the user's typing away.
+      if (root.keyboardFocused && !root.browsing) root.forceActiveFocus(Qt.TabFocusReason)
     } else if (selectedSession.id === root.pendingOriginId) {
       const groupId = root.pendingOriginGroupId
       root.clearPendingOrigin()
@@ -143,8 +161,11 @@ Item {
   signal sessionSelected(string id)
   onSessionSelected: id => {
     if (id !== root.pendingOriginId) clearPendingOrigin()
+    // Choosing a page in the rail, by pointer or shortcut, leaves the browser.
+    root.browserOpen = false
   }
   signal previousRequested()
+  onPreviousRequested: root.browserOpen = false
   signal reopenSessionRequested(string id)
   signal screenshotRequested(url source, string title)
   signal stopSessionRequested(string id)
@@ -166,6 +187,8 @@ Item {
   }
   function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
   function focusComposer() {
+    // The focus-input shortcut asks for the composer; the page stays loaded.
+    root.browserOpen = false
     if (activityView.visible) activityView.focusInput()
     else if (!root.fullWidget) chat.focusComposer()
   }
@@ -228,6 +251,75 @@ Item {
   function isLocallyUnpinned(reference) {
     const dismissed = root.locallyUnpinned[reference.id]
     return dismissed && dismissed.viewUrl === reference.viewUrl && reference.revision <= dismissed.revision
+  }
+
+  // Explicit user action only. The browser takes keyboard focus once, when
+  // it opens; nothing in the panel moves focus into it later.
+  function openBrowser() {
+    if (!root.browserAvailable) return
+    root.browserStarted = true
+    root.browserOpen = true
+    Qt.callLater(function() {
+      if (root.browsing && browserLoader.item) browserLoader.item.focusBrowser()
+    })
+  }
+
+  // companion_browser_open: an agent's own turn asks to show a web page.
+  // `request` is {requestId, id (calling conversation), url}; `answer` must be
+  // called exactly once with {outcome, reason, url?, title?}. It opens only for
+  // the conversation the user has selected here, never while they are typing
+  // an address or answering a page dialog, and it never shows the window or
+  // moves keyboard focus to the address field.
+  property var agentBrowserRequests: ({})
+  function openBrowserFromAgent(request, answer) {
+    // The listener sends each request once; ignore an impossible repeat.
+    if (typeof request.requestId !== "string" || root.agentBrowserRequests[request.requestId]) return
+    const seen = Object.assign({}, root.agentBrowserRequests)
+    seen[request.requestId] = true
+    const keys = Object.keys(seen)
+    if (keys.length > 32) delete seen[keys[0]]
+    root.agentBrowserRequests = seen
+
+    if (!root.browserAvailable) {
+      answer({outcome: "unsupported", reason: "This Companion panel has no built-in browser."})
+      return
+    }
+    if (typeof request.id !== "string" || typeof request.url !== "string"
+      || root.showingPrevious || root.selectedSession === null || root.selectedSessionId !== request.id) {
+      answer({outcome: "not-selected",
+        reason: "The user is looking at another page or conversation in Companion."})
+      return
+    }
+    root.browserStarted = true
+    const browser = browserLoader.item
+    if (!browser) {
+      answer({outcome: "unsupported", reason: "The panel browser could not load here (it needs Qt WebEngine 6.9 or newer)."})
+      return
+    }
+    const busy = browser.userBusyReason()
+    if (busy !== "") {
+      answer({outcome: "busy", reason: busy})
+      return
+    }
+    // Show the browser first, so the page is awake (not frozen) when it loads.
+    const wasBrowsing = root.browsing
+    root.browserOpen = true
+    if (!browser.openFromAgent(request.url, answer)) {
+      root.browserOpen = wasBrowsing
+      return
+    }
+    // Within an already focused window, typing continues in the page rather
+    // than in the now hidden composer. An inactive window is left alone.
+    if (!wasBrowsing && root.keyboardFocused) Qt.callLater(function() {
+      if (root.browsing && browserLoader.item && browserLoader.item.page) browserLoader.item.page.forceActiveFocus()
+    })
+  }
+
+  // Return from the browser to the page it covered, keeping the browser page.
+  function closeBrowser() {
+    if (!root.browserOpen) return
+    root.browserOpen = false
+    Qt.callLater(function() { if (root.keyboardFocused && !root.browsing) root.focusComposer() })
   }
 
   function backToChat() {
@@ -634,8 +726,8 @@ Item {
 
     Text {
       anchors.top: parent.top
-      width: parent.width - 38 * root.unit
-      text: root.showingPrevious ? "Previous sessions" : root.selectedSession ? root.selectedSession.title : "Companion"
+      width: parent.width - 38 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+      text: root.browsing ? "Browser" : root.showingPrevious ? "Previous sessions" : root.selectedSession ? root.selectedSession.title : "Companion"
       textFormat: Text.PlainText
       elide: Text.ElideRight
       color: root.foreground
@@ -674,6 +766,23 @@ Item {
       Accessible.onPressAction: root.closeRequested()
     }
 
+    PanelAction {
+      id: browserButton
+      objectName: "panelBrowserButton"
+      visible: root.browserAvailable && !root.browsing
+      anchors.top: parent.top
+      anchors.topMargin: -4 * root.unit
+      anchors.right: closeButton.left
+      anchors.rightMargin: 6 * root.unit
+      text: "Browser"
+      foreground: root.foreground
+      selection: root.selection
+      fontFamily: root.fontFamily
+      unit: root.unit
+      onTriggered: root.openBrowser()
+      Accessible.name: "Open the panel browser"
+    }
+
     Text {
       id: actionError
       objectName: "sessionControlError"
@@ -691,7 +800,7 @@ Item {
     ActivityStrip {
       id: activityStrip
       objectName: "activityStrip"
-      visible: (root.selectedSession !== null || root.showingPrevious)
+      visible: !root.browsing && (root.selectedSession !== null || root.showingPrevious)
         && !root.fullWidget && !(root.pinnedMessage && root.pinnedMessage.widget.presentation.replaceActivity)
       y: pinned.visible ? pinned.y + pinned.height + 12 * root.unit : body.contentTop
       width: parent.width
@@ -713,7 +822,7 @@ Item {
     Item {
       id: pinned
       objectName: "pinnedWidgetArea"
-      visible: root.pinnedMessage !== null
+      visible: root.pinnedMessage !== null && !root.browsing
       y: body.contentTop
       width: parent.width
       // Below 100%, the requested percentage yields to the measured input,
@@ -767,7 +876,7 @@ Item {
     }
 
     PreviousSessionsView {
-      visible: root.showingPrevious
+      visible: root.showingPrevious && !root.browsing
       anchors.fill: parent
       anchors.topMargin: activityStrip.y + activityStrip.height + 12 * root.unit
       sessions: root.previousSessions
@@ -787,7 +896,7 @@ Item {
       textInputAvailable: root.textInputAvailable
       onUtteranceRequested: text => root.utteranceRequested(text)
       objectName: "fullActivityStatus"
-      visible: !root.showingPrevious && root.selectedSession === null
+      visible: !root.showingPrevious && root.selectedSession === null && !root.browsing
       anchors.fill: parent
       anchors.topMargin: 48 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
       online: root.online
@@ -819,7 +928,7 @@ Item {
       id: chat
       nativeWidgets: root.nativeWidgets
       objectName: "sessionView"
-      visible: root.selectedSession !== null && !root.fullWidget
+      visible: root.selectedSession !== null && !root.fullWidget && !root.browsing
       widgetsRunning: root.online && root.animationsEnabled
       choiceHeightLimit: Math.max(48 * root.unit, Math.min(180 * root.unit,
         (root.pinnedMessage ? body.contentHeight : chat.height) * 0.3))
@@ -848,12 +957,49 @@ Item {
       onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
     }
 
+    // Loaded by URL, not by type, so hosts without Qt WebEngine never compile
+    // it. Once started it stays loaded (hidden while not browsing), keeping
+    // its page and profile across tab changes, reconnects and presentation
+    // moves.
+    Loader {
+      id: browserLoader
+      objectName: "panelBrowserLoader"
+      active: root.browserAvailable && root.browserStarted
+      visible: root.browsing
+      anchors.fill: parent
+      anchors.topMargin: body.contentTop
+      source: active ? root.browserSource : ""
+      onLoaded: {
+        item.foreground = Qt.binding(function() { return root.foreground })
+        item.muted = Qt.binding(function() { return root.muted })
+        item.accent = Qt.binding(function() { return root.accent })
+        item.selection = Qt.binding(function() { return root.selection })
+        item.background = Qt.binding(function() { return root.background })
+        item.fontFamily = Qt.binding(function() { return root.fontFamily })
+        item.unit = Qt.binding(function() { return root.unit })
+        item.shown = Qt.binding(function() { return root.browsing })
+        item.returnRequested.connect(root.closeBrowser)
+      }
+    }
+    Text {
+      objectName: "panelBrowserUnavailable"
+      visible: root.browsing && browserLoader.status === Loader.Error
+      anchors.fill: browserLoader
+      text: "The panel browser needs Qt WebEngine 6.9 or newer. Choose a conversation or Activity to return."
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 12 * root.unit
+    }
   }
 
   ModelPicker {
     id: modelPicker
     objectName: "sessionModelFooter"
-    visible: root.selectedSession !== null && root.sessionControls !== null && root.sessionControls.controlsAvailable
+    visible: !root.browsing && root.selectedSession !== null && root.sessionControls !== null && root.sessionControls.controlsAvailable
     anchors.left: rail.right
     anchors.right: parent.right
     anchors.bottom: parent.bottom

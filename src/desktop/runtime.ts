@@ -26,10 +26,35 @@ import type { TranscriptionCleanupSetting } from '../core/transcription-cleanup/
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
 import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
-import type { AgentDraftOutcome, AgentDraftRequest } from '../agents/types.ts';
+import type {
+  AgentBrowserOpenOutcome,
+  AgentBrowserOpenRequest,
+  AgentDraftOutcome,
+  AgentDraftRequest,
+} from '../agents/types.ts';
 
 /** A connected panel must confirm a forwarded draft within this time. */
 const draftConfirmationMilliseconds = 5000;
+
+/**
+ * A panel answers a browser-open request once the page loaded or failed, or
+ * after its own shorter wait (about 8 seconds) with "loading". This bound
+ * only covers a panel that never answers.
+ */
+const browserConfirmationMilliseconds = 15000;
+
+/** Outcomes a panel may report for a browser-open request. */
+const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
+  'loaded',
+  'loading',
+  'load-failed',
+  'superseded',
+  'refused',
+  'not-selected',
+  'busy',
+  'panel-hidden',
+  'unsupported',
+]);
 
 /**
  * Actions that act on the desktop itself: the compositor's focused window,
@@ -43,6 +68,7 @@ const desktopOnlyActions = new Set([
   'media-playback',
   'composer-focus',
   'agent-draft-result',
+  'agent-browser-open-result',
 ]);
 
 /**
@@ -142,6 +168,13 @@ export class DesktopRuntime {
     string,
     { clientId: number; finish(outcome: AgentDraftOutcome): void }
   >();
+  // Panels with a built-in browser (the standalone native window), by client,
+  // with the sequence of their latest panel report, like draft hosts.
+  private readonly browserHosts = new Map<number, number>();
+  private readonly pendingBrowserOpens = new Map<
+    string,
+    { clientId: number; finish(outcome: AgentBrowserOpenOutcome): void }
+  >();
 
   constructor(
     private readonly pause: PauseControl,
@@ -179,6 +212,8 @@ export class DesktopRuntime {
         }
         this.draftHosts.delete(clientId);
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
+        this.browserHosts.delete(clientId);
+        this.abandonBrowserOpens(clientId, 'The panel disconnected before confirming.');
         const navigationRemoved = this.navigation?.clientId === clientId;
         if (navigationRemoved) {
           this.navigation = undefined;
@@ -206,6 +241,7 @@ export class DesktopRuntime {
       },
     );
     options.agents?.setDraftHost((request, signal) => this.requestDraft(request, signal));
+    options.agents?.setBrowserHost((request, signal) => this.requestBrowserOpen(request, signal));
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
@@ -852,6 +888,100 @@ export class DesktopRuntime {
     });
   }
 
+  /**
+   * The native panel that shows web pages: the visible navigation owner if it
+   * has a browser, otherwise the browser panel that reported most recently.
+   * Remote panels never report one, so they are never asked.
+   */
+  private browserClient(): number | undefined {
+    const visible = this.navigation?.clientId;
+    if (visible !== undefined && this.browserHosts.has(visible)) {
+      return visible;
+    }
+    let newest: number | undefined;
+    let newestSequence = -1;
+    for (const [clientId, sequence] of this.browserHosts) {
+      if (sequence > newestSequence) {
+        newest = clientId;
+        newestSequence = sequence;
+      }
+    }
+    return newest;
+  }
+
+  /**
+   * Ask one native panel to show a web page for the calling conversation and
+   * wait for its explicit answer. The request is a one-time event, never part
+   * of snapshots, so reconnects cannot replay it. Once sent, timeout,
+   * disconnect or turn cancellation are `unconfirmed`. Never retried.
+   */
+  private requestBrowserOpen(
+    request: AgentBrowserOpenRequest,
+    signal: AbortSignal,
+  ): Promise<AgentBrowserOpenOutcome> {
+    if (signal.aborted) {
+      return Promise.resolve({ outcome: 'offline', reason: 'The agent turn has ended.' });
+    }
+    const clientId = this.browserClient();
+    if (clientId === undefined) {
+      // A connected panel without a browser (Quickshell, an older UI) is not
+      // the same as no panel at all.
+      if (this.draftHosts.size > 0) {
+        return Promise.resolve({
+          outcome: 'unsupported',
+          reason: 'The connected Companion panel has no built-in browser.',
+        });
+      }
+      return Promise.resolve({ outcome: 'offline', reason: '' });
+    }
+
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const finish = (outcome: AgentBrowserOpenOutcome) => {
+        if (!this.pendingBrowserOpens.delete(requestId)) {
+          return;
+        }
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancelled);
+        resolve(outcome);
+      };
+      const timer = setTimeout(
+        () =>
+          finish({
+            outcome: 'unconfirmed',
+            reason: 'The panel did not answer within 15 seconds.',
+          }),
+        browserConfirmationMilliseconds,
+      );
+      const cancelled = () =>
+        finish({
+          outcome: 'unconfirmed',
+          reason: 'The agent turn ended before the panel answered.',
+        });
+
+      this.pendingBrowserOpens.set(requestId, { clientId, finish });
+      signal.addEventListener('abort', cancelled, { once: true });
+
+      const sent = this.server.publishTo(clientId, {
+        type: 'agent-browser-open',
+        requestId,
+        id: request.sessionId,
+        url: request.url,
+      });
+      if (!sent) {
+        finish({ outcome: 'offline', reason: 'The panel disconnected.' });
+      }
+    });
+  }
+
+  private abandonBrowserOpens(clientId: number | undefined, reason: string): void {
+    for (const pending of [...this.pendingBrowserOpens.values()]) {
+      if (clientId === undefined || pending.clientId === clientId) {
+        pending.finish({ outcome: 'unconfirmed', reason });
+      }
+    }
+  }
+
   private abandonDrafts(clientId: number | undefined, reason: string): void {
     for (const pending of [...this.pendingDrafts.values()]) {
       if (clientId === undefined || pending.clientId === clientId) {
@@ -884,6 +1014,7 @@ export class DesktopRuntime {
         this.composerClient === clientId ||
         this.navigation?.clientId === clientId ||
         this.draftHosts.has(clientId) ||
+        this.browserHosts.has(clientId) ||
         this.mediaClients.has(clientId)
       ) {
         throw Error('Declare the remote role before reporting desktop panel state');
@@ -1095,6 +1226,35 @@ export class DesktopRuntime {
       return 'draft-recorded';
     }
 
+    if (request.action === 'agent-browser-open-result') {
+      if (
+        typeof request.requestId !== 'string' ||
+        typeof request.outcome !== 'string' ||
+        !browserPanelOutcomes.has(request.outcome as AgentBrowserOpenOutcome['outcome']) ||
+        (request.reason !== undefined &&
+          (typeof request.reason !== 'string' || request.reason.length > 600)) ||
+        (request.url !== undefined &&
+          (typeof request.url !== 'string' || request.url.length > 4096))
+      ) {
+        throw Error('Expected a browser request id and outcome');
+      }
+      // Only the panel that was asked can answer; a late answer is refused.
+      const pending = this.pendingBrowserOpens.get(request.requestId);
+      if (!pending || pending.clientId !== clientId) {
+        throw Error('This browser request has expired');
+      }
+      const outcome: AgentBrowserOpenOutcome = {
+        outcome: request.outcome as AgentBrowserOpenOutcome['outcome'],
+        reason: (request.reason as string | undefined) ?? '',
+      };
+      // Page text (such as its title) is never forwarded to the agent.
+      if (typeof request.url === 'string' && request.url) {
+        outcome.url = request.url;
+      }
+      pending.finish(outcome);
+      return 'browser-recorded';
+    }
+
     if (request.action === 'panel-state' && remote) {
       // Remote panels report only which conversation they show. Focus,
       // navigation and draft fields describe the desktop and are ignored.
@@ -1113,6 +1273,7 @@ export class DesktopRuntime {
       if (
         typeof request.id !== 'string' ||
         (request.draftHost !== undefined && typeof request.draftHost !== 'boolean') ||
+        (request.browserHost !== undefined && typeof request.browserHost !== 'boolean') ||
         (request.visible !== undefined && typeof request.visible !== 'boolean') ||
         (request.navigationToken !== undefined &&
           (typeof request.navigationToken !== 'string' || request.navigationToken.length > 128)) ||
@@ -1148,6 +1309,13 @@ export class DesktopRuntime {
         this.draftHosts.set(clientId, ++this.draftReportSequence);
       } else {
         this.draftHosts.delete(clientId);
+      }
+      // Only the standalone native window has the built-in browser.
+      if (request.browserHost === true) {
+        this.browserHosts.set(clientId, ++this.draftReportSequence);
+      } else {
+        this.browserHosts.delete(clientId);
+        this.abandonBrowserOpens(clientId, 'The panel no longer offers its browser.');
       }
       this.setPanelKeyboardFocus(
         request.keyboardFocused === true || request.composerFocused,
@@ -1434,6 +1602,8 @@ export class DesktopRuntime {
     this.unsubscribeAgents?.();
     this.options.agents?.setDraftHost(undefined);
     this.abandonDrafts(undefined, 'Companion is shutting down.');
+    this.options.agents?.setBrowserHost(undefined);
+    this.abandonBrowserOpens(undefined, 'Companion is shutting down.');
     this.ready = false;
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);

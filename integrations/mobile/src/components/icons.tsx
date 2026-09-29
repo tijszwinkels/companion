@@ -44,6 +44,15 @@ export const SettingsIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const AppsIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <rect x="4" y="4" width="6" height="6" rx="1" />
+    <rect x="14" y="4" width="6" height="6" rx="1" />
+    <rect x="4" y="14" width="6" height="6" rx="1" />
+    <rect x="14" y="14" width="6" height="6" rx="1" />
+  </Icon>
+);
+
 export const BackIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="m15 18-6-6 6-6" />

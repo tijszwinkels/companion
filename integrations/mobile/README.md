@@ -7,7 +7,10 @@ loads nothing from any other origin.
 
 It is Companion's own panel on the phone: conversations, chat, follow-ups, stop,
 choices, model/effort, Previous/reopen/close/reorder, Activity history with labels,
-deletion and new sessions, listening/sound/intent switches. The
+deletion and new sessions, listening/sound/intent switches. When the gateway offers
+[local apps](../../docs/local-apps.md), an **Apps** header button lists them and opens
+one in a new top-level tab on the app's own origin (`src/components/Apps.tsx`); the
+app never runs inside the panel or sees its device token. The
 [parity matrix](PARITY.md) lists exactly what matches the desktop panel, what differs,
 and what is missing.
 
@@ -48,7 +51,9 @@ emulation or a narrow window, enter the code, and try the chats, Activity and
 the rail, Previous sessions and Phone settings. Everything is synthetic: a scripted backend streams Markdown, tool calls
 and choices, and no model, microphone, screen capture or personal data is involved.
 Ctrl+C stops the demo and deletes its temporary directory. Use `--port N` for another
-port.
+port. `--apps` also starts the synthetic CSV notebook local app and offers it through
+the app proxy on `http://csv-notebook.localhost:N+3` (Chromium resolves `*.localhost`
+to this computer).
 
 Against a real listener: run `bin/companion-remote serve` (see the gateway README
 for Tailscale/TLS options) with a listener built from this branch. Doing that with
@@ -88,6 +93,8 @@ gateway restart without replaying requests, revocation, and that no request goes
 to another origin. Additional tests cover draft/send races across navigation,
 sign-out/revocation clearing, browser Back, modal focus/Escape, Claude models
 with fixed effort, rail reorder/close/reopen and a short 390×400 viewport.
+`test/mobile/apps.test.ts` pairs, lists a synthetic local app and opens it in a new
+tab on its own origin without opener access or the panel's storage.
 
 Not tested by this suite: physical iOS Safari, the on-screen keyboard, actual safe-area insets,
 a real phone on Tailscale, or long-running battery/network behavior.

@@ -3,15 +3,17 @@
  * and the selected page on the right (Activity, Previous sessions or a
  * conversation). The page header has a menu button that shows or hides the
  * rail, the page title, and phone settings where the desktop has its close
- * button.
+ * button. When the computer offers local apps to this phone, an Apps button
+ * appears before the settings button (see Apps.tsx).
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { useAppState, useStore } from '../hooks.ts';
 import { ActivityPage } from './Activity.tsx';
+import { AppsSheet, usePhoneApps } from './Apps.tsx';
 import { ConversationPage } from './Conversation.tsx';
-import { MenuIcon, SettingsIcon } from './icons.tsx';
+import { AppsIcon, MenuIcon, SettingsIcon } from './icons.tsx';
 import { Pairing } from './Pairing.tsx';
 import { PreviousPage } from './Previous.tsx';
 import { Rail } from './Rail.tsx';
@@ -36,6 +38,8 @@ export function App() {
   const state = useAppState();
   const [railOpen, setRailOpen] = useState(initialRailOpen);
   const [settings, setSettings] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
+  const phoneApps = usePhoneApps();
   const heading = useRef<HTMLHeadingElement>(null);
   const paired = state.connection.status !== 'unpaired';
 
@@ -44,6 +48,7 @@ export function App() {
       heading.current?.focus({ preventScroll: true });
     } else {
       setSettings(false);
+      setAppsOpen(false);
     }
   }, [paired, state.selected, state.showingPrevious]);
 
@@ -93,6 +98,16 @@ export function App() {
             <h1 ref={heading} tabIndex={-1} data-page-heading>
               {title}
             </h1>
+            {phoneApps.apps.length > 0 && (
+              <button
+                class="icon-button"
+                aria-label="Apps"
+                aria-haspopup="dialog"
+                onClick={() => setAppsOpen(true)}
+              >
+                <AppsIcon size={20} />
+              </button>
+            )}
             <button
               class="icon-button"
               aria-label="Phone settings"
@@ -113,6 +128,13 @@ export function App() {
         </main>
       </div>
       {settings && <SettingsSheet onClose={() => setSettings(false)} />}
+      {appsOpen && (
+        <AppsSheet
+          apps={phoneApps.apps}
+          refresh={phoneApps.refresh}
+          onClose={() => setAppsOpen(false)}
+        />
+      )}
       <Toasts />
     </div>
   );

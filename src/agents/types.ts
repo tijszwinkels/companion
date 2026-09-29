@@ -257,3 +257,54 @@ export type AgentDraftHost = (
   request: AgentDraftRequest,
   signal: AbortSignal,
 ) => Promise<AgentDraftOutcome>;
+
+/**
+ * An agent's request to show a web page in the native panel's built-in
+ * browser. Only the calling conversation's own turn can make it, and the UI
+ * opens the page only while that conversation is the one selected there.
+ */
+export interface AgentBrowserOpenRequest {
+  /** The calling conversation, established by its turn lease. */
+  sessionId: string;
+  /** Absolute https:// URL, or http:// on a loopback host. */
+  url: string;
+}
+
+/**
+ * What happened, as confirmed by the panel:
+ * - `loaded`, `loading` and `load-failed`: the browser now shows the address;
+ *   the page finished loading, was still loading when the panel answered, or
+ *   failed to load (reason says why, e.g. an invalid certificate).
+ * - `superseded`: a newer navigation replaced it before it finished.
+ * - `refused`, `not-selected`, `busy`, `panel-hidden`, `unsupported`:
+ *   confirmed non-changes. A hidden panel is never shown for an agent, and
+ *   opening a page the user cannot see is not reported as success.
+ * - `offline`: no panel could receive the request.
+ * - `unconfirmed`: sent, but the panel did not answer in time; it may or may
+ *   not have opened the page, so the caller must not blindly retry.
+ */
+export interface AgentBrowserOpenOutcome {
+  outcome:
+    | 'loaded'
+    | 'loading'
+    | 'load-failed'
+    | 'superseded'
+    | 'refused'
+    | 'not-selected'
+    | 'busy'
+    | 'panel-hidden'
+    | 'unsupported'
+    | 'offline'
+    | 'unconfirmed';
+  reason: string;
+  /**
+   * Address the browser shows, when it shows one (after redirects). No page
+   * content, not even its title, is returned to the agent.
+   */
+  url?: string;
+}
+
+export type AgentBrowserHost = (
+  request: AgentBrowserOpenRequest,
+  signal: AbortSignal,
+) => Promise<AgentBrowserOpenOutcome>;

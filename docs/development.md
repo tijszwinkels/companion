@@ -38,12 +38,14 @@ milestones. User instructions can waive review for a particular change.
 | History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
 | Shared Activity/conversation components                                                | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
 | Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
+| In-panel web browser (native window only)                                              | `integrations/panel/PanelBrowser*.{qml,mjs}`                    | [Panel browser](panel-browser.md)                                                          |
 | Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
 | Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
 | Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
 | Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
 | Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
 | Opt-in phone gateway and phone panel | `src/remote/`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [phone app](../integrations/mobile/README.md) |
+| Trusted local web apps: registry, lifecycle, app windows, phone app proxy | `src/apps/`, `bin/companion-app` | [Local apps](local-apps.md) |
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -158,6 +160,18 @@ use temporary session stores, real subprocesses and sockets, and synthetic agent
 backends. Never point these tests at the live listener or personal session store.
 The feature is off unless the listener is explicitly started with
 `--external-sessions`; activation remains a separate user decision.
+
+## Local app development
+
+`bin/companion-app` registers, runs and opens trusted local web apps; nothing
+starts it automatically and it never restarts Companion. `npm run apps:demo` runs
+the synthetic CSV notebook in a temporary directory. Unit tests
+(`test/unit/apps-*.test.ts`, `test/unit/remote-apps.test.ts`) run with `npm test`;
+`npm run test:apps` drives real headless Chromium with temporary profiles. Tests
+and demos must use temporary registries (`--apps-directory`), profiles and
+non-live ports; never the live `~/companion/apps`, the live gateway port or its
+state. Registering real apps, enabling phone access and configuring app host
+names/TLS are separate user decisions. See [the guide](local-apps.md).
 
 ## Phone panel development
 

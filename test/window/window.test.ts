@@ -479,7 +479,7 @@ test('portable client handles ordered replies and reconnects', async () => {
         killSignal: 'SIGKILL',
       },
     );
-    assert.match(result.stdout, /11 passed, 0 failed/);
+    assert.match(result.stdout, /12 passed, 0 failed/);
   } finally {
     await rm(setup.directory, { recursive: true, force: true });
   }

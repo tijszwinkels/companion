@@ -124,6 +124,27 @@ origin. That is readable by any script running on that origin, which the CSP lim
 to the app's own bundle. An iOS wrapper should move it to the Keychain. Anyone who
 unlocks the phone and opens the app can use Companion; revoke a lost phone.
 
+## Local apps
+
+With `--apps-listen 127.0.0.1:PORT` and one `--app-origin ID=ORIGIN` per app, the
+gateway also starts the app proxy from [`src/apps/`](../apps/proxy.ts) and offers
+phone-enabled [local apps](../../docs/local-apps.md) to paired phones:
+
+- `GET /api/apps` (bearer token) lists apps whose registration has phone access
+  and an origin configured here. Without `--apps-listen` it returns no apps.
+- `POST /api/apps/ID/open` (bearer token and the gateway's exact Origin) returns
+  a one-time URL on that app's own origin. The phone opens it top-level; the app
+  proxy turns it into an HttpOnly session cookie on the app origin.
+
+App pages never run on the gateway's origin, and each app origin must use a host
+name distinct from every other app and from the gateway (cookies ignore ports).
+The device token never leaves the gateway origin: app origins refuse requests
+carrying it. Revocation, phone opt-out and registration changes end app sessions
+and live app connections using the same recheck interval as phone relays. The app
+proxy binds loopback only; TLS and host names for app origins are separate user
+deployment decisions. See the [local apps guide](../../docs/local-apps.md) for the
+full policy and limits.
+
 ## Requests, receipts and reconnection
 
 Phone messages are `{"type":"request","requestId":"…","action":"…",…}`; replies
@@ -180,6 +201,6 @@ requires an explicitly arranged gateway restart.
 `test/unit/remote-panel-role.test.ts` (listener role) and
 `test/unit/remote-gateway.test.ts` (pairing, origin/host checks, authorization,
 refused actions, receipts across reconnects, screenshots, revocation, listener loss,
-TLS) use temporary directories, a real control socket, synthetic agent backends and
+TLS) and `test/unit/remote-apps.test.ts` (app list/open endpoints) use temporary directories, a real control socket, synthetic agent backends and
 loopback only. `test/mobile/` drives the built app in headless Chromium. None of
 them validates a real iPhone, Safari, Tailscale or production listener.

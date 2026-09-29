@@ -1,0 +1,248 @@
+import QtQuick
+import QtTest
+import QtWebEngine
+import "@WINDOW@" as Native
+
+// companion_browser_open inside the real standalone window body. The fake
+// backend delivers the listener's one-time "agent-browser-open" events and
+// records the panel's answers; pages come from loopback fixtures.
+TestCase {
+  id: testCase
+  name: "BrowserOpenToolHost"
+  when: windowShown
+
+  readonly property string origin: @ORIGIN@
+  readonly property var reference: @REFERENCE@
+  property var body: null
+  property var panel: null
+  property var composer: null
+  property var widgetView: null
+  property int sequence: 0
+
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+
+  function conversation() {
+    const widget = Object.assign({}, reference, {presentation: {
+      placement: "pinned", heightPercent: 40, replaceActivity: false}})
+    return {id: "one", title: "Pinned chat", status: "running", messages: [
+      {id: "visual", role: "assistant", kind: "widget", text: "Pinned list", widget: widget,
+        toolName: "", input: "", state: "", screenshot: ""}]}
+  }
+  function evaluate(view, script) {
+    let done = false
+    let result = null
+    view.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 5000, script)
+    return result
+  }
+  function browser() {
+    return findChild(body, "panelBrowser")
+  }
+  // Deliver one request as the listener would; returns its request id.
+  function request(id, url) {
+    const requestId = "request-" + (++sequence)
+    fakeBackend.received({type: "agent-browser-open", requestId: requestId, id: id, url: url})
+    return requestId
+  }
+  function answers(requestId) {
+    return fakeBackend.sent.filter(function(message) {
+      return message.action === "agent-browser-open-result" && message.requestId === requestId
+    })
+  }
+  function answer(requestId, timeout) {
+    tryVerify(function() { return answers(requestId).length > 0 }, timeout || 10000, "answer to " + requestId)
+    compare(answers(requestId).length, 1, "exactly one answer")
+    return answers(requestId)[0]
+  }
+  function verifyChatRetained() {
+    compare(panel.selectedSessionId, "one")
+    compare(findChild(body, "sessionComposer"), composer)
+    compare(composer.text, "Unsent draft stays")
+    compare(findChild(body, "nativeWidgetBrowser"), widgetView)
+    compare(evaluate(widgetView, "window.retainedWidget"), "widget")
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    panel = body.panel
+    TestHost.attach(body)
+    TestHost.show(true)
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0,
+      sessions: [conversation(), {id: "two", title: "Background chat", status: "running", messages: []}]})
+    body.client.sessions.select("one")
+    tryVerify(function() { return panel.selectedSession !== null && panel.selectedSession.id === "one" })
+    composer = findChild(body, "sessionComposer")
+    composer.text = "Unsent draft stays"
+    const pinned = findChild(body, "pinnedWidget")
+    tryVerify(function() { return pinned.rendered }, 15000, pinned.error)
+    widgetView = findChild(body, "nativeWidgetBrowser")
+    compare(evaluate(widgetView, "window.retainedWidget = 'widget'"), "widget")
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+    wait(100)
+  }
+
+  function test_01_panel_advertises_its_browser() {
+    const report = fakeBackend.sent.filter(function(message) { return message.action === "panel-state" }).pop()
+    verify(report !== undefined)
+    compare(report.browserHost, true)
+    compare(report.draftHost, true)
+  }
+
+  function test_02_background_or_unknown_callers_change_nothing() {
+    for (const id of ["two", "missing", ""]) {
+      const refused = answer(request(id, origin + "/"))
+      compare(refused.outcome, "not-selected", id)
+    }
+    verify(!panel.browsing)
+    compare(browser(), null, "the browser was not even created")
+    verifyChatRetained()
+  }
+
+  function test_03_selected_conversation_opens_with_controls_hidden() {
+    const result = answer(request("one", origin + "/"))
+    compare(result.outcome, "loaded")
+    compare(result.title, undefined, "no page content reaches the agent")
+    compare(result.url, origin + "/")
+    verify(panel.browsing)
+    const view = browser()
+    verify(!findChild(view, "panelBrowserAddress").activeFocus, "the address is not focused")
+    tryCompare(view, "controlsShown", false, 3000)
+    verify(!findChild(body, "sessionView").visible)
+    compare(body.composerId, "")
+    compare(evaluate(view.page, "window.agentMarker = 'kept'"), "kept")
+
+    // Chat returns with draft, pin and widget document intact.
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    verifyChatRetained()
+    tryCompare(view.page, "lifecycleState", WebEngineView.LifecycleState.Frozen, 3000)
+  }
+
+  function test_04_hidden_page_is_reused_and_woken() {
+    const view = browser()
+    const page = view.page
+    const result = answer(request("one", origin + "/second"))
+    compare(result.outcome, "loaded")
+    compare(result.url, origin + "/second")
+    verify(panel.browsing)
+    compare(view.page, page, "the same page item is reused")
+    compare(page.lifecycleState, WebEngineView.LifecycleState.Active)
+    verify(evaluate(page, "document.visibilityState") === "visible")
+
+    // Already browsing: navigates again in place.
+    const again = answer(request("one", origin + "/"))
+    compare(again.outcome, "loaded")
+    compare(view.page, page)
+  }
+
+  function test_05_user_interaction_wins() {
+    const view = browser()
+    // Typing an address: refused as busy, the text stays.
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    const address = findChild(view, "panelBrowserAddress")
+    tryVerify(function() { return address.activeFocus })
+    address.selectAll()
+    keyClick("x")
+    compare(answer(request("one", origin + "/second")).outcome, "busy")
+    compare(view.addressText, "x")
+    compare(view.pageUrl, origin + "/")
+
+    // Edited but no longer focused: the page opens, the edit stays in place.
+    view.page.forceActiveFocus()
+    tryVerify(function() { return !address.activeFocus })
+    compare(answer(request("one", origin + "/second")).outcome, "loaded")
+    compare(view.addressText, "x")
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    keyClick(Qt.Key_Escape)
+    compare(view.addressText, origin + "/second")
+
+    // A page question awaiting the user's answer: busy, nothing lapses.
+    view.page.forceActiveFocus()
+    evaluate(view.page, "setTimeout(() => { confirm('Keep?') }, 0)")
+    tryVerify(function() { return view.pendingDialog !== null })
+    compare(answer(request("one", origin + "/")).outcome, "busy")
+    verify(view.pendingDialog !== null)
+    view.answerDialog(false)
+  }
+
+  function test_06_refusals_and_failures_are_truthful() {
+    const view = browser()
+    // The panel re-checks the address even though the listener already did.
+    const refused = answer(request("one", "file:///etc/passwd"))
+    compare(refused.outcome, "refused")
+    verify(refused.reason.indexOf("file:") >= 0)
+    compare(view.pageUrl, origin + "/second")
+
+    // Nothing listens on port 1: the browser shows the failure.
+    const failed = answer(request("one", "http://127.0.0.1:1/"))
+    compare(failed.outcome, "load-failed")
+    verify(failed.reason.length > 0, failed.reason)
+
+    // A redirect the policy refuses is a failed load with its reason.
+    const redirected = answer(request("one", origin + "/redirect-public-http"))
+    compare(redirected.outcome, "load-failed")
+    verify(redirected.reason.indexOf("Plain http://") >= 0, redirected.reason)
+  }
+
+  function test_07_slow_pages_are_bounded_and_can_be_superseded() {
+    const view = browser()
+    view.agentOpenWait = 500
+    const slow = answer(request("one", origin + "/slow"), 5000)
+    compare(slow.outcome, "loading")
+
+    view.agentOpenWait = 8000
+    const first = request("one", origin + "/slow")
+    wait(200)
+    const second = request("one", origin + "/")
+    compare(answer(first).outcome, "superseded")
+    compare(answer(second).outcome, "loaded")
+
+    // The user's own navigation supersedes an agent's pending open.
+    const pending = request("one", origin + "/slow")
+    wait(200)
+    verify(view.openAddress(origin + "/second"))
+    compare(answer(pending).outcome, "superseded")
+  }
+
+  function test_08_hidden_window_is_not_shown_and_repeats_are_ignored() {
+    const view = browser()
+    const before = view.pageUrl
+    TestHost.hide()
+    tryVerify(function() { return !TestHost.opened })
+    // A page the user cannot see is never reported as opened.
+    const hidden = answer(request("one", origin + "/second"))
+    compare(hidden.outcome, "panel-hidden")
+    wait(300)
+    verify(!TestHost.opened, "the window stays hidden")
+    compare(view.pageUrl, before, "nothing navigated")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.opened })
+
+    const requestId = request("one", origin + "/")
+    compare(answer(requestId).outcome, "loaded")
+    // The listener never repeats a request; an impossible repeat is ignored.
+    fakeBackend.received({type: "agent-browser-open", requestId: requestId, id: "one", url: origin + "/second"})
+    wait(500)
+    compare(answers(requestId).length, 1)
+    compare(view.pageUrl, origin + "/")
+  }
+}

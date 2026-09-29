@@ -79,6 +79,10 @@ const files = [
   'panel/ToolDetails.qml',
   'panel/WidgetSurface.qml',
   'panel/NativeWidgetView.qml',
+  // Native-window only and loaded by URL, like NativeWidgetView; the Omarchy
+  // panel never enables it, but every shared panel type must be present.
+  'panel/PanelBrowser.qml',
+  'panel/PanelBrowserPolicy.mjs',
   'panel/Markdown.mjs',
   'panel/vendor/markdown-it.mjs',
   'panel/vendor/markdown-it.LICENSE',

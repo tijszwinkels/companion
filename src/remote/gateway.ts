@@ -8,7 +8,13 @@
  *   GET  /                      the phone app (static files, strict CSP)
  *   POST /api/pair              exchange a one-time code for a device token
  *   GET  /api/screenshots/:id   a conversation's saved screenshot (bearer token)
+ *   GET  /api/apps              local apps this phone may open (bearer token)
+ *   POST /api/apps/:id/open     one-time top-level URL for an app (bearer token)
  *   GET  /api/socket            WebSocket; first message authenticates
+ *
+ * Local apps themselves are never served from this origin: an optional
+ * separate AppProxy listener (src/apps/proxy.ts) serves each app on its own
+ * configured host name, so app JavaScript cannot reach the device token.
  *
  * Security model (see README.md in this directory):
  * - Transport: HTTPS with a user-supplied certificate for any non-loopback
@@ -38,6 +44,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { AppProxy } from '../apps/proxy.ts';
+import { AppRegistry } from '../apps/registry.ts';
 import { DeviceStore, type PairedDevice } from './devices.ts';
 import { maximumClientMessageBytes } from './protocol.ts';
 import { ReceiptBook } from './receipts.ts';
@@ -65,6 +73,24 @@ export interface GatewayOptions {
   revocationCheckMilliseconds?: number;
   /** Protocol ping interval; clients missing the next pong are disconnected. */
   heartbeatMilliseconds?: number;
+  /** Optional phone access to registered local apps; off when omitted. */
+  apps?: GatewayAppOptions;
+}
+
+/**
+ * The separate loopback listener that serves local apps to paired phones.
+ * Each app needs an explicit origin whose host name differs from every other
+ * app and from this gateway (see src/apps/origins.ts). Only apps whose
+ * registration has phone access turned on are offered.
+ */
+export interface GatewayAppOptions {
+  /** Loopback address and port for the app proxy, e.g. 127.0.0.1:8790. */
+  host: string;
+  port: number;
+  /** `[app id, public origin]` pairs, e.g. `['budget', 'https://budget.example']`. */
+  origins: Array<[string, string]>;
+  /** Registry directory (default ~/companion/apps). */
+  registryDirectory: string;
 }
 
 /** Concurrent authenticated phones and not-yet-authenticated sockets. */
@@ -158,11 +184,31 @@ export class Gateway {
   private revocationTimer?: ReturnType<typeof setInterval>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private readonly alive = new Map<WebSocket, boolean>();
+  /** Serves local apps on their own origins; undefined when not configured. */
+  readonly apps?: AppProxy;
 
   constructor(private readonly options: GatewayOptions) {
     checkGatewayOptions(options);
     this.devices = new DeviceStore(options.stateDirectory);
     this.allowedHosts = new Set(options.origins.map((origin) => new URL(origin).host));
+
+    if (options.apps) {
+      const registry = new AppRegistry(options.apps.registryDirectory);
+      this.apps = new AppProxy({
+        host: options.apps.host,
+        port: options.apps.port,
+        appOrigins: options.apps.origins,
+        gatewayOrigins: options.origins,
+        sources: {
+          apps: () => registry.list(),
+          pairedDeviceIds: async () => new Set((await this.devices.devices()).map((d) => d.id)),
+          isDeviceCredential: async (value) =>
+            (await this.devices.authenticate(value)) !== undefined,
+        },
+        log: options.log,
+        sweepMilliseconds: options.revocationCheckMilliseconds,
+      });
+    }
   }
 
   /** Bound port (useful when started with port 0 in tests). */
@@ -174,6 +220,45 @@ export class Gateway {
   async start(): Promise<void> {
     await this.devices.prepare();
 
+    // Start the app proxy first: if its port is unavailable the gateway
+    // refuses to start rather than silently serving without it.
+    await this.apps?.start();
+
+    // Any later failure (occupied port, unreadable TLS material) must not
+    // leave the app proxy listening or timers running in a process whose
+    // gateway never started. Release what was started, then report the
+    // original error.
+    try {
+      await this.startServer();
+    } catch (error) {
+      await this.releaseFailedStart();
+      throw error;
+    }
+  }
+
+  /** Undo a partial start; never masks the original startup error. */
+  private async releaseFailedStart(): Promise<void> {
+    clearInterval(this.revocationTimer);
+    clearInterval(this.heartbeatTimer);
+    this.revocationTimer = undefined;
+    this.heartbeatTimer = undefined;
+
+    const server = this.server;
+    this.server = undefined;
+    if (server?.listening) {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+
+    try {
+      await this.apps?.close();
+    } catch (error) {
+      this.options.log(`App proxy cleanup after failed start: ${String(error)}`);
+    }
+  }
+
+  /** Create and bind the gateway's own HTTP(S) server and its timers. */
+  private async startServer(): Promise<void> {
     const handler = (request: IncomingMessage, response: ServerResponse) => {
       this.handleHttp(request, response).catch((error) => {
         this.options.log(`HTTP error: ${String(error)}`);
@@ -185,16 +270,17 @@ export class Gateway {
       });
     };
 
-    this.server = this.options.tls
+    const server = this.options.tls
       ? createHttpsServer({ cert: this.options.tls.cert, key: this.options.tls.key }, handler)
       : createHttpServer(handler);
+    this.server = server;
 
-    this.server.on('upgrade', (request, socket, head) => this.handleUpgrade(request, socket, head));
+    server.on('upgrade', (request, socket, head) => this.handleUpgrade(request, socket, head));
 
     await new Promise<void>((resolveListen, rejectListen) => {
-      this.server!.once('error', rejectListen);
-      this.server!.listen(this.options.port, this.options.host, () => {
-        this.server!.removeListener('error', rejectListen);
+      server.once('error', rejectListen);
+      server.listen(this.options.port, this.options.host, () => {
+        server.removeListener('error', rejectListen);
         resolveListen();
       });
     });
@@ -221,6 +307,7 @@ export class Gateway {
   async close(): Promise<void> {
     clearInterval(this.revocationTimer);
     clearInterval(this.heartbeatTimer);
+    await this.apps?.close();
 
     for (const relay of this.relays.keys()) {
       relay.terminate(closeCodes.shutdown, 'Gateway stopped');
@@ -229,9 +316,11 @@ export class Gateway {
       client.terminate();
     }
 
-    if (this.server) {
-      this.server.closeAllConnections();
-      await new Promise<void>((resolveClose) => this.server!.close(() => resolveClose()));
+    const server = this.server;
+    this.server = undefined;
+    if (server?.listening) {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
   }
 
@@ -309,6 +398,17 @@ export class Gateway {
     const screenshot = /^\/api\/screenshots\/([^/]+)$/.exec(url.pathname);
     if (screenshot) {
       await this.handleScreenshot(request, response, screenshot[1]);
+      return;
+    }
+
+    if (url.pathname === '/api/apps') {
+      await this.handleAppList(request, response);
+      return;
+    }
+
+    const openApp = /^\/api\/apps\/([a-z0-9-]{1,32})\/open$/.exec(url.pathname);
+    if (openApp) {
+      await this.handleAppOpen(request, response, openApp[1]);
       return;
     }
 
@@ -418,6 +518,61 @@ export class Gateway {
       'Content-Length': image.length,
     });
     response.end(image);
+  }
+
+  /** The apps this phone may open; empty when app access is not configured. */
+  private async handleAppList(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.method !== 'GET') {
+      this.sendJson(response, 405, { error: 'Method not allowed' });
+      return;
+    }
+
+    const device = await this.devices.authenticate(this.bearerToken(request));
+    if (!device) {
+      this.sendJson(response, 401, { error: 'Not paired' });
+      return;
+    }
+
+    const apps = this.apps ? await this.apps.phoneApps() : [];
+    this.sendJson(response, 200, { apps });
+  }
+
+  /**
+   * Mint a one-time grant for this device and app. The phone opens the
+   * returned URL as a top-level page on the app's own origin; the device
+   * token itself never leaves this origin. The exact-Origin check keeps other
+   * pages from using a stolen or ambient credential path to mint grants.
+   */
+  private async handleAppOpen(
+    request: IncomingMessage,
+    response: ServerResponse,
+    appId: string,
+  ): Promise<void> {
+    if (request.method !== 'POST') {
+      this.sendJson(response, 405, { error: 'Method not allowed' });
+      return;
+    }
+    if (!this.originAllowed(request)) {
+      this.sendJson(response, 403, { error: 'Origin not allowed' });
+      return;
+    }
+
+    const device = await this.devices.authenticate(this.bearerToken(request));
+    if (!device) {
+      this.sendJson(response, 401, { error: 'Not paired' });
+      return;
+    }
+    if (!this.apps) {
+      this.sendJson(response, 404, { error: 'Apps are not available on this gateway' });
+      return;
+    }
+
+    try {
+      const opened = await this.apps.openForDevice(device.id, appId);
+      this.sendJson(response, 200, opened);
+    } catch (error) {
+      this.sendJson(response, 404, { error: error instanceof Error ? error.message : 'Not found' });
+    }
   }
 
   private async serveStatic(pathname: string, response: ServerResponse): Promise<void> {
