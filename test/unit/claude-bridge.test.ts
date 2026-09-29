@@ -134,6 +134,7 @@ test('the bridge offers Pi’s tools, instructions and schemas, conditioned on t
       'companion_session_close',
       'companion_session_send',
       'companion_session_draft',
+      'companion_browser_open',
     ],
   );
   assert.equal((await full.request('ping')).result !== undefined, true);

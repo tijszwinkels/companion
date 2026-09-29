@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import {
   agentHarnesses,
+  type AgentBrowserOpenOutcome,
   type AgentDraftOutcome,
   type AgentHarness,
   type AgentMessageOrigin,
@@ -16,13 +17,15 @@ import {
  */
 export const maxAgentDepth = 3;
 
-/** Start/reopen/close/send/draft calls admitted per agent turn, including failures. */
+/** Start/reopen/close/send/draft/browser-open calls admitted per agent turn, including failures. */
 export const maxLifecycleActionsPerTurn = 6;
 
 const sessionIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const maximumBodyBytes = 32 * 1024;
 const maximumReceiptsPerTurn = 32;
 const maximumTextLength = 4000;
+/** Longest address `companion_browser_open` accepts, in UTF-16 code units. */
+export const maximumBrowserUrlLength = 2048;
 
 /** A deliberate, explainable refusal. `code` is stable for tools and tests. */
 export class SessionToolError extends Error {
@@ -120,6 +123,11 @@ export interface SessionToolHost {
     },
     signal: AbortSignal,
   ): Promise<AgentDraftOutcome>;
+  /** Show `url` in the native panel browser for the calling conversation. */
+  browserOpen(
+    request: { sessionId: string; url: string },
+    signal: AbortSignal,
+  ): Promise<AgentBrowserOpenOutcome>;
 }
 
 export interface ToolReply {
@@ -341,7 +349,8 @@ export class SessionToolService {
       method !== 'reopen' &&
       method !== 'close' &&
       method !== 'send' &&
-      method !== 'draft'
+      method !== 'draft' &&
+      method !== 'browser-open'
     ) {
       throw new SessionToolError('invalid', 'Unknown session tool method', 400);
     }
@@ -361,9 +370,49 @@ export class SessionToolService {
       throw new SessionToolError('limit', 'Too many session tool calls in this turn', 429);
     }
 
-    const reply = this.act(lease, method, command, requestId).catch((error) => this.failure(error));
+    const action =
+      method === 'browser-open'
+        ? this.openBrowser(lease, command)
+        : this.act(lease, method, command, requestId);
+    const reply = action.catch((error) => this.failure(error));
     lease.receipts.set(receiptKey, reply);
     return reply;
+  }
+
+  /**
+   * `companion_browser_open`: only an internal turn may ask, and only for its
+   * own conversation, which the UI must currently show as selected. External
+   * callers have no conversation of their own, so this is never offered to
+   * them. The panel's confirmed outcome is reported as-is; a page that fails
+   * to load is still a truthful, successful report of what the user now sees.
+   */
+  private async openBrowser(lease: Lease, command: Record<string, unknown>): Promise<ToolReply> {
+    // Validate before consuming the turn's action budget.
+    const url = browserUrl(command.url);
+
+    this.assertLive(lease);
+    if (lease.actions >= maxLifecycleActionsPerTurn) {
+      throw new SessionToolError(
+        'limit',
+        `An agent turn can perform at most ${maxLifecycleActionsPerTurn} session actions`,
+        429,
+      );
+    }
+    lease.actions++;
+    if (this.host.title(lease.owner) === undefined) {
+      throw new SessionToolError('expired', 'The calling conversation is no longer open', 403);
+    }
+
+    const result = await this.host.browserOpen({ sessionId: lease.owner, url }, lease.signal);
+    const shown =
+      result.outcome === 'loaded' ||
+      result.outcome === 'loading' ||
+      result.outcome === 'load-failed' ||
+      result.outcome === 'superseded';
+    if (shown) {
+      return { status: 200, body: { ...result } };
+    }
+    throw new SessionToolError(result.outcome, browserFailure(result));
   }
 
   private list(lease: Lease | undefined, command: Record<string, unknown>): ToolReply {
@@ -636,6 +685,76 @@ function draftFailure(result: AgentDraftOutcome): string {
     reason +
     ' Do not resend it; ask the user to check that conversation.'
   );
+}
+
+function browserFailure(result: AgentBrowserOpenOutcome): string {
+  const reason = result.reason ? ` ${result.reason}` : '';
+  if (result.outcome === 'not-selected') {
+    return (
+      'Not opened: the browser opens only for the conversation the user has selected in the ' +
+      'Companion panel.' +
+      reason
+    );
+  }
+  if (result.outcome === 'busy') {
+    return 'Not opened: the user is busy in the panel browser.' + reason;
+  }
+  if (result.outcome === 'unsupported') {
+    return 'Not opened: this Companion panel has no built-in browser.' + reason;
+  }
+  if (result.outcome === 'refused') {
+    return 'Not opened: the panel browser refused this address.' + reason;
+  }
+  if (result.outcome === 'offline') {
+    return 'Not opened: no Companion panel is connected.' + reason;
+  }
+  return (
+    'The Companion panel did not confirm the request; the page may or may not be showing.' +
+    reason +
+    ' Do not retry; ask the user to check.'
+  );
+}
+
+/**
+ * The same top-level rule as the panel browser (PanelBrowserPolicy.mjs):
+ * https:// on any host, http:// only on loopback. Only absolute addresses are
+ * accepted from agents; the panel checks the address again before loading.
+ */
+function browserUrl(value: unknown): string {
+  const invalid = new SessionToolError(
+    'invalid',
+    'url must be an absolute https:// address, or http:// on this computer (localhost), ' +
+      `of at most ${maximumBrowserUrlLength} characters`,
+    400,
+  );
+  if (typeof value !== 'string' || !value || value.length > maximumBrowserUrlLength) {
+    throw invalid;
+  }
+  if (/\s/u.test(value)) {
+    throw invalid;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw invalid;
+  }
+
+  const secure = url.protocol === 'https:' && url.hostname !== '';
+  const local = url.protocol === 'http:' && loopbackHost(url.hostname);
+  if (!secure && !local) {
+    throw invalid;
+  }
+  return url.href;
+}
+
+function loopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '[::1]') {
+    return true;
+  }
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
 function sessionId(value: unknown): string {

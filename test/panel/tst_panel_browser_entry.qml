@@ -66,6 +66,30 @@ Item {
       panel.sessionSelected("one")
       verify(!panel.browsing)
       verify(findChild(panel, "sessionView").visible)
+
+      // An agent's request gets the same truthful answer, and changes nothing.
+      let answer = null
+      panel.openBrowserFromAgent({requestId: "a", id: "one", url: "https://example.com/"},
+        function(result) { answer = result })
+      compare(answer.outcome, "unsupported")
+      verify(!panel.browsing)
+    }
+
+    // companion_browser_open on a portable host: answered, never opened.
+    function test_agent_request_without_browser_is_unsupported() {
+      const panel = createTemporaryObject(contentComponent, parent, {nativeWidgets: true})
+      const answers = []
+      panel.openBrowserFromAgent({requestId: "b", id: "one", url: "https://example.com/"},
+        function(result) { answers.push(result) })
+      compare(answers.length, 1)
+      compare(answers[0].outcome, "unsupported")
+      verify(!panel.browsing)
+      verify(!panel.browserStarted)
+      compare(findChild(panel, "panelBrowser"), null)
+      // A repeated request id is ignored rather than answered twice.
+      panel.openBrowserFromAgent({requestId: "b", id: "one", url: "https://example.com/"},
+        function(result) { answers.push(result) })
+      compare(answers.length, 1)
     }
   }
 }

@@ -188,6 +188,15 @@ Item {
     onInputFinished: (id, text, error) => panel.submitted(id, text, error)
     onToolPageReceived: message => panel.toolPageReceived(message)
     onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
+    browserHost: panel.browserAvailable
+    // The panel answers once, when the page loaded or failed, or after a
+    // bounded wait. It never shows or activates a hidden window for this.
+    onBrowserOpenRequested: message => {
+      panel.openBrowserFromAgent(message, function(result) {
+        client.answerBrowserOpen(message.requestId,
+          Object.assign({}, result, {panelVisible: root.host.opened}))
+      })
+    }
     onDraftRequested: message => {
       const result = panel.applyDraft(message)
       client.answerDraft(message.requestId, result)

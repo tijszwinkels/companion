@@ -40,6 +40,8 @@ import {
   type ClaudeCodeConversationSettings,
   type ClaudeCodeModelCatalog,
   type ClaudeCodeSettings,
+  type AgentBrowserHost,
+  type AgentBrowserOpenOutcome,
   type AgentDraftHost,
   type AgentDraftOutcome,
   type AgentMessage,
@@ -139,6 +141,8 @@ export class AgentSessions implements InspectableModule {
   readonly sessionTools: SessionToolService;
   // The desktop runtime owns UI connections and therefore unsent drafts.
   private draftHost?: AgentDraftHost;
+  // The desktop runtime also owns the native panel's built-in browser.
+  private browserHost?: AgentBrowserHost;
 
   /**
    * `directory` is the agents' working directory holding saved conversations
@@ -194,12 +198,18 @@ export class AgentSessions implements InspectableModule {
       close: (id, sender, signal) => this.closeFromAgent(id, sender, signal),
       send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
       draft: (request, signal) => this.draftFromAgent(request, signal),
+      browserOpen: (request, signal) => this.browserOpenFromAgent(request, signal),
     });
   }
 
   /** Install (or clear) the UI connection that can hold composer drafts. */
   setDraftHost(host: AgentDraftHost | undefined): void {
     this.draftHost = host;
+  }
+
+  /** Install (or clear) the route to the native panel's built-in browser. */
+  setBrowserHost(host: AgentBrowserHost | undefined): void {
+    this.browserHost = host;
   }
 
   private validateWidgetChanges(records: WidgetRecord[]): () => void {
@@ -1678,6 +1688,29 @@ export class AgentSessions implements InspectableModule {
       },
       signal,
     );
+  }
+
+  /**
+   * Forward a conversation's own request to show a web page. The service has
+   * already validated the address and the caller's live turn; the UI decides
+   * whether this conversation is the one the user is looking at.
+   */
+  private async browserOpenFromAgent(
+    request: { sessionId: string; url: string },
+    signal: AbortSignal,
+  ): Promise<AgentBrowserOpenOutcome> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) {
+      throw this.notOpen(request.sessionId);
+    }
+    if (session.closing || this.closed) {
+      return { outcome: 'not-selected', reason: 'The conversation is closing.' };
+    }
+    signal.throwIfAborted();
+    if (!this.browserHost) {
+      return { outcome: 'offline', reason: '' };
+    }
+    return this.browserHost(request, signal);
   }
 
   async idle(): Promise<void> {

@@ -19,6 +19,7 @@ TestCase {
   SignalSpy { id: choices; target: client; signalName: "choiceFinished" }
   SignalSpy { id: reveals; target: client; signalName: "revealRequested" }
   SignalSpy { id: drafts; target: client; signalName: "draftRequested" }
+  SignalSpy { id: browserOpens; target: client; signalName: "browserOpenRequested" }
 
   function session(id, turn) {
     return {id: id, title: id, status: "idle", completedTurnId: turn || "", messages: []}
@@ -39,6 +40,7 @@ TestCase {
     client.panelVisible = false
     client.keyboardFocused = false
     client.composerFocusId = ""
+    client.browserHost = false
     backend.connected = true
     backend.requests = []
     inputs.clear(); choices.clear(); reveals.clear(); utterances.clear()
@@ -72,7 +74,7 @@ TestCase {
     backend.requests = []
     client.choose("a", "revision", 1)
     compare(backend.requests[0], {action: "panel-state", id: "a", composerFocused: true, keyboardFocused: true, visible: true, navigationToken: client.sessions.navigationToken, draftHost: true,
-      incrementalSessions: true})
+      browserHost: false, incrementalSessions: true})
     compare(backend.requests[1], {action: "choose-agent", id: "a", revision: "revision", index: 1})
     backend.received({type: "result", action: "choose-agent"})
     compare(Array.from(choices.signalArguments[0]), ["a", "revision", 1, ""])
@@ -149,6 +151,25 @@ TestCase {
     compare(client.sessions.conversationId, "a")
     compare(reveals.count, 0)
   }
+  function test_browser_open_is_advertised_delegated_and_answered() {
+    snapshot([session("a")])
+    backend.requests = []
+    client.browserHost = true
+    tryVerify(function() {
+      return backend.requests.some(function(request) { return request.action === "panel-state" && request.browserHost === true })
+    })
+    browserOpens.clear()
+    backend.received({type: "agent-browser-open", requestId: "r1", id: "a", url: "https://example.com/"})
+    compare(browserOpens.count, 1)
+    compare(browserOpens.signalArguments[0][0].url, "https://example.com/")
+    backend.requests = []
+    client.answerBrowserOpen("r1", {outcome: "loaded", reason: "", url: "https://example.com/",
+      title: "Page text", panelVisible: false, extra: "dropped"})
+    compare(backend.requests[0], {action: "agent-browser-open-result", requestId: "r1", outcome: "loaded",
+      reason: "", url: "https://example.com/", panelVisible: false})
+    client.browserHost = false
+  }
+
   function test_session_less_state_retains_conversations_controls_and_navigation() {
     // Routine state after the incrementalSessions report omits conversations.
     backend.received({type: "state", protocol: 1, ready: true,

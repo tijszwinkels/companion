@@ -96,6 +96,24 @@ TestCase {
     tryVerify(function() { return browser.notice.indexOf(fragment) >= 0 }, 5000,
       "notice containing " + fragment + ", got: " + browser.notice)
   }
+  // The dialog's buttons are created when it opens; click once laid out.
+  function clickDialog(label) {
+    const button = child("panelBrowserDialog-" + label)
+    tryVerify(function() { return button.visible && button.width > 0 && child("panelBrowserDialog").visible })
+    waitForRendering(button)
+    mouseClick(button)
+  }
+  // Chromium's leave-page question needs a real user gesture on the page;
+  // repeat the click until the page has registered one.
+  function activatePage() {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      waitForRendering(browser.page)
+      mouseClick(browser.page, 100, 100)
+      if (run("navigator.userActivation.hasBeenActive") === true) return
+      wait(100)
+    }
+    fail("the page never registered a user gesture")
+  }
   function waitHidden() {
     tryCompare(browser, "controlsShown", false, 3000)
   }
@@ -238,7 +256,7 @@ TestCase {
     verify(child("panelBrowserDialog").visible)
     compare(child("panelBrowserDialogMessage").text, "hello from page")
     tryVerify(function() { return child("panelBrowserDialog").activeFocus }, 2000, "a page-focused dialog takes focus")
-    mouseClick(child("panelBrowserDialog-OK"))
+    clickDialog("OK")
     tryCompare(browser.page, "title", "alert done")
     tryVerify(function() { return browser.page.activeFocus }, 2000, "focus returns to the page")
 
@@ -248,7 +266,7 @@ TestCase {
     tryCompare(browser.page, "title", "confirm false")
     run("setTimeout(() => { document.title = 'confirm ' + confirm('Delete everything?') }, 0)")
     tryVerify(function() { return browser.pendingDialog !== null })
-    mouseClick(child("panelBrowserDialog-OK"))
+    clickDialog("OK")
     tryCompare(browser.page, "title", "confirm true")
 
     run("setTimeout(() => { document.title = 'prompt ' + prompt('Name?', 'default') }, 0)")
@@ -261,7 +279,7 @@ TestCase {
     tryCompare(browser.page, "title", "prompt Wren")
     run("setTimeout(() => { document.title = 'prompt ' + prompt('Name?') }, 0)")
     tryVerify(function() { return browser.pendingDialog !== null })
-    mouseClick(child("panelBrowserDialog-Cancel"))
+    clickDialog("Cancel")
     tryCompare(browser.page, "title", "prompt null")
 
     run("Notification.requestPermission().then((result) => { document.title = 'notify ' + result })")
@@ -353,16 +371,16 @@ TestCase {
     load("/leave")
     waitHidden()
     // Chromium asks before leaving only after a real user gesture on the page.
-    mouseClick(browser.page, 100, 100)
+    activatePage()
     verify(browser.openAddress(origin + "/"))
     tryVerify(function() { return browser.pendingDialog !== null }, 5000)
-    mouseClick(child("panelBrowserDialog-Stay"))
+    clickDialog("Stay")
     wait(500)
     compare(browser.pageUrl, origin + "/leave")
     navigated(function() {
       verify(browser.openAddress(origin + "/"))
       tryVerify(function() { return browser.pendingDialog !== null }, 5000)
-      mouseClick(child("panelBrowserDialog-Leave"))
+      clickDialog("Leave")
     }, "/")
 
     // A navigation replaces the asking document; its dialog lapses.

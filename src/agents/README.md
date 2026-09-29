@@ -305,6 +305,19 @@ from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 | `companion_session_close`  | `id`                                                                                                              | Closes an open tab, saving it to Previous sessions; the caller's own tab closes after its turn.                    |
 | `companion_session_send`   | `id`, `text` (1–4000)                                                                                             | Follow-up to another open tab; starts its turn or queues behind earlier messages.                                  |
 | `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false)                   | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.                       |
+| `companion_browser_open`   | `url` (absolute `https://`, or `http://` on loopback; ≤2048)                                                      | Shows the page in the native panel's built-in browser, only for the caller's own, currently selected conversation. |
+
+`companion_browser_open` is offered to Pi and, through the MCP bridge, to
+Claude Code with the same schema; it uses the same lease, receipts and action
+budget. It is not available to external (CLI) callers, which have no
+conversation of their own. The service checks the address before asking the
+UI; the desktop runtime forwards a one-time `agent-browser-open` event to the
+native window that advertised `browserHost`, and the panel answers after the
+page loaded or failed, or after about 8 seconds with `loading`. Results report
+what the user now sees (`loaded`, `loading`, `load-failed` with the
+reason, `superseded`, and `panelVisible`); refusals are `not-selected`, `busy`,
+`unsupported`, `refused`, `offline` and `unconfirmed`. The page's content never
+returns to the agent. See [panel browser](../../docs/panel-browser.md#opening-a-page-from-an-agent).
 
 `companion_sessions` matches titles only. Its prompt guidelines also tell the
 agent how to search contents: grep `.companion-sessions/*.json` in the agent

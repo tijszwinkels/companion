@@ -112,6 +112,54 @@ viewers, print and compose links. Some identity providers refuse embedded
 browsers altogether; Google sign-in in particular is not promised to work.
 Nothing spoofs the user agent or copies credentials to work around this.
 
+## Opening a page from an agent
+
+An agent can show a page without the user clicking **Browser** or typing an
+address: `companion_browser_open({url})`, available to Pi and Claude Code
+conversations through their turn's session tool lease (see the
+[agent contracts](../src/agents/README.md#session-lifecycle-tools)). It only
+presents the page. The agent cannot read, click, type in or screenshot it, and
+nothing from the page is returned except the address it ends on (no content,
+not even its title).
+
+- **Addresses:** absolute `https://` URLs, or `http://` on loopback, at most
+  2048 characters. The service checks the address, the panel checks it again,
+  and every navigation and redirect still follows the rules above.
+- **Who may open:** only a conversation's own running turn, and only while that
+  conversation is the one selected in the panel (Previous sessions or Activity
+  do not count). A background, closed or finished conversation, an external
+  CLI caller or a phone panel cannot change what the user sees.
+- **The user comes first:** while they are typing in the address field or a
+  page dialog awaits their answer, the request is refused as `busy`. An address
+  they edited but left stays in the field; the strip shows the real site.
+- **Presentation:** the browser replaces the chat as if **Browser** had been
+  clicked, with the controls hidden and the address field not focused. A hidden
+  (frozen) page is reused and woken. The window is never shown or activated. In
+  an already focused window, keyboard focus moves to the page instead of the
+  hidden composer. Drafts, pins and widgets are kept as usual.
+- **Answer:** the panel reports once, after the page loaded (`loaded` with its
+  address) or failed (`load-failed` with the load error, certificate or policy
+  notice), or after about 8 seconds (`loading`). A newer request, or the user's
+  own navigation or Close, answers `superseded`. `panelVisible` tells whether
+  the panel was showing. Confirmed non-changes are `not-selected`, `busy`,
+  `unsupported` (no native browser, or Qt WebEngine older than 6.9) and
+  `refused`. `offline` means no panel is connected. `unconfirmed` means the
+  panel did not answer within 15 seconds or disconnected; the agent is told not
+  to retry.
+- **No replay:** each call is one `agent-browser-open` event to one native
+  window. It is not stored in snapshots or re-sent on reconnect, and a repeated
+  delivery of the same tool call returns the original reply without asking the
+  panel again. A new call may navigate again. The calls count toward the turn's
+  six session actions.
+
+Protocol (listener ↔ native window, desktop-only): the window reports
+`browserHost: true` in `panel-state`. The listener sends
+`{type: "agent-browser-open", requestId, id, url}` to exactly one such window,
+and only that window may answer
+`{action: "agent-browser-open-result", requestId, outcome, reason, url?, panelVisible?}`;
+any other field (such as page text) is dropped.
+A late, foreign, malformed or remote answer is refused.
+
 ## Tests
 
 - `test/panel/tst_panel_browser_policy.qml` (plain `qmltestrunner`): typed
@@ -144,6 +192,23 @@ Nothing spoofs the user agent or copies credentials to work around this.
   A snapshot that removes the selected conversation leaves keyboard focus in
   the address field or the page.
   The widget keeps its separate off-the-record profile.
+- `test/unit/browser-open-tool.test.ts` (in `npm test`): identical Pi and
+  Claude schemas, and the real lease, service and desktop socket with a
+  synthetic panel. It covers address checks before any panel is asked, loopback
+  http, panels without a browser, answers only from the asked panel, late,
+  foreign and malformed answers, receipts, the action budget, withdrawal,
+  disconnect, reconnect without replay, remote panels, external callers and
+  ended turns.
+- `test/window/browser-open-tool.test.ts` (in `npm run test:window`):
+  - The real window body receives requests and answers them: background and
+    unknown callers, controls hidden and chat retained, reuse of a frozen page,
+    busy while typing or during a page dialog, an edited address kept, refusals,
+    connection and redirect failures, the bounded wait, supersession, a hidden
+    window not shown, and ignored repeats.
+  - End to end, a real tool call runs through the lease, the listener and the
+    real `companion-ui` executable. The selected conversation loads a loopback
+    page, a background conversation is refused, and the page also opens with
+    the window hidden without showing it.
 - `test/panel/tst_panel_browser_entry.qml`: a portable host never shows the
   entry or loads the browser, even with the native-widget marker set; a
   browser that fails to load (as on Qt 6.8) shows the version message.

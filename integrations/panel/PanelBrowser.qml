@@ -80,6 +80,11 @@ FocusScope {
   property var pendingDialog: null
   property string pendingDialogHost: ""
   property bool pendingDialogFocus: false
+  // An agent's open request (companion_browser_open) waiting for its page:
+  // {answer, url, started}. Answered exactly once: loaded, load-failed, still
+  // loading after agentOpenWait, or superseded by the user or a newer request.
+  property var agentOpen: null
+  property int agentOpenWait: 8000
 
   signal returnRequested()
 
@@ -111,6 +116,11 @@ FocusScope {
     onTriggered: if (!root.controlsWanted) root.controlsShown = false
   }
   Timer {
+    id: agentOpenTimeout
+    interval: root.agentOpenWait
+    onTriggered: root.finishAgentOpen({outcome: "loading", reason: "The page was still loading."})
+  }
+  Timer {
     id: noticeExpiry
     interval: root.noticeDuration
     onTriggered: root.notice = ""
@@ -137,6 +147,64 @@ FocusScope {
     noticeExpiry.restart()
   }
 
+  // Why an agent must not navigate right now, or "" when it may. The user's
+  // own interaction wins: a page question awaiting an answer, or an address
+  // being typed in the visible toolbar.
+  function userBusyReason() {
+    if (root.pendingDialog) return "A page dialog is waiting for the user's answer."
+    if (root.shown && addressField.activeFocus) return "The user is typing an address."
+    return ""
+  }
+
+  // Navigate for an agent. Unlike openAddress, this moves no keyboard focus,
+  // reveals no controls and leaves an address the user is editing untouched
+  // (it stays in the field; the strip shows the real site). `answer` receives
+  // one result. Returns whether a navigation started.
+  function openFromAgent(url, answer) {
+    const result = Policy.addressFromInput(url)
+    if (result.error !== "") {
+      answer({outcome: "refused", reason: result.error})
+      return false
+    }
+    root.finishAgentOpen({outcome: "superseded", reason: "A newer request replaced it."})
+    root.loadError = ""
+    if (!root.profile) root.profile = profilePrototype.instance()
+    pageLoader.active = true
+    root.agentOpen = {answer: answer, url: result.url, started: false}
+    agentOpenTimeout.restart()
+    root.page.url = result.url
+    if (!addressField.edited) addressField.text = result.url
+    return true
+  }
+
+  function finishAgentOpen(result) {
+    const pending = root.agentOpen
+    if (!pending) return
+    root.agentOpen = null
+    agentOpenTimeout.stop()
+    if (result.url === undefined && root.pageUrl !== "" && root.pageUrl !== "about:blank") {
+      result.url = root.pageUrl
+    }
+    pending.answer(result)
+  }
+
+  // Whether a load event belongs to the pending agent open. Qt reports no new
+  // LoadStarted when a navigation replaces one still in progress, so an event
+  // for the requested address itself counts too. An earlier, aborted load of
+  // another address never does.
+  function agentLoad(url) {
+    if (!root.agentOpen) return false
+    if (root.agentOpen.started) return true
+    const strip = function(text) { return String(text).replace(/\/$/, "") }
+    return strip(url) === strip(root.agentOpen.url)
+  }
+
+  // Page text for a failed agent open: the load error and/or the latest notice.
+  function agentFailure(fallback) {
+    const parts = [root.loadError, root.notice].filter(function(part) { return part !== "" })
+    return parts.length > 0 ? parts.join(" ") : fallback
+  }
+
   // Load typed text. Refused text stays in the field with its reason, so the
   // user can correct it. Returns whether a navigation started.
   function openAddress(text) {
@@ -145,6 +213,7 @@ FocusScope {
       root.notify(result.error)
       return false
     }
+    root.finishAgentOpen({outcome: "superseded", reason: "The user opened another address."})
     root.loadError = ""
     addressField.edited = false
     if (!root.profile) root.profile = profilePrototype.instance()
@@ -214,6 +283,7 @@ FocusScope {
   // Close unloads the page (the profile keeps cookies and site data); its
   // address stays in the field for reopening. Both actions return to chat.
   function closePage() {
+    root.finishAgentOpen({outcome: "superseded", reason: "The user closed the page."})
     root.answerDialog(false)
     pageLoader.active = false
     root.loadError = ""
@@ -221,6 +291,9 @@ FocusScope {
   }
 
   function trigger(action) {
+    if (action === "back" || action === "forward" || action === "reload") {
+      root.finishAgentOpen({outcome: "superseded", reason: "The user navigated in the browser."})
+    }
     if (action === "back" && root.page) root.page.goBack()
     else if (action === "forward" && root.page) root.page.goForward()
     else if (action === "reload" && root.page) {
@@ -326,6 +399,7 @@ FocusScope {
         if (decision.allowed) return
         request.reject()
         root.notify(decision.reason)
+        root.finishAgentOpen({outcome: "load-failed", reason: decision.reason})
       }
       onNewWindowRequested: request => {
         // Not calling openIn() discards the new window.
@@ -387,14 +461,28 @@ FocusScope {
           // A new document replaces the one that asked; its question lapses.
           root.answerDialog(false)
           root.loadError = ""
+          if (root.agentOpen) root.agentOpen.started = true
+        } else if (info.status === WebEngineView.LoadSucceededStatus) {
+          if (root.agentLoad(info.url)) {
+            // Only the address; page content (even the title) never goes to the agent.
+            root.finishAgentOpen({outcome: "loaded", reason: "", url: view.url.toString()})
+          }
         } else if (info.status === WebEngineView.LoadFailedStatus && info.errorCode !== -3) {
           // -3 is Chromium's ERR_ABORTED: a stopped or refused navigation,
           // already explained by its own notice.
           const target = Policy.displayHost(info.url.toString()) || "the page"
           root.loadError = "Could not open " + target + ": " + info.errorString
+          if (root.agentLoad(info.url)) {
+            root.finishAgentOpen({outcome: "load-failed", reason: root.agentFailure(info.errorString)})
+          }
+        } else if (info.status === WebEngineView.LoadFailedStatus && root.agentLoad(info.url)) {
+          // Stopped or refused (e.g. a redirect Chromium dropped): what the
+          // user sees is the previous page or an empty one.
+          root.finishAgentOpen({outcome: "load-failed", reason: root.agentFailure("The page load was stopped.")})
         }
       }
       onRenderProcessTerminated: (status, exitCode) => {
+        root.finishAgentOpen({outcome: "load-failed", reason: "The page stopped unexpectedly."})
         root.answerDialog(false)
         root.loadError = "The page stopped unexpectedly. Reload to try again."
       }

@@ -264,6 +264,57 @@ Item {
     })
   }
 
+  // companion_browser_open: an agent's own turn asks to show a web page.
+  // `request` is {requestId, id (calling conversation), url}; `answer` must be
+  // called exactly once with {outcome, reason, url?, title?}. It opens only for
+  // the conversation the user has selected here, never while they are typing
+  // an address or answering a page dialog, and it never shows the window or
+  // moves keyboard focus to the address field.
+  property var agentBrowserRequests: ({})
+  function openBrowserFromAgent(request, answer) {
+    // The listener sends each request once; ignore an impossible repeat.
+    if (typeof request.requestId !== "string" || root.agentBrowserRequests[request.requestId]) return
+    const seen = Object.assign({}, root.agentBrowserRequests)
+    seen[request.requestId] = true
+    const keys = Object.keys(seen)
+    if (keys.length > 32) delete seen[keys[0]]
+    root.agentBrowserRequests = seen
+
+    if (!root.browserAvailable) {
+      answer({outcome: "unsupported", reason: "This Companion panel has no built-in browser."})
+      return
+    }
+    if (typeof request.id !== "string" || typeof request.url !== "string"
+      || root.showingPrevious || root.selectedSession === null || root.selectedSessionId !== request.id) {
+      answer({outcome: "not-selected",
+        reason: "The user is looking at another page or conversation in Companion."})
+      return
+    }
+    root.browserStarted = true
+    const browser = browserLoader.item
+    if (!browser) {
+      answer({outcome: "unsupported", reason: "The panel browser could not load here (it needs Qt WebEngine 6.9 or newer)."})
+      return
+    }
+    const busy = browser.userBusyReason()
+    if (busy !== "") {
+      answer({outcome: "busy", reason: busy})
+      return
+    }
+    // Show the browser first, so the page is awake (not frozen) when it loads.
+    const wasBrowsing = root.browsing
+    root.browserOpen = true
+    if (!browser.openFromAgent(request.url, answer)) {
+      root.browserOpen = wasBrowsing
+      return
+    }
+    // Within an already focused window, typing continues in the page rather
+    // than in the now hidden composer. An inactive window is left alone.
+    if (!wasBrowsing && root.keyboardFocused) Qt.callLater(function() {
+      if (root.browsing && browserLoader.item && browserLoader.item.page) browserLoader.item.page.forceActiveFocus()
+    })
+  }
+
   // Return from the browser to the page it covered, keeping the browser page.
   function closeBrowser() {
     if (!root.browserOpen) return
