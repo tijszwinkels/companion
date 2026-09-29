@@ -9,10 +9,12 @@
  * to be framed therefore still work.
  *
  * The list is fetched when the phone comes online and whenever the sheet is
- * opened; nothing here is cached across sign-out.
+ * opened. It belongs to one pairing (gateway address and device credential):
+ * signing out or pairing again clears it, and an answer to a request made
+ * under an earlier pairing is discarded when it arrives.
  */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { gatewayUrl } from '../connection.ts';
 import { useAppState, useStore } from '../hooks.ts';
@@ -39,7 +41,22 @@ export function usePhoneApps(): { apps: PhoneApp[]; refresh(): Promise<void> } {
   const [apps, setApps] = useState<PhoneApp[]>([]);
   const online = state.connection.status === 'online';
 
+  // Which pairing the list belongs to. Every change (sign-out, pairing again,
+  // another computer) starts a new generation and clears the list before the
+  // browser paints; a request remembers the generation it was made under.
+  const pairing =
+    state.connection.status === 'unpaired'
+      ? ''
+      : `${store.connection.server}\n${store.connection.token}`;
+  const generation = useRef(0);
+
+  useLayoutEffect(() => {
+    generation.current += 1;
+    setApps([]);
+  }, [pairing]);
+
   async function refresh(): Promise<void> {
+    const requestGeneration = generation.current;
     const response = await fetch(gatewayUrl('api/apps', store.connection.server), {
       headers: { Authorization: `Bearer ${store.connection.token}` },
       credentials: 'omit',
@@ -50,6 +67,11 @@ export function usePhoneApps(): { apps: PhoneApp[]; refresh(): Promise<void> } {
     }
 
     const body = (await response.json()) as { apps?: PhoneApp[] };
+
+    // Answered for an earlier pairing: that list is not this pairing's.
+    if (requestGeneration !== generation.current) {
+      return;
+    }
     setApps(Array.isArray(body.apps) ? body.apps : []);
   }
 
@@ -59,12 +81,6 @@ export function usePhoneApps(): { apps: PhoneApp[]; refresh(): Promise<void> } {
     }
     refresh().catch(() => {});
   }, [online]);
-
-  useEffect(() => {
-    if (state.connection.status === 'unpaired') {
-      setApps([]);
-    }
-  }, [state.connection.status]);
 
   return { apps, refresh };
 }

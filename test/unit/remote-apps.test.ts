@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import test from 'node:test';
 
 import { AppRegistry } from '../../src/apps/registry.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
-import { freePort, remoteFixture } from '../remote-fixture.ts';
+import { remoteFixture } from '../remote-fixture.ts';
 
 /**
  * The phone gateway's app list/open endpoints with a real listener control
@@ -30,23 +31,26 @@ test('the gateway lists and opens only phone-enabled apps for paired devices', a
   await registry.update('budget', { phoneAccess: true });
   await registry.add({ id: 'hidden', name: 'Hidden', upstream: 'http://127.0.0.1:9' });
 
-  const appsPort = await freePort();
-  const budgetOrigin = `http://budget.localhost:${appsPort}`;
+  // The app proxy binds port 0; its public origins use a fixed synthetic port
+  // that only appears in Host headers, so no port is reserved in advance.
+  const publicPort = 8790;
+  const budgetOrigin = `http://budget.localhost:${publicPort}`;
   const fixture = await remoteFixture({
     gateway: {
       apps: {
         host: '127.0.0.1',
-        port: appsPort,
+        port: 0,
         origins: [
           ['budget', budgetOrigin],
-          ['hidden', `http://hidden.localhost:${appsPort}`],
+          ['hidden', `http://hidden.localhost:${publicPort}`],
         ],
         registryDirectory: join(root, 'apps'),
       },
     },
   });
   context.after(() => fixture.close());
-  assert.equal(fixture.gateway.apps?.port, appsPort);
+  const appsPort = fixture.gateway.apps!.port;
+  assert.notEqual(appsPort, 0);
 
   const { token } = await fixture.pair();
   const bearer = { Authorization: `Bearer ${token}` };
@@ -226,14 +230,13 @@ test('a gateway that fails to start releases its app proxy and keeps the origina
     { name: 'occupied port', port: occupiedPort, error: /EADDRINUSE/ },
     {
       name: 'unreadable TLS material',
-      port: await freePort(),
+      port: 0,
       tls: { cert: 'not a certificate', key: 'not a key' },
       error: /PEM|certificate|key|asn1|ssl/i,
     },
   ];
 
   for (const failure of failures) {
-    const appsPort = await freePort();
     // Let servers closed by earlier tests finish closing before the baseline.
     await new Promise((resolve) => setTimeout(resolve, 50));
     const before = ownedHandles();
@@ -250,19 +253,91 @@ test('a gateway that fails to start releases its app proxy and keeps the origina
       log: () => {},
       apps: {
         host: '127.0.0.1',
-        port: appsPort,
-        origins: [['budget', `http://budget.localhost:${appsPort}`]],
+        port: 0,
+        origins: [['budget', 'http://budget.localhost:8790']],
         registryDirectory: join(root, 'apps'),
       },
     });
 
-    await assert.rejects(gateway.start(), failure.error, failure.name);
+    // Record the port the app proxy really binds (it asks for port 0).
+    const apps = gateway.apps!;
+    const startApps = apps.start.bind(apps);
+    let boundAppsPort = 0;
+    apps.start = async () => {
+      await startApps();
+      boundAppsPort = apps.port;
+    };
 
-    assert.equal(await listening(appsPort), false, `${failure.name}: app proxy released`);
+    await assert.rejects(gateway.start(), failure.error, failure.name);
+    assert.notEqual(boundAppsPort, 0, `${failure.name}: app proxy had started`);
+    assert.equal(await listening(boundAppsPort), false, `${failure.name}: app port closed`);
+
+    // The app proxy bound a port and then released it again.
+    assert.equal(gateway.apps!.port, 0, `${failure.name}: app proxy released`);
     assert.deepEqual(ownedHandles(), before, `${failure.name}: no leaked servers or timers`);
 
     // Shutdown after a failed start is safe and changes nothing.
     await gateway.close();
     assert.deepEqual(ownedHandles(), before);
   }
+});
+
+test('companion-remote serve exits with the original error when its port is taken', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-remote-apps-cli-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+
+  const blocker = createServer();
+  await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+  context.after(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
+  const occupiedPort = (blocker.address() as { port: number }).port;
+
+  // The CLI needs a concrete app proxy port. If another process happened to
+  // take it first, startup fails there instead; either way the process must
+  // report the error and exit by itself rather than keep a listener alive.
+  const spare = createServer();
+  await new Promise<void>((resolve) => spare.listen(0, '127.0.0.1', resolve));
+  const appsPort = (spare.address() as { port: number }).port;
+  await new Promise<void>((resolve) => spare.close(() => resolve()));
+
+  const executable = join(import.meta.dirname, '..', '..', 'bin', 'companion-remote');
+  const argumentsList = [
+    'serve',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    String(occupiedPort),
+    '--state-directory',
+    join(root, 'state'),
+    '--sessions-directory',
+    join(root, 'sessions'),
+    '--app-directory',
+    join(root, 'static'),
+    '--control-socket',
+    join(root, 'no-listener.sock'),
+    '--apps-listen',
+    `127.0.0.1:${appsPort}`,
+    '--app-origin',
+    'alpha=http://alpha.localhost:8790',
+    '--apps-directory',
+    join(root, 'apps'),
+  ];
+
+  const outcome = await new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stderr: string;
+  }>((resolve) => {
+    const child = execFile(
+      executable,
+      argumentsList,
+      { timeout: 20_000 },
+      (_error, _stdout, stderr) =>
+        resolve({ code: child.exitCode, signal: child.signalCode, stderr }),
+    );
+  });
+
+  // Exited on its own (not killed by the timeout) with the original diagnostic.
+  assert.equal(outcome.signal, null);
+  assert.equal(outcome.code, 1);
+  assert.match(outcome.stderr, /EADDRINUSE/);
 });

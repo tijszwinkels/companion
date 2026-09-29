@@ -106,7 +106,16 @@ export async function remoteFixture(
     revocationCheckMilliseconds: 50,
     ...options.gateway,
   });
-  await gateway.start();
+  try {
+    await gateway.start();
+  } catch (error) {
+    // A fixture that cannot start must not leave the listener socket or its
+    // temporary directory behind to keep the test process alive.
+    await gateway.close();
+    await desktop.close();
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
 
   const devices = new DeviceStore(stateDirectory);
 

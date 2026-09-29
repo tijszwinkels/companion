@@ -262,8 +262,8 @@ test(
       log: () => {},
       sweepMilliseconds: 60_000,
     });
-    await proxy.start();
     context.after(() => proxy.close());
+    await proxy.start();
 
     const phoneProfile = await mkdtemp(join(root, 'phone-profile-'));
     const phoneBrowser = browser(['--user-data-dir=' + phoneProfile, '--no-first-run']);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import {
   createServer as createHttpServer,
   request as httpRequest,
@@ -371,14 +371,6 @@ async function syntheticBackend() {
   };
 }
 
-async function freePort(): Promise<number> {
-  const server = createNetServer();
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
-
 interface Reply {
   status: number;
   headers: IncomingHttpHeaders;
@@ -439,14 +431,32 @@ function rawRequest(port: number, text: string): Promise<string> {
   });
 }
 
+/**
+ * Public app origins use this fixed synthetic port, while the proxy itself
+ * binds port 0. Requests go to the real socket with these Host headers, so no
+ * port is reserved and released in advance (which another test could grab in
+ * between). The number is never bound by these tests.
+ */
+const publicPort = 8790;
+
 async function proxyFixture(
-  context: { after(callback: () => Promise<void>): void },
-  options: { maximumRequestBodyBytes?: number; grantLifetimeMilliseconds?: number } = {},
+  context: { after(callback: () => Promise<unknown>): void },
+  options: {
+    maximumRequestBodyBytes?: number;
+    grantLifetimeMilliseconds?: number;
+    /** Bind port; only the forced-failure regression overrides the default 0. */
+    bindPort?: number;
+  } = {},
 ) {
+  // Each resource registers its cleanup as soon as it exists, before anything
+  // that can throw, so a failed setup never leaves listeners or files behind.
   const directory = await mkdtemp(join(tmpdir(), 'companion-apps-proxy-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+
   const budgetBackend = await syntheticBackend();
+  context.after(() => budgetBackend.close());
   const notesBackend = await syntheticBackend();
-  const port = await freePort();
+  context.after(() => notesBackend.close());
 
   const registry = new AppRegistry(join(directory, 'apps'));
   await registry.add({
@@ -465,16 +475,16 @@ async function proxyFixture(
 
   const paired = new Set(['phone-1', 'phone-2']);
   const deviceToken = 'D'.repeat(43);
-  const budgetOrigin = `http://budget.localhost:${port}`;
-  const notesOrigin = `http://notes.localhost:${port}`;
+  const budgetOrigin = `http://budget.localhost:${publicPort}`;
+  const notesOrigin = `http://notes.localhost:${publicPort}`;
 
   const proxy = new AppProxy({
     host: '127.0.0.1',
-    port,
+    port: options.bindPort ?? 0,
     appOrigins: [
       ['budget', budgetOrigin],
       ['notes', notesOrigin],
-      ['private', `http://private.localhost:${port}`],
+      ['private', `http://private.localhost:${publicPort}`],
     ],
     gatewayOrigins: ['http://127.0.0.1:8787'],
     sources: {
@@ -485,19 +495,18 @@ async function proxyFixture(
     log: () => {},
     // Sweeps are triggered explicitly in these tests.
     sweepMilliseconds: 60_000,
-    ...options,
+    maximumRequestBodyBytes: options.maximumRequestBodyBytes,
+    grantLifetimeMilliseconds: options.grantLifetimeMilliseconds,
   });
+  // close() is safe before, after or without a successful start.
+  context.after(() => proxy.close());
   await proxy.start();
 
-  context.after(async () => {
-    await proxy.close();
-    await budgetBackend.close();
-    await notesBackend.close();
-    await rm(directory, { recursive: true, force: true });
-  });
+  /** The real listening port; requests carry the synthetic public Host. */
+  const port = proxy.port;
 
-  const budgetHost = `budget.localhost:${port}`;
-  const notesHost = `notes.localhost:${port}`;
+  const budgetHost = `budget.localhost:${publicPort}`;
+  const notesHost = `notes.localhost:${publicPort}`;
 
   /** Open an app as a paired phone would; returns its session cookie header. */
   async function openApp(deviceId = 'phone-1', appId = 'budget'): Promise<string> {
@@ -525,6 +534,37 @@ async function proxyFixture(
     openApp,
   };
 }
+
+/** Listening servers in this process, after pending closes have settled. */
+async function settledServerCount(): Promise<number> {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return process.getActiveResourcesInfo().filter((kind) => kind === 'TCPServerWrap').length;
+}
+
+async function fixtureDirectories(): Promise<string[]> {
+  const entries = await readdir(tmpdir());
+  return entries.filter((name) => name.startsWith('companion-apps-proxy-')).sort();
+}
+
+test('a fixture whose proxy cannot start releases everything it acquired', async (context) => {
+  // Hold a port so the fixture's proxy deterministically fails to bind it.
+  const blocker = createNetServer();
+  await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+  context.after(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
+  const blockedPort = (blocker.address() as { port: number }).port;
+
+  const serversBefore = await settledServerCount();
+  const directoriesBefore = await fixtureDirectories();
+
+  await context.test('setup on an occupied port', async (setup) => {
+    await assert.rejects(proxyFixture(setup, { bindPort: blockedPort }), /EADDRINUSE/);
+  });
+
+  // The subtest's cleanup hooks have run: both synthetic backends are closed
+  // and the temporary directory is gone, so nothing keeps this file alive.
+  assert.equal(await settledServerCount(), serversBefore);
+  assert.deepEqual(await fixtureDirectories(), directoriesBefore);
+});
 
 test('grants are single-use, app-bound, short-lived and become an HttpOnly Strict cookie', async (context) => {
   const fixture = await proxyFixture(context, { grantLifetimeMilliseconds: 300 });
@@ -1020,7 +1060,6 @@ test('an unreadable registry ends every session instead of continuing', async (c
   context.after(() => rm(directory, { recursive: true, force: true }));
   const backend = await syntheticBackend();
   context.after(() => backend.close());
-  const port = await freePort();
 
   const registry = new AppRegistry(directory);
   await registry.add({
@@ -1033,8 +1072,8 @@ test('an unreadable registry ends every session instead of continuing', async (c
   let broken = false;
   const proxy = new AppProxy({
     host: '127.0.0.1',
-    port,
-    appOrigins: [['budget', `http://budget.localhost:${port}`]],
+    port: 0,
+    appOrigins: [['budget', `http://budget.localhost:${publicPort}`]],
     sources: {
       apps: async () => {
         if (broken) {
@@ -1047,12 +1086,12 @@ test('an unreadable registry ends every session instead of continuing', async (c
     log: () => {},
     sweepMilliseconds: 60_000,
   });
-  await proxy.start();
   context.after(() => proxy.close());
+  await proxy.start();
 
   const { url } = await proxy.openForDevice('phone-1', 'budget');
   const parsed = new URL(url);
-  await send(port, { host: parsed.host, path: parsed.pathname + parsed.search });
+  await send(proxy.port, { host: parsed.host, path: parsed.pathname + parsed.search });
   assert.equal(proxy.sessionCount, 1);
 
   broken = true;
