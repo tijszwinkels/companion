@@ -259,6 +259,11 @@ test('a gateway that fails to start releases its app proxy and keeps the origina
       },
     });
 
+    // Registered before start: if a rollback ever regresses and an assertion
+    // below throws, the app proxy is still closed and the file cannot hang.
+    // close() is safe to repeat, so the explicit close further down stays.
+    context.after(() => gateway.close());
+
     // Record the port the app proxy really binds (it asks for port 0).
     const apps = gateway.apps!;
     const startApps = apps.start.bind(apps);
