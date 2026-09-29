@@ -201,6 +201,8 @@ Item {
       host.panel.intents = legacy
       const controls = findChild(host, "intentControls")
       compare(controls.separateModes, false)
+      compare(findChild(findChild(controls, "intent-SEND_TEXT_TO_APPLICATION"), "intentModeState").text, "● On",
+        "Older listeners' combined enabled flag still labels the mode")
       let requests = 0
       host.panel.intentEnabledRequested.connect(function() { requests++ })
       const chip = findChild(controls, "intent-SEND_TEXT_TO_APPLICATION")

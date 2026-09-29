@@ -187,6 +187,7 @@ Item {
       // spacing applies only between rows. Constant, so the sections above do
       // not shift when the first card replaces the empty-state row.
       bottomPadding: 12 * root.unit
+      Component.onCompleted: activityScroll.anchorItems = [listeningSection].concat(intentControls.sections, [historySection])
 
       CollapsibleSection {
         id: listeningSection
@@ -230,6 +231,7 @@ Item {
       }
 
       IntentControls {
+        id: intentControls
         objectName: "intentControls"
         width: parent.width
         intents: root.intents

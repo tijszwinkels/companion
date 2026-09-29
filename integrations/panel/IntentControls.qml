@@ -69,6 +69,10 @@ Item {
     return labels;
   }
 
+  // Page sections, top to bottom, that keep their place on screen while
+  // sections around them fold or change size (see ActivityHistoryView).
+  readonly property var sections: [voiceSection, intentionsSection]
+
   implicitHeight: contents.height
   height: implicitHeight
 
@@ -78,6 +82,7 @@ Item {
     spacing: 16 * root.unit
 
     CollapsibleSection {
+      id: voiceSection
       objectName: "voiceSection"
       width: parent.width
       title: "Voice shortcuts"
@@ -131,6 +136,7 @@ Item {
     }
 
     CollapsibleSection {
+      id: intentionsSection
       objectName: "intentionsSection"
       width: parent.width
       title: "Intentions"
@@ -331,7 +337,11 @@ Item {
     required property var intent
     required property string mode
     readonly property bool inference: mode === "inference"
-    readonly property bool routeEnabled: inference ? intent.inferenceEnabled === true : intent.shortcutEnabled === true
+    // Older listeners only report the combined `enabled` summary.
+    readonly property bool routeEnabled: {
+      const state = inference ? intent.inferenceEnabled : intent.shortcutEnabled
+      return state === undefined ? intent.enabled === true : state === true
+    }
     readonly property bool available: inference ? intent.inferenceAvailable : intent.prefixAvailable
     readonly property bool active: root.online && !root.paused && routeEnabled && available
     // Switched on but waiting for a conversation: keep the mode's color, softer

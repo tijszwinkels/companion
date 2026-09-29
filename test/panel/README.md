@@ -221,7 +221,11 @@ stops at both ends with Listening and the keyboard help reachable. The history i
 the page's only list, so a 400-row history still creates fewer than 40 cards.
 They also cover short/tall and narrow/wide surfaces at 100–200% zoom, the Activity
 draft and focus during scrolling, new rows while reading mid-history, and folding
-History or Listening without losing the reader's place. Previews are
+History or Listening without losing the reader's place. With every registered
+activity in a short panel, a real click folds and unfolds each page section
+(Listening, Voice shortcuts, Intentions, History) with empty and populated
+history; the clicked heading keeps its screen position, as do cards below a
+section that changes size above them. Previews are
 `/tmp/companion-activity-scrolling-{short-narrow,tall-wide}.png`.
 
 Activity history tests cover bounded reconnect pages interleaved with newer

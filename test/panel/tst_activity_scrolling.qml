@@ -41,6 +41,29 @@ Item {
     }
   }
 
+  // Every registered activity, so the page sections are realistically tall.
+  function fullInventory() {
+    const rows = [
+      ["SEND_TEXT_TO_APPLICATION", "Type text", true, ["insert"]],
+      ["ENTER_TEXT_TO_APPLICATION", "Type text and Enter", false, ["enter"]],
+      ["START_CODING_AGENT_SESSION", "Start a coding session", true, ["new session"]],
+      ["QUICK_QUESTION", "Quick question", false, ["quick question"]],
+      ["START_CLAUDE_CODE_SESSION", "Start a Claude Code session", false, ["new claude session"]],
+      ["START_PI_SESSION", "Start a Pi session", false, ["new pi session"]],
+      ["CONTINUE_OPEN_AGENT_CONVERSATION", "Continue the open agent conversation", true, ["continue session"]],
+      ["GO_TO_SESSION", "Go to session 1–16", false, ["go to session"]],
+      ["CLOSE_AGENT_SESSION", "Close session", false, ["close session"]],
+      ["LABEL_PREVIOUS_CORRECT", "Label previous correct", false, ["label previous correct"]],
+      ["LABEL_PREVIOUS_INCORRECT", "Label previous incorrect", false, ["label previous incorrect"]],
+      ["IGNORE", "Ignore", true, []]
+    ]
+    return rows.map(row => ({
+      name: row[0], label: row[1], enabled: true, supportsInference: row[2], inferenceEnabled: true,
+      shortcutEnabled: true, toggleable: row[0] !== "IGNORE", inferenceAvailable: row[2],
+      prefixes: row[3], prefixAvailable: row[3].length > 0
+    }))
+  }
+
   function entry(sequence) {
     return {
       id: "utterance-" + sequence, sequence: sequence, revision: 1,
@@ -229,6 +252,66 @@ Item {
       verify(waitForRendering(fixture.host))
       verify(findChild(fixture.host, "history-utterance-1") !== null)
       verify(Math.abs(intents.mapToItem(fixture.list, 0, 0).y - before) < 1)
+    }
+
+    function test_folding_a_section_keeps_its_heading_where_it_was_clicked_data() {
+      const rows = []
+      for (const section of ["listeningArea", "voiceSection", "intentionsSection", "historySection"]) {
+        for (const count of [0, 80])
+          rows.push({tag: section + "-" + count, section: section, count: count})
+      }
+      return rows
+    }
+
+    function test_folding_a_section_keeps_its_heading_where_it_was_clicked(data) {
+      const fixture = makeHost(data.count, {width: 420, height: 520})
+      fixture.host.panel.intents = scene.fullInventory()
+      fixture.host.panel.transcriptionCleanup = {enabled: false}
+      verify(waitForRendering(fixture.host))
+      const list = fixture.list
+      const section = findChild(fixture.host, data.section)
+      const toggle = findChild(section, "sectionToggle")
+      function headingY() { return toggle.mapToItem(list, 0, 0).y }
+      function headingVisible() { return headingY() >= -1 && headingY() + toggle.height <= list.height + 1 }
+
+      // Put the heading a little below the viewport top, as a reader would.
+      fixture.page.scrollToItem(section)
+      fixture.page.scrollTo(fixture.page.contentY - 20)
+      verify(waitForRendering(fixture.host))
+      const start = headingY()
+      verify(headingVisible(), "Heading visible before folding: " + start)
+
+      mouseClick(toggle)
+      compare(section.expanded, false)
+      verify(waitForRendering(fixture.host))
+      verify(headingVisible(), "Heading still visible after folding: " + headingY())
+      // A page too short to scroll that far may pull the heading down.
+      if (fixture.page.contentHeight - fixture.page.viewportHeight >= fixture.page.contentY + 1)
+        verify(Math.abs(headingY() - start) < 1.5, "Heading kept its place: " + start + " -> " + headingY())
+
+      mouseClick(toggle)
+      compare(section.expanded, true)
+      verify(waitForRendering(fixture.host))
+      verify(Math.abs(headingY() - start) < 1.5, "Unfolding returns to the same view: " + start + " -> " + headingY())
+      compare(fixture.state.model.count, data.count)
+    }
+
+    function test_sections_changing_above_the_reader_do_not_move_what_is_read() {
+      const fixture = makeHost(40, {width: 420, height: 520})
+      fixture.host.panel.intents = scene.fullInventory()
+      verify(waitForRendering(fixture.host))
+      const list = fixture.list
+      const card = findChild(fixture.host, "activity-CONTINUE_OPEN_AGENT_CONVERSATION")
+      fixture.page.scrollToItem(card)
+      verify(waitForRendering(fixture.host))
+      const before = card.mapToItem(list, 0, 0).y
+      findChild(fixture.host, "listeningArea").expanded = false
+      verify(waitForRendering(fixture.host))
+      verify(Math.abs(card.mapToItem(list, 0, 0).y - before) < 1.5, "Folding Listening above keeps the card in place")
+      fixture.host.panel.paused = true
+      findChild(fixture.host, "listeningArea").expanded = true
+      verify(waitForRendering(fixture.host))
+      verify(Math.abs(card.mapToItem(list, 0, 0).y - before) < 1.5, "Unfolding a taller Listening above keeps the card in place")
     }
 
     function test_wheel_over_cards_at_every_surface_size_data() {

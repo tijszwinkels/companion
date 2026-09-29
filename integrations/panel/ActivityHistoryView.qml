@@ -51,19 +51,38 @@ ListView {
     scrollToPageY(item.mapToItem(contentItem, 0, 0).y - originY)
   }
 
-  // Whether the reader is at the top of the page. Header geometry arrives
-  // after the list first positions itself and changes when sections fold, and
-  // card-height estimates move the origin; a ListView keeps contentY fixed
-  // through all of these and also nudges it itself while laying out. Keep the
-  // top in view while the reader is there; elsewhere the content stays put.
-  // So only actual scrolling updates this: wheel, drag or flick, the scroll
-  // bar, or scrollToPageY.
+  // Where the reader is, so the view can keep it when content above moves.
+  // Header geometry arrives after the list first positions itself and changes
+  // when sections fold or intent cards update; card-height estimates move the
+  // origin; and a ListView also nudges contentY itself while laying out. So
+  // only actual scrolling records the position: wheel, drag or flick, the
+  // scroll bar, or scrollToPageY.
+  //  - At the top: stay at the top.
+  //  - Inside the page sections: keep the section at the viewport top in the
+  //    same place on screen, e.g. the heading of a section just folded.
+  //  - Among the cards: the ListView already keeps the cards in place.
   property bool readerAtTop: true
+  // Header sections in page order, supplied by the owner.
+  property var anchorItems: []
+  property Item anchorItem: null
+  // The anchor's top relative to the viewport top (zero or negative).
+  property real anchorOffset: 0
   // True while this view applies a scroll itself. The origin can move during
   // that assignment, before the new position has been noted.
   property bool applyingScroll: false
   function noteReaderPosition() {
     readerAtTop = contentY <= originY + 0.5
+    anchorItem = null
+    if (readerAtTop || !headerItem || contentY >= originY + headerItem.height)
+      return
+
+    for (const item of anchorItems) {
+      const top = item.mapToItem(contentItem, 0, 0).y
+      if (item.visible && top <= contentY + 0.5) {
+        anchorItem = item
+        anchorOffset = top - contentY
+      }
+    }
   }
   function applyContentY(value) {
     applyingScroll = true
@@ -73,8 +92,24 @@ ListView {
   }
   onMovementEnded: noteReaderPosition()
   onOriginYChanged: {
-    if (readerAtTop && !applyingScroll && !moving && !verticalBar.pressed)
+    if (applyingScroll || moving || verticalBar.pressed)
+      return
+
+    if (readerAtTop)
       contentY = originY
+    else if (anchorItem)
+      keepAnchor()
+  }
+  // Put the anchor section back at its recorded screen position, as far as
+  // the page allows. The recorded position is kept rather than re-noted, so
+  // unfolding after a fold that had to clamp returns to the same view.
+  function keepAnchor() {
+    // The header starts at the origin once the list has laid it out.
+    const anchorTop = originY + anchorItem.mapToItem(headerItem, 0, 0).y
+    const end = originY + Math.max(0, contentHeight - height)
+    applyingScroll = true
+    contentY = Math.max(originY, Math.min(end, anchorTop - anchorOffset))
+    applyingScroll = false
   }
   function showPageTop() {
     readerAtTop = true
@@ -102,14 +137,20 @@ ListView {
 
     const keptPageY = pageY
     const keptTop = readerAtTop
+    const keptAnchor = anchorItem
     // Detach first so neither delegate is ever created for the other's rows.
     model = null
     delegate = cards ? cardDelegate : placeholderDelegate
     model = wanted
-    if (keptTop)
+    if (keptTop) {
       showPageTop()
-    else
+    } else if (keptAnchor) {
+      ensurePolished()
+      anchorItem = keptAnchor
+      keepAnchor()
+    } else {
       scrollToPageY(keptPageY)
+    }
   }
   onExpandedChanged: attachModel()
   onHistoryModelChanged: attachModel()
