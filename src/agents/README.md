@@ -315,7 +315,8 @@ UI; the desktop runtime forwards a one-time `agent-browser-open` event to the
 native window that advertised `browserHost`, and the panel answers after the
 page loaded or failed, or after about 8 seconds with `loading`. Results report
 what the user now sees (`loaded`, `loading`, `load-failed` with the
-reason, `superseded`, and `panelVisible`); refusals are `not-selected`, `busy`,
+reason, `superseded`); refusals are `panel-hidden` (a hidden panel is never
+shown and nothing opens), `not-selected`, `busy`,
 `unsupported`, `refused`, `offline` and `unconfirmed`. The page's content never
 returns to the agent. See [panel browser](../../docs/panel-browser.md#opening-a-page-from-an-agent).
 

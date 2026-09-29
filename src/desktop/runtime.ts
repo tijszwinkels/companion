@@ -52,6 +52,7 @@ const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
   'refused',
   'not-selected',
   'busy',
+  'panel-hidden',
   'unsupported',
 ]);
 
@@ -1233,8 +1234,7 @@ export class DesktopRuntime {
         (request.reason !== undefined &&
           (typeof request.reason !== 'string' || request.reason.length > 600)) ||
         (request.url !== undefined &&
-          (typeof request.url !== 'string' || request.url.length > 4096)) ||
-        (request.panelVisible !== undefined && typeof request.panelVisible !== 'boolean')
+          (typeof request.url !== 'string' || request.url.length > 4096))
       ) {
         throw Error('Expected a browser request id and outcome');
       }
@@ -1250,9 +1250,6 @@ export class DesktopRuntime {
       // Page text (such as its title) is never forwarded to the agent.
       if (typeof request.url === 'string' && request.url) {
         outcome.url = request.url;
-      }
-      if (typeof request.panelVisible === 'boolean') {
-        outcome.panelVisible = request.panelVisible;
       }
       pending.finish(outcome);
       return 'browser-recorded';

@@ -87,7 +87,6 @@ Item {
     const answer = {action: "agent-browser-open-result", requestId: requestId,
       outcome: result.outcome, reason: String(result.reason || "").slice(0, 600)}
     if (typeof result.url === "string" && result.url) answer.url = result.url.slice(0, 4096)
-    if (typeof result.panelVisible === "boolean") answer.panelVisible = result.panelVisible
     root.send(answer)
   }
 

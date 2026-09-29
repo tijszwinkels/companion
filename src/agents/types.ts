@@ -276,7 +276,9 @@ export interface AgentBrowserOpenRequest {
  *   the page finished loading, was still loading when the panel answered, or
  *   failed to load (reason says why, e.g. an invalid certificate).
  * - `superseded`: a newer navigation replaced it before it finished.
- * - `refused`, `not-selected`, `busy`, `unsupported`: confirmed non-changes.
+ * - `refused`, `not-selected`, `busy`, `panel-hidden`, `unsupported`:
+ *   confirmed non-changes. A hidden panel is never shown for an agent, and
+ *   opening a page the user cannot see is not reported as success.
  * - `offline`: no panel could receive the request.
  * - `unconfirmed`: sent, but the panel did not answer in time; it may or may
  *   not have opened the page, so the caller must not blindly retry.
@@ -290,6 +292,7 @@ export interface AgentBrowserOpenOutcome {
     | 'refused'
     | 'not-selected'
     | 'busy'
+    | 'panel-hidden'
     | 'unsupported'
     | 'offline'
     | 'unconfirmed';
@@ -299,8 +302,6 @@ export interface AgentBrowserOpenOutcome {
    * content, not even its title, is returned to the agent.
    */
   url?: string;
-  /** Whether the Companion panel was showing when it answered. */
-  panelVisible?: boolean;
 }
 
 export type AgentBrowserHost = (

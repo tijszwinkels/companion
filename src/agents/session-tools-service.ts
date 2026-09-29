@@ -696,6 +696,13 @@ function browserFailure(result: AgentBrowserOpenOutcome): string {
       reason
     );
   }
+  if (result.outcome === 'panel-hidden') {
+    return (
+      'Not opened: the Companion panel is hidden, so the user could not see the page. ' +
+      'Ask the user to open Companion, then try again.' +
+      reason
+    );
+  }
   if (result.outcome === 'busy') {
     return 'Not opened: the user is busy in the panel browser.' + reason;
   }

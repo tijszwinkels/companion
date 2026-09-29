@@ -196,7 +196,6 @@ test('a conversation opens a page only through a panel that has the browser, and
     reason: '',
     url: 'https://example.com/docs?q=1',
     title: 'Docs',
-    panelVisible: false,
   });
   assert.equal((await desktop.reply('agent-browser-open-result')).result, 'browser-recorded');
   // Page text a panel might send (a title) is never forwarded to the agent.
@@ -204,7 +203,6 @@ test('a conversation opens a page only through a panel that has the browser, and
     outcome: 'loaded',
     reason: '',
     url: 'https://example.com/docs?q=1',
-    panelVisible: false,
   });
 
   // A late duplicate answer is refused rather than applied to a later call.
@@ -244,6 +242,18 @@ test('failed loads are reported truthfully and malformed panel answers are rejec
     browserHost: true,
   });
   await desktop.reply('panel-state');
+
+  // A hidden panel opens nothing and is not a success.
+  const hiddenPanel = f.open('https://example.com/hidden');
+  const hiddenEvent = await f.nextEvent();
+  desktop.send({
+    action: 'agent-browser-open-result',
+    requestId: hiddenEvent.requestId,
+    outcome: 'panel-hidden',
+    reason: 'The Companion panel is hidden.',
+  });
+  await desktop.reply('agent-browser-open-result');
+  assert.match(String((await hiddenPanel).error), /could not see the page.*\[panel-hidden\]$/);
 
   // A page that failed to load is still a truthful report of what is shown.
   const failing = f.open('https://expired.example/');

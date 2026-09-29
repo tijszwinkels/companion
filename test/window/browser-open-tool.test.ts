@@ -286,7 +286,6 @@ test(
       );
       assert.ok(background);
 
-      // With the window hidden, the page opens without showing it.
       await execute(
         join(build, 'companion-ui'),
         ['--control-socket', control, '--command', 'hide'],
@@ -296,10 +295,18 @@ test(
           killSignal: 'SIGKILL',
         },
       );
+      // With the window hidden, nothing opens and the tool does not succeed.
+      const hiddenVisits = visits.length;
       const hidden = await open('Requester', origin + '/second');
-      assert.equal(hidden.outcome, 'loaded', JSON.stringify(hidden));
-      assert.equal(hidden.url, origin + '/second');
-      assert.equal(hidden.panelVisible, false);
+      assert.match(
+        String(hidden.error),
+        /panel is hidden.*\[panel-hidden\]$/,
+        JSON.stringify(hidden),
+      );
+      assert.deepEqual(
+        visits.slice(hiddenVisits).filter((path) => path !== '/favicon.ico'),
+        [],
+      );
       assert.ok(requester);
       assert.doesNotMatch(output, /ReferenceError|TypeError|Binding loop|Required property/);
     } finally {

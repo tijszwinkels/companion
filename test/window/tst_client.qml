@@ -166,7 +166,7 @@ TestCase {
     client.answerBrowserOpen("r1", {outcome: "loaded", reason: "", url: "https://example.com/",
       title: "Page text", panelVisible: false, extra: "dropped"})
     compare(backend.requests[0], {action: "agent-browser-open-result", requestId: "r1", outcome: "loaded",
-      reason: "", url: "https://example.com/", panelVisible: false})
+      reason: "", url: "https://example.com/"})
     client.browserHost = false
   }
 

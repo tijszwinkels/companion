@@ -125,8 +125,9 @@ not even its title).
 - **Addresses:** absolute `https://` URLs, or `http://` on loopback, at most
   2048 characters. The service checks the address, the panel checks it again,
   and every navigation and redirect still follows the rules above.
-- **Who may open:** only a conversation's own running turn, and only while that
-  conversation is the one selected in the panel (Previous sessions or Activity
+- **Who may open:** only a conversation's own running turn, only while the
+  Companion panel is showing, and only while that conversation is the one
+  selected in it (Previous sessions or Activity
   do not count). A background, closed or finished conversation, an external
   CLI caller or a phone panel cannot change what the user sees.
 - **The user comes first:** while they are typing in the address field or a
@@ -134,14 +135,16 @@ not even its title).
   they edited but left stays in the field; the strip shows the real site.
 - **Presentation:** the browser replaces the chat as if **Browser** had been
   clicked, with the controls hidden and the address field not focused. A hidden
-  (frozen) page is reused and woken. The window is never shown or activated. In
+  (frozen) page is reused and woken. A hidden window is never shown or
+  activated: the request is refused as `panel-hidden` and nothing changes, so a
+  page the user cannot see is never reported as opened. In
   an already focused window, keyboard focus moves to the page instead of the
   hidden composer. Drafts, pins and widgets are kept as usual.
 - **Answer:** the panel reports once, after the page loaded (`loaded` with its
   address) or failed (`load-failed` with the load error, certificate or policy
   notice), or after about 8 seconds (`loading`). A newer request, or the user's
-  own navigation or Close, answers `superseded`. `panelVisible` tells whether
-  the panel was showing. Confirmed non-changes are `not-selected`, `busy`,
+  own navigation or Close, answers `superseded`. Confirmed non-changes are
+  `panel-hidden`, `not-selected`, `busy`,
   `unsupported` (no native browser, or Qt WebEngine older than 6.9) and
   `refused`. `offline` means no panel is connected. `unconfirmed` means the
   panel did not answer within 15 seconds or disconnected; the agent is told not
@@ -156,7 +159,7 @@ Protocol (listener ↔ native window, desktop-only): the window reports
 `browserHost: true` in `panel-state`. The listener sends
 `{type: "agent-browser-open", requestId, id, url}` to exactly one such window,
 and only that window may answer
-`{action: "agent-browser-open-result", requestId, outcome, reason, url?, panelVisible?}`;
+`{action: "agent-browser-open-result", requestId, outcome, reason, url?}`;
 any other field (such as page text) is dropped.
 A late, foreign, malformed or remote answer is refused.
 
@@ -204,11 +207,12 @@ A late, foreign, malformed or remote answer is refused.
     unknown callers, controls hidden and chat retained, reuse of a frozen page,
     busy while typing or during a page dialog, an edited address kept, refusals,
     connection and redirect failures, the bounded wait, supersession, a hidden
-    window not shown, and ignored repeats.
+    window refused as `panel-hidden` without showing it or navigating, and
+    ignored repeats.
   - End to end, a real tool call runs through the lease, the listener and the
     real `companion-ui` executable. The selected conversation loads a loopback
-    page, a background conversation is refused, and the page also opens with
-    the window hidden without showing it.
+    page, a background conversation is refused, and with the window hidden the
+    call fails as `panel-hidden` without any page request.
 - `test/panel/tst_panel_browser_entry.qml`: a portable host never shows the
   entry or loads the browser, even with the native-widget marker set; a
   browser that fails to load (as on Qt 6.8) shows the version message.

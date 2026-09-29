@@ -122,7 +122,6 @@ TestCase {
     compare(result.outcome, "loaded")
     compare(result.title, undefined, "no page content reaches the agent")
     compare(result.url, origin + "/")
-    compare(result.panelVisible, true)
     verify(panel.browsing)
     const view = browser()
     verify(!findChild(view, "panelBrowserAddress").activeFocus, "the address is not focused")
@@ -225,19 +224,25 @@ TestCase {
   }
 
   function test_08_hidden_window_is_not_shown_and_repeats_are_ignored() {
+    const view = browser()
+    const before = view.pageUrl
     TestHost.hide()
     tryVerify(function() { return !TestHost.opened })
-    const requestId = request("one", origin + "/")
-    const result = answer(requestId)
-    compare(result.outcome, "loaded")
-    compare(result.panelVisible, false)
+    // A page the user cannot see is never reported as opened.
+    const hidden = answer(request("one", origin + "/second"))
+    compare(hidden.outcome, "panel-hidden")
+    wait(300)
     verify(!TestHost.opened, "the window stays hidden")
+    compare(view.pageUrl, before, "nothing navigated")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.opened })
 
+    const requestId = request("one", origin + "/")
+    compare(answer(requestId).outcome, "loaded")
     // The listener never repeats a request; an impossible repeat is ignored.
     fakeBackend.received({type: "agent-browser-open", requestId: requestId, id: "one", url: origin + "/second"})
     wait(500)
     compare(answers(requestId).length, 1)
-    compare(browser().pageUrl, origin + "/")
-    TestHost.show(true)
+    compare(view.pageUrl, origin + "/")
   }
 }
