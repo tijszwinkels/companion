@@ -15,9 +15,10 @@
  */
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { assertPrivateDirectory } from './private-directory.ts';
 import { withStateLock } from './state-lock.ts';
 
 /** How long a newly printed pairing code remains valid. */
@@ -112,22 +113,12 @@ export class DeviceStore {
 
   /**
    * Create the private state directory. An existing directory must already be
-   * private; we refuse rather than silently chmod a directory someone else
-   * may have made readable on purpose.
+   * private and must not be a symbolic link; we refuse rather than silently
+   * chmod a directory someone else may have made readable on purpose.
    */
   async prepare(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const info = await stat(this.directory);
-
-    if (!info.isDirectory()) {
-      throw Error(`${this.directory} is not a directory`);
-    }
-    if (process.getuid && info.uid !== process.getuid()) {
-      throw Error(`${this.directory} is not owned by the current user`);
-    }
-    if ((info.mode & 0o077) !== 0) {
-      throw Error(`${this.directory} must not be accessible to other users (chmod 700)`);
-    }
+    await assertPrivateDirectory(this.directory);
   }
 
   /** Queue local writers, then lock against every other gateway/CLI process. */

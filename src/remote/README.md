@@ -54,10 +54,69 @@ before changing an existing installation.
    `tailscale serve` to proxy to it. The gateway sees loopback connections but
    still requires the configured origin/host and a paired device token.
 
+3. **`tailscale serve` forwards to a Unix socket.** This is meant for a
+   persistent `tailscale serve --bg` route and a supervised user service. It has
+   not been live-tested yet.
+
+   ```sh
+   bin/companion-remote serve \
+     --listen unix:$XDG_RUNTIME_DIR/companion-phone/gateway.sock \
+     --origin https://desk.tailnet.ts.net \
+     --require-tailscale-login user@github \
+     --check-tailscale-serve
+   ```
+
+   With a TCP route, anything that binds the loopback port while the gateway is
+   down would be served under the tailnet name. A socket in a private directory
+   cannot be taken over by other users. At startup the gateway:
+   - requires the socket's directory to be owned by the user, not group/world
+     accessible and not a symlink (checked with `lstat`; created 0700 only when
+     missing). Its ancestors should be owned by root or the user, as
+     `/run/user/UID` is; only the final directory is checked. The socket itself
+     is created 0600;
+   - holds a lifetime `flock` on `<socket>.lock`, so a second gateway fails
+     instead of replacing the first. The lock file stays after the gateway stops;
+   - removes an existing path only if it is a socket nobody answers on (a crashed
+     gateway's leftover). A live socket, a socket it cannot probe, a symlink, a
+     regular file or anything else is refused and left in place;
+   - requires at least one `--origin`, all of them https, and adds no loopback
+     default origins. `--host`, `--port` and `--tls-*` cannot be combined with it.
+
+   `--require-tailscale-login` refuses any request whose `Tailscale-User-Login`
+   header is not exactly the given login (compare `tailscale status --json`).
+   Tailscale Serve strips client-supplied identity headers and sets this one
+   only for a tailnet user's device, not for tagged devices, Funnel or local
+   connections. It is therefore trustworthy only in Unix socket mode, where only
+   tailscaled and the user can connect. On a loopback TCP port any local user
+   could forge it, and the gateway prints a warning when it is used there.
+
+   `--check-tailscale-serve` (Unix socket mode, exactly one https origin on port 443) reads `tailscale serve status --json` without sudo before binding, then
+   again every minute. It accepts only `TCP 443 → HTTPS`, one Web entry
+   `<host>:443` and one handler `/` → `Proxy: "unix:<socket path>"`. Any other
+   setting fails closed: a foreground session, Funnel, another port, handler,
+   target or service. On a mismatch the gateway refuses to start (exit 1), or
+   stops serving and exits 1. A status that cannot be read (for example while
+   tailscaled restarts) is retried: 5 reads 3 seconds apart at startup, and 3
+   unreadable minute-checks in a row at runtime, before it fails the same way.
+   On any shutdown the gateway socket closes first (before the optional app
+   proxy), and the process exits within 5 seconds even if a connection lingers.
+   The gateway never changes Serve. The `unix:<path>` Proxy spelling follows
+   Tailscale's own help text but has not yet been seen in a live `--bg` route.
+
+   In Unix socket mode without both flags, the gateway prints a warning. The
+   optional `--apps-listen` app proxy (below) remains a separate loopback TCP
+   listener: the socket, Funnel and login checks above apply to the gateway
+   origin only.
+
 See [the supervised tailnet trial](../../docs/mobile-tailnet-trial.md) for the
 locally audited Serve setup, exact origin policy, validation and rollback gates.
 The gateway never uses `Forwarded`, `X-Forwarded-*` or Tailscale identity headers
-as authentication or to replace the request's actual Host/Origin.
+as authentication or to replace the request's actual Host/Origin. The optional
+required Tailscale login is an additional gate in front of pairing and device
+tokens, never a substitute for them.
+
+In every mode, requests to the gateway carrying `Tailscale-Funnel-Request`
+(public internet via Funnel) are refused with 403, WebSocket upgrades included.
 
 Plain HTTP on a non-loopback address, binding every interface, and non-HTTPS
 non-loopback origins are refused at startup. Browsers need HTTPS for a secure
@@ -78,7 +137,7 @@ page a secure context.
   device token once; only its hash is stored in `devices.json`. The endpoint also
   has a global limit of 10 requests per minute. State lives in
   `~/companion/remote/` (0700; files 0600, atomic rename). The directory must
-  already be private if it exists. CLI/gateway writes hold a shared Linux `flock`
+  already be private if it exists, and must not be a symlink. CLI/gateway writes hold a shared Linux `flock`
   through the complete transaction, preventing double redemption or revocation
   being overwritten by a concurrent pair/revoke. Requires util-linux `flock`.
 - **Revocation.** `revoke` removes the hash; the gateway rechecks every 5 seconds
@@ -202,5 +261,11 @@ requires an explicitly arranged gateway restart.
 `test/unit/remote-gateway.test.ts` (pairing, origin/host checks, authorization,
 refused actions, receipts across reconnects, screenshots, revocation, listener loss,
 TLS) and `test/unit/remote-apps.test.ts` (app list/open endpoints) use temporary directories, a real control socket, synthetic agent backends and
-loopback only. `test/mobile/` drives the built app in headless Chromium. None of
+loopback only. `test/unit/remote-unix-socket.test.ts` covers Unix socket mode:
+directory permission and symlink refusal, the lifetime lock, live and unprobeable
+socket refusal, stale-socket removal, rollback of a failed start, Host 421 /
+Origin 403 / WebSocket 101 over the socket, unauthenticated sockets receiving no
+data, and Funnel and login refusals on every route.
+`test/unit/remote-serve-check.test.ts` covers the Serve matcher, the read
+retries, and the CLI flags and warnings against a fake `tailscale` script. Real Tailscale is never used. `test/mobile/` drives the built app in headless Chromium. None of
 them validates a real iPhone, Safari, Tailscale or production listener.
