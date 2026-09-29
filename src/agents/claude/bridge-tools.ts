@@ -35,7 +35,8 @@ export interface BridgeTool {
 export interface BridgeToolConnections {
   results?: { endpoint: string; token: string };
   widgets?: { endpoint: string; token: string };
-  sessionTools?: { endpoint: string; token: string };
+  /** `capabilities`: optional tools the listener announced (see session-tools.ts). */
+  sessionTools?: { endpoint: string; token: string; capabilities?: readonly string[] };
 }
 
 /** The shape shared by Pi's native tool definitions. */
@@ -80,8 +81,8 @@ export function bridgeTools(
   }
 
   if (connections.sessionTools) {
-    const { endpoint, token } = connections.sessionTools;
-    for (const tool of sessionTools(endpoint, token)) {
+    const { endpoint, token, capabilities } = connections.sessionTools;
+    for (const tool of sessionTools(endpoint, token, capabilities)) {
       tools.push(fromPiTool(tool as unknown as PiToolDefinition));
     }
   }

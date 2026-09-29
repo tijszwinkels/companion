@@ -155,6 +155,17 @@ not even its title).
   panel again. A new call may navigate again. The calls count toward the turn's
   six session actions.
 
+**Mixed versions.** Pi extensions and the Claude MCP bridge are read from disk
+for every turn, while a running listener keeps the code it started with. Each
+session tool lease therefore carries the optional tools its listener supports
+(`COMPANION_SESSION_TOOLS_CAPABILITIES=browser-open`). Pi and the bridge offer
+`companion_browser_open` only when it is announced, and ignore unknown or
+malformed values. After a source update without a listener restart, agents keep
+exactly the older listener's tools until that listener is restarted; nothing
+is offered that it cannot serve. An updated listener with a UI that has not
+been restarted answers `unsupported`, because that UI does not advertise its
+browser.
+
 Protocol (listener ↔ native window, desktop-only): the window reports
 `browserHost: true` in `panel-state`. The listener sends
 `{type: "agent-browser-open", requestId, id, url}` to exactly one such window,

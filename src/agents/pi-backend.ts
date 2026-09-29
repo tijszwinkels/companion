@@ -77,6 +77,8 @@ export class PiBackend implements AgentBackend {
           COMPANION_WIDGET_TOKEN: request.widgets?.token,
           COMPANION_SESSION_TOOLS_ENDPOINT: request.sessionTools?.endpoint,
           COMPANION_SESSION_TOOLS_TOKEN: request.sessionTools?.token,
+          // Tools this listener supports; the on-disk extension offers only these.
+          COMPANION_SESSION_TOOLS_CAPABILITIES: request.sessionTools?.capabilities?.join(','),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',

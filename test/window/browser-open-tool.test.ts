@@ -212,7 +212,10 @@ test(
         join(agentDirectory, 'companion-agent.json'),
         JSON.stringify(defaultAgentSettings),
       );
-      const leases = new Map<string, { endpoint: string; token: string }>();
+      const leases = new Map<
+        string,
+        { endpoint: string; token: string; capabilities?: readonly string[] }
+      >();
       const sessions = new AgentSessions(
         {
           pi: {
@@ -248,7 +251,7 @@ test(
 
       async function open(caller: string, url: string) {
         const lease = leases.get(caller)!;
-        const tool = sessionTools(lease.endpoint, lease.token).find(
+        const tool = sessionTools(lease.endpoint, lease.token, lease.capabilities).find(
           (candidate) => candidate.name === 'companion_browser_open',
         )!;
         try {

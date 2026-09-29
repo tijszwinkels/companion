@@ -14,13 +14,14 @@ export const bridgeEnvironment = {
   widgetToken: 'COMPANION_WIDGET_TOKEN',
   sessionToolsEndpoint: 'COMPANION_SESSION_TOOLS_ENDPOINT',
   sessionToolsToken: 'COMPANION_SESSION_TOOLS_TOKEN',
+  sessionToolsCapabilities: 'COMPANION_SESSION_TOOLS_CAPABILITIES',
 } as const;
 
 /** The connections one turn grants to its bridge. Widgets and session tools are optional leases. */
 export interface BridgeConnections {
   results: TurnResultConnection;
   widgets?: { endpoint: string; token: string };
-  sessionTools?: { endpoint: string; token: string };
+  sessionTools?: { endpoint: string; token: string; capabilities?: readonly string[] };
 }
 
 /** A written configuration file and the private directory that contains it. */
@@ -61,6 +62,10 @@ export async function writeMcpConfig(connections: BridgeConnections): Promise<Mc
   if (connections.sessionTools) {
     environment[bridgeEnvironment.sessionToolsEndpoint] = connections.sessionTools.endpoint;
     environment[bridgeEnvironment.sessionToolsToken] = connections.sessionTools.token;
+    const capabilities = connections.sessionTools.capabilities ?? [];
+    if (capabilities.length > 0) {
+      environment[bridgeEnvironment.sessionToolsCapabilities] = capabilities.join(',');
+    }
   }
 
   const configuration = {

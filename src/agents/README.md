@@ -320,6 +320,14 @@ shown and nothing opens), `not-selected`, `busy`,
 `unsupported`, `refused`, `offline` and `unconfirmed`. The page's content never
 returns to the agent. See [panel browser](../../docs/panel-browser.md#opening-a-page-from-an-agent).
 
+Optional session tools need the listener's positive announcement. A lease
+carries `capabilities` (currently `browser-open`), passed to Pi as
+`COMPANION_SESSION_TOOLS_CAPABILITIES` and to the Claude bridge through its
+per-turn MCP configuration. Because both load the tool definitions from disk
+for every turn, a still-running older listener, which announces nothing, keeps
+exactly its original tools after a source update
+(`test/unit/session-tools-compatibility.test.ts`).
+
 `companion_sessions` matches titles only. Its prompt guidelines also tell the
 agent how to search contents: grep `.companion-sessions/*.json` in the agent
 working directory (`~/companion/agents` by default). Each archive's file name is

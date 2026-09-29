@@ -190,8 +190,11 @@ export interface AgentRunRequest<Settings = AgentSettings> {
    */
   previousModel?: string;
   widgets?: { endpoint: string; token: string };
-  /** Turn-scoped connection for the session lifecycle tools. */
-  sessionTools?: { endpoint: string; token: string };
+  /**
+   * Turn-scoped connection for the session lifecycle tools, with the optional
+   * tools this listener supports (announced to Pi and the Claude bridge).
+   */
+  sessionTools?: { endpoint: string; token: string; capabilities?: readonly string[] };
 }
 
 export interface AgentBackend<Settings = AgentSettings> extends InspectableModule {

@@ -31,8 +31,12 @@ interface BrowserOpenMessage {
 }
 
 test('Pi and Claude Code offer the same companion_browser_open tool', () => {
-  const lease = { endpoint: 'http://127.0.0.1:1/session', token: 'a'.repeat(64) };
-  const pi = sessionTools(lease.endpoint, lease.token).find(
+  const lease = {
+    endpoint: 'http://127.0.0.1:1/session',
+    token: 'a'.repeat(64),
+    capabilities: ['browser-open'],
+  };
+  const pi = sessionTools(lease.endpoint, lease.token, lease.capabilities).find(
     (tool) => tool.name === 'companion_browser_open',
   );
   const claude = bridgeTools({ sessionTools: lease }).find(
@@ -72,7 +76,7 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
   });
 
   await writeFile(join(directory, 'companion-agent.json'), JSON.stringify(defaultAgentSettings));
-  let lease: { endpoint: string; token: string } | undefined;
+  let lease: { endpoint: string; token: string; capabilities?: readonly string[] } | undefined;
   const sessions = new AgentSessions(
     {
       pi: {
@@ -99,7 +103,9 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
   const requester = sessions.start({ ...frame, utterance: 'Requester' }, signal());
   await waitFor(() => lease !== undefined);
 
-  const pi = sessionTools(lease!.endpoint, lease!.token).find(
+  // The capabilities are those the listener announced with this very lease.
+  assert.deepEqual(lease!.capabilities, ['browser-open']);
+  const pi = sessionTools(lease!.endpoint, lease!.token, lease!.capabilities).find(
     (tool) => tool.name === 'companion_browser_open',
   )!;
   const claude = bridgeTools({ sessionTools: lease! }).find(

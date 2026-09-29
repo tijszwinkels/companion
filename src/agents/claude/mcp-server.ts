@@ -12,6 +12,7 @@
  * directory, which Claude Code gives the bridge: the agent directory. An
  * invalid file throws here, so the bridge exits and the turn fails visibly.
  */
+import { parseSessionToolCapabilities } from '../session-tools.ts';
 import { bridgeTools, type BridgeToolConnections } from './bridge-tools.ts';
 import { bridgeEnvironment } from './mcp-config.ts';
 import { bridgeInstructions, McpStdioServer } from './mcp-stdio.ts';
@@ -33,11 +34,27 @@ function connection(
 const connections: BridgeToolConnections = {
   results: connection(bridgeEnvironment.resultsEndpoint, bridgeEnvironment.resultsToken),
   widgets: connection(bridgeEnvironment.widgetEndpoint, bridgeEnvironment.widgetToken),
-  sessionTools: connection(
+  sessionTools: sessionToolsConnection(),
+};
+
+/**
+ * Session tools plus the optional tools the listener announced. A listener
+ * that predates an optional tool announces nothing, so the bridge (loaded
+ * fresh from disk each turn) never offers a tool that listener cannot serve.
+ */
+function sessionToolsConnection(): BridgeToolConnections['sessionTools'] {
+  const lease = connection(
     bridgeEnvironment.sessionToolsEndpoint,
     bridgeEnvironment.sessionToolsToken,
-  ),
-};
+  );
+  if (!lease) {
+    return undefined;
+  }
+  const capabilities = parseSessionToolCapabilities(
+    process.env[bridgeEnvironment.sessionToolsCapabilities],
+  );
+  return { ...lease, capabilities };
+}
 
 const toolSettings = await loadClaudeToolSettings(process.cwd());
 const tools = bridgeTools(connections, toolSettings);

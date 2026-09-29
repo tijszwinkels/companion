@@ -903,7 +903,7 @@ export class AgentSessions implements InspectableModule {
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
     let widgetLease: WidgetLease | undefined;
-    let sessionToolLease: { endpoint: string; token: string; release(): void } | undefined;
+    let sessionToolLease: Awaited<ReturnType<SessionToolService['lease']>> | undefined;
     try {
       // A queued successor waits for an accepted model change to be durable.
       // A failed choice rolls back first, then this turn uses the old setting.
@@ -971,7 +971,11 @@ export class AgentSessions implements InspectableModule {
           resume,
           widgets: widgetLease,
           sessionTools: sessionToolLease
-            ? { endpoint: sessionToolLease.endpoint, token: sessionToolLease.token }
+            ? {
+                endpoint: sessionToolLease.endpoint,
+                token: sessionToolLease.token,
+                capabilities: sessionToolLease.capabilities,
+              }
             : undefined,
         },
         session.controller.signal,

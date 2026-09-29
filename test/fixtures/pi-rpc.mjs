@@ -69,6 +69,7 @@ function receive(request) {
       pid: process.pid,
       internalAgent: process.env.COMPANION_INTERNAL_AGENT,
       externalSocketExported: process.env.COMPANION_EXTERNAL_SOCKET !== undefined,
+      sessionToolCapabilities: process.env.COMPANION_SESSION_TOOLS_CAPABILITIES ?? null,
     }),
   );
   if (request.message.startsWith('inherited-pipe')) {

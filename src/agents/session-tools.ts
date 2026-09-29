@@ -21,7 +21,31 @@ const focus = Type.Optional(
  * calling conversation from its token, so an agent cannot claim another sender.
  * Errors are thrown, which Pi reports to the model as failed tool results.
  */
-export function sessionTools(endpoint: string, token: string) {
+/**
+ * Optional session tool features a listener announces with each lease, in the
+ * `COMPANION_SESSION_TOOLS_CAPABILITIES` environment variable (comma-separated).
+ *
+ * Pi extensions and the Claude MCP bridge are loaded from disk for every turn,
+ * while a running listener keeps the code it started with. After a source
+ * update without a restart, an older listener would otherwise receive calls it
+ * cannot serve. A tool that needs newer listener support is therefore offered
+ * only when the listener positively announced it; absent or unknown values
+ * mean an older listener, which keeps exactly its original tools.
+ */
+export const sessionToolCapabilities = ['browser-open'] as const;
+export type SessionToolCapability = (typeof sessionToolCapabilities)[number];
+
+/** Parse the announced capabilities; anything unrecognised is ignored. */
+export function parseSessionToolCapabilities(value: string | undefined): SessionToolCapability[] {
+  const announced = (value ?? '').split(',').map((item) => item.trim());
+  return sessionToolCapabilities.filter((capability) => announced.includes(capability));
+}
+
+export function sessionTools(
+  endpoint: string,
+  token: string,
+  capabilities: readonly string[] = [],
+) {
   async function invoke(
     method: string,
     callId: string,
@@ -195,10 +219,16 @@ export function sessionTools(endpoint: string, token: string) {
         }),
       }),
       method: 'browser-open',
+      requires: 'browser-open' as SessionToolCapability,
     },
   ];
 
-  return definitions.map(({ method, ...definition }) => ({
+  // Omit tools whose listener support was not announced (see above).
+  const offered = definitions.filter((definition) => {
+    const required = (definition as { requires?: string }).requires;
+    return required === undefined || capabilities.includes(required);
+  });
+  return offered.map(({ method, requires: _requires, ...definition }) => ({
     ...definition,
     execute: (callId: string, parameters: Record<string, unknown>, signal?: AbortSignal) =>
       invoke(method, callId, parameters, signal),
@@ -210,8 +240,11 @@ export default function registerSessionTools(pi: {
 }): void {
   const endpoint = process.env.COMPANION_SESSION_TOOLS_ENDPOINT;
   const token = process.env.COMPANION_SESSION_TOOLS_TOKEN;
+  const capabilities = parseSessionToolCapabilities(
+    process.env.COMPANION_SESSION_TOOLS_CAPABILITIES,
+  );
   if (endpoint && token) {
-    for (const tool of sessionTools(endpoint, token)) {
+    for (const tool of sessionTools(endpoint, token, capabilities)) {
       pi.registerTool(tool);
     }
   }

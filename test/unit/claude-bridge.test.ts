@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 import { bridgeServerPath } from '../../src/agents/claude/mcp-config.ts';
 import { TurnResultRoute } from '../../src/agents/claude/turn-results.ts';
@@ -33,6 +33,17 @@ async function fakeService(path: string, reply: (body: Record<string, unknown>) 
   };
 }
 
+/** Every bridge process started here; see the `after` hook below. */
+const bridges = new Set<ChildProcessWithoutNullStreams>();
+
+// A failed assertion can skip a test's close(). Kill any bridge still running
+// so the test file reports the failure and exits instead of hanging.
+after(() => {
+  for (const child of bridges) {
+    child.kill('SIGKILL');
+  }
+});
+
 /** The real bridge process, speaking newline-delimited JSON-RPC like Claude Code. */
 class BridgeClient {
   private readonly child: ChildProcessWithoutNullStreams;
@@ -49,6 +60,8 @@ class BridgeClient {
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
+    bridges.add(this.child);
+    this.child.once('exit', () => bridges.delete(this.child));
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk: string) => {
       this.buffered += chunk;
@@ -109,6 +122,9 @@ test('the bridge offers Pi’s tools, instructions and schemas, conditioned on t
   assert.equal(minimalTools[0].inputSchema.properties.options.maxItems, 8);
   assert.equal(await minimal.close(), 0);
 
+  // A session tool lease without announced capabilities is exactly what an
+  // older, still running listener writes. The bridge is loaded from disk each
+  // turn, so it must then keep that listener's original tools only.
   const full = new BridgeClient({
     COMPANION_CLAUDE_RESULTS_ENDPOINT: route.connection.endpoint,
     COMPANION_CLAUDE_RESULTS_TOKEN: route.connection.token,
@@ -134,12 +150,48 @@ test('the bridge offers Pi’s tools, instructions and schemas, conditioned on t
       'companion_session_close',
       'companion_session_send',
       'companion_session_draft',
-      'companion_browser_open',
     ],
   );
   assert.equal((await full.request('ping')).result !== undefined, true);
   assert.equal((await full.request('resources/list')).error.code, -32601);
   assert.equal(await full.close(), 0);
+});
+
+test('the bridge offers companion_browser_open only when the listener announced it', async (context) => {
+  const route = await TurnResultRoute.open();
+  context.after(() => route.close());
+  const base = {
+    COMPANION_CLAUDE_RESULTS_ENDPOINT: route.connection.endpoint,
+    COMPANION_CLAUDE_RESULTS_TOKEN: route.connection.token,
+    COMPANION_SESSION_TOOLS_ENDPOINT: 'http://127.0.0.1:1/session',
+    COMPANION_SESSION_TOOLS_TOKEN: 'b'.repeat(64),
+  };
+  const names = async (environment: Record<string, string>) => {
+    const client = new BridgeClient(environment);
+    const tools = (await client.request('tools/list')).result.tools;
+    assert.equal(await client.close(), 0);
+    return tools.map((tool: { name: string }) => tool.name) as string[];
+  };
+
+  // A new listener announces it with the lease.
+  const announced = await names({ ...base, COMPANION_SESSION_TOOLS_CAPABILITIES: 'browser-open' });
+  assert.ok(announced.includes('companion_browser_open'));
+
+  // Unknown, malformed or look-alike announcements never enable it, and the
+  // other session tools stay available.
+  for (const value of ['', ' ', 'Browser-Open', 'browser-open-v2', 'browser_open', 'x,y']) {
+    const offered = await names({ ...base, COMPANION_SESSION_TOOLS_CAPABILITIES: value });
+    assert.equal(offered.includes('companion_browser_open'), false, JSON.stringify(value));
+    assert.ok(offered.includes('companion_session_draft'), JSON.stringify(value));
+  }
+
+  // Without a session tool lease at all, the capability alone offers nothing.
+  const withoutLease = await names({
+    COMPANION_CLAUDE_RESULTS_ENDPOINT: route.connection.endpoint,
+    COMPANION_CLAUDE_RESULTS_TOKEN: route.connection.token,
+    COMPANION_SESSION_TOOLS_CAPABILITIES: 'browser-open',
+  });
+  assert.deepEqual(withoutLease, ['companion_choices', 'companion_name_session']);
 });
 
 test('choice and name calls report to the turn route before succeeding', async (context) => {

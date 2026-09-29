@@ -20,6 +20,8 @@ export const maxAgentDepth = 3;
 /** Start/reopen/close/send/draft/browser-open calls admitted per agent turn, including failures. */
 export const maxLifecycleActionsPerTurn = 6;
 
+import { sessionToolCapabilities, type SessionToolCapability } from './session-tools.ts';
+
 const sessionIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const maximumBodyBytes = 32 * 1024;
 const maximumReceiptsPerTurn = 32;
@@ -182,7 +184,13 @@ export class SessionToolService {
     turnId: string,
     depth: number,
     signal: AbortSignal,
-  ): Promise<{ endpoint: string; token: string; release(): void }> {
+  ): Promise<{
+    endpoint: string;
+    token: string;
+    /** Optional tools this service supports; see `sessionToolCapabilities`. */
+    capabilities: readonly SessionToolCapability[];
+    release(): void;
+  }> {
     signal.throwIfAborted();
     const origin = await this.start();
     signal.throwIfAborted();
@@ -208,7 +216,12 @@ export class SessionToolService {
       release,
     });
     signal.addEventListener('abort', release, { once: true });
-    return { endpoint: origin + '/session', token, release };
+    return {
+      endpoint: origin + '/session',
+      token,
+      capabilities: sessionToolCapabilities,
+      release,
+    };
   }
 
   async close(): Promise<void> {
