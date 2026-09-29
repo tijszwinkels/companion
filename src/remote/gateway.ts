@@ -224,6 +224,41 @@ export class Gateway {
     // refuses to start rather than silently serving without it.
     await this.apps?.start();
 
+    // Any later failure (occupied port, unreadable TLS material) must not
+    // leave the app proxy listening or timers running in a process whose
+    // gateway never started. Release what was started, then report the
+    // original error.
+    try {
+      await this.startServer();
+    } catch (error) {
+      await this.releaseFailedStart();
+      throw error;
+    }
+  }
+
+  /** Undo a partial start; never masks the original startup error. */
+  private async releaseFailedStart(): Promise<void> {
+    clearInterval(this.revocationTimer);
+    clearInterval(this.heartbeatTimer);
+    this.revocationTimer = undefined;
+    this.heartbeatTimer = undefined;
+
+    const server = this.server;
+    this.server = undefined;
+    if (server?.listening) {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+
+    try {
+      await this.apps?.close();
+    } catch (error) {
+      this.options.log(`App proxy cleanup after failed start: ${String(error)}`);
+    }
+  }
+
+  /** Create and bind the gateway's own HTTP(S) server and its timers. */
+  private async startServer(): Promise<void> {
     const handler = (request: IncomingMessage, response: ServerResponse) => {
       this.handleHttp(request, response).catch((error) => {
         this.options.log(`HTTP error: ${String(error)}`);
@@ -235,16 +270,17 @@ export class Gateway {
       });
     };
 
-    this.server = this.options.tls
+    const server = this.options.tls
       ? createHttpsServer({ cert: this.options.tls.cert, key: this.options.tls.key }, handler)
       : createHttpServer(handler);
+    this.server = server;
 
-    this.server.on('upgrade', (request, socket, head) => this.handleUpgrade(request, socket, head));
+    server.on('upgrade', (request, socket, head) => this.handleUpgrade(request, socket, head));
 
     await new Promise<void>((resolveListen, rejectListen) => {
-      this.server!.once('error', rejectListen);
-      this.server!.listen(this.options.port, this.options.host, () => {
-        this.server!.removeListener('error', rejectListen);
+      server.once('error', rejectListen);
+      server.listen(this.options.port, this.options.host, () => {
+        server.removeListener('error', rejectListen);
         resolveListen();
       });
     });
@@ -280,9 +316,11 @@ export class Gateway {
       client.terminate();
     }
 
-    if (this.server) {
-      this.server.closeAllConnections();
-      await new Promise<void>((resolveClose) => this.server!.close(() => resolveClose()));
+    const server = this.server;
+    this.server = undefined;
+    if (server?.listening) {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
   }
 

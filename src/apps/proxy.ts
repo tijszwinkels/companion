@@ -147,26 +147,37 @@ export class AppProxy {
       );
     });
 
-    await new Promise<void>((resolveListen, rejectListen) => {
-      this.server!.once('error', rejectListen);
-      this.server!.listen(this.options.port, this.options.host, () => {
-        this.server!.removeListener('error', rejectListen);
-        resolveListen();
+    const server = this.server;
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(this.options.port, this.options.host, () => {
+          server.removeListener('error', rejectListen);
+          resolveListen();
+        });
       });
-    });
+    } catch (error) {
+      // Nothing is listening; forget the server so close() stays a no-op.
+      this.server = undefined;
+      throw error;
+    }
 
     this.sweepTimer = setInterval(() => {
       this.grants.sweep().catch((error) => this.options.log(String(error)));
     }, this.options.sweepMilliseconds ?? 5000);
   }
 
+  /** Stop listening and end every session. Safe to call more than once. */
   async close(): Promise<void> {
     clearInterval(this.sweepTimer);
+    this.sweepTimer = undefined;
     this.grants.endAll();
 
-    if (this.server) {
-      this.server.closeAllConnections();
-      await new Promise<void>((resolveClose) => this.server!.close(() => resolveClose()));
+    const server = this.server;
+    this.server = undefined;
+    if (server?.listening) {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
   }
 

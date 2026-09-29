@@ -184,3 +184,85 @@ function get(
     request.end();
   });
 }
+
+/** Active server sockets and timers in this process, by kind. */
+function ownedHandles(): { servers: number; timers: number } {
+  const resources = process.getActiveResourcesInfo();
+  return {
+    servers: resources.filter((kind) => kind === 'TCPServerWrap').length,
+    timers: resources.filter((kind) => kind === 'Timeout').length,
+  };
+}
+
+/** Whether anything accepts TCP connections on this loopback port. */
+async function listening(port: number): Promise<boolean> {
+  const { connect } = await import('node:net');
+  return new Promise((resolve) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => resolve(false));
+  });
+}
+
+test('a gateway that fails to start releases its app proxy and keeps the original error', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'companion-remote-apps-start-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+
+  // Something else already holds the gateway's port.
+  const blocker = createServer();
+  await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+  context.after(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
+  const occupiedPort = (blocker.address() as { port: number }).port;
+
+  const failures: Array<{
+    name: string;
+    tls?: { cert: string; key: string };
+    port: number;
+    error: RegExp;
+  }> = [
+    { name: 'occupied port', port: occupiedPort, error: /EADDRINUSE/ },
+    {
+      name: 'unreadable TLS material',
+      port: await freePort(),
+      tls: { cert: 'not a certificate', key: 'not a key' },
+      error: /PEM|certificate|key|asn1|ssl/i,
+    },
+  ];
+
+  for (const failure of failures) {
+    const appsPort = await freePort();
+    // Let servers closed by earlier tests finish closing before the baseline.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const before = ownedHandles();
+
+    const gateway = new Gateway({
+      host: '127.0.0.1',
+      port: failure.port,
+      tls: failure.tls,
+      origins: [`http://127.0.0.1:${failure.port}`],
+      stateDirectory: join(root, failure.name.replace(/\s/g, '-')),
+      controlSocket: join(root, 'no-listener.sock'),
+      sessionsDirectory: join(root, 'sessions'),
+      appDirectory: join(root, 'no-app'),
+      log: () => {},
+      apps: {
+        host: '127.0.0.1',
+        port: appsPort,
+        origins: [['budget', `http://budget.localhost:${appsPort}`]],
+        registryDirectory: join(root, 'apps'),
+      },
+    });
+
+    await assert.rejects(gateway.start(), failure.error, failure.name);
+
+    assert.equal(await listening(appsPort), false, `${failure.name}: app proxy released`);
+    assert.deepEqual(ownedHandles(), before, `${failure.name}: no leaked servers or timers`);
+
+    // Shutdown after a failed start is safe and changes nothing.
+    await gateway.close();
+    assert.deepEqual(ownedHandles(), before);
+  }
+});
