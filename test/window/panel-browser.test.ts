@@ -102,6 +102,20 @@ function site(visits: Visit[]) {
     } else if (path === '/redirect-file') {
       response.writeHead(302, { Location: 'file:///etc/hostname' });
       response.end();
+    } else if (path === '/redirect-mailto') {
+      response.writeHead(302, { Location: 'mailto:someone@example.com' });
+      response.end();
+    } else if (path === '/external') {
+      // Large mailto: and custom-scheme links, clicked with real pointer events.
+      response.setHeader('Content-Type', 'text/html');
+      response.end(
+        page(
+          'External',
+          '<div style="height: 80px"></div>' +
+            '<a class="block" href="mailto:someone@example.com">Mail</a>' +
+            '<a class="block" href="companion-test-scheme://open">Custom</a>',
+        ),
+      );
     } else if (path === '/redirect-widget') {
       response.writeHead(302, { Location: 'companion-widget://view/document' });
       response.end();
@@ -205,14 +219,49 @@ async function close(server: Server) {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
+// Programs Qt or a desktop library could use to hand a URL to another
+// application. Recording stubs with these names come first in PATH, so any
+// launch attempt is logged instead of opening something. The environment
+// has no D-Bus session, so the desktop portal route is not available either.
+const externalHandlers = [
+  'xdg-open',
+  'xdg-email',
+  'gio',
+  'kde-open',
+  'kde-open5',
+  'kioclient5',
+  'gnome-open',
+  'exo-open',
+  'x-www-browser',
+  'sensible-browser',
+  'firefox',
+  'chromium',
+  'thunderbird',
+];
+
+function handlerLog(directory: string) {
+  return join(directory, 'external-handlers.log');
+}
+
 // Isolated environment for one runner process: temporary HOME, XDG and
-// runtime directories, offscreen Qt and software rendering.
+// runtime directories, offscreen Qt and software rendering, and recording
+// stubs for external URL handlers.
 async function environment(directory: string) {
   const runtime = join(directory, 'runtime');
   await mkdir(runtime, { mode: 0o700 });
 
+  const stubs = join(directory, 'handlers');
+  await mkdir(stubs, { recursive: true });
+  for (const name of externalHandlers) {
+    await writeFile(
+      join(stubs, name),
+      `#!/bin/sh\necho "${name} $*" >> '${handlerLog(directory)}'\n`,
+      { mode: 0o755 },
+    );
+  }
+
   return {
-    PATH: process.env.PATH,
+    PATH: stubs + ':' + process.env.PATH,
     HOME: directory,
     XDG_CONFIG_HOME: join(directory, 'config'),
     XDG_CACHE_HOME: join(directory, 'cache'),
@@ -315,7 +364,7 @@ test(
         await runQml(path, env, `panel-browser-${phase}`, expected);
       }
 
-      await run('first', /Totals: 15 passed, 0 failed, 1 skipped/);
+      await run('first', /Totals: 16 passed, 0 failed, 1 skipped/);
 
       // Chromium created the named profile under the temporary data directory,
       // privately, and nowhere near widget, app or personal browser storage.
@@ -350,9 +399,12 @@ test(
       await assert.rejects(stat(join(directory, 'Downloads/fixture.bin')), { code: 'ENOENT' });
       // The certificate was refused before any HTTPS request was served.
       assert.deepEqual(httpsVisits, []);
+      // mailto:, custom-scheme links and a redirect to mailto: launched nothing.
+      assert.ok(paths.includes('/redirect-mailto') && paths.includes('/external'), paths.join(' '));
+      await assert.rejects(stat(handlerLog(directory)), { code: 'ENOENT' });
 
       const reached = visits.length;
-      await run('second', /Totals: 3 passed, 0 failed, 13 skipped/);
+      await run('second', /Totals: 3 passed, 0 failed, 14 skipped/);
       const echoes = visits.slice(reached).filter((visit) => visit.path === '/echo');
       assert.deepEqual(
         echoes.map((visit) => visit.cookie),
@@ -360,9 +412,8 @@ test(
         'the panel profile sends its persisted cookie; a default-profile view does not',
       );
     } finally {
-      for (const server of servers) {
-        await close(server);
-      }
+      // A failing close must not leave the temporary home behind.
+      await Promise.allSettled(servers.map((server) => close(server)));
       await rm(directory, { recursive: true, force: true });
     }
   },
@@ -416,14 +467,18 @@ test(
           .replace('@ORIGIN@', JSON.stringify(origin))
           .replace('@REFERENCE@', JSON.stringify(reference)),
       );
-      await runQml(path, env, 'panel-browser-host', /Totals: 5 passed, 0 failed/);
+      await runQml(path, env, 'panel-browser-host', /Totals: 6 passed, 0 failed/);
+      await assert.rejects(stat(handlerLog(directory)), { code: 'ENOENT' });
     } finally {
+      // A failing close must not leave the temporary home behind.
+      const closing: Promise<unknown>[] = [];
       if (server) {
-        await close(server);
+        closing.push(close(server));
       }
       if (service) {
-        await service.close();
+        closing.push(service.close());
       }
+      await Promise.allSettled(closing);
       await rm(directory, { recursive: true, force: true });
     }
   },

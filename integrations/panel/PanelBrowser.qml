@@ -46,9 +46,11 @@ FocusScope {
   property string fontFamily: "sans-serif"
   property real unit: 1
 
-  // PanelContent sets this while the browser replaces the chat. A hidden page
-  // stays loaded but is frozen and muted, so it keeps its place without
-  // running scripts or playing sound in the background.
+  // PanelContent sets this while the browser replaces the chat. When chat is
+  // shown instead, the page stays loaded but is frozen and muted, so it keeps
+  // its place without running scripts or playing sound. Hiding the whole
+  // Companion window does not change item visibility, so it neither freezes
+  // nor mutes the page.
   property bool shown: false
 
   readonly property var page: pageLoader.item

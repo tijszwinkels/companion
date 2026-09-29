@@ -22,6 +22,7 @@ TestCase {
       ["http://127.0.0.1:4000/x", "http://127.0.0.1:4000/x"],
       ["https://localhost:8443/", "https://localhost:8443/"],
       ["example.com:8443", "https://example.com:8443"],
+      ["https://user:pass@example.com/", "https://user:pass@example.com/"],
     ]
     for (const [input, expected] of cases) {
       const result = Policy.addressFromInput(input)
@@ -41,6 +42,7 @@ TestCase {
       ["javascript:alert(1)", "does not open javascript:"],
       ["data:text/html,hi", "does not open data:"],
       ["mailto:someone@example.com", "does not open mailto:"],
+      ["user:pass@example.com", "type it in full: https://user:password@host"],
       ["chrome://settings", "does not open chrome:"],
       ["view-source:https://example.com", "does not open view-source:"],
       ["about:settings", "does not open about:"],

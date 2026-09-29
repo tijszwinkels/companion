@@ -143,7 +143,9 @@ Item {
   onSelectedSessionChanged: {
     if (selectedSession === null) {
       chat.releaseComposerFocus()
-      if (root.keyboardFocused) root.forceActiveFocus(Qt.TabFocusReason)
+      // While browsing, the page or address field keeps focus: a conversation
+      // closed in the background must not take the user's typing away.
+      if (root.keyboardFocused && !root.browsing) root.forceActiveFocus(Qt.TabFocusReason)
     } else if (selectedSession.id === root.pendingOriginId) {
       const groupId = root.pendingOriginGroupId
       root.clearPendingOrigin()

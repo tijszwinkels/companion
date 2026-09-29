@@ -132,7 +132,14 @@ export function addressFromInput(input) {
   const decision = mainFrameDecision(url.href);
 
   if (!decision.allowed) {
-    return { url: '', error: decision.reason };
+    // "user:pass@example.com" reads to a URL parser as a "user:" scheme,
+    // exactly like "mailto:someone@example.com". Explain both readings.
+    const credentialsLike = !text.includes('//') && /^[^/?#]*@/.test(text);
+    const hint = credentialsLike
+      ? ' For a web address with a user name, type it in full: https://user:password@host.'
+      : '';
+
+    return { url: '', error: decision.reason + hint };
   }
 
   return { url: url.href, error: '' };

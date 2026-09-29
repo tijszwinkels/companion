@@ -29,7 +29,12 @@ a message saying so instead of a page; the rail returns as usual.
 - **Chat** returns to the conversation and keeps the page. While hidden the
   page is frozen (scripts and timers stop) and muted; opening the browser
   again resumes it. Selecting a conversation, Activity or Previous sessions in
-  the rail, and the focus-input shortcut, do the same.
+  the rail, and the focus-input shortcut, do the same. **Hiding the whole
+  Companion panel (×, the toggle shortcut) does not freeze or mute the page**;
+  it keeps running as it would in a hidden browser window.
+- While browsing, a conversation closed in the background (by an agent,
+  another surface or a reconnect) does not move keyboard focus: typing stays
+  in the page or the address field.
 - **Close** unloads the page and returns to chat. The address stays in the
   field for reopening; cookies and site data stay in the profile.
 
@@ -66,14 +71,16 @@ loopback (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`), and `about:blank`.
 The check runs for typed addresses, links, form posts and server redirects.
 Everything else (`file:`, `data:`, `blob:`, `javascript:`,
 `companion-widget:`, `chrome:`, `view-source:`, `mailto:` and other external
-schemes) is refused, and no external handler is launched. Typed addresses and
-redirects get a notice. For attempts started by the page itself, Chromium
-decides first:
+schemes) is refused, and no external handler is launched. Typed addresses get
+a notice, and so do server redirects to a refused web address (for example
+public `http:`) or to `companion-widget:`. Chromium decides first for other
+attempts:
 
-- some (e.g. `companion-widget:`) end on Chromium's inert `about:blank#blocked`
-  page, which also shows a notice;
-- `file:`, `mailto:` and unknown schemes are dropped by Chromium before
-  Companion is told, so the page simply stays where it was, **without a
+- some page-initiated ones (e.g. `companion-widget:`) end on Chromium's inert
+  `about:blank#blocked` page, which also shows a notice;
+- page-initiated `file:`, `mailto:` and unknown-scheme links, and server
+  redirects to `mailto:` and similar non-web schemes, are dropped by Chromium
+  before Companion is told. The page simply stays where it was, **without a
   notice** (as in Chromium itself, apart from a console message).
 
 Subresources and frames follow Chromium's normal rules.
@@ -120,7 +127,10 @@ Nothing spoofs the user agent or copies credentials to work around this.
   pending dialog lapses on navigation and is declined by Close. Chat and Close
   are reached from page focus by keyboard alone, also while a dialog is open.
   A hidden page is frozen: JavaScript timers stop and a playing (muted) audio
-  element's position does not advance until it is shown again. A
+  element's position does not advance until it is shown again. Recording
+  stubs for `xdg-open`, `gio` and similar handlers come first in `PATH`; real
+  clicks on `mailto:` and custom-scheme links and a redirect to `mailto:` must
+  leave them unused (the test environment has no D-Bus portal). A
   second runner process with the same temporary home proves that cookies and
   local storage persist on disk, and that a default-profile view does not see
   them. The storage directories are checked to be 0700.
@@ -131,6 +141,8 @@ Nothing spoofs the user agent or copies credentials to work around this.
   and selection survive Window/Sidebar/Dock moves (ordinary offscreen surfaces),
   hide/show and agent updates. Chat, the rail, Alt+1 and the focus command
   return; the page is then frozen and resumes on reopening; Close unloads it.
+  A snapshot that removes the selected conversation leaves keyboard focus in
+  the address field or the page.
   The widget keeps its separate off-the-record profile.
 - `test/panel/tst_panel_browser_entry.qml`: a portable host never shows the
   entry or loads the browser, even with the native-widget marker set; a

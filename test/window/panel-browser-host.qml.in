@@ -208,4 +208,49 @@ TestCase {
     view.trigger("chat")
     tryVerify(function() { return !panel.browsing })
   }
+
+  // Review F1: a snapshot that drops the selected conversation (an agent or
+  // another surface closed it, or a reconnect) must not take keyboard focus
+  // from the browser, whether the address field or the page has it.
+  function test_04_background_close_keeps_browser_focus() {
+    const other = {id: "two", title: "Other chat", status: "idle", messages: []}
+    function snapshot(sessions) {
+      fakeBackend.received({type: "state", protocol: 1, ready: true,
+        activitySessionId: "activity", activityHistoryCount: 0, sessions: sessions})
+    }
+    compare(panel.selectedSessionId, "one")
+    openBrowser()
+    const view = browser()
+    const address = findChild(view, "panelBrowserAddress")
+    tryVerify(function() { return address.activeFocus })
+    address.selectAll()
+    type("127.0.0.1:1/draft")
+    snapshot([other])
+    tryVerify(function() { return panel.selectedSession === null })
+    wait(100)
+    verify(panel.browsing)
+    verify(address.activeFocus, "the address keeps focus")
+    keyClick("Z")
+    compare(view.addressText, "127.0.0.1:1/draftZ", "typing continues in the address")
+
+    // Again with the page focused.
+    snapshot([conversation(), other])
+    body.client.sessions.select("one")
+    tryVerify(function() { return panel.selectedSession !== null })
+    verify(panel.browsing, "a programmatic selection does not leave the browser")
+    verify(view.openAddress(origin + "/"))
+    tryVerify(function() { return view.page !== null && view.page.title === "Home" }, 10000)
+    tryVerify(function() { return view.page.activeFocus })
+    snapshot([other])
+    tryVerify(function() { return panel.selectedSession === null })
+    wait(100)
+    verify(panel.browsing)
+    verify(view.page.activeFocus, "the page keeps focus")
+
+    // Returning shows the page that now applies (Activity) and focuses it.
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    verify(findChild(body, "fullActivityStatus").visible)
+    tryVerify(function() { return findChild(body, "activityTextInput").activeFocus }, 2000)
+  }
 }

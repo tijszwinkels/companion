@@ -192,6 +192,25 @@ TestCase {
     }
   }
 
+  // Review F4: clicks and redirects to external schemes never launch a
+  // handler. The node driver asserts that its recording stubs stayed unused.
+  function test_04b_external_scheme_links_launch_nothing() {
+    onlyIn("first")
+    for (const y of [140, 260]) {
+      load("/external")
+      waitHidden()
+      mouseClick(browser.page, 150, y)
+      wait(500)
+      verify(browser.pageUrl === origin + "/external" || browser.pageUrl === "about:blank#blocked",
+        "click at " + y + " -> " + browser.pageUrl)
+    }
+    load("/")
+    verify(browser.openAddress(origin + "/redirect-mailto"))
+    wait(500)
+    tryVerify(function() { return !browser.loading }, 10000)
+    verify(browser.pageUrl.indexOf("mailto:") !== 0, browser.pageUrl)
+  }
+
   function test_05_new_windows_are_refused_with_a_notice() {
     onlyIn("first")
     load("/popup")
@@ -408,7 +427,8 @@ TestCase {
     waitHidden()
     mouseClick(browser.page, 150, 100)
     tryCompare(browser.page, "title", "playing", 5000)
-    wait(500)
+    // Wait until playback demonstrably advances, however loaded the machine.
+    tryVerify(function() { return Number(run("document.getElementById('audio').currentTime")) > 0.2 }, 5000)
     const before = Number(run("document.getElementById('audio').currentTime"))
     browser.shown = false
     browser.visible = false
