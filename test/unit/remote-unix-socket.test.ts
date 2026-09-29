@@ -577,6 +577,14 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
   // the app proxy's close() waiting until the peer lets go.
   const holder = createConnection({ host: '127.0.0.1', port: appsPort, allowHalfOpen: true });
   holder.on('error', () => {});
+
+  // Registered before any wait that can fail: an early failure must still
+  // release the held connection and close the gateway (close() is idempotent).
+  context.after(async () => {
+    holder.destroy();
+    await gateway.close();
+  });
+
   const refusal = readStatusLine(holder);
   holder.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
   assert.match(await refusal, /^HTTP\/1\.1 405/);
