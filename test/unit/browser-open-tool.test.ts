@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { bridgeTools } from '../../src/agents/claude/bridge-tools.ts';
+import { DesktopServer } from '../../src/desktop/server.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { defaultAgentSettings } from '../../src/agents/settings.ts';
 import { sessionTools } from '../../src/agents/session-tools.ts';
@@ -458,4 +459,54 @@ test('disconnects, ended turns, reconnects, remote panels and external callers n
   f.endTurn();
   await f.sessions.idle();
   assert.match(String((await f.open('https://example.com/late')).error), /\[expired\]$/);
+});
+
+// Review finding 3: the panel's answer is a control action. A slow paste (or
+// any other ordinary request) on the same connection must not block it, or a
+// page that really opened would time out as unconfirmed.
+test('browser answers are admitted while an ordinary request is still running', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-browser-admission-'));
+  let release: () => void = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const handled: string[] = [];
+  const server = new DesktopServer(
+    join(directory, 'control.sock'),
+    () => ({ type: 'state' }),
+    async (value) => {
+      const action = String((value as { action?: unknown }).action);
+      handled.push(action);
+      if (action === 'paste') {
+        await blocked;
+      }
+      return 'recorded';
+    },
+  );
+  let client: Socket | undefined;
+  context.after(async () => {
+    release();
+    client?.destroy();
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await server.start();
+  client = createConnection(join(directory, 'control.sock'));
+  await once(client, 'connect');
+  const received: string[] = [];
+  client.setEncoding('utf8');
+  client.on('data', (chunk: string) => received.push(chunk));
+
+  client.write(JSON.stringify({ action: 'paste' }) + '\n');
+  await waitFor(() => handled.includes('paste'));
+  // A batch of answers arrives while the paste is still running.
+  for (const requestId of ['one', 'two', 'three']) {
+    client.write(
+      JSON.stringify({ action: 'agent-browser-open-result', requestId, outcome: 'loaded' }) + '\n',
+    );
+  }
+  await waitFor(
+    () => handled.filter((action) => action === 'agent-browser-open-result').length === 3,
+  );
+  assert.doesNotMatch(received.join(''), /Previous request is still running/);
 });

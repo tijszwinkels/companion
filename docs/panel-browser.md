@@ -140,15 +140,22 @@ not even its title).
   page the user cannot see is never reported as opened. In
   an already focused window, keyboard focus moves to the page instead of the
   hidden composer. Drafts, pins and widgets are kept as usual.
-- **Answer:** the panel reports once, after the page loaded (`loaded` with its
-  address) or failed (`load-failed` with the load error, certificate or policy
-  notice), or after about 8 seconds (`loading`). A newer request, or the user's
-  own navigation or Close, answers `superseded`. Confirmed non-changes are
-  `panel-hidden`, `not-selected`, `busy`,
-  `unsupported` (no native browser, or Qt WebEngine older than 6.9) and
-  `refused`. `offline` means no panel is connected. `unconfirmed` means the
-  panel did not answer within 15 seconds or disconnected; the agent is told not
-  to retry.
+- **Answer:** the panel reports once, from what actually happened: `loaded`
+  (with its address; a same-document `#fragment` counts as soon as it is
+  shown), `load-failed` (with the load error, certificate or policy notice), or
+  `cancelled` when the current page asked before leaving and the user chose to
+  stay. A newer request, or the user's own link, form, history step, reload,
+  typed address or Close, answers `superseded`; redirects and script-driven
+  navigations of the requested page still count as its own. After about 8
+  seconds without an answer the panel reports the view's real state: `loading`
+  if it is still loading, `loaded` if it shows the requested address, otherwise
+  `load-failed`. While a page dialog still awaits the user it keeps waiting.
+  Confirmed non-changes are `cancelled`, `panel-hidden`, `not-selected`,
+  `busy`, `unsupported` (no native browser, or Qt WebEngine older than 6.9)
+  and `refused`. `offline` means no panel is connected. `unconfirmed` means
+  the panel did not answer within 15 seconds or disconnected; the agent is told
+  not to retry. The panel's answer is a desktop control action, so a slow
+  request on the same connection (such as a paste) cannot hold it back.
 - **No replay:** each call is one `agent-browser-open` event to one native
   window. It is not stored in snapshots or re-sent on reconnect, and a repeated
   delivery of the same tool call returns the original reply without asking the

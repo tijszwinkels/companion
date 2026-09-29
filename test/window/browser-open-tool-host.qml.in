@@ -245,4 +245,59 @@ TestCase {
     compare(answers(requestId).length, 1)
     compare(view.pageUrl, origin + "/")
   }
+
+  // Review findings 1 and 2: every answer reflects what actually happened.
+  function test_09_navigation_outcomes_are_truthful() {
+    const view = browser()
+    compare(answer(request("one", origin + "/")).outcome, "loaded")
+
+    // A same-document #fragment is answered as soon as it is shown, not as
+    // "loading" after the bounded wait.
+    const fragment = answer(request("one", origin + "/#anchor"), 3000)
+    compare(fragment.outcome, "loaded")
+    compare(fragment.url, origin + "/#anchor")
+
+    // A server redirect remains the request's own navigation.
+    const redirected = answer(request("one", origin + "/redirect"))
+    compare(redirected.outcome, "loaded")
+    compare(redirected.url, origin + "/second")
+
+    // Staying on a page that asks before leaving cancels the request.
+    compare(answer(request("one", origin + "/leave")).outcome, "loaded")
+    tryCompare(view, "controlsShown", false, 3000)
+    let activated = false
+    for (let attempt = 0; attempt < 10 && !activated; attempt++) {
+      waitForRendering(view.page)
+      mouseClick(view.page, 100, 100)
+      activated = evaluate(view.page, "navigator.userActivation.hasBeenActive") === true
+    }
+    verify(activated, "the page registered a real user gesture")
+    const stay = request("one", origin + "/second")
+    tryVerify(function() { return view.pendingDialog !== null }, 5000)
+    view.answerDialog(false)
+    const stayed = answer(stay, 3000)
+    compare(stayed.outcome, "cancelled")
+    wait(300)
+    compare(view.pageUrl, origin + "/leave")
+    // Leaving lets the same request's page load.
+    const leave = request("one", origin + "/second")
+    tryVerify(function() { return view.pendingDialog !== null }, 5000)
+    view.answerDialog(true)
+    compare(answer(leave).outcome, "loaded")
+
+    // The user's own link click while the agent's page still loads replaces
+    // it; that user navigation is never reported as the agent's page.
+    const held = request("one", origin + "/held")
+    tryVerify(function() {
+      return view.pageUrl === origin + "/held"
+        && evaluate(view.page, "document.getElementById('other') !== null") === true
+    }, 5000)
+    verify(view.loading, "the requested page is still loading")
+    tryCompare(view, "controlsShown", false, 3000)
+    waitForRendering(view.page)
+    mouseClick(view.page, 150, 180)
+    const replaced = answer(held, 5000)
+    compare(replaced.outcome, "superseded")
+    tryVerify(function() { return view.pageUrl === origin + "/second" }, 5000)
+  }
 }

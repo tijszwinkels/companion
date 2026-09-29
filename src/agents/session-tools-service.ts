@@ -709,6 +709,11 @@ function browserFailure(result: AgentBrowserOpenOutcome): string {
       reason
     );
   }
+  if (result.outcome === 'cancelled') {
+    return (
+      'Not opened: the current page asked whether to leave it, and the user chose to stay.' + reason
+    );
+  }
   if (result.outcome === 'panel-hidden') {
     return (
       'Not opened: the Companion panel is hidden, so the user could not see the page. ' +

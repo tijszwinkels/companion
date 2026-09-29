@@ -62,6 +62,33 @@ function site(visits: string[]) {
           response.end(page('Slow'));
         }
       }, 10000).unref();
+    } else if (path === '/redirect') {
+      response.writeHead(302, { Location: '/second' });
+      response.end();
+    } else if (path === '/leave') {
+      // Asks before leaving (Chromium asks only after a real user gesture).
+      response.setHeader('Content-Type', 'text/html');
+      response.end(
+        page(
+          'Leave',
+          '<p style="height: 300px">Unsaved form</p><script>addEventListener(' +
+            "'beforeunload', (event) => { event.preventDefault(); event.returnValue = ''; });" +
+            '</script>',
+        ),
+      );
+    } else if (path === '/held') {
+      // Its document is shown at once, but its image never finishes, so the
+      // page keeps loading while the user clicks the link.
+      response.setHeader('Content-Type', 'text/html');
+      response.end(
+        page(
+          'Held',
+          '<a id="other" href="/second" style="display: block; margin-top: 100px; ' +
+            'height: 200px; background: #cde">Other page</a><img src="/held-image">',
+        ),
+      );
+    } else if (path === '/held-image') {
+      // Never answered; closed with the server at cleanup.
     } else if (path === '/redirect-public-http') {
       response.writeHead(302, { Location: 'http://example.invalid/' });
       response.end();
@@ -167,7 +194,7 @@ test(
           { env, timeout: 100000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 },
         );
         output = result.stdout + result.stderr;
-        assert.match(result.stdout, /Totals: 10 passed, 0 failed/);
+        assert.match(result.stdout, /Totals: 11 passed, 0 failed/);
       } catch (error) {
         output = output || [String(error), (error as any).stdout, (error as any).stderr].join('\n');
         throw Error(output, { cause: error });

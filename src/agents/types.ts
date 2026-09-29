@@ -279,6 +279,7 @@ export interface AgentBrowserOpenRequest {
  *   the page finished loading, was still loading when the panel answered, or
  *   failed to load (reason says why, e.g. an invalid certificate).
  * - `superseded`: a newer navigation replaced it before it finished.
+ * - `cancelled`: the page asked before leaving and the user chose to stay.
  * - `refused`, `not-selected`, `busy`, `panel-hidden`, `unsupported`:
  *   confirmed non-changes. A hidden panel is never shown for an agent, and
  *   opening a page the user cannot see is not reported as success.
@@ -292,6 +293,7 @@ export interface AgentBrowserOpenOutcome {
     | 'loading'
     | 'load-failed'
     | 'superseded'
+    | 'cancelled'
     | 'refused'
     | 'not-selected'
     | 'busy'

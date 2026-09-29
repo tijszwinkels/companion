@@ -413,6 +413,7 @@ export class DesktopServer {
           action === 'composer-focus' ||
           action === 'panel-state' ||
           action === 'agent-draft-result' ||
+          action === 'agent-browser-open-result' ||
           action === 'reopen-agent' ||
           action === 'close-agent' ||
           action === 'client-role' ||

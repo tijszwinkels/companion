@@ -49,6 +49,7 @@ const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
   'loading',
   'load-failed',
   'superseded',
+  'cancelled',
   'refused',
   'not-selected',
   'busy',

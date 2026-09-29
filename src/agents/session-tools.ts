@@ -208,7 +208,7 @@ export function sessionTools(
         'a hidden panel is never shown for you. Returns outcome "loaded", "loading" (still loading when the ' +
         'panel answered), "load-failed" (with the reason, such as an invalid certificate or a refused ' +
         'redirect) or "superseded", and the address shown after redirects. Failures: panel-hidden, ' +
-        'not-selected, busy (the user is typing an address or answering a page dialog), unsupported (no ' +
+        'cancelled (the user chose to stay on a page that asked before leaving), not-selected, busy (the user is typing an address or answering a page dialog), unsupported (no ' +
         'native browser), refused, offline, or unconfirmed (do not retry; ask the user). Pop-ups, downloads ' +
         'and permissions stay blocked, and signing in to sites is up to the user.',
       parameters: Type.Object({

@@ -463,7 +463,11 @@ test('repeated tool calls and identical content are delivered once per turn', as
     await call(run, 'companion_session_reopen', { id: target });
     errors.push(await refusal(run, 'companion_session_reopen', { id: target }));
   });
-  await sessions.idle();
+  // idle() waits for the turns running when it is called; the target's queued
+  // follow-up turns start afterwards, so drain the queue as the loop test does.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await sessions.idle();
+  }
 
   assert.deepEqual(replies[0], replies[1]);
   assert.match(errors[0], /already delivered.*\[duplicate\]$/);

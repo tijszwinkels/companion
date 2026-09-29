@@ -81,8 +81,11 @@ FocusScope {
   property string pendingDialogHost: ""
   property bool pendingDialogFocus: false
   // An agent's open request (companion_browser_open) waiting for its page:
-  // {answer, url, started}. Answered exactly once: loaded, load-failed, still
-  // loading after agentOpenWait, or superseded by the user or a newer request.
+  // {answer, url, started}. Answered exactly once, from what actually happened:
+  // loaded (including a same-document #fragment), load-failed, cancelled (the
+  // user chose to stay on a page that asked before leaving), superseded (a
+  // newer request, or the user's own link, form, history, reload, typed
+  // address or Close), or, after agentOpenWait, whatever the view then shows.
   property var agentOpen: null
   property int agentOpenWait: 8000
 
@@ -118,7 +121,7 @@ FocusScope {
   Timer {
     id: agentOpenTimeout
     interval: root.agentOpenWait
-    onTriggered: root.finishAgentOpen({outcome: "loading", reason: "The page was still loading."})
+    onTriggered: root.agentOpenTimedOut()
   }
   Timer {
     id: noticeExpiry
@@ -170,7 +173,13 @@ FocusScope {
     root.loadError = ""
     if (!root.profile) root.profile = profilePrototype.instance()
     pageLoader.active = true
-    root.agentOpen = {answer: answer, url: result.url, started: false}
+    // Only a new #fragment of the page already shown is a same-document
+    // navigation, which Chromium completes without any load event.
+    const withoutFragment = function(text) { return String(text).split("#")[0].replace(/\/$/, "") }
+    const sameDocument = root.page !== null && result.url.indexOf("#") >= 0
+      && withoutFragment(result.url) === withoutFragment(root.pageUrl)
+      && !root.sameAddress(result.url, root.pageUrl)
+    root.agentOpen = {answer: answer, url: result.url, started: false, sameDocument: sameDocument}
     agentOpenTimeout.restart()
     root.page.url = result.url
     if (!addressField.edited) addressField.text = result.url
@@ -197,6 +206,30 @@ FocusScope {
     if (root.agentOpen.started) return true
     const strip = function(text) { return String(text).replace(/\/$/, "") }
     return strip(url) === strip(root.agentOpen.url)
+  }
+
+  function sameAddress(first, second) {
+    const strip = function(text) { return String(text).replace(/\/$/, "") }
+    return strip(first) === strip(second)
+  }
+
+  // The bounded wait ended without a load event: report the view's real state.
+  // While a page dialog (such as the leave-page question for this navigation)
+  // still awaits the user, keep waiting; the listener's own deadline bounds
+  // the tool call and then reports it as unconfirmed.
+  function agentOpenTimedOut() {
+    const pending = root.agentOpen
+    if (!pending) return
+    if (root.pendingDialog) {
+      agentOpenTimeout.restart()
+    } else if (root.page && root.page.loading) {
+      root.finishAgentOpen({outcome: "loading", reason: "The page was still loading."})
+    } else if (root.sameAddress(root.pageUrl, pending.url)) {
+      root.finishAgentOpen({outcome: "loaded", reason: ""})
+    } else {
+      root.finishAgentOpen({outcome: "load-failed",
+        reason: root.agentFailure("The page did not open; the browser still shows another address.")})
+    }
   }
 
   // Page text for a failed agent open: the load error and/or the latest notice.
@@ -265,6 +298,11 @@ FocusScope {
     const restoreFocus = root.pendingDialogFocus && pageDialog.activeFocus
     root.pendingDialog = null
     root.pendingDialogFocus = false
+    // Staying on a page that asked before leaving cancels a pending agent open.
+    if (!accepted && request.type === JavaScriptDialogRequest.DialogTypeBeforeUnload) {
+      root.finishAgentOpen({outcome: "cancelled",
+        reason: "The page asked whether to leave it, and the user chose to stay."})
+    }
     if (!accepted) request.dialogReject()
     else if (request.type === JavaScriptDialogRequest.DialogTypePrompt) request.dialogAccept(dialogInput.text)
     else request.dialogAccept()
@@ -395,6 +433,15 @@ FocusScope {
 
       onNavigationRequested: request => {
         if (!request.isMainFrame) return
+        // A link, form, history step or reload replaces a pending agent open.
+        // Redirects and script navigations of the requested page stay its own.
+        const type = request.navigationType
+        if (type === WebEngineNavigationRequest.LinkClickedNavigation
+          || type === WebEngineNavigationRequest.FormSubmittedNavigation
+          || type === WebEngineNavigationRequest.BackForwardNavigation
+          || type === WebEngineNavigationRequest.ReloadNavigation) {
+          root.finishAgentOpen({outcome: "superseded", reason: "The user opened another page."})
+        }
         const decision = Policy.mainFrameDecision(request.url.toString())
         if (decision.allowed) return
         request.reject()
@@ -454,6 +501,16 @@ FocusScope {
       onUrlChanged: {
         if (view.url.toString() === "about:blank#blocked") {
           root.notify("Blocked the page from opening an address the panel browser does not open.")
+        }
+        // A same-document navigation (a new #fragment) changes the address
+        // without loading a document, so no load event will answer it.
+        if (root.agentOpen && root.agentOpen.sameDocument) Qt.callLater(view.settleSameDocument)
+      }
+      function settleSameDocument() {
+        const pending = root.agentOpen
+        if (pending && pending.sameDocument && !pending.started && !view.loading
+          && root.sameAddress(view.url, pending.url)) {
+          root.finishAgentOpen({outcome: "loaded", reason: ""})
         }
       }
       onLoadingChanged: info => {
