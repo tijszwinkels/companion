@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -499,21 +500,36 @@ test('a runtime Serve mismatch stops serving with exit 1 despite open connection
 
   // Peers that never close their side: a refused upgrade (the socket now
   // belongs to the gateway, not the HTTP server) and an idle half-request.
-  const holders = [
-    'GET /elsewhere HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
-    'GET / HTTP/1.1\r\nHost: ',
-  ].map((text) => {
-    const holder = createConnection({ path: socket, allowHalfOpen: true });
-    holder.on('error', () => {});
-    holder.write(text);
-    return holder;
-  });
+  const refusedUpgrade = createConnection({ path: socket, allowHalfOpen: true });
+  const halfRequest = createConnection({ path: socket, allowHalfOpen: true });
+  const halfRequestConnected = once(halfRequest, 'connect');
   context.after(async () => {
-    for (const holder of holders) {
-      holder.destroy();
-    }
+    refusedUpgrade.destroy();
+    halfRequest.destroy();
   });
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  refusedUpgrade.on('error', () => {});
+  halfRequest.on('error', () => {});
+
+  // Proceed only once each connection is known to have reached the gateway:
+  // the upgrade has been answered, and a probe request on the half-request's
+  // server shows the connection was accepted before it.
+  const refusal = once(refusedUpgrade, 'data');
+  refusedUpgrade.write(
+    'GET /elsewhere HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
+  );
+  assert.match(String((await refusal)[0]), /^HTTP\/1\.1 404/);
+  await halfRequestConnected;
+  halfRequest.write('GET / HTTP/1.1\r\nHost: ');
+  const probe = await new Promise<number>((resolve, reject) => {
+    const request = httpRequest({ socketPath: socket, path: '/', headers: { Host: hostname } });
+    request.on('response', (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(probe, 503);
 
   // Funnel gets switched on: the next check stops the gateway, promptly and
   // by closing normally rather than through the shutdown deadline.
@@ -522,7 +538,11 @@ test('a runtime Serve mismatch stops serving with exit 1 despite open connection
   const changedAt = Date.now();
   await fake.setStatus(funnel);
 
-  const [code] = await exited;
+  // Bounded, so a broken watch fails the test instead of hanging it.
+  const timeout = new Promise<never>((_resolve, reject) => {
+    setTimeout(() => reject(Error('the gateway did not stop')), 10_000).unref();
+  });
+  const [code] = await Promise.race([exited, timeout]);
   assert.equal(code, 1);
   assert.ok(Date.now() - changedAt < 4000, 'stopped well before the 5 s deadline');
   assert.match(stderr, /Stopping: Serve has settings other than/);

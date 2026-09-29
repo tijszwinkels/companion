@@ -392,5 +392,8 @@ main().then(
   (error) => {
     console.error(`companion-remote: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
+    // A failed start may leave the app proxy waiting on a peer that holds a
+    // connection open; the process must still end, as after a shutdown.
+    setTimeout(() => process.exit(1), shutdownDeadlineMilliseconds).unref();
   },
 );

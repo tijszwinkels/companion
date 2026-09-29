@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { createConnection, createServer } from 'node:net';
@@ -577,8 +577,9 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
   // the app proxy's close() waiting until the peer lets go.
   const holder = createConnection({ host: '127.0.0.1', port: appsPort, allowHalfOpen: true });
   holder.on('error', () => {});
+  const refusal = once(holder, 'data');
   holder.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.match(String((await refusal)[0]), /^HTTP\/1\.1 405/);
 
   const closing = gateway.close();
 
@@ -591,4 +592,48 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
     holder.destroy();
     await closing;
   }
+});
+
+test('a failed start reports its error even if the app proxy never finishes closing', async (context) => {
+  const fixture = await remoteFixture();
+  context.after(() => fixture.close());
+
+  // The socket directory is group-accessible, so the claim fails after the
+  // app proxy has already started.
+  const socketDirectory = join(fixture.directory, 'shared');
+  await mkdir(socketDirectory, { mode: 0o700 });
+  await chmod(socketDirectory, 0o750);
+
+  const gateway = new Gateway({
+    socketPath: join(socketDirectory, 'gateway.sock'),
+    origins: [tailnetOrigin],
+    stateDirectory: join(fixture.directory, 'remote-state'),
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    apps: {
+      host: '127.0.0.1',
+      port: await freePort(),
+      origins: [],
+      registryDirectory: join(fixture.directory, 'apps'),
+    },
+    log: () => {},
+  });
+
+  // Simulate an app proxy whose close() waits forever on a held connection.
+  const appProxy = gateway.apps!;
+  const realClose = appProxy.close.bind(appProxy);
+  appProxy.close = () => new Promise<void>(() => {});
+  context.after(() => realClose());
+
+  // Bounded, so a regression fails the test instead of hanging it.
+  const hung = new Promise<never>((_resolve, reject) => {
+    setTimeout(() => reject(Error('start() never reported its error')), 8000).unref();
+  });
+  const startedAt = Date.now();
+  await assert.rejects(
+    Promise.race([gateway.start(), hung]),
+    /must not be accessible to other users/,
+  );
+  assert.ok(Date.now() - startedAt < 4000, 'the startup error is reported within the bound');
 });

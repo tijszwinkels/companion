@@ -134,6 +134,9 @@ export interface GatewayAppOptions {
 const maximumPhones = 2;
 const maximumUnauthenticated = 8;
 
+/** How long a failed start waits for the app proxy to close before reporting. */
+const failedStartCleanupMilliseconds = 2000;
+
 /** A new socket must authenticate within this time. */
 const authenticationMilliseconds = 5000;
 
@@ -340,10 +343,18 @@ export class Gateway {
     }
     await this.releaseSocketClaim();
 
-    try {
-      await this.apps?.close();
-    } catch (error) {
-      this.options.log(`App proxy cleanup after failed start: ${String(error)}`);
+    // The app proxy's close() waits for its connections to end, and a local
+    // peer can hold one open. Do not let that keep the startup error from
+    // being reported: wait a bounded time, then give up (the CLI then exits).
+    if (this.apps) {
+      try {
+        const finished = await settlesWithin(this.apps.close(), failedStartCleanupMilliseconds);
+        if (!finished) {
+          this.options.log('App proxy did not finish closing after the failed start');
+        }
+      } catch (error) {
+        this.options.log(`App proxy cleanup after failed start: ${String(error)}`);
+      }
     }
   }
 
@@ -943,6 +954,23 @@ export class Gateway {
         this.screenshots.delete(deviceId);
       }
     }
+  }
+}
+
+/**
+ * Resolve true when `work` settles within `milliseconds`, false when it is
+ * still pending then (it keeps running). A rejection of `work` propagates.
+ */
+async function settlesWithin(work: Promise<void>, milliseconds: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolveTimeout) => {
+    timer = setTimeout(() => resolveTimeout(false), milliseconds);
+  });
+
+  try {
+    return await Promise.race([work.then(() => true), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
