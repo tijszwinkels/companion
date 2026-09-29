@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { once } from 'node:events';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -16,7 +17,7 @@ import {
   type GatewayServiceOptions,
 } from '../../src/remote/gateway.ts';
 import { claimUnixSocket } from '../../src/remote/unix-socket-claim.ts';
-import { remoteFixture, waitFor } from '../remote-fixture.ts';
+import { freePort, remoteFixture, waitFor } from '../remote-fixture.ts';
 
 /**
  * Unix socket mode for Tailscale Serve (`--listen unix:PATH`) and the
@@ -544,4 +545,50 @@ test('a start that fails after claiming the socket releases the lock', async (co
   const claim = await claimUnixSocket(socketPath);
   await claim.release();
   await gateway.close();
+});
+
+test('closing stops the gateway socket before waiting for the app proxy', async (context) => {
+  const fixture = await remoteFixture();
+  context.after(() => fixture.close());
+
+  const socketDirectory = join(fixture.directory, 'phone');
+  await mkdir(socketDirectory, { mode: 0o700 });
+  const socketPath = join(socketDirectory, 'gateway.sock');
+  const appsPort = await freePort();
+
+  const gateway = new Gateway({
+    socketPath,
+    origins: [tailnetOrigin],
+    stateDirectory: join(fixture.directory, 'remote-state'),
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    apps: {
+      host: '127.0.0.1',
+      port: appsPort,
+      origins: [],
+      registryDirectory: join(fixture.directory, 'apps'),
+    },
+    log: () => {},
+  });
+  await gateway.start();
+
+  // A local peer holds a refused CONNECT to the app proxy open, which keeps
+  // the app proxy's close() waiting until the peer lets go.
+  const holder = createConnection({ host: '127.0.0.1', port: appsPort, allowHalfOpen: true });
+  holder.on('error', () => {});
+  holder.write('CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const closing = gateway.close();
+
+  try {
+    // The gateway socket is gone and its lock free while the app proxy waits.
+    await waitFor(() => !existsSync(socketPath), 2000);
+    const claim = await claimUnixSocket(socketPath);
+    await claim.release();
+  } finally {
+    holder.destroy();
+    await closing;
+  }
 });

@@ -429,10 +429,15 @@ export class Gateway {
     await claim?.release();
   }
 
+  /**
+   * Stop serving. The gateway's own listener closes first (which also
+   * unlinks a Unix socket) and its lock is released; only then do we wait for
+   * the optional app proxy, so a slow app-proxy shutdown can never keep the
+   * gateway itself reachable.
+   */
   async close(): Promise<void> {
     clearInterval(this.revocationTimer);
     clearInterval(this.heartbeatTimer);
-    await this.apps?.close();
 
     for (const relay of this.relays.keys()) {
       relay.terminate(closeCodes.shutdown, 'Gateway stopped');
@@ -449,6 +454,8 @@ export class Gateway {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
     await this.releaseSocketClaim();
+
+    await this.apps?.close();
   }
 
   // ---- Request guards -------------------------------------------------------
@@ -774,8 +781,13 @@ export class Gateway {
   // ---- WebSocket ------------------------------------------------------------
 
   private handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
+    // After an upgrade request the socket belongs to us, not to the HTTP
+    // server: closeAllConnections() no longer sees it. Destroy it once the
+    // refusal is written, so a peer that never closes its side cannot keep
+    // the server (and a shutdown waiting for it) open.
     const reject = (status: number, text: string) => {
-      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+      const refusal = `HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`;
+      socket.end(refusal, () => socket.destroy());
     };
 
     // Funnel/login refusals come first, as for plain HTTP, so every upgrade

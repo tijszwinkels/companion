@@ -29,8 +29,24 @@ import {
   type ExpectedServeRoute,
 } from './tailscale-serve-check.ts';
 
-/** How often `--check-tailscale-serve` re-reads the Serve configuration. */
-const serveCheckIntervalMilliseconds = 60_000;
+/**
+ * How often `--check-tailscale-serve` re-reads the Serve configuration.
+ * Tests may shorten (never lengthen) it through
+ * COMPANION_REMOTE_SERVE_CHECK_MILLISECONDS, so the runtime-mismatch path can
+ * be exercised end to end without waiting a minute.
+ */
+const serveCheckIntervalMilliseconds = shortenedInterval(
+  60_000,
+  process.env.COMPANION_REMOTE_SERVE_CHECK_MILLISECONDS,
+);
+
+function shortenedInterval(defaultMilliseconds: number, override: string | undefined): number {
+  const requested = Number(override);
+  if (!Number.isInteger(requested) || requested < 10) {
+    return defaultMilliseconds;
+  }
+  return Math.min(requested, defaultMilliseconds);
+}
 
 /**
  * Unreadable Serve status (e.g. tailscaled restarting) is retried before
@@ -41,11 +57,13 @@ const serveStartupRetry = { attempts: 5, delayMilliseconds: 3000 };
 const serveMaximumConsecutiveUnreadable = 3;
 
 /**
- * After shutdown the process normally exits once its event loop drains. A
- * leftover handle must not keep a stopped gateway looking alive to a
- * supervisor, so exit anyway after this grace period.
+ * Once shutdown begins (signal or Serve mismatch), the process must be gone
+ * within this time. Normally closing takes milliseconds and the process then
+ * exits because its event loop is empty; a connection or handle that does not
+ * let go must not keep a gateway that decided to stop looking alive to a
+ * supervisor, or keep it reachable.
  */
-const exitGraceMilliseconds = 5000;
+const shutdownDeadlineMilliseconds = 5000;
 
 const help = `Usage: companion-remote <serve|pair|devices|revoke> [options]
 
@@ -276,6 +294,14 @@ async function main(): Promise<number> {
     }
   });
 
+  // Armed before closing, so it also bounds a close() that never finishes.
+  // unref(): the timer itself never keeps the process alive.
+  const deadline = setTimeout(() => {
+    console.error('[remote] Shutdown did not finish in time; exiting');
+    process.exit(exitCode);
+  }, shutdownDeadlineMilliseconds);
+  deadline.unref();
+
   // The watch timer would otherwise keep the process alive after close.
   watch?.stop();
   await gateway.close();
@@ -362,8 +388,6 @@ function logTailscaleSafeguards(
 main().then(
   (code) => {
     process.exitCode = code;
-    // Normally the process has nothing left to do and exits right away.
-    setTimeout(() => process.exit(code), exitGraceMilliseconds).unref();
   },
   (error) => {
     console.error(`companion-remote: ${error instanceof Error ? error.message : String(error)}`);

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import test from 'node:test';
@@ -454,5 +455,77 @@ test('serve warns when the login check or Serve check gives less protection', as
     ...common,
   ]);
   assert.match(bare, /Warning: serving a Unix socket without --require-tailscale-login/);
+  await assert.rejects(lstat(socket), { code: 'ENOENT' });
+});
+
+test('a runtime Serve mismatch stops serving with exit 1 despite open connections', async (context) => {
+  const fake = await fakeTailscale(context);
+  const { socket, common } = await cliPaths(fake.directory);
+
+  const matching = exactConfig();
+  matching.Web = { [`${hostname}:443`]: { Handlers: { '/': { Proxy: `unix:${socket}` } } } };
+  await fake.setStatus(matching);
+
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      'src/remote/cli.ts',
+      'serve',
+      '--listen',
+      `unix:${socket}`,
+      '--origin',
+      `https://${hostname}`,
+      '--check-tailscale-serve',
+      ...common,
+    ],
+    {
+      env: {
+        ...process.env,
+        PATH: fake.binDirectory + delimiter + process.env.PATH,
+        COMPANION_REMOTE_SERVE_CHECK_MILLISECONDS: '100',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    },
+  );
+  context.after(async () => {
+    child.kill('SIGKILL');
+  });
+  let stderr = '';
+  child.stderr!.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+  const exited = once(child, 'exit');
+  await waitFor(() => stderr.includes('Pair a phone'), 20_000);
+
+  // Peers that never close their side: a refused upgrade (the socket now
+  // belongs to the gateway, not the HTTP server) and an idle half-request.
+  const holders = [
+    'GET /elsewhere HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
+    'GET / HTTP/1.1\r\nHost: ',
+  ].map((text) => {
+    const holder = createConnection({ path: socket, allowHalfOpen: true });
+    holder.on('error', () => {});
+    holder.write(text);
+    return holder;
+  });
+  context.after(async () => {
+    for (const holder of holders) {
+      holder.destroy();
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Funnel gets switched on: the next check stops the gateway, promptly and
+  // by closing normally rather than through the shutdown deadline.
+  const funnel = structuredClone(matching);
+  funnel.AllowFunnel = { [`${hostname}:443`]: true };
+  const changedAt = Date.now();
+  await fake.setStatus(funnel);
+
+  const [code] = await exited;
+  assert.equal(code, 1);
+  assert.ok(Date.now() - changedAt < 4000, 'stopped well before the 5 s deadline');
+  assert.match(stderr, /Stopping: Serve has settings other than/);
+  assert.ok(!stderr.includes('did not finish'));
   await assert.rejects(lstat(socket), { code: 'ENOENT' });
 });

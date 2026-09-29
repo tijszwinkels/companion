@@ -98,6 +98,8 @@ before changing an existing installation.
    stops serving and exits 1. A status that cannot be read (for example while
    tailscaled restarts) is retried: 5 reads 3 seconds apart at startup, and 3
    unreadable minute-checks in a row at runtime, before it fails the same way.
+   On any shutdown the gateway socket closes first (before the optional app
+   proxy), and the process exits within 5 seconds even if a connection lingers.
    The gateway never changes Serve. The `unix:<path>` Proxy spelling follows
    Tailscale's own help text but has not yet been seen in a live `--bg` route.
 
