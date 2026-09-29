@@ -49,5 +49,23 @@ Item {
         verify(findChild(panel, "sessionView").visible, "the chat stays visible")
       }
     }
+
+    // A host whose Qt WebEngine lacks the browser's types (Qt 6.8) gets a
+    // clear message in place of a blank area, and the rail still returns.
+    function test_failed_browser_load_is_reported() {
+      const panel = createTemporaryObject(contentComponent, parent,
+        {browserAvailable: true, browserSource: Qt.resolvedUrl("missing-panel-browser.qml")})
+      ignoreWarning(new RegExp("missing-panel-browser"))
+      verify(findChild(panel, "panelBrowserButton").visible)
+      panel.openBrowser()
+      verify(panel.browsing)
+      const message = findChild(panel, "panelBrowserUnavailable")
+      tryVerify(function() { return message.visible })
+      verify(message.text.indexOf("Qt WebEngine 6.9") >= 0)
+      verify(!findChild(panel, "sessionView").visible)
+      panel.sessionSelected("one")
+      verify(!panel.browsing)
+      verify(findChild(panel, "sessionView").visible)
+    }
   }
 }

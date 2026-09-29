@@ -7,7 +7,10 @@ agent tool, backend protocol, app registry or phone route opens or controls it.
 
 Source: `integrations/panel/PanelBrowser.qml` (view, profile, controls) and
 `integrations/panel/PanelBrowserPolicy.mjs` (address rules). Only the native
-Qt host loads it; the portable Quickshell panel never does.
+Qt host loads it; the portable Quickshell panel never does. It needs Qt
+WebEngine **6.9 or newer** (`WebEngineProfilePrototype`), while the rest of the
+native UI still builds with 6.8. With an older Qt, opening the browser shows
+a message saying so instead of a page; the rail returns as usual.
 
 ## Using it
 
@@ -63,10 +66,17 @@ loopback (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`), and `about:blank`.
 The check runs for typed addresses, links, form posts and server redirects.
 Everything else (`file:`, `data:`, `blob:`, `javascript:`,
 `companion-widget:`, `chrome:`, `view-source:`, `mailto:` and other external
-schemes) is refused with a notice, and no external handler is launched.
-Chromium itself replaces some page-initiated attempts with an inert
-`about:blank#blocked` page. Subresources and frames follow Chromium's normal
-rules.
+schemes) is refused, and no external handler is launched. Typed addresses and
+redirects get a notice. For attempts started by the page itself, Chromium
+decides first:
+
+- some (e.g. `companion-widget:`) end on Chromium's inert `about:blank#blocked`
+  page, which also shows a notice;
+- `file:`, `mailto:` and unknown schemes are dropped by Chromium before
+  Companion is told, so the page simply stays where it was, **without a
+  notice** (as in Chromium itself, apart from a console message).
+
+Subresources and frames follow Chromium's normal rules.
 
 Each of these is declined, with a notice in the strip:
 
@@ -77,10 +87,18 @@ Each of these is declined, with a notice in the strip:
 | Camera, microphone, screen sharing, location, notifications, clipboard, pointer lock | Denied every time; decisions are never stored.         |
 | File picker, colour picker, HTTP sign-in prompt, passkeys/security keys, printing    | Declined.                                              |
 | Invalid TLS certificate                                                              | Refused; there is no bypass.                           |
-| `alert()`                                                                            | Dismissed; its text appears as “Page says: …”.         |
-| `confirm()`, `prompt()`                                                              | Answered “Cancel”.                                     |
-| Leave-page (`beforeunload`) prompt                                                   | Leaving proceeds.                                      |
-| Context menu, fullscreen                                                             | Not shown.                                             |
+| Context menu, fullscreen                                                             | Not shown (keyboard copy and paste still work).        |
+
+**Script dialogs are ordinary page features.** `alert()`, `confirm()`,
+`prompt()` and the leave-page question appear in a small dialog over the page,
+headed with the page's own host name (“example.com says”) and its message as
+plain text. The page waits for the user's answer: OK/Cancel, the typed prompt
+answer, or Stay/Leave. Enter answers OK and Escape answers Cancel. The dialog
+takes keyboard focus only if the page had it, and returns focus to the page
+afterwards. The toolbar stays usable above it, so Ctrl+L, Chat and Close still
+work. Close, a navigation to another page and a renderer crash decline a
+pending dialog. Chromium asks the leave-page question only after the user has
+interacted with the page.
 
 Unsupported pop-ups can break sign-in flows that depend on them, attachment
 viewers, print and compose links. Some identity providers refuse embedded
@@ -95,9 +113,14 @@ Nothing spoofs the user agent or copies credentials to work around this.
   component against loopback HTTP/HTTPS fixtures in offscreen Qt. It covers
   typed addresses, links, same-origin subresources, redirects, Back/Forward,
   Reload, refused redirects and page-initiated navigations, pop-up refusal
-  (script and real click), dialogs, permissions, the file picker and download
-  refusal, an untrusted certificate, pointer and Ctrl+L reveal, retained
-  address edits, freezing while hidden, reparenting, Close and recreation. A
+  (script and real click), permissions, the file picker and download refusal,
+  an untrusted certificate, pointer and Ctrl+L reveal, retained address edits,
+  reparenting, Close and recreation. Script dialogs are answered with real
+  clicks and keys (OK, Escape, typed prompt answer, Cancel, Stay/Leave); a
+  pending dialog lapses on navigation and is declined by Close. Chat and Close
+  are reached from page focus by keyboard alone, also while a dialog is open.
+  A hidden page is frozen: JavaScript timers stop and a playing (muted) audio
+  element's position does not advance until it is shown again. A
   second runner process with the same temporary home proves that cookies and
   local storage persist on disk, and that a default-profile view does not see
   them. The storage directories are checked to be 0700.
@@ -110,9 +133,11 @@ Nothing spoofs the user agent or copies credentials to work around this.
   return; the page is then frozen and resumes on reopening; Close unloads it.
   The widget keeps its separate off-the-record profile.
 - `test/panel/tst_panel_browser_entry.qml`: a portable host never shows the
-  entry or loads the browser, even with the native-widget marker set.
+  entry or loads the browser, even with the native-widget marker set; a
+  browser that fails to load (as on Qt 6.8) shows the version message.
 
 These use offscreen software rendering, synthetic pages and temporary
 profiles. They do not establish live Wayland hover or focus, GPU behaviour,
-Sidebar/Dock layer-shell behaviour, or compatibility with any real site or
-sign-in.
+Sidebar/Dock layer-shell behaviour, audible playback, behaviour on an actual
+Qt 6.8 installation, dialog handling during a real renderer crash, or
+compatibility with any real site or sign-in.

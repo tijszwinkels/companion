@@ -123,6 +123,9 @@ Item {
   property bool browserOpen: false
   // Set on first open; the browser item then lives as long as this body.
   property bool browserStarted: false
+  // PanelBrowser.qml needs Qt WebEngine 6.9+ (WebEngineProfilePrototype); the
+  // rest of the panel builds with 6.8. A failed load shows a message instead.
+  property url browserSource: Qt.resolvedUrl("PanelBrowser.qml")
   readonly property bool browsing: browserOpen && browserAvailable
   readonly property bool inputFocused: root.keyboardFocused && (root.composerFocusId !== "" || activityView.inputFocused)
   readonly property string composerFocusId: fullWidget || browsing ? "" : chat.composerFocusId
@@ -912,7 +915,7 @@ Item {
       visible: root.browsing
       anchors.fill: parent
       anchors.topMargin: body.contentTop
-      source: active ? Qt.resolvedUrl("PanelBrowser.qml") : ""
+      source: active ? root.browserSource : ""
       onLoaded: {
         item.foreground = Qt.binding(function() { return root.foreground })
         item.muted = Qt.binding(function() { return root.muted })
@@ -924,6 +927,19 @@ Item {
         item.shown = Qt.binding(function() { return root.browsing })
         item.returnRequested.connect(root.closeBrowser)
       }
+    }
+    Text {
+      objectName: "panelBrowserUnavailable"
+      visible: root.browsing && browserLoader.status === Loader.Error
+      anchors.fill: browserLoader
+      text: "The panel browser needs Qt WebEngine 6.9 or newer. Choose a conversation or Activity to return."
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 12 * root.unit
     }
   }
 

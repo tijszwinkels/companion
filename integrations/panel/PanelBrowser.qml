@@ -23,9 +23,10 @@ import "PanelBrowserPolicy.mjs" as Policy
 //   and server redirects alike.
 // - There is one page. New windows, tabs and pop-ups are refused with a
 //   visible notice, never opened elsewhere or redirected into this page.
-//   Downloads, permissions, file selection and other browser dialogs are
-//   declined the same way. alert() text appears in the notice line, and
-//   confirm() and prompt() are declined.
+//   Downloads, permissions, file selection and the colour/sign-in pickers
+//   are declined the same way. Script dialogs (alert, confirm, prompt and
+//   the leave-page question) are ordinary page features: they appear in a
+//   small dialog over the page and the user answers them.
 //
 // Controls are hidden by default. A slim status strip always shows the site,
 // the loading state and the latest notice. Hovering or clicking the strip, or
@@ -72,6 +73,11 @@ FocusScope {
     || root.controlsHovered || root.controlsFocused)
   readonly property alias addressText: addressField.text
   readonly property alias addressEdited: addressField.edited
+  // The one script dialog Chromium is waiting for, or null. Chromium sends
+  // them one at a time and blocks the page's script until it is answered.
+  property var pendingDialog: null
+  property string pendingDialogHost: ""
+  property bool pendingDialogFocus: false
 
   signal returnRequested()
 
@@ -160,9 +166,53 @@ FocusScope {
   }
   onPageUrlChanged: synchronizeAddress()
 
+  // Show a page's script dialog. It takes keyboard focus only when the page
+  // itself had it, so a page cannot pull focus out of the address field.
+  function showDialog(request) {
+    request.accepted = true
+    if (root.pendingDialog) {
+      // Chromium does not overlap dialogs; decline defensively if it did.
+      request.dialogReject()
+      return
+    }
+    root.pendingDialogFocus = root.page !== null && root.page.activeFocus
+    root.pendingDialogHost = Policy.displayHost(request.securityOrigin.toString())
+    dialogInput.text = request.type === JavaScriptDialogRequest.DialogTypePrompt ? request.defaultText : ""
+    root.pendingDialog = request
+    if (root.pendingDialogFocus) {
+      if (request.type === JavaScriptDialogRequest.DialogTypePrompt) {
+        dialogInput.forceActiveFocus()
+        dialogInput.selectAll()
+      } else pageDialog.forceActiveFocus()
+    }
+  }
+
+  // Resolve the pending dialog; OK/Leave accept, Cancel/Stay decline.
+  function answerDialog(accepted) {
+    const request = root.pendingDialog
+    if (!request) return
+    const restoreFocus = root.pendingDialogFocus && pageDialog.activeFocus
+    root.pendingDialog = null
+    root.pendingDialogFocus = false
+    if (!accepted) request.dialogReject()
+    else if (request.type === JavaScriptDialogRequest.DialogTypePrompt) request.dialogAccept(dialogInput.text)
+    else request.dialogAccept()
+    if (restoreFocus && root.page) root.page.forceActiveFocus()
+  }
+
+  function dialogButtons(request) {
+    if (!request) return []
+    if (request.type === JavaScriptDialogRequest.DialogTypeAlert) return [{label: "OK", accept: true}]
+    if (request.type === JavaScriptDialogRequest.DialogTypeBeforeUnload) {
+      return [{label: "Stay", accept: false}, {label: "Leave", accept: true}]
+    }
+    return [{label: "Cancel", accept: false}, {label: "OK", accept: true}]
+  }
+
   // Close unloads the page (the profile keeps cookies and site data); its
   // address stays in the field for reopening. Both actions return to chat.
   function closePage() {
+    root.answerDialog(false)
     pageLoader.active = false
     root.loadError = ""
     root.returnRequested()
@@ -290,19 +340,7 @@ FocusScope {
         request.dialogReject()
         root.notify("Choosing files is not available in the panel browser.")
       }
-      onJavaScriptDialogRequested: request => {
-        request.accepted = true
-        if (request.type === JavaScriptDialogRequest.DialogTypeAlert) {
-          request.dialogAccept()
-          root.notify("Page says: " + request.message)
-        } else if (request.type === JavaScriptDialogRequest.DialogTypeBeforeUnload) {
-          // Leaving is the user's explicit request; do not trap them on a page.
-          request.dialogAccept()
-        } else {
-          request.dialogReject()
-          root.notify("Declined a page question: " + request.message)
-        }
-      }
+      onJavaScriptDialogRequested: request => root.showDialog(request)
       onColorDialogRequested: request => {
         request.accepted = true
         request.dialogReject()
@@ -335,8 +373,17 @@ FocusScope {
       onDesktopMediaRequested: request => request.cancel()
       onPrintRequested: root.notify("Printing is not available in the panel browser.")
       onPrintRequestedByFrame: frame => root.notify("Printing is not available in the panel browser.")
+      // Chromium replaces some refused page-initiated navigations (external
+      // or privileged schemes) with this inert document, without asking.
+      onUrlChanged: {
+        if (view.url.toString() === "about:blank#blocked") {
+          root.notify("Blocked the page from opening an address the panel browser does not open.")
+        }
+      }
       onLoadingChanged: info => {
         if (info.status === WebEngineView.LoadStartedStatus) {
+          // A new document replaces the one that asked; its question lapses.
+          root.answerDialog(false)
           root.loadError = ""
         } else if (info.status === WebEngineView.LoadFailedStatus && info.errorCode !== -3) {
           // -3 is Chromium's ERR_ABORTED: a stopped or refused navigation,
@@ -346,6 +393,7 @@ FocusScope {
         }
       }
       onRenderProcessTerminated: (status, exitCode) => {
+        root.answerDialog(false)
         root.loadError = "The page stopped unexpectedly. Reload to try again."
       }
     }
@@ -379,6 +427,146 @@ FocusScope {
     color: root.muted
     font.family: root.fontFamily
     font.pixelSize: 12 * root.unit
+  }
+
+  // A page's script dialog, over the page but below the toolbar, so Chat and
+  // Close stay reachable. The message is page text, shown as plain text
+  // under the page's own host name.
+  FocusScope {
+    id: pageDialog
+    objectName: "panelBrowserDialog"
+    anchors.fill: pageLoader
+    visible: root.pendingDialog !== null
+    z: 1
+    Keys.onReturnPressed: root.answerDialog(true)
+    Keys.onEnterPressed: root.answerDialog(true)
+    Keys.onEscapePressed: root.answerDialog(root.pendingDialog !== null
+      && root.pendingDialog.type === JavaScriptDialogRequest.DialogTypeAlert)
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(root.background.r, root.background.g, root.background.b, 0.6)
+      // Blocks pointer input to the page while its dialog is open.
+      MouseArea { anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.AllButtons }
+    }
+
+    Rectangle {
+      id: dialogCard
+      anchors.centerIn: parent
+      width: Math.min(parent.width - 24 * root.unit, 380 * root.unit)
+      height: dialogColumn.implicitHeight + 24 * root.unit
+      radius: 6 * root.unit
+      color: root.background
+      border.width: Math.max(1, root.unit)
+      border.color: root.selection
+
+      Column {
+        id: dialogColumn
+        x: 12 * root.unit
+        y: 12 * root.unit
+        width: parent.width - 24 * root.unit
+        spacing: 10 * root.unit
+
+        Text {
+          objectName: "panelBrowserDialogHost"
+          width: parent.width
+          text: root.pendingDialog && root.pendingDialog.type === JavaScriptDialogRequest.DialogTypeBeforeUnload
+            ? "Leave this page? Changes you made may not be saved."
+            : (root.pendingDialogHost || "This page") + " says"
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+          color: root.muted
+          font.family: root.fontFamily
+          font.pixelSize: 11 * root.unit
+        }
+        Text {
+          objectName: "panelBrowserDialogMessage"
+          width: parent.width
+          visible: text !== ""
+          text: root.pendingDialog && root.pendingDialog.type !== JavaScriptDialogRequest.DialogTypeBeforeUnload
+            ? root.pendingDialog.message : ""
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+          maximumLineCount: 12
+          elide: Text.ElideRight
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: 13 * root.unit
+        }
+        Rectangle {
+          width: parent.width
+          height: 26 * root.unit
+          visible: root.pendingDialog !== null && root.pendingDialog.type === JavaScriptDialogRequest.DialogTypePrompt
+          radius: 4 * root.unit
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+          border.width: dialogInput.activeFocus ? Math.max(1, root.unit) : 0
+          border.color: root.accent
+          TextInput {
+            id: dialogInput
+            objectName: "panelBrowserDialogInput"
+            anchors.fill: parent
+            anchors.leftMargin: 6 * root.unit
+            anchors.rightMargin: 6 * root.unit
+            verticalAlignment: TextInput.AlignVCenter
+            clip: true
+            selectByMouse: true
+            activeFocusOnTab: true
+            color: root.foreground
+            selectionColor: root.selection
+            selectedTextColor: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: 12 * root.unit
+            onAccepted: root.answerDialog(true)
+            Accessible.role: Accessible.EditableText
+            Accessible.name: "Answer to the page"
+          }
+        }
+        Row {
+          anchors.right: parent.right
+          spacing: 6 * root.unit
+          Repeater {
+            model: root.dialogButtons(root.pendingDialog)
+            delegate: Rectangle {
+              id: dialogButton
+              required property var modelData
+              objectName: "panelBrowserDialog-" + modelData.label
+              implicitWidth: Math.max(60 * root.unit, dialogLabel.implicitWidth + 20 * root.unit)
+              implicitHeight: 28 * root.unit
+              radius: 4 * root.unit
+              color: dialogMouse.containsMouse || activeFocus ? root.selection
+                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+              border.width: activeFocus ? Math.max(1, root.unit) : 0
+              border.color: root.accent
+              activeFocusOnTab: true
+              Keys.onReturnPressed: root.answerDialog(modelData.accept)
+              Keys.onEnterPressed: root.answerDialog(modelData.accept)
+              Keys.onSpacePressed: root.answerDialog(modelData.accept)
+              Text {
+                id: dialogLabel
+                anchors.centerIn: parent
+                text: dialogButton.modelData.label
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: 12 * root.unit
+              }
+              MouseArea {
+                id: dialogMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.answerDialog(dialogButton.modelData.accept)
+              }
+              Accessible.role: Accessible.Button
+              Accessible.name: dialogButton.modelData.label
+              Accessible.onPressAction: root.answerDialog(dialogButton.modelData.accept)
+            }
+          }
+        }
+      }
+    }
+    Accessible.role: Accessible.Dialog
+    Accessible.name: "Message from the page"
   }
 
   // The status strip and the toolbar below it share one hover area.

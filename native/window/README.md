@@ -53,8 +53,9 @@ and returns to the same conversation, draft and pins. Its controls are hidden
 behind a slim status strip (hover, click or Ctrl+L). It uses its own named,
 persistent WebEngine profile, separate from the restricted widget profile, and
 refuses pop-ups, downloads, permissions and non-web schemes with a visible
-notice. Only this standalone host enables it; the portable Quickshell panel
-never loads it. See [the panel browser guide](../../docs/panel-browser.md) for
+notice. Script dialogs appear as a small in-panel dialog the user answers.
+It needs Qt WebEngine 6.9+; with 6.8 the control shows a message instead. Only
+this standalone host enables it; the portable Quickshell panel never loads it. See [the panel browser guide](../../docs/panel-browser.md) for
 behaviour, storage, limits and tests.
 
 ## Build without activating

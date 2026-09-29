@@ -125,6 +125,42 @@ function site(visits: Visit[]) {
             '<a class="block" id="download" href="/download">Download</a>',
         ),
       );
+    } else if (path === '/leave') {
+      // Asks before leaving; Chromium only asks after a real user gesture.
+      response.setHeader('Content-Type', 'text/html');
+      response.end(
+        page(
+          'Leave',
+          '<p style="height: 300px">Unsaved form</p>',
+          "addEventListener('beforeunload', (event) => { event.preventDefault(); event.returnValue = ''; });",
+        ),
+      );
+    } else if (path === '/media') {
+      // A muted, looping, generated silent WAV: advances currentTime while playing.
+      response.setHeader('Content-Type', 'text/html');
+      response.end(
+        page(
+          'Media',
+          '<audio id="audio" muted loop></audio><button id="play" style="width: 300px; height: 200px">Play</button>',
+          `const rate = 8000;
+           const samples = rate * 30;
+           const bytes = new Uint8Array(44 + samples);
+           const view = new DataView(bytes.buffer);
+           const text = (offset, value) => { for (let i = 0; i < value.length; i++) bytes[offset + i] = value.charCodeAt(i); };
+           text(0, 'RIFF'); view.setUint32(4, 36 + samples, true); text(8, 'WAVE'); text(12, 'fmt ');
+           view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+           view.setUint32(24, rate, true); view.setUint32(28, rate, true); view.setUint16(32, 1, true);
+           view.setUint16(34, 8, true); text(36, 'data'); view.setUint32(40, samples, true);
+           bytes.fill(128, 44);
+           const audio = document.getElementById('audio');
+           audio.muted = true;
+           audio.src = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+           // Playback needs a user gesture; the test clicks this button.
+           document.getElementById('play').onclick = () => {
+             audio.play().then(() => { document.title = 'playing'; }, (error) => { document.title = 'failed ' + error.name; });
+           };`,
+        ),
+      );
     } else if (path === '/download') {
       response.setHeader('Content-Type', 'application/octet-stream');
       response.setHeader('Content-Disposition', 'attachment; filename="fixture.bin"');
@@ -279,7 +315,7 @@ test(
         await runQml(path, env, `panel-browser-${phase}`, expected);
       }
 
-      await run('first', /Totals: 14 passed, 0 failed, 1 skipped/);
+      await run('first', /Totals: 15 passed, 0 failed, 1 skipped/);
 
       // Chromium created the named profile under the temporary data directory,
       // privately, and nowhere near widget, app or personal browser storage.
@@ -316,7 +352,7 @@ test(
       assert.deepEqual(httpsVisits, []);
 
       const reached = visits.length;
-      await run('second', /Totals: 3 passed, 0 failed, 12 skipped/);
+      await run('second', /Totals: 3 passed, 0 failed, 13 skipped/);
       const echoes = visits.slice(reached).filter((visit) => visit.path === '/echo');
       assert.deepEqual(
         echoes.map((visit) => visit.cookie),
