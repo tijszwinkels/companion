@@ -6,7 +6,7 @@ import {
   type IncomingHttpHeaders,
   type IncomingMessage,
 } from 'node:http';
-import { connect, createServer as createNetServer } from 'node:net';
+import { connect, createServer as createNetServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -1107,5 +1107,77 @@ test('the proxy refuses non-loopback binds', () => {
       /loopback/,
       host,
     );
+  }
+});
+
+/**
+ * A local peer that keeps its own side open (allowHalfOpen) after a refused
+ * CONNECT or upgrade. Resolves once the refusal and the proxy's end arrived;
+ * the peer socket itself stays open until the test destroys it.
+ */
+function heldRefusal(peers: Socket[], port: number, text: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port, allowHalfOpen: true });
+    peers.push(socket);
+    let received = '';
+    const deadline = setTimeout(() => {
+      reject(Error('No refusal arrived: ' + JSON.stringify(received)));
+    }, 3000);
+    socket.on('data', (chunk) => {
+      received += chunk.toString('utf8');
+    });
+    socket.on('error', () => {});
+    socket.on('end', () => {
+      clearTimeout(deadline);
+      resolve(received.split('\r\n')[0]);
+    });
+    socket.write(text);
+  });
+}
+
+test('a peer holding a refused CONNECT or upgrade cannot keep the proxy open', async (context) => {
+  const fixture = await proxyFixture(context);
+  // Peers are released in finally, so a regression fails instead of hanging
+  // the fixture's own proxy.close() cleanup.
+  const peers: Socket[] = [];
+  try {
+    // Test-only view of the raw sockets the proxy still holds.
+    const held = (fixture.proxy as unknown as { rawSockets: Set<unknown> }).rawSockets;
+
+    assert.match(
+      await heldRefusal(
+        peers,
+        fixture.port,
+        `CONNECT example.com:443 HTTP/1.1\r\nHost: ${fixture.budgetHost}\r\n\r\n`,
+      ),
+      /^HTTP\/1\.1 405/,
+    );
+    assert.match(
+      await heldRefusal(
+        peers,
+        fixture.port,
+        'GET /socket HTTP/1.1\r\nHost: unknown.localhost:8790\r\nConnection: Upgrade\r\n' +
+          'Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n',
+      ),
+      /^HTTP\/1\.1 421/,
+    );
+
+    // Both peers still hold their side open, yet the proxy released its
+    // sockets instead of leaving them half-closed.
+    for (let attempt = 0; attempt < 100 && held.size > 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(held.size, 0, 'refused sockets are destroyed after the refusal');
+
+    // And close() finishes promptly with those peers still connected.
+    const bounded = new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(Error('AppProxy.close() waited on a held socket')), 3000).unref();
+    });
+    await Promise.race([fixture.proxy.close(), bounded]);
+  } finally {
+    for (const peer of peers) {
+      peer.destroy();
+    }
   }
 });

@@ -87,6 +87,11 @@ const defaultMaximumBody = 64 * 1024 * 1024;
 export class AppProxy {
   private server?: Server;
   private sweepTimer?: ReturnType<typeof setInterval>;
+  // Raw sockets taken over from the HTTP server (WebSocket upgrades and
+  // CONNECT). The server's closeAllConnections() no longer covers them, so
+  // close() destroys whatever is still open; a peer holding one cannot keep
+  // the proxy from closing.
+  private readonly rawSockets = new Set<Duplex>();
   private readonly grants: GrantBook;
   /** App ID → public origin, and public Host → app ID. */
   private readonly origins: Map<string, string>;
@@ -135,16 +140,18 @@ export class AppProxy {
     });
 
     this.server.on('upgrade', (request, socket, head) => {
+      this.trackRawSocket(socket);
       this.handleUpgrade(request, socket, head).catch((error) => {
         this.options.log(`App proxy WebSocket error: ${String(error)}`);
         socket.destroy();
       });
     });
     // CONNECT would ask us to tunnel anywhere; this is not a forward proxy.
+    // The refusal is written, then the socket is destroyed rather than left
+    // half-closed for the peer to hold open.
     this.server.on('connect', (_request, socket) => {
-      socket.end(
-        'HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
-      );
+      this.trackRawSocket(socket);
+      refuseRawSocket(socket, 405, 'Method Not Allowed');
     });
 
     const server = this.server;
@@ -175,10 +182,20 @@ export class AppProxy {
 
     const server = this.server;
     this.server = undefined;
+    for (const socket of this.rawSockets) {
+      socket.destroy();
+    }
+    this.rawSockets.clear();
     if (server?.listening) {
       server.closeAllConnections();
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
+  }
+
+  /** Remember a raw socket until it closes, so close() can destroy it. */
+  private trackRawSocket(socket: Duplex): void {
+    this.rawSockets.add(socket);
+    socket.once('close', () => this.rawSockets.delete(socket));
   }
 
   /**
@@ -478,9 +495,7 @@ export class AppProxy {
     socket: Duplex,
     head: Buffer,
   ): Promise<void> {
-    const refuse = (status: number, text: string) => {
-      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-    };
+    const refuse = (status: number, text: string) => refuseRawSocket(socket, status, text);
 
     const target = this.appForRequest(request);
     if (!target) {
@@ -625,6 +640,17 @@ function readResponseHead(stream: Duplex): Promise<{ responseHead: string; rest:
 }
 
 /** The handshake request line and sanitized headers for the backend. */
+/**
+ * Answer a refused upgrade or CONNECT, then destroy the socket once the
+ * answer is written. Ending alone only half-closes it, which a peer that
+ * never closes its side could hold open indefinitely.
+ */
+function refuseRawSocket(socket: Duplex, status: number, text: string): void {
+  socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () =>
+    socket.destroy(),
+  );
+}
+
 function upgradeRequestHead(request: IncomingMessage, path: string): string {
   const headers = upstreamRequestHeaders(request.headers, true);
   const lines = [`GET ${path} HTTP/1.1`];

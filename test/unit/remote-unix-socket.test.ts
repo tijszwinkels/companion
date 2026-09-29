@@ -573,8 +573,9 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
   });
   await gateway.start();
 
-  // A local peer holds a refused CONNECT to the app proxy open, which keeps
-  // the app proxy's close() waiting until the peer lets go.
+  // A local peer holds a refused CONNECT to the app proxy open. The app proxy
+  // now destroys refused sockets itself (see apps-proxy.test.ts); this test
+  // still checks that the gateway releases its own socket first.
   const holder = createConnection({ host: '127.0.0.1', port: appsPort, allowHalfOpen: true });
   holder.on('error', () => {});
 
@@ -592,7 +593,7 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
   const closing = gateway.close();
 
   try {
-    // The gateway socket is gone and its lock free while the app proxy waits.
+    // The gateway socket is gone and its lock free, whatever the app proxy does.
     await waitFor(() => !existsSync(socketPath), 2000);
     const claim = await claimUnixSocket(socketPath);
     await claim.release();
