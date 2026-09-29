@@ -291,9 +291,12 @@ test('companion-remote serve exits with the original error when its port is take
   context.after(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
   const occupiedPort = (blocker.address() as { port: number }).port;
 
-  // The CLI needs a concrete app proxy port. If another process happened to
-  // take it first, startup fails there instead; either way the process must
-  // report the error and exit by itself rather than keep a listener alive.
+  // The real CLI only accepts a concrete app proxy port (1-65535), so this
+  // one test must pick a free port ahead of time. The assertion below demands
+  // the error for the *gateway's* occupied port: the app proxy bound first,
+  // so the rollback path really ran. In the rare case another process takes
+  // this port in between, the test fails at once with a clear message; it
+  // cannot hang or pass without exercising the rollback.
   const spare = createServer();
   await new Promise<void>((resolve) => spare.listen(0, '127.0.0.1', resolve));
   const appsPort = (spare.address() as { port: number }).port;
@@ -339,5 +342,5 @@ test('companion-remote serve exits with the original error when its port is take
   // Exited on its own (not killed by the timeout) with the original diagnostic.
   assert.equal(outcome.signal, null);
   assert.equal(outcome.code, 1);
-  assert.match(outcome.stderr, /EADDRINUSE/);
+  assert.match(outcome.stderr, new RegExp(`EADDRINUSE.*127\\.0\\.0\\.1:${occupiedPort}\\b`));
 });
