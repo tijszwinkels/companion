@@ -228,7 +228,7 @@ history; the clicked heading keeps its screen position, as do cards below a
 section that changes size above them. With the panel browser covering the page,
 `tst_activity_browser.qml` (portable; the browser fails to load as in
 `tst_panel_browser_entry.qml`) checks the rail selection markers, and after
-returning through the rail it checks Activity folds, the same history card's
+returning it checks Activity folds, the same history card's
 position, the draft, new rows and wheel scrolling over cards. Case `test_05` of
 the native panel-browser host uses the real browser for a narrower set: rail
 markers, a folded Listening section, the History heading's position and rows
