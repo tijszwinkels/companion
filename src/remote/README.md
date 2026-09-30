@@ -5,7 +5,8 @@ Companion panel over a private network such as Tailscale. The listener itself
 still opens no network port: the gateway connects to the listener's private Unix
 control socket as a [remote panel](../desktop/README.md#remote-panels) on behalf of
 each authenticated phone. Nothing starts the gateway automatically, and it never
-changes Tailscale, firewall or system settings.
+changes Tailscale, firewall or system settings. `service/` holds the optional
+`companion-phone` supervisor for it.
 
 ```text
 phone browser / iOS wrapper ──HTTPS+WSS──▶ companion-remote ──Unix socket──▶ listener
@@ -26,6 +27,9 @@ bin/companion-remote pair               # prints a one-time code for the phone
 bin/companion-remote devices            # list paired phones
 bin/companion-remote revoke DEVICE_ID   # remove one; live connections close
 ```
+
+To run it without a terminal, supervised and opt-in, see
+[supervised phone access](../../docs/mobile-startup.md) (`bin/companion-phone`).
 
 The listener must already be running (its socket defaults to
 `$XDG_RUNTIME_DIR/companion/control.sock`) and must include the remote-panel
@@ -55,8 +59,10 @@ before changing an existing installation.
    still requires the configured origin/host and a paired device token.
 
 3. **`tailscale serve` forwards to a Unix socket.** This is meant for a
-   persistent `tailscale serve --bg` route and a supervised user service. It has
-   not been live-tested yet.
+   persistent `tailscale serve --bg` route and a supervised user service; see
+   [`companion-phone`](../../docs/mobile-startup.md), which runs this mode (with
+   both flags) from a pinned checkout in a hardened transient user service.
+   It has not been live-tested yet.
 
    ```sh
    bin/companion-remote serve \
@@ -267,5 +273,7 @@ socket refusal, stale-socket removal, rollback of a failed start, Host 421 /
 Origin 403 / WebSocket 101 over the socket, unauthenticated sockets receiving no
 data, and Funnel and login refusals on every route.
 `test/unit/remote-serve-check.test.ts` covers the Serve matcher, the read
-retries, and the CLI flags and warnings against a fake `tailscale` script. Real Tailscale is never used. `test/mobile/` drives the built app in headless Chromium. None of
+retries, and the CLI flags and warnings against a fake `tailscale` script. Real Tailscale is never used.
+The supervised service (`src/remote/service/`) has its own tests; see
+[its guide](../../docs/mobile-startup.md#tests). `test/mobile/` drives the built app in headless Chromium. None of
 them validates a real iPhone, Safari, Tailscale or production listener.

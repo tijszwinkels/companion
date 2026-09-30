@@ -75,6 +75,15 @@ function hasExactlyKeys(object: JsonObject, expected: string[]): boolean {
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
+/**
+ * True when Serve has no configuration at all: `{}`, or only empty values.
+ * The phone service reports this as "no route yet" rather than a mismatch,
+ * so it can print the one-time setup command for the user.
+ */
+export function serveConfigIsEmpty(config: unknown): boolean {
+  return isObject(config) && presentKeys(config).length === 0;
+}
+
 /** Compare a parsed Serve config with the single expected route. */
 export function serveConfigMismatch(
   config: unknown,

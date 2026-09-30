@@ -37,7 +37,8 @@
     "test:mobile": "tsx --test test/mobile/*.test.ts",
     "mobile:demo": "tsx integrations/mobile/demo.ts",
     "apps:demo": "tsx src/apps/cli.ts demo",
-    "test:apps": "tsx --test test/apps/*.test.ts"
+    "test:apps": "tsx --test test/apps/*.test.ts",
+    "test:phone-service": "tsx --test --test-concurrency=1 test/phone-service/*.test.ts"
   },
   "keywords": [],
   "author": "",

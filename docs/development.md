@@ -44,7 +44,7 @@ milestones. User instructions can waive review for a particular change.
 | Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
 | Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
 | Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
-| Opt-in phone gateway and phone panel | `src/remote/`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [phone app](../integrations/mobile/README.md) |
+| Opt-in phone gateway, its supervised service and phone panel | `src/remote/`, `bin/companion-phone`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md) |
 | Trusted local web apps: registry, lifecycle, app windows, phone app proxy | `src/apps/`, `bin/companion-app` | [Local apps](local-apps.md) |
 
 The standalone Qt host is the current native UI path. The private Quickshell
@@ -176,7 +176,10 @@ names/TLS are separate user decisions. See [the guide](local-apps.md).
 ## Phone panel development
 
 `bin/companion-remote` is an opt-in gateway for the phone app in
-`integrations/mobile/`; nothing starts it automatically. `npm run mobile:build`
+`integrations/mobile/`; nothing starts it automatically. `bin/companion-phone`
+optionally supervises it as a pinned, hardened transient systemd user service
+([guide](mobile-startup.md)); `npm run test:phone-service` exercises that against
+the real user manager with uniquely named test units and synthetic state only. `npm run mobile:build`
 builds the app, `npm run mobile:demo` runs a fully synthetic listener and gateway
 on loopback, and `npm run test:mobile` drives the built app in headless Chromium.
 Gateway and remote-role unit tests use temporary state and synthetic backends.
