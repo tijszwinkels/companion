@@ -29,7 +29,11 @@ import {
   validateConfig,
   type PhoneServiceConfig,
 } from '../../src/remote/service/config.ts';
-import { pinCheckProgram, verifyPinnedCheckout } from '../../src/remote/service/pin.ts';
+import {
+  pinCheckProgram,
+  runPinCheck,
+  verifyPinnedCheckout,
+} from '../../src/remote/service/pin.ts';
 import { classifyServeConfig } from '../../src/remote/service/probes.ts';
 import {
   descriptionMarker,
@@ -352,7 +356,7 @@ test('the shell pin check that systemd runs agrees with the TypeScript one', asy
   assert.equal((await shellCheck(checkout.revision)).code, 0);
 });
 
-test('the pin check cannot be fooled by index flags, replace refs, excludes or hooks', async (context) => {
+test('the pin check cannot be fooled by index flags, replace refs, excludes, filters, hooks or redirection', async (context) => {
   const directory = await temporaryDirectory(context);
   const checkout = await createPinnedCheckout(directory);
   const git = (...args: string[]) => run('git', ['-C', checkout.path, ...args]);
@@ -410,6 +414,54 @@ test('the pin check cannot be fooled by index flags, replace refs, excludes or h
   assert.deepEqual(await problems(), []);
   await assert.rejects(lstat(marker), { code: 'ENOENT' });
   await git('config', '--unset', 'core.fsmonitor');
+
+  // A clean filter that presents the approved bytes for an edited file is
+  // neither trusted nor run.
+  const approvedCopy = join(directory, 'approved-cli.ts');
+  await writeFile(approvedCopy, original);
+  const filterRan = join(directory, 'filter-ran');
+  await writeFile(
+    join(checkout.path, '.git', 'info', 'attributes'),
+    'src/remote/cli.ts filter=mask\n',
+  );
+  await git('config', 'filter.mask.clean', `sh -c 'touch ${filterRan}; cat ${approvedCopy}'`);
+  await writeFile(source, original + '// unreviewed\n');
+  assert.match((await problems()).join('\n'), /uncommitted changes/);
+  assert.match(
+    (await runPinCheck(checkout.path, checkout.revision, 'git')) ?? '',
+    /uncommitted changes/,
+  );
+  await assert.rejects(lstat(filterRan), { code: 'ENOENT' });
+  await writeFile(source, original);
+  await rm(join(checkout.path, '.git', 'info', 'attributes'));
+  await git('config', '--unset', 'filter.mask.clean');
+  assert.deepEqual(await problems(), []);
+
+  // core.worktree pointing at a clean copy elsewhere: the shell program
+  // itself (what systemd runs) must check the directory it was given.
+  const cleanCopy = join(directory, 'clean-copy');
+  await run('cp', ['-a', checkout.path, cleanCopy]);
+  await rm(join(cleanCopy, '.git'), { recursive: true });
+  await writeFile(source, original + '// unreviewed\n');
+  await git('config', 'core.worktree', cleanCopy);
+  assert.match(
+    (await runPinCheck(checkout.path, checkout.revision, 'git')) ?? '',
+    /is not the work tree of its own Git repository/,
+  );
+  await git('config', '--unset', 'core.worktree');
+  await writeFile(source, original);
+  assert.equal(await runPinCheck(checkout.path, checkout.revision, 'git'), undefined);
+
+  // The executable bit and the file type are part of the pin.
+  await chmod(source, 0o755);
+  assert.match((await problems()).join('\n'), /changed file mode at src\/remote\/cli.ts/);
+  await chmod(source, 0o644);
+  await rm(source);
+  await symlink(approvedCopy, source);
+  assert.match((await problems()).join('\n'), /changed file type at src\/remote\/cli.ts/);
+  await rm(source);
+  await writeFile(source, original);
+  assert.deepEqual(await problems(), []);
 
   // A code directory replaced by a symlink to other files is a change.
   const elsewhere = join(directory, 'elsewhere');

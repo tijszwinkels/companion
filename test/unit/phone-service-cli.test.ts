@@ -20,6 +20,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
@@ -801,3 +802,43 @@ async function waitFor(check: () => Promise<boolean>, milliseconds = 20_000): Pr
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+test('stop does not claim off when the gateway socket path is suspicious', async (context) => {
+  const w = await ready(context);
+  const runtimeDirectory = join(w.gatewaySocket, '..');
+  await mkdir(runtimeDirectory, { mode: 0o700 });
+
+  // A symlink to a socket that answers: never followed, never "off".
+  const elsewhere = join(w.directory, 'elsewhere.sock');
+  const server = createServer();
+  await new Promise<void>((done) => server.listen(elsewhere, done));
+  context.after(() => new Promise((done) => server.close(() => done(undefined))));
+  await symlink(elsewhere, w.gatewaySocket);
+  let result = await w.phone(['stop']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /unsafe \(is a symbolic link\); cannot confirm phone access is off/);
+  assert.ok((await lstat(w.gatewaySocket)).isSymbolicLink(), 'left untouched');
+
+  // Not a socket at all.
+  await rm(w.gatewaySocket);
+  await writeFile(w.gatewaySocket, '');
+  result = await w.phone(['stop']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /is not a socket\); cannot confirm/);
+
+  // A socket that refuses connections is definitely off.
+  await rm(w.gatewaySocket);
+  // A process killed while listening leaves exactly such a socket behind.
+  const holder = spawn(process.execPath, [
+    '-e',
+    'require("node:net").createServer().listen(process.argv[1], () => console.log("up"))',
+    w.gatewaySocket,
+  ]);
+  await new Promise((done) => holder.stdout.once('data', done));
+  holder.kill('SIGKILL');
+  await new Promise((done) => holder.once('exit', done));
+  assert.ok((await lstat(w.gatewaySocket)).isSocket());
+  result = await w.phone(['stop']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /phone access is off/);
+});

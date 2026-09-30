@@ -133,34 +133,55 @@ export async function verifyPinnedCheckout(
  * parsing unchanged (the `:` prefix in the unit additionally turns off
  * systemd's own `$` expansion).
  *
- * It compares the files on disk with the approved commit's own tree, and
- * trusts nothing the checkout's owner could have configured to hide changes:
- * - a fresh temporary index built from that commit, re-hashing every file,
- *   so assume-unchanged / skip-worktree flags and stale stat data in the
- *   checkout's index cannot mask an edit;
- * - no replace refs (GIT_NO_REPLACE_OBJECTS), so a substituted commit or tree
- *   cannot stand in for the approved one;
- * - no fsmonitor, untracked cache, split index, sparse checkout or external
- *   diff, which could run commands or answer from a cache;
- * - untracked files are judged only by the tracked top-level .gitignore (just
- *   verified unchanged), not by .git/info/exclude, a global excludes file or
- *   new .gitignore files inside the code directories.
- * Residual trust: Git's object store itself, owned by the same user.
+ * It compares the actual bytes on disk with the approved commit's tree and
+ * trusts nothing the checkout's owner could have configured to hide a change
+ * (review findings M1, including clean filters and work-tree redirection):
+ * - Git environment redirections are unset; the checkout must be its own
+ *   work tree (`core.worktree` elsewhere is refused), and every later command
+ *   uses that explicit Git directory and work tree;
+ * - the approved tree is listed without replace refs (GIT_NO_REPLACE_OBJECTS);
+ * - every entry must exist with the same type and executable bit, and every
+ *   file is hashed with `hash-object --no-filters`: no index, stat cache,
+ *   attributes, clean/smudge filters or line-ending conversion is involved,
+ *   and no configured command (filter, fsmonitor, external diff) runs;
+ * - no symbolic link may appear in the code paths unless the tree has it;
+ * - untracked files there are judged only by the tracked top-level
+ *   .gitignore (whose bytes were just verified), not by .git/info/exclude, a
+ *   global excludes file or new nested .gitignore files.
+ * Residual trust: Git's object store and the git binary, owned by the same
+ * user or root.
  */
 export const pinCheckProgram = [
   'set -u',
   'dir=$1',
   'rev=$2',
   'git=$3',
-  'export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0',
-  'g() { "$git" -C "$dir" -c core.fsmonitor=false -c core.untrackedCache=false -c core.splitIndex=false -c core.sparseCheckout=false "$@"; }',
+  'unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_NAMESPACE GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM',
+  'export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1',
   'tmp=$(mktemp -d) || exit 1',
   'fail() { rm -rf "$tmp"; echo "companion-phone: $dir $1; refusing to start" >&2; exit 1; }',
+  'cd "$dir" || fail "cannot be entered"',
+  'test "$("$git" rev-parse --show-toplevel 2>/dev/null)" = "$dir" || fail "is not the work tree of its own Git repository"',
+  'gd=$("$git" rev-parse --absolute-git-dir 2>/dev/null) || fail "is not a Git checkout"',
+  'g() { "$git" --git-dir="$gd" --work-tree="$dir" -c core.fsmonitor=false -c core.untrackedCache=false -c core.splitIndex=false -c core.sparseCheckout=false -c core.quotePath=false "$@"; }',
   'test "$(g rev-parse --verify --quiet "HEAD^{commit}")" = "$rev" || fail "is not at the approved revision $rev"',
+  'g ls-tree -r --full-tree "$rev" > "$tmp/tree" || fail "cannot read the approved revision"',
+  ': > "$tmp/paths"',
+  ': > "$tmp/expected"',
+  'while read -r mode type oid path; do case $mode in ' +
+    '100644|100755) { test -f "$path" && ! test -L "$path"; } || fail "has a changed file type at $path"; ' +
+    'if test -x "$path"; then test "$mode" = 100755 || fail "has a changed file mode at $path"; ' +
+    'else test "$mode" = 100644 || fail "has a changed file mode at $path"; fi; ' +
+    'echo "$path" >> "$tmp/paths"; echo "$oid" >> "$tmp/expected" ;; ' +
+    '120000) { test -L "$path" && test "$(readlink -n -- "$path" | g hash-object --stdin)" = "$oid"; } || fail "has a changed symbolic link at $path" ;; ' +
+    '*) fail "has an unsupported $type entry at $path" ;; ' +
+    'esac; done < "$tmp/tree"',
+  'g hash-object --no-filters --stdin-paths < "$tmp/paths" > "$tmp/actual" || fail "has unreadable tracked files"',
+  'cmp -s "$tmp/expected" "$tmp/actual" || fail "has uncommitted changes"',
+  `for link in $(find ${pinnedCodePaths.join(' ')} tsconfig.json -type l 2>/dev/null); do ` +
+    'test "$(g ls-tree "$rev" -- "$link" | cut -d " " -f 1)" = 120000 || fail "has a symbolic link at $link"; done',
   'export GIT_INDEX_FILE="$tmp/index"',
   'g read-tree "$rev" || fail "cannot read the approved revision"',
-  'g update-index -q --really-refresh >/dev/null 2>&1',
-  'g diff-files --quiet --no-ext-diff || fail "has uncommitted changes"',
   `test -z "$(g ls-files --others --exclude-from=.gitignore -- ${pinnedCodePaths.join(' ')})" || fail "has untracked code files"`,
   'rm -rf "$tmp"',
 ].join('; ');

@@ -37,11 +37,14 @@ print-service` shows the exact, shell-quoted command without running it.
   checkout. `start`, and systemd itself before every automatic restart
   (`ExecStartPre`), refuse unless the checkout is exactly at that commit, with no
   tracked changes and no untracked files in `src`, `bin`, `integrations` or the
-  package files. Both use the same shell check, which compares the files on disk
-  with the approved commit's tree through a fresh temporary index. It ignores
-  what could hide a change: assume-unchanged/skip-worktree flags, replace refs,
-  `.git/info/exclude`, global or new nested ignore files, fsmonitor and
-  external diff. Paths are restricted to `A–Z a–z 0–9 / . _ + -`, so nothing
+  package files. Both use the same shell check. It compares the actual bytes,
+  file types and executable bits on disk with the approved commit's tree
+  (`hash-object --no-filters`), so it does not depend on the index, stat cache,
+  attributes or clean filters. It runs no configured command, refuses a
+  `core.worktree` pointing elsewhere, and ignores replace refs, `GIT_*`
+  environment redirection, `.git/info/exclude`, and global or new nested
+  ignore files. Paths are restricted to
+  `A–Z a–z 0–9 / . _ + -`, so nothing
   needs shell or systemd quoting. Not pinned: `node_modules` and the built app in
   `integrations/mobile/dist` (see limits).
 - **Its own runtime directory.** systemd creates
@@ -86,6 +89,12 @@ listener does not answer (unless `--without-listener`); or Serve is not exactly
 the expected route. A running service with other settings is not replaced by
 `start`; use `restart`. Until then `status` reports phone access as
 unavailable, because the running gateway does not match the configuration.
+
+`stop` reports phone access off only when the service is inactive and the
+gateway socket path is either absent or a socket that refuses connections. A
+symlink, a file that is not a socket, a socket that belongs to someone else, or
+one that does not answer in time is left untouched and reported as a failure,
+because it might still serve Tailscale Serve.
 
 `stop` needs a readable config to know which service is meant. Without one it
 refuses (exit 2) instead of guessing; name the service explicitly with
@@ -246,7 +255,8 @@ reset`, which removes unrelated configuration). Delete
 
 ## Limits
 
-- The pin trusts Git's object store in the pinned checkout (same user).
+- The pin trusts Git's object store in the pinned checkout (same user) and the
+  `git` binary it runs.
 - `node_modules` and `integrations/mobile/dist` in the pinned checkout are not
   hashed. Anyone able to change them already runs code as you; do not share or
   modify the pinned worktree.

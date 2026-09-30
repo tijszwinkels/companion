@@ -244,7 +244,7 @@ export async function startService(
 
   // 4. Nothing may already answer on the gateway socket (e.g. a manual gateway).
   const existing = await probeUnixSocket(plan.socketPath);
-  if (existing.state === 'answering' || existing.state === 'unsafe') {
+  if (existing.state !== 'absent' && existing.state !== 'not-answering') {
     return refuse(`something else is at ${plan.socketPath} (${describeSocket(existing)})`);
   }
 
@@ -417,9 +417,18 @@ export async function stopService(
     return exitCodes.ok;
   }
 
+  // "Off" only for a definite result: nothing there, or a socket that
+  // refuses connections. Anything else might still serve Tailscale Serve.
   const socket = await probeUnixSocket(socketPath);
   if (socket.state === 'answering') {
     log(`companion-phone: ${unit} is stopped, but something still answers on ${socketPath}`);
+    return exitCodes.failed;
+  }
+  if (socket.state !== 'absent' && socket.state !== 'not-answering') {
+    log(
+      `companion-phone: ${unit} is stopped, but ${socketPath} is ${describeSocket(socket)}; ` +
+        'cannot confirm phone access is off',
+    );
     return exitCodes.failed;
   }
 

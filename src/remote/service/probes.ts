@@ -29,6 +29,12 @@ import {
 
 const socketProbeMilliseconds = 1000;
 
+/**
+ * `absent` (nothing at the path) and `not-answering` (a socket that refuses
+ * connections, ECONNREFUSED) are definite. `unsafe` (not ours, a symlink, not
+ * a socket) and `error` (including no answer in time) are indeterminate: the
+ * path might still serve a client such as tailscaled.
+ */
 export type SocketProbe =
   | { state: 'answering' }
   | { state: 'absent' }
@@ -61,9 +67,10 @@ export async function probeUnixSocket(path: string): Promise<SocketProbe> {
 
   return new Promise((resolve) => {
     const socket = connect(path);
+    // No answer in time is not a refusal: something may be there but busy.
     const timer = setTimeout(() => {
       socket.destroy();
-      resolve({ state: 'not-answering' });
+      resolve({ state: 'error', reason: 'no answer within 1 s (busy or stuck)' });
     }, socketProbeMilliseconds);
 
     socket.once('connect', () => {
