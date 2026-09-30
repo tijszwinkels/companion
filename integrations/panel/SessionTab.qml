@@ -57,6 +57,22 @@ Rectangle {
 
   HoverHandler { id: hover }
 
+  // Persistent selection marker. Hover only tints the background, running
+  // spins the ring and unread adds the green tint, border and dot, so the
+  // right-edge line is the one cue that means "this conversation is shown".
+  Rectangle {
+    objectName: "sessionSelectionMarker"
+    visible: root.selected
+    anchors.right: parent.right
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    anchors.topMargin: 6 * root.tabUnit
+    anchors.bottomMargin: 6 * root.tabUnit
+    width: 3 * root.tabUnit
+    radius: width / 2
+    color: root.accent
+  }
+
   // Show the complete title without changing the compact tab layout. Suppress
   // this tip over the close button so the two explanations never overlap.
   ToolTip {

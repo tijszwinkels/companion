@@ -95,11 +95,9 @@ Item {
       verify(waitForRendering(host));
       const page = findChild(host, "fullActivityStatus");
       const history = findChild(host, "historySection");
-      const position = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, history.y));
-      if (page.contentY !== position) {
-        page.contentY = position;
-        verify(waitForRendering(host));
-      }
+      const list = findChild(page, "activityScroll");
+      page.scrollTo(history.mapToItem(list.contentItem, 0, 0).y - list.originY);
+      verify(waitForRendering(host));
     }
 
     function test_text_zoom_follows_activity_history_library_and_conversation() {
@@ -431,7 +429,7 @@ Item {
       verify(waitForRendering(host));
       grabImage(host).save("/tmp/companion-activity-history-preview-narrow.png");
       const card = findChild(host, "history-utterance-2");
-      verify(card.width <= findChild(host, "activityHistoryList").width);
+      verify(card.width <= findChild(host, "activityScroll").width);
       verify(findChild(card, "historyDetectedIntent").width <= card.width);
       const detected = findChild(card, "historyDetectedIntent");
       verify(detected.mapToItem(card, 0, detected.height).y <= card.height, "Wrapped metadata stays inside its card");

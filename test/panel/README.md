@@ -40,6 +40,9 @@ long choices in a small panel. The synthetic image is
 coverage is described in [conversation choices](../../src/agents/README.md).
 
 Session-indicator checks cover running-ring animation gating, whole emoji tokens,
+the right-edge accent selection marker (sampled pixels; distinct from hover,
+running and unread, following selection, not blocking clicks or the close control;
+Activity and Previous sessions use the same marker),
 unread completions while hidden/on other pages, read-on-view without focus,
 duplicate updates, reconnects during queued turns, and close/restore cleanup.
 The synthetic layout preview is `/tmp/companion-session-indicators.png`. These
@@ -112,10 +115,15 @@ retaining drafts, focus, and the collapsed setting across tabs. Synthetic
 previews are saved to `/tmp/companion-activity-{processing,result,collapsed}-preview.png`.
 The compact header has offscreen coverage; its native desktop interaction has
 not been exercised by automated input.
-Intent-control checks click the real Activity chips, wait for backend-owned
+Intent-control checks click the real Activity mode controls, wait for backend-owned
 state changes, and check off/context/paused/offline colors, shortcut visibility,
-the fixed IGNORE fallback, and scrolling in small panels. The synthetic preview
-is `/tmp/companion-intent-controls-preview.png`. Node tests cover prompt exclusion,
+the fixed IGNORE fallback, and scrolling in small panels. A synthetic inventory of
+every registered processor checks one card per activity with only its supported
+modes, visible phrases, On/Off/Always on labels, context text distinct from Off,
+clicks on the card title/padding sending nothing, and each mode requesting only
+itself. Responsive checks cover 1–5 columns at narrow/wide widths and 200% zoom.
+Synthetic previews are `/tmp/companion-intent-controls-preview.png` and
+`/tmp/companion-activity-cards-{narrow,wide,wide-zoomed}.png`. Node tests cover prompt exclusion,
 disabled-prefix consumption, late inference, cancellation, private socket control,
 validation, serialized atomic preference writes and reload. These tests do not
 inject input into the desktop or change the user's stored switches.
@@ -206,6 +214,19 @@ unfocused or hidden panel. It seeds wtype's synthetic keymap to put those keys a
 XKB codes 20/21, rather than relying on symbolic shortcut matching. Offscreen
 surface tests cover bounds, theme scale, monitor-size changes, right anchoring,
 and retaining width after closing and reopening.
+
+Activity scrolling checks send real wheel events with the pointer over history
+cards (not the heading): each notch moves the whole page, in both directions, and
+stops at both ends with Listening and the keyboard help reachable. The history is
+the page's only list, so a 400-row history still creates fewer than 40 cards.
+They also cover short/tall and narrow/wide surfaces at 100–200% zoom, the Activity
+draft and focus during scrolling, new rows while reading mid-history, and folding
+History or Listening without losing the reader's place. With every registered
+activity in a short panel, a real click folds and unfolds each page section
+(Listening, Voice shortcuts, Intentions, History) with empty and populated
+history; the clicked heading keeps its screen position, as do cards below a
+section that changes size above them. Previews are
+`/tmp/companion-activity-scrolling-{short-narrow,tall-wide}.png`.
 
 Activity history tests cover bounded reconnect pages interleaved with newer
 feedback, listener replacement, all hover action payloads, correction chips,

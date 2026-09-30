@@ -59,9 +59,16 @@ Item {
   signal transcriptionCleanupRequested(bool enabled)
   signal historyActionRequested(string action, string id, var value)
 
-  property alias contentY: activityScroll.contentY
+  // Page scroll position measured from the top of Listening. Tests and
+  // callers use these rather than the history list's shifting content origin.
+  readonly property real contentY: activityScroll.pageY
   readonly property real contentHeight: activityScroll.contentHeight
   readonly property real viewportHeight: activityScroll.height
+  function scrollTo(pageY) { activityScroll.scrollToPageY(pageY) }
+  function scrollToItem(item) { activityScroll.scrollToItem(item) }
+  // Owned here rather than by the heading inside the list header, so the list
+  // model and card animations can follow it.
+  property bool historyExpanded: true
   clip: true
 
   Column {
@@ -150,23 +157,37 @@ Item {
     }
   }
 
-  Flickable {
+  // One scrolling list for the whole page: the sections above History are its
+  // header and the keyboard help is its footer. See ActivityHistoryView.
+  ActivityHistoryView {
     id: activityScroll
     objectName: "activityScroll"
     width: root.width
     height: Math.max(0, inputArea.y - 16 * root.unit)
-    contentWidth: width
-    contentHeight: contents.height
-    clip: true
-    boundsBehavior: Flickable.StopAtBounds
-    ScrollBar.vertical: ScrollBar {
-      policy: activityScroll.contentHeight > activityScroll.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
-    }
+    historyModel: root.activityHistoryModel
+    available: root.activityHistoryAvailable
+    expanded: root.historyExpanded
+    historyDeletionAvailable: root.historyDeletionAvailable
+    intents: root.intents
+    online: root.online
+    foreground: root.foreground
+    muted: root.muted
+    accent: root.accent
+    selection: root.selection
+    fontFamily: root.fontFamily
+    unit: root.unit
+    textScale: root.textScale
+    animationsEnabled: root.animationsEnabled && root.historyExpanded
+    onActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
 
-    Column {
-      id: contents
-      width: root.width
+    header: Column {
+      width: activityScroll.width
       spacing: 28 * root.unit
+      // Separates the History heading from the first row; the list's own
+      // spacing applies only between rows. Constant, so the sections above do
+      // not shift when the first card replaces the empty-state row.
+      bottomPadding: 12 * root.unit
+      Component.onCompleted: activityScroll.anchorItems = [listeningSection].concat(intentControls.sections, [historySection])
 
       CollapsibleSection {
         id: listeningSection
@@ -210,6 +231,7 @@ Item {
       }
 
       IntentControls {
+        id: intentControls
         objectName: "intentControls"
         width: parent.width
         intents: root.intents
@@ -232,61 +254,50 @@ Item {
         objectName: "historySection"
         width: parent.width
         title: "History"
-        detail: historyView.count + " · this run"
+        detail: activityScroll.historyCount + " · this run"
+        expanded: root.historyExpanded
+        onExpandedChanged: root.historyExpanded = expanded
         foreground: root.foreground
         muted: root.muted
         accent: root.accent
         fontFamily: root.fontFamily
         unit: root.unit
         textScale: root.textScale
-        ActivityHistoryView {
-          id: historyView
-          width: parent.width
-          historyModel: root.activityHistoryModel
-          available: root.activityHistoryAvailable
-          historyDeletionAvailable: root.historyDeletionAvailable
-          intents: root.intents
-          online: root.online
-          foreground: root.foreground
-          muted: root.muted
-          accent: root.accent
-          selection: root.selection
-          fontFamily: root.fontFamily
-          unit: root.unit
-          textScale: root.textScale
-          animationsEnabled: root.animationsEnabled && historySection.expanded
-          onActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
-        }
+        // The empty-state message and cards are rows of the list itself.
       }
+    }
 
-      Column {
-        objectName: "activityKeyboardHelp"
-        visible: root.shortcutLabel !== ""
+    footer: Column {
+      objectName: "activityKeyboardHelp"
+      visible: root.shortcutLabel !== ""
+      width: activityScroll.width
+      height: visible ? implicitHeight : 0
+      // The usual gap between sections; a folded History already ends with
+      // the header's bottom padding.
+      topPadding: (root.historyExpanded ? 28 : 16) * root.unit
+      spacing: 12 * root.unit
+
+      Rectangle {
         width: parent.width
-        spacing: 12 * root.unit
-
-        Rectangle {
-          width: parent.width
-          height: root.unit
-          color: Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.18)
-        }
-        Text {
-          text: "Keyboard shortcuts"
-          color: root.muted
-          font.family: root.fontFamily
-          font.pixelSize: 11 * root.textScale
-          font.weight: Font.DemiBold
-        }
-        Text {
-          width: parent.width
-          text: root.shortcutLabel
-          textFormat: Text.PlainText
-          wrapMode: Text.WordWrap
-          color: root.muted
-          font.family: root.fontFamily
-          font.pixelSize: 10 * root.textScale
-          lineHeight: 1.5
-        }
+        height: root.unit
+        color: Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.18)
+      }
+      Text {
+        text: "Keyboard shortcuts"
+        color: root.muted
+        font.family: root.fontFamily
+        font.pixelSize: 11 * root.textScale
+        font.weight: Font.DemiBold
+      }
+      Text {
+        width: parent.width
+        text: root.shortcutLabel
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.muted
+        font.family: root.fontFamily
+        font.pixelSize: 10 * root.textScale
+        lineHeight: 1.5
       }
     }
   }

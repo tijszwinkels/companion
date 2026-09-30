@@ -533,10 +533,18 @@ Item {
         height: 64 * root.tabUnit
         color: !root.showingPrevious && root.selectedSession === null ? root.selection : "transparent"
 
+        // Same right-edge selection marker as the conversation tabs.
         Rectangle {
-          width: 2 * root.tabUnit
-          height: parent.height
-          color: !root.showingPrevious && root.selectedSession === null ? root.accent : "transparent"
+          objectName: "activitySelectionMarker"
+          visible: !root.showingPrevious && root.selectedSession === null
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          anchors.topMargin: 6 * root.tabUnit
+          anchors.bottomMargin: 6 * root.tabUnit
+          width: 3 * root.tabUnit
+          radius: width / 2
+          color: root.accent
         }
 
         Column {
@@ -660,6 +668,18 @@ Item {
         height: 60 * root.tabUnit
         radius: 5 * root.tabUnit
         color: root.showingPrevious || previousMouse.containsMouse ? root.selection : "transparent"
+        Rectangle {
+          objectName: "previousSelectionMarker"
+          visible: root.showingPrevious
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          anchors.topMargin: 6 * root.tabUnit
+          anchors.bottomMargin: 6 * root.tabUnit
+          width: 3 * root.tabUnit
+          radius: width / 2
+          color: root.accent
+        }
         Text {
           anchors.centerIn: parent
           objectName: "previousSessionsLabel"
