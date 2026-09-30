@@ -9,6 +9,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 
+import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway, checkGatewayOptions } from '../../src/remote/gateway.ts';
 import { parseRemoteRequest } from '../../src/remote/protocol.ts';
 import { frame, signal } from '../helpers.ts';
@@ -468,7 +469,8 @@ test('TLS mode serves the socket over wss with a supplied certificate', async (c
     port,
     tls: { cert: await readFile(certificate, 'utf8'), key: await readFile(key, 'utf8') },
     origins: [origin],
-    stateDirectory: join(fixture.directory, 'remote-state'),
+    // Its own pairing state: the fixture's TCP gateway serves remote-state.
+    stateDirectory: join(fixture.directory, 'tls-state'),
     controlSocket: fixture.desktop.socketPath,
     sessionsDirectory: join(fixture.directory, '.companion-sessions'),
     appDirectory: join(fixture.directory, 'no-app'),
@@ -477,7 +479,11 @@ test('TLS mode serves the socket over wss with a supplied certificate', async (c
   await gateway.start();
   context.after(() => gateway.close());
 
-  const { token } = await fixture.pair();
+  const tlsDevices = new DeviceStore(join(fixture.directory, 'tls-state'));
+  const { code } = await tlsDevices.createPairingCode();
+  const paired = await tlsDevices.redeemPairingCode(code, 'Synthetic phone');
+  assert.ok(paired.ok);
+  const token = paired.token;
   const { default: WebSocket } = await import('ws');
   const phone = await new Promise<InstanceType<typeof WebSocket>>((resolve, reject) => {
     const socket = new WebSocket(`wss://127.0.0.1:${port}/api/socket`, {

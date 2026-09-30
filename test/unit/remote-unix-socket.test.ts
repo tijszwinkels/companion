@@ -115,9 +115,10 @@ async function unixPhone(
 }
 
 /**
- * A real listener, device store and TCP gateway from the shared fixture, plus
- * a second gateway on a Unix socket sharing the same state. Pairing happens
- * over the TCP gateway; the token is then used over the socket.
+ * A real listener and TCP gateway from the shared fixture, plus a second
+ * gateway on a Unix socket with its OWN pairing state: one state directory
+ * serves one gateway at a time. `pair()` pairs directly in the socket
+ * gateway's state (the same store the pairing endpoint uses).
  */
 async function unixFixture(
   context: { after(callback: () => Promise<void>): void },
@@ -131,10 +132,11 @@ async function unixFixture(
   const socketPath = join(socketDirectory, 'gateway.sock');
   const logs: string[] = [];
 
+  const stateDirectory = join(fixture.directory, 'unix-state');
   const gateway = new Gateway({
     socketPath,
     origins: [tailnetOrigin],
-    stateDirectory: join(fixture.directory, 'remote-state'),
+    stateDirectory,
     controlSocket: fixture.desktop.socketPath,
     sessionsDirectory: join(fixture.directory, '.companion-sessions'),
     appDirectory: join(fixture.directory, 'no-app'),
@@ -144,7 +146,15 @@ async function unixFixture(
   await gateway.start();
   context.after(() => gateway.close());
 
-  return { fixture, gateway, socketPath, socketDirectory, logs };
+  const devices = new DeviceStore(stateDirectory);
+  async function pair(): Promise<{ token: string }> {
+    const { code } = await devices.createPairingCode();
+    const result = await devices.redeemPairingCode(code, 'Synthetic phone');
+    assert.ok(result.ok);
+    return { token: result.token };
+  }
+
+  return { fixture, gateway, socketPath, socketDirectory, stateDirectory, logs, pair };
 }
 
 // ---- Claiming the socket path ------------------------------------------------
@@ -335,13 +345,14 @@ test('the socket is private and removed on close; a second gateway is refused', 
   const second = new Gateway({
     socketPath,
     origins: [tailnetOrigin],
-    stateDirectory: join(fixture.directory, 'remote-state'),
+    // Its own pairing state, so the socket's lifetime lock is what refuses it.
+    stateDirectory: join(fixture.directory, 'second-state'),
     controlSocket: fixture.desktop.socketPath,
     sessionsDirectory: join(fixture.directory, '.companion-sessions'),
     appDirectory: join(fixture.directory, 'no-app'),
     log: () => {},
   });
-  await assert.rejects(second.start(), /Another phone gateway/);
+  await assert.rejects(second.start(), /Another phone gateway holds .*gateway\.sock\.lock/);
   assert.ok((await lstat(socketPath)).isSocket());
 
   await gateway.close();
@@ -349,7 +360,7 @@ test('the socket is private and removed on close; a second gateway is refused', 
 });
 
 test('Host, Origin and authentication are enforced over the socket', async (context) => {
-  const { fixture, socketPath } = await unixFixture(context);
+  const { socketPath, pair } = await unixFixture(context);
 
   // HTTP: a foreign Host is misdirected; the tailnet Host is served.
   const rebound = await unixRequest(socketPath, {
@@ -389,7 +400,7 @@ test('Host, Origin and authentication are enforced over the socket', async (cont
   assert.equal(wrong.messages.length, 0);
 
   // A paired device authenticates and receives state.
-  const { token } = await fixture.pair();
+  const { token } = await pair();
   const phone = await unixPhone(socketPath, token);
   context.after(async () => {
     phone.socket.terminate();
@@ -419,7 +430,7 @@ test('Funnel requests are refused in Unix socket and TCP modes', async (context)
 
 test('a required Tailscale login must match exactly', async (context) => {
   const login = 'synthetic-user@github';
-  const { fixture, socketPath, logs } = await unixFixture(context, {
+  const { socketPath, logs, pair } = await unixFixture(context, {
     requireTailscaleLogin: login,
   });
 
@@ -449,7 +460,7 @@ test('a required Tailscale login must match exactly', async (context) => {
   });
   assert.equal(allowed.status, 503);
 
-  const { token } = await fixture.pair();
+  const { token } = await pair();
   const phone = await unixPhone(socketPath, token, { 'Tailscale-User-Login': login });
   context.after(async () => {
     phone.socket.terminate();
@@ -533,7 +544,7 @@ test('a start that fails after claiming the socket releases the lock', async (co
   const gateway = new Gateway({
     socketPath,
     origins: [tailnetOrigin],
-    stateDirectory: join(fixture.directory, 'remote-state'),
+    stateDirectory: join(fixture.directory, 'unix-state'),
     controlSocket: fixture.desktop.socketPath,
     sessionsDirectory: join(fixture.directory, '.companion-sessions'),
     appDirectory: join(fixture.directory, 'no-app'),
@@ -559,7 +570,7 @@ test('closing stops the gateway socket before waiting for the app proxy', async 
   const gateway = new Gateway({
     socketPath,
     origins: [tailnetOrigin],
-    stateDirectory: join(fixture.directory, 'remote-state'),
+    stateDirectory: join(fixture.directory, 'unix-state'),
     controlSocket: fixture.desktop.socketPath,
     sessionsDirectory: join(fixture.directory, '.companion-sessions'),
     appDirectory: join(fixture.directory, 'no-app'),
@@ -616,7 +627,7 @@ test('a failed start reports its error even if the app proxy never finishes clos
   const gateway = new Gateway({
     socketPath: join(socketDirectory, 'gateway.sock'),
     origins: [tailnetOrigin],
-    stateDirectory: join(fixture.directory, 'remote-state'),
+    stateDirectory: join(fixture.directory, 'unix-state'),
     controlSocket: fixture.desktop.socketPath,
     sessionsDirectory: join(fixture.directory, '.companion-sessions'),
     appDirectory: join(fixture.directory, 'no-app'),
@@ -645,4 +656,105 @@ test('a failed start reports its error even if the app proxy never finishes clos
     /must not be accessible to other users/,
   );
   assert.ok(Date.now() - startedAt < 4000, 'the startup error is reported within the bound');
+});
+
+// ---- One gateway per pairing state -------------------------------------------
+
+test('one pairing state serves one gateway at a time, whether TCP or Unix socket', async (context) => {
+  // The fixture's TCP gateway serves remote-state.
+  const fixture = await remoteFixture();
+  context.after(() => fixture.close());
+  const stateDirectory = join(fixture.directory, 'remote-state');
+  const socketDirectory = join(fixture.directory, 'phone');
+  await mkdir(socketDirectory, { mode: 0o700 });
+  const socketPath = join(socketDirectory, 'gateway.sock');
+
+  const unixGateway = () =>
+    new Gateway({
+      socketPath,
+      origins: [tailnetOrigin],
+      stateDirectory,
+      controlSocket: fixture.desktop.socketPath,
+      sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+      appDirectory: join(fixture.directory, 'no-app'),
+      log: () => {},
+    });
+  const tcpGateway = () =>
+    new Gateway({
+      host: '127.0.0.1',
+      port: fixture.port,
+      origins: [fixture.origin],
+      stateDirectory,
+      controlSocket: fixture.desktop.socketPath,
+      sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+      appDirectory: join(fixture.directory, 'no-app'),
+      log: () => {},
+    });
+
+  // A Unix socket gateway on the same state is refused while TCP serves it,
+  // and leaves no socket or socket lock behind.
+  const refusedUnix = unixGateway();
+  await assert.rejects(refusedUnix.start(), /serving this pairing state holds .*gateway\.lock/);
+  await assert.rejects(lstat(socketPath), { code: 'ENOENT' });
+  const socketClaim = await claimUnixSocket(socketPath);
+  await socketClaim.release();
+
+  // Pairing transactions (the CLI's state.lock) still work meanwhile.
+  const { token } = await fixture.pair();
+
+  // Handover: stop TCP first, then the socket gateway starts on the same
+  // pairing, and the TCP one cannot come back while it runs.
+  await fixture.gateway.close();
+  const socketGateway = unixGateway();
+  await socketGateway.start();
+  context.after(() => socketGateway.close());
+  await assert.rejects(tcpGateway().start(), /serving this pairing state/);
+
+  const phone = await unixPhone(socketPath, token);
+  context.after(async () => {
+    phone.socket.terminate();
+  });
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+
+  // Once the socket gateway stops, TCP may serve the state again.
+  await socketGateway.close();
+  const tcpAgain = tcpGateway();
+  await tcpAgain.start();
+  await tcpAgain.close();
+});
+
+test('a failed start releases the pairing state for the next gateway', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const fixture = await remoteFixture();
+  context.after(() => fixture.close());
+  const stateDirectory = join(directory, 'state');
+
+  // A group-accessible socket directory makes the start fail after the state lock.
+  const shared = join(directory, 'shared');
+  await mkdir(shared, { mode: 0o700 });
+  await chmod(shared, 0o750);
+  const failing = new Gateway({
+    socketPath: join(shared, 'gateway.sock'),
+    origins: [tailnetOrigin],
+    stateDirectory,
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    log: () => {},
+  });
+  await assert.rejects(failing.start(), /must not be accessible to other users/);
+
+  const privateDirectory = join(directory, 'private');
+  await mkdir(privateDirectory, { mode: 0o700 });
+  const next = new Gateway({
+    socketPath: join(privateDirectory, 'gateway.sock'),
+    origins: [tailnetOrigin],
+    stateDirectory,
+    controlSocket: fixture.desktop.socketPath,
+    sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+    appDirectory: join(fixture.directory, 'no-app'),
+    log: () => {},
+  });
+  await next.start();
+  await next.close();
 });

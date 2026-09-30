@@ -1,17 +1,20 @@
 /**
  * Start, stop and report on the supervised phone gateway.
  *
- * Ordering contract with the desktop (see docs/mobile-startup.md):
+ * Ordering with the desktop (see docs/mobile-startup.md; the listener's
+ * opt-in `--phone` hook in desktop-hook.ts follows it):
  * - Start phone access only after the desktop listener answers on its control
  *   socket (`start` checks, or waits with `--wait-for-listener`).
- * - Stop phone access *before* stopping the listener, and do not stop the
- *   listener if `stop` fails. A launcher's `--phone` option follows this.
+ * - Stop phone access before the listener's control socket goes away.
  * - A listener restart while the gateway runs is harmless: phones get "listener
  *   unavailable" (close code 4503) and reconnect when it is back.
+ * - One gateway per pairing state: start refuses while another gateway holds
+ *   the state's lifetime lock (see Gateway.start).
  *
  * Start refuses, before anything runs, unless every precondition holds: the
  * pinned checkout is exactly the approved revision, the pairing directory is
- * private, the listener answers, and Tailscale Serve has exactly the one
+ * private and not served by another gateway, the listener answers, and
+ * Tailscale Serve has exactly the one
  * expected route to the gateway socket (the gateway re-checks this itself).
  * It never runs sudo or changes Serve; when the route is missing it prints the
  * one-time command for the user to run.
@@ -29,6 +32,7 @@ import { DeviceStore } from '../devices.ts';
 import { assertSafePath, configHostname, type PhoneServiceConfig } from './config.ts';
 import { verifyPinnedCheckout } from './pin.ts';
 import {
+  pairingStateInUse,
   probePairingState,
   probeServeRoute,
   probeUnixSocket,
@@ -195,6 +199,17 @@ export async function startService(
   const pairing = await probePairingState(config.stateDirectory);
   if (pairing.state === 'problem') {
     return refuse(`pairing state ${config.stateDirectory}: ${pairing.reason}`);
+  }
+
+  // 3b. No other gateway may serve the same pairing state, e.g. one started
+  // in a terminal. (Gateways older than the state lock cannot be detected.)
+  if (
+    pairing.state !== 'missing' &&
+    (await pairingStateInUse(config.stateDirectory, tools.flock))
+  ) {
+    return refuse(
+      `another phone gateway is serving the pairing state ${config.stateDirectory}; stop it first`,
+    );
   }
 
   // 4. Nothing may already answer on the gateway socket (e.g. a manual gateway).

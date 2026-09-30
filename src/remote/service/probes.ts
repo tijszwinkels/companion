@@ -13,7 +13,9 @@
  * Nothing here writes, binds, or changes Tailscale.
  */
 
-import { lstat } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { constants } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
 import { connect } from 'node:net';
 
 import { DeviceStore } from '../devices.ts';
@@ -145,5 +147,37 @@ export async function probePairingState(directory: string): Promise<StateProbe> 
     return { state: 'ok', devices: devices.length };
   } catch (error) {
     return { state: 'problem', reason: `devices.json cannot be read: ${(error as Error).message}` };
+  }
+}
+
+/**
+ * Whether a gateway currently serves this pairing state: gateways hold an
+ * exclusive lifetime flock on `gateway.lock` there (see Gateway.start). This
+ * only tries the lock and never creates the file, so it changes nothing.
+ * Gateways from before that lock take no lock and cannot be detected here.
+ */
+export async function pairingStateInUse(directory: string, flock: string): Promise<boolean> {
+  let file;
+  try {
+    file = await open(`${directory}/gateway.lock`, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const child = spawn(flock, ['--exclusive', '--nonblock', '3'], {
+        stdio: ['ignore', 'ignore', 'ignore', file.fd],
+      });
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    return code !== 0;
+  } finally {
+    // Closing our descriptor drops the lock again if flock(1) took it.
+    await file.close();
   }
 }

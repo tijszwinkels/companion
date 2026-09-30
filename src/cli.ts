@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs, styleText, stripVTControlCharacters } from 'node:util';
 
 import { loadConfig } from './config.ts';
@@ -36,6 +38,7 @@ import { failureOutcome } from './core/delivery-error.ts';
 import { createGraph } from './core/graph.ts';
 import { graphToMermaid } from './core/graph-mermaid.ts';
 import { DesktopRuntime, desktopPaths } from './desktop/runtime.ts';
+import { PhoneAccessHook } from './remote/service/desktop-hook.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
 import type { Transcript } from './core/activity.ts';
@@ -71,6 +74,7 @@ async function main(): Promise<void> {
       'external-socket': { type: 'string' },
       'widget-library': { type: 'string' },
       paused: { type: 'boolean', default: false },
+      phone: { type: 'boolean', default: false },
     },
   });
 
@@ -92,6 +96,9 @@ Usage: npm start -- [options]
   --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
                      else ~/companion/widget-library)
   --paused           Start paused; resume through the desktop control
+  --phone            Opt-in: also run 'bin/companion-phone start' once the desktop is up,
+                     and 'companion-phone stop' when this listener stops
+                     (see docs/mobile-startup.md)
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
@@ -129,6 +136,17 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     throw Error('--external-sessions requires ordinary listener mode');
   }
 
+  if (
+    values.phone &&
+    (values['no-desktop'] ||
+      values.preview ||
+      values.graph ||
+      values.text !== undefined ||
+      values.wav)
+  ) {
+    throw Error('--phone requires ordinary listener mode with desktop control');
+  }
+
   const seconds = values.seconds === undefined ? undefined : Number(values.seconds);
   if (seconds !== undefined && (!Number.isFinite(seconds) || seconds <= 0)) {
     throw Error('--seconds must be positive');
@@ -162,6 +180,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let pipeline: SensorPipeline | undefined;
   let desktop: DesktopRuntime | undefined;
   let external: ExternalSessionServer | undefined;
+  let phone: PhoneAccessHook | undefined;
   const pause = new PauseControl();
 
   // Automatic transcription cleanup: off unless the desktop loads a saved
@@ -205,6 +224,18 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       );
       await external.start();
       log('external', 'Same-user session API enabled');
+    }
+
+    // Opt-in only: phone access follows this listener. Started once the
+    // control socket answers, in the background, so the desktop never waits
+    // for it or depends on it. This checkout's companion-phone is used; the
+    // gateway code it runs is the pinned one from its own config.
+    if (values.phone && desktop) {
+      phone = new PhoneAccessHook({
+        executable: join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'companion-phone'),
+        log: (detail) => log('phone', detail),
+      });
+      phone.start();
     }
 
     const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
@@ -358,6 +389,11 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // Stop producers and pending work before releasing VAD's native resources.
     controller.abort();
     clearTimeout(timer);
+
+    // Phone access goes first, while the control socket still exists, so
+    // phones are never left connected to a gateway without its listener.
+    // Bounded (about 35 s at most); a failure is logged and shutdown continues.
+    await phone?.stop();
 
     await pipeline?.idle();
     await transcriber?.close();

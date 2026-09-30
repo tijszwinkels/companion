@@ -4,8 +4,8 @@
  * Runs the phone gateway (`companion-remote serve`) from a pinned, reviewed
  * checkout as a hardened *transient* systemd user service, behind a
  * persistent Tailscale Serve route to a private Unix socket. Nothing starts on
- * its own: not at boot, not at login and not with the desktop, unless a
- * launcher is explicitly asked to (for example a `--phone` option) or you run
+ * its own: not at boot, not at login and not with the desktop, unless the
+ * listener is started with the opt-in `--phone` option or you run
  * `companion-phone start` yourself.
  *
  * It never runs sudo, never changes Tailscale, never installs or enables unit

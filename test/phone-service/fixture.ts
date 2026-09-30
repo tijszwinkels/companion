@@ -143,7 +143,9 @@ export async function createWorld(): Promise<PhoneServiceWorld> {
 
   // The pinned checkout: a clone at the commit under test.
   const revision = (await run('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim();
-  const checkout = join(base, 'checkout');
+  // Every character the config allows besides letters and digits, so path
+  // handling in systemd-run, ExecStartPre and the shell pin check is exercised.
+  const checkout = join(base, 'pinned+co_v1.2-x');
   await run('git', ['clone', '--quiet', '--shared', '--no-checkout', repository, checkout]);
   await run('git', ['-C', checkout, 'checkout', '--quiet', '--detach', revision]);
   await symlink(join(repository, 'node_modules'), join(checkout, 'node_modules'));
@@ -178,9 +180,14 @@ export async function createWorld(): Promise<PhoneServiceWorld> {
 
   const stateDirectory = join(base, 'state');
   const configFile = join(base, 'config', 'phone-gateway.json');
+  // A synthetic HOME and config home: nothing may read or write the user's own.
+  const home = join(base, 'home');
+  await mkdir(join(home, '.config'), { recursive: true, mode: 0o700 });
   const environment = {
     ...process.env,
     PATH: `${binDirectory}:${process.env.PATH}`,
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, '.config'),
     COMPANION_PHONE_CONFIG: configFile,
   };
 

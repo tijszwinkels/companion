@@ -146,6 +146,9 @@ page a secure context.
   already be private if it exists, and must not be a symlink. CLI/gateway writes hold a shared Linux `flock`
   through the complete transaction, preventing double redemption or revocation
   being overwritten by a concurrent pair/revoke. Requires util-linux `flock`.
+  Separately, a running gateway holds an exclusive lifetime lock on
+  `gateway.lock` there: one gateway per state directory, TCP or Unix socket; a
+  second one refuses to start. Gateways from before this lock do not take it.
 - **Revocation.** `revoke` removes the hash; the gateway rechecks every 5 seconds
   and closes that device's live connections (close code 4403).
 - **Origins and hosts.** The WebSocket upgrade and pairing endpoint require an

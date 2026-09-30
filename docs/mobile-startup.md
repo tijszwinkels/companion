@@ -8,9 +8,9 @@ gateway restarts, desktop restarts and reboots.
 
 It is **opt-in only**. Plain desktop startup (`npm start`, `npm run ui`) is
 unchanged and never starts phone access. Nothing starts at boot or login:
-phone access runs from an explicit `companion-phone start` (by you, or by a
-launcher that you explicitly asked for phone access, e.g. a `--phone` option)
-until `companion-phone stop`, a failure, or the end of the user manager.
+phone access runs from an explicit `companion-phone start`, or with a listener
+you started with the opt-in `--phone` option, until `companion-phone stop`, that
+listener's shutdown, a failure, or the end of the user manager.
 
 `companion-phone` never runs sudo, never changes Tailscale, never installs or
 enables unit files, and never finds processes by name (`pkill`/`pgrep`). The
@@ -113,11 +113,13 @@ Each step is a separate decision. Nothing below happens automatically.
    Defaults: pairing state `~/companion/remote`, the listener socket
    `$XDG_RUNTIME_DIR/companion/control.sock`, unit `companion-phone-gateway`.
 
-3. **Stop any terminal-run gateway** you used before, and end a foreground
-   `tailscale serve` session (Ctrl+C, then `sudo -k`). Serve must be empty
-   (`companion-phone check-serve` prints `none`). Pairing in `~/companion/remote`
-   is reused as is; pairing kept elsewhere must be moved deliberately while no
-   gateway runs (see rollback for the direction back).
+3. **Stop any terminal-run gateway** you used before (see
+   [one gateway per pairing state](#one-gateway-per-pairing-state)), and end a
+   foreground `tailscale serve` session (Ctrl+C, then `sudo -k`). Serve must be
+   empty (`companion-phone check-serve` prints `none`). An existing
+   `~/companion/remote` is used as it is: no migration, reset or copy. Pairing
+   kept elsewhere must be moved deliberately while no gateway runs (see rollback
+   for the direction back).
 
 4. **Create the tailnet route yourself, once** (`companion-phone route-commands`):
 
@@ -135,62 +137,78 @@ Each step is a separate decision. Nothing below happens automatically.
    your `tailscale` refuses the command or asks for account, HTTPS or operator
    changes, stop and decide separately; do not grant `--operator` for this.
 
-5. **Start and pair:** with Companion running, `bin/companion-phone start`, then
+5. **Start and pair:** with Companion running, `bin/companion-phone start` (or
+   restart the listener with `--phone`), then
    `bin/companion-remote pair` (add `--state-directory` if you changed it) and
    enter the code on the phone at `https://<machine>.<tailnet>.ts.net`.
 
-## Daily use and launcher contract
+## Daily use: `npm start -- --phone`
 
-Start the desktop as you do today. For phone access, run
-`companion-phone start` afterwards, or let a launcher do it when you ask it to.
-A launcher's opt-in option (for example `companion-run <profile> --phone`)
-should follow this contract; the launcher itself is local, not part of this
-repository:
+Phone access can follow the desktop listener. Start the listener with the
+opt-in `--phone` option (a launcher only has to pass it through, e.g. for
+`companion-run <profile> --phone`):
 
 ```sh
-# Before stopping the listener (switching profiles, or off): stop phone access
-# first, and keep the desktop running if that does not succeed. With nothing
-# running this is a no-op; it never starts anything.
-"$PINNED/bin/companion-phone" stop || { echo "Phone gateway did not stop"; exit 1; }
-
-# Only with the explicit opt-in: after launching the listener, wait for it,
-# then start phone access. A phone failure is reported but does not stop the
-# desktop.
-"$PINNED/bin/companion-phone" start --wait-for-listener 120 || echo "Phone access not started"
+npm start -- --external-sessions --phone
 ```
 
-So phone access follows each explicit choice: a switch with `--phone` turns it
-on, a switch without it (or `off`) leaves it off. Plain startup never starts it.
-Use the pinned checkout's `bin/companion-phone`. A listener restart outside the
-launcher needs no phone step at all (see below).
+| Moment                                 | What happens                                                                                                                                                                                                               |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Listener without `--phone`             | Never runs `companion-phone`: starts nothing, stops nothing, whatever gateway may be running.                                                                                                                              |
+| `--phone` listener is up               | After its control socket answers, it runs this checkout's `bin/companion-phone start` in the background. The desktop never waits for it.                                                                                   |
+| Phone start fails or is refused        | Logged in the listener output (`phone` lines) with the reason; the desktop keeps running. `companion-phone status` shows which part is missing.                                                                            |
+| `--phone` listener stops (Ctrl+C/TERM) | First, while its socket still exists: a start still in progress is terminated, then `companion-phone stop` (at most about 35 s). If that fails it is logged ("Phone access may still be on") and the listener still exits. |
+| Desktop restart by a launcher          | The old `--phone` listener stops phone access on its way out; the new one starts it only if it has `--phone` too. Wait for the old listener to exit before starting the new one.                                           |
+| Listener crash or SIGKILL              | No hook runs. The gateway keeps running and phones see "listener unavailable" (4503) until a listener is back; a new `--phone` listener keeps the running service. `companion-phone stop` ends it any time.                |
 
-What happens when:
+`--phone` is refused outside ordinary listener mode (`--no-desktop`,
+`--preview`, `--text`, `--wav`, `--graph`). `companion-phone start` and
+`stop` also work by hand, independently of any listener.
 
-| Event                          | Effect                                                                                                                          |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Listener stops or restarts     | Gateway keeps running; phones see "listener unavailable" (close 4503) and reconnect when it is back, with the same pairing.     |
-| Gateway crashes                | systemd restarts it after 2 s (at most 3 times a minute); phones reconnect.                                                     |
-| Checkout changes while running | The running gateway continues; the next (re)start refuses. `status` reports it; approve with `configure --replace` + `restart`. |
-| Serve route changes            | The gateway stops within about a minute; its restarts refuse too, so it ends failed. Fix the route, then `start` again.         |
-| Logout                         | Without lingering, the user manager stops the service. With lingering it keeps running; stop it explicitly.                     |
-| Reboot                         | The service is gone (transient). Pairing and the `--bg` route persist; phone access returns at the next explicit `start`.       |
+Other events:
+
+| Event                            | Effect                                                                                                                                                                                 |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Listener restarts without a hook | The gateway keeps running; phones see "listener unavailable" (close 4503) and reconnect when it is back, with the same pairing.                                                        |
+| Gateway crashes                  | systemd restarts it after 2 s (at most 3 times a minute); phones reconnect.                                                                                                            |
+| Checkout changes while running   | The running gateway continues; every (re)start refuses, so after a crash it ends failed. `status` reports it; approve with `configure --replace` + `restart`, or restore the checkout. |
+| Serve route changes              | The gateway stops within about a minute; its restarts refuse too, so it ends failed. Fix the route, then `start` again.                                                                |
+| Logout                           | Without lingering, the user manager stops the service. With lingering it keeps running; stop it explicitly.                                                                            |
+| Reboot                           | The service is gone (transient). Pairing and the `--bg` route persist; phone access returns at the next `--phone` listener or explicit `start`.                                        |
 
 Starting phone access automatically at boot or login is **not** part of this
-design. It would be a separate decision (for example a small enabled user unit
-that runs `companion-phone start --without-listener`), with its own review.
+design. It would be a separate decision with its own review.
+
+## One gateway per pairing state
+
+A gateway holds an exclusive lifetime lock on `gateway.lock` in its pairing
+state directory for as long as it serves, whether on a TCP port or a Unix
+socket. A second gateway on the same state refuses to start ("Another phone
+gateway serving this pairing state holds …"), and `companion-phone start`
+refuses before creating anything. (`state.lock` is different: it only
+serializes single pairing/revocation transactions, and `pair`/`revoke` keep
+working while a gateway runs.)
+
+**Handover and upgrade limit:** gateways from before this lock take no lock
+and cannot be detected. When switching from an older terminal gateway, stop it
+first yourself; `companion-phone` cannot see it. Likewise, a service pinned to
+an older revision does not take the lock itself (the preflight in
+`companion-phone start` still refuses while a newer gateway holds it).
 
 ## Stop, disable and roll back
 
-- **Stop phone access:** `companion-phone stop`. Nothing restarts it.
+- **Stop phone access:** `companion-phone stop`. Nothing restarts it until the
+  next explicit `start` or `--phone` listener.
 - **Disable completely:** stop, then remove the route yourself:
   `sudo tailscale serve --https=443 off` and `sudo -k` (never `tailscale serve
 reset`, which removes unrelated configuration). Delete
-  `~/.config/companion/phone-gateway.json` so no launcher can start it.
+  `~/.config/companion/phone-gateway.json` so no `--phone` listener can start it.
 - **Revoke a phone:** `bin/companion-remote devices`, then `revoke ID`.
 - **Forget all pairing:** stop, then remove `~/companion/remote`. Every phone
   must pair again.
-- **Back to a terminal gateway:** stop the service and remove the `--bg` route
-  first (one route, one owner), then run `companion-remote serve` as before with
+- **Back to a terminal gateway:** stop the service (and stop passing `--phone`)
+  and remove the `--bg` route first (one route, one owner), then run
+  `companion-remote serve` as before with
   the same `--state-directory` (revoked devices stay revoked). If the old
   gateway used another state directory, copy the _current_
   `~/companion/remote/devices.json` there while no gateway runs, never an older
@@ -219,16 +237,27 @@ reset`, which removes unrelated configuration). Delete
 ## Tests
 
 - `npm test` includes `test/unit/phone-service-config.test.ts` (validation,
-  quoting, the unit plan, both pin checks, the Serve classifier) and
+  quoting, the unit plan, both pin checks, the Serve classifier),
   `test/unit/phone-service-cli.test.ts` (the CLI with fake `systemctl`,
-  `systemd-run`, `tailscale` and `pkill`/`pgrep` trip-wires).
+  `systemd-run`, `tailscale` and `pkill`/`pgrep` trip-wires, synthetic HOME and
+  config; read-only `status`/`check-serve` that print no token, hash or code),
+  `test/unit/phone-desktop-hook.test.ts` (the `--phone` hook: background start,
+  failure reporting, stop ordering and time bounds, flag validation) and, in
+  `test/unit/remote-unix-socket.test.ts`, one gateway per pairing state across
+  TCP and Unix socket gateways, with handover in both directions.
 - `npm run test:phone-service` needs a running systemd user manager and creates
   uniquely named transient units `companion-phone-test-*` with fixtures under
-  `~/.cache`. It checks the sandbox (read-only home and checkout, no TCP,
+  `~/.cache` and a synthetic HOME. The pinned checkout's path contains
+  `+ . _ -`. It checks the sandbox (read-only home and checkout, no TCP,
   tailscale/flock/listener still reachable; `systemd-analyze security` exposure
-  at most 2.5, measured 1.7), refusals before any unit exists,
-  the private socket and its Host/login/Funnel guards, a paired phone across
-  listener loss and restart, crash restart with durable pairing, the gateway
-  failing closed on a changed route, systemd refusing a changed checkout, and a
-  stop that never touches a unit of the same name it did not start. It never
-  uses the production socket names, state, Tailscale or installed units.
+  at most 2.5, measured 1.7), that the gateway is a child of the user manager
+  rather than of the caller, refusals before any unit exists, the private
+  socket and its Host/login/Funnel guards, a paired phone across listener loss
+  and restart, crash restart with durable pairing, the gateway failing closed
+  on a changed route, systemd refusing on automatic restart each of: an edited
+  tracked file, an untracked source file and a moved HEAD (ending
+  `start-limit-hit`, cleaned up by `stop`), a terminal TCP gateway on the same
+  pairing state blocking the service and vice versa, the `--phone` hook end to
+  end, and a stop that never touches a unit of the same name it did not start.
+  It never uses the production socket names, state, Tailscale or installed
+  units, and needs the tested revision committed (it pins a clone of HEAD).

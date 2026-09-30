@@ -15,17 +15,21 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { promisify } from 'node:util';
 
 import { DeviceStore } from '../../src/remote/devices.ts';
+import { Gateway } from '../../src/remote/gateway.ts';
+import { PhoneAccessHook } from '../../src/remote/service/desktop-hook.ts';
+import { freePort } from '../remote-fixture.ts';
 import { resolveTools } from '../../src/remote/service/lifecycle.ts';
 import { loadConfig, runtimeRoot } from '../../src/remote/service/config.ts';
 import { transientServicePlan } from '../../src/remote/service/transient-unit.ts';
 import {
   assertUserManager,
+  cli,
   createWorld,
   receivedState,
   socketPhone,
@@ -48,7 +52,11 @@ before(async () => {
   await assertUserManager();
   world = await createWorld();
   // Tools are resolved from PATH: the fake tailscale must come first here too.
-  process.env.PATH = world.environment.PATH;
+  // The listener hook test runs companion-phone with this process's
+  // environment, so it gets the synthetic HOME and config as well.
+  for (const name of ['PATH', 'HOME', 'XDG_CONFIG_HOME', 'COMPANION_PHONE_CONFIG']) {
+    process.env[name] = world.environment[name];
+  }
   await world.listener.start();
 
   const configured = await world.phoneCli([
@@ -270,6 +278,19 @@ test('start runs the gateway as a hardened transient service on a private socket
   assert.equal(unit.Restart, 'on-failure');
   assert.equal(unit.StartLimitBurst, '3');
 
+  // Terminal independence: the gateway belongs to the user manager, not to
+  // the process (or terminal) that ran companion-phone start.
+  const placement = await systemctlShow(world.unit, ['ControlGroup', 'MainPID']);
+  assert.match(
+    placement.ControlGroup,
+    new RegExp(`/user@\\d+\\.service/app\\.slice/${world.unit}$`),
+  );
+  assert.ok(!(await readFile('/proc/self/cgroup', 'utf8')).includes(world.unit));
+  const parentPid = (await readFile(`/proc/${placement.MainPID}/stat`, 'utf8'))
+    .split(') ')[1]
+    .split(' ')[1];
+  assert.equal((await readFile(`/proc/${parentPid}/comm`, 'utf8')).trim(), 'systemd');
+
   // systemd's own assessment of the running gateway's sandbox (0 best, 10 worst).
   const security = await run('systemd-analyze', ['--user', 'security', world.unit, '--no-pager']);
   const exposure = Number(/Overall exposure level for \S+: ([0-9.]+)/.exec(security.stdout)?.[1]);
@@ -392,39 +413,90 @@ test('systemd restarts a crashed gateway and pairing survives', async () => {
   phone.socket.terminate();
 });
 
-test('systemd refuses to restart the gateway onto a changed checkout', async () => {
+test('systemd refuses every kind of code change on automatic restart; stop cleans up', async () => {
+  const git = (...args: string[]) =>
+    run('git', ['-C', world.checkout, ...args], { env: world.environment });
   const readme = join(world.checkout, 'README.md');
   const original = await readFile(readme, 'utf8');
-  await writeFile(readme, original + '\nUnreviewed change.\n');
 
-  try {
-    await run('systemctl', ['--user', 'kill', '--signal=SIGKILL', world.unit]);
-    await waitUntil(
-      async () => (await systemctlShow(world.unit, ['ActiveState'])).ActiveState === 'failed',
-      60_000,
-      'the unit to give up',
-    );
-    const journal = await run('journalctl', [
-      '--user',
-      '-u',
-      world.unit,
-      '--no-pager',
-      '-o',
-      'cat',
-    ]);
-    assert.match(journal.stdout, /has uncommitted changes; refusing to start/);
-    await assert.rejects(lstat(world.socketPath), { code: 'ENOENT' });
+  const changes = [
+    {
+      name: 'a tracked file edited',
+      apply: () => writeFile(readme, original + '\nUnreviewed change.\n'),
+      undo: () => writeFile(readme, original),
+      message: /has uncommitted changes; refusing to start/,
+    },
+    {
+      name: 'an untracked source file',
+      apply: () => writeFile(join(world.checkout, 'src', 'injected.ts'), 'export {};\n'),
+      undo: () => rm(join(world.checkout, 'src', 'injected.ts')),
+      message: /has untracked code files; refusing to start/,
+    },
+    {
+      name: 'HEAD moved to another commit',
+      apply: () =>
+        git(
+          '-c',
+          'user.name=T',
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '--quiet',
+          '--allow-empty',
+          '-m',
+          'unreviewed',
+        ),
+      undo: () => git('reset', '--quiet', '--hard', world.revision),
+      message: /is not at the approved revision/,
+    },
+  ];
 
-    const status = await world.phoneCli(['status', '--json']);
-    const report = JSON.parse(status.stdout);
-    assert.match(report.gateway.service, /^failed/);
-    assert.equal(report.checkout.ok, false);
+  for (const change of changes) {
+    // Running from the approved revision.
+    const started = await world.phoneCli(['start']);
+    assert.equal(started.code, 0, `${change.name}: ${started.stderr}`);
+    const since = `@${Math.floor(Date.now() / 1000) - 1}`;
 
-    const refused = await world.phoneCli(['start']);
-    assert.equal(refused.code, 1);
-    assert.match(refused.stderr, /uncommitted changes/);
-  } finally {
-    await writeFile(readme, original);
+    await change.apply();
+    try {
+      // A crash makes systemd restart it; ExecStartPre refuses every attempt
+      // until the start limit leaves the unit failed.
+      await run('systemctl', ['--user', 'kill', '--signal=SIGKILL', world.unit]);
+      await waitUntil(
+        async () => (await systemctlShow(world.unit, ['ActiveState'])).ActiveState === 'failed',
+        60_000,
+        `${change.name}: the unit to give up`,
+      );
+      const state = await systemctlShow(world.unit, ['Result', 'NRestarts']);
+      assert.equal(state.Result, 'start-limit-hit', change.name);
+      const journal = await run('journalctl', [
+        '--user',
+        '-u',
+        world.unit,
+        '--since',
+        since,
+        '--no-pager',
+        '-o',
+        'cat',
+      ]);
+      assert.match(journal.stdout, change.message, change.name);
+      await assert.rejects(lstat(world.socketPath), { code: 'ENOENT' });
+
+      const report = JSON.parse((await world.phoneCli(['status', '--json'])).stdout);
+      assert.match(report.gateway.service, /^failed/);
+      assert.equal(report.checkout.ok, false);
+      const refused = await world.phoneCli(['start']);
+      assert.equal(refused.code, 1, change.name);
+    } finally {
+      await change.undo();
+    }
+
+    // stop clears the failed unit, so the next start begins cleanly.
+    const stopped = await world.phoneCli(['stop']);
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.equal(await unitLoaded(), false, change.name);
   }
 
   const restarted = await world.phoneCli(['start']);
@@ -459,4 +531,79 @@ test('stop and start leave alone a unit of the same name that this tool did not 
   } finally {
     await run('systemctl', ['--user', 'stop', world.unit]);
   }
+});
+
+test('the listener hook starts phone access in the background and stops it', async () => {
+  await world.setServeStatus(world.exactRoute());
+  const lines: string[] = [];
+  const hook = new PhoneAccessHook({ executable: cli, log: (line) => lines.push(line) });
+
+  hook.start();
+  await waitUntil(
+    async () => lines.some((line) => line.includes('phone access is on')),
+    60_000,
+    'phone access from the hook',
+  );
+  assert.equal((await systemctlShow(world.unit, ['ActiveState'])).ActiveState, 'active');
+
+  assert.equal(await hook.stop(), true);
+  assert.equal(await unitLoaded(), false);
+
+  // Without the route, the hook reports and creates nothing.
+  await world.setServeStatus({});
+  const refused = new PhoneAccessHook({ executable: cli, log: (line) => lines.push(line) });
+  refused.start();
+  await waitUntil(
+    async () => lines.some((line) => line.startsWith('Phone access did not start')),
+    60_000,
+    'the refusal',
+  );
+  assert.equal(await unitLoaded(), false);
+  assert.equal(await refused.stop(), true);
+});
+
+test('a terminal TCP gateway on the same pairing state keeps the service from serving it', async () => {
+  await world.setServeStatus(world.exactRoute());
+  const port = await freePort();
+  const terminalGateway = new Gateway({
+    host: '127.0.0.1',
+    port,
+    origins: [`http://127.0.0.1:${port}`],
+    stateDirectory: world.stateDirectory,
+    controlSocket: world.listener.socketPath,
+    sessionsDirectory: join(world.base, 'sessions'),
+    appDirectory: join(world.checkout, 'integrations', 'mobile', 'dist'),
+    log: () => {},
+  });
+  await terminalGateway.start();
+  try {
+    const result = await world.phoneCli(['start']);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /another phone gateway is serving the pairing state/);
+    assert.equal(await unitLoaded(), false);
+    await assert.rejects(lstat(world.socketPath), { code: 'ENOENT' });
+  } finally {
+    await terminalGateway.close();
+    await world.phoneCli(['stop']);
+  }
+
+  // After the handover the service serves the same pairing, and now its
+  // sandboxed gateway holds the lock: a terminal gateway cannot join it.
+  const started = await world.phoneCli(['start']);
+  assert.equal(started.code, 0, started.stderr);
+  const lateTerminalGateway = new Gateway({
+    host: '127.0.0.1',
+    port: await freePort(),
+    origins: ['http://127.0.0.1:1'],
+    stateDirectory: world.stateDirectory,
+    controlSocket: world.listener.socketPath,
+    sessionsDirectory: join(world.base, 'sessions'),
+    appDirectory: join(world.checkout, 'integrations', 'mobile', 'dist'),
+    log: () => {},
+  });
+  await assert.rejects(lateTerminalGateway.start(), /serving this pairing state/);
+  const phone = await socketPhone(world.socketPath, token);
+  await waitUntil(async () => receivedState(phone), 10_000, 'state after the handover');
+  phone.socket.terminate();
+  assert.equal((await world.phoneCli(['stop'])).code, 0);
 });

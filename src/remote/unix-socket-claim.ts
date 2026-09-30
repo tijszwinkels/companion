@@ -82,14 +82,18 @@ export async function claimUnixSocket(socketPath: string): Promise<UnixSocketCla
 /**
  * Open the lock file without following symlinks and take a non-blocking
  * exclusive flock on it. The returned handle owns the lock until it is closed
- * or the process exits; the kernel releases it on crash too.
+ * or the process exits; the kernel releases it on crash too. `holder` names
+ * what a held lock means, for the refusal message.
  *
  * This uses the same flock(1) technique as state-lock.ts, but deliberately
  * does not wait: state-lock serializes short transactions (and waits up to
  * 5 s), whereas this lock is held for the gateway's whole lifetime, so a
  * held lock means "another gateway is running" and must fail at once.
  */
-async function acquireLifetimeLock(lockPath: string): Promise<FileHandle> {
+export async function acquireLifetimeLock(
+  lockPath: string,
+  holder = 'Another phone gateway',
+): Promise<FileHandle> {
   const flags = constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW;
   let file: FileHandle;
   try {
@@ -122,8 +126,7 @@ async function acquireLifetimeLock(lockPath: string): Promise<FileHandle> {
 
     if (exitCode !== 0) {
       throw Error(
-        `Another phone gateway holds ${lockPath}; stop it first ` +
-          '(or check that flock(1) is installed)',
+        `${holder} holds ${lockPath}; stop it first ` + '(or check that flock(1) is installed)',
       );
     }
   } catch (error) {

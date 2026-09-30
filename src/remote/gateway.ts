@@ -36,7 +36,7 @@
  *   other origin.
  */
 
-import { chmod, readFile } from 'node:fs/promises';
+import { chmod, readFile, type FileHandle } from 'node:fs/promises';
 import {
   createServer as createHttpServer,
   type IncomingMessage,
@@ -56,7 +56,7 @@ import { maximumClientMessageBytes } from './protocol.ts';
 import { ReceiptBook } from './receipts.ts';
 import { closeCodes, Relay } from './relay.ts';
 import { tailscaleRefusal } from './tailscale-headers.ts';
-import { claimUnixSocket, type UnixSocketClaim } from './unix-socket-claim.ts';
+import { acquireLifetimeLock, claimUnixSocket, type UnixSocketClaim } from './unix-socket-claim.ts';
 
 /**
  * Where the gateway accepts connections: either a TCP address and port, or a
@@ -248,6 +248,8 @@ export class Gateway {
   private server?: Server;
   /** Held while listening on a Unix socket; see unix-socket-claim.ts. */
   private socketClaim?: UnixSocketClaim;
+  /** Lifetime lock on the pairing state directory (see start()). */
+  private stateClaim?: FileHandle;
   private readonly sockets = new WebSocketServer({
     noServer: true,
     maxPayload: maximumClientMessageBytes,
@@ -312,9 +314,26 @@ export class Gateway {
   async start(): Promise<void> {
     await this.devices.prepare();
 
+    // Exactly one gateway may serve a pairing state directory at a time,
+    // whatever it listens on (TCP port or Unix socket). state.lock only
+    // serializes single transactions; this lock is held for the gateway's
+    // whole lifetime, so a second gateway on the same pairing state (for
+    // example a terminal TCP gateway next to the supervised socket one)
+    // refuses to start instead of both admitting and revoking phones.
+    // Gateways older than this lock do not take it; stop them explicitly.
+    this.stateClaim = await acquireLifetimeLock(
+      join(this.options.stateDirectory, 'gateway.lock'),
+      'Another phone gateway serving this pairing state',
+    );
+
     // Start the app proxy first: if its port is unavailable the gateway
     // refuses to start rather than silently serving without it.
-    await this.apps?.start();
+    try {
+      await this.apps?.start();
+    } catch (error) {
+      await this.releaseStateClaim();
+      throw error;
+    }
 
     // Any later failure (occupied port, unreadable TLS material) must not
     // leave the app proxy listening or timers running in a process whose
@@ -356,6 +375,14 @@ export class Gateway {
         this.options.log(`App proxy cleanup after failed start: ${String(error)}`);
       }
     }
+    await this.releaseStateClaim();
+  }
+
+  /** Give up the pairing state's lifetime lock, once nothing serves it any more. */
+  private async releaseStateClaim(): Promise<void> {
+    const claim = this.stateClaim;
+    this.stateClaim = undefined;
+    await claim?.close();
   }
 
   /** Create and bind the gateway's own HTTP(S) server (TCP or Unix socket) and its timers. */
@@ -467,6 +494,7 @@ export class Gateway {
     await this.releaseSocketClaim();
 
     await this.apps?.close();
+    await this.releaseStateClaim();
   }
 
   // ---- Request guards -------------------------------------------------------

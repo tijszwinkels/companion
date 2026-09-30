@@ -12,13 +12,24 @@
 
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
+import { DeviceStore } from '../../src/remote/devices.ts';
+import { acquireLifetimeLock } from '../../src/remote/unix-socket-claim.ts';
 import { createFakes, createPinnedCheckout, type Fakes } from '../phone-service-fakes.ts';
 
 const execute = promisify(execFile);
@@ -59,9 +70,14 @@ async function world(context: { after(callback: () => Promise<void>): void }): P
   const configFile = join(directory, 'config', 'phone-gateway.json');
   const stateDirectory = join(directory, 'state');
 
+  // Synthetic HOME and config home: the user's own are never read or written.
+  const home = join(directory, 'home');
+  await mkdir(join(home, '.config'), { recursive: true, mode: 0o700 });
   const environment = {
     ...process.env,
     PATH: `${fakes.binDirectory}:${process.env.PATH}`,
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, '.config'),
     XDG_RUNTIME_DIR: runtime,
     COMPANION_PHONE_CONFIG: configFile,
   };
@@ -526,4 +542,82 @@ test('route-commands prints the human steps and changes nothing', async (context
   );
   assert.ok(result.stdout.includes('sudo tailscale serve --https=443 off'));
   assert.deepEqual(await w.fakes.calls(), []);
+});
+
+test('status and check-serve are read-only and never print secrets', async (context) => {
+  const w = await ready(context);
+  assert.equal((await w.phone(['start'])).code, 0);
+
+  // A paired device and a pending pairing code, as after real use.
+  const devices = new DeviceStore(w.stateDirectory);
+  const { code } = await devices.createPairingCode();
+  const paired = await devices.redeemPairingCode(code, 'Synthetic phone');
+  assert.ok(paired.ok);
+  await devices.createPairingCode();
+  const secrets = [
+    paired.token,
+    paired.device.tokenHash,
+    JSON.parse(await readFile(join(w.stateDirectory, 'pairing.json'), 'utf8')).codeHash,
+  ];
+
+  const before = await snapshot(w.stateDirectory);
+  const callsBefore = (await w.fakes.calls()).length;
+  const outputs = [
+    await w.phone(['status']),
+    await w.phone(['status', '--json']),
+    await w.phone(['check-serve']),
+  ];
+  assert.deepEqual(await snapshot(w.stateDirectory), before, 'the state directory is unchanged');
+
+  for (const output of outputs) {
+    for (const secret of secrets) {
+      assert.ok(!output.stdout.includes(secret) && !output.stderr.includes(secret));
+    }
+  }
+  assert.equal(JSON.parse(outputs[1].stdout).pairing.devices, 1);
+  // Only reads: status and check-serve issue no start, stop or reset.
+  const readOnly = (await w.fakes.calls()).slice(callsBefore);
+  assert.ok(readOnly.length > 0);
+  assert.ok(
+    readOnly.every((call) => call[0] === 'tailscale' || call[2] === 'show'),
+    JSON.stringify(readOnly),
+  );
+
+  // Nothing was written to the synthetic HOME either (only the explicit config).
+  assert.deepEqual(await readdir(join(w.directory, 'home', '.config')), []);
+});
+
+/** Names, sizes and modification times of every file in a directory. */
+async function snapshot(directory: string): Promise<string[]> {
+  const entries: string[] = [];
+  for (const name of (await readdir(directory)).sort()) {
+    const info = await lstat(join(directory, name));
+    entries.push(`${name} ${info.size} ${info.mtimeMs} ${info.mode}`);
+  }
+  return entries;
+}
+
+test('start refuses while another gateway holds the pairing state', async (context) => {
+  const w = await ready(context);
+  await mkdir(w.stateDirectory, { mode: 0o700 });
+
+  // No lock file yet: probing must not create one.
+  assert.equal((await w.phone(['start', '--ready-timeout', '5'])).code, 0);
+  assert.equal((await w.phone(['stop'])).code, 0);
+  await assert.rejects(lstat(join(w.stateDirectory, 'gateway.lock')), { code: 'ENOENT' });
+
+  // A gateway (here: its lifetime lock) serving the same state blocks start.
+  const lock = await acquireLifetimeLock(join(w.stateDirectory, 'gateway.lock'));
+  context.after(() => lock.close());
+  const runsBefore = (await w.fakes.calls()).filter((call) => call[0] === 'systemd-run').length;
+  const refused = await w.phone(['start']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /another phone gateway is serving the pairing state/);
+  assert.equal(
+    (await w.fakes.calls()).filter((call) => call[0] === 'systemd-run').length,
+    runsBefore,
+  );
+
+  await lock.close();
+  assert.equal((await w.phone(['start'])).code, 0);
 });
