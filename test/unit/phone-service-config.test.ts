@@ -7,7 +7,17 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -186,7 +196,7 @@ test('the transient unit runs the pinned checkout with every safeguard', () => {
   );
   assert.ok(
     plan.properties.includes(
-      `Environment=PATH=/usr/bin GIT_OPTIONAL_LOCKS=0 COMPANION_PHONE_SERVICE=${plan.fingerprint}`,
+      `Environment=PATH=/usr/bin:/bin GIT_OPTIONAL_LOCKS=0 COMPANION_PHONE_SERVICE=${plan.fingerprint}`,
     ),
   );
 
@@ -263,7 +273,7 @@ test('the pin check accepts only the exact, clean, complete revision', async (co
 
   assert.match(
     (await verifyPinnedCheckout(checkout.path, 'b'.repeat(40), 'git')).join('\n'),
-    /not the approved/,
+    /not at the approved revision/,
   );
 
   await writeFile(join(checkout.path, 'README.md'), 'changed\n');
@@ -340,6 +350,74 @@ test('the shell pin check that systemd runs agrees with the TypeScript one', asy
   await rm(join(checkout.path, 'bin'), { recursive: true });
 
   assert.equal((await shellCheck(checkout.revision)).code, 0);
+});
+
+test('the pin check cannot be fooled by index flags, replace refs, excludes or hooks', async (context) => {
+  const directory = await temporaryDirectory(context);
+  const checkout = await createPinnedCheckout(directory);
+  const git = (...args: string[]) => run('git', ['-C', checkout.path, ...args]);
+  const identity = [
+    '-c',
+    'user.name=T',
+    '-c',
+    'user.email=t@example.invalid',
+    '-c',
+    'commit.gpgsign=false',
+  ];
+  const problems = () => verifyPinnedCheckout(checkout.path, checkout.revision, 'git');
+  const source = join(checkout.path, 'src', 'remote', 'cli.ts');
+  const original = await readFile(source, 'utf8');
+
+  // assume-unchanged and skip-worktree hide an edit from `git diff`.
+  for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+    await git('update-index', flag, 'src/remote/cli.ts');
+    await writeFile(source, original + '// unreviewed\n');
+    assert.match((await problems()).join('\n'), /uncommitted changes/, flag);
+    await writeFile(source, original);
+    await git('update-index', flag.replace('--', '--no-'), 'src/remote/cli.ts');
+  }
+  assert.deepEqual(await problems(), []);
+
+  // A replace ref makes Git show another commit's tree for the approved ID.
+  await writeFile(join(checkout.path, 'README.md'), 'substituted\n');
+  await git(...identity, 'commit', '--quiet', '-am', 'substitute');
+  const substitute = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await git('replace', checkout.revision, substitute);
+  await git('checkout', '--quiet', '--detach', checkout.revision);
+  assert.equal((await git('rev-parse', 'HEAD')).stdout.trim(), checkout.revision);
+  assert.equal(await readFile(join(checkout.path, 'README.md'), 'utf8'), 'substituted\n');
+  assert.match((await problems()).join('\n'), /uncommitted changes/);
+  await git('replace', '-d', checkout.revision);
+  await git('checkout', '--quiet', '--force', '--detach', checkout.revision);
+  assert.deepEqual(await problems(), []);
+
+  // Local excludes and a new ignore-everything .gitignore cannot hide new code.
+  await writeFile(join(checkout.path, '.git', 'info', 'exclude'), 'src/hidden.ts\n');
+  await writeFile(join(checkout.path, 'src', 'hidden.ts'), '');
+  assert.match((await problems()).join('\n'), /untracked code files/);
+  await rm(join(checkout.path, 'src', 'hidden.ts'));
+  await mkdir(join(checkout.path, 'src', 'extra'));
+  await writeFile(join(checkout.path, 'src', 'extra', '.gitignore'), '*\n');
+  await writeFile(join(checkout.path, 'src', 'extra', 'code.ts'), '');
+  assert.match((await problems()).join('\n'), /untracked code files/);
+  await rm(join(checkout.path, 'src', 'extra'), { recursive: true });
+
+  // A configured fsmonitor command is never run.
+  const marker = join(directory, 'fsmonitor-ran');
+  const monitor = join(directory, 'monitor.sh');
+  await writeFile(monitor, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+  await git('config', 'core.fsmonitor', monitor);
+  assert.deepEqual(await problems(), []);
+  await assert.rejects(lstat(marker), { code: 'ENOENT' });
+  await git('config', '--unset', 'core.fsmonitor');
+
+  // A code directory replaced by a symlink to other files is a change.
+  const elsewhere = join(directory, 'elsewhere');
+  await mkdir(elsewhere);
+  await writeFile(join(elsewhere, 'cli.ts'), original);
+  await rm(join(checkout.path, 'src', 'remote'), { recursive: true });
+  await symlink(elsewhere, join(checkout.path, 'src', 'remote'));
+  assert.notDeepEqual(await problems(), []);
 });
 
 test('the Serve classifier separates none, ours and everything else', () => {

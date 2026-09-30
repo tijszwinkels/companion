@@ -108,6 +108,13 @@ export function assertOrigin(origin: string): string {
   return url.hostname;
 }
 
+/** Unit and runtime directory names, also accepted on their own by `stop`. */
+export function assertServiceName(label: string, name: string): void {
+  if (!namePattern.test(name)) {
+    throw Error(`${label} may contain only lower-case letters, digits and hyphens`);
+  }
+}
+
 /** Check every field; returns the config unchanged or throws. */
 export function validateConfig(value: unknown): PhoneServiceConfig {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -191,11 +198,48 @@ export function runtimeRoot(environment: NodeJS.ProcessEnv = process.env): strin
 
 /** Absolute path of the gateway's Unix socket, which Tailscale Serve proxies to. */
 export function gatewaySocketPath(config: PhoneServiceConfig, root: string): string {
-  const path = join(root, config.runtimeDirectoryName, 'gateway.sock');
+  const path = join(gatewayRuntimeDirectory(config, root), 'gateway.sock');
   if (Buffer.byteLength(path) > maximumSocketPathBytes) {
     throw Error(`Gateway socket path is too long for a Unix socket: ${path}`);
   }
   return path;
+}
+
+/** True when `path` is `directory` itself or anywhere below it. */
+function within(path: string, directory: string): boolean {
+  return path === directory || path.startsWith(`${directory}/`);
+}
+
+/**
+ * The service's own runtime directory. systemd creates it at start and
+ * deletes it, with everything inside, at stop (`RuntimeDirectory=`). It must
+ * therefore never be, contain or sit inside anything else we use: not the
+ * listener's socket directory, not the pairing state, the checkout, the
+ * saved conversations or node. (An existing directory of that name is refused
+ * at start; see lifecycle.ts.)
+ */
+export function gatewayRuntimeDirectory(config: PhoneServiceConfig, root: string): string {
+  const directory = join(root, config.runtimeDirectoryName);
+  const listenerDirectory = dirname(config.controlSocket);
+
+  if (within(directory, listenerDirectory) || within(listenerDirectory, directory)) {
+    throw Error(
+      `--runtime-directory-name ${config.runtimeDirectoryName} overlaps the listener's socket ` +
+        `directory ${listenerDirectory}; systemd would delete it when phone access stops`,
+    );
+  }
+  const others: [string, string][] = [
+    ['--state-directory', config.stateDirectory],
+    ['--sessions-directory', config.sessionsDirectory],
+    ['--checkout', config.checkout],
+    ['--node', config.nodeExecutable],
+  ];
+  for (const [label, path] of others) {
+    if (within(path, directory) || within(directory, path)) {
+      throw Error(`${label} ${path} overlaps the service's runtime directory ${directory}`);
+    }
+  }
+  return directory;
 }
 
 /** Defaults for `configure`, mirroring `companion-remote`'s own defaults. */
@@ -281,20 +325,16 @@ export async function loadConfig(path: string): Promise<PhoneServiceConfig | und
 }
 
 /**
- * Write the config 0600 by atomic rename. The final directory is created 0700
- * when missing; an existing one only has to be ours and not writable by others.
+ * Write the config 0600 by atomic rename. Missing directories are created
+ * 0700; an existing final directory only has to be ours and not writable by
+ * others.
  */
 export async function saveConfig(path: string, config: PhoneServiceConfig): Promise<void> {
   validateConfig(config);
 
+  // Missing directories (e.g. a fresh ~/.config) are created private.
   const directory = dirname(path);
-  try {
-    await mkdir(directory, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-      throw error;
-    }
-  }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   await assertOwnedAndUnshared(directory, 'directory');
 
   const temporary = `${path}.${randomUUID()}.tmp`;

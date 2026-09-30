@@ -24,12 +24,17 @@
  * gateway socket any more.
  */
 
-import { access, constants } from 'node:fs/promises';
+import { access, constants, lstat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { DeviceStore } from '../devices.ts';
-import { assertSafePath, configHostname, type PhoneServiceConfig } from './config.ts';
+import {
+  assertSafePath,
+  configHostname,
+  gatewayRuntimeDirectory,
+  type PhoneServiceConfig,
+} from './config.ts';
 import { verifyPinnedCheckout } from './pin.ts';
 import {
   pairingStateInUse,
@@ -195,6 +200,22 @@ export async function startService(
     }
   }
 
+  // 2b. The runtime directory must not exist yet. systemd would adopt an
+  // existing directory of that name and delete it, with whatever is inside,
+  // when the service stops. Ours only exists while our unit runs.
+  const runtimeDirectory = gatewayRuntimeDirectory(config, root);
+  try {
+    await lstat(runtimeDirectory);
+    return refuse(
+      `${runtimeDirectory} already exists; systemd would take it over and delete it on stop. ` +
+        'Remove it if it is a leftover of this service, or choose another --runtime-directory-name',
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
   // 3. Durable pairing state must be private if it exists (created in step 7).
   const pairing = await probePairingState(config.stateDirectory);
   if (pairing.state === 'problem') {
@@ -355,12 +376,17 @@ export async function stopService(
     await resetFailedUnit(unit);
   }
 
-  if (socketPath !== undefined) {
-    const socket = await probeUnixSocket(socketPath);
-    if (socket.state === 'answering') {
-      log(`companion-phone: ${unit} is stopped, but something still answers on ${socketPath}`);
-      return exitCodes.failed;
-    }
+  // Without a config (an explicit --unit-name stop) the socket path is
+  // unknown: report the unit as stopped, but do not claim phone access is off.
+  if (socketPath === undefined) {
+    log(`companion-phone: ${unit} is not running; the gateway socket was not checked (no config)`);
+    return exitCodes.ok;
+  }
+
+  const socket = await probeUnixSocket(socketPath);
+  if (socket.state === 'answering') {
+    log(`companion-phone: ${unit} is stopped, but something still answers on ${socketPath}`);
+    return exitCodes.failed;
   }
 
   log('companion-phone: phone access is off');
@@ -430,6 +456,11 @@ export async function statusReport(
     reasons.push('the gateway service is not running');
   } else if (socket.state !== 'answering') {
     reasons.push('the gateway does not answer on its socket yet');
+  }
+  if (running && state.fingerprint !== plan.fingerprint) {
+    reasons.push(
+      'the running gateway was started with other settings or revision (restart to apply them)',
+    );
   }
   if (state.loadState !== 'not-found' && !ours) {
     reasons.push(`${plan.unit} exists but was not started by companion-phone`);

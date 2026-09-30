@@ -13,11 +13,12 @@
  */
 
 import { readFile, realpath } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import {
+  assertServiceName,
   configPath,
   configVersion,
   defaultControlSocket,
@@ -74,6 +75,8 @@ start       Start phone access if everything is in place; waits until it answers
   --without-listener           Start even if the desktop listener is not running.
   --ready-timeout SECONDS      Wait this long for the gateway (default 90).
 stop        Stop phone access. Exit 0 only once it is confirmed off.
+  --unit-name NAME, --runtime-directory-name NAME
+                               Only without a readable config: which service to stop.
 restart     stop, then start (same options as start).
 status      Report gateway service, gateway socket, desktop listener, tailnet route
             and pairing state separately. Exit 0 only when phone access is available.
@@ -110,6 +113,15 @@ function seconds(value: string | undefined, fallback: number, option: string): n
 
 class UsageError extends Error {}
 
+/** Run a validation, reporting its failure as a usage error (exit 2). */
+function usageCheck(check: () => void): void {
+  try {
+    check();
+  } catch (error) {
+    throw new UsageError((error as Error).message);
+  }
+}
+
 /**
  * Options each command accepts. Anything else is a usage error rather than
  * silently ignored: a misplaced option must never change which unit `stop`
@@ -131,7 +143,7 @@ const commandOptions: Record<string, string[]> = {
   ],
   start: ['wait-for-listener', 'without-listener', 'ready-timeout'],
   restart: ['wait-for-listener', 'without-listener', 'ready-timeout'],
-  stop: [],
+  stop: ['unit-name', 'runtime-directory-name'],
   status: ['json'],
   'check-serve': ['from-file'],
   'print-service': [],
@@ -201,7 +213,7 @@ async function main(): Promise<number> {
   }
 
   if (command === 'stop') {
-    return stop(file);
+    return stop(file, values);
   }
 
   let config: PhoneServiceConfig | undefined;
@@ -276,22 +288,49 @@ function printUnconfigured(file: string): number {
 }
 
 /**
- * Stop works from the config when there is one, and otherwise falls back to
- * the default unit name, so phone access can always be switched off.
+ * Stop the configured service. Without a readable config the tool cannot
+ * know which instance is meant, so it refuses rather than guess a default
+ * name: `--unit-name` (and optionally `--runtime-directory-name`, for the
+ * socket check) names one explicitly. With a config those come from it.
  */
-async function stop(file: string): Promise<number> {
+async function stop(
+  file: string,
+  values: { 'unit-name'?: string; 'runtime-directory-name'?: string },
+): Promise<number> {
+  const explicitUnit = values['unit-name'];
+  const explicitRuntime = values['runtime-directory-name'];
+
   let config: PhoneServiceConfig | undefined;
+  let problem: string | undefined;
   try {
     config = await loadConfig(file);
   } catch (error) {
-    log(`companion-phone: ${(error as Error).message}; stopping the default unit name instead`);
+    problem = (error as Error).message;
   }
 
-  let socketPath: string | undefined;
   if (config) {
-    socketPath = gatewaySocketPath(config, runtimeRoot());
+    if (explicitUnit !== undefined || explicitRuntime !== undefined) {
+      throw new UsageError(
+        'stop takes the unit and runtime directory from the config; do not pass them',
+      );
+    }
+    return stopService(config.unitName, gatewaySocketPath(config, runtimeRoot()), log);
   }
-  return stopService(config?.unitName ?? defaultUnitName, socketPath, log);
+
+  if (explicitUnit === undefined) {
+    log(`companion-phone: ${problem ?? `not configured (${file} does not exist)`}`);
+    throw new UsageError(
+      'cannot tell which phone service to stop; pass --unit-name NAME ' +
+        '(and --runtime-directory-name NAME to check its socket)',
+    );
+  }
+  usageCheck(() => assertServiceName('--unit-name', explicitUnit));
+  let socketPath: string | undefined;
+  if (explicitRuntime !== undefined) {
+    usageCheck(() => assertServiceName('--runtime-directory-name', explicitRuntime));
+    socketPath = join(runtimeRoot(), explicitRuntime, 'gateway.sock');
+  }
+  return stopService(explicitUnit, socketPath, log);
 }
 
 async function checkServe(
@@ -390,9 +429,18 @@ async function configure(file: string, values: ConfigureValues): Promise<number>
     return exitCodes.failed;
   }
 
+  // Everything that can be checked without starting anything is checked
+  // before the file is written: the socket path length and the runtime
+  // directory layout included.
+  let socketPath: string;
+  try {
+    socketPath = gatewaySocketPath(config, runtimeRoot());
+  } catch (error) {
+    throw new UsageError((error as Error).message);
+  }
+
   await saveConfig(file, config);
 
-  const socketPath = gatewaySocketPath(config, runtimeRoot());
   console.log(`Saved ${file}`);
   console.log(`Gateway code: ${config.checkout} at ${config.revision}`);
   console.log(`Phone origin: ${config.origin} (login ${config.tailscaleLogin})`);

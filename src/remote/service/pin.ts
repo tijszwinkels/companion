@@ -93,27 +93,11 @@ export async function verifyPinnedCheckout(
     return [`${checkout} is not the top directory of a Git checkout`];
   }
 
-  const head = await git(gitExecutable, checkout, ['rev-parse', 'HEAD']);
-  if (head.code !== 0 || head.stdout.trim() !== revision) {
-    problems.push(
-      `${checkout} is at ${head.stdout.trim() || 'an unknown commit'}, not the approved ${revision}`,
-    );
-  }
-
-  const tracked = await git(gitExecutable, checkout, ['diff', '--quiet', 'HEAD', '--']);
-  if (tracked.code !== 0) {
-    problems.push(`${checkout} has uncommitted changes to tracked files`);
-  }
-
-  const untracked = await git(gitExecutable, checkout, [
-    'ls-files',
-    '--others',
-    '--exclude-standard',
-    '--',
-    ...pinnedCodePaths,
-  ]);
-  if (untracked.code !== 0 || untracked.stdout.trim() !== '') {
-    problems.push(`${checkout} has untracked files in ${pinnedCodePaths.join(', ')}`);
+  // The Git checks are the very program systemd runs before every start,
+  // so the two can never disagree.
+  const pin = await runPinCheck(checkout, revision, gitExecutable);
+  if (pin !== undefined) {
+    problems.push(pin);
   }
 
   // What the unit will execute must be present.
@@ -142,18 +126,69 @@ export async function verifyPinnedCheckout(
 }
 
 /**
- * Shell program for `ExecStartPre=`. The checkout, revision and git binary
- * arrive as positional parameters ($1, $2, $3), so no value is ever pasted
- * into the program text. It contains no single quote, `%` or backslash, so it
- * survives systemd's command-line parsing unchanged (the `:` prefix in the
- * unit additionally turns off systemd's own `$` expansion).
+ * Shell program for `ExecStartPre=` and for `verifyPinnedCheckout()`. The
+ * checkout, revision and git binary arrive as positional parameters ($1, $2,
+ * $3), so no value is ever pasted into the program text. It contains no
+ * single quote, `%` or backslash, so it survives systemd's command-line
+ * parsing unchanged (the `:` prefix in the unit additionally turns off
+ * systemd's own `$` expansion).
+ *
+ * It compares the files on disk with the approved commit's own tree, and
+ * trusts nothing the checkout's owner could have configured to hide changes:
+ * - a fresh temporary index built from that commit, re-hashing every file,
+ *   so assume-unchanged / skip-worktree flags and stale stat data in the
+ *   checkout's index cannot mask an edit;
+ * - no replace refs (GIT_NO_REPLACE_OBJECTS), so a substituted commit or tree
+ *   cannot stand in for the approved one;
+ * - no fsmonitor, untracked cache, split index, sparse checkout or external
+ *   diff, which could run commands or answer from a cache;
+ * - untracked files are judged only by the tracked top-level .gitignore (just
+ *   verified unchanged), not by .git/info/exclude, a global excludes file or
+ *   new .gitignore files inside the code directories.
+ * Residual trust: Git's object store itself, owned by the same user.
  */
 export const pinCheckProgram = [
-  'export GIT_OPTIONAL_LOCKS=0',
-  'test "$("$3" -C "$1" rev-parse HEAD)" = "$2" || { echo "companion-phone: $1 is not at the approved revision $2; refusing to start" >&2; exit 1; }',
-  '"$3" -C "$1" diff --quiet HEAD -- || { echo "companion-phone: $1 has uncommitted changes; refusing to start" >&2; exit 1; }',
-  `test -z "$("$3" -C "$1" ls-files --others --exclude-standard -- ${pinnedCodePaths.join(' ')})" || { echo "companion-phone: $1 has untracked code files; refusing to start" >&2; exit 1; }`,
+  'set -u',
+  'dir=$1',
+  'rev=$2',
+  'git=$3',
+  'export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0',
+  'g() { "$git" -C "$dir" -c core.fsmonitor=false -c core.untrackedCache=false -c core.splitIndex=false -c core.sparseCheckout=false "$@"; }',
+  'tmp=$(mktemp -d) || exit 1',
+  'fail() { rm -rf "$tmp"; echo "companion-phone: $dir $1; refusing to start" >&2; exit 1; }',
+  'test "$(g rev-parse --verify --quiet "HEAD^{commit}")" = "$rev" || fail "is not at the approved revision $rev"',
+  'export GIT_INDEX_FILE="$tmp/index"',
+  'g read-tree "$rev" || fail "cannot read the approved revision"',
+  'g update-index -q --really-refresh >/dev/null 2>&1',
+  'g diff-files --quiet --no-ext-diff || fail "has uncommitted changes"',
+  `test -z "$(g ls-files --others --exclude-from=.gitignore -- ${pinnedCodePaths.join(' ')})" || fail "has untracked code files"`,
+  'rm -rf "$tmp"',
 ].join('; ');
+
+/** Run the pin program; undefined when the checkout passes, else its message. */
+export function runPinCheck(
+  checkout: string,
+  revision: string,
+  gitExecutable: string,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      '/bin/sh',
+      ['-c', pinCheckProgram, 'companion-phone-pin-check', checkout, revision, gitExecutable],
+      { timeout: 60_000, maxBuffer: 1024 * 1024 },
+      (error, _stdout, stderr) => {
+        if (!error) {
+          resolve(undefined);
+          return;
+        }
+        const message = String(stderr)
+          .trim()
+          .replace(/^companion-phone: /, '');
+        resolve(message || `the pin check failed (${error.message})`);
+      },
+    );
+  });
+}
 
 /** The complete `ExecStartPre=` value (systemd syntax). */
 export function pinCheckCommand(checkout: string, revision: string, gitExecutable: string): string {

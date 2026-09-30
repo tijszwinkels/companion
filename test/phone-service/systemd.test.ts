@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { lstat, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { promisify } from 'node:util';
@@ -197,6 +197,23 @@ test('start refuses while the desktop listener is down', async () => {
     assert.equal(await unitLoaded(), false);
   } finally {
     await world.listener.start();
+  }
+});
+
+test('start never adopts an existing runtime directory (systemd would delete it on stop)', async () => {
+  await world.setServeStatus(world.exactRoute());
+  const runtimeDirectory = join(world.socketPath, '..');
+  await mkdir(runtimeDirectory, { mode: 0o700 });
+  const sentinel = join(runtimeDirectory, 'sentinel');
+  await writeFile(sentinel, 'keep me');
+  try {
+    const refused = await world.phoneCli(['start']);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /already exists; systemd would take it over/);
+    assert.equal(await unitLoaded(), false);
+    assert.equal(await readFile(sentinel, 'utf8'), 'keep me');
+  } finally {
+    await rm(runtimeDirectory, { recursive: true, force: true });
   }
 });
 

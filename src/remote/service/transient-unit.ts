@@ -98,10 +98,14 @@ const sandbox = [
   'SystemCallFilter=@system-service',
 ];
 
-/** The directories of the helper binaries, in a fixed order, without repeats. */
+/**
+ * The directories of the helper binaries, then /usr/bin and /bin for the
+ * basic utilities the pin check uses (mktemp, rm), in a fixed order, without
+ * repeats.
+ */
 function searchPath(tools: ServiceTools): string {
   const directories: string[] = [];
-  for (const tool of [tools.tailscale, tools.flock, tools.git]) {
+  for (const tool of [tools.tailscale, tools.flock, tools.git, '/usr/bin/sh', '/bin/sh']) {
     const directory = dirname(tool);
     if (!directories.includes(directory)) {
       directories.push(directory);

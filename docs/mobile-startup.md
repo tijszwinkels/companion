@@ -37,9 +37,18 @@ print-service` shows the exact, shell-quoted command without running it.
   checkout. `start`, and systemd itself before every automatic restart
   (`ExecStartPre`), refuse unless the checkout is exactly at that commit, with no
   tracked changes and no untracked files in `src`, `bin`, `integrations` or the
-  package files. Paths are restricted to `A–Z a–z 0–9 / . _ + -`, so nothing
+  package files. Both use the same shell check, which compares the files on disk
+  with the approved commit's tree through a fresh temporary index. It ignores
+  what could hide a change: assume-unchanged/skip-worktree flags, replace refs,
+  `.git/info/exclude`, global or new nested ignore files, fsmonitor and
+  external diff. Paths are restricted to `A–Z a–z 0–9 / . _ + -`, so nothing
   needs shell or systemd quoting. Not pinned: `node_modules` and the built app in
   `integrations/mobile/dist` (see limits).
+- **Its own runtime directory.** systemd creates
+  `$XDG_RUNTIME_DIR/companion-phone` at start and deletes it with its contents
+  at stop. `configure` refuses a name that overlaps the listener's socket
+  directory or any configured path, and `start` refuses if a directory of that
+  name already exists, so nothing else is ever adopted and deleted.
 - **Sandbox.** The whole file system is read-only except the pairing state
   directory, the service's own runtime directory and a private `/tmp`
   (`ProtectSystem=strict` **and** `ProtectHome=read-only`: on systems where
@@ -61,7 +70,7 @@ print-service` shows the exact, shell-quoted command without running it.
 | --------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `configure …`                     | Validate and record settings, approving one revision. Starts nothing.                                |
 | `start [--wait-for-listener S]`   | Check every precondition, start the service, wait until it answers (default up to 90 s).             |
-| `stop`                            | Stop the service. Exit 0 only once it is off and nothing answers on the gateway socket.              |
+| `stop`                            | Stop the configured service. Exit 0 only once it is off and nothing answers on the gateway socket.   |
 | `restart`                         | `stop`, then `start` (e.g. after approving a new revision).                                          |
 | `status [--json]`                 | Gateway service, gateway socket, pinned checkout, desktop listener, tailnet route and pairing state. |
 | `check-serve [--from-file F]`     | Tailscale Serve state: `ours`, `none`, `unexpected` or `unreadable`.                                 |
@@ -70,11 +79,19 @@ print-service` shows the exact, shell-quoted command without running it.
 Exit status: 0 success (for `status`: phone access available), 1 refused,
 failed or unavailable, 2 usage or configuration error. `start` refuses, before
 creating anything, when: the checkout is not the approved revision; the pairing
-directory is not private; something already answers on the gateway socket; a
+directory is not private or another gateway serves it; the runtime directory
+already exists; something already answers on the gateway socket; a
 unit of that name exists that `companion-phone` did not start; the desktop
 listener does not answer (unless `--without-listener`); or Serve is not exactly
 the expected route. A running service with other settings is not replaced by
-`start`; use `restart`.
+`start`; use `restart`. Until then `status` reports phone access as
+unavailable, because the running gateway does not match the configuration.
+
+`stop` needs a readable config to know which service is meant. Without one it
+refuses (exit 2) instead of guessing; name the service explicitly with
+`stop --unit-name NAME --runtime-directory-name NAME`. With only `--unit-name`
+it stops that unit but does not claim phone access is off, because it cannot
+check the socket.
 
 `status` distinguishes the parts of phone access, for example:
 
@@ -219,6 +236,7 @@ reset`, which removes unrelated configuration). Delete
 
 ## Limits
 
+- The pin trusts Git's object store in the pinned checkout (same user).
 - `node_modules` and `integrations/mobile/dist` in the pinned checkout are not
   hashed. Anyone able to change them already runs code as you; do not share or
   modify the pinned worktree.

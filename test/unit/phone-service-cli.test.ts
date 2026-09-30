@@ -180,7 +180,7 @@ test('unknown commands and options that do not apply are usage errors', async (c
   const w = await world(context);
   for (const args of [
     ['launch'],
-    ['stop', '--unit-name', 'other'],
+    ['stop', '--json'],
     ['start', '--json'],
     ['status', '--bogus'],
     ['start', 'extra'],
@@ -226,7 +226,7 @@ test('configure writes only the config, and never overwrites one silently', asyn
     w.checkout.path,
   ]);
   assert.equal(wrongRevision.code, 1);
-  assert.match(wrongRevision.stderr, /not the approved/);
+  assert.match(wrongRevision.stderr, /not at the approved revision/);
 
   const unsafe = await w.phone([
     'configure',
@@ -414,7 +414,12 @@ test('a running unit with other settings is refused by start and replaced by res
   assert.match(refused.stderr, /already running with different settings/);
 
   const status = await w.phone(['status']);
+  assert.equal(status.code, 1, 'a gateway running other settings is not "available"');
   assert.match(status.stdout, /started with other settings or revision/);
+  assert.match(
+    status.stdout,
+    /unavailable — .*the running gateway was started with other settings/,
+  );
 
   // restart = stop first, then start.
   const restarted = await w.phone(['restart']);
@@ -490,18 +495,139 @@ test('stop and start leave a unit they did not start alone', async (context) => 
   );
 });
 
-test('stop works from the default unit name when the config is missing or broken', async (context) => {
+test('stop never guesses which service is meant', async (context) => {
   const w = await world(context);
+
+  // A custom instance whose config is gone, with its gateway still answering.
+  await mkdir(join(w.gatewaySocket, '..'), { recursive: true, mode: 0o700 });
+  const running = createServer();
+  await new Promise<void>((done) => running.listen(w.gatewaySocket, done));
+  context.after(() => new Promise((done) => running.close(() => done(undefined))));
+
+  // Missing config: refused, nothing queried, nothing claimed.
+  let result = await w.phone(['stop']);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /cannot tell which phone service to stop/);
+  assert.doesNotMatch(result.stderr, /phone access is off/);
+
+  // Broken config: the same.
   await mkdir(join(w.configFile, '..'), { mode: 0o700 });
   await writeFile(w.configFile, '{ broken', { mode: 0o600 });
+  result = await w.phone(['stop']);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /not valid JSON/);
+  assert.deepEqual(await w.fakes.calls(), []);
 
-  const result = await w.phone(['stop']);
+  // Named explicitly, with its runtime directory: the socket check still applies.
+  result = await w.phone([
+    'stop',
+    '--unit-name',
+    'companion-phone-gateway',
+    '--runtime-directory-name',
+    'companion-phone',
+  ]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /something still answers/);
+
+  // Named without a runtime directory: stopped, but not claimed to be off.
+  result = await w.phone(['stop', '--unit-name', 'companion-phone-gateway']);
   assert.equal(result.code, 0);
-  assert.match(result.stderr, /stopping the default unit name instead/);
+  assert.match(result.stderr, /the gateway socket was not checked/);
+  assert.doesNotMatch(result.stderr, /phone access is off/);
   assert.deepEqual(
     (await w.fakes.calls()).map((call) => call.slice(0, 4)),
-    [['systemctl', '--user', 'show', 'companion-phone-gateway.service']],
+    [
+      ['systemctl', '--user', 'show', 'companion-phone-gateway.service'],
+      ['systemctl', '--user', 'show', 'companion-phone-gateway.service'],
+    ],
   );
+
+  // With a valid config the names come from it and may not be overridden.
+  await rm(w.configFile);
+  await configure(w);
+  result = await w.phone(['stop', '--unit-name', 'other']);
+  assert.equal(result.code, 2);
+  result = await w.phone(['stop', '--unit-name', 'Bad_Name']);
+  assert.equal(result.code, 2);
+});
+
+test('start never adopts an existing runtime directory', async (context) => {
+  const w = await ready(context);
+  const runtimeDirectory = join(w.gatewaySocket, '..');
+  await mkdir(runtimeDirectory, { mode: 0o700 });
+  await writeFile(join(runtimeDirectory, 'sentinel'), 'keep me');
+
+  const result = await w.phone(['start']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /already exists; systemd would take it over/);
+  assert.equal(await readFile(join(runtimeDirectory, 'sentinel'), 'utf8'), 'keep me');
+  assert.ok(!(await w.fakes.calls()).some((call) => call[0] === 'systemd-run'));
+});
+
+test('configure refuses layouts where stopping would delete something else', async (context) => {
+  const w = await world(context);
+  const base = [
+    'configure',
+    '--origin',
+    origin,
+    '--tailscale-login',
+    'someone@github',
+    '--revision',
+    w.checkout.revision,
+    '--checkout',
+    w.checkout.path,
+    '--state-directory',
+    w.stateDirectory,
+    '--sessions-directory',
+    join(w.directory, 'sessions'),
+  ];
+
+  // The listener's own socket directory ($XDG_RUNTIME_DIR/companion).
+  let result = await w.phone([...base, '--runtime-directory-name', 'companion']);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /overlaps the listener's socket directory/);
+
+  // Pairing state inside the runtime directory.
+  result = await w.phone([
+    ...base.slice(0, -4),
+    '--state-directory',
+    join(w.environment.XDG_RUNTIME_DIR!, 'companion-phone', 'state'),
+    '--sessions-directory',
+    join(w.directory, 'sessions'),
+  ]);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /overlaps the service's runtime directory/);
+
+  // An overlong socket path is refused before anything is written.
+  result = await w.phone([...base, '--runtime-directory-name', 'x'.repeat(64)]);
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /too long/);
+  await assert.rejects(lstat(w.configFile), { code: 'ENOENT' });
+});
+
+test('configure creates missing parent directories privately', async (context) => {
+  const w = await world(context);
+  const nested = join(w.directory, 'fresh', 'config', 'companion', 'phone-gateway.json');
+  const result = await w.phone([
+    'configure',
+    '--config',
+    nested,
+    '--origin',
+    origin,
+    '--tailscale-login',
+    'someone@github',
+    '--revision',
+    w.checkout.revision,
+    '--checkout',
+    w.checkout.path,
+    '--state-directory',
+    w.stateDirectory,
+    '--sessions-directory',
+    join(w.directory, 'sessions'),
+  ]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal((await lstat(nested)).mode & 0o777, 0o600);
+  assert.equal((await lstat(join(nested, '..'))).mode & 0o777, 0o700);
 });
 
 test('check-serve classifies live and saved Serve status', async (context) => {
