@@ -842,3 +842,48 @@ test('stop does not claim off when the gateway socket path is suspicious', async
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /phone access is off/);
 });
+
+test('stop waits for a stop already in progress instead of failing', async (context) => {
+  const w = await ready(context);
+  assert.equal((await w.phone(['start'])).code, 0);
+
+  // Our unit is already on its way down (e.g. a stop issued elsewhere).
+  const unitFile = join(w.fakes.directory, 'unit.json');
+  const state = JSON.parse(await readFile(unitFile, 'utf8'));
+  await writeFile(
+    unitFile,
+    JSON.stringify({ ...state, active: 'deactivating', sub: 'stop-sigterm' }),
+  );
+
+  const result = await w.phone(['stop']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /phone access is off/);
+  const stops = (await w.fakes.calls()).filter(
+    (call) => call[0] === 'systemctl' && call[2] === 'stop',
+  );
+  assert.deepEqual(stops, [['systemctl', '--user', 'stop', 'companion-phone-gateway.service']]);
+});
+
+test('cancelling a start that waits for the listener ends promptly and submits nothing', async (context) => {
+  const w = await world(context);
+  await configure(w);
+  await w.fakes.set('serve-status', w.exactRoute());
+
+  const child = spawn(cli, ['start', '--wait-for-listener', '60'], {
+    env: w.environment,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => (stderr += chunk));
+  const exited = new Promise<number | null>((done) => child.once('exit', done));
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const cancelledAt = Date.now();
+  child.kill('SIGTERM');
+  const code = await exited;
+
+  assert.ok(Date.now() - cancelledAt < 3000, `took ${Date.now() - cancelledAt} ms`);
+  assert.equal(code, 1);
+  assert.match(stderr, /not starting: cancelled/);
+  assert.ok(!(await w.fakes.calls()).some((call) => call[0] === 'systemd-run'));
+});

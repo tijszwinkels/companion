@@ -69,7 +69,15 @@ interface Run {
 }
 
 export class PhoneAccessHook {
+  /** The background start, kept until it has exited (also while being cancelled). */
   private starting?: Run;
+
+  /**
+   * The one cancel-then-stop operation in progress, if any. A start that
+   * overruns its time limit and a listener shutdown share it, so shutdown
+   * never runs a second stop beside it, nor returns before it finished.
+   */
+  private stopping?: Promise<boolean>;
 
   constructor(private readonly options: PhoneAccessHookOptions) {}
 
@@ -80,22 +88,18 @@ export class PhoneAccessHook {
 
     const limit = this.options.startTimeoutMilliseconds ?? 120_000;
     const timer = setTimeout(() => {
-      if (this.starting !== run) {
+      if (this.starting !== run || run.exited) {
         return;
       }
-      this.starting = undefined;
       this.options.log('Phone access did not start in time; cancelling it');
-      void this.cancel(run).then((forced) => this.stopConfirmed(forced));
+      void this.cancelAndStop();
     }, limit);
     timer.unref();
 
     void run.finished.then(({ code }) => {
       clearTimeout(timer);
-      if (this.starting !== run) {
-        return;
-      }
-      this.starting = undefined;
-      if (code === 0) {
+      // A cancelled start reports through its stop; nothing to add here.
+      if (code === 0 || this.stopping !== undefined) {
         return;
       }
       this.options.log(
@@ -110,16 +114,34 @@ export class PhoneAccessHook {
    * `companion-phone stop` confirmed it is off, after any start in progress
    * can no longer create the service; never throws.
    */
-  async stop(): Promise<boolean> {
-    const starting = this.starting;
-    this.starting = undefined;
+  stop(): Promise<boolean> {
+    return this.cancelAndStop();
+  }
 
-    let forced = false;
-    if (starting && !starting.exited) {
-      this.options.log('Cancelling the phone access start that is still in progress');
-      forced = await this.cancel(starting);
+  /**
+   * Cancel a start still in progress, then stop and confirm. Concurrent
+   * callers share the operation already under way; a later call (after it
+   * finished) runs a fresh stop, because something may have started since.
+   */
+  private cancelAndStop(): Promise<boolean> {
+    if (this.stopping === undefined) {
+      const operation = (async () => {
+        let forced = false;
+        const run = this.starting;
+        if (run !== undefined && !run.exited) {
+          this.options.log('Cancelling the phone access start that is still in progress');
+          forced = await this.cancel(run);
+        }
+        return this.stopConfirmed(forced);
+      })();
+      this.stopping = operation;
+      void operation.finally(() => {
+        if (this.stopping === operation) {
+          this.stopping = undefined;
+        }
+      });
     }
-    return this.stopConfirmed(forced);
+    return this.stopping;
   }
 
   /**

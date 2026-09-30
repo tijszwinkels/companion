@@ -26,7 +26,10 @@ import { PhoneAccessHook } from '../../src/remote/service/desktop-hook.ts';
 import { freePort } from '../remote-fixture.ts';
 import { resolveTools } from '../../src/remote/service/lifecycle.ts';
 import { loadConfig, runtimeRoot } from '../../src/remote/service/config.ts';
-import { transientServicePlan } from '../../src/remote/service/transient-unit.ts';
+import {
+  descriptionMarker,
+  transientServicePlan,
+} from '../../src/remote/service/transient-unit.ts';
 import {
   assertUserManager,
   cli,
@@ -667,5 +670,52 @@ test('listener shutdown during a slow real systemd-run leaves no gateway behind'
   } finally {
     await rm(wrapper, { force: true });
     await rm(entered, { force: true });
+  }
+});
+
+test('stop joins a stop already in progress on the real manager', async () => {
+  assert.equal(await unitLoaded(), false);
+  // A stand-in for our unit that takes two seconds to stop.
+  const ready = join(world.base, 'stand-in-ready');
+  await run('systemd-run', [
+    '--user',
+    `--unit=${world.unit}`,
+    '--quiet',
+    `--property=Description=${descriptionMarker}, test, stand-in)`,
+    process.execPath,
+    '-e',
+    // Handler first, then readiness: every stop takes two seconds.
+    `process.on('SIGTERM', () => setTimeout(() => process.exit(0), 2000));
+     require('node:fs').writeFileSync(${JSON.stringify(ready)}, '');
+     setInterval(() => {}, 1000);`,
+  ]);
+  try {
+    // Only once the trap is installed does a stop take two seconds.
+    await waitUntil(
+      async () => {
+        try {
+          await lstat(ready);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      5000,
+      'the stand-in to be ready',
+    );
+    await run('systemctl', ['--user', 'stop', '--no-block', world.unit]);
+    await waitUntil(
+      async () => (await systemctlShow(world.unit, ['ActiveState'])).ActiveState === 'deactivating',
+      5000,
+      'the unit to be deactivating',
+    );
+
+    const stopped = await world.phoneCli(['stop']);
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.match(stopped.stderr, /phone access is off/);
+    assert.equal(await unitLoaded(), false);
+  } finally {
+    await run('systemctl', ['--user', 'stop', world.unit]).catch(() => {});
+    await rm(ready, { force: true });
   }
 });

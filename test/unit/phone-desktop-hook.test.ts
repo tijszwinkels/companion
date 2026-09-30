@@ -42,7 +42,7 @@ interface FakePhone {
 async function fakePhone(
   context: { after(callback: () => Promise<void>): void },
   behavior: {
-    start: 'ok' | 'fail' | 'hang' | 'stubborn' | 'escaped';
+    start: 'ok' | 'fail' | 'hang' | 'stubborn' | 'escaped' | 'slow-cancel';
     stop: 'ok' | 'fail' | 'hang';
   },
 ): Promise<FakePhone> {
@@ -65,6 +65,9 @@ async function fakePhone(
       '  fail) echo "companion-phone: $1 refused" >&2; exit 1 ;;',
       // A background sleep plus wait, so the TERM trap runs promptly.
       '  hang) sleep 60 >/dev/null 2>&1 & sleeper=$!; wait $sleeper; exit 0 ;;',
+      // Cancellation takes a second to finish its step (like waiting for an
+      // in-flight systemd-run) before it exits.
+      `  slow-cancel) trap 'sleep 1; echo "start terminated" >> ${calls}; exit 143' TERM; sleep 60 >/dev/null 2>&1 & wait $! ; exit 0 ;;`,
       // Ignores SIGTERM; a descendant in its process group (like systemd-run)
       // would create the service one second later unless it is killed too.
       `  stubborn) trap '' TERM; (sleep 1; touch ${unit}) >/dev/null 2>&1 & sleep 60 >/dev/null 2>&1 ; exit 0 ;;`,
@@ -250,4 +253,21 @@ test('the listener accepts --phone only in ordinary listener mode, and documents
       return true;
     });
   }
+});
+
+test('shutdown during a timeout cancellation waits for it and stops only once', async (context) => {
+  const phone = await fakePhone(context, { start: 'slow-cancel', stop: 'ok' });
+  const hook = phone.hook({ startMilliseconds: 200 });
+
+  hook.start();
+  // The time limit has passed and its cancellation is under way.
+  await eventually(async () =>
+    phone.lines.includes('Phone access did not start in time; cancelling it'),
+  );
+  const stopped = await hook.stop();
+
+  // stop() returned only after the cancelled start had exited, and the
+  // timeout's stop and the shutdown stop were one and the same.
+  assert.equal(stopped, true);
+  assert.deepEqual(await phone.calls(), ['start begin', 'start terminated', 'stop begin']);
 });

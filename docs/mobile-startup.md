@@ -90,6 +90,11 @@ the expected route. A running service with other settings is not replaced by
 `start`; use `restart`. Until then `status` reports phone access as
 unavailable, because the running gateway does not match the configuration.
 
+A `stop` while the service is already stopping (a stop issued elsewhere)
+waits for that stop to finish instead of failing. A `start` waiting for the
+listener (`--wait-for-listener`) ends promptly when cancelled and never submits
+the service afterwards.
+
 `stop` reports phone access off only when the service is inactive and the
 gateway socket path is either absent or a socket that refuses connections. A
 symlink, a file that is not a socket, a socket that belongs to someone else, or
@@ -193,7 +198,9 @@ sends it SIGTERM. It stops between steps, lets an in-flight `systemd-run`
 finish (at most 20 s), stops a service it has just created, and exits. Only if
 it has not exited after 30 s is its whole process group killed. Stop then runs
 a second time 3 s later, in case systemd accepted the start request from the
-killed client. Worst case, shutdown therefore waits about 1.5 minutes for
+killed client. A start that overruns its own time limit is cancelled the
+same way; a shutdown during that cancellation waits for it and shares its stop
+rather than running a second one. Worst case, shutdown therefore waits about 1.5 minutes for
 phone access; a launcher that gives up earlier should say so rather than
 start a new listener while the old one is still stopping.
 

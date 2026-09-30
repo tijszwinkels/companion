@@ -124,12 +124,24 @@ function describeSocket(probe: SocketProbe): string {
   return probe.state;
 }
 
-/** Wait until the listener answers, for at most `seconds` (0: check once). */
-async function waitForListener(controlSocket: string, seconds: number): Promise<SocketProbe> {
+/**
+ * Wait until the listener answers, for at most `seconds` (0: check once), or
+ * until the start is cancelled.
+ */
+async function waitForListener(
+  controlSocket: string,
+  seconds: number,
+  cancelled: AbortSignal | undefined,
+): Promise<SocketProbe> {
   const deadline = Date.now() + seconds * 1000;
   let probe = await probeUnixSocket(controlSocket);
-  while (probe.state !== 'answering' && Date.now() < deadline) {
-    await delay(pollMilliseconds);
+  while (probe.state !== 'answering' && Date.now() < deadline && !cancelled?.aborted) {
+    // The pause ends early on cancellation; the caller then refuses.
+    try {
+      await delay(pollMilliseconds, undefined, { signal: cancelled });
+    } catch {
+      break;
+    }
     probe = await probeUnixSocket(controlSocket);
   }
   return probe;
@@ -254,7 +266,14 @@ export async function startService(
 
   // 5. The desktop listener.
   if (!options.withoutListener) {
-    const listener = await waitForListener(config.controlSocket, options.listenerWaitSeconds);
+    const listener = await waitForListener(
+      config.controlSocket,
+      options.listenerWaitSeconds,
+      options.cancelled,
+    );
+    if (isCancelled()) {
+      return refuse('cancelled');
+    }
     if (listener.state !== 'answering') {
       return refuse(
         `the desktop listener does not answer on ${config.controlSocket} (${describeSocket(listener)}); ` +
@@ -394,7 +413,10 @@ export async function stopService(
     return exitCodes.failed;
   }
 
-  if (unitRunning(state)) {
+  // A unit already deactivating (a stop issued elsewhere) is stopped too:
+  // `systemctl stop` joins the pending stop job and waits for it (bounded by
+  // the unit's TimeoutStopSec and our command timeout), instead of failing.
+  if (unitRunning(state) || state.activeState === 'deactivating') {
     const result = await stopUnit(unit);
     if (result.code !== 0) {
       log(`companion-phone: systemctl --user stop ${unit} failed: ${result.stderr.trim()}`);
