@@ -225,7 +225,11 @@ History or Listening without losing the reader's place. With every registered
 activity in a short panel, a real click folds and unfolds each page section
 (Listening, Voice shortcuts, Intentions, History) with empty and populated
 history; the clicked heading keeps its screen position, as do cards below a
-section that changes size above them. Previews are
+section that changes size above them. `tst_activity_browser.qml` (portable,
+with the browser failing to load as in `tst_panel_browser_entry.qml`) and case
+`test_05` of the native panel-browser host check the same Activity folds, reading
+position, draft and rail selection markers while the panel browser covers the
+page and after returning through the rail or the browser's Chat control. Previews are
 `/tmp/companion-activity-scrolling-{short-narrow,tall-wide}.png`.
 
 Activity history tests cover bounded reconnect pages interleaved with newer

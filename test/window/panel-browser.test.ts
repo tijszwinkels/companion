@@ -467,7 +467,7 @@ test(
           .replace('@ORIGIN@', JSON.stringify(origin))
           .replace('@REFERENCE@', JSON.stringify(reference)),
       );
-      await runQml(path, env, 'panel-browser-host', /Totals: 6 passed, 0 failed/);
+      await runQml(path, env, 'panel-browser-host', /Totals: 7 passed, 0 failed/);
       await assert.rejects(stat(handlerLog(directory)), { code: 'ENOENT' });
     } finally {
       // A failing close must not leave the temporary home behind.

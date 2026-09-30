@@ -253,4 +253,67 @@ TestCase {
     verify(findChild(body, "fullActivityStatus").visible)
     tryVerify(function() { return findChild(body, "activityTextInput").activeFocus }, 2000)
   }
+  // Activity & settings clarity integration: the Activity page keeps its
+  // folds and reading position under the real browser, and the rail's
+  // right-edge selection marker stays on the page the browser covers.
+  function test_05_activity_position_and_selection_markers_with_the_browser() {
+    const intents = [
+      {name: "SEND_TEXT_TO_APPLICATION", label: "Type text", enabled: true, supportsInference: true,
+        inferenceEnabled: true, shortcutEnabled: true, toggleable: true, inferenceAvailable: true,
+        prefixAvailable: true, prefixes: ["insert"]},
+      {name: "IGNORE", label: "Ignore", enabled: true, supportsInference: true, inferenceEnabled: true,
+        shortcutEnabled: true, toggleable: false, inferenceAvailable: true, prefixAvailable: false, prefixes: []}
+    ]
+    function entry(sequence) {
+      return {type: "activity-entry", sessionId: "activity", entry: {
+        id: "utterance-" + sequence, sequence: sequence, revision: 1, utterance: "Synthetic utterance " + sequence,
+        intent: "SEND_TEXT_TO_APPLICATION", outcome: "sent", observedAt: sequence * 1000,
+        correct: null, actualIntent: null}}
+    }
+    fakeBackend.received({type: "state", protocol: 1, ready: true, intents: intents,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [conversation()]})
+    for (let sequence = 1; sequence <= 40; sequence++)
+      fakeBackend.received(entry(sequence))
+    body.client.sessions.select("")
+    tryVerify(function() { return panel.selectedSession === null && !panel.browsing })
+
+    const page = findChild(body, "fullActivityStatus")
+    const list = findChild(page, "activityScroll")
+    const activityMarker = findChild(body, "activitySelectionMarker")
+    const tab = findChild(body, "tab-one")
+    const tabMarker = findChild(tab, "sessionSelectionMarker")
+    tryVerify(function() { return page.visible })
+    findChild(body, "listeningArea").expanded = false
+    const history = findChild(body, "historySection")
+    page.scrollToItem(history)
+    verify(waitForRendering(page))
+    const heading = findChild(history, "sectionToggle")
+    const headingY = heading.mapToItem(list, 0, 0).y
+    verify(headingY >= -1 && headingY < list.height, "History heading in view")
+    verify(activityMarker.visible)
+    verify(!tabMarker.visible)
+
+    openBrowser()
+    verify(!page.visible)
+    verify(activityMarker.visible, "The rail marks Activity under the browser")
+    fakeBackend.received(entry(41))
+    mouseClick(findChild(body, "activityTab"))
+    tryVerify(function() { return !panel.browsing && page.visible })
+    verify(waitForRendering(page))
+    compare(findChild(body, "listeningArea").expanded, false)
+    verify(history.expanded)
+    verify(Math.abs(heading.mapToItem(list, 0, 0).y - headingY) < 1.5,
+      "History heading kept its place: " + headingY + " -> " + heading.mapToItem(list, 0, 0).y)
+    tryCompare(body.client.activity.model, "count", 41)
+
+    mouseClick(tab)
+    tryCompare(panel, "selectedSessionId", "one")
+    verify(tabMarker.visible)
+    verify(!activityMarker.visible)
+    openBrowser()
+    verify(tabMarker.visible, "The rail marks the conversation under the browser")
+    browser().trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    verify(tabMarker.visible)
+  }
 }
