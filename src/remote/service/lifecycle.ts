@@ -142,6 +142,14 @@ export interface StartOptions {
   listenerWaitSeconds: number;
   /** Start even though the desktop listener does not answer (phones then see it as unavailable). */
   withoutListener: boolean;
+  /**
+   * Cooperative cancellation (SIGTERM/SIGINT to `companion-phone start`).
+   * Checked between steps, never in the middle of `systemd-run`: a request
+   * that may already have reached systemd is always waited for, and a unit
+   * this invocation created is stopped again, so a cancelled start cannot
+   * leave a gateway appearing afterwards.
+   */
+  cancelled?: AbortSignal;
 }
 
 export async function startService(
@@ -152,6 +160,7 @@ export async function startService(
 ): Promise<number> {
   const tools = await resolveTools();
   const plan = transientServicePlan(config, tools, root);
+  const isCancelled = () => options.cancelled?.aborted === true;
   const refuse = (reason: string): number => {
     log(`companion-phone: not starting: ${reason}`);
     return exitCodes.failed;
@@ -189,7 +198,7 @@ export async function startService(
       );
     }
     log(`companion-phone: ${plan.unit} is already running with this configuration`);
-    return waitUntilReady(config, plan.unit, plan.socketPath, options.readySeconds, log, false);
+    return waitUntilReady(config, plan.unit, plan.socketPath, options, log, false);
   }
   if (state.activeState === 'failed' || state.loadState !== 'not-found') {
     // A failed transient unit keeps its name until it is reset.
@@ -239,6 +248,10 @@ export async function startService(
     return refuse(`something else is at ${plan.socketPath} (${describeSocket(existing)})`);
   }
 
+  if (isCancelled()) {
+    return refuse('cancelled');
+  }
+
   // 5. The desktop listener.
   if (!options.withoutListener) {
     const listener = await waitForListener(config.controlSocket, options.listenerWaitSeconds);
@@ -248,6 +261,10 @@ export async function startService(
           'start Companion first, or pass --without-listener',
       );
     }
+  }
+
+  if (isCancelled()) {
+    return refuse('cancelled');
   }
 
   // 6. The tailnet route: exactly ours, or nothing starts.
@@ -264,9 +281,15 @@ export async function startService(
   } catch (error) {
     return refuse(`pairing state ${config.stateDirectory}: ${(error as Error).message}`);
   }
+  // The last point where a cancelled start creates nothing at all.
+  if (isCancelled()) {
+    return refuse('cancelled');
+  }
+  // Not interrupted once begun: systemd may accept the request even if this
+  // client died, so we always learn the outcome (bounded by its timeout).
   await startTransientService(plan);
   log(`companion-phone: started ${plan.unit} (${config.revision.slice(0, 12)})`);
-  return waitUntilReady(config, plan.unit, plan.socketPath, options.readySeconds, log, true);
+  return waitUntilReady(config, plan.unit, plan.socketPath, options, log, true);
 }
 
 function reportRouteProblem(route: RouteProbe, socketPath: string, log: Log): void {
@@ -299,14 +322,30 @@ async function waitUntilReady(
   config: PhoneServiceConfig,
   unit: string,
   socketPath: string,
-  seconds: number,
+  options: StartOptions,
   log: Log,
-  stopOnTimeout: boolean,
+  startedHere: boolean,
 ): Promise<number> {
+  const seconds = options.readySeconds;
   const deadline = Date.now() + seconds * 1000;
   let downPolls = 0;
 
+  // A unit this invocation created is stopped again if the start does not
+  // complete: on timeout, and when the start is cancelled.
+  const undo = async (reason: string): Promise<number> => {
+    log(`companion-phone: ${reason}`);
+    if (startedHere) {
+      await stopUnit(unit);
+      log(`companion-phone: stopped ${unit} again`);
+    }
+    return exitCodes.failed;
+  };
+
   while (Date.now() < deadline) {
+    if (options.cancelled?.aborted) {
+      return undo('start cancelled');
+    }
+
     const state = await unitState(unit);
     const running = unitRunning(state);
 
@@ -334,12 +373,7 @@ async function waitUntilReady(
     await delay(pollMilliseconds);
   }
 
-  log(`companion-phone: the gateway did not answer within ${seconds} s; see ${journalHint(unit)}`);
-  if (stopOnTimeout) {
-    await stopUnit(unit);
-    log(`companion-phone: stopped ${unit} again`);
-  }
-  return exitCodes.failed;
+  return undo(`the gateway did not answer within ${seconds} s; see ${journalHint(unit)}`);
 }
 
 /**

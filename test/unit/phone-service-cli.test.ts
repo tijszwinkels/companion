@@ -29,6 +29,7 @@ import { test } from 'node:test';
 import { promisify } from 'node:util';
 
 import { DeviceStore } from '../../src/remote/devices.ts';
+import { PhoneAccessHook } from '../../src/remote/service/desktop-hook.ts';
 import { acquireLifetimeLock } from '../../src/remote/unix-socket-claim.ts';
 import { createFakes, createPinnedCheckout, type Fakes } from '../phone-service-fakes.ts';
 
@@ -747,3 +748,56 @@ test('start refuses while another gateway holds the pairing state', async (conte
   await lock.close();
   assert.equal((await w.phone(['start'])).code, 0);
 });
+
+test('listener shutdown during a slow systemd-run leaves no gateway behind', async (context) => {
+  const w = await ready(context);
+  await w.fakes.set('run-delay', '1500');
+  const lines: string[] = [];
+  const hook = new PhoneAccessHook({
+    executable: cli,
+    environment: w.environment,
+    log: (line) => lines.push(line),
+  });
+
+  hook.start();
+  await waitFor(async () => (await w.fakes.calls()).some((call) => call[0] === 'systemd-run'));
+  // The unit does not exist yet: systemd-run is still submitting it.
+  await assert.rejects(lstat(join(w.fakes.directory, 'unit.json')), { code: 'ENOENT' });
+
+  assert.equal(await hook.stop(), true);
+  assert.ok(lines.includes('companion-phone: cancelling the start'), lines.join('\n'));
+  assert.ok(lines.some((line) => line.includes('stopped companion-phone-gateway.service again')));
+
+  // Nothing appears afterwards: no unit, no answering gateway socket.
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  await assert.rejects(lstat(join(w.fakes.directory, 'unit.json')), { code: 'ENOENT' });
+  await assert.rejects(lstat(w.gatewaySocket), { code: 'ENOENT' });
+});
+
+test('a start cancelled before submission creates nothing', async (context) => {
+  const w = await ready(context);
+  await w.fakes.set('serve-delay', '1500');
+  const lines: string[] = [];
+  const hook = new PhoneAccessHook({
+    executable: cli,
+    environment: w.environment,
+    log: (line) => lines.push(line),
+  });
+
+  // Cancelled while the Serve route is still being read.
+  hook.start();
+  await waitFor(async () => (await w.fakes.calls()).some((call) => call[0] === 'tailscale'));
+  assert.equal(await hook.stop(), true);
+
+  assert.ok(lines.includes('companion-phone: not starting: cancelled'), lines.join('\n'));
+  assert.ok(!(await w.fakes.calls()).some((call) => call[0] === 'systemd-run'));
+  await assert.rejects(lstat(join(w.fakes.directory, 'unit.json')), { code: 'ENOENT' });
+});
+
+async function waitFor(check: () => Promise<boolean>, milliseconds = 20_000): Promise<void> {
+  const deadline = Date.now() + milliseconds;
+  while (!(await check())) {
+    assert.ok(Date.now() < deadline, 'timed out');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}

@@ -9,6 +9,8 @@
  *
  * Behavior switches (files in the fake directory):
  *   run-behavior   serve (default) | fail | silent
+ *   run-delay      milliseconds systemd-run takes before the unit exists
+ *   serve-delay    milliseconds tailscale takes to answer
  *   stop-behavior  stop (default; also removes the socket directory) | stuck
  *   serve-status   printed by `tailscale serve status --json`
  */
@@ -43,8 +45,11 @@ if (name === 'pkill' || name === 'pgrep') {
 
 if (name === 'tailscale') {
   if (args.join(' ') !== 'serve status --json') { process.exit(64); }
-  process.stdout.write(read('serve-status', '{}'));
-  process.exit(0);
+  setTimeout(() => {
+    process.stdout.write(read('serve-status', '{}'));
+    process.exit(0);
+  }, Number(read('serve-delay', '0')));
+  return;
 }
 
 if (name === 'systemd-run') {
@@ -67,6 +72,7 @@ if (name === 'systemd-run') {
   if (behavior === 'fail') {
     Object.assign(state, { active: 'failed', sub: 'failed', result: 'exit-code' });
   }
+  const create = () => {
   if (behavior === 'serve') {
     fs.mkdirSync(path.dirname(listen), { recursive: true, mode: 0o700 });
     const child = spawn(process.execPath, ['-e', 'require("node:net").createServer().listen(process.argv[1])', listen], {
@@ -77,6 +83,10 @@ if (name === 'systemd-run') {
   }
   save(state);
   process.exit(0);
+  };
+  // A slow submission: the unit only exists once systemd-run has finished.
+  setTimeout(create, Number(read('run-delay', '0')));
+  return;
 }
 
 if (name === 'systemctl') {
@@ -115,7 +125,10 @@ export interface Fakes {
   directory: string;
   binDirectory: string;
   calls(): Promise<string[][]>;
-  set(file: 'run-behavior' | 'stop-behavior' | 'serve-status', value: string): Promise<void>;
+  set(
+    file: 'run-behavior' | 'run-delay' | 'serve-delay' | 'stop-behavior' | 'serve-status',
+    value: string,
+  ): Promise<void>;
   /** Pretend a unit exists (e.g. one this tool did not start). */
   setUnit(state: Record<string, string | number>): Promise<void>;
   cleanup(): Promise<void>;

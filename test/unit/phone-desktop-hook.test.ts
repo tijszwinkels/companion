@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -22,9 +22,16 @@ const preload = fileURLToPath(new URL('../fixtures/no-audio.cjs', import.meta.ur
 
 interface FakePhone {
   executable: string;
+  /** Stands in for the service: created by a (late) start, removed by stop. */
+  unit: string;
   calls(): Promise<string[]>;
   lines: string[];
-  hook(options?: { startMilliseconds?: number; stopMilliseconds?: number }): PhoneAccessHook;
+  hook(options?: {
+    startMilliseconds?: number;
+    stopMilliseconds?: number;
+    graceMilliseconds?: number;
+    settleMilliseconds?: number;
+  }): PhoneAccessHook;
 }
 
 /**
@@ -34,11 +41,15 @@ interface FakePhone {
  */
 async function fakePhone(
   context: { after(callback: () => Promise<void>): void },
-  behavior: { start: 'ok' | 'fail' | 'hang'; stop: 'ok' | 'fail' | 'hang' },
+  behavior: {
+    start: 'ok' | 'fail' | 'hang' | 'stubborn' | 'escaped';
+    stop: 'ok' | 'fail' | 'hang';
+  },
 ): Promise<FakePhone> {
   const directory = await mkdtemp(join(tmpdir(), 'companion-phone-hook-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const calls = join(directory, 'calls');
+  const unit = join(directory, 'unit');
   const executable = join(directory, 'companion-phone');
   await writeFile(
     executable,
@@ -49,10 +60,18 @@ async function fakePhone(
       `[ "$1" = stop ] && behavior=${behavior.stop}`,
       `trap 'echo "$1 terminated" >> ${calls}; kill $sleeper 2>/dev/null; exit 143' TERM`,
       'case $behavior in',
-      '  ok) echo "companion-phone: $1 done"; exit 0 ;;',
+      // stop removes the stand-in service, as companion-phone stop would.
+      `  ok) [ "$1" = stop ] && rm -f ${unit}; echo "companion-phone: $1 done"; exit 0 ;;`,
       '  fail) echo "companion-phone: $1 refused" >&2; exit 1 ;;',
       // A background sleep plus wait, so the TERM trap runs promptly.
       '  hang) sleep 60 >/dev/null 2>&1 & sleeper=$!; wait $sleeper; exit 0 ;;',
+      // Ignores SIGTERM; a descendant in its process group (like systemd-run)
+      // would create the service one second later unless it is killed too.
+      `  stubborn) trap '' TERM; (sleep 1; touch ${unit}) >/dev/null 2>&1 & sleep 60 >/dev/null 2>&1 ; exit 0 ;;`,
+      // Ignores SIGTERM, and its request has already left the process group
+      // (like a start systemd accepted): the service appears one second later
+      // whatever happens to the client.
+      `  escaped) trap '' TERM; setsid sh -c 'sleep 1; touch ${unit}' >/dev/null 2>&1 & sleep 60 >/dev/null 2>&1 ; exit 0 ;;`,
       'esac',
       '',
     ].join('\n'),
@@ -62,6 +81,7 @@ async function fakePhone(
   const lines: string[] = [];
   return {
     executable,
+    unit,
     lines,
     async calls() {
       try {
@@ -76,6 +96,8 @@ async function fakePhone(
         log: (line) => lines.push(line),
         startTimeoutMilliseconds: options.startMilliseconds,
         stopTimeoutMilliseconds: options.stopMilliseconds,
+        cancelGraceMilliseconds: options.graceMilliseconds,
+        settleMilliseconds: options.settleMilliseconds,
       });
     },
   };
@@ -143,12 +165,40 @@ test('a failed or hanging stop is reported, bounded, and never throws', async (c
   assert.ok(hanging.lines.some((line) => line.includes('companion-phone stop: timed out')));
 });
 
-test('a hanging start is killed after its time limit', async (context) => {
+test('a start that overruns its time limit is cancelled and followed by a stop', async (context) => {
   const phone = await fakePhone(context, { start: 'hang', stop: 'ok' });
   phone.hook({ startMilliseconds: 300 }).start();
-  await eventually(async () =>
-    phone.lines.some((line) => line.includes('did not start (timed out)')),
-  );
+  await eventually(async () => (await phone.calls()).includes('stop begin'));
+  assert.ok(phone.lines.includes('Phone access did not start in time; cancelling it'));
+  assert.deepEqual(await phone.calls(), ['start begin', 'start terminated', 'stop begin']);
+});
+
+test('a start that ignores cancellation is killed with its whole process group', async (context) => {
+  const phone = await fakePhone(context, { start: 'stubborn', stop: 'ok' });
+  const hook = phone.hook({ graceMilliseconds: 200, settleMilliseconds: 1500 });
+
+  hook.start();
+  await eventually(async () => (await phone.calls()).includes('start begin'));
+  assert.equal(await hook.stop(), true);
+  assert.ok(phone.lines.includes('The phone access start did not stop in time; killing it'));
+
+  // Its descendant died with it: the service never appears.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await assert.rejects(lstat(phone.unit), { code: 'ENOENT' });
+  assert.deepEqual(await phone.calls(), ['start begin', 'stop begin', 'stop begin']);
+});
+
+test('a start request that escaped the kill is caught by the settle stop', async (context) => {
+  const phone = await fakePhone(context, { start: 'escaped', stop: 'ok' });
+  const hook = phone.hook({ graceMilliseconds: 200, settleMilliseconds: 1500 });
+
+  hook.start();
+  await eventually(async () => (await phone.calls()).includes('start begin'));
+  assert.equal(await hook.stop(), true);
+
+  // It appeared after the first stop; the confirming stop removed it.
+  await assert.rejects(lstat(phone.unit), { code: 'ENOENT' });
+  assert.deepEqual(await phone.calls(), ['start begin', 'stop begin', 'stop begin']);
 });
 
 test('a missing companion-phone is reported, not thrown', async () => {

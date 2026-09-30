@@ -430,7 +430,7 @@ test('systemd restarts a crashed gateway and pairing survives', async () => {
   phone.socket.terminate();
 });
 
-test('systemd refuses every kind of code change on automatic restart; stop cleans up', async () => {
+test('systemd refuses an edited file, an untracked file or a moved HEAD on automatic restart; stop cleans up', async () => {
   const git = (...args: string[]) =>
     run('git', ['-C', world.checkout, ...args], { env: world.environment });
   const readme = join(world.checkout, 'README.md');
@@ -623,4 +623,49 @@ test('a terminal TCP gateway on the same pairing state keeps the service from se
   await waitUntil(async () => receivedState(phone), 10_000, 'state after the handover');
   phone.socket.terminate();
   assert.equal((await world.phoneCli(['stop'])).code, 0);
+});
+
+test('listener shutdown during a slow real systemd-run leaves no gateway behind', async () => {
+  await world.setServeStatus(world.exactRoute());
+  assert.equal(await unitLoaded(), false);
+
+  // Reproduces the review's H2 case: the service is only submitted to the
+  // real user manager 1.5 s after companion-phone called systemd-run.
+  const wrapper = join(world.binDirectory, 'systemd-run');
+  const entered = join(world.base, 'systemd-run-entered');
+  const realSystemdRun = (await run('sh', ['-c', 'command -v systemd-run'])).stdout.trim();
+  await writeFile(
+    wrapper,
+    ['#!/bin/sh', `touch ${entered}`, 'sleep 1.5', `exec ${realSystemdRun} "$@"`, ''].join('\n'),
+    { mode: 0o755 },
+  );
+
+  try {
+    const lines: string[] = [];
+    const hook = new PhoneAccessHook({ executable: cli, log: (line) => lines.push(line) });
+    hook.start();
+    await waitUntil(
+      async () => {
+        try {
+          await lstat(entered);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      60_000,
+      'systemd-run to be entered',
+    );
+    assert.equal(await unitLoaded(), false);
+
+    assert.equal(await hook.stop(), true, lines.join('\n'));
+
+    // Nothing comes up afterwards.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    assert.equal(await unitLoaded(), false);
+    await assert.rejects(lstat(world.socketPath), { code: 'ENOENT' });
+  } finally {
+    await rm(wrapper, { force: true });
+    await rm(entered, { force: true });
+  }
 });

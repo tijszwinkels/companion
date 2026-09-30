@@ -392,7 +392,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     // Phone access goes first, while the control socket still exists, so
     // phones are never left connected to a gateway without its listener.
-    // Bounded (about 35 s at most); a failure is logged and shutdown continues.
+    // Usually about a second. Bounded even when a start must be cancelled
+    // (see desktop-hook.ts); a failure is logged and shutdown continues.
     await phone?.stop();
 
     await pipeline?.idle();

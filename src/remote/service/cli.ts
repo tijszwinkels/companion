@@ -150,6 +150,24 @@ const commandOptions: Record<string, string[]> = {
   'route-commands': [],
 };
 
+/**
+ * SIGTERM/SIGINT cancel a start cooperatively instead of killing it at an
+ * arbitrary point (see StartOptions.cancelled): the start finishes or undoes
+ * its current step, then exits. The listener's --phone hook relies on this.
+ */
+function cancellationSignal(): AbortSignal {
+  const controller = new AbortController();
+  const cancel = () => {
+    if (!controller.signal.aborted) {
+      log('companion-phone: cancelling the start');
+      controller.abort();
+    }
+  };
+  process.on('SIGTERM', cancel);
+  process.on('SIGINT', cancel);
+  return controller.signal;
+}
+
 /** Quote one argument for a POSIX shell, so printed commands can be pasted. */
 function shellQuote(argument: string): string {
   if (/^[A-Za-z0-9/._+=:@,-]+$/.test(argument)) {
@@ -232,6 +250,7 @@ async function main(): Promise<number> {
     readySeconds: seconds(values['ready-timeout'], 90, '--ready-timeout'),
     listenerWaitSeconds: seconds(values['wait-for-listener'], 0, '--wait-for-listener'),
     withoutListener: values['without-listener'] === true,
+    cancelled: cancellationSignal(),
   });
 
   switch (command) {

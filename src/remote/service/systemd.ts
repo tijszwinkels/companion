@@ -140,7 +140,8 @@ export function unitRunning(state: UnitState): boolean {
 }
 
 export async function startTransientService(plan: TransientServicePlan): Promise<void> {
-  const result = await runCommand('systemd-run', systemdRunArguments(plan), 60_000);
+  // Bounded well inside the hook's cancellation grace (see desktop-hook.ts).
+  const result = await runCommand('systemd-run', systemdRunArguments(plan), 20_000);
   if (result.code !== 0) {
     throw Error(
       `systemd-run could not start ${plan.unit}: ${result.stderr.trim() || `exit ${result.code}`}`,

@@ -169,14 +169,24 @@ opt-in `--phone` option (a launcher only has to pass it through, e.g. for
 npm start -- --external-sessions --phone
 ```
 
-| Moment                                 | What happens                                                                                                                                                                                                               |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Listener without `--phone`             | Never runs `companion-phone`: starts nothing, stops nothing, whatever gateway may be running.                                                                                                                              |
-| `--phone` listener is up               | After its control socket answers, it runs this checkout's `bin/companion-phone start` in the background. The desktop never waits for it.                                                                                   |
-| Phone start fails or is refused        | Logged in the listener output (`phone` lines) with the reason; the desktop keeps running. `companion-phone status` shows which part is missing.                                                                            |
-| `--phone` listener stops (Ctrl+C/TERM) | First, while its socket still exists: a start still in progress is terminated, then `companion-phone stop` (at most about 35 s). If that fails it is logged ("Phone access may still be on") and the listener still exits. |
-| Desktop restart by a launcher          | The old `--phone` listener stops phone access on its way out; the new one starts it only if it has `--phone` too. Wait for the old listener to exit before starting the new one.                                           |
-| Listener crash or SIGKILL              | No hook runs. The gateway keeps running and phones see "listener unavailable" (4503) until a listener is back; a new `--phone` listener keeps the running service. `companion-phone stop` ends it any time.                |
+| Moment                                 | What happens                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Listener without `--phone`             | Never runs `companion-phone`: starts nothing, stops nothing, whatever gateway may be running.                                                                                                                                                                                                                                                    |
+| `--phone` listener is up               | After its control socket answers, it runs this checkout's `bin/companion-phone start` in the background. The desktop never waits for it.                                                                                                                                                                                                         |
+| Phone start fails or is refused        | Logged in the listener output (`phone` lines) with the reason; the desktop keeps running. `companion-phone status` shows which part is missing.                                                                                                                                                                                                  |
+| `--phone` listener stops (Ctrl+C/TERM) | First, while its socket still exists: a start still in progress is cancelled, then `companion-phone stop`. The cancelled start finishes or undoes its current step and never leaves a gateway appearing later (details below). Usually about a second. If stop fails it is logged ("Phone access may still be on") and the listener still exits. |
+| Desktop restart by a launcher          | The old `--phone` listener stops phone access on its way out; the new one starts it only if it has `--phone` too. Wait for the old listener to exit before starting the new one.                                                                                                                                                                 |
+| Listener crash or SIGKILL              | No hook runs. The gateway keeps running and phones see "listener unavailable" (4503) until a listener is back; a new `--phone` listener keeps the running service. `companion-phone stop` ends it any time.                                                                                                                                      |
+
+**Cancelling a start.** `companion-phone` runs in its own process group, so a
+Ctrl+C in the listener's terminal does not interrupt it half-way. The hook
+sends it SIGTERM. It stops between steps, lets an in-flight `systemd-run`
+finish (at most 20 s), stops a service it has just created, and exits. Only if
+it has not exited after 30 s is its whole process group killed. Stop then runs
+a second time 3 s later, in case systemd accepted the start request from the
+killed client. Worst case, shutdown therefore waits about 1.5 minutes for
+phone access; a launcher that gives up earlier should say so rather than
+start a new listener while the old one is still stopping.
 
 `--phone` is refused outside ordinary listener mode (`--no-desktop`,
 `--preview`, `--text`, `--wav`, `--graph`). `companion-phone start` and
@@ -260,7 +270,10 @@ reset`, which removes unrelated configuration). Delete
   `systemd-run`, `tailscale` and `pkill`/`pgrep` trip-wires, synthetic HOME and
   config; read-only `status`/`check-serve` that print no token, hash or code),
   `test/unit/phone-desktop-hook.test.ts` (the `--phone` hook: background start,
-  failure reporting, stop ordering and time bounds, flag validation) and, in
+  failure reporting, stop ordering and time bounds, cancellation of a start
+  whose descendants ignore SIGTERM or whose request escaped the kill, flag
+  validation), cancellation during a slow `systemd-run` and during the Serve
+  check with the real `companion-phone` (in the CLI tests) and, in
   `test/unit/remote-unix-socket.test.ts`, one gateway per pairing state across
   TCP and Unix socket gateways, with handover in both directions.
 - `npm run test:phone-service` needs a running systemd user manager and creates
@@ -276,6 +289,9 @@ reset`, which removes unrelated configuration). Delete
   tracked file, an untracked source file and a moved HEAD (ending
   `start-limit-hit`, cleaned up by `stop`), a terminal TCP gateway on the same
   pairing state blocking the service and vice versa, the `--phone` hook end to
-  end, and a stop that never touches a unit of the same name it did not start.
+  end, shutdown during a `systemd-run` delayed 1.5 s before the real
+  submission (nothing appears afterwards), an existing runtime directory left
+  untouched, and a stop that never touches a unit of the same name it did not
+  start.
   It never uses the production socket names, state, Tailscale or installed
   units, and needs the tested revision committed (it pins a clone of HEAD).
