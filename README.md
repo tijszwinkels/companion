@@ -19,8 +19,9 @@ tests, documentation and the separate backend/UI/adapter update steps.
 After completing the [installation checkpoints](docs/installation.md), run from
 a terminal inside the Hyprland desktop session. **The following starts microphone
 capture and types detected dictation into the active application.** Select the
-intended text field first; add `--paused` to start with capture off. Ctrl+C stops
-capture, inference, and child processes.
+intended text field first; add `--paused` to start with microphone capture off.
+Even paused startup takes and discards one active-window screenshot, so display
+harmless content before launching. Ctrl+C stops capture, inference, and child processes.
 
 ```sh
 cd ~/Work/companion
