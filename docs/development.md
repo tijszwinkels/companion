@@ -4,6 +4,10 @@ Reconciled with main at `46f301d` on 2026-09-22. This is an entry point for
 developers, including agents started inside Companion. Check the current tree
 and feature ledger before treating a dated status as current.
 
+For a new machine, follow the [installation guide](installation.md) first. It
+includes model acquisition, agent setup and explicit capture/activation checkpoints;
+this developer guide assumes those prerequisites.
+
 ## Find the right directory
 
 On Tijs's machine:
