@@ -30,8 +30,9 @@
  *   revoked; revocation also closes live connections.
  * - Browser-origin checks: the WebSocket and pairing endpoints require an
  *   `Origin` from the configured allowlist, and every request requires a
- *   matching `Host`, which blocks cross-site WebSocket hijacking and DNS
- *   rebinding from web pages the phone happens to visit.
+ *   matching `Host` (on the Unix socket: `X-Forwarded-Host`, set by Tailscale
+ *   Serve), which blocks cross-site WebSocket hijacking and DNS rebinding from
+ *   web pages the phone happens to visit.
  * - No third-party requests: the app is self-contained, and CSP forbids any
  *   other origin.
  */
@@ -499,9 +500,26 @@ export class Gateway {
 
   // ---- Request guards -------------------------------------------------------
 
+  /**
+   * The host the browser addressed. Over TCP that is `Host`. Behind Tailscale
+   * Serve's `unix:` target, tailscaled sends `Host: localhost` and passes the
+   * browser's host in `X-Forwarded-Host` (seen live with Tailscale 1.102.4).
+   * Only this user and root (tailscaled) can connect to the private socket,
+   * so the forwarded header is trusted there, and only there; `Host` is then
+   * ignored. A repeated header is joined by Node and matches no host.
+   */
+  private requestHost(request: IncomingMessage): string | undefined {
+    const host =
+      this.options.socketPath !== undefined
+        ? request.headers['x-forwarded-host']
+        : request.headers.host;
+    return typeof host === 'string' ? host : undefined;
+  }
+
   /** Every request must name one of our hosts; defeats DNS rebinding. */
   private hostAllowed(request: IncomingMessage): boolean {
-    return typeof request.headers.host === 'string' && this.allowedHosts.has(request.headers.host);
+    const host = this.requestHost(request);
+    return host !== undefined && this.allowedHosts.has(host);
   }
 
   private originAllowed(request: IncomingMessage): boolean {
@@ -509,7 +527,7 @@ export class Gateway {
     return (
       typeof origin === 'string' &&
       this.options.origins.includes(origin) &&
-      new URL(origin).host === request.headers.host
+      new URL(origin).host === this.requestHost(request)
     );
   }
 

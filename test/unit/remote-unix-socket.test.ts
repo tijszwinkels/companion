@@ -28,6 +28,8 @@ import { freePort, readStatusLine, remoteFixture, waitFor } from '../remote-fixt
 
 const tailnetOrigin = 'https://desk.example-tailnet.ts.net';
 const tailnetHost = 'desk.example-tailnet.ts.net';
+/** What Tailscale Serve sends to a `unix:` target: Host localhost, real host forwarded. */
+const served = { Host: 'localhost', 'X-Forwarded-Host': tailnetHost };
 
 async function temporaryDirectory(context: { after(callback: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-unix-'));
@@ -83,7 +85,7 @@ type UnixPhone = {
 
 /**
  * Open the phone WebSocket over the Unix socket, as Tailscale Serve would:
- * Host and Origin name the tailnet HTTPS origin. Resolves once upgraded
+ * Host localhost, X-Forwarded-Host and Origin naming the tailnet HTTPS origin. Resolves once upgraded
  * (HTTP 101) or rejects with the HTTP status.
  */
 async function unixPhone(
@@ -92,7 +94,7 @@ async function unixPhone(
   headers: Record<string, string> = {},
 ): Promise<UnixPhone> {
   const socket = new WebSocket(`ws+unix:${socketPath}:/api/socket`, {
-    headers: { Host: tailnetHost, Origin: tailnetOrigin, ...headers },
+    headers: { ...served, Origin: tailnetOrigin, ...headers },
   });
   const messages: { type: string }[] = [];
   const closed = new Promise<{ code: number }>((resolve) => {
@@ -362,21 +364,21 @@ test('the socket is private and removed on close; a second gateway is refused', 
 test('Host, Origin and authentication are enforced over the socket', async (context) => {
   const { socketPath, pair } = await unixFixture(context);
 
-  // HTTP: a foreign Host is misdirected; the tailnet Host is served.
+  // HTTP: a foreign forwarded host is misdirected; the tailnet host is served.
   const rebound = await unixRequest(socketPath, {
     path: '/',
-    headers: { Host: 'rebound.example' },
+    headers: { ...served, 'X-Forwarded-Host': 'rebound.example' },
   });
   assert.equal(rebound.status, 421);
-  const served = await unixRequest(socketPath, { path: '/', headers: { Host: tailnetHost } });
-  assert.equal(served.status, 503); // no app built in the fixture, but routed
+  const routed = await unixRequest(socketPath, { path: '/', headers: served });
+  assert.equal(routed.status, 503); // no app built in the fixture, but routed
 
   // Pairing needs the allowed Origin.
   const pairing = await unixRequest(socketPath, {
     method: 'POST',
     path: '/api/pair',
     headers: {
-      Host: tailnetHost,
+      ...served,
       Origin: 'https://evil.example',
       'Content-Type': 'application/json',
     },
@@ -385,7 +387,10 @@ test('Host, Origin and authentication are enforced over the socket', async (cont
   assert.equal(pairing.status, 403);
 
   // WebSocket: 421 for a foreign Host, 403 for a foreign Origin.
-  await assert.rejects(unixPhone(socketPath, undefined, { Host: 'rebound.example' }), /HTTP 421/);
+  await assert.rejects(
+    unixPhone(socketPath, undefined, { 'X-Forwarded-Host': 'rebound.example' }),
+    /HTTP 421/,
+  );
   await assert.rejects(
     unixPhone(socketPath, undefined, { Origin: 'https://evil.example' }),
     /HTTP 403/,
@@ -409,13 +414,74 @@ test('Host, Origin and authentication are enforced over the socket', async (cont
   await waitFor(() => phone.messages.some((message) => message.type === 'engine'));
 });
 
+test('the Unix socket trusts X-Forwarded-Host, never Host; TCP the reverse', async (context) => {
+  const { fixture, socketPath } = await unixFixture(context);
+
+  // Tailscale Serve sends Host: localhost to a unix: target. The tailnet
+  // name only in Host, a missing, foreign or repeated forwarded host, and a
+  // forwarded host that does not match the Origin are all refused.
+  const misdirected: Record<string, string | string[]>[] = [
+    { Host: tailnetHost },
+    { Host: 'localhost' },
+    { Host: tailnetHost, 'X-Forwarded-Host': 'rebound.example' },
+    { Host: 'localhost', 'X-Forwarded-Host': [tailnetHost, tailnetHost] },
+  ];
+  for (const headers of misdirected) {
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({ socketPath, path: '/', method: 'GET' }, (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+      for (const [name, value] of Object.entries(headers)) request.setHeader(name, value);
+      request.on('error', reject);
+      request.end();
+    });
+    assert.equal(status, 421, JSON.stringify(headers));
+  }
+  await assert.rejects(
+    unixPhone(socketPath, undefined, { Host: tailnetHost, 'X-Forwarded-Host': '' }),
+    /HTTP 421/,
+  );
+  await assert.rejects(
+    unixPhone(socketPath, undefined, { 'X-Forwarded-Host': 'other.example-tailnet.ts.net' }),
+    /HTTP 421/,
+  );
+
+  // TCP mode keeps checking Host and ignores a forwarded host.
+  const tcpStatus = (headers: Record<string, string>) =>
+    new Promise<number>((resolve, reject) => {
+      const url = new URL(fixture.origin);
+      const request = httpRequest(
+        { host: url.hostname, port: url.port, path: '/', headers },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        },
+      );
+      request.on('error', reject);
+      request.end();
+    });
+  assert.equal(
+    await tcpStatus({ Host: url(fixture.origin), 'X-Forwarded-Host': 'rebound.example' }),
+    503,
+  );
+  assert.equal(
+    await tcpStatus({ Host: 'rebound.example', 'X-Forwarded-Host': url(fixture.origin) }),
+    421,
+  );
+});
+
+function url(origin: string): string {
+  return new URL(origin).host;
+}
+
 test('Funnel requests are refused in Unix socket and TCP modes', async (context) => {
   const { fixture, socketPath, logs } = await unixFixture(context);
   const funnel = { 'Tailscale-Funnel-Request': '?1' };
 
   const http = await unixRequest(socketPath, {
     path: '/',
-    headers: { Host: tailnetHost, ...funnel },
+    headers: { ...served, ...funnel },
   });
   assert.equal(http.status, 403);
   await assert.rejects(unixPhone(socketPath, undefined, funnel), /HTTP 403/);
@@ -443,7 +509,7 @@ test('a required Tailscale login must match exactly', async (context) => {
   for (const headers of refused) {
     const response = await unixRequest(socketPath, {
       path: '/',
-      headers: { Host: tailnetHost, ...headers },
+      headers: { ...served, ...headers },
     });
     assert.equal(response.status, 403);
     await assert.rejects(unixPhone(socketPath, undefined, headers), /HTTP 403/);
@@ -456,7 +522,7 @@ test('a required Tailscale login must match exactly', async (context) => {
   // The right login reaches the normal checks and a paired device connects.
   const allowed = await unixRequest(socketPath, {
     path: '/',
-    headers: { Host: tailnetHost, 'Tailscale-User-Login': login },
+    headers: { ...served, 'Tailscale-User-Login': login },
   });
   assert.equal(allowed.status, 503);
 
@@ -478,7 +544,8 @@ test('a duplicated login header is refused', async (context) => {
       response.resume();
       resolve(response.statusCode ?? 0);
     });
-    request.setHeader('Host', tailnetHost);
+    request.setHeader('Host', 'localhost');
+    request.setHeader('X-Forwarded-Host', tailnetHost);
     request.setHeader('Tailscale-User-Login', [login, login]);
     request.on('error', reject);
     request.end();
@@ -489,7 +556,7 @@ test('a duplicated login header is refused', async (context) => {
 test('Funnel and login refusals cover the app routes and every upgrade path', async (context) => {
   const login = 'synthetic-user@github';
   const { socketPath } = await unixFixture(context, { requireTailscaleLogin: login });
-  const allowed = { Host: tailnetHost, 'Tailscale-User-Login': login };
+  const allowed = { ...served, 'Tailscale-User-Login': login };
 
   // The phone app list and app-open endpoints: refused before authentication.
   const funnelList = await unixRequest(socketPath, {
@@ -500,7 +567,7 @@ test('Funnel and login refusals cover the app routes and every upgrade path', as
   const strangerOpen = await unixRequest(socketPath, {
     method: 'POST',
     path: '/api/apps/notebook/open',
-    headers: { Host: tailnetHost, Origin: tailnetOrigin, 'Tailscale-User-Login': 'x@github' },
+    headers: { ...served, Origin: tailnetOrigin, 'Tailscale-User-Login': 'x@github' },
   });
   assert.equal(strangerOpen.status, 403);
 

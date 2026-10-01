@@ -117,7 +117,12 @@ before changing an existing installation.
 See [the supervised tailnet trial](../../docs/mobile-tailnet-trial.md) for the
 locally audited Serve setup, exact origin policy, validation and rollback gates.
 The gateway never uses `Forwarded`, `X-Forwarded-*` or Tailscale identity headers
-as authentication or to replace the request's actual Host/Origin. The optional
+as authentication. Over TCP it never uses them to replace the request's actual
+Host/Origin. The one exception is the Unix socket (`--listen unix:`): tailscaled
+sends `Host: localhost` to a `unix:` target and the browser's host in
+`X-Forwarded-Host` (seen with Tailscale 1.102.4). Only this user and root can
+connect to that private socket, so there `X-Forwarded-Host` takes the place of
+`Host` and `Host` is ignored. The optional
 required Tailscale login is an additional gate in front of pairing and device
 tokens, never a substitute for them.
 
@@ -152,8 +157,9 @@ page a secure context.
 - **Revocation.** `revoke` removes the hash; the gateway rechecks every 5 seconds
   and closes that device's live connections (close code 4403).
 - **Origins and hosts.** The WebSocket upgrade and pairing endpoint require an
-  `Origin` in the exact allowlist; every request requires a `Host` matching an
-  allowed origin. Pairing and WebSocket requests also require that Host to match
+  `Origin` in the exact allowlist; every request requires a `Host` (on the Unix
+  socket: `X-Forwarded-Host`) matching an allowed origin. Pairing and WebSocket
+  requests also require that host to match
   their Origin, even when both localhost and HTTPS are configured. This blocks
   cross-site WebSocket hijacking and DNS rebinding.
   Only HTTPS and loopback HTTP app origins are supported. Bundled wrapper origins

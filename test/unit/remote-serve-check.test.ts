@@ -521,7 +521,11 @@ test('a runtime Serve mismatch stops serving with exit 1 despite open connection
   await within(halfRequestConnected, 5000, 'the idle connection');
   halfRequest.write('GET / HTTP/1.1\r\nHost: ');
   const probeResponse = new Promise<number>((resolve, reject) => {
-    const request = httpRequest({ socketPath: socket, path: '/', headers: { Host: hostname } });
+    const request = httpRequest({
+      socketPath: socket,
+      path: '/',
+      headers: { Host: 'localhost', 'X-Forwarded-Host': hostname },
+    });
     request.on('response', (response) => {
       response.resume();
       resolve(response.statusCode ?? 0);

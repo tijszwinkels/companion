@@ -275,9 +275,11 @@ reset`, which removes unrelated configuration). Delete
   without the remote-panel protocol is refused by the gateway.
 - Tests (below) use a real systemd user manager with synthetic listener, state,
   checkout and a fake `tailscale`. They do not prove real Tailscale Serve
-  behavior (`unix:` spelling in `serve status --json`, Host and WebSocket
-  forwarding over the socket, the login header value, the response while the
-  gateway is off), a real phone, logout or an actual reboot.
+  behavior (`unix:` spelling in `serve status --json`, WebSocket forwarding
+  over the socket, the login header value, the response while the gateway is
+  off), a real phone, logout or an actual reboot. Observed live with Tailscale
+  1.102.4: a `unix:` target receives `Host: localhost` with the real name in
+  `X-Forwarded-Host`, which the gateway checks in socket mode.
 
 ## Tests
 
