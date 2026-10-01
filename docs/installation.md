@@ -7,8 +7,9 @@ it in order; each checkpoint tells you what should work before proceeding.
 
 **Validation status (2026-10-01):** source-checked against Companion base
 `736c7a130c7c7b0a08e2d58a9fe7087a2a5daf91`. The public ASR fixture has historical
-native-decoder evidence linked below. The new examples have isolated synthetic
-checks. **This guide has not been executed on a fresh Omarchy PC.** Package
+native-decoder evidence linked below and also passed independent review using
+existing matching model files and a built worker. The new examples have isolated
+synthetic checks. **This guide has not been executed on a fresh Omarchy PC.** Package
 installation, model download/serving, GPU sizing, real microphone/screenshot/typing,
 and a complete first agent conversation still need that validation. A candidate
 recipe below is not a promise of supported hardware or measured model quality.
@@ -19,6 +20,8 @@ recipe below is not a promise of supported hardware or measured model quality.
 focused application.** An explicit “enter …” can also submit that text. Window
 focus checks do not identify a browser tab or text field and cannot prevent every
 focus race. Start paused later in this guide, with an empty disposable editor.
+Even `--paused` takes one startup screenshot to check desktop capture; that image
+is not routed to a model or saved in history. Display harmless content before launch.
 
 **`--preview` suppresses dispatched actions, not observation or storage.** It can
 still open the microphone, capture screenshots, contact the classifier and retain
@@ -146,17 +149,28 @@ mkdir -p "$HOME/Work"
 git clone https://github.com/tijszwinkels/companion.git "$HOME/Work/companion"
 cd "$HOME/Work/companion"
 git rev-parse HEAD
-npm ci
+ONNXRUNTIME_NODE_INSTALL=skip npm ci
 npm run asr:build
 npm run ui:build
 ```
 
 Record the commit you actually checked out; `git clone` follows the current default
 branch, not the historical base named at the top of this guide. For a reviewed
-release, check out its exact commit before `npm ci`. Package lifecycle scripts and
-native builds execute downloaded code. `npm ci` replaces checkout-local
+release, check out its exact commit before installing dependencies. Package lifecycle
+scripts and native builds execute downloaded code. `npm ci` replaces checkout-local
 `node_modules`; it is not a global Pi installation. These commands build locally
 and do not install the desktop adapter, start listening or launch the UI.
+
+Use `ONNXRUNTIME_NODE_INSTALL=skip` for this CPU-only Companion setup. The locked
+`onnxruntime-node` 1.30.0 package already bundles its CPU binaries; on Linux x86_64,
+its default postinstall otherwise downloads unused CUDA/TensorRT libraries from
+Microsoft's NuGet feed (`api.nuget.org`). That extra download is outside npm's
+lockfile integrity checks and can fail installation if the feed is unavailable.
+The environment flag skips that extra download, not all npm lifecycle scripts.
+Companion's [VAD explicitly uses CPU](../src/sensors/audio/vad.ts); the Rust ASR
+build remains separate. This behavior is source-checked, but a clean x86_64 install
+with the flag is still an untested checkpoint. Recheck the package's install
+behavior when upgrading the lockfile.
 
 For Window mode without LayerShellQt/private Wayland headers, use
 `npm run ui:build -- -DCOMPANION_SIDEBAR=OFF`. That build cannot provide Sidebar or
@@ -184,7 +198,7 @@ error and OS/version details; do not disable WebEngine sandboxing to fix a launc
 
 Use **Parakeet TDT 0.6B v3**, in the compatible ONNX int8 export, not CTC, Whisper,
 a `.nemo` checkpoint or a three-file Sherpa export. Companion's `parakeet-rs 0.3.5`
-worker uses exactly these filenames:
+worker can load this three-file int8 set:
 
 - `encoder-model.int8.onnx`
 - `decoder_joint-model.int8.onnx`
@@ -236,7 +250,10 @@ python3 docs/examples/check-asr.py \
 contains “Dublin”. This checks the native decoder directly, not live VAD or the
 whole desktop pipeline. The example bounds decode/startup/inference time and
 creates no recordings. Missing worker: rebuild in this checkout. `model` error:
-check filenames, int8 export and hashes. Timeout/out-of-memory: inspect resources
+check filenames, int8 export and hashes. Keep this directory limited to the
+three-file set: the loader prefers `encoder-model.onnx` if present, so a full
+repository snapshot containing FP32 files can load a different model precision
+(and require external data files). Timeout/out-of-memory: inspect resources
 before increasing a deadline. The existing `asr:bench` additionally compares with
 Voxtype 1.0.1 and its model location; it is not a fresh-install prerequisite.
 
@@ -248,7 +265,9 @@ public product. Override both the listener and Pi settings below.
 
 Companion's classifier expects an OpenAI-compatible **chat completions** endpoint,
 inline PNG `image_url` support and ordinary text replies. It sends streaming
-requests, `max_tokens`, and `chat_template_kwargs.enable_thinking=false`.
+requests, `temperature: 0`, `max_tokens`, and chat-template options
+`enable_thinking: false` / `preserve_thinking: true`. Its ordinary output budget is
+32 tokens; optional transcription cleanup uses 512.
 A text-only model is insufficient. Quick questions additionally need Pi-compatible
 streaming and tool calls. An HTTP 200 from `/v1/models` alone proves none of those.
 
@@ -281,8 +300,17 @@ into the Hugging Face cache (normally `~/.cache/huggingface`).
 ```bash
 uv venv --python 3.12 "$HOME/.local/share/companion/vllm-0.11.0"
 uv pip install --python "$HOME/.local/share/companion/vllm-0.11.0/bin/python" \
-  'vllm==0.11.0' --extra-index-url https://download.pytorch.org/whl/cu128
+  'vllm==0.11.0' 'transformers==4.57.6' --torch-backend=cu128
 ```
+
+`--torch-backend=cu128` directs PyTorch packages to the CUDA index without making
+that index the first source for every package. With uv, a general
+`--extra-index-url` here can hide vLLM 0.11.0 on PyPI and fail resolution. The
+Transformers pin stays in the Qwen3-VL-capable 4.57 series: vLLM 0.11.0 leaves that
+dependency unbounded and can otherwise resolve an incompatible 5.x version.
+Dependency resolution was checked against Linux x86_64/Python 3.12 metadata; no
+GPU installation or inference was performed. Keep a record of resolved versions
+before changing the recipe.
 
 **Start an endpoint, not Companion:** this binds loopback only and consumes GPU
 memory. Choose a private API key with your normal secret manager. In Bash, this
@@ -300,8 +328,7 @@ VLLM_API_KEY="${COMPANION_LLM_API_KEY:?Enter a nonempty model API key}" VLLM_NO_
   --served-model-name companion-vision \
   --host 127.0.0.1 --port 18081 \
   --max-model-len 32768 --max-num-seqs 2 \
-  --enable-auto-tool-choice --tool-call-parser hermes \
-  --disable-log-requests
+  --enable-auto-tool-choice --tool-call-parser hermes
 ```
 
 The serving alias `companion-vision` is chosen here and must match both configs.
@@ -309,7 +336,8 @@ The serving alias `companion-vision` is chosen here and must match both configs.
 uses `hermes`; actual Companion tool reliability remains a live checkpoint.
 `VLLM_NO_USAGE_STATS=1` disables vLLM's documented
 [usage reporting](https://docs.vllm.ai/en/v0.11.0/usage/usage_stats.html).
-Request logging is disabled; inspect other server/proxy logs and retention too.
+Request logging is off by default in this vLLM version; inspect other
+server/proxy logs and retention too.
 Environment keys remain readable to sufficiently privileged/same-user processes.
 Use Ctrl+C in this server terminal to stop it. No boot service is created here.
 
@@ -414,14 +442,15 @@ Project trust controls resource loading, not filesystem/network isolation.
 `~/.pi/agent` and `~/companion/agents` directories; on a new installation:
 
 ```bash
-mkdir -p -m 700 "$HOME/.pi/agent" "$HOME/companion/agents"
+(umask 077; mkdir -p "$HOME/.pi/agent" "$HOME/companion/agents")
 ```
 
-Existing directories retain their current mode. Inspect ownership/permissions and
+The subshell umask makes new parent and leaf directories private too; existing
+directories retain their current mode. Inspect ownership/permissions and
 existing files first. Save the following as `~/.pi/agent/models.json`, merging the
 `providers` entry if the file already exists. `companion-local` is a new provider
 name defined by this example. Its key is an environment reference, not a literal
-secret; **this interpolation syntax is from Pi 0.99.1**.
+secret; **this interpolation syntax is documented in Pi 0.99.1**.
 
 ```json
 {
@@ -538,8 +567,9 @@ a short text prompt and verifies Pi's streaming path, not image/tool integration
 Expect `READY` and a clean exit. `--offline` disables automatic Pi network activity;
 it does **not** block the explicitly requested model call or tools in normal
 sessions. For reviewed project-local `.pi` resources, use interactive Pi in that
-specific directory and `/trust`. Do not set global trust to `always`. In RPC mode
-unresolved trust normally skips protected project resources rather than prompting.
+specific directory and `/trust`. Do not set `defaultProjectTrust` to `always` in
+`~/.pi/agent/settings.json`. In RPC mode unresolved trust normally skips protected
+project resources rather than prompting.
 
 ### Optional cloud coding profile
 
@@ -658,9 +688,11 @@ First ensure the endpoint (or SSH tunnel), API key and Pi executable are availab
 in the listener's environment. Run as your ordinary desktop user. Close an older
 listener normally; never delete its socket/lock or kill processes by name.
 
-**Activate, initially paused:** this loads ASR/VAD, opens desktop storage/control,
-and reads saved sessions, but starts with microphone capture off. It is not a
-read-only storage check. It does not start the separate model server.
+**Activate, initially paused:** display a harmless editor before running this
+command. Startup loads ASR/VAD, opens desktop storage/control, reads saved sessions
+and captures one active-window screenshot as an availability check, even while
+paused. This startup image is not routed or persisted. Microphone capture starts
+off. This is not a read-only storage check and does not start the model server.
 
 ```bash
 cd "$HOME/Work/companion"
@@ -689,8 +721,9 @@ selected providers. Do not speak credentials.
    `npm start -- --config "$PWD/companion.config.json" --preview --seconds 10`.
    Say a harmless sentence. Expect capture → ASR → intent → preview logs. It can
    capture/transmit/store data, despite not dispatching typing or agent starts.
-   The ten-second option bounds capture, not necessarily completion of queued
-   processing. Ctrl+C ends the process. Stop preview before starting ordinary mode.
+   The ten-second option stops like Ctrl+C, cancelling in-flight ASR/intent work;
+   finish speaking well before the limit or later stages may not appear. Stop
+   preview before starting ordinary mode.
 2. **Literal dictation:** start paused again, focus the disposable editor, then
    toggle Listening or press Super+Alt+P. Say “insert hello world”. Expect exactly
    `hello world`, without Enter. “enter hello world” explicitly presses Enter, so
@@ -699,8 +732,9 @@ selected providers. Do not speak credentials.
    ordinary dictation without a prefix. Verify the selected intent and outcome in
    Activity before trusting it for real work. There is no quality certification
    for the candidate model; misroutes need investigation, not a silent model swap.
-4. **First useful agent workflow:** while paused, open Activity with Super+Alt+D,
-   keep a harmless editor behind it and submit “quick question, explain what an
+4. **First useful agent workflow:** while paused, keep a harmless editor behind the
+   panel. Press Super+Alt+D to focus its current input, then Super+Alt+0 to select
+   Activity, and submit “quick question, explain what an
    installation checkpoint is; do not run tools.” Activity restores application
    focus, captures it and routes the typed request without ASR/WAV. Expect an answer
    in a new Pi tab using `companion-local/companion-vision`. Confirm that actual
@@ -775,7 +809,7 @@ See [storage contracts](../src/desktop/README.md) and
 
 | Symptom                                    | Check next                                                                                                                                                                              |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm ci` or native build fails             | Node version, architecture, disk, network/CA certificates, compiler/development packages; keep the lockfile intact.                                                                     |
+| `npm ci` or native build fails             | Node version, architecture, disk, network/CA certificates, compiler/development packages and `ONNXRUNTIME_NODE_INSTALL=skip`; keep the lockfile intact.                                 |
 | ASR cannot load or returns empty           | Worker path, exact model files/hashes, microphone source/mute; inspect numeric `audio-levels`/ASR logs first. Diagnostic WAVs are private data, not default bug-report attachments.     |
 | Wrong/no microphone                        | `wpctl status`; choose the correct default in sound settings or launch with `--device NODE_NAME` from PipeWire source metadata. Do not change device permissions broadly.               |
 | “No visible active window” / capture fails | Real Hyprland session, visible mapped ordinary window, `hyprctl`/`grim` present, same-user compositor access. `--text` still needs capture.                                             |
@@ -793,8 +827,9 @@ See [storage contracts](../src/desktop/README.md) and
 Record your working commit, Node/Pi/native/Qt/model-server versions, config and model
 hashes. Before updating, save drafts, stop listener/UI and back up your data and
 adapter config. Fetch/review a chosen revision in a separate checkout if possible;
-do not `git reset --hard` over local work. Re-run `npm ci`, ASR/UI builds and the
-non-capturing checkpoints there. After approval, activate the listener, UI and
+do not `git reset --hard` over local work. Re-run
+`ONNXRUNTIME_NODE_INSTALL=skip npm ci`, ASR/UI builds and the non-capturing checkpoints
+there. After approval, activate the listener, UI and
 adapter together. Model updates deserve fresh synthetic and live-quality checks.
 
 Rollback includes code, rebuilt native artifacts and the installed adapter—not
