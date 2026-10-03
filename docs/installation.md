@@ -9,9 +9,13 @@ it in order; each checkpoint tells you what should work before proceeding.
 `736c7a130c7c7b0a08e2d58a9fe7087a2a5daf91`. The public ASR fixture has historical
 native-decoder evidence linked below and also passed independent review using
 existing matching model files and a built worker. The new examples have isolated
-synthetic checks. **This guide has not been executed on a fresh Omarchy PC.** Package
-installation, model download/serving, GPU sizing, real microphone/screenshot/typing,
-and a complete first agent conversation still need that validation. A candidate
+synthetic checks. **This guide has not been executed on a fresh Omarchy PC.** On
+2026-10-03 it was rehearsed in a fresh Omarchy 4.0.4 x86_64 KVM guest (software
+rendering, no audio device, no model endpoint): steps 1–3, offline Pi discovery,
+the adapter, a paused launch with the native UI and a typed `insert` passed after
+the Omarchy package correction in step 1. Model serving, GPU sizing, the vision
+check, real microphone/screenshot/typing, and a complete first agent conversation
+still need validation. A candidate
 recipe below is not a promise of supported hardware or measured model quality.
 
 ## Before you begin
@@ -128,6 +132,20 @@ sudo pacman -Syu --needed git nodejs npm rust base-devel openssl ca-certificates
   qt6-base qt6-declarative qt6-webengine qt6-wayland layer-shell-qt
 ```
 
+**On Omarchy 4.x**, a pacman hook deliberately refuses direct system upgrades
+(`pacman -Syu`), so the command above stops with “no packages were upgraded”. Do
+not bypass that guard. Run Omarchy's own upgrade from a desktop terminal, then
+install the packages without `-yu`. Omarchy already provides Node.js and npm
+through mise (first in `PATH`), so `nodejs npm` are omitted here; confirm
+`node --version` meets the table:
+
+```bash
+omarchy update
+sudo pacman -S --needed git rust base-devel openssl ca-certificates \
+  cmake pkgconf pipewire wireplumber grim wtype util-linux ffmpeg python \
+  qt6-base qt6-declarative qt6-webengine qt6-wayland layer-shell-qt
+```
+
 This does not install/replace Omarchy, Hyprland or GPU drivers. Follow your OS's
 supported installation process for those. For the vLLM recipe you will also need
 `uv` (`sudo pacman -S --needed uv` on an already updated Arch system) on the
@@ -167,6 +185,9 @@ its default postinstall otherwise downloads unused CUDA/TensorRT libraries from
 Microsoft's NuGet feed (`api.nuget.org`). That extra download is outside npm's
 lockfile integrity checks and can fail installation if the feed is unavailable.
 The environment flag skips that extra download, not all npm lifecycle scripts.
+Recent npm 11 releases may instead report dependency install scripts as “not yet
+covered by allowScripts” and skip them; the build and checks below are what
+establish a usable checkout, so do not approve scripts merely to silence that notice.
 Companion's [VAD explicitly uses CPU](../src/sensors/audio/vad.ts); the Rust ASR
 build remains separate. This behavior is source-checked, but a clean x86_64 install
 with the flag is still an untested checkpoint. Recheck the package's install
@@ -447,7 +468,11 @@ Project trust controls resource loading, not filesystem/network isolation.
 
 The subshell umask makes new parent and leaf directories private too; existing
 directories retain their current mode. Inspect ownership/permissions and
-existing files first. Save the following as `~/.pi/agent/models.json`, merging the
+existing files first. A fresh Omarchy installation already creates `~/.pi/agent`
+(mode 0755, with its own `settings.json`, skills and themes) and a separate
+mise-managed `pi` in `~/.local/bin`. Keep those files, make the directory private
+with `chmod 700 "$HOME/.pi/agent"`, and use the dedicated Pi installed above by
+its absolute path rather than whichever `pi` comes first in `PATH`. Save the following as `~/.pi/agent/models.json`, merging the
 `providers` entry if the file already exists. `companion-local` is a new provider
 name defined by this example. Its key is an environment reference, not a literal
 secret; **this interpolation syntax is documented in Pi 0.99.1**.
