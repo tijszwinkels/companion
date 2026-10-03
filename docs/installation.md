@@ -10,12 +10,18 @@ it in order; each checkpoint tells you what should work before proceeding.
 native-decoder evidence linked below and also passed independent review using
 existing matching model files and a built worker. The new examples have isolated
 synthetic checks. **This guide has not been executed on a fresh Omarchy PC.** On
-2026-10-03 it was rehearsed in a fresh Omarchy 4.0.4 x86_64 KVM guest (software
-rendering, no audio device, no model endpoint): steps 1–3, offline Pi discovery,
-the adapter, a paused launch with the native UI and a typed `insert` passed after
-the Omarchy package correction in step 1. Model serving, GPU sizing, the vision
-check, real microphone/screenshot/typing, and a complete first agent conversation
-still need validation. A candidate
+2026-10-03 it was rehearsed in a fresh Omarchy 4.0.4 x86_64 KVM guest with software
+rendering and no audio device. After `omarchy update`, the step-1 packages were
+installed with the list _including_ distro `nodejs npm`; the reduced Omarchy list
+below has not been run as written. The source came from a local Git bundle of
+the reviewed commit, so the public `git clone` was not exercised. On that
+checkout, the step-2 builds and checks, the step-3 download and ASR fixture, Pi
+discovery, the adapter, a paused launch with the native UI and a typed `insert`
+passed. Against an existing trusted vLLM server (not the candidate recipe below),
+the vision check, Pi `READY`, one classifier routing, a quick question and the
+read-tool checkpoint also passed with synthetic input. Model installation and
+serving, GPU sizing, real microphone/screenshot/typing and intent quality still
+need validation. A candidate
 recipe below is not a promise of supported hardware or measured model quality.
 
 ## Before you begin
@@ -132,15 +138,23 @@ sudo pacman -Syu --needed git nodejs npm rust base-devel openssl ca-certificates
   qt6-base qt6-declarative qt6-webengine qt6-wayland layer-shell-qt
 ```
 
-**On Omarchy 4.x**, a pacman hook deliberately refuses direct system upgrades
-(`pacman -Syu`), so the command above stops with “no packages were upgraded”. Do
-not bypass that guard. Run Omarchy's own upgrade from a desktop terminal, then
-install the packages without `-yu`. Omarchy already provides Node.js and npm
-through mise (first in `PATH`), so `nodejs npm` are omitted here; confirm
-`node --version` meets the table:
+**On Omarchy** (observed on 4.0.4), a pacman hook deliberately refuses direct
+system upgrades (`pacman -Syu`), so the command above stops with “no packages were
+upgraded”. Do not bypass that guard. Instead, run Omarchy's own full upgrade from
+a desktop terminal:
 
 ```bash
 omarchy update
+```
+
+**Checkpoint:** the update must finish without “Something went wrong during the
+update!”. If it fails, stop and resolve that first; installing packages against
+refreshed databases on a partially upgraded system is the partial upgrade Arch
+warns against. Only after a successful update, install the packages without `-yu`.
+Omarchy already provides Node.js and npm through mise (first in `PATH`), so
+`nodejs npm` are omitted here; confirm `node --version` meets the table:
+
+```bash
 sudo pacman -S --needed git rust base-devel openssl ca-certificates \
   cmake pkgconf pipewire wireplumber grim wtype util-linux ffmpeg python \
   qt6-base qt6-declarative qt6-webengine qt6-wayland layer-shell-qt
@@ -189,9 +203,11 @@ Recent npm 11 releases may instead report dependency install scripts as “not y
 covered by allowScripts” and skip them; the build and checks below are what
 establish a usable checkout, so do not approve scripts merely to silence that notice.
 Companion's [VAD explicitly uses CPU](../src/sensors/audio/vad.ts); the Rust ASR
-build remains separate. This behavior is source-checked, but a clean x86_64 install
-with the flag is still an untested checkpoint. Recheck the package's install
-behavior when upgrading the lockfile.
+build remains separate. This behavior is source-checked. In the clean x86_64
+rehearsal (npm 11.19.1), npm withheld the dependency scripts, so the flag's skip
+path itself was not exercised; the build, ASR and launch checks still passed.
+Other npm versions may run the postinstall. Recheck the package's install behavior
+when upgrading the lockfile.
 
 For Window mode without LayerShellQt/private Wayland headers, use
 `npm run ui:build -- -DCOMPANION_SIDEBAR=OFF`. That build cannot provide Sidebar or
