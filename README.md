@@ -5,24 +5,28 @@ one intent, and routes the sensor frame to a subscribed processor. Explicit
 command prefixes skip intent inference.
 The previous experiment lives in `../companion_spike`.
 
+**New installation? Start with the [complete installation guide](docs/installation.md)**
+for humans and coding agents: prerequisites, ASR/model downloads, local or trusted-LAN
+inference, agent setup, desktop integration, privacy and first-run checkpoints.
+Fresh Omarchy installation validation is still pending.
+
 Developing Companion, including from a Companion agent session? Start with
 [the development guide](docs/development.md) for the source map, configuration,
 tests, documentation and the separate backend/UI/adapter update steps.
 
 ## Run
 
-From a terminal inside the Hyprland desktop session:
+After completing the [installation checkpoints](docs/installation.md), run from
+a terminal inside the Hyprland desktop session. **The following starts microphone
+capture and types detected dictation into the active application.** Select the
+intended text field first; add `--paused` to start with microphone capture off.
+Even paused startup takes and discards one active-window screenshot, so display
+harmless content before launching. Ctrl+C stops capture, inference, and child processes.
 
 ```sh
 cd ~/Work/companion
-npm ci
-npm run asr:build
 npm start
 ```
-
-This starts microphone capture and **types detected dictation into the active
-application**. Select the intended text field and speak. Ctrl+C stops capture,
-inference, and child processes.
 
 - **“insert hello”** types `hello`, without pressing Enter.
 - **“enter hello”** types `hello`, then presses Enter.
@@ -34,7 +38,9 @@ These prefixes bypass the intent LLM. Matching is case-insensitive and accepts p
 after the command, such as “Insert, hello”. It matches whole prefixes: “entering”
 does not trigger “enter”. A command with no following text does nothing.
 
-To observe without typing, pressing Enter, or launching an agent:
+To observe without dispatched typing, Enter, or agent starts, use preview.
+**It still captures, can call the classifier, and retains desktop history/audio/PNG.**
+See the [data and stopping guidance](docs/installation.md#before-you-begin).
 
 ```sh
 npm start -- --preview
@@ -354,7 +360,10 @@ Speech audio for each saved transcript is retained alongside its screenshot at
 The WAV is uncompressed 16 kHz mono PCM16, encoded exactly like the input to
 transcription. Audio is saved even if screen capture or the later action fails,
 and for ignored speech. Old records and `--text` input have no audio file.
-Segments with failed or empty transcription, and overload drops, are not retained.
+Worker failures and overload drops are not retained. Eligible final empty ASR
+results are saved separately as `~/companion/asr-empty/YYYY-MM-DD/<clip-uuid>/audio.wav`
+and `metadata.json`; they have no transcript-history row and are not removed by
+Activity deletion. See [recording details](src/desktop/README.md).
 
 Say **“label previous correct”** or **“label previous incorrect”** to give feedback
 on the preceding utterance's selected intent. These standalone shortcuts bypass
@@ -378,6 +387,9 @@ including storage and sounds, for isolated CLI use.
 
 ## Prerequisites and configuration
 
+For acquisition and ordered setup commands, use the [installation guide](docs/installation.md).
+The defaults below describe existing source configuration, not a clean-machine installer.
+
 - Node.js 22.19 or newer.
 - Hyprland, `hyprctl`, `grim`, `pw-record`, `pw-play`, `wtype`, and util-linux
   `flock` on PATH.
@@ -394,11 +406,15 @@ including storage and sounds, for isolated CLI use.
 
 The bundled Silero VAD runs locally with ONNX Runtime. Transcription is local.
 For utterances without a matching prefix, the configured model endpoint receives
-the utterance, window identity, and PNG. Prefix commands make no model request.
+the utterance, window identity, and PNG. Prefixes bypass classification; agent-start/quick-question prefixes still call
+their configured model, and optional transcription cleanup can call the local
+model for text-delivery prefixes.
 With desktop history enabled, screenshots and speech audio for saved transcripts
 are retained under `~/companion/data`. Transcription itself uses private pipes and
-creates no temporary audio files. `--no-desktop` disables history and artifact
-storage.
+creates no temporary audio files. Eligible empty ASR results are also saved as
+diagnostic audio under `~/companion/asr-empty`. `--no-desktop` disables these
+desktop stores; it does not disable capture, model requests, typing, or independent
+agent conversation storage. See [retention and deletion](docs/installation.md#storage-deletion-and-egress).
 
 Optionally copy `companion.config.example.json` to `companion.config.json`.
 Supported configuration is defined in [src/config.ts](src/config.ts):

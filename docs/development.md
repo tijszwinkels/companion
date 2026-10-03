@@ -4,6 +4,10 @@ Reconciled with main at `46f301d` on 2026-09-22. This is an entry point for
 developers, including agents started inside Companion. Check the current tree
 and feature ledger before treating a dated status as current.
 
+For a new machine, follow the [installation guide](installation.md) first. It
+includes model acquisition, agent setup and explicit capture/activation checkpoints;
+this developer guide assumes those prerequisites.
+
 ## Find the right directory
 
 On Tijs's machine:
@@ -72,7 +76,7 @@ call the classifier. Old design proposals contain historical prompt snapshots.
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Optional `companion.config.json` in the launch directory, or CLI `--config`         | Intent LLM, ASR and VAD; defaults in `src/config.ts`.                                                                                                                                                                                            |
 | `~/companion/agents/companion-agent.json`                                           | Pi executable and coding model/thinking; nested `quickQuestion` model/thinking; `codingDefaultHarness` and `claudeCode` executable/model/effort. Reloaded for each turn; a Claude Code conversation's model changes only with its footer picker. |
-| Pi's provider configuration and credentials                                         | Providers used by Pi; quick questions require its local-Qwen provider to exist.                                                                                                                                                                  |
+| Pi's provider configuration and credentials                                         | Providers used by Pi; the configured `quickQuestion.model` provider must exist (the default is installation-specific).                                                                                                                           |
 | `~/companion/agents/claude-tools.json` (proposed, opt-in; not created by Companion) | Pi-parity tool groups for Claude Code conversations (desktop, OpenRig, web); see [parity tools](../src/agents/claude/parity/README.md).                                                                                                          |
 | `~/companion/disabled-intents.json`                                                 | Independent persisted inference/shortcut switches.                                                                                                                                                                                               |
 | `~/companion/transcription-cleanup.json`                                            | Transcription cleanup switch; missing means off.                                                                                                                                                                                                 |
@@ -90,7 +94,9 @@ for the protocol and separate storage limits.
 
 ## Validate without activating
 
-Use dependencies matching the checkout's lockfile (`npm ci` for a fresh checkout).
+Use dependencies matching the checkout's lockfile. For a fresh CPU-only checkout,
+use `ONNXRUNTIME_NODE_INSTALL=skip npm ci`; see the [installation guide](installation.md)
+for the optional CUDA download this skips.
 Run checks appropriate to the change:
 
 ```sh
