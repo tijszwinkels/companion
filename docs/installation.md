@@ -1199,8 +1199,8 @@ each checkpoint's result; failures and changes made. Mark these separately:
 - **Live checked:** real microphone, screenshot, typing, UI/adapter and each agent
   harness/model, only after explicit activation and successful observation.
 - **Fresh install checked:** all prerequisites installed on the intended clean
-  machine and the complete workflow repeated there. This remains **not done** for
-  the preparation of this guide.
+  machine and the complete workflow repeated there. Done once for this guide in a
+  fresh Omarchy VM guest, except the audio path (see the validation status above).
 
 Do not upload keys, real screenshots/audio, native session histories or personal
 configuration with the report. The [development guide](development.md) maps further

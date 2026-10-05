@@ -9,7 +9,8 @@ The previous experiment lives in `../companion_spike`.
 for humans and coding agents: you set up Pi first, then Pi can follow the rest with
 you: prerequisites, ASR/model downloads, local or trusted-LAN inference, agent setup,
 desktop integration, optional login startup, privacy and first-run checkpoints.
-Fresh Omarchy installation validation is still pending.
+A fresh Omarchy 4.0.4 VM installation, done by Pi with a local model, passed except the
+audio path; see the guide's validation status.
 
 Developing Companion, including from a Companion agent session? Start with
 [the development guide](docs/development.md) for the source map, configuration,
