@@ -49,6 +49,7 @@ milestones. User instructions can waive review for a particular change.
 | Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
 | Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
 | Opt-in phone gateway, its supervised service and phone panel | `src/remote/`, `bin/companion-phone`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md) |
+| Opt-in listener/UI start after desktop login (systemd user units) | `src/login-startup/`, `bin/companion-login` | [Installation step 8](installation.md#8-start-companion-after-login-optional) |
 | Trusted local web apps: registry, lifecycle, app windows, phone app proxy | `src/apps/`, `bin/companion-app` | [Local apps](local-apps.md) |
 
 The standalone Qt host is the current native UI path. The private Quickshell
@@ -134,6 +135,7 @@ These are separate operations, not an automatic deployment script:
 | Source-launched UI QML                   | Stop/relaunch the UI; restarting the listener does not reload it. Packaged UI assets require their own update.                                   |
 | Installed Omarchy QML or Lua             | `npm run omarchy:install` from a Hyprland desktop terminal. QML changes rescan the plugin; changed bindings can reload Hyprland.                 |
 | Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Claude conversations keep effort; only their picker changes model. |
+| Login services (`bin/companion-login`)   | `systemctl --user restart companion-listener.service companion-ui.service` after rebuilding; rerun `companion-login enable` when Node/Pi/wtype/config paths change. |
 
 Save unsent drafts before stopping the UI. Its window close button hides the
 resident process; it does not exit it. Stop that process before relaunching when

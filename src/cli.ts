@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       'external-socket': { type: 'string' },
       'widget-library': { type: 'string' },
       paused: { type: 'boolean', default: false },
+      'no-startup-capture': { type: 'boolean', default: false },
       phone: { type: 'boolean', default: false },
     },
   });
@@ -96,6 +97,9 @@ Usage: npm start -- [options]
   --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
                      else ~/companion/widget-library)
   --paused           Start paused; resume through the desktop control
+  --no-startup-capture
+                     Skip the startup screenshot check, e.g. at login before
+                     any window is open; the first input captures as usual
   --phone            Opt-in: also run 'bin/companion-phone start' once the desktop is up,
                      and 'companion-phone stop' when this listener stops
                      (see docs/mobile-startup.md)
@@ -124,6 +128,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   }
   if (values.text !== undefined && (!values.text.trim() || values.text.length > 4000)) {
     throw Error('--text requires 1–4000 characters');
+  }
+  if (values['no-startup-capture'] && (values.text !== undefined || values.graph)) {
+    throw Error('--no-startup-capture applies only to microphone and WAV modes');
   }
 
   if (values['external-socket'] && !values['external-sessions']) {
@@ -334,7 +341,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     log('asr-start', 'Loading Parakeet transcription worker');
     await transcriber.start(controller.signal);
 
-    await screen.capture(controller.signal);
+    // One screenshot checks that capture works before any audio is accepted. It
+    // is neither routed nor stored. A login service may start before any window
+    // is open, when this check would fail, so it can opt out explicitly; every
+    // later utterance still captures and reports its own failures.
+    if (values['no-startup-capture']) {
+      log('capture', 'Startup screenshot check skipped; the first input captures the window');
+    } else {
+      await screen.capture(controller.signal);
+    }
 
     // Load the native runtime only when audio processing actually needs it.
     // Help, graph export, and supplied-text mode need no ONNX installation.

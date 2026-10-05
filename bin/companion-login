@@ -1,0 +1,5 @@
+#!/bin/sh
+# Opt-in start of the listener and native UI after desktop login. Resolve this checkout independently of the caller's cwd.
+entry=$(readlink -f -- "$0") || exit 2
+root=$(dirname -- "$(dirname -- "$entry")") || exit 2
+exec "$root/node_modules/.bin/tsx" "$root/src/login-startup/cli.ts" "$@"

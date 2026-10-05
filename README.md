@@ -6,8 +6,9 @@ command prefixes skip intent inference.
 The previous experiment lives in `../companion_spike`.
 
 **New installation? Start with the [complete installation guide](docs/installation.md)**
-for humans and coding agents: prerequisites, ASR/model downloads, local or trusted-LAN
-inference, agent setup, desktop integration, privacy and first-run checkpoints.
+for humans and coding agents: you set up Pi first, then Pi can follow the rest with
+you: prerequisites, ASR/model downloads, local or trusted-LAN inference, agent setup,
+desktop integration, optional login startup, privacy and first-run checkpoints.
 Fresh Omarchy installation validation is still pending.
 
 Developing Companion, including from a Companion agent session? Start with
@@ -27,6 +28,9 @@ harmless content before launching. Ctrl+C stops capture, inference, and child pr
 cd ~/Work/companion
 npm start
 ```
+
+To start Companion paused after each desktop login instead, see
+[Start Companion after login](docs/installation.md#8-start-companion-after-login-optional).
 
 - **“insert hello”** types `hello`, without pressing Enter.
 - **“enter hello”** types `hello`, then presses Enter.
