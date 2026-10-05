@@ -211,6 +211,9 @@ test('enable writes both managed units and enables them, without starting anythi
   const run = await companionLogin(box, ['enable', '--wtype-dir', wtype]);
   assert.equal(run.code, 0, run.output);
 
+  const shown = await companionLogin(box, ['status']);
+  assert.match(shown.output, new RegExp(`wtype {5}${join(wtype, 'wtype')}`));
+
   const listener = await readFile(join(box.unitDirectory, 'companion-listener.service'), 'utf8');
   const ui = await readFile(join(box.unitDirectory, 'companion-ui.service'), 'utf8');
   assert.ok(listener.startsWith(managedMarker));
@@ -269,6 +272,22 @@ test('enable refuses a symlink in place of a log file and writes no units', asyn
   assert.match(run.output, /Cannot use log file/);
   assert.deepEqual(mutatingCalls(run), []);
   await assert.rejects(stat(join(box.unitDirectory, 'companion-listener.service')));
+});
+
+test('enable refuses a FIFO in place of a log file instead of hanging', async (context) => {
+  const box = await sandbox(context);
+  await mkdir(box.logDirectory, { recursive: true, mode: 0o700 });
+  await new Promise<void>((resolveFifo, rejectFifo) => {
+    execFile('mkfifo', [join(box.logDirectory, 'listener.log')], (error) =>
+      error ? rejectFifo(error) : resolveFifo(),
+    );
+  });
+
+  // companionLogin bounds the run at 30 seconds; a hang would fail the test.
+  const run = await companionLogin(box, ['enable']);
+  assert.equal(run.code, 1);
+  assert.match(run.output, /Cannot use log file|must be a regular file/);
+  assert.deepEqual(mutatingCalls(run), []);
 });
 
 test('enable --listening --now starts both services and says so', async (context) => {

@@ -832,11 +832,15 @@ do not repeatedly reload or replace personal bindings to force installation.
 The adapter is optional for the listener but needed for the documented focus,
 media and global-shortcut workflow. [Full adapter contract](../integrations/omarchy/README.md).
 
-**Typing caveat before dictating into a browser:** stock wtype v0.4 can corrupt
-punctuation by assigning printable characters to physical Backspace keycodes.
-Companion includes a narrowly scoped patch with nested Chromium evidence. Read
-[the patch and remaining Unicode limitations](../integrations/wtype/README.md).
-To build a candidate without replacing the system executable:
+**Patched text writer (required for reliable text delivery):** Companion types
+through `wtype`. Stock wtype v0.4 can assign printable characters to physical key
+codes such as Backspace; on Hyprland with Chromium-based applications this deletes
+text instead of typing punctuation (“open.” becomes “ope”). Companion includes a
+narrowly scoped patch with nested Chromium evidence. Read
+[the patch and its remaining Unicode limitations](../integrations/wtype/README.md).
+This is a text-delivery fix: it does not change speech recognition, and it does not
+fix every application's physical-key handling or supplementary Unicode (emoji).
+Build it into a private directory; leave the distribution's `/usr/bin/wtype` alone:
 
 ```bash
 python3 integrations/wtype/build.py "$HOME/.local/share/companion/wtype-candidate"
@@ -844,20 +848,23 @@ python3 integrations/wtype/build.py "$HOME/.local/share/companion/wtype-candidat
 
 This downloads pinned, checksum-verified upstream source and requires a new output
 directory, C compiler, `patch`, `pkg-config`, Wayland client and xkbcommon
-development files, and `wayland-scanner`. It installs nothing. On an updated Arch
-system, install missing build dependencies with `sudo pacman -S --needed wayland
-libxkbcommon patch` after approval. After reviewing/testing the candidate, prepend that
-specific directory to the **listener** terminal's PATH:
+development files, and `wayland-scanner`. It installs nothing and prints
+`Built …/wtype; nothing installed`. On an updated Arch system, install missing build
+dependencies with `sudo pacman -S --needed wayland libxkbcommon patch` after approval.
+
+Building it changes nothing by itself: the **listener** must find it first in its
+PATH. Every manual listener terminal needs this before starting Companion, and
+[step 8](#8-start-companion-after-login-optional) needs `--wtype-dir`:
 
 ```bash
 export PATH="$HOME/.local/share/companion/wtype-candidate:$PATH"
-command -v wtype
+command -v wtype   # must print …/.local/share/companion/wtype-candidate/wtype
 ```
 
-Do not assume building it changes a running listener. Test literal punctuation in
-a disposable local editor/browser field before using it in messaging applications.
-The patch does not fix every application's physical-key handling or supplementary
-Unicode. Do not use a live chat composer as a typing test.
+**Checkpoint:** the build printed `nothing installed`, `command -v wtype` in the
+listener's terminal prints the candidate, and `/usr/bin/wtype` is unchanged. The
+text check itself follows in step 7, through Companion. Do not use a live chat
+composer as a typing test.
 
 ## 7. First launch, first useful workflow, and stopping
 
@@ -879,6 +886,8 @@ off. This is not a read-only storage check and does not start the model server.
 
 ```bash
 cd "$HOME/Work/companion"
+export PATH="$HOME/.local/share/companion/wtype-candidate:$PATH"
+command -v wtype
 npm start -- --config "$PWD/companion.config.json" --paused --no-sounds
 ```
 
@@ -907,15 +916,24 @@ selected providers. Do not speak credentials.
    The ten-second option stops like Ctrl+C, cancelling in-flight ASR/intent work;
    finish speaking well before the limit or later stages may not appear. Stop
    preview before starting ordinary mode.
-2. **Literal dictation:** start paused again, focus the disposable editor, then
+2. **Exact text delivery (no microphone needed):** open a disposable browser text
+   field, for example Chromium with the address `data:text/html,<textarea autofocus></textarea>`,
+   and click into it. Press Super+Alt+D, then Super+Alt+0 to select Activity, and
+   submit `insert let's just keep it open. Done, (a+b)=c; ok? "yes"!` in its input.
+   Activity returns focus to the field and types the text without the classifier.
+   **Checkpoint:** the field contains exactly `let's just keep it open. Done, (a+b)=c; ok? "yes"!`,
+   with no Enter and nothing missing. A truncated result such as `ope` means the
+   listener is using stock wtype: check `command -v wtype` in its terminal (or
+   `bin/companion-login status` for step 8 services) before going further.
+3. **Literal dictation:** start paused again, focus the disposable editor, then
    toggle Listening or press Super+Alt+P. Say “insert hello world”. Expect exactly
    `hello world`, without Enter. “enter hello world” explicitly presses Enter, so
    test it only in a field where submission has no external effect. Pause again.
-3. **Classifier:** with synthetic screen content and an approved endpoint, try
+4. **Classifier:** with synthetic screen content and an approved endpoint, try
    ordinary dictation without a prefix. Verify the selected intent and outcome in
    Activity before trusting it for real work. There is no quality certification
    for the candidate model; misroutes need investigation, not a silent model swap.
-4. **First useful agent workflow:** while paused, keep a harmless editor behind the
+5. **First useful agent workflow:** while paused, keep a harmless editor behind the
    panel. Press Super+Alt+D to focus its current input, then Super+Alt+0 to select
    Activity, and submit “quick question, explain what an
    installation checkpoint is; do not run tools.” Activity restores application
@@ -923,7 +941,7 @@ selected providers. Do not speak credentials.
    in a new Pi tab using your `companion-local` model. Confirm that actual
    model in the UI. Conversation-composer follow-ups go directly to that session
    and do not capture another attachment.
-5. **Tool checkpoint:** only after approving agent tool access, ask that conversation
+6. **Tool checkpoint:** only after approving agent tool access, ask that conversation
    to read the starter `AGENTS.md` and summarize its constraints, without changing
    files. Expect a visible read-tool result and an answer. Failure here can reveal
    tool-parser incompatibility despite a successful color/text test. Stop before
@@ -980,10 +998,13 @@ PATH, fixed at this moment, because systemd does not read your shell startup fil
 
 ```bash
 cd "$HOME/Work/companion"
-bin/companion-login enable
-# With the patched wtype from step 6 first in PATH:
 bin/companion-login enable --wtype-dir "$HOME/.local/share/companion/wtype-candidate"
+bin/companion-login status
 ```
+
+`--wtype-dir` puts the patched writer from step 6 first in the services' PATH; without
+it they use whichever `wtype` your terminal finds, normally the stock one. `status`
+prints the `wtype` the listener service will resolve.
 
 Add `--now` to also start both services immediately, or log out and back in.
 `--listening` makes the listener start listening at login; leave it out until you
@@ -1015,8 +1036,9 @@ systemctl --user stop companion-listener.service companion-ui.service
 ```
 
 **Checkpoint:** after logging in again, `status` shows both services
-`active/running`, the listener is paused at login, the UI is connected and shows
-**Paused**, and the logs contain no errors. `stop` waits for the listener's orderly
+`active/running` and the candidate `wtype`, the listener is paused at login, the UI
+is connected and shows **Paused**, and the logs contain no errors. Repeat step 7's
+exact text delivery check once: the services must type the same exact text. `stop` waits for the listener's orderly
 shutdown, which also stops its Pi children; `systemctl` kills whatever remains after
 30 seconds. Each start replaces the previous log file. The logs contain transcripts,
 window titles and agent progress, like the terminal output; they are kept in your

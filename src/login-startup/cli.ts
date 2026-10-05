@@ -301,10 +301,15 @@ async function preparePrivateLogs(directory: string): Promise<void> {
     let file;
     try {
       // O_NOFOLLOW: a symlink planted at the log name fails instead of
-      // redirecting transcripts elsewhere.
+      // redirecting transcripts elsewhere. O_NONBLOCK: a FIFO there fails or
+      // returns at once (and is then refused below) instead of hanging.
       file = await open(
         path,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_APPEND |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
         0o600,
       );
     } catch (error) {
@@ -450,6 +455,26 @@ async function disable(where: Locations): Promise<number> {
   return refused ? exitCodes.failed : exitCodes.ok;
 }
 
+/**
+ * The `wtype` the listener service will run: the first executable one along the
+ * PATH written into its unit file. Text delivery depends on this being the
+ * patched candidate (see integrations/wtype/README.md), not merely on it existing.
+ */
+async function serviceWtype(unitText: string): Promise<string> {
+  const match = /^Environment=PATH=(.*)$/m.exec(unitText);
+  if (!match) {
+    return 'unknown (no PATH in the unit file)';
+  }
+
+  for (const directory of match[1].split(':')) {
+    const candidate = join(directory, 'wtype');
+    if (await isExecutableFile(candidate)) {
+      return candidate;
+    }
+  }
+  return 'NOT FOUND on the service PATH';
+}
+
 async function status(where: Locations): Promise<number> {
   for (const unit of [listenerUnit, uiUnit]) {
     const file = join(where.unitDirectory, unit);
@@ -484,6 +509,7 @@ async function status(where: Locations): Promise<number> {
       const text = await readFile(file, 'utf8');
       const paused = / --paused( |$)/m.test(text);
       console.log(`  at login  ${paused ? 'paused' : 'LISTENING'}`);
+      console.log(`  wtype     ${await serviceWtype(text)}`);
     }
   }
 
