@@ -34,8 +34,18 @@ recipe below is not a promise of supported hardware or measured model quality.
 
 **Pi-first order and login startup (2026-10-05):** step 0, the Pi task prompt and
 step 8 are new in this revision. `companion-login` has isolated synthetic tests
-(fake `systemctl`, temporary home). Whether Pi with a small local model can follow
-this guide on a fresh Omarchy guest is still being tested.
+(fake `systemctl`, temporary home). On a fresh Omarchy 4.0.4 x86_64 KVM guest
+(software rendering, no audio device), a human did step 0 and then Pi 0.99.1 with a
+local Qwen model on a trusted LAN vLLM server (keyless, 128K context) followed
+steps 1–8 of commit `c9841c6`. The human ran only `omarchy update`, `sudo pacman`
+and the desktop checks Pi asked for. Builds, the ASR fixture, the vision check, Pi
+discovery, the adapter, the patched wtype, a quick question and the read-tool
+checkpoint passed. The exact-text check was byte-exact through step 8 services,
+a manual `npm start` and services started by a real password login (paused, one
+listener and one UI). `companion-login disable` left nothing starting at the next
+login. The source again came from a local Git bundle, so the public clone was not
+exercised. The test harness, not the guide, needed fixes for guest credentials and
+the idle lock. Dictation, the spoken classifier and intent quality remain untested.
 
 ## Before you begin
 
@@ -928,6 +938,9 @@ selected providers. Do not speak credentials.
    field, for example Chromium with the address `data:text/html,<textarea autofocus></textarea>`,
    and click into it. Press Super+Alt+D, then Super+Alt+0 to select Activity, and
    submit `insert let's just keep it open. Done, (a+b)=c; ok? "yes"!` in its input.
+   If the UI says “Could not focus Companion. Click the input to continue.” (seen
+   with the standalone window in a virtual machine), click the Activity input
+   instead; it still returns focus to the field you used last.
    Activity returns focus to the field and types the text without the classifier.
    **Checkpoint:** the field contains exactly `let's just keep it open. Done, (a+b)=c; ok? "yes"!`,
    with no Enter and nothing missing. A truncated result such as `ope` means the
