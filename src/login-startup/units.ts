@@ -104,7 +104,7 @@ export function listenerArguments(plan: LoginStartupPlan): string[] {
 function commonUnitLines(plan: LoginStartupPlan, description: string): string[] {
   return [
     managedMarker,
-    '# Regenerate with `companion-login enable`; remove with `companion-login disable`.',
+    `# Regenerate with ${plan.checkout}/bin/companion-login enable; remove with … disable.`,
     '# Manual edits are replaced the next time it is enabled.',
     '[Unit]',
     `Description=${description}`,
@@ -112,8 +112,9 @@ function commonUnitLines(plan: LoginStartupPlan, description: string): string[] 
     'PartOf=graphical-session.target',
     'After=graphical-session.target',
     'Requisite=graphical-session.target',
-    // A few automatic restarts after a crash, not an endless loop. After that
-    // the unit stays failed until `systemctl --user restart` or the next login.
+    // At most three starts (including the first) in five minutes, manual starts
+    // included, not an endless loop. Then the unit stays failed until
+    // `systemctl --user reset-failed` (or the interval passes) and a new start.
     'StartLimitIntervalSec=300',
     'StartLimitBurst=3',
     '',

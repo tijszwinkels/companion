@@ -16,7 +16,19 @@
 
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -264,6 +276,53 @@ async function buildPlan(
   };
 }
 
+/**
+ * Log lines contain transcripts and window titles, so the log directory and
+ * files must be private even when they already exist: `mkdir` does not change
+ * an existing directory's mode, and systemd's `truncate:` reopens an existing
+ * file without changing its mode. Symlinks and entries owned by somebody else
+ * are refused, never followed or repaired.
+ */
+async function preparePrivateLogs(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+
+  const info = await lstat(directory);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw Error(`Log directory ${directory} must be a real directory, not a symlink`);
+  }
+  if (info.uid !== process.getuid?.()) {
+    throw Error(`Log directory ${directory} is not owned by you`);
+  }
+  await chmod(directory, 0o700);
+
+  for (const name of ['listener.log', 'ui.log']) {
+    const path = join(directory, name);
+
+    let file;
+    try {
+      // O_NOFOLLOW: a symlink planted at the log name fails instead of
+      // redirecting transcripts elsewhere.
+      file = await open(
+        path,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch (error) {
+      throw Error(`Cannot use log file ${path}: ${(error as Error).message}`);
+    }
+
+    try {
+      const fileInfo = await file.stat();
+      if (!fileInfo.isFile() || fileInfo.uid !== process.getuid?.()) {
+        throw Error(`Log file ${path} must be a regular file owned by you`);
+      }
+      await file.chmod(0o600);
+    } finally {
+      await file.close();
+    }
+  }
+}
+
 /** Write via a temporary name and rename, so systemd never reads half a file. */
 async function writeUnitFile(path: string, text: string): Promise<void> {
   const temporary = `${path}.companion-login-${process.pid}`;
@@ -319,8 +378,8 @@ async function enable(
     }
   }
 
+  await preparePrivateLogs(where.logDirectory);
   await mkdir(where.unitDirectory, { recursive: true });
-  await mkdir(where.logDirectory, { recursive: true, mode: 0o700 });
 
   await writeUnitFile(join(where.unitDirectory, listenerUnit), renderListenerUnit(plan));
   await writeUnitFile(join(where.unitDirectory, uiUnit), renderUiUnit(plan));
@@ -334,7 +393,10 @@ async function enable(
   console.log(`Logs in ${plan.logDirectory}/ (listener.log, ui.log), replaced at each start.`);
 
   if (!options.now) {
-    console.log('Start them now with: companion-login enable --now, or log out and back in.');
+    // Start the units just written; rerunning `enable` with other options
+    // would regenerate them with different settings.
+    console.log('Start them now, or log out and back in:');
+    console.log(`  systemctl --user start ${listenerUnit} ${uiUnit}`);
     return exitCodes.ok;
   }
 

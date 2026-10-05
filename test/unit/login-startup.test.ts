@@ -229,6 +229,48 @@ test('enable writes both managed units and enables them, without starting anythi
   ]);
 });
 
+test('enable advises starting the written units, not re-enabling with defaults', async (context) => {
+  const box = await sandbox(context);
+  const config = join(box.home, 'custom.json');
+  await writeFile(config, '{}\n');
+
+  const run = await companionLogin(box, ['enable', '--config', config]);
+  assert.equal(run.code, 0, run.output);
+  assert.match(
+    run.output,
+    /systemctl --user start companion-listener\.service companion-ui\.service/,
+  );
+  assert.doesNotMatch(run.output, /enable --now/);
+});
+
+test('enable makes an existing public log directory and log files private', async (context) => {
+  const box = await sandbox(context);
+  await mkdir(box.logDirectory, { recursive: true });
+  await chmod(box.logDirectory, 0o755);
+  await writeFile(join(box.logDirectory, 'listener.log'), 'old transcript\n', { mode: 0o644 });
+  await chmod(join(box.logDirectory, 'listener.log'), 0o644);
+
+  const run = await companionLogin(box, ['enable']);
+  assert.equal(run.code, 0, run.output);
+  assert.equal((await stat(box.logDirectory)).mode & 0o777, 0o700);
+  assert.equal((await stat(join(box.logDirectory, 'listener.log'))).mode & 0o777, 0o600);
+  assert.equal((await stat(join(box.logDirectory, 'ui.log'))).mode & 0o777, 0o600);
+});
+
+test('enable refuses a symlink in place of a log file and writes no units', async (context) => {
+  const box = await sandbox(context);
+  await mkdir(box.logDirectory, { recursive: true, mode: 0o700 });
+  const elsewhere = join(box.home, 'elsewhere.log');
+  await writeFile(elsewhere, '');
+  await symlink(elsewhere, join(box.logDirectory, 'ui.log'));
+
+  const run = await companionLogin(box, ['enable']);
+  assert.equal(run.code, 1);
+  assert.match(run.output, /Cannot use log file/);
+  assert.deepEqual(mutatingCalls(run), []);
+  await assert.rejects(stat(join(box.unitDirectory, 'companion-listener.service')));
+});
+
 test('enable --listening --now starts both services and says so', async (context) => {
   const box = await sandbox(context);
 

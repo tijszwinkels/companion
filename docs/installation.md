@@ -110,7 +110,7 @@ length and whether it needs an API key.
 node --version   # 22.19 or newer
 npm --version
 git --version
-command -v pi && pi --version
+command -v pi    # only shows where an existing pi is; do not run it yet
 ```
 
 **Install a dedicated Pi.** On Omarchy 4.0.4, `pi` in `~/.local/bin` is a wrapper
@@ -1025,9 +1025,11 @@ home rather than the system journal so that you can delete them.
 - **Duplicates:** each service runs at most once. A listener you start by hand while
   the service runs is refused (“Companion is already running”), and the reverse; a
   second UI just shows the existing one. Stop one before starting the other.
-- **Failures:** a crashed service restarts after 5 seconds, at most three times in
-  five minutes; then it stays failed until you fix the cause (see the log) and run
-  `systemctl --user restart …`, or log in again.
+- **Failures:** a crashed service restarts after 5 seconds. At most three starts
+  (the first one and manual starts included) are allowed in five minutes; then it
+  stays failed. Fix the cause (see the log), then run
+  `systemctl --user reset-failed companion-listener.service companion-ui.service`
+  and `systemctl --user restart …`, or wait five minutes before starting it again.
 - **Endpoint, tunnel and model server:** the services start neither. If a LAN
   server or your SSH tunnel is not up yet, the listener still starts; classification
   and Pi requests fail visibly in Activity until it is reachable. There is no cloud
