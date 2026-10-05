@@ -25,7 +25,7 @@ Item {
 
     function populate(panel) {
       const sessions = []
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 16; i++) {
         sessions.push({id: "s" + i, title: i === 0 ? "🌱 Garden plans for next spring" : "Question " + i,
           status: "completed", error: "", messages: []})
       }
@@ -40,6 +40,7 @@ Item {
       const panel = createTemporaryObject(panelComponent, scene, {unit: data.unit})
       populate(panel)
       const tab = findChild(panel, "tab-s0")
+      compare(findChild(findChild(panel, "tab-s15"), "sessionGlyph").text, "Q16")
       const activity = findChild(panel, "activityTab")
       const previous = findChild(panel, "previousSessionsButton")
       const rail = findChild(panel, "tabRail")
@@ -99,9 +100,9 @@ Item {
       mouseWheel(list, list.width / 2, list.height / 2, 0, -12000, Qt.NoButton)
       tryVerify(function() { return list.atYEnd })
       tryCompare(list, "moving", false)
-      const last = findChild(panel, "tab-s11")
+      const last = findChild(panel, "tab-s15")
       mouseClick(last, last.width / 2, last.height - 10)
-      compare(panel.selectedSessionId, "s11")
+      compare(panel.selectedSessionId, "s15")
       // In the fallback layout, scroll above the session list to reach Previous.
       if (rail.interactive) {
         mouseWheel(rail, 2, 10, 0, -120)

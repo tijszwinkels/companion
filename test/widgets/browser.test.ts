@@ -873,7 +873,7 @@ test('conversation turns retain text, choices, names, widgets and freeform follo
       choices?.([{ label: 'Continue', description: '' }]);
     },
   };
-  let sessions = new AgentSessions({ backend }, () => {}, directory);
+  let sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   try {
     const id = sessions.start({ ...frame, utterance: 'Make a useful checklist' }, signal());
     await sessions.idle();
@@ -905,7 +905,7 @@ test('conversation turns retain text, choices, names, widgets and freeform follo
     assert.ok(view.messages.some((message) => message.text === 'A concise **Markdown** answer.'));
     assert.equal(view.choices, undefined);
     await sessions.close();
-    sessions = new AgentSessions({ backend }, () => {}, directory);
+    sessions = new AgentSessions({ pi: backend }, () => {}, directory);
     await sessions.loadPrevious();
     await sessions.reopen(id);
     const reopened = sessions.snapshot()[0].messages.find((message) => message.widget)!;
@@ -916,7 +916,7 @@ test('conversation turns retain text, choices, names, widgets and freeform follo
       await readFile(join(directory, '.companion-widgets', id + '.json'), 'utf8'),
     );
     await rm(join(directory, '.companion-widgets', 'bundles', records[0].bundle + '.json'));
-    sessions = new AgentSessions({ backend }, () => {}, directory);
+    sessions = new AgentSessions({ pi: backend }, () => {}, directory);
     await sessions.loadPrevious();
     await sessions.reopen(id);
     assert.equal(

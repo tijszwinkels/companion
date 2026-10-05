@@ -2,20 +2,29 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { WidgetService } from '../widgets/service.ts';
+import { bundledLibraryDirectory } from '../widgets/library-path.ts';
 import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
-import { agentDirectory, loadAgentSettings } from './settings.ts';
+import {
+  agentDirectory,
+  loadAgentConfiguration,
+  loadAgentSettings,
+  loadClaudeCodeSettings,
+} from './settings.ts';
 import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
+import { MAX_OPEN_AGENT_SESSIONS } from './session-limit.ts';
 import { SessionStore } from './session-store.ts';
 import { panelMessageLimit, panelTextLimit } from './transcript-limits.ts';
-import { choiceText, parseChoices, type AgentChoiceSet } from './choices.ts';
+import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
 import { promptText } from './agent-origin.ts';
+import { claudeCodeModelCatalog } from './claude/models.ts';
 import {
   SessionToolError,
   SessionToolService,
+  checkStartModel,
   type OpenSessionToolSummary,
   type SessionDirectory,
   type SessionToolSummary,
@@ -25,6 +34,14 @@ import {
   agentThinkingLevels,
   type AgentSettings,
   type AgentBackend,
+  type AgentHarness,
+  type AgentHarnessBackends,
+  type AgentRunRequest,
+  type ClaudeCodeConversationSettings,
+  type ClaudeCodeModelCatalog,
+  type ClaudeCodeSettings,
+  type AgentBrowserHost,
+  type AgentBrowserOpenOutcome,
   type AgentDraftHost,
   type AgentDraftOutcome,
   type AgentMessage,
@@ -62,6 +79,39 @@ interface RunningSession {
    * It closes only after the requesting turn completes with nothing queued.
    */
   closeAfterTurn: boolean;
+  /**
+   * A conversation started by speech whose harness is not yet recorded in the
+   * view. Reading the configuration is asynchronous, but tab creation is not,
+   * so the first turn resolves it before its first save or backend call:
+   * `coding-default` reads `codingDefaultHarness`; `claude-code` only reads the
+   * Claude model and effort. A configuration error then fails that turn in its
+   * own tab. Cleared once resolved; never saved.
+   *
+   * If the first turn fails or stops before resolution (for example because
+   * the configuration is broken), the saved archive has no harness. While the
+   * tab stays open, the next turn tries to resolve again. Once it is closed
+   * and reopened, or after a listener restart, it is an ordinary Pi
+   * conversation, even if "new claude session" started it: a follow-up runs Pi
+   * with `resume`, which fails visibly because Pi has no transcript for it.
+   * This is deliberate. Do not turn it into a silent fallback.
+   */
+  pendingHarness?: 'coding-default' | 'claude-code';
+}
+
+/**
+ * One turn's backend and settings, chosen from the conversation's harness.
+ * `run` receives the harness-independent request fields and adds the settings.
+ */
+interface PreparedTurn {
+  /** Displayed as the conversation's model while this turn runs. */
+  model: string;
+  run(
+    request: Omit<AgentRunRequest, 'settings'>,
+    signal: AbortSignal,
+    emit: (message: AgentMessage) => void,
+    replaceChoices: (options: readonly AgentChoice[]) => void,
+    renameSession: (title: string) => void,
+  ): Promise<void>;
 }
 
 const maxPendingFollowUps = 8;
@@ -70,12 +120,15 @@ const maxPendingFollowUps = 8;
  * Owns independent question lifetimes. The sensor worker only hands off a frame;
  * it never waits for a long answer. Microphone pause therefore does not cancel
  * accepted questions. Stop, close-tab, and application shutdown do cancel them.
- * Closed tabs are saved for reopening. Pi owns the resumable model transcript;
- * Companion owns its display transcript and the original screenshot attachment.
+ * Closed tabs are saved for reopening. The conversation's harness (Pi or Claude
+ * Code) owns the resumable model transcript; Companion owns its display
+ * transcript and the original screenshot attachment. Each turn selects its
+ * backend from the conversation's harness; absence means Pi.
  */
 export class AgentSessions implements InspectableModule {
   readonly id = 'agent-sessions';
   readonly label = 'Question sessions';
+  readonly dependencies: Readonly<Record<string, InspectableModule>>;
   private readonly sessions = new Map<string, RunningSession>();
   private readonly listeners = new Set<(event: SessionEvent) => void>();
   private closed = false;
@@ -88,12 +141,32 @@ export class AgentSessions implements InspectableModule {
   readonly sessionTools: SessionToolService;
   // The desktop runtime owns UI connections and therefore unsent drafts.
   private draftHost?: AgentDraftHost;
+  // The desktop runtime also owns the native panel's built-in browser.
+  private browserHost?: AgentBrowserHost;
 
+  /**
+   * `directory` is the agents' working directory holding saved conversations
+   * and widget state. `widgetLibrary` is the widget source directory used for
+   * discovery and publication. The listener passes the configured user library
+   * (see library-path.ts); the default is the checkout's bundled examples so
+   * tests and harnesses stay hermetic and never read the user's real widgets.
+   * `backends` holds one backend per harness. Claude Code is optional: a
+   * Claude Code conversation's turns then fail with a visible error.
+   */
   constructor(
-    readonly dependencies: { backend: AgentBackend },
+    private readonly backends: AgentHarnessBackends,
     private readonly log: Log,
     private readonly directory = agentDirectory(),
+    widgetLibrary = bundledLibraryDirectory,
   ) {
+    // Graph inspection shows each wired backend under its harness name.
+    const dependencies: Record<string, InspectableModule> = { pi: backends.pi };
+    const claudeCode = backends['claude-code'];
+    if (claudeCode) {
+      dependencies['claude-code'] = claudeCode;
+    }
+    this.dependencies = dependencies;
+
     this.store = new SessionStore(join(directory, '.companion-sessions'));
     this.widgets = new WidgetService(
       join(directory, '.companion-widgets'),
@@ -112,24 +185,31 @@ export class AgentSessions implements InspectableModule {
         // immediately after a click, without waiting for another model response.
         await this.store.save(session.view);
       },
-      undefined,
+      widgetLibrary,
       undefined,
       (records) => this.validateWidgetChanges(records),
     );
     this.sessionTools = new SessionToolService({
       title: (id) => this.sessions.get(id)?.view.title,
+      sourceGroupId: (sender, turnId, toolCallId) => this.sourceGroupId(sender, turnId, toolCallId),
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
       start: (request, signal) => this.startFromAgent(request, signal),
       reopen: (id, focus, signal) => this.reopenFromAgent(id, focus, signal),
       close: (id, sender, signal) => this.closeFromAgent(id, sender, signal),
       send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
       draft: (request, signal) => this.draftFromAgent(request, signal),
+      browserOpen: (request, signal) => this.browserOpenFromAgent(request, signal),
     });
   }
 
   /** Install (or clear) the UI connection that can hold composer drafts. */
   setDraftHost(host: AgentDraftHost | undefined): void {
     this.draftHost = host;
+  }
+
+  /** Install (or clear) the route to the native panel's built-in browser. */
+  setBrowserHost(host: AgentBrowserHost | undefined): void {
+    this.browserHost = host;
   }
 
   private validateWidgetChanges(records: WidgetRecord[]): () => void {
@@ -175,6 +255,21 @@ export class AgentSessions implements InspectableModule {
 
   previousSnapshot(): PreviousSession[] {
     return [...this.previous.values()].sort((first, second) => second.updatedAt - first.updatedAt);
+  }
+
+  /**
+   * Locate the sender's stored tool group for one outbound session-tool call,
+   * using the turn-prefixed Pi tool message ID written by `runTurn` and
+   * `pi-transcript`. The anchor is optional navigation metadata: a storage
+   * read failure omits it instead of refusing an otherwise valid delivery.
+   */
+  private sourceGroupId(sender: string, turnId: string, toolCallId: string): string | undefined {
+    try {
+      return this.store.tools.groupFor(sender, `${turnId}:tool-${toolCallId}`);
+    } catch (error) {
+      this.log('agent-session-tools', `Source tool group unavailable: ${String(error)}`);
+      return undefined;
+    }
   }
 
   private publishHistory(): void {
@@ -229,10 +324,12 @@ export class AgentSessions implements InspectableModule {
   async models(signal: AbortSignal) {
     const coding = await loadAgentSettings(this.directory, 'coding', false);
     const quickQuestion = await loadAgentSettings(this.directory, 'quickQuestion', false);
-    if (!this.dependencies.backend.models) {
+    // Pi's catalogue only. The Claude picker has its own catalogue below, so a
+    // Pi discovery failure cannot stop a Claude Code conversation's choice.
+    if (!this.backends.pi.models) {
       throw Error('This agent backend does not support model selection');
     }
-    const catalog = await this.dependencies.backend.models(coding, this.directory, signal);
+    const catalog = await this.backends.pi.models(coding, this.directory, signal);
     if (catalog.warning) {
       this.log('agent-models', catalog.warning);
     }
@@ -245,8 +342,32 @@ export class AgentSessions implements InspectableModule {
     };
   }
 
-  /** Choices affect only later turns of this conversation, including reopening. */
+  /**
+   * The Claude picker's catalogue: the fixed allowlist plus the configured
+   * default model. It only reads the configuration file; it starts neither
+   * Claude Code nor Pi, so it works even when Pi discovery fails.
+   */
+  async claudeModels(): Promise<ClaudeCodeModelCatalog> {
+    const { model } = await loadClaudeCodeSettings(this.directory, false);
+    return { models: claudeCodeModelCatalog(model), model };
+  }
+
+  /**
+   * Choices affect only later turns of this conversation, including reopening.
+   * A Pi conversation stores a Pi model override (empty clears it). A Claude
+   * Code conversation replaces its own Claude model; it never becomes a Pi
+   * conversation and a Pi model ID is not reinterpreted as a Claude one.
+   */
   async setModel(id: string, model: string, signal: AbortSignal): Promise<void> {
+    const session = this.sessions.get(id);
+    if (session?.view.harness === 'claude-code' && session.view.claudeCode) {
+      await this.setPreferences(
+        id,
+        { claudeCode: { model, effort: session.view.claudeCode.effort } },
+        signal,
+      );
+      return;
+    }
     await this.setPreferences(id, { modelOverride: model || undefined }, signal);
   }
 
@@ -263,18 +384,62 @@ export class AgentSessions implements InspectableModule {
     );
   }
 
+  /**
+   * A Claude model choice must be one exact ID from the allowlist (or the
+   * configured default), or the conversation's current model. There is no
+   * trimming, alias resolution or fallback; anything else is refused visibly.
+   */
+  private async checkClaudeModel(view: AgentSession, model: string): Promise<void> {
+    if (model === view.claudeCode?.model) {
+      return;
+    }
+    if (model === '') {
+      throw Error('Choose a Claude model for this Claude Code conversation');
+    }
+
+    const { model: configuredModel } = await loadClaudeCodeSettings(this.directory, false);
+    const catalog = claudeCodeModelCatalog(configuredModel);
+    if (!catalog.includes(model)) {
+      throw Error(
+        `${model} is not an available Claude model. Choose one of: ${catalog.join(', ')}`,
+      );
+    }
+  }
+
+  /**
+   * Validate and durably save one model/effort choice for the next turn.
+   * `changes` holds either Pi overrides or, for a Claude Code conversation,
+   * its replacement `claudeCode` settings (same effort, another model).
+   */
   private async setPreferences(
     id: string,
-    changes: Pick<AgentSession, 'modelOverride' | 'thinkingOverride'>,
+    changes: Pick<AgentSession, 'modelOverride' | 'thinkingOverride' | 'claudeCode'>,
     signal: AbortSignal,
   ): Promise<void> {
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing || this.modelChanges.has(id)) {
       throw Error('Conversation is unavailable or its model/effort is already being changed');
     }
+    const claudeConversation = session.view.harness === 'claude-code';
+    if (claudeConversation && 'thinkingOverride' in changes) {
+      throw Error('This Claude Code conversation keeps the effort chosen when it started');
+    }
+    const claudeChoice = 'claudeCode' in changes;
+    if (claudeConversation !== claudeChoice) {
+      // A choice prepared for the other harness, for example a Pi override
+      // for a conversation that has since become Claude Code. Never convert.
+      throw Error('That model choice does not belong to this conversation’s harness');
+    }
+    // Until the first turn has read the configuration, this conversation might
+    // still become a Claude Code conversation, whose picker lists Claude models.
+    if (session.pendingHarness) {
+      throw Error('This conversation is still starting; choose its model/effort in a moment');
+    }
     this.modelChanges.add(id);
     try {
-      if (changes.modelOverride !== undefined || changes.thinkingOverride !== undefined) {
+      if (changes.claudeCode) {
+        await this.checkClaudeModel(session.view, changes.claudeCode.model);
+      } else if (changes.modelOverride !== undefined || changes.thinkingOverride !== undefined) {
         const catalog = await this.models(signal);
         if (
           changes.modelOverride !== undefined &&
@@ -293,10 +458,15 @@ export class AgentSessions implements InspectableModule {
       if (this.closed || this.sessions.get(id) !== session || session.closing) {
         throw Error('Conversation closed while choosing its model/effort');
       }
-      const previous = {
+      // `claudeCode` is replaced as a whole object, never edited in place, so
+      // a turn that already captured the previous object keeps its settings.
+      let previous: Pick<AgentSession, 'modelOverride' | 'thinkingOverride' | 'claudeCode'> = {
         modelOverride: session.view.modelOverride,
         thinkingOverride: session.view.thinkingOverride,
       };
+      if (claudeConversation) {
+        previous = { claudeCode: session.view.claudeCode };
+      }
       // Save both preferences through the same ordered write gate. A running
       // turn already holds a settings copy; a queued successor waits for this
       // save (or rollback). Changing models retains the requested effort: Pi
@@ -424,16 +594,54 @@ export class AgentSessions implements InspectableModule {
     return () => this.listeners.delete(listener);
   }
 
-  start(frame: UserSensorFrame, signal: AbortSignal, profile: AgentProfile = 'coding'): string {
+  /**
+   * `harness` is the explicitly requested harness; omitting it uses the
+   * configured `codingDefaultHarness`. Quick questions always use Pi.
+   * Remote history starts preserve the saved frame but suppress desktop reveal.
+   */
+  start(
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+    profile: AgentProfile = 'coding',
+    harness?: AgentHarness,
+    openInBackground = false,
+  ): string {
     return this.create(
-      { text: frame.utterance, screenshot: frame.screenshot, frameId: frame.id, profile },
+      {
+        text: frame.utterance,
+        screenshot: frame.screenshot,
+        frameId: frame.id,
+        profile,
+        harness,
+        openInBackground,
+      },
       signal,
     );
   }
 
   /**
+   * A typed question from a remote panel (for example the phone app). It has
+   * no screenshot: the phone cannot capture the desktop, and substituting a
+   * current desktop capture would attach a screen the user did not choose.
+   * The tab opens in the background so a desktop panel keeps its selection;
+   * the remote client selects the returned ID itself.
+   */
+  startRemote(text: string, profile: AgentProfile, signal: AbortSignal): string {
+    if (!text.trim() || text.length > 4000) {
+      throw new SessionToolError('rejected', 'Enter between 1 and 4000 characters');
+    }
+
+    return this.create({ text, profile, openInBackground: true }, signal);
+  }
+
+  /**
    * Speech, history recovery and agent tools share one creation path, so tab
    * and concurrency limits apply equally. Only a sensor frame has a screenshot.
+   *
+   * An absent `harness` means the configured coding default. A Claude Code
+   * request without `claudeCode` reads the configured Claude model and effort.
+   * Both are resolved when the first turn starts (see `pendingHarness`); the
+   * session tools resolve them before calling this and pass both explicitly.
    */
   private create(
     request: {
@@ -441,6 +649,8 @@ export class AgentSessions implements InspectableModule {
       screenshot?: UserSensorFrame['screenshot'];
       frameId?: number;
       profile: AgentProfile;
+      harness?: AgentHarness;
+      claudeCode?: ClaudeCodeConversationSettings;
       modelOverride?: string;
       origin?: AgentMessageOrigin;
       openInBackground?: boolean;
@@ -451,10 +661,10 @@ export class AgentSessions implements InspectableModule {
     if (this.closed) {
       throw new SessionToolError('rejected', 'Agent sessions are shutting down');
     }
-    if (this.sessions.size + this.restoring.size >= 12) {
+    if (this.sessions.size + this.restoring.size >= MAX_OPEN_AGENT_SESSIONS) {
       throw new SessionToolError(
         'rejected',
-        'Close a question tab before starting another (12 tabs maximum)',
+        `Close a question tab before starting another (${MAX_OPEN_AGENT_SESSIONS} tabs maximum)`,
       );
     }
     if (this.activeRuns() >= 4) {
@@ -462,6 +672,13 @@ export class AgentSessions implements InspectableModule {
         'rejected',
         'Four questions are already running; stop one or wait for an answer',
       );
+    }
+
+    // Quick questions use Pi's local model profile; only coding conversations
+    // can run in Claude Code.
+    let harness = request.harness;
+    if (request.profile === 'quickQuestion') {
+      harness = 'pi';
     }
 
     const id = randomUUID();
@@ -498,6 +715,17 @@ export class AgentSessions implements InspectableModule {
       depth: request.origin?.depth ?? 0,
       closeAfterTurn: false,
     };
+
+    // Record the harness now when it is fully known; otherwise the first turn
+    // resolves it from the configuration. A Pi conversation records nothing.
+    if (harness === 'claude-code' && request.claudeCode) {
+      adoptClaudeCode(session.view, request.claudeCode);
+    } else if (harness === 'claude-code') {
+      session.pendingHarness = 'claude-code';
+    } else if (harness === undefined) {
+      session.pendingHarness = 'coding-default';
+    }
+
     this.sessions.set(id, session);
     this.flush(session);
     this.publishOrder();
@@ -588,8 +816,9 @@ export class AgentSessions implements InspectableModule {
 
   /**
    * One promise owns the entire sequence, so idle/stop/close include queued
-   * work. Await both the backend and its final save before resuming Pi. Once
-   * accepted, a message is independent of microphone pause and UI tab changes.
+   * work. Await both the backend and its final save before resuming the agent.
+   * Once accepted, a message is independent of microphone pause and UI tab
+   * changes.
    */
   private async drain(
     session: RunningSession,
@@ -674,7 +903,7 @@ export class AgentSessions implements InspectableModule {
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
     let widgetLease: WidgetLease | undefined;
-    let sessionToolLease: { endpoint: string; token: string; release(): void } | undefined;
+    let sessionToolLease: Awaited<ReturnType<SessionToolService['lease']>> | undefined;
     try {
       // A queued successor waits for an accepted model change to be durable.
       // A failed choice rolls back first, then this turn uses the old setting.
@@ -683,6 +912,9 @@ export class AgentSessions implements InspectableModule {
       }
       const modelOverride = session.view.modelOverride;
       const thinkingOverride = session.view.thinkingOverride;
+      // A Claude model choice is replaced as a whole object, so this keeps the
+      // settings accepted before this turn began, like the Pi overrides above.
+      let claudeCode = session.view.claudeCode;
       if (prompt.screenshot) {
         const question = session.view.messages[0];
         question.screenshotUrl = await this.store.screenshot(
@@ -691,20 +923,24 @@ export class AgentSessions implements InspectableModule {
         );
         session.changed.set(question.id, question);
       }
-      // Save the question before launching Pi. An interrupted turn can still be
-      // found in history after a restart and is shown as stopped, never running.
+      // A new conversation records its harness before the first save, so the
+      // saved question already reopens with the harness that will answer it.
+      await this.resolveHarness(session);
+      // A conversation still resolving its harness refuses model choices, so
+      // the freshly resolved settings are the ones this turn must use.
+      claudeCode ??= session.view.claudeCode;
+      // Save the question before launching the agent. An interrupted turn can
+      // still be found in history after a restart and is shown as stopped.
       session.view.updatedAt = Date.now();
       await this.store.save(session.view);
       session.controller.signal.throwIfAborted();
-      const settings = await loadAgentSettings(this.directory, session.view.profile);
-      if (modelOverride) {
-        settings.model = modelOverride;
-      }
-      if (thinkingOverride !== undefined) {
-        settings.thinking = thinkingOverride;
-      }
+      const turn = await this.prepareTurn(session.view, resume, {
+        modelOverride,
+        thinkingOverride,
+        claudeCode,
+      });
       session.controller.signal.throwIfAborted();
-      session.view.model = settings.model;
+      session.view.model = turn.model;
       session.view.status = 'running';
       this.flush(session);
       try {
@@ -719,6 +955,7 @@ export class AgentSessions implements InspectableModule {
         // the sender; queued successors receive a fresh lease and depth.
         sessionToolLease = await this.sessionTools.lease(
           session.view.id,
+          turnId,
           session.depth,
           session.controller.signal,
         );
@@ -726,16 +963,19 @@ export class AgentSessions implements InspectableModule {
         session.controller.signal.throwIfAborted();
         this.log('agent-session-tools', `Session tools unavailable: ${String(error)}`, frameId);
       }
-      await this.dependencies.backend.run(
+      await turn.run(
         {
           id: session.view.id,
           directory: this.directory,
-          settings,
           prompt,
           resume,
           widgets: widgetLease,
           sessionTools: sessionToolLease
-            ? { endpoint: sessionToolLease.endpoint, token: sessionToolLease.token }
+            ? {
+                endpoint: sessionToolLease.endpoint,
+                token: sessionToolLease.token,
+                capabilities: sessionToolLease.capabilities,
+              }
             : undefined,
         },
         session.controller.signal,
@@ -869,6 +1109,109 @@ export class AgentSessions implements InspectableModule {
     }
   }
 
+  /**
+   * Record a speech-started conversation's harness from the configuration,
+   * once. The configuration is read with initialization, as every turn does.
+   * A failure leaves the harness pending and fails this turn in its tab.
+   */
+  private async resolveHarness(session: RunningSession): Promise<void> {
+    const pending = session.pendingHarness;
+    if (!pending) {
+      return;
+    }
+
+    const configuration = await loadAgentConfiguration(this.directory);
+    session.controller.signal.throwIfAborted();
+
+    let harness: AgentHarness = 'claude-code';
+    if (pending === 'coding-default') {
+      harness = configuration.codingDefaultHarness;
+    }
+    if (harness === 'claude-code') {
+      adoptClaudeCode(session.view, {
+        model: configuration.claudeCode.model,
+        effort: configuration.claudeCode.effort,
+      });
+    }
+    session.pendingHarness = undefined;
+    this.flush(session);
+  }
+
+  /**
+   * Select this turn's backend from the conversation's harness and load its
+   * settings afresh, so configuration edits need no restart.
+   *
+   * `choices` are the conversation's model/effort choices captured when this
+   * turn began. Pi reads its profile settings and applies its overrides.
+   * Claude Code uses the conversation's own model and effort and only reads
+   * the executable, so configuration edits never change the model; only the
+   * picker does. Without a Claude Code backend, the turn fails instead of
+   * falling back to Pi: Pi cannot resume a Claude Code transcript.
+   */
+  private async prepareTurn(
+    view: AgentSession,
+    resume: boolean,
+    choices: {
+      modelOverride: string | undefined;
+      thinkingOverride: AgentSettings['thinking'] | undefined;
+      claudeCode: ClaudeCodeConversationSettings | undefined;
+    },
+  ): Promise<PreparedTurn> {
+    if (view.harness === 'claude-code') {
+      const backend = this.backends['claude-code'];
+      if (!backend) {
+        throw Error(
+          'Claude Code is not available in this Companion listener, so this Claude Code conversation cannot continue',
+        );
+      }
+      // The store only accepts a Claude Code conversation with its settings.
+      const claudeCode = choices.claudeCode;
+      if (!claudeCode) {
+        throw Error('This Claude Code conversation has no saved model and effort');
+      }
+
+      const { executable } = await loadClaudeCodeSettings(this.directory);
+      const settings: ClaudeCodeSettings = {
+        executable,
+        model: claudeCode.model,
+        effort: claudeCode.effort,
+      };
+
+      // `view.model` still names the previous turn's model here; the caller
+      // replaces it with this turn's model afterwards. A first turn has no
+      // previous model to switch from.
+      let previousModel: string | undefined;
+      if (resume && view.model !== '' && view.model !== settings.model) {
+        previousModel = view.model;
+      }
+      return {
+        model: settings.model,
+        run: (request, signal, emit, replaceChoices, renameSession) =>
+          backend.run(
+            { ...request, settings, ...(previousModel ? { previousModel } : {}) },
+            signal,
+            emit,
+            replaceChoices,
+            renameSession,
+          ),
+      };
+    }
+
+    const settings = await loadAgentSettings(this.directory, view.profile);
+    if (choices.modelOverride) {
+      settings.model = choices.modelOverride;
+    }
+    if (choices.thinkingOverride !== undefined) {
+      settings.thinking = choices.thinkingOverride;
+    }
+    const backend = this.backends.pi;
+    return {
+      model: settings.model,
+      run: (request, signal, emit, replaceChoices, renameSession) =>
+        backend.run({ ...request, settings }, signal, emit, replaceChoices, renameSession),
+    };
+  }
+
   private message(session: RunningSession, message: AgentMessage, persistTool = false): void {
     if (message.kind === 'tool' && !message.toolGroup) {
       const existingGroup = this.store.tools.groupFor(session.view.id, message.id);
@@ -903,7 +1246,9 @@ export class AgentSessions implements InspectableModule {
           groupId,
         ]).size > panelMessageLimit
       ) {
-        throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
+        throw Error(
+          `The panel transcript limit was reached. The full session is saved in ${harnessName(session.view)}.`,
+        );
       }
       const toolId = message.id;
       message = this.store.tools.put(session.view.id, message, groupId);
@@ -920,7 +1265,9 @@ export class AgentSessions implements InspectableModule {
       0,
     );
     if (totalSize > panelTextLimit || reserved.size > panelMessageLimit) {
-      throw Error('The panel transcript limit was reached. The full session is saved in Pi.');
+      throw Error(
+        `The panel transcript limit was reached. The full session is saved in ${harnessName(session.view)}.`,
+      );
     }
 
     if (index < 0) {
@@ -1038,10 +1385,10 @@ export class AgentSessions implements InspectableModule {
     if (this.closed || !this.previous.has(id) || this.restoring.has(id)) {
       throw new SessionToolError('rejected', 'Previous session is unavailable');
     }
-    if (this.sessions.size + this.restoring.size >= 12) {
+    if (this.sessions.size + this.restoring.size >= MAX_OPEN_AGENT_SESSIONS) {
       throw new SessionToolError(
         'rejected',
-        'Close a question tab before reopening another (12 tabs maximum)',
+        `Close a question tab before reopening another (${MAX_OPEN_AGENT_SESSIONS} tabs maximum)`,
       );
     }
     this.restoring.add(id);
@@ -1116,7 +1463,10 @@ export class AgentSessions implements InspectableModule {
       title: view.title,
       status: view.status,
       profile: view.profile ?? 'coding',
-      model: view.modelOverride ?? view.model,
+      harness: view.harness ?? 'pi',
+      // The model the next turn uses when known: a Claude conversation's own
+      // model or a Pi override, otherwise the current/last turn's model.
+      model: view.claudeCode?.model ?? view.modelOverride ?? view.model,
       ...(view.modelOverride ? { modelOverride: view.modelOverride } : {}),
       updatedAt: view.updatedAt,
     };
@@ -1167,29 +1517,64 @@ export class AgentSessions implements InspectableModule {
     );
   }
 
+  /**
+   * Everything is resolved and validated before the tab exists, so a refused
+   * request never leaves a tab behind. There is deliberately no fallback to
+   * another model or harness.
+   */
   private async startFromAgent(
     request: {
       text: string;
       profile: AgentProfile;
+      /** Absent: the configured coding default (Pi for quick questions). */
+      harness?: AgentHarness;
       model: string;
       focus: boolean;
       origin: AgentMessageOrigin;
     },
     signal: AbortSignal,
   ): Promise<SessionToolSummary> {
-    // Validate against a fresh catalog, as the model picker does. There is
-    // deliberately no fallback: an unavailable request fails before creation.
-    if (request.model && !(await this.models(signal)).models.includes(request.model)) {
+    // Quick questions always use Pi (the service refuses an explicit Claude
+    // Code quick question). Only the coding default and Claude Code's model
+    // and effort need the configuration file.
+    let harness: AgentHarness = 'pi';
+    let claudeCode: ClaudeCodeConversationSettings | undefined;
+    if (request.profile === 'coding' && request.harness !== 'pi') {
+      const configuration = await loadAgentConfiguration(this.directory);
+      signal.throwIfAborted();
+      harness = request.harness ?? configuration.codingDefaultHarness;
+      if (harness === 'claude-code') {
+        claudeCode = {
+          model: request.model || configuration.claudeCode.model,
+          effort: configuration.claudeCode.effort,
+        };
+      }
+    }
+
+    // Both harnesses check the model's form. Claude Code models are then
+    // checked exactly by the backend when the turn starts, which fails the
+    // turn visibly if Claude Code reports a different model.
+    checkStartModel(harness, request.model);
+
+    // Validate a Pi model against a fresh catalog, as the model picker does.
+    if (
+      harness === 'pi' &&
+      request.model &&
+      !(await this.models(signal)).models.includes(request.model)
+    ) {
       throw new SessionToolError(
         'unavailable-model',
         `Model ${request.model} is not available in Pi. Omit model to use the ${request.profile} default.`,
       );
     }
+
     const id = this.create(
       {
         text: request.text,
         profile: request.profile,
-        modelOverride: request.model || undefined,
+        harness,
+        claudeCode,
+        modelOverride: harness === 'pi' && request.model ? request.model : undefined,
         origin: request.origin,
         openInBackground: !request.focus,
       },
@@ -1309,6 +1694,29 @@ export class AgentSessions implements InspectableModule {
     );
   }
 
+  /**
+   * Forward a conversation's own request to show a web page. The service has
+   * already validated the address and the caller's live turn; the UI decides
+   * whether this conversation is the one the user is looking at.
+   */
+  private async browserOpenFromAgent(
+    request: { sessionId: string; url: string },
+    signal: AbortSignal,
+  ): Promise<AgentBrowserOpenOutcome> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) {
+      throw this.notOpen(request.sessionId);
+    }
+    if (session.closing || this.closed) {
+      return { outcome: 'not-selected', reason: 'The conversation is closing.' };
+    }
+    signal.throwIfAborted();
+    if (!this.browserHost) {
+      return { outcome: 'offline', reason: '' };
+    }
+    return this.browserHost(request, signal);
+  }
+
   async idle(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((session) => session.done));
   }
@@ -1328,4 +1736,22 @@ export class AgentSessions implements InspectableModule {
     this.listeners.clear();
     this.store.tools.close();
   }
+}
+
+/**
+ * Make `view` a Claude Code conversation with its own model and effort. The
+ * displayed model is the Claude model from the start, before any turn runs.
+ */
+function adoptClaudeCode(view: AgentSession, settings: ClaudeCodeConversationSettings): void {
+  view.harness = 'claude-code';
+  view.claudeCode = { model: settings.model, effort: settings.effort };
+  view.model = settings.model;
+}
+
+/** The harness's user-facing name, for messages about its own transcript. */
+function harnessName(view: AgentSession): string {
+  if (view.harness === 'claude-code') {
+    return 'Claude Code';
+  }
+  return 'Pi';
 }

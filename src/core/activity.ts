@@ -1,6 +1,7 @@
 import type { DeliveryControl } from './delivery-control.ts';
 import type { InteractionContext, Screenshot } from './frame.ts';
 import type { TranscriptionDiagnostic } from '../sensors/audio/transcriber.ts';
+import type { TranscriptionCleanupRecord } from './transcription-cleanup/record.ts';
 
 /** Results describe actual delivery, rather than just the model's chosen intent. */
 export type UtteranceOutcome =
@@ -14,10 +15,23 @@ export type UtteranceOutcome =
   | 'preview'
   | 'error'
   | 'cancelled'
-  | 'interrupted';
+  | 'interrupted'
+  // Resumed speech replaced this provisional attempt before any action.
+  | 'superseded';
 
 /** Delivery feedback describes acceptance, not eventual agent-turn completion. */
 export type UtteranceDestination = 'application' | 'agent-session' | 'new-agent-session';
+
+/**
+ * Where a record's text came from when it is not this attempt's own ASR result.
+ * `earlier-attempt`: the latest usable text of an earlier attempt of the same
+ * spoken utterance, stored beside the combined audio; the final part of the
+ * speech may be missing from it. `audio-only`: a continued utterance whose
+ * final ASR failed and none of whose parts yielded usable text; the record has
+ * the combined audio and an empty transcript, never invented words. Absent
+ * means unspecified, not proof that the whole recording was transcribed.
+ */
+export type TranscriptSource = 'earlier-attempt' | 'audio-only';
 
 /** Desktop observers receive text before classification, even if capture failed. */
 export interface Transcript {
@@ -25,6 +39,7 @@ export interface Transcript {
   observedAt: number;
   utterance: string;
   application?: { address: string; app: string; title: string };
+  source?: TranscriptSource;
 }
 
 /** A failed recognition attempt, without a transcript or associated screenshot. */
@@ -63,8 +78,29 @@ export interface Activity {
   /** Persist the finalized model request before transport; absent for shortcuts. */
   intentRequested?(id: number, serializedRequest: string): void;
   intentRecognized?(id: number, intent: string): void;
+  /**
+   * Exactly once per routed utterance: whether transcription cleanup was on
+   * and, for a text route, the cleaned text or why the raw text was used.
+   * Text routes report before dispatch; the raw transcript is `transcribed`.
+   */
+  transcriptionCleanup?(id: number, record: TranscriptionCleanupRecord): void;
   /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
   labelPrevious?(id: number, correct: boolean): string | undefined;
   outcome?(id: number, outcome: UtteranceOutcome, destination?: UtteranceDestination): void;
+  /**
+   * A provisional attempt was replaced by a continuation (it will report the
+   * outcome `superseded`). Called once, at supersession, before its successor
+   * is admitted. Only attempts named here belong to a continuation chain.
+   */
+  attemptSuperseded?(id: number): void;
+  /**
+   * The final attempt of a continued utterance has settled; `supersededIds`
+   * are the attempts it replaced, oldest first. Called once per such chain,
+   * immediately before `finished(finalId)`, whatever the final outcome. Every
+   * superseded attempt has already reported `finished`, except one replaced
+   * while still waiting in the queue, which never reached ASR and recorded
+   * nothing. The desktop uses this to keep a single record per utterance.
+   */
+  continuationSettled?(finalId: number, supersededIds: readonly number[]): void;
   finished?(id: number): void;
 }

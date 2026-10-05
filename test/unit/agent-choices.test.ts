@@ -28,7 +28,7 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
   const runs: Run[] = [];
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'choices-fixture',
         label: 'Choices fixture',
         dependencies: {},

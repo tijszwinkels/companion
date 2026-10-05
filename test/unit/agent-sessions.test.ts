@@ -73,7 +73,7 @@ test('Pi loads the native choice extension and accepts only correlated successfu
 for (const failure of ['malformed', 'missing', 'version']) {
   test(`Pi preserves the answer when choice metadata is ${failure}`, async (context) => {
     const { directory, settings } = await fixture(context);
-    const sessions = new AgentSessions({ backend: new PiBackend() }, () => {}, directory);
+    const sessions = new AgentSessions({ pi: new PiBackend() }, () => {}, directory);
     context.after(() => sessions.close());
     const id = sessions.start({ ...frame, utterance: `choices ${failure}` }, signal());
     await sessions.idle();
@@ -93,7 +93,7 @@ for (const failure of ['malformed', 'missing', 'version']) {
 for (const variant of ['success', 'invalid', 'timeout', 'exit']) {
   test(`Pi native name ${variant}: session state is authoritative and cannot lose the answer`, async (context) => {
     const { directory } = await fixture(context);
-    const sessions = new AgentSessions({ backend: new PiBackend() }, () => {}, directory);
+    const sessions = new AgentSessions({ pi: new PiBackend() }, () => {}, directory);
     context.after(() => sessions.close());
     const utterance = `native-name ${variant}`;
     sessions.start({ ...frame, utterance }, signal());
@@ -279,7 +279,7 @@ test('question handoff frees the router, preserves screenshot, and can be stoppe
       await stopped(signal);
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => sessions.close());
   const events: SessionEvent[] = [];
   sessions.subscribe((event) => events.push(event));
@@ -323,7 +323,7 @@ test('preview and pre-handoff cancellation never launch an agent', async (contex
   const { directory } = await fixture(context);
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'unused',
         label: 'Unused',
         dependencies: {},
@@ -387,7 +387,7 @@ test('desktop clients receive question updates, snapshots, and independent stop/
   const { directory } = await fixture(context);
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'socket-fixture',
         label: 'Socket fixture',
         dependencies: {},
@@ -466,7 +466,7 @@ test('follow-ups reuse the conversation, omit a new screenshot, and preserve ear
   const requests: Parameters<AgentBackend['run']>[0][] = [];
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'resume-fixture',
         label: 'Resume fixture',
         dependencies: {},
@@ -526,7 +526,7 @@ test('Pi refuses to silently create an empty conversation for a follow-up', asyn
 test('composer focus changes block pending typing and suppress Enter even if activewindow is unchanged', async (context) => {
   const { directory } = await fixture(context);
   const sessions = new AgentSessions(
-    { backend: { id: 'focus-fixture', label: 'Focus', dependencies: {}, run: async () => {} } },
+    { pi: { id: 'focus-fixture', label: 'Focus', dependencies: {}, run: async () => {} } },
     () => {},
     directory,
   );

@@ -45,7 +45,7 @@ Run the checkout's executable by absolute path from any working directory, after
 ```
 
 Use this feature branch's absolute executable path before merge, against an
-isolated test listener only. `--help` describes model/profile, focus, draft append,
+isolated test listener only. `--help` describes profile/harness/model, focus, draft append,
 request IDs and client timeouts. Successful commands emit one JSON object to
 stdout (`ok: true`, outcome/session or directory). Failures emit `ok: false`, a
 stable `code`, and a bounded explanation. Exit statuses: 0 success, 2 usage,
@@ -71,10 +71,13 @@ in that Companion conversation. Draft sources likewise carry `kind: "external"`
 and a label, never an invented internal session ID. A reply transport to external
 agents is outside this API; `send` confirms acceptance, not provider completion.
 
-The shared lifecycle guards still apply: 12 tabs, four running turns, eight queued
+The shared lifecycle guards still apply: 16 tabs, four running turns, eight queued
 follow-ups, FIFO behind human messages, no implicit reopen on send/draft, busy
-close refusal, and explicit model validation. Start/reopen/draft default to no
-focus. Drafts use the existing single panel acknowledgement and default to refusing
+close refusal, and explicit model validation. `start` accepts the internal tool's
+optional `harness` (`pi` or `claude-code`; `--harness`), with the same defaults,
+harness-aware model validation and refusal codes (`invalid`, `unavailable-model`);
+callers that omit it get the configured coding harness (Pi by default).
+Start/reopen/draft default to no focus. Drafts use the existing single panel acknowledgement and default to refusing
 existing text; `--append` is explicit. Closing an external target never gets the
 internal deferred self-close exception. It can close only an idle conversation.
 

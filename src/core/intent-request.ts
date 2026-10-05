@@ -1,18 +1,44 @@
 import { createHash } from 'node:crypto';
 
+import {
+  CLEANUP_PROMPT_VARIANT,
+  type CleanupPromptVariant,
+} from './transcription-cleanup/prompt.ts';
+
 /**
  * Versioned evaluation evidence at the provider-payload boundary. The body is
  * the actual JSON request, with its one screenshot URL replaced by a structured
  * reference to the PNG belonging to the enclosing utterance row. No paths,
  * authentication headers or duplicated base64 recording are stored here.
+ *
+ * Two record versions exist:
+ *
+ * - Version 1: today's bare-name intent prompt. Byte-for-byte the format
+ *   recorded before transcription cleanup existed, and still what is recorded
+ *   while cleanup is off. It has no `promptVariant`.
+ * - Version 2: a request made with transcription cleanup on. `promptVariant`
+ *   names the prompt wording (json-cleanup-v1). The version bump is deliberate:
+ *   older checkouts refuse version 2 as unsupported instead of silently
+ *   treating a cleanup prompt as a bare-name recording, and the exact-replay
+ *   export here skips it too (src/evals/dataset.ts).
  */
-export interface IntentRequestRecord {
-  version: 1;
-  api: 'openai-completions';
-  baseUrl: string;
-  preparedAt: number;
-  body: Record<string, unknown>;
-}
+export type IntentRequestRecord =
+  | {
+      version: 1;
+      promptVariant?: never;
+      api: 'openai-completions';
+      baseUrl: string;
+      preparedAt: number;
+      body: Record<string, unknown>;
+    }
+  | {
+      version: 2;
+      promptVariant: CleanupPromptVariant;
+      api: 'openai-completions';
+      baseUrl: string;
+      preparedAt: number;
+      body: Record<string, unknown>;
+    };
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -46,8 +72,17 @@ function mapScreenshot(body: unknown, replace: (url: unknown) => unknown): Recor
   return { ...body, messages };
 }
 
-/** Serialize immediately: later SDK or conversation changes cannot alter evidence. */
-export function snapshotIntentRequest(payload: unknown, png: Buffer, baseUrl: string): string {
+/**
+ * Serialize immediately: later SDK or conversation changes cannot alter evidence.
+ * `promptVariant` is null for the bare-name prompt (a version 1 record, exactly
+ * as before) and names the cleanup prompt otherwise (a version 2 record).
+ */
+export function snapshotIntentRequest(
+  payload: unknown,
+  png: Buffer,
+  baseUrl: string,
+  promptVariant: CleanupPromptVariant | null = null,
+): string {
   const endpoint = new URL(baseUrl);
   if (
     !['http:', 'https:'].includes(endpoint.protocol) ||
@@ -67,13 +102,25 @@ export function snapshotIntentRequest(payload: unknown, png: Buffer, baseUrl: st
     }
     return { artifact: 'utterance-screenshot', mimeType: 'image/png', sha256 };
   });
-  const record: IntentRequestRecord = {
-    version: 1,
-    api: 'openai-completions',
-    baseUrl,
-    preparedAt: Date.now(),
-    body,
-  };
+  let record: IntentRequestRecord;
+  if (promptVariant === null) {
+    record = {
+      version: 1,
+      api: 'openai-completions',
+      baseUrl,
+      preparedAt: Date.now(),
+      body,
+    };
+  } else {
+    record = {
+      version: 2,
+      promptVariant,
+      api: 'openai-completions',
+      baseUrl,
+      preparedAt: Date.now(),
+      body,
+    };
+  }
   return JSON.stringify(record);
 }
 
@@ -86,13 +133,22 @@ export function restoreIntentRequest(serialized: string, png: Buffer): IntentReq
   const record: unknown = JSON.parse(serialized);
   if (
     !isObject(record) ||
-    record.version !== 1 ||
+    (record.version !== 1 && record.version !== 2) ||
     record.api !== 'openai-completions' ||
     typeof record.baseUrl !== 'string' ||
     typeof record.preparedAt !== 'number'
   ) {
     throw Error('Unsupported intent request recording');
   }
+
+  // Version 1 never names a variant; version 2 must name a known one.
+  if (record.version === 1 && 'promptVariant' in record) {
+    throw Error('Unsupported intent request recording');
+  }
+  if (record.version === 2 && record.promptVariant !== CLEANUP_PROMPT_VARIANT) {
+    throw Error('Unsupported intent request recording');
+  }
+
   const sha256 = createHash('sha256').update(png).digest('hex');
   const body = mapScreenshot(record.body, (reference) => {
     if (
@@ -105,6 +161,17 @@ export function restoreIntentRequest(serialized: string, png: Buffer): IntentReq
     }
     return 'data:image/png;base64,' + png.toString('base64');
   });
+
+  if (record.version === 2) {
+    return {
+      version: 2,
+      promptVariant: CLEANUP_PROMPT_VARIANT,
+      api: 'openai-completions',
+      baseUrl: record.baseUrl,
+      preparedAt: record.preparedAt,
+      body,
+    };
+  }
   return {
     version: 1,
     api: 'openai-completions',

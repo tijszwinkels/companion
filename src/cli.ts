@@ -1,13 +1,19 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs, styleText, stripVTControlCharacters } from 'node:util';
 
 import { loadConfig } from './config.ts';
 import { IntentDetector } from './core/intent-detector.ts';
+import { FixedRouteCleaner } from './core/transcription-cleanup/fixed-route-cleaner.ts';
+import { TranscriptionCleanupSetting } from './core/transcription-cleanup/setting.ts';
 import { UserSensorRouter } from './core/router.ts';
 import { Ignore } from './processors/ignore.ts';
 import { EnterTextToApplication } from './processors/enter-text-to-application.ts';
 import { SendTextToApplication } from './processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from './processors/start-coding-agent-session.ts';
 import { QuickQuestion } from './processors/quick-question.ts';
+import { StartClaudeCodeSession } from './processors/start-claude-code-session.ts';
+import { StartPiSession } from './processors/start-pi-session.ts';
 import { GoToSession } from './processors/go-to-session.ts';
 import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
 import { CloseAgentSession } from './processors/close-agent-session.ts';
@@ -16,7 +22,10 @@ import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts
 import { ExternalSessionServer } from './agents/external/server.ts';
 import { externalSocketPath } from './agents/external/paths.ts';
 import { AgentSessions } from './agents/sessions.ts';
+import { agentDirectory } from './agents/settings.ts';
+import { userWidgetLibrary } from './widgets/library-path.ts';
 import { PiBackend } from './agents/pi-backend.ts';
+import { ClaudeCodeBackend } from './agents/claude/claude-backend.ts';
 import { AgentChoiceIntents } from './agents/choice-intents.ts';
 import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
@@ -29,6 +38,7 @@ import { failureOutcome } from './core/delivery-error.ts';
 import { createGraph } from './core/graph.ts';
 import { graphToMermaid } from './core/graph-mermaid.ts';
 import { DesktopRuntime, desktopPaths } from './desktop/runtime.ts';
+import { PhoneAccessHook } from './remote/service/desktop-hook.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
 import type { Transcript } from './core/activity.ts';
@@ -62,7 +72,10 @@ async function main(): Promise<void> {
       'no-desktop': { type: 'boolean', default: false },
       'external-sessions': { type: 'boolean', default: false },
       'external-socket': { type: 'string' },
+      'widget-library': { type: 'string' },
       paused: { type: 'boolean', default: false },
+      'no-startup-capture': { type: 'boolean', default: false },
+      phone: { type: 'boolean', default: false },
     },
   });
 
@@ -81,11 +94,21 @@ Usage: npm start -- [options]
   --no-desktop       Disable history, sounds, and desktop control
   --external-sessions Enable the same-user Unix session API (off by default)
   --external-socket PATH Override its private socket path; requires --external-sessions
+  --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
+                     else ~/companion/widget-library)
   --paused           Start paused; resume through the desktop control
+  --no-startup-capture
+                     Skip the startup screenshot check, e.g. at login before
+                     any window is open; the first input captures as usual
+  --phone            Opt-in: also run 'bin/companion-phone start' once the desktop is up,
+                     and 'companion-phone stop' when this listener stops
+                     (see docs/mobile-startup.md)
 
 Live mode types detected dictation into the same focused window. Ctrl+C stops.
 "insert …" types directly; "enter …" types and presses Enter. Both bypass the LLM.
-"new session …" asks Pi using the coding model; "quick question …" uses local Qwen.
+"new session …" asks the coding harness (codingDefaultHarness, Pi by default);
+"new claude session …" uses Claude Code; "new pi session …" uses Pi's coding model.
+"quick question …" uses local Qwen.
 "continue session …" continues the currently open agent conversation.
 "close session" closes the selected conversation, keeping it in Previous sessions.
 "label previous correct" / "label previous incorrect" records intent feedback.
@@ -106,6 +129,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   if (values.text !== undefined && (!values.text.trim() || values.text.length > 4000)) {
     throw Error('--text requires 1–4000 characters');
   }
+  if (values['no-startup-capture'] && (values.text !== undefined || values.graph)) {
+    throw Error('--no-startup-capture applies only to microphone and WAV modes');
+  }
 
   if (values['external-socket'] && !values['external-sessions']) {
     throw Error('--external-socket requires --external-sessions');
@@ -117,17 +143,37 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     throw Error('--external-sessions requires ordinary listener mode');
   }
 
+  if (
+    values.phone &&
+    (values['no-desktop'] ||
+      values.preview ||
+      values.graph ||
+      values.text !== undefined ||
+      values.wav)
+  ) {
+    throw Error('--phone requires ordinary listener mode with desktop control');
+  }
+
   const seconds = values.seconds === undefined ? undefined : Number(values.seconds);
   if (seconds !== undefined && (!Number.isFinite(seconds) || seconds <= 0)) {
     throw Error('--seconds must be positive');
   }
+
+  // Resolved once here so every widget discovery and publication in this
+  // listener uses the same directory. It may not exist yet; that is not fatal.
+  const widgetLibrary = userWidgetLibrary(values['widget-library']);
 
   const config = await loadConfig(values.config);
 
   // Every asynchronous stage observes this signal, so Ctrl+C cancels the whole
   // session, including an in-flight transcription or intent request.
   const controller = new AbortController();
-  const agents = new AgentSessions({ backend: new PiBackend() }, log);
+  const agents = new AgentSessions(
+    { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
+    log,
+    agentDirectory(),
+    widgetLibrary,
+  );
   const stop = () => {
     controller.abort();
     void agents.close();
@@ -141,7 +187,13 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let pipeline: SensorPipeline | undefined;
   let desktop: DesktopRuntime | undefined;
   let external: ExternalSessionServer | undefined;
+  let phone: PhoneAccessHook | undefined;
   const pause = new PauseControl();
+
+  // Automatic transcription cleanup: off unless the desktop loads a saved
+  // "on" choice (~/companion/transcription-cleanup.json) or the user clicks
+  // the switch. Without the desktop service it stays off.
+  const cleanup = new TranscriptionCleanupSetting();
 
   if (values.paused) {
     pause.toggle();
@@ -153,6 +205,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         'start',
         `Companion · ${config.llm.model} · ${values.preview ? 'preview' : 'type into focused application'}`,
       );
+      log('widgets', `Library ${widgetLibrary}`);
     }
 
     if (!values['no-desktop'] && !values.graph) {
@@ -163,6 +216,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         sounds: !values['no-sounds'] && !values.preview,
         mediaPause: values.text === undefined && !values.wav,
         agents,
+        cleanup,
       });
       await desktop.start();
     }
@@ -179,11 +233,24 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       log('external', 'Same-user session API enabled');
     }
 
+    // Opt-in only: phone access follows this listener. Started once the
+    // control socket answers, in the background, so the desktop never waits
+    // for it or depends on it. This checkout's companion-phone is used; the
+    // gateway code it runs is the pinned one from its own config.
+    if (values.phone && desktop) {
+      phone = new PhoneAccessHook({
+        executable: join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'companion-phone'),
+        log: (detail) => log('phone', detail),
+      });
+      phone.start();
+    }
+
     const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
 
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
     const detector = new IntentDetector(config.llm, undefined, 'detector', activity);
-    const router = new UserSensorRouter({ detector }, log, activity);
+    const cleaner = new FixedRouteCleaner(config.llm);
+    const router = new UserSensorRouter({ detector, cleaner }, log, activity, 'router', cleanup);
     new SendTextToApplication(log, values.preview, command, activity).subscribe(router);
     new EnterTextToApplication(log, values.preview, command, activity).subscribe(router);
     new Ignore(log, activity).subscribe(router);
@@ -191,6 +258,10 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       router,
     );
     new QuickQuestion({ sessions: agents }, log, values.preview, activity).subscribe(router);
+    new StartClaudeCodeSession({ sessions: agents }, log, values.preview, activity).subscribe(
+      router,
+    );
+    new StartPiSession({ sessions: agents }, log, values.preview, activity).subscribe(router);
     new GoToSession(log, values.preview, activity).subscribe(router);
     new ContinueOpenAgentConversation(
       { sessions: agents },
@@ -234,7 +305,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     log(
       'registered',
-      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), CONTINUE_OPEN_AGENT_CONVERSATION (continue session / visible conversation), CLOSE_AGENT_SESSION (close session), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
+      'SEND_TEXT_TO_APPLICATION (insert), ENTER_TEXT_TO_APPLICATION (enter), IGNORE, START_CODING_AGENT_SESSION (new session), QUICK_QUESTION (quick question), START_CLAUDE_CODE_SESSION (new claude session), START_PI_SESSION (new pi session), CONTINUE_OPEN_AGENT_CONVERSATION (continue session / visible conversation), CLOSE_AGENT_SESSION (close session), LABEL_PREVIOUS_CORRECT, LABEL_PREVIOUS_INCORRECT',
     );
 
     // Supplied text enters the same routing path but needs no audio resources.
@@ -270,7 +341,15 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     log('asr-start', 'Loading Parakeet transcription worker');
     await transcriber.start(controller.signal);
 
-    await screen.capture(controller.signal);
+    // One screenshot checks that capture works before any audio is accepted. It
+    // is neither routed nor stored. A login service may start before any window
+    // is open, when this check would fail, so it can opt out explicitly; every
+    // later utterance still captures and reports its own failures.
+    if (values['no-startup-capture']) {
+      log('capture', 'Startup screenshot check skipped; the first input captures the window');
+    } else {
+      await screen.capture(controller.signal);
+    }
 
     // Load the native runtime only when audio processing actually needs it.
     // Help, graph export, and supplied-text mode need no ONNX installation.
@@ -325,6 +404,12 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // Stop producers and pending work before releasing VAD's native resources.
     controller.abort();
     clearTimeout(timer);
+
+    // Phone access goes first, while the control socket still exists, so
+    // phones are never left connected to a gateway without its listener.
+    // Usually about a second. Bounded even when a start must be cancelled
+    // (see desktop-hook.ts); a failure is logged and shutdown continues.
+    await phone?.stop();
 
     await pipeline?.idle();
     await transcriber?.close();

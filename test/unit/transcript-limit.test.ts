@@ -28,7 +28,7 @@ for (const size of [262_145, 999_999, 1_000_000, 1_000_001]) {
         emit(message);
       },
     };
-    const sessions = new AgentSessions({ backend }, () => {}, directory);
+    const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
     try {
       const id = sessions.start(frame, signal());
       await sessions.idle();
@@ -73,7 +73,7 @@ for (const count of [201, 800, 801]) {
         }
       },
     };
-    const sessions = new AgentSessions({ backend }, () => {}, directory);
+    const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
     try {
       const id = sessions.start(frame, signal());
       await sessions.idle();

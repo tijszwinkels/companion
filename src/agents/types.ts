@@ -26,6 +26,8 @@ export interface InternalAgentOrigin {
   /** Sender title captured when the message was sent. */
   title: string;
   depth: number;
+  /** Source tool group, when the outbound call was retained in the sender transcript. */
+  sourceGroupId?: string;
 }
 
 /** Portable chat data. Provider events and subprocess details stay in the backend. */
@@ -50,6 +52,52 @@ export interface AgentMessage {
 /** Selects a model configuration for the whole conversation, including reopening. */
 export type AgentProfile = 'coding' | 'quickQuestion';
 
+/**
+ * The agent program that runs a conversation's turns. There are exactly two:
+ * the headless Pi RPC process (which also serves OpenAI Codex models) and the
+ * native Claude Code CLI. A conversation keeps its harness for its lifetime,
+ * because each harness stores its own transcript that only it can resume.
+ */
+export const agentHarnesses = ['pi', 'claude-code'] as const;
+
+export type AgentHarness = (typeof agentHarnesses)[number];
+
+/** Effort levels accepted by `claude --effort` (verified against Claude Code 2.1.280). */
+export const claudeCodeEffortLevels = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export type ClaudeCodeEffort = (typeof claudeCodeEffortLevels)[number];
+
+/**
+ * Settings for one Claude Code turn. `model` is the exact model ID that Claude
+ * Code must report at startup; the backend fails the turn on any difference
+ * and never configures a fallback model.
+ */
+export interface ClaudeCodeSettings {
+  executable: string;
+  model: string;
+  effort: ClaudeCodeEffort;
+}
+
+/**
+ * A Claude Code conversation's own model and effort. Both are captured from
+ * the configuration (or an explicit start request) when the conversation is
+ * created; later configuration edits never change them. The user can choose
+ * another Claude model for the next turn from the footer picker, which
+ * replaces `model` here; the effort stays fixed. The executable is still read
+ * from the configuration for each turn.
+ */
+export type ClaudeCodeConversationSettings = Pick<ClaudeCodeSettings, 'model' | 'effort'>;
+
+/**
+ * The Claude picker's catalogue (`claude-models`): the allowlisted exact
+ * model IDs plus the configured default, and that configured default model.
+ * There is no effort field: a conversation's effort never changes.
+ */
+export interface ClaudeCodeModelCatalog {
+  models: string[];
+  model: string;
+}
+
 export interface AgentSession {
   id: string;
   title: string;
@@ -57,6 +105,13 @@ export interface AgentSession {
   model: string;
   /** Older saved conversations omit this and retain the coding configuration. */
   profile?: AgentProfile;
+  /** Absent in older archives and in every Pi conversation; absence means `pi`. */
+  harness?: AgentHarness;
+  /**
+   * Present only when `harness` is `claude-code`. `model` is the model for the
+   * next turn (the picker may change it); `effort` is fixed at creation.
+   */
+  claudeCode?: ClaudeCodeConversationSettings;
   /** Explicit conversation choice; absence reloads the profile default each turn. */
   modelOverride?: string;
   /** Requested effort for subsequent turns; Pi adapts it to the chosen model. */
@@ -115,29 +170,59 @@ export interface AgentModelCatalog {
   thinkingLevels: Record<string, AgentSettings['thinking'][]>;
 }
 
-export interface AgentBackend extends InspectableModule {
-  /** Discover authenticated/configured Pi models without starting a conversation. */
-  models?(
-    settings: AgentSettings,
-    directory: string,
-    signal: AbortSignal,
-  ): Promise<AgentModelCatalog>;
+/**
+ * One agent turn. `Settings` is the harness's own settings type: Pi receives
+ * `AgentSettings`, Claude Code receives `ClaudeCodeSettings`.
+ */
+export interface AgentRunRequest<Settings = AgentSettings> {
+  /** Companion conversation ID; both harnesses use it as their own session ID. */
+  id: string;
+  directory: string;
+  settings: Settings;
+  prompt: { text: string; screenshot?: Screenshot };
+  /** False only for a conversation's first turn. A missing transcript then fails. */
+  resume: boolean;
+  /**
+   * Claude Code only: the model Companion requested for this conversation's
+   * previous turn (`AgentSession.model`, even if that turn failed), when the
+   * user has since chosen another one. The backend announces the switch once
+   * Claude Code has confirmed the new model. Pi ignores it.
+   */
+  previousModel?: string;
+  widgets?: { endpoint: string; token: string };
+  /**
+   * Turn-scoped connection for the session lifecycle tools, with the optional
+   * tools this listener supports (announced to Pi and the Claude bridge).
+   */
+  sessionTools?: { endpoint: string; token: string; capabilities?: readonly string[] };
+}
+
+export interface AgentBackend<Settings = AgentSettings> extends InspectableModule {
+  /** Discover authenticated/configured models without starting a conversation. */
+  models?(settings: Settings, directory: string, signal: AbortSignal): Promise<AgentModelCatalog>;
   run(
-    request: {
-      id: string;
-      directory: string;
-      settings: AgentSettings;
-      prompt: { text: string; screenshot?: Screenshot };
-      resume: boolean;
-      widgets?: { endpoint: string; token: string };
-      /** Turn-scoped connection for the session lifecycle tools. */
-      sessionTools?: { endpoint: string; token: string };
-    },
+    request: AgentRunRequest<Settings>,
     signal: AbortSignal,
     emit: (message: AgentMessage) => void,
     replaceChoices?: (options: readonly AgentChoice[]) => void,
     renameSession?: (title: string) => void,
   ): Promise<void>;
+}
+
+/**
+ * The Claude Code adapter. It has no `models()`: the Claude picker uses the
+ * fixed allowlist in `claude/models.ts`, not a discovery process.
+ */
+export type ClaudeCodeAgentBackend = AgentBackend<ClaudeCodeSettings>;
+
+/**
+ * The backends available to the session layer, selected by a conversation's
+ * harness. Claude Code is optional so that tests and older wiring can supply
+ * only Pi; selecting `claude-code` without a backend must then fail visibly.
+ */
+export interface AgentHarnessBackends {
+  pi: AgentBackend;
+  'claude-code'?: ClaudeCodeAgentBackend;
 }
 
 export function chatMessage(id: string, kind: AgentMessage['kind'], text: string): AgentMessage {
@@ -175,3 +260,56 @@ export type AgentDraftHost = (
   request: AgentDraftRequest,
   signal: AbortSignal,
 ) => Promise<AgentDraftOutcome>;
+
+/**
+ * An agent's request to show a web page in the native panel's built-in
+ * browser. Only the calling conversation's own turn can make it, and the UI
+ * opens the page only while that conversation is the one selected there.
+ */
+export interface AgentBrowserOpenRequest {
+  /** The calling conversation, established by its turn lease. */
+  sessionId: string;
+  /** Absolute https:// URL, or http:// on a loopback host. */
+  url: string;
+}
+
+/**
+ * What happened, as confirmed by the panel:
+ * - `loaded`, `loading` and `load-failed`: the browser now shows the address;
+ *   the page finished loading, was still loading when the panel answered, or
+ *   failed to load (reason says why, e.g. an invalid certificate).
+ * - `superseded`: a newer navigation replaced it before it finished.
+ * - `cancelled`: the page asked before leaving and the user chose to stay.
+ * - `refused`, `not-selected`, `busy`, `panel-hidden`, `unsupported`:
+ *   confirmed non-changes. A hidden panel is never shown for an agent, and
+ *   opening a page the user cannot see is not reported as success.
+ * - `offline`: no panel could receive the request.
+ * - `unconfirmed`: sent, but the panel did not answer in time; it may or may
+ *   not have opened the page, so the caller must not blindly retry.
+ */
+export interface AgentBrowserOpenOutcome {
+  outcome:
+    | 'loaded'
+    | 'loading'
+    | 'load-failed'
+    | 'superseded'
+    | 'cancelled'
+    | 'refused'
+    | 'not-selected'
+    | 'busy'
+    | 'panel-hidden'
+    | 'unsupported'
+    | 'offline'
+    | 'unconfirmed';
+  reason: string;
+  /**
+   * Address the browser shows, when it shows one (after redirects). No page
+   * content, not even its title, is returned to the agent.
+   */
+  url?: string;
+}
+
+export type AgentBrowserHost = (
+  request: AgentBrowserOpenRequest,
+  signal: AbortSignal,
+) => Promise<AgentBrowserOpenOutcome>;

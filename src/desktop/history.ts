@@ -3,8 +3,13 @@ import { chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { Transcript, UtteranceOutcome } from '../core/activity.ts';
+import type { Transcript, TranscriptSource, UtteranceOutcome } from '../core/activity.ts';
 import type { Screenshot, UserSensorFrame } from '../core/frame.ts';
+import type {
+  CleanupFallbackReason,
+  TranscriptionCleanupRecord,
+  TranscriptionCleanupStatus,
+} from '../core/transcription-cleanup/record.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
 import { artifactPath, removeArtifacts, saveArtifact } from './artifacts.ts';
 
@@ -16,10 +21,49 @@ export interface IntentFeedback {
 export interface HistoryEntry {
   id: string;
   observedAt: number;
+  /** The raw ASR transcript (or typed Activity text), always unchanged. */
   utterance: string;
   application: string | null;
   intent: string | null;
   outcome: UtteranceOutcome | 'processing' | 'delivering';
+  /**
+   * Transcription cleanup for this utterance: null when unknown (older rows,
+   * rows written by an older checkout, or utterances that never reached
+   * routing), otherwise whether the switch was on.
+   */
+  cleanupEnabled: boolean | null;
+  /** Null while cleanup was off or unknown. */
+  cleanupStatus: TranscriptionCleanupStatus | null;
+  /** The cleaned text a text route received instead of `utterance`. */
+  cleanedText: string | null;
+  /** Why a text route received the raw text although cleanup was on. */
+  cleanupFallback: CleanupFallbackReason | null;
+  /**
+   * `earlier-attempt` when the text is an earlier attempt's transcript stored
+   * beside a continued utterance's combined audio (D2 fallback, or a failed
+   * final attempt); `audio-only` when such a failed utterance had no usable
+   * text at all (empty transcript, WAV kept). Null means unspecified: older
+   * rows, typed input and fresh ASR all read null, so it is not proof the
+   * whole recording was transcribed.
+   */
+  transcriptSource: TranscriptSource | null;
+}
+
+/** Row shape before booleans are decoded; SQLite stores them as integers. */
+type HistoryRow = Omit<HistoryEntry, 'cleanupEnabled'> & { cleanupEnabled: number | null };
+
+// Every entry query selects the same columns in the same order.
+const ENTRY_COLUMNS = `id, observed_at AS observedAt, transcript AS utterance,
+      application, recognized_intent AS intent, outcome,
+      cleanup_enabled AS cleanupEnabled, cleanup_status AS cleanupStatus,
+      cleaned_text AS cleanedText, cleanup_fallback AS cleanupFallback,
+      transcript_source AS transcriptSource`;
+
+function decodeEntry(row: HistoryRow): HistoryEntry {
+  return {
+    ...row,
+    cleanupEnabled: row.cleanupEnabled === null ? null : row.cleanupEnabled === 1,
+  };
 }
 
 /**
@@ -33,6 +77,9 @@ export class UtteranceHistory {
   private database?: DatabaseSync;
   private readonly frameEntries = new Map<number, string>();
   private readonly deleting = new Set<string>();
+  // Superseded attempts whose continuation has not settled yet. The desktop
+  // runtime holds them from their `finished` until it retires or keeps them.
+  private readonly awaitingRetirement = new Set<string>();
 
   constructor(private readonly path: string) {}
 
@@ -108,6 +155,29 @@ export class UtteranceHistory {
 
       if (utteranceColumns.some((column) => column.name === 'audio_path')) {
         this.database.exec('ALTER TABLE utterances DROP COLUMN audio_path');
+      }
+
+      // Transcription cleanup, stored beside the unchanged raw transcript, and
+      // the transcript source of continued utterances (see HistoryEntry).
+      // These nullable columns are additive and deliberately do not change
+      // the schema version: older checkouts keep opening this database and
+      // simply ignore them (their new rows read as "unknown"), so switching
+      // back to a build without cleanup needs no migration. They live in the
+      // utterances row itself, so deleting an utterance also deletes them.
+      const additiveColumns: [string, string][] = [
+        ['cleanup_enabled', 'INTEGER CHECK (cleanup_enabled IN (0, 1))'],
+        ['cleanup_status', "TEXT CHECK (cleanup_status IN ('cleaned', 'fallback', 'no-text'))"],
+        ['cleaned_text', 'TEXT'],
+        ['cleanup_fallback', 'TEXT'],
+        [
+          'transcript_source',
+          "TEXT CHECK (transcript_source IN ('earlier-attempt', 'audio-only'))",
+        ],
+      ];
+      for (const [name, definition] of additiveColumns) {
+        if (!utteranceColumns.some((column) => column.name === name)) {
+          this.database.exec(`ALTER TABLE utterances ADD COLUMN ${name} ${definition}`);
+        }
       }
 
       // No rows are inferred from delivery, recovery, or lack of complaints.
@@ -206,22 +276,19 @@ export class UtteranceHistory {
   }
 
   snapshot(limit = 100): HistoryEntry[] {
-    return this.db
+    const rows = this.db
       .prepare(
-        `SELECT id, observed_at AS observedAt, transcript AS utterance,
-      application, recognized_intent AS intent, outcome FROM utterances
+        `SELECT ${ENTRY_COLUMNS} FROM utterances
       ORDER BY observed_at DESC, rowid DESC LIMIT ?`,
       )
-      .all(limit) as unknown as HistoryEntry[];
+      .all(limit) as unknown as HistoryRow[];
+    return rows.map((row) => decodeEntry(row));
   }
 
   find(id: string): HistoryEntry | undefined {
-    return this.db
-      .prepare(
-        `SELECT id, observed_at AS observedAt, transcript AS utterance,
-      application, recognized_intent AS intent, outcome FROM utterances WHERE id = ?`,
-      )
-      .get(id) as unknown as HistoryEntry | undefined;
+    const row = this.db.prepare(`SELECT ${ENTRY_COLUMNS} FROM utterances WHERE id = ?`).get(id) as
+      HistoryRow | undefined;
+    return row ? decodeEntry(row) : undefined;
   }
 
   /**
@@ -231,7 +298,7 @@ export class UtteranceHistory {
    * files are harmless, including after a partially completed earlier attempt.
    */
   async delete(id: string): Promise<void> {
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -248,16 +315,75 @@ export class UtteranceHistory {
       throw Error('Wait for this utterance to finish processing or pasting before deleting it');
     }
 
-    // Claim the row before filesystem awaits. No paste, label or history-agent
-    // request may begin using it while its recordings are being removed.
+    await this.removeClaimed(id, () => {
+      this.db.prepare('DELETE FROM intent_feedback WHERE id = ?').run(id);
+      this.db.prepare('DELETE FROM paste_events WHERE utterance_id = ?').run(id);
+      this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id);
+    });
+  }
+
+  /**
+   * Remove a provisional attempt that a continuation replaced, once the
+   * continuation's own record owns the whole utterance (the desktop runtime
+   * decides that). This is not a user deletion and is deliberately narrower:
+   * only a finished row whose outcome is exactly `superseded`, with no paste
+   * attempt and no feedback, is removed. Anything the user has already used
+   * or referenced stays, and the caller keeps it visible. The same claim,
+   * files-first order and transaction as `delete` apply. Throws instead of
+   * reporting success when the row was kept.
+   */
+  async retireSuperseded(id: string): Promise<void> {
+    // The retirement hold is expected here; only a concurrent deletion stops it.
+    if (this.deleting.has(id)) {
+      throw Error('This utterance is being deleted');
+    }
+    const entry = this.find(id);
+    if (!entry) {
+      throw Error('Utterance not found');
+    }
+    if (entry.outcome !== 'superseded' || this.activeFrameId(id) !== undefined) {
+      throw Error('Only a finished superseded attempt can be retired');
+    }
+    if (this.referenced(id)) {
+      throw Error('This superseded attempt was pasted or labeled; keeping it');
+    }
+
+    await this.removeClaimed(id, () => {
+      // The claim blocks new pastes and labels, so these conditions still hold;
+      // the statement checks them again rather than relying on that.
+      const result = this.db
+        .prepare(
+          `DELETE FROM utterances WHERE id = ? AND outcome = 'superseded'
+          AND NOT EXISTS (SELECT 1 FROM paste_events WHERE utterance_id = ?)
+          AND NOT EXISTS (SELECT 1 FROM intent_feedback WHERE id = ?)`,
+        )
+        .run(id, id, id);
+      if (result.changes !== 1) {
+        throw Error('The superseded attempt changed while it was being retired');
+      }
+    });
+  }
+
+  private referenced(id: string): boolean {
+    const paste = this.db
+      .prepare('SELECT 1 FROM paste_events WHERE utterance_id = ? LIMIT 1')
+      .get(id);
+    const feedback = this.db.prepare('SELECT 1 FROM intent_feedback WHERE id = ?').get(id);
+    return paste !== undefined || feedback !== undefined;
+  }
+
+  /**
+   * Claim the row before filesystem awaits, so no paste, label or history-agent
+   * request may begin using it while its recordings are removed. Files go
+   * first; `removeRows` then runs in one SQLite transaction.
+   */
+  private async removeClaimed(id: string, removeRows: () => void): Promise<void> {
     this.deleting.add(id);
     try {
       await removeArtifacts(dirname(this.path), id);
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        this.db.prepare('DELETE FROM intent_feedback WHERE id = ?').run(id);
-        this.db.prepare('DELETE FROM paste_events WHERE utterance_id = ?').run(id);
-        this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id);
+        removeRows();
         this.db.exec('COMMIT');
       } catch (error) {
         this.db.exec('ROLLBACK');
@@ -268,14 +394,45 @@ export class UtteranceHistory {
     }
   }
 
-  private assertNotDeleting(id: string): void {
+  /**
+   * No paste, label, history-agent question or user deletion may start from a
+   * row that is being deleted, or from a superseded attempt that is waiting
+   * for its continuation to settle (it is about to be retired or kept).
+   */
+  private assertAvailable(id: string): void {
     if (this.deleting.has(id)) {
       throw Error('This utterance is being deleted');
     }
+    if (this.awaitingRetirement.has(id)) {
+      throw Error('This attempt was replaced by a continuing utterance; use the final utterance');
+    }
+  }
+
+  /** An audio-only record has nothing to paste or ask about. */
+  private assertHasText(id: string): void {
+    if (this.find(id)?.transcriptSource === 'audio-only') {
+      throw Error('This record has audio only; no speech was recognized');
+    }
+  }
+
+  /** Hold a finished superseded attempt until its continuation settles. */
+  holdForRetirement(id: string): void {
+    this.awaitingRetirement.add(id);
+  }
+
+  /** The continuation settled: the attempt was retired, or is kept as an ordinary row. */
+  releaseRetirement(id: string): void {
+    this.awaitingRetirement.delete(id);
   }
 
   add(transcript: Transcript): void {
-    if (!transcript.utterance.trim() || this.frameEntries.has(transcript.id)) {
+    if (this.frameEntries.has(transcript.id)) {
+      return;
+    }
+
+    // Only an explicitly audio-only record has no text; it never invents any.
+    const audioOnly = transcript.source === 'audio-only';
+    if (audioOnly ? transcript.utterance !== '' : !transcript.utterance.trim()) {
       return;
     }
 
@@ -285,8 +442,8 @@ export class UtteranceHistory {
     this.db
       .prepare(
         `INSERT INTO utterances
-      (id, observed_at, transcript, application, window_title, window_address)
-      VALUES (?, ?, ?, ?, ?, ?)`,
+      (id, observed_at, transcript, application, window_title, window_address, transcript_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -295,6 +452,7 @@ export class UtteranceHistory {
         application?.app ?? null,
         application?.title ?? null,
         application?.address ?? null,
+        transcript.source ?? null,
       );
 
     this.frameEntries.set(transcript.id, id);
@@ -306,6 +464,38 @@ export class UtteranceHistory {
     if (id) {
       this.db.prepare('UPDATE utterances SET recognized_intent = ? WHERE id = ?').run(intent, id);
     }
+  }
+
+  /**
+   * Store what transcription cleanup did for an active utterance. The router
+   * reports once per routed utterance; the first record is kept. The raw
+   * transcript column is never touched.
+   */
+  saveCleanup(frameId: number, record: TranscriptionCleanupRecord): void {
+    const id = this.frameEntries.get(frameId);
+    if (!id) {
+      return;
+    }
+
+    let status: TranscriptionCleanupStatus | null = null;
+    let cleanedText: string | null = null;
+    let fallback: CleanupFallbackReason | null = null;
+    if (record.enabled) {
+      status = record.status;
+      if (record.status === 'cleaned') {
+        cleanedText = record.text;
+      }
+      if (record.status === 'fallback') {
+        fallback = record.reason;
+      }
+    }
+
+    this.db
+      .prepare(
+        `UPDATE utterances SET cleanup_enabled = ?, cleanup_status = ?, cleaned_text = ?,
+        cleanup_fallback = ? WHERE id = ? AND cleanup_enabled IS NULL`,
+      )
+      .run(Number(record.enabled), status, cleanedText, fallback, id);
   }
 
   /** The first prepared request is immutable, including after failures/feedback. */
@@ -322,22 +512,25 @@ export class UtteranceHistory {
     }
   }
 
-  async saveScreenshot(frameId: number, screenshot: Screenshot): Promise<void> {
+  /** Resolves true once the PNG is published; false when the frame has no row. */
+  async saveScreenshot(frameId: number, screenshot: Screenshot): Promise<boolean> {
     const id = this.frameEntries.get(frameId);
 
     if (!id) {
-      return;
+      return false;
     }
 
     const entry = this.find(id)!;
     await saveArtifact(dirname(this.path), id, entry.observedAt, 'screenshots', screenshot.png);
+    return true;
   }
 
-  async saveAudio(frameId: number, samples: Float32Array): Promise<void> {
+  /** Resolves true once the WAV is published; false when the frame has no row. */
+  async saveAudio(frameId: number, samples: Float32Array): Promise<boolean> {
     const id = this.frameEntries.get(frameId);
 
     if (!id) {
-      return;
+      return false;
     }
 
     const entry = this.find(id)!;
@@ -345,6 +538,12 @@ export class UtteranceHistory {
     // trimming. The pipeline retains ownership until this write settles.
     const wav = encodeWav(samples);
     await saveArtifact(dirname(this.path), id, entry.observedAt, 'audio', wav);
+    return true;
+  }
+
+  /** The row UUID of a frame that is still being processed. */
+  entryId(frameId: number): string | undefined {
+    return this.frameEntries.get(frameId);
   }
 
   /**
@@ -388,7 +587,7 @@ export class UtteranceHistory {
 
   /** Explicit correction preserves the detected intent and delivery outcome. */
   label(id: string, correct: boolean, actualIntent: string | null = null): void {
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     const entry = this.find(id);
     if (!entry?.intent) {
       throw Error('This utterance has no detected intent to label');
@@ -413,7 +612,8 @@ export class UtteranceHistory {
 
   /** Start a question from its original observation, not today's active screen. */
   async recordedFrame(id: string): Promise<UserSensorFrame> {
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
+    this.assertHasText(id);
     const entry = this.find(id);
     if (!entry) {
       throw Error('Utterance not found');
@@ -433,7 +633,7 @@ export class UtteranceHistory {
     }
     // Reading the screenshot yields. Deletion may have begun or completed
     // since the first lookup; do not start a new agent from that stale read.
-    this.assertNotDeleting(id);
+    this.assertAvailable(id);
     if (!this.find(id)) {
       throw Error('Utterance not found');
     }
@@ -501,7 +701,8 @@ export class UtteranceHistory {
 
   /** Failed recovery is not evidence that the user successfully corrected intent. */
   beginPaste(utteranceId: string, targetAddress: string): string {
-    this.assertNotDeleting(utteranceId);
+    this.assertAvailable(utteranceId);
+    this.assertHasText(utteranceId);
     const id = randomUUID();
     this.db
       .prepare(

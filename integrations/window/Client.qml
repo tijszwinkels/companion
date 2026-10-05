@@ -17,6 +17,8 @@ Item {
   property string pendingUtterance: ""
   property string pendingUtteranceId: ""
   property var intents: []
+  // {enabled: bool}, or null when the listener has no transcription cleanup.
+  property var transcriptionCleanup: null
   property var agentActions: ({})
   property string error: ""
   property string errorAction: ""
@@ -35,6 +37,13 @@ Item {
   // An agent asked this panel to place unsent text in a composer. The host
   // applies it and must answer with answerDraft(); nothing is ever submitted.
   signal draftRequested(var message)
+  // True when the panel has the built-in browser (standalone native window).
+  // Only then does the listener route companion_browser_open here.
+  property bool browserHost: false
+  // An agent asked this panel to show a web page for its conversation. The
+  // host must answer exactly once with answerBrowserOpen().
+  signal browserOpenRequested(var message)
+  onBrowserHostChanged: Qt.callLater(reportPanel)
 
   onPanelVisibleChanged: Qt.callLater(reportPanel)
   onKeyboardFocusedChanged: Qt.callLater(reportPanel)
@@ -71,7 +80,14 @@ Item {
       composerFocused: id !== "" && root.composerFocusId === id,
       keyboardFocused: root.keyboardFocused,
       visible: root.panelVisible, navigationToken: sessions.navigationToken,
-      draftHost: true})
+      draftHost: true, browserHost: root.browserHost, incrementalSessions: true})
+  }
+
+  function answerBrowserOpen(requestId, result) {
+    const answer = {action: "agent-browser-open-result", requestId: requestId,
+      outcome: result.outcome, reason: String(result.reason || "").slice(0, 600)}
+    if (typeof result.url === "string" && result.url) answer.url = result.url.slice(0, 4096)
+    root.send(answer)
   }
 
   function answerDraft(requestId, result) {
@@ -143,6 +159,7 @@ Item {
     root.history = []
     root.historyDeletionAvailable = false
     root.intents = []
+    root.transcriptionCleanup = null
     root.agentActions = ({})
     activity.disconnected()
   }
@@ -159,12 +176,12 @@ Item {
       root.textInputAvailable = message.textInputAvailable === true
       const intents = message.intents || []
       if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
+      const cleanup = message.transcriptionCleanup || null
+      if (JSON.stringify(cleanup) !== JSON.stringify(root.transcriptionCleanup)) root.transcriptionCleanup = cleanup
       const actions = message.agentActions || {}
       if (JSON.stringify(actions) !== JSON.stringify(root.agentActions)) root.agentActions = actions
-      sessions.replace(message.sessions || [])
-      sessions.orderRevision = message.sessionOrderRevision || ""
+      sessions.applyState(message)
       sessions.controlsAvailable = message.sessionControlsAvailable === true
-      sessions.previousSessions = message.previousSessions || []
       root.online = message.ready === true
       if (root.online) activity.observe(message.activitySessionId, message.activityHistoryCount)
     } else if (message.type === "agent-session") {
@@ -177,6 +194,8 @@ Item {
       sessions.restore(message.session, message.reveal)
     } else if (message.type === "agent-draft") {
       root.draftRequested(message)
+    } else if (message.type === "agent-browser-open") {
+      root.browserOpenRequested(message)
     } else if (message.type === "agent-removed") {
       sessions.remove(message.id)
     } else if (message.type === "history-deleted") {

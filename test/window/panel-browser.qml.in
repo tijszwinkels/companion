@@ -1,0 +1,533 @@
+import QtQuick
+import QtTest
+import QtWebEngine
+import "@PANEL@" as Panel
+
+// Driven by panel-browser.test.ts in two processes that share a temporary
+// HOME. Pages come from its loopback fixtures; nothing touches real sites.
+// TestCase itself is not a visual item, so the browser lives in this scene.
+Item {
+  id: scene
+  width: 480
+  height: 560
+
+TestCase {
+  id: testCase
+  name: "PanelBrowser"
+  when: windowShown
+
+  readonly property string phase: @PHASE@
+  readonly property string origin: @ORIGIN@
+  readonly property string httpsOrigin: @HTTPS_ORIGIN@
+  property var browser: null
+
+  Component {
+    id: browserComponent
+    Panel.PanelBrowser {
+      width: 480
+      height: 520
+      foreground: "#dce5ef"
+      muted: "#8ba0b8"
+      accent: "#9fc0f7"
+      selection: "#293a51"
+      background: "#161e2b"
+      fontFamily: "sans-serif"
+      shown: true
+    }
+  }
+  SignalSpy { id: returns; signalName: "returnRequested" }
+  // Records finished loads; the url property changes before Chromium starts.
+  property var finished: []
+  Connections {
+    target: testCase.browser ? testCase.browser.page : null
+    function onLoadingChanged(info) {
+      if (info.status === WebEngineView.LoadSucceededStatus) testCase.finished.push(info.url.toString())
+    }
+  }
+
+  function create() {
+    browser = browserComponent.createObject(scene)
+    verify(browser !== null)
+    returns.target = browser
+    returns.clear()
+    return browser
+  }
+  function initTestCase() {
+    create()
+  }
+  function cleanupTestCase() {
+    if (browser) browser.destroy()
+    browser = null
+    wait(100)
+  }
+  function onlyIn(expected) {
+    if (phase !== expected) skip("runs in the " + expected + " process")
+  }
+
+  function child(name) {
+    const item = findChild(browser, name)
+    verify(item !== null, name)
+    return item
+  }
+  function loaded(path) {
+    return browser.page !== null && !browser.page.loading && browser.pageUrl === origin + path
+      && finished.indexOf(origin + path) >= 0
+  }
+  // Start a navigation and wait until Chromium finished loading that URL.
+  function navigated(start, path) {
+    finished = []
+    start()
+    tryVerify(function() { return loaded(path) }, 10000, "loaded " + path + ", at " + browser.pageUrl)
+  }
+  function load(path) {
+    navigated(function() { verify(browser.openAddress(origin + path)) }, path)
+  }
+  function run(script) {
+    let done = false
+    let value
+    browser.page.runJavaScript(script, function(result) { value = result; done = true })
+    tryVerify(function() { return done }, 5000, script)
+    return value
+  }
+  function type(text) {
+    for (const character of text) keyClick(character)
+  }
+  function noticeFor(fragment) {
+    tryVerify(function() { return browser.notice.indexOf(fragment) >= 0 }, 5000,
+      "notice containing " + fragment + ", got: " + browser.notice)
+  }
+  // The dialog's buttons are created when it opens; click once laid out.
+  function clickDialog(label) {
+    const button = child("panelBrowserDialog-" + label)
+    tryVerify(function() { return button.visible && button.width > 0 && child("panelBrowserDialog").visible })
+    waitForRendering(button)
+    mouseClick(button)
+  }
+  // Chromium's leave-page question needs a real user gesture on the page;
+  // repeat the click until the page has registered one.
+  function activatePage() {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      waitForRendering(browser.page)
+      mouseClick(browser.page, 100, 100)
+      if (run("navigator.userActivation.hasBeenActive") === true) return
+      wait(100)
+    }
+    fail("the page never registered a user gesture")
+  }
+  function waitHidden() {
+    tryCompare(browser, "controlsShown", false, 3000)
+  }
+
+  function test_01_empty_browser_offers_the_address_field() {
+    onlyIn("first")
+    verify(browser.page === null)
+    tryCompare(browser, "controlsShown", true)
+    browser.focusBrowser()
+    const address = child("panelBrowserAddress")
+    tryVerify(function() { return address.activeFocus })
+    compare(child("panelBrowserStatus").text, "No page open")
+
+    // Refused schemes keep the typed text and explain why.
+    type("file:///etc/hostname")
+    keyClick(Qt.Key_Return)
+    noticeFor("does not open file:")
+    compare(browser.addressText, "file:///etc/hostname")
+    verify(browser.page === null)
+    selectAllAndType(address, "http://example.com/")
+    keyClick(Qt.Key_Return)
+    noticeFor("Plain http:// is only opened for this computer")
+    verify(browser.page === null)
+  }
+  function selectAllAndType(field, text) {
+    field.selectAll()
+    type(text)
+  }
+
+  function test_02_typed_address_links_and_subresources() {
+    onlyIn("first")
+    const address = child("panelBrowserAddress")
+    address.forceActiveFocus()
+    selectAllAndType(address, origin.replace("http://", "") + "/")
+    navigated(function() { keyClick(Qt.Key_Return) }, "/")
+    compare(browser.page.title, "Home")
+    verify(browser.page.activeFocus, "Enter hands keyboard focus to the page")
+    compare(browser.host, origin.replace("http://", ""))
+    verify(child("panelBrowserStatus").text.indexOf("(local, not encrypted)") > 0)
+    verify(browser.profile.storageName === "companion-panel-browser")
+    verify(!browser.profile.offTheRecord)
+
+    navigated(function() { run("document.getElementById('second').click()") }, "/second")
+    tryCompare(browser.page, "title", "subresources 7 rgb(1, 2, 3) fetched", 10000)
+    compare(browser.pageUrl, origin + "/second")
+  }
+
+  function test_03_redirects_history_and_reload() {
+    onlyIn("first")
+    load("/")
+    navigated(function() { verify(browser.openAddress(origin + "/redirect")) }, "/second")
+    verify(child("panelBrowser-back").enabled)
+    navigated(function() { browser.trigger("back") }, "/")
+    verify(child("panelBrowser-forward").enabled)
+    navigated(function() { browser.trigger("forward") }, "/second")
+
+    load("/reload")
+    compare(browser.page.title, "Reload 1")
+    browser.trigger("reload")
+    tryCompare(browser.page, "title", "Reload 2", 10000)
+  }
+
+  function test_04_privileged_and_external_navigation_is_refused() {
+    onlyIn("first")
+    load("/")
+    // A server redirect to public plain HTTP is checked like a typed address.
+    verify(browser.openAddress(origin + "/redirect-public-http"))
+    noticeFor("Plain http:// is only opened for this computer")
+    tryVerify(function() { return !browser.loading }, 10000)
+    verify(browser.pageUrl.indexOf("example.invalid") < 0, browser.pageUrl)
+
+    for (const path of ["/redirect-file", "/redirect-widget"]) {
+      verify(browser.openAddress(origin + path))
+      tryVerify(function() { return !browser.loading }, 10000)
+      wait(200)
+      verify(browser.pageUrl.indexOf("file:") !== 0 && browser.pageUrl.indexOf("companion-widget:") !== 0,
+        path + " -> " + browser.pageUrl)
+    }
+
+    // Page-initiated attempts either stay on the page or end on Chromium's
+    // own inert "about:blank#blocked" document; none reaches its target.
+    for (const target of ["http://example.invalid/", "companion-widget://view/document",
+      "file:///etc/hostname", "mailto:someone@example.com", "javascript-not-a-scheme:x"]) {
+      load("/")
+      run("location.href = " + JSON.stringify(target))
+      wait(300)
+      tryVerify(function() { return !browser.loading }, 10000)
+      verify(browser.pageUrl === origin + "/" || browser.pageUrl === "about:blank#blocked",
+        target + " -> " + browser.pageUrl)
+      console.log("BLOCKED " + target + " -> " + browser.pageUrl + " notice: " + browser.notice)
+      if (target === "http://example.invalid/") noticeFor("Plain http:// is only opened for this computer")
+      if (browser.pageUrl === "about:blank#blocked") noticeFor("Blocked the page from opening an address")
+      browser.notice = ""
+    }
+  }
+
+  // Review F4: clicks and redirects to external schemes never launch a
+  // handler. The node driver asserts that its recording stubs stayed unused.
+  function test_04b_external_scheme_links_launch_nothing() {
+    onlyIn("first")
+    for (const y of [140, 260]) {
+      load("/external")
+      waitHidden()
+      mouseClick(browser.page, 150, y)
+      wait(500)
+      verify(browser.pageUrl === origin + "/external" || browser.pageUrl === "about:blank#blocked",
+        "click at " + y + " -> " + browser.pageUrl)
+    }
+    load("/")
+    verify(browser.openAddress(origin + "/redirect-mailto"))
+    wait(500)
+    tryVerify(function() { return !browser.loading }, 10000)
+    verify(browser.pageUrl.indexOf("mailto:") !== 0, browser.pageUrl)
+  }
+
+  function test_05_new_windows_are_refused_with_a_notice() {
+    onlyIn("first")
+    load("/popup")
+    waitHidden()
+    browser.notice = ""
+    run("window.open('/popup-target')")
+    noticeFor("Blocked a pop-up")
+    browser.notice = ""
+    // A real click on a target=_blank link, in page coordinates.
+    wait(200)
+    mouseClick(browser.page, 150, 140)
+    noticeFor("Blocked a pop-up")
+    wait(300)
+    compare(browser.pageUrl, origin + "/popup")
+  }
+
+  function test_06_dialogs_permissions_files_and_downloads_are_declined() {
+    onlyIn("first")
+    load("/features")
+    waitHidden()
+    // Script dialogs wait for the user's answer in the panel's own dialog.
+    browser.page.forceActiveFocus()
+    run("setTimeout(() => { alert('hello from page'); document.title = 'alert done' }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    verify(child("panelBrowserDialog").visible)
+    compare(child("panelBrowserDialogMessage").text, "hello from page")
+    tryVerify(function() { return child("panelBrowserDialog").activeFocus }, 2000, "a page-focused dialog takes focus")
+    clickDialog("OK")
+    tryCompare(browser.page, "title", "alert done")
+    tryVerify(function() { return browser.page.activeFocus }, 2000, "focus returns to the page")
+
+    run("setTimeout(() => { document.title = 'confirm ' + confirm('Delete everything?') }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    keyClick(Qt.Key_Escape)
+    tryCompare(browser.page, "title", "confirm false")
+    run("setTimeout(() => { document.title = 'confirm ' + confirm('Delete everything?') }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    clickDialog("OK")
+    tryCompare(browser.page, "title", "confirm true")
+
+    run("setTimeout(() => { document.title = 'prompt ' + prompt('Name?', 'default') }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    const answer = child("panelBrowserDialogInput")
+    tryVerify(function() { return answer.activeFocus })
+    compare(answer.selectedText, "default")
+    type("Wren")
+    keyClick(Qt.Key_Return)
+    tryCompare(browser.page, "title", "prompt Wren")
+    run("setTimeout(() => { document.title = 'prompt ' + prompt('Name?') }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    clickDialog("Cancel")
+    tryCompare(browser.page, "title", "prompt null")
+
+    run("Notification.requestPermission().then((result) => { document.title = 'notify ' + result })")
+    tryCompare(browser.page, "title", "notify denied", 5000)
+    noticeFor("Showing notifications is not available")
+    run("navigator.geolocation.getCurrentPosition(() => { document.title = 'geo granted' }, (error) => { document.title = 'geo ' + error.code })")
+    tryCompare(browser.page, "title", "geo 1", 5000)
+    noticeFor("Location access is not available")
+
+    browser.notice = ""
+    mouseClick(browser.page, 150, 120)
+    noticeFor("Choosing files is not available")
+    browser.notice = ""
+    mouseClick(browser.page, 150, 220)
+    noticeFor("Downloads are not available")
+    compare(browser.pageUrl, origin + "/features")
+  }
+
+  function test_07_pointer_reveals_the_hidden_toolbar() {
+    onlyIn("first")
+    load("/")
+    browser.page.forceActiveFocus()
+    mouseMove(browser, 240, 400)
+    waitHidden()
+    const toolbar = child("panelBrowserToolbar")
+    verify(!toolbar.visible)
+    verify(child("panelBrowserStrip").visible, "the status strip stays visible " + browser.visible + " " + child("panelBrowserStrip"))
+
+    mouseMove(browser, 240, 10)
+    tryCompare(browser, "controlsShown", true, 2000)
+    verify(toolbar.visible)
+    mouseMove(browser, 240, 40)
+    wait(1000)
+    verify(browser.controlsShown, "controls stay while the pointer is over them")
+    mouseMove(browser, 240, 400)
+    waitHidden()
+
+    // Clicking the strip reveals and focuses the address for editing.
+    mouseClick(browser, 240, 10)
+    tryCompare(browser, "controlsShown", true)
+    tryVerify(function() { return child("panelBrowserAddress").activeFocus })
+    mouseClick(browser, 240, 400)
+    tryVerify(function() { return browser.page.activeFocus })
+    waitHidden()
+  }
+
+  function test_08_keyboard_reveal_keeps_the_edited_address() {
+    onlyIn("first")
+    load("/")
+    browser.page.forceActiveFocus()
+    mouseMove(browser, 240, 400)
+    waitHidden()
+    const address = child("panelBrowserAddress")
+
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryCompare(browser, "controlsShown", true, 2000)
+    tryVerify(function() { return address.activeFocus })
+    compare(address.selectedText, origin + "/")
+
+    type("localhost:1/draft")
+    verify(browser.addressEdited)
+    mouseMove(browser, 240, 450)
+    wait(1200)
+    verify(browser.controlsShown, "editing keeps the toolbar")
+    keyClick(Qt.Key_Tab)
+    verify(!address.activeFocus)
+    verify(browser.controlsShown, "focused controls keep the toolbar")
+
+    // Leaving for the page hides the toolbar but never discards the edit,
+    // even when the page navigates meanwhile.
+    mouseClick(browser, 240, 400)
+    waitHidden()
+    compare(browser.addressText, "localhost:1/draft")
+    navigated(function() { run("location.href = '/second'") }, "/second")
+    compare(browser.addressText, "localhost:1/draft")
+
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryVerify(function() { return address.activeFocus })
+    compare(address.selectedText, "localhost:1/draft")
+    keyClick(Qt.Key_Escape)
+    compare(browser.addressText, origin + "/second")
+    verify(!browser.addressEdited)
+    tryVerify(function() { return browser.page.activeFocus })
+    waitHidden()
+  }
+
+  function test_08b_leave_page_question_and_keyboard_exits() {
+    onlyIn("first")
+    load("/leave")
+    waitHidden()
+    // Chromium asks before leaving only after a real user gesture on the page.
+    activatePage()
+    verify(browser.openAddress(origin + "/"))
+    tryVerify(function() { return browser.pendingDialog !== null }, 5000)
+    clickDialog("Stay")
+    wait(500)
+    compare(browser.pageUrl, origin + "/leave")
+    navigated(function() {
+      verify(browser.openAddress(origin + "/"))
+      tryVerify(function() { return browser.pendingDialog !== null }, 5000)
+      clickDialog("Leave")
+    }, "/")
+
+    // A navigation replaces the asking document; its dialog lapses.
+    browser.page.forceActiveFocus()
+    run("setTimeout(() => { alert('about to be replaced') }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    compare(child("panelBrowserDialogHost").text, origin.replace("http://", "") + " says")
+    navigated(function() { verify(browser.openAddress(origin + "/second")) }, "/second")
+    verify(browser.pendingDialog === null)
+    verify(!child("panelBrowserDialog").visible)
+
+    // Chat and Close are reachable from page focus with the keyboard alone:
+    // Ctrl+L, then Tab from the address to Chat.
+    browser.page.forceActiveFocus()
+    returns.clear()
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryVerify(function() { return child("panelBrowserAddress").activeFocus })
+    keyClick(Qt.Key_Tab)
+    tryVerify(function() { return child("panelBrowser-chat").activeFocus })
+    keyClick(Qt.Key_Space)
+    compare(returns.count, 1)
+    keyClick(Qt.Key_Tab)
+    tryVerify(function() { return child("panelBrowser-close").activeFocus })
+
+    // A pending dialog does not trap the user: Ctrl+L still reaches the
+    // toolbar, and Close declines the dialog before unloading the page.
+    browser.page.forceActiveFocus()
+    run("setTimeout(() => { confirm('Still there?') }, 0)")
+    tryVerify(function() { return browser.pendingDialog !== null })
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryVerify(function() { return child("panelBrowserAddress").activeFocus })
+    keyClick(Qt.Key_Tab)
+    keyClick(Qt.Key_Tab)
+    tryVerify(function() { return child("panelBrowser-close").activeFocus })
+    keyClick(Qt.Key_Return)
+    compare(returns.count, 2)
+    verify(browser.pendingDialog === null)
+    tryVerify(function() { return browser.page === null })
+  }
+
+  function test_09_hidden_page_is_frozen_and_resumes() {
+    onlyIn("first")
+    load("/counter")
+    tryVerify(function() { return Number(browser.page.title) > 3 }, 5000)
+    browser.shown = false
+    browser.visible = false
+    tryCompare(browser.page, "lifecycleState", WebEngineView.LifecycleState.Frozen, 3000)
+    verify(browser.page.audioMuted)
+    wait(200)
+    const frozenAt = Number(browser.page.title)
+    wait(600)
+    compare(Number(browser.page.title), frozenAt, "timers do not run while hidden")
+
+    browser.visible = true
+    browser.shown = true
+    tryCompare(browser.page, "lifecycleState", WebEngineView.LifecycleState.Active, 3000)
+    verify(!browser.page.audioMuted)
+    tryVerify(function() { return Number(browser.page.title) > frozenAt + 3 }, 5000)
+
+    // Media playback is suspended as well, not merely muted.
+    load("/media")
+    waitHidden()
+    mouseClick(browser.page, 150, 100)
+    tryCompare(browser.page, "title", "playing", 5000)
+    // Wait until playback demonstrably advances, however loaded the machine.
+    tryVerify(function() { return Number(run("document.getElementById('audio').currentTime")) > 0.2 }, 5000)
+    const before = Number(run("document.getElementById('audio').currentTime"))
+    browser.shown = false
+    browser.visible = false
+    tryCompare(browser.page, "lifecycleState", WebEngineView.LifecycleState.Frozen, 3000)
+    wait(1500)
+    browser.visible = true
+    browser.shown = true
+    const after = Number(run("document.getElementById('audio').currentTime"))
+    console.log("MEDIA before " + before + " after " + after)
+    verify(before > 0.2, "playing before hiding: " + before)
+    verify(after - before < 0.6, "media did not advance while frozen: " + before + " -> " + after)
+  }
+
+  function test_10_reparenting_keeps_the_page_and_close_returns() {
+    onlyIn("first")
+    returns.clear()
+    load("/second")
+    tryCompare(browser.page, "title", "subresources 7 rgb(1, 2, 3) fetched", 10000)
+    const view = browser.page
+    const other = Qt.createQmlObject("import QtQuick; Item { width: 480; height: 520 }", scene)
+    browser.parent = other
+    wait(200)
+    browser.parent = scene
+    other.destroy()
+    wait(200)
+    verify(browser.page === view)
+    compare(browser.page.title, "subresources 7 rgb(1, 2, 3) fetched")
+
+    browser.trigger("chat")
+    compare(returns.count, 1)
+    verify(browser.page === view, "Chat keeps the page")
+
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryCompare(browser, "controlsShown", true)
+    mouseClick(child("panelBrowser-close"))
+    compare(returns.count, 2)
+    tryVerify(function() { return browser.page === null })
+    compare(browser.addressText, origin + "/second", "the closed address stays for reopening")
+    tryCompare(browser, "controlsShown", true)
+    load("/")
+  }
+
+  function test_11_certificate_errors_are_never_bypassed() {
+    onlyIn("first")
+    browser.notice = ""
+    verify(browser.openAddress(httpsOrigin + "/"))
+    noticeFor("its security certificate is not valid")
+    tryVerify(function() { return !browser.loading }, 10000)
+    verify(browser.page.title !== "Home")
+  }
+
+  function test_12_recreated_browser_reuses_its_profile() {
+    onlyIn("first")
+    load("/")
+    // Destroy with a live page, then recreate in the same process.
+    browser.destroy()
+    browser = null
+    wait(500)
+    create()
+    load("/echo")
+    tryCompare(browser.page, "title", "cookie=panel=persisted storage=stored", 5000)
+  }
+
+  Component {
+    id: defaultProfileView
+    WebEngineView { width: 200; height: 200 }
+  }
+
+  function test_13_profile_persists_on_disk_and_stays_separate() {
+    onlyIn("second")
+    verify(browser.profile === null, "the profile is created on first use")
+    load("/echo")
+    compare(browser.profile.storageName, "companion-panel-browser")
+    verify(!browser.profile.offTheRecord)
+    compare(browser.profile.persistentPermissionsPolicy, WebEngineProfile.PersistentPermissionsPolicy.AskEveryTime)
+    tryCompare(browser.page, "title", "cookie=panel=persisted storage=stored", 5000)
+
+    const other = defaultProfileView.createObject(scene, {url: origin + "/echo"})
+    tryCompare(other, "title", "cookie= storage=null", 10000)
+    other.destroy()
+    wait(200)
+  }
+}
+}

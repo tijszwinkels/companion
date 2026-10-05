@@ -3,6 +3,7 @@ import type { Detector } from '../src/core/router.ts';
 import type { PipelineDependencies } from '../src/core/pipeline.ts';
 import type { ScreenSensor } from '../src/sensors/screen/sensor.ts';
 import type { SpeechTranscriber } from '../src/sensors/audio/transcriber.ts';
+import type { CommitClock } from '../src/core/utterance-continuation.ts';
 
 /** A tiny PNG and a stable window identity; no desktop access is needed. */
 export const screenshot: Screenshot = {
@@ -82,4 +83,59 @@ export function deferred<T>() {
   });
 
   return { promise, resolve };
+}
+
+/**
+ * A controlled monotonic clock for speech commitment deadlines. Time moves only
+ * when a test calls `advance` or `advanceTo`, which run every timer that falls
+ * due, in deadline order, with `now()` equal to that timer's deadline. Timer
+ * callbacks usually resolve promises; let those continuations run afterwards.
+ */
+export class ManualClock implements CommitClock {
+  private current = 0;
+  private sequence = 0;
+  private timers: { dueAt: number; sequence: number; callback: () => void }[] = [];
+
+  now(): number {
+    return this.current;
+  }
+
+  schedule(callback: () => void, delayMs: number): () => void {
+    const timer = { dueAt: this.current + delayMs, sequence: this.sequence++, callback };
+    this.timers.push(timer);
+
+    return () => {
+      this.timers = this.timers.filter((entry) => entry !== timer);
+    };
+  }
+
+  /** Timers scheduled and neither run nor cancelled; zero when nothing is left behind. */
+  get pendingTimers(): number {
+    return this.timers.length;
+  }
+
+  advance(milliseconds: number): void {
+    this.advanceTo(this.current + milliseconds);
+  }
+
+  advanceTo(time: number): void {
+    if (time < this.current) {
+      throw Error('A monotonic clock cannot go back');
+    }
+
+    for (;;) {
+      const due = this.timers
+        .filter((timer) => timer.dueAt <= time)
+        .sort((left, right) => left.dueAt - right.dueAt || left.sequence - right.sequence)[0];
+      if (!due) {
+        break;
+      }
+
+      this.timers = this.timers.filter((timer) => timer !== due);
+      this.current = Math.max(this.current, due.dueAt);
+      due.callback();
+    }
+
+    this.current = time;
+  }
 }

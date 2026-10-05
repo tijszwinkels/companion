@@ -42,7 +42,7 @@ test('names publish immediately, persist on close, and ignore callbacks from fin
   let rename: NonNullable<Parameters<AgentBackend['run']>[4]> | undefined;
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'name-fixture',
         label: 'Name fixture',
         dependencies: {},
@@ -85,7 +85,7 @@ test('each successful queued turn chimes once; snapshots and reopened sessions n
   const turns: (() => void)[] = [];
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'completion-fixture',
         label: 'Completion fixture',
         dependencies: {},

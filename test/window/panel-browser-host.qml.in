@@ -1,0 +1,319 @@
+import QtQuick
+import QtTest
+import QtWebEngine
+import "@WINDOW@" as Native
+
+// The panel browser inside the real standalone window body, with a synthetic
+// backend, a real pinned native widget and a loopback page. Presentation moves
+// use the test host's ordinary offscreen surfaces, not Wayland layer shell.
+TestCase {
+  id: testCase
+  name: "PanelBrowserHost"
+  when: windowShown
+
+  readonly property string origin: @ORIGIN@
+  readonly property var reference: @REFERENCE@
+  property var body: null
+  property var panel: null
+  property var composer: null
+  property var widgetView: null
+
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+
+  function conversation(extra) {
+    const widget = Object.assign({}, reference, {presentation: {
+      placement: "pinned", heightPercent: 40, replaceActivity: false}})
+    return {id: "one", title: "Pinned chat", status: "idle", messages: [
+      {id: "note", role: "assistant", kind: "assistant", text: "Earlier answer",
+        toolName: "", input: "", state: "", screenshot: ""},
+      {id: "visual", role: "assistant", kind: "widget", text: "Pinned list", widget: widget,
+        toolName: "", input: "", state: "", screenshot: ""}
+    ].concat(extra || [])}
+  }
+  function evaluate(view, script) {
+    let done = false
+    let result = null
+    view.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 5000, script)
+    return result
+  }
+  function type(text) {
+    for (const character of text) keyClick(character)
+  }
+  function browser() {
+    return findChild(body, "panelBrowser")
+  }
+  function openBrowser() {
+    const button = findChild(body, "panelBrowserButton")
+    verify(button.visible, "the header offers the browser")
+    mouseClick(button)
+    tryVerify(function() { return panel.browsing })
+    verify(!button.visible)
+  }
+  // The chat page underneath is intact: same composer and draft, same pinned
+  // native widget view and document, same selected conversation.
+  function verifyChatRetained() {
+    compare(panel.selectedSessionId, "one")
+    compare(findChild(body, "sessionComposer"), composer)
+    compare(composer.text, "Unsent draft stays")
+    compare(findChild(body, "nativeWidgetBrowser"), widgetView)
+    compare(evaluate(widgetView, "window.retainedWidget"), "widget")
+  }
+
+  // Leaving the conversation (e.g. for Activity) unloads its pinned widget
+  // view on the base panel as well; take the recreated one as the reference.
+  function captureWidget() {
+    const pinned = findChild(body, "pinnedWidget")
+    tryVerify(function() { return pinned.rendered }, 15000, pinned.error)
+    widgetView = findChild(body, "nativeWidgetBrowser")
+    verify(widgetView !== null)
+    compare(evaluate(widgetView, "window.retainedWidget = 'widget'"), "widget")
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    panel = body.panel
+    TestHost.attach(body)
+    TestHost.show(true)
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0,
+      sessions: [conversation(), {id: "two", title: "Other chat", status: "idle", messages: []}]})
+    body.client.sessions.select("one")
+    tryVerify(function() { return panel.selectedSession !== null && panel.selectedSession.id === "one" })
+
+    composer = findChild(body, "sessionComposer")
+    composer.text = "Unsent draft stays"
+    captureWidget()
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+    wait(100)
+  }
+
+  function test_01_browsing_replaces_the_chat_and_returns_to_it() {
+    verify(panel.browserAvailable)
+    compare(browser(), null, "nothing is loaded before the first open")
+    openBrowser()
+    const view = browser()
+    verify(view !== null && view.visible)
+    verify(!findChild(body, "sessionView").visible)
+    verify(!findChild(body, "pinnedWidgetArea").visible)
+    verify(!findChild(body, "sessionModelFooter").visible)
+    compare(body.composerId, "", "no conversation is a voice target while browsing")
+    const address = findChild(view, "panelBrowserAddress")
+    tryVerify(function() { return address.activeFocus }, 2000, "the first open focuses the address")
+
+    type(origin + "/")
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return view.page !== null && view.page.title === "Home" }, 10000)
+    const page = view.page
+    compare(evaluate(page, "window.retainedPage = 'page'"), "page")
+    verify(page.profile !== widgetView.profile)
+    verify(widgetView.profile.offTheRecord, "the widget keeps its restricted profile")
+    verify(!page.profile.offTheRecord)
+
+    // Moves between native surfaces and hide/show keep both pages.
+    for (const mode of ["sidebar", "dock", "window"]) {
+      TestHost.setPresentation(mode)
+      compare(TestHost.presentation, mode)
+      verify(panel.browsing)
+      compare(findChild(body, "panelBrowserView"), page)
+      verifyChatRetained()
+    }
+    TestHost.hide()
+    TestHost.show(true)
+    verify(panel.browsing)
+    compare(evaluate(page, "window.retainedPage"), "page")
+
+    // An agent update or a programmatic selection does not pull the user out.
+    fakeBackend.received({type: "agent-session", session: conversation([
+      {id: "later", role: "assistant", kind: "assistant", text: "A later answer",
+        toolName: "", input: "", state: "", screenshot: ""}])})
+    wait(100)
+    verify(panel.browsing)
+
+    // The toolbar's Chat returns; the page stays, frozen.
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryCompare(view, "controlsShown", true)
+    mouseClick(findChild(view, "panelBrowser-chat"))
+    tryVerify(function() { return !panel.browsing })
+    verify(findChild(body, "sessionView").visible)
+    verify(findChild(body, "pinnedWidgetArea").visible)
+    verify(findChild(body, "panelBrowserButton").visible)
+    tryVerify(function() { return findChild(body, "pinnedWidget").rendered }, 10000)
+    verifyChatRetained()
+    tryCompare(page, "lifecycleState", WebEngineView.LifecycleState.Frozen, 3000)
+    tryVerify(function() { return composer.activeFocus }, 2000, "returning focuses the composer")
+
+    // Reopening resumes the same page and focuses it.
+    openBrowser()
+    compare(view.page, page)
+    tryCompare(page, "lifecycleState", WebEngineView.LifecycleState.Active, 3000)
+    compare(evaluate(page, "window.retainedPage"), "page")
+    tryVerify(function() { return page.activeFocus }, 2000)
+  }
+
+  function test_02_rail_and_focus_shortcut_leave_the_browser() {
+    if (!panel.browsing) openBrowser()
+    mouseClick(findChild(body, "activityTab"))
+    tryVerify(function() { return !panel.browsing })
+    verify(findChild(body, "fullActivityStatus").visible)
+
+    openBrowser()
+    keyClick(Qt.Key_1, Qt.AltModifier)
+    tryVerify(function() { return !panel.browsing })
+    tryCompare(panel, "selectedSessionId", "one")
+    captureWidget()
+    verifyChatRetained()
+
+    openBrowser()
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return !panel.browsing })
+    tryVerify(function() { return composer.activeFocus })
+    body.releaseFocus(false)
+    verifyChatRetained()
+  }
+
+  function test_03_close_unloads_the_page_and_reopens_empty() {
+    openBrowser()
+    const view = browser()
+    verify(view.page !== null)
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryCompare(view, "controlsShown", true)
+    mouseClick(findChild(view, "panelBrowser-close"))
+    tryVerify(function() { return !panel.browsing })
+    tryVerify(function() { return view.page === null })
+    verifyChatRetained()
+
+    openBrowser()
+    compare(browser(), view, "the browser item and its profile persist")
+    tryVerify(function() { return findChild(view, "panelBrowserAddress").activeFocus })
+    compare(view.addressText, origin + "/")
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+  }
+
+  // Review F1: a snapshot that drops the selected conversation (an agent or
+  // another surface closed it, or a reconnect) must not take keyboard focus
+  // from the browser, whether the address field or the page has it.
+  function test_04_background_close_keeps_browser_focus() {
+    const other = {id: "two", title: "Other chat", status: "idle", messages: []}
+    function snapshot(sessions) {
+      fakeBackend.received({type: "state", protocol: 1, ready: true,
+        activitySessionId: "activity", activityHistoryCount: 0, sessions: sessions})
+    }
+    compare(panel.selectedSessionId, "one")
+    openBrowser()
+    const view = browser()
+    const address = findChild(view, "panelBrowserAddress")
+    tryVerify(function() { return address.activeFocus })
+    address.selectAll()
+    type("127.0.0.1:1/draft")
+    snapshot([other])
+    tryVerify(function() { return panel.selectedSession === null })
+    wait(100)
+    verify(panel.browsing)
+    verify(address.activeFocus, "the address keeps focus")
+    keyClick("Z")
+    compare(view.addressText, "127.0.0.1:1/draftZ", "typing continues in the address")
+
+    // Again with the page focused.
+    snapshot([conversation(), other])
+    body.client.sessions.select("one")
+    tryVerify(function() { return panel.selectedSession !== null })
+    verify(panel.browsing, "a programmatic selection does not leave the browser")
+    verify(view.openAddress(origin + "/"))
+    tryVerify(function() { return view.page !== null && view.page.title === "Home" }, 10000)
+    tryVerify(function() { return view.page.activeFocus })
+    snapshot([other])
+    tryVerify(function() { return panel.selectedSession === null })
+    wait(100)
+    verify(panel.browsing)
+    verify(view.page.activeFocus, "the page keeps focus")
+
+    // Returning shows the page that now applies (Activity) and focuses it.
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    verify(findChild(body, "fullActivityStatus").visible)
+    tryVerify(function() { return findChild(body, "activityTextInput").activeFocus }, 2000)
+  }
+  // Activity & settings clarity integration: the Activity page keeps its
+  // folds and reading position under the real browser, and the rail's
+  // right-edge selection marker stays on the page the browser covers.
+  function test_05_activity_position_and_selection_markers_with_the_browser() {
+    const intents = [
+      {name: "SEND_TEXT_TO_APPLICATION", label: "Type text", enabled: true, supportsInference: true,
+        inferenceEnabled: true, shortcutEnabled: true, toggleable: true, inferenceAvailable: true,
+        prefixAvailable: true, prefixes: ["insert"]},
+      {name: "IGNORE", label: "Ignore", enabled: true, supportsInference: true, inferenceEnabled: true,
+        shortcutEnabled: true, toggleable: false, inferenceAvailable: true, prefixAvailable: false, prefixes: []}
+    ]
+    function entry(sequence) {
+      return {type: "activity-entry", sessionId: "activity", entry: {
+        id: "utterance-" + sequence, sequence: sequence, revision: 1, utterance: "Synthetic utterance " + sequence,
+        intent: "SEND_TEXT_TO_APPLICATION", outcome: "sent", observedAt: sequence * 1000,
+        correct: null, actualIntent: null}}
+    }
+    fakeBackend.received({type: "state", protocol: 1, ready: true, intents: intents,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [conversation()]})
+    for (let sequence = 1; sequence <= 40; sequence++)
+      fakeBackend.received(entry(sequence))
+    body.client.sessions.select("")
+    tryVerify(function() { return panel.selectedSession === null && !panel.browsing })
+
+    const page = findChild(body, "fullActivityStatus")
+    const list = findChild(page, "activityScroll")
+    const activityMarker = findChild(body, "activitySelectionMarker")
+    const tab = findChild(body, "tab-one")
+    const tabMarker = findChild(tab, "sessionSelectionMarker")
+    tryVerify(function() { return page.visible })
+    findChild(body, "listeningArea").expanded = false
+    const history = findChild(body, "historySection")
+    page.scrollToItem(history)
+    verify(waitForRendering(page))
+    const heading = findChild(history, "sectionToggle")
+    const headingY = heading.mapToItem(list, 0, 0).y
+    verify(headingY >= -1 && headingY < list.height, "History heading in view")
+    verify(activityMarker.visible)
+    verify(!tabMarker.visible)
+
+    openBrowser()
+    verify(!page.visible)
+    verify(activityMarker.visible, "The rail marks Activity under the browser")
+    fakeBackend.received(entry(41))
+    mouseClick(findChild(body, "activityTab"))
+    tryVerify(function() { return !panel.browsing && page.visible })
+    verify(waitForRendering(page))
+    compare(findChild(body, "listeningArea").expanded, false)
+    verify(history.expanded)
+    verify(Math.abs(heading.mapToItem(list, 0, 0).y - headingY) < 1.5,
+      "History heading kept its place: " + headingY + " -> " + heading.mapToItem(list, 0, 0).y)
+    tryCompare(body.client.activity.model, "count", 41)
+
+    mouseClick(tab)
+    tryCompare(panel, "selectedSessionId", "one")
+    verify(tabMarker.visible)
+    verify(!activityMarker.visible)
+    openBrowser()
+    verify(tabMarker.visible, "The rail marks the conversation under the browser")
+    browser().trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    verify(tabMarker.visible)
+  }
+}

@@ -59,12 +59,46 @@ On connection and state changes, the server sends:
 }
 ```
 
-The recent view contains the latest 100 nonempty transcripts, newest first.
+The recent view contains the latest 100 records, newest first, including
+audio-only failures (an empty transcript with `transcriptSource: "audio-only"`).
 `speaking` is the current VAD speech state, independent of the processing count.
 It returns to false on silence, pause, end of input, or capture failure. Older
 servers omit this optional field; adapters should treat absence as false.
 It is a view limit, not a database retention policy. Snapshot the rows when
 opening a picker so new utterances cannot displace its selected item.
+
+### State stream, conversation sync and backpressure
+
+The **first** `state` message on every connection is complete and authoritative,
+including `sessions`, `sessionOrderRevision` and `previousSessions`. A client that
+applies the ordered conversation events (`agent-session`, `agent-order`,
+`agent-history`, `agent-removed`, `agent-restored`) to its retained conversations
+declares so with `incrementalSessions: true` in `panel-state`. From then on, for
+the rest of that connection, routine `state` messages **omit** those three fields:
+absence means "unchanged since the connect snapshot and the events after it".
+Activity/status fields (`speaking`, `processing`, `history`, `intents`,
+`agentActions`, …) are still complete in every `state`. Speech, processing,
+cleanup and outcome updates therefore no longer resend every open transcript.
+Reconnects hydrate from a full snapshot again. Treat absent conversation fields
+in the first `state` after connecting as empty, as for older listeners without
+sessions. Adapters that do not send the field (older installed shells) keep
+receiving complete snapshots. An older listener ignores the field and always
+sends complete snapshots, which new clients apply as before.
+
+The listener has one ordered queue per connection. A line is written directly
+while the socket is idle; after `write` reports backpressure, later lines wait
+for `drain`. Events, replies, errors, `agent-select` and `agent-draft` keep their
+order and are never dropped individually. An unwritten `state` is superseded by
+the next one: the newer snapshot is appended after the events it already
+reflects, so a client never receives a snapshot older than a preceding event.
+A client under backpressure may therefore not see every intermediate state (for
+example a brief `speaking: true`); the latest state is always delivered.
+One slow client does not delay others. Bounds: a connection whose unwritten
+ordered backlog exceeds 16 MiB, or whose socket does not drain for 30 seconds,
+is closed; the UI reconnects and hydrates. A single message larger than the
+backlog bound (such as a large connect snapshot) is still written when the
+connection is idle. Queued lines belong to their connection and are never
+replayed to a later one.
 
 Commands:
 
@@ -73,6 +107,7 @@ Commands:
 {"action":"media-playback","playing":true}
 {"action":"toggle-sounds"}
 {"action":"set-intent-enabled","name":"SEND_TEXT_TO_APPLICATION","mode":"inference","enabled":false}
+{"action":"set-transcription-cleanup","enabled":true}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
 {"action":"close-agent","id":"question-uuid"}
@@ -81,7 +116,7 @@ Commands:
 {"action":"choose-agent","id":"question-uuid","revision":"choice-set-uuid","index":0}
 {"action":"stop-agent-run","id":"question-uuid","runId":"running-turn-uuid"}
 {"action":"composer-focus","id":"question-uuid"}
-{"action":"panel-state","id":"question-uuid","composerFocused":true}
+{"action":"panel-state","id":"question-uuid","composerFocused":true,"incrementalSessions":true}
 {"action":"agent-draft-result","requestId":"draft-request-uuid","outcome":"inserted","reason":""}
 {"action":"activity-history","sessionId":"listener-run-uuid","after":0,"through":1}
 {"action":"label-history","id":"utterance-uuid","correct":true}
@@ -119,7 +154,8 @@ opaque request ID so a delayed focus reply cannot submit a replacement draft.
 The Activity panel has a separate **current listener run** history. An utterance
 joins it only at the pipeline's `finished` callback, after its outcome is known.
 There is no 100-row cap here. The in-memory index lasts until listener shutdown;
-SQLite records and recordings remain until explicitly deleted.
+SQLite records and recordings remain until explicitly deleted, except the
+superseded attempts of a continued utterance (see the `superseded` outcome below).
 Closing/reopening the panel or reconnecting its socket does not begin a new run.
 
 `activity-history` returns an object in `result`: `{sessionId, entries, removed,
@@ -187,9 +223,15 @@ unavailable. `inferenceEnabled` and `shortcutEnabled` are independent saved
 switches; `inferenceAvailable` and `prefixAvailable` describe context eligibility.
 `prefixes` identifies the supported voice commands. Listening must also be active.
 `enabled` remains a compatibility summary: at least one supported route is enabled.
-`IGNORE` is required and cannot be disabled. The UI renders separate accent-colored
-Intent and amber Shortcut cards and greys out disabled/unavailable routes. If the
-server lacks these independent fields, the refreshed UI requests a listener restart.
+`IGNORE` is required and cannot be disabled. The UI renders one card per registered
+activity, in router order, containing only its supported modes: an accent-colored
+(blue) intent-recognition control and an amber voice-shortcut control that keeps its
+phrases visible. Each control toggles only its own mode, shows explicit On/Off (or
+Always on) text, and waits for the next snapshot rather than changing optimistically;
+the card title is not a control. An enabled route without context stays On and says
+it needs conversation context. Cards form a responsive grid that adds columns in wide
+panels and wraps at enlarged reader zoom. If the server lacks these independent
+fields, the refreshed UI requests a listener restart and disables the controls.
 
 `set-intent-enabled` accepts `mode: "inference"` or `mode: "shortcut"`. Omitting
 mode preserves the old combined toggle for older clients. Unknown/unsupported
@@ -206,6 +248,19 @@ click saves the versioned format, retaining unknown module names. A failed save
 leaves the live switches unchanged. Desktop startup restores preferences before
 sensor frames; `--no-desktop` does not load them. Older listeners cannot read the
 new format; restore the previous preferences file if rolling back to an old build.
+
+`transcriptionCleanup` in the state snapshot is `{"enabled":bool}`, or null when
+the listener has no cleanup support (the UI then hides its switch).
+`set-transcription-cleanup` requires a boolean, saves
+`transcription-cleanup.json` beside the database (mode 0600, atomic, serialized),
+then applies the switch and broadcasts. It returns `cleanup-enabled` or
+`cleanup-disabled`. A missing file means off. See
+[transcription cleanup](../../docs/transcription-cleanup.md).
+
+History entries (snapshot `history`, `activity-entry` and Activity pages) carry
+`cleanupEnabled` (true/false/null), `cleanupStatus` (`cleaned`, `fallback`,
+`no-text` or null), `cleanedText` and `cleanupFallback`. `utterance` is always
+the raw transcript.
 
 The optional `agentActions` snapshot field describes the selected conversation's
 ephemeral composer controls. Changes also arrive as
@@ -292,15 +347,38 @@ The shared keyboard queue stays occupied through typing and any explicit Enter;
 cancellation still interrupts the keyboard process. Longer text therefore has
 time to complete without extending a stalled focus lookup's deadline.
 
-SQLite lives at `~/companion/utterances.sqlite`. It uses WAL and has no automatic
-deletion. `utterances` stores the exact transcript, speech-end timestamp, active
-application/window identity, recognized intent, and final processing outcome.
+SQLite lives at `~/companion/utterances.sqlite`. It uses WAL. Its only automatic
+deletion is the retirement of superseded attempts described below. `utterances`
+stores the exact transcript, speech-end timestamp, active application/window
+identity, recognized intent, and final processing outcome.
 Schema version 2 adds `delivery_started_at` to both tables, committed immediately
 before starting keyboard input. The automatic row is `delivering` until completion.
 An unavailable application or unsuccessful classification is represented by
 NULL, not an inferred label.
 The `closed` outcome records an explicit `close session` command after the tab
 has been saved and removed; it does not delete its conversation archive.
+
+The `superseded` outcome marks a provisional speech attempt that was replaced
+because the user resumed speaking before it committed to an action. It plays no
+sound and is not a failure. The retranscribed whole utterance follows as its own
+row. An attempt replaced before its transcript arrived has no row at all. Since
+2026-09-27 a superseded row is removed, with its PNG/WAV, once the final record
+of its utterance has its own row and WAV; its Activity card is never published
+then, and `history-deleted` (without `removed`) is sent. A final attempt that
+failed before its transcript records the earlier words with the combined WAV
+and its true outcome. Residual superseded rows remain only after a failed write
+or removal, a crash, or a paste/feedback reference. Older `superseded` rows are
+not touched. See [final-only retention](../../docs/speech-timing.md#final-only-retention).
+
+`utterances.transcript_source` (nullable, additive, no schema version change) is
+`earlier-attempt` when the stored text came from an earlier attempt of the same
+continued utterance: a recovered failure or a D2 fallback. It is `audio-only`
+for a failed continued utterance that yielded no usable text: the transcript is
+empty, the WAV is kept, and paste recovery and history-agent questions refuse
+the row. Older checkouts would show such a row as an empty utterance. NULL means
+unspecified, including all older rows and typed input; it does not prove that
+the whole recording was transcribed. History entries carry it as
+`transcriptSource`.
 
 The `started` outcome means a question was handed to the independent agent
 session manager, not that text was typed or an answer succeeded. Pi persists
@@ -317,6 +395,17 @@ than `intent_feedback`, since examples must be recorded before anyone labels
 them. Opening an older database adds the column without inventing past prompts
 or changing existing recordings/labels. Older Companion builds that only
 understand schema version 4 will refuse the upgraded database.
+
+Transcription cleanup adds nullable `cleanup_enabled`, `cleanup_status`,
+`cleaned_text` and `cleanup_fallback` columns to `utterances` without changing
+the schema version. Older builds keep opening the database and ignore them, so
+switching back needs no migration. NULL means unknown: older rows, rows written
+by an older checkout, or utterances that never reached routing.
+
+Requests prepared while transcription cleanup is on are saved as **version 2**
+records with `"promptVariant":"json-cleanup-v1"`; the bare-name prompt keeps the
+unchanged version 1 format. Exact-replay export skips version 2, and older
+builds refuse it as unsupported rather than mixing it into bare-name data.
 
 Pi's `onPayload` hook runs after provider conversion and before HTTP. We save the
 complete body there: exact system instruction text, enabled/dynamic intent
@@ -361,6 +450,11 @@ along with the other observation records. Preview still records an inference
 request if it calls the detector, while an explicit prefix has no request to
 record. The snapshot shares its utterance's lifetime because it lives in the
 same row.
+
+For a read-only exporter and exact-request model-comparison CLI, see
+[intent evals](../../docs/intent-evals.md). It changes only the model ID, freezes
+explicit labels and requires `--send` before sending recordings to configured
+endpoints. It never runs detected actions or restarts Companion.
 
 For labeled evaluations, join the original observation with its current label:
 
@@ -409,13 +503,23 @@ This separate top-level `asr-empty/` tree stays outside successful recordings in
 as the storage root. No empty history row, screenshot, application context, or intent
 is saved.
 
-Only a confirmed ASR `empty` outcome qualifies, with at least 128 ms of input and
+Only a confirmed final ASR `empty` outcome qualifies, with at least 128 ms of input and
 strongest-128-ms-window RMS at or above 0.0005. Live audio has already passed the
 VAD requirement of 128 ms of voiced frames. These are the existing speech gates;
 they do not establish that the sound is intelligible. Silence rejection,
-punctuation-only output, worker errors, untranscribed cancelled jobs and overload
-drops do not create these clips. The helper exposes empty **text**, so this does
+punctuation-only output, worker errors, untranscribed cancelled jobs, overload
+drops and provisional attempts replaced by resumed speech do not create these clips.
+An empty provisional attempt is retained only after 1.2 s pass after its
+endpoint without a continuation. The helper exposes empty **text**, so this does
 not distinguish zero raw tokens from special-token-only output.
+
+The transcriber may retry an empty first pass once with padding
+([details](../../docs/short-phrase-recognition.md#empty-result-retry)). Retention uses
+the final outcome: a recovered transcript follows the ordinary transcript path, and
+its WAV is the original, unpadded segment. A clip is retained when the retry is still
+empty or was skipped; its diagnostic `emptyRetry` field records which. A retry that
+returns punctuation or fails is not retained, matching those first-pass outcomes.
+The saved audio is always the captured segment, never the padded retry input.
 
 Each clip keeps the complete 16 kHz mono PCM16 segment, using the ASR conversion.
 Metadata version 1 contains its UUID, pipeline frame ID, observation timestamp,
@@ -504,8 +608,9 @@ Session tabs scroll independently. On surfaces shorter than 305 theme-scaled
 pixels, the whole rail can also scroll to keep its controls reachable without
 overlap.
 
-The optional `sessions` array in each state snapshot contains complete chat
-state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
+The optional `sessions` array in the connect state snapshot (and in every state
+snapshot for a client that did not declare `incrementalSessions`) contains
+complete chat state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
 `updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,
 `completed`, `cancelled`, or `error`.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
@@ -519,7 +624,18 @@ Between snapshots, `{"type":"agent-session","session":{...}}` carries current
 session metadata and **only changed messages**. Upsert by session/message ID in
 arrival order; do not replace the entire conversation with this partial array.
 Streaming updates are coalesced every 40 ms; a terminal status flushes pending
-messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab.
+messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab. The
+listener never publishes `agent-session` for a conversation that is no longer
+open, so a late flush cannot add a closed tab back to an incremental client.
+Session metadata may carry `harness: "claude-code"` with
+`claudeCode: {model, effort}`; absence means a Pi conversation. `claudeCode.model`
+is the next turn's model. The panel and standalone window then list the
+`claude-models` result (exact Claude IDs) instead of Pi's models, never request
+Pi's `agent-models` for it, and show the fixed effort instead of an effort
+picker.
+`set-agent-model` with a listed Claude ID changes that conversation's next turn;
+other names are refused. `set-agent-thinking` is refused for such a conversation.
+Clients that do not know these fields ignore them.
 All messages share the ordered socket with snapshots. A newly seen session opens
 and selects its panel tab once; further updates and reconnects do not reopen it.
 Exception: a live-only `openInBackground: true` marks a tab an agent tool opened
@@ -560,6 +676,16 @@ Show all models exposes the remaining catalogue without changing Pi's pins.
 Only an override excluded from the full successful catalogue is unavailable.
 Both menus pin rows and conversation until selection or cancellation.
 
+`{"action":"claude-models"}` returns `{models: string[], model: string}`: the
+listener's allowlist of exact Claude model IDs plus the configured
+`claudeCode.model` (`model`), for a Claude Code conversation's picker. It reads
+only the configuration file and starts no process, so it is independent of Pi
+discovery; a broken configuration returns an error. Clients request it on the
+first Claude Code conversation in each connection and on refresh from such a
+tab, with the same caching and retry rules as `agent-models`. An older listener
+rejects the action; the picker then offers only the conversation's current
+model.
+
 `{"action":"set-agent-model","id":"...","model":"provider/id"}` validates the
 available identifier, saves `modelOverride`, and returns `model-selected`.
 `{"action":"set-agent-thinking","id":"...","thinking":"high"}` validates an
@@ -579,22 +705,26 @@ New clients also include `visible` and `navigationToken` in `panel-state`.
 `visible: true` covers Activity and Previous as well as conversations; their `id`
 stays empty. Tokens are unique to the UI instance and change when selection,
 Previous visibility, panel visibility or connection changes. Token-only reports
-update routing without sending a full snapshot. Selection or navigation
+update routing without sending a state snapshot. Selection or navigation
 availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
 ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
-“go to session 1” through “go to session 9”, also one through nine, with ordinary
-ASR casing/spacing/terminal punctuation. Invalid/missing/out-of-range suffixes and
-disabled shortcuts remain consumed, never passed to inference or conversation
-text. This processor has its own shortcut toggle and no inference toggle.
+“go to session 1” through “go to session 16”, also one through sixteen, with ordinary
+ASR casing/spacing/terminal punctuation. Ordinals, partial, missing, and
+out-of-range suffixes are consumed, as are disabled shortcuts; none is passed
+to inference or conversation text. At most 16 conversation tabs can be open; requests for higher positions
+are rejected even if a stale client reports extra IDs. This processor has its
+own shortcut toggle and no inference toggle.
 
 Immediately before dispatch the runtime rechecks the client, token, membership
 and order revision. It sends only that connection
 `{"type":"agent-select","id":"...","token":"...","orderRevision":"..."}`.
 The UI rechecks visibility, token, revision and membership before selecting the
 conversation, preventing even a socket-delayed command from changing a newer
-selection. Successful dispatch records `selected`; this indicates delivery to
-the owning UI, not a separate UI acknowledgement. No panel is opened by a hidden
+selection. Successful dispatch records `selected`; this indicates admission to the
+owning connection's ordered stream, not a separate UI acknowledgement. If that
+connection is closed before the line is written, the command is lost with it and
+the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
 target, and a disconnected client cannot retain navigation ownership.
 
 The optional `previousSessions` snapshot array and
@@ -631,6 +761,11 @@ a hidden panel, Activity, or another non-conversation page. Send changes to eith
 field and resend after connecting; the response is `panel-recorded`. The owning
 connection's loss clears this state. Unknown session IDs and a focused empty ID
 are rejected. These reports also update the keyboard delivery focus guard.
+Optional `incrementalSessions: true` is a sticky per-connection capability (see
+[state stream](#state-stream-conversation-sync-and-backpressure)); a non-boolean
+value is rejected. A shell observer while the native window owns the panel sends
+it in a neutral report (`id: ""`, no `visible`/`navigationToken`/`draftHost`),
+which never changes another connection's selection, focus or navigation.
 
 At speech end, the sensor frame captures the session ID, focus, and a local
 generation. `CONTINUE_OPEN_AGENT_CONVERSATION` is available whenever an agent
@@ -756,8 +891,9 @@ Reading another call or explicitly refreshing uses the current group revision.
 `next` is `{index, offset}` or null. Index selects a call;
 offset counts UTF-16 units in its name, input and result, separated by blank lines.
 Each page contains at most 8,192 units (under 50 KiB even with worst-case JSON
-escaping), against the socket's existing 2 MiB write-backpressure threshold.
-Requests remain under its 32 KiB input bound and 16 outstanding-control limit.
+escaping), far below each connection's 16 MiB ordered-backlog bound (see
+[state stream](#state-stream-conversation-sync-and-backpressure)). Requests
+remain under its 32 KiB input bound and 16 outstanding-control limit.
 Replies go only to the requester, never through session broadcasts.
 
 The portable panel and native client create the details reader only on expansion.
@@ -815,3 +951,42 @@ sources **external (unverified)**, retains existing composer text by default,
 and preserves the existing no-focus/explicit-focus behavior. Internal sources
 and turn leases keep their current shape and semantics. Update the listener and
 shared UI together to display the explicit external attribution.
+
+### Remote panels
+
+A socket client that relays another device's panel, such as the phone gateway in
+[`src/remote/`](../remote/README.md), first sends
+`{"action":"client-role","role":"remote"}` and receives `role-recorded`. The role
+must be declared before that connection reports any desktop panel, focus,
+navigation, draft-host or media state; the listener refuses it afterwards.
+Existing clients never send it and keep their current behavior.
+
+For a remote connection:
+
+- `panel-state` records only which conversation **that connection** shows (`id`,
+  empty for other pages). Focus, `visible`, `navigationToken` and `draftHost` are
+  ignored. It never changes the desktop's selected conversation, speech routing,
+  `go to session` navigation, keyboard delivery guards or draft hosting.
+- `choose-agent`, `stop-agent-run` and `agent-tool-page` check that connection's
+  own selection instead of the desktop selection. The desktop cannot act on a
+  conversation merely because a phone shows it, and vice versa.
+- Choice and stop controls for its selection arrive only on that connection as
+  `{"type":"remote-agent-actions","actions":{...}}`, in the `agentActions` shape,
+  and only when they change. Global `agent-actions` still describe the desktop
+  selection; remote clients should ignore them.
+- `paste`, `submit-utterance`, `media-playback`, `composer-focus` and
+  `agent-draft-result` are refused: they act on the desktop's focused window,
+  keyboard, media or composer drafts.
+- `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
+  starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
+  the ordinary tab/concurrency limits, opens in the background on desktop panels,
+  and returns `{outcome: "started", id}`. Desktop clients cannot use this action.
+- `start-history-agent` reuses the selected utterance's saved screenshot and opens
+  the conversation in the desktop background. `reopen-agent` also suppresses
+  desktop reveal. Neither path changes desktop dictation selection or captures
+  a new screenshot.
+
+Every result/error envelope now echoes a string `requestId` of at most 128
+characters when the request carried one, for correlation of concurrent replies.
+The Unix socket remains the only listener transport; network access, pairing and
+authentication belong to the separate gateway process.

@@ -106,3 +106,68 @@ test('Activity text focus failure returns the draft instead of submitting to a d
   assert.equal(result.text, 'insert retained');
   assert.match(result.error, /Focus changed/);
 });
+
+test('shell observer declares incremental sessions without claiming the native selection', () => {
+  const setup = fixture();
+  const sent: unknown[] = [];
+  setup.root.send = (request: unknown) => sent.push(request);
+  setup.method('reportObserverState')();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
+    {
+      action: 'panel-state',
+      id: '',
+      composerFocused: false,
+      keyboardFocused: false,
+      incrementalSessions: true,
+    },
+  ]);
+});
+
+test('shell panel reports declare incremental sessions when the shell owns the panel', () => {
+  const sent: { incrementalSessions?: boolean; id?: string }[] = [];
+  const context = {
+    root: { send: (request: { incrementalSessions?: boolean }) => sent.push(request) },
+    native: { ready: false },
+    agentSessions: { viewedId: 'visible', panelVisible: true, navigationToken: 'token' },
+    sidePanel: { composerFocusId: '', keyboardFocused: false },
+  };
+  const body = source.match(/\n {2}function reportPanelState\(\) \{[\s\S]*?\n {2}\}/)![0];
+  (runInNewContext('(' + body + ')', context) as () => void)();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].id, 'visible');
+  assert.equal(sent[0].incrementalSessions, true);
+});
+
+test('shell state messages retain conversations through the shared session state', () => {
+  const applied: unknown[] = [];
+  const agentSessions = {
+    controlsAvailable: false,
+    controlReceived() {},
+    applyState: (message: unknown) => applied.push(message),
+    replace: () => assert.fail('Session-less state must not replace conversations'),
+  };
+  const root: any = { updateAgentActions() {} };
+  const context = {
+    root,
+    agentSessions,
+    sidePanel: {},
+    activityHistory: { observe() {} },
+    JSON,
+  };
+  const body = source.match(/\n {2}function receive\(line\) \{[\s\S]*?\n {2}\}/)![0];
+  const receive = runInNewContext('(' + body + ')', context) as (line: string) => void;
+  receive(
+    JSON.stringify({
+      type: 'state',
+      protocol: 1,
+      ready: true,
+      history: [],
+      sessionControlsAvailable: true,
+      activitySessionId: 'activity',
+      activityHistoryCount: 0,
+    }),
+  );
+  assert.equal(applied.length, 1);
+  assert.equal(agentSessions.controlsAvailable, true);
+  assert.equal(root.lastError, undefined);
+});

@@ -115,7 +115,9 @@ TestCase {
     const page = findChild(body, "fullActivityStatus")
     const section = findChild(body, "intentionsSection")
     tryVerify(function() { return section.height > 0 })
-    page.contentY = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, section.y))
+    page.scrollToItem(section)
+    // Let the folded sections finish their layout before clicking.
+    verify(waitForRendering(page))
 
     for (const mode of ["inference", "shortcut"]) {
       const card = findChild(body, (mode === "inference" ? "intent-" : "shortcut-") + intent.name)
@@ -202,7 +204,7 @@ TestCase {
     const page = findChild(body, "fullActivityStatus")
     const history = findChild(body, "historySection")
     tryVerify(function() { return history.height > 0 })
-    page.contentY = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, history.y))
+    page.scrollToItem(history)
     tryVerify(function() { return findChild(body, "history-action-delete-history") !== null })
     const button = findChild(body, "history-action-delete-history")
     tryVerify(function() { return button.visible && button.enabled })

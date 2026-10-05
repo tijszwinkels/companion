@@ -19,6 +19,14 @@ QtObject {
   property bool modelsRequested: false
   property bool modelsLoading: false
   property string modelsError: ""
+  // The Claude picker's allowlist has its own request and state, so opening a
+  // Claude Code conversation never starts Pi discovery and a Pi failure cannot
+  // hide the Claude models. Same caching rules as Pi's catalogue.
+  property var claudeModelCatalog: ({models: []})
+  property bool claudeModelsLoaded: false
+  property bool claudeModelsRequested: false
+  property bool claudeModelsLoading: false
+  property string claudeModelsError: ""
   // A request in flight must not select a tab after the user changes pages or
   // hides/reopens this UI. Each client instance has an independent token.
   property string navigationToken: Date.now().toString() + "-" + Math.random().toString()
@@ -40,10 +48,39 @@ QtObject {
     root.controlRequested({action: "agent-models"})
   }
 
+  function ensureClaudeModels() {
+    if (!root.claudeModelsRequested) root.refreshClaudeModels()
+  }
+
+  function refreshClaudeModels() {
+    if (!root.controlsAvailable || root.claudeModelsLoading) return
+    root.claudeModelsRequested = true
+    root.claudeModelsLoading = true
+    root.claudeModelsError = ""
+    root.controlRequested({action: "claude-models"})
+  }
+
+  // The first state message after (re)connecting is authoritative for the
+  // conversation fields, including an older listener that omits them. Later
+  // state messages may omit them after this client declares
+  // `incrementalSessions` in panel-state; absence then means unchanged.
+  property bool hydrated: false
+
+  function applyState(message) {
+    if (message.sessions === undefined && root.hydrated) return
+    root.replace(message.sessions || [])
+    root.orderRevision = message.sessionOrderRevision || ""
+    root.previousSessions = message.previousSessions || []
+    root.hydrated = true
+  }
+
   function disconnectControls() {
+    root.hydrated = false
     root.controlsAvailable = false
     root.modelsLoading = false
     root.modelsRequested = false
+    root.claudeModelsLoading = false
+    root.claudeModelsRequested = false
     root.invalidateNavigation()
   }
 
@@ -51,8 +88,10 @@ QtObject {
     if (message.type === "agent-order") {
       const byId = {}
       for (const entry of root.sessions) byId[entry.id] = entry
-      // Full membership must agree. A later snapshot repairs a protocol gap;
-      // never silently drop conversations on a malformed/incomplete event.
+      // Full membership must agree; never silently drop conversations on a
+      // malformed/incomplete event. Only a state that carries conversations
+      // repairs such a gap: for an incrementalSessions client that is the
+      // full snapshot after reconnecting, not the routine session-less state.
       if (!Array.isArray(message.ids) || message.ids.length !== root.sessions.length
         || new Set(message.ids).size !== message.ids.length || message.ids.some(id => !byId[id])) return
       root.sessions = message.ids.map(id => byId[id])
@@ -68,6 +107,13 @@ QtObject {
       if (!root.modelsError) {
         root.modelCatalog = message.result
         root.modelsLoaded = true
+      }
+    } else if ((message.type === "result" || message.type === "error") && message.action === "claude-models") {
+      root.claudeModelsLoading = false
+      root.claudeModelsError = message.type === "error" ? message.message : ""
+      if (!root.claudeModelsError) {
+        root.claudeModelCatalog = message.result
+        root.claudeModelsLoaded = true
       }
     }
   }

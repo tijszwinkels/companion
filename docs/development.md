@@ -4,6 +4,10 @@ Reconciled with main at `46f301d` on 2026-09-22. This is an entry point for
 developers, including agents started inside Companion. Check the current tree
 and feature ledger before treating a dated status as current.
 
+For a new machine, follow the [installation guide](installation.md) first. It
+includes model acquisition, agent setup and explicit capture/activation checkpoints;
+this developer guide assumes those prerequisites.
+
 ## Find the right directory
 
 On Tijs's machine:
@@ -14,30 +18,39 @@ On Tijs's machine:
 | `/home/user/companion/agents`                                    | Pi agents' working directory and shared memory; not the source repo. |
 | `/home/user/companion/agents/memory/software/projects/companion` | Project index, tech-lead instructions, feature/review ledger.        |
 | `/home/user/companion/utterances.sqlite`                         | Live utterance database; use temporary databases for tests.          |
-| `widget-library/` in the running listener's checkout             | Reusable widget source, including local user workspace files.        |
+| `/home/user/companion/widget-library`                            | Live widget source (user library, unversioned scratch space).        |
+| `widget-library/` in a source checkout                           | Tracked example widgets, their tests and the widget guide.           |
 
 Read the source checkout's `AGENTS.md` and the relevant shared project notes
 before editing. On this machine `AGENTS.md` is intentionally Git-ignored, so a
 worktree must read `/home/user/Work/companion/AGENTS.md` explicitly. Preserve
-uncommitted widget designs, tests and other agents' work. Create worktrees under
+uncommitted widget designs, tests and other agents' work. Author live widgets in
+the user library (`--widget-library`/`COMPANION_WIDGET_LIBRARY`, default
+`~/companion/widget-library`); it is not a Git repository. Create worktrees under
 `.worktrees/`; implementation, review readiness, merge and deployment are separate
 milestones. User instructions can waive review for a particular change.
 
 ## Source and documentation map
 
-| Responsibility                                               | Source                                                          | Guide                                                                                      |
-| ------------------------------------------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| CLI assembly and config                                      | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                       |
-| Speech/typed observation queue, context and intent selection | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)     |
-| Capture, VAD and persistent ASR                              | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md) |
-| Pi sessions, follow-up queue, choices, naming and tools      | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                 |
-| History, exact intent requests, feedback and deletion        | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
-| Shared Activity/conversation components                      | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
-| Standalone Window/Sidebar/Dock client                        | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
-| Omarchy shortcuts, theme, media and focus bridge             | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
-| Widget tools, durable state and browser views                | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
-| Native WebEngine profile/module                              | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
-| Application text delivery                                    | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
+| Responsibility                                                                         | Source                                                          | Guide                                                                                      |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| CLI assembly and config                                                                | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                       |
+| Speech/typed observation queue, context and intent selection                           | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)     |
+| Capture, VAD and persistent ASR                                                        | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md) |
+| Provisional endpoint, speech continuation and commitment                               | `src/core/utterance-continuation.ts`, `src/core/pipeline.ts`    | [Speech timing](speech-timing.md)                                                          |
+| Pi/Claude Code sessions, harness selection, follow-up queue, choices, naming and tools | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                 |
+| History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
+| Shared Activity/conversation components                                                | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
+| Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
+| In-panel web browser (native window only)                                              | `integrations/panel/PanelBrowser*.{qml,mjs}`                    | [Panel browser](panel-browser.md)                                                          |
+| Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
+| Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
+| Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
+| Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
+| Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
+| Opt-in phone gateway, its supervised service and phone panel | `src/remote/`, `bin/companion-phone`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md) |
+| Opt-in listener/UI start after desktop login (systemd user units) | `src/login-startup/`, `bin/companion-login` | [Installation step 8](installation.md#8-start-companion-after-login-optional) |
+| Trusted local web apps: registry, lifecycle, app windows, phone app proxy | `src/apps/`, `bin/companion-app` | [Local apps](local-apps.md) |
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -52,19 +65,25 @@ focus and skips ASR; it creates no WAV. Conversation composer text instead goes
 straight to that conversation's follow-up queue. Preserve this distinction.
 
 Permanent intent wording lives in `src/processors/`; system assembly and user
-JSON live in `src/core/intent-detector.ts`. Scoped choice instructions live in
+JSON live in `src/core/intent-detector.ts`. Transcription cleanup wording lives
+in `src/core/transcription-cleanup/prompt.ts`. Scoped choice instructions live in
 `src/agents/choice-intents.ts`. For an actual past classifier request, use
 `utterances.intent_request` and its screenshot reference as described in the
 [protocol guide](../src/desktop/README.md). Reassembling today's instructions is
 not an exact replay of yesterday's dynamic prompt. Prefix-only dispatches do not
 call the classifier. Old design proposals contain historical prompt snapshots.
 
-| Configuration                                                               | Applies to                                                                                              |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Optional `companion.config.json` in the launch directory, or CLI `--config` | Intent LLM, ASR and VAD; defaults in `src/config.ts`.                                                   |
-| `~/companion/agents/companion-agent.json`                                   | Pi executable and coding model/thinking; nested `quickQuestion` model/thinking. Reloaded for each turn. |
-| Pi's provider configuration and credentials                                 | Providers used by Pi; quick questions require its local-Qwen provider to exist.                         |
-| `~/companion/disabled-intents.json`                                         | Independent persisted inference/shortcut switches.                                                      |
+| Configuration                                                                       | Applies to                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Optional `companion.config.json` in the launch directory, or CLI `--config`         | Intent LLM, ASR and VAD; defaults in `src/config.ts`.                                                                                                                                                                                            |
+| `~/companion/agents/companion-agent.json`                                           | Pi executable and coding model/thinking; nested `quickQuestion` model/thinking; `codingDefaultHarness` and `claudeCode` executable/model/effort. Reloaded for each turn; a Claude Code conversation's model changes only with its footer picker. |
+| Pi's provider configuration and credentials                                         | Providers used by Pi; the configured `quickQuestion.model` provider must exist (the default is installation-specific).                                                                                                                           |
+| `~/companion/agents/claude-tools.json` (proposed, opt-in; not created by Companion) | Pi-parity tool groups for Claude Code conversations (desktop, OpenRig, web); see [parity tools](../src/agents/claude/parity/README.md).                                                                                                          |
+| `~/companion/disabled-intents.json`                                                 | Independent persisted inference/shortcut switches.                                                                                                                                                                                               |
+| `~/companion/transcription-cleanup.json`                                            | Transcription cleanup switch; missing means off.                                                                                                                                                                                                 |
+
+A Claude Code conversation's model changes only through its footer picker, for
+the next turn and in the same Claude history; its effort never changes.
 
 Do not edit literal user-approved prompts as part of an unrelated refactor.
 The live panel transcript currently has limits of **800 bubbles** and
@@ -76,7 +95,9 @@ for the protocol and separate storage limits.
 
 ## Validate without activating
 
-Use dependencies matching the checkout's lockfile (`npm ci` for a fresh checkout).
+Use dependencies matching the checkout's lockfile. For a fresh CPU-only checkout,
+use `ONNXRUNTIME_NODE_INSTALL=skip npm ci`; see the [installation guide](installation.md)
+for the optional CUDA download this skips.
 Run checks appropriate to the change:
 
 ```sh
@@ -90,7 +111,9 @@ QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
 For native-window changes, build with `npm run ui:build`, then run
 `npm run test:window`. See the native guide for Qt/WebEngine/LayerShellQt
 dependencies and the window-only option. ASR changes use `npm run asr:build`,
-`npm run asr:test` and the relevant prerecorded regressions.
+`npm run asr:test` and the relevant prerecorded regressions. Endpoint or
+continuation changes also use `npm run asr:speech-timing`, which replays public
+audio in real time (several minutes).
 
 The format scripts also traverse `widget-library/`. Avoid rewriting another
 agent's local work; report unrelated failures separately. Test fixtures should
@@ -111,7 +134,8 @@ These are separate operations, not an automatic deployment script:
 | Standalone native C++ or Qt dependencies | `npm run ui:build`, then stop/relaunch the UI with `npm run ui`. Rebuild after Qt upgrades because Sidebar/Dock use matching private Qt headers. |
 | Source-launched UI QML                   | Stop/relaunch the UI; restarting the listener does not reload it. Packaged UI assets require their own update.                                   |
 | Installed Omarchy QML or Lua             | `npm run omarchy:install` from a Hyprland desktop terminal. QML changes rescan the plugin; changed bindings can reload Hyprland.                 |
-| Pi model settings                        | Edit the profile config; the next turn reloads it without a listener restart.                                                                    |
+| Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Claude conversations keep effort; only their picker changes model. |
+| Login services (`bin/companion-login`)   | `systemctl --user restart companion-listener.service companion-ui.service` after rebuilding; rerun `companion-login enable` when Node/Pi/wtype/config paths change. |
 
 Save unsent drafts before stopping the UI. Its window close button hides the
 resident process; it does not exit it. Stop that process before relaunching when
@@ -144,3 +168,28 @@ use temporary session stores, real subprocesses and sockets, and synthetic agent
 backends. Never point these tests at the live listener or personal session store.
 The feature is off unless the listener is explicitly started with
 `--external-sessions`; activation remains a separate user decision.
+
+## Local app development
+
+`bin/companion-app` registers, runs and opens trusted local web apps; nothing
+starts it automatically and it never restarts Companion. `npm run apps:demo` runs
+the synthetic CSV notebook in a temporary directory. Unit tests
+(`test/unit/apps-*.test.ts`, `test/unit/remote-apps.test.ts`) run with `npm test`;
+`npm run test:apps` drives real headless Chromium with temporary profiles. Tests
+and demos must use temporary registries (`--apps-directory`), profiles and
+non-live ports; never the live `~/companion/apps`, the live gateway port or its
+state. Registering real apps, enabling phone access and configuring app host
+names/TLS are separate user decisions. See [the guide](local-apps.md).
+
+## Phone panel development
+
+`bin/companion-remote` is an opt-in gateway for the phone app in
+`integrations/mobile/`; nothing starts it automatically. `bin/companion-phone`
+optionally supervises it as a pinned, hardened transient systemd user service
+([guide](mobile-startup.md)); `npm run test:phone-service` exercises that against
+the real user manager with uniquely named test units and synthetic state only. `npm run mobile:build`
+builds the app, `npm run mobile:demo` runs a fully synthetic listener and gateway
+on loopback, and `npm run test:mobile` drives the built app in headless Chromium.
+Gateway and remote-role unit tests use temporary state and synthetic backends.
+Pairing a real phone, serving on a Tailscale address and running the production
+listener with this protocol are separate user decisions.

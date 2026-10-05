@@ -61,10 +61,11 @@ needed to update this adapter.
   desktop-wide numbered shortcuts are registered.
 - Drag a conversation tab, or use **Alt+Shift+Up/Down** while the panel is
   focused, to move it. Activity and Previous stay fixed. Q1–Q9, Alt-number and
-  **“Go to session one”** (also digits 1–9) use this same order. Spoken navigation
-  works from any visible panel page, has its own shortcut toggle, and rejects
-  stale/invalid targets without sending text to an agent. Order survives UI
-  reconnects for this listener run; new/reopened tabs append.
+  **“Go to session one”** through **“go to session sixteen”** (also digits 1–16)
+  use this same order. Spoken navigation works from any visible panel page, has
+  its own shortcut toggle, and rejects stale/invalid targets without sending
+  text to an agent. At most 16 conversation tabs can be open.
+  Order survives UI reconnects for this listener run; new/reopened tabs append.
 - Drag the divider beside the tab rail to widen it. The larger tab heights,
   icons and text remain unchanged; captions use the extra width. The rail stays
   between 80 and 280 theme units and leaves at least 320 units for the body where
@@ -75,7 +76,9 @@ needed to update this adapter.
   coding/quick-question default. Overrides survive closing and reopening, while
   running turns and other sessions keep their models. Thinking follows the
   conversation profile, or `off` for models without reasoning. The picker does
-  not edit profile or Pi configuration.
+  not edit profile or Pi configuration. A Claude Code conversation's picker
+  lists Claude models only and switches its next turn in the same Claude
+  history; its effort stays as it started and has no picker.
 - While the panel has keyboard focus, **Super+minus** widens it and
   **Super+equals** narrows it by 100 logical pixels. These are Omarchy's existing
   physical horizontal-resize keys (`code:20`/`code:21`); their original window
@@ -200,7 +203,8 @@ status or expands the microphone and phrase animation. The choice follows you
 between tabs until the plugin is restarted; hidden animations stop immediately.
 Each session has Stop and
 Close session controls, plus a composer for follow-ups (Enter sends; Shift+Enter
-inserts a newline). A follow-up resumes its Pi conversation. Closing the panel
+inserts a newline). A follow-up resumes its Pi or Claude Code conversation.
+Closing the panel
 keeps its questions running and retains its drafts. Right-click a question tab or
 use the animated **×** at its top-right corner to stop and archive it. **Previous
 sessions** at the bottom of the tab rail shows saved titles, dates, and status in

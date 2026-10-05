@@ -88,7 +88,7 @@ test('quick conversations retain their profile across queued turns, process rest
       }
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => finish.resolve());
   context.after(() => sessions.close());
   const id = sessions.start(frame, signal(), 'quickQuestion');
@@ -105,7 +105,7 @@ test('quick conversations retain their profile across queued turns, process rest
   await sessions.remove(id);
   await sessions.close();
 
-  const restarted = new AgentSessions({ backend }, () => {}, directory);
+  const restarted = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => restarted.close());
   await restarted.loadPrevious();
   await restarted.reopen(id);
@@ -138,7 +138,7 @@ test('old archived conversations retain coding settings; invalid stored profiles
       requests.push(request);
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => sessions.close());
   const id = sessions.start(frame, signal());
   await sessions.idle();
@@ -166,7 +166,7 @@ test('quick-question preview and cancellation never launch an agent', async (con
       assert.fail('Preview launched an agent');
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => sessions.close());
   const preview = new QuickQuestion({ sessions }, () => {}, true);
   await preview.process(frame, signal());
@@ -201,7 +201,7 @@ test('conversation model overrides preserve an active turn, queued profile think
       }
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => finish.resolve());
   context.after(() => sessions.close());
   // Discovery must not initialize or rewrite the user's configuration.
@@ -228,7 +228,7 @@ test('conversation model overrides preserve an active turn, queued profile think
   await sessions.remove(id);
   await sessions.close();
 
-  const restarted = new AgentSessions({ backend }, () => {}, directory);
+  const restarted = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => restarted.close());
   await restarted.loadPrevious();
   await restarted.reopen(id);
@@ -276,7 +276,7 @@ test('effort is conversation-local, captured per turn and durable independently 
       }
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => finish.resolve());
   context.after(() => sessions.close());
   const id = sessions.start(frame, signal(), 'quickQuestion');
@@ -343,7 +343,7 @@ test('effort discovery cannot change a closed conversation or race a simultaneou
       };
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   context.after(() => catalog.resolve());
   context.after(() => sessions.close());
   const id = sessions.start(frame, signal());
@@ -382,7 +382,7 @@ test('a failed effort write rolls back snapshots already queued by a completing 
       await finish.promise;
     },
   };
-  const sessions = new AgentSessions({ backend }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend }, () => {}, directory);
   const replace = SessionStore.prototype['replace'];
   const save = SessionStore.prototype.save;
   let intercepted = false;

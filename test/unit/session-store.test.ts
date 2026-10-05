@@ -137,7 +137,7 @@ test('close and restart keep history dormant; reopen restores the same UUID and 
     requests.push(request);
     emit(chatMessage('answer', 'assistant', `Answer ${requests.length}`));
   });
-  const sessions = new AgentSessions({ backend: agent }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: agent }, () => {}, directory);
   const id = sessions.start(frame, signal());
   await sessions.idle();
   const before = sessions.snapshot()[0];
@@ -146,7 +146,7 @@ test('close and restart keep history dormant; reopen restores the same UUID and 
   assert.equal(sessions.previousSnapshot().length, 1);
   await sessions.close();
 
-  const restarted = new AgentSessions({ backend: agent }, () => {}, directory);
+  const restarted = new AgentSessions({ pi: agent }, () => {}, directory);
   context.after(() => restarted.close());
   await restarted.loadPrevious();
   assert.equal(restarted.snapshot().length, 0);
@@ -176,7 +176,7 @@ test('closing a running turn blocks new input and archives the final cancelled t
   let running = false;
   const sessions = new AgentSessions(
     {
-      backend: backend(async (_request, signal, emit) => {
+      pi: backend(async (_request, signal, emit) => {
         running = true;
         emit({ ...chatMessage('answer', 'assistant', 'Partial answer'), state: 'running' });
         await stopped(signal);
@@ -202,7 +202,7 @@ test('closing a running turn blocks new input and archives the final cancelled t
 
 test('failed close retains its tab; failed reopen retains history and can be retried', async (context) => {
   const { directory, path } = await fixture(context);
-  const sessions = new AgentSessions({ backend: backend() }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend() }, () => {}, directory);
   context.after(() => sessions.close());
   const id = sessions.start(frame, signal());
   await sessions.idle();
@@ -233,7 +233,7 @@ test('save errors remain visible and cancellation before startup never launches 
   await rm(path, { recursive: true });
   await writeFile(path, 'not a directory');
   const sessions = new AgentSessions(
-    { backend: backend(async () => assert.fail('No model call')) },
+    { pi: backend(async () => assert.fail('No model call')) },
     () => {},
     directory,
   );
@@ -249,11 +249,11 @@ test('save errors remain visible and cancellation before startup never launches 
 
 test('concurrent restores reserve the tab limit and cannot restore one conversation twice', async (context) => {
   const { directory, store } = await fixture(context);
-  const saved = Array.from({ length: 13 }, savedSession);
+  const saved = Array.from({ length: 17 }, savedSession);
   for (const session of saved) {
     await store.save(session);
   }
-  const sessions = new AgentSessions({ backend: backend() }, () => {}, directory);
+  const sessions = new AgentSessions({ pi: backend() }, () => {}, directory);
   context.after(() => sessions.close());
   await sessions.loadPrevious();
   const first = sessions.reopen(saved[0].id);
@@ -263,7 +263,7 @@ test('concurrent restores reserve the tab limit and cannot restore one conversat
     saved.slice(1).map((session) => sessions.reopen(session.id)),
   );
   assert.equal(attempts.filter((result) => result.status === 'rejected').length, 1);
-  assert.equal(sessions.snapshot().length, 12);
+  assert.equal(sessions.snapshot().length, 16);
   assert.equal(sessions.previousSnapshot().length, 1);
-  assert.throws(() => sessions.start(frame, signal()), /12 tabs maximum/);
+  assert.throws(() => sessions.start(frame, signal()), /16 tabs maximum/);
 });

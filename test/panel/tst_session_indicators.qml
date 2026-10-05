@@ -203,6 +203,70 @@ Item {
       compare(findChild(finished, "sessionRunningRing").visible, false)
     }
 
+    function test_selected_tab_has_a_right_edge_marker_distinct_from_hover_running_and_unread() {
+      const host = createTemporaryObject(panelComponent, scene)
+      const running = session("one", "running", "")
+      const unread = session("two", "completed", "turn")
+      unread.title = "🐛 Login fix"
+      const plain = session("three", "completed", "")
+      plain.title = "Original question"
+      host.panel.sessions = [running, unread, plain]
+      host.panel.unreadSessionIds = {two: true}
+      host.panel.selectedSessionId = "two"
+      verify(waitForRendering(host))
+      const tabs = ["one", "two", "three"].map(id => findChild(host, "tab-" + id))
+      const markers = tabs.map(tab => findChild(tab, "sessionSelectionMarker"))
+      compare(markers.map(marker => marker.visible), [false, true, false])
+      const marker = markers[1]
+      compare(marker.x + marker.width, tabs[1].width, "The marker sits on the right edge")
+      verify(marker.width >= 3 && marker.height >= tabs[1].height / 2)
+      compare(marker.color.toString(), host.panel.accent.toString())
+      compare(findChild(tabs[1], "sessionUnreadDot").visible, true, "Selection keeps the unread cue")
+      compare(findChild(tabs[0], "sessionRunningRing").visible, true, "Running keeps its ring without a marker")
+      compare(findChild(host, "activitySelectionMarker").visible, false)
+
+      // Rendered pixels: the marker's accent line is present on the selected
+      // tab only, including while another tab is hovered.
+      mouseMove(tabs[2], tabs[2].width / 2, tabs[2].height - 8)
+      tryVerify(function() { return tabs[2].hovered })
+      compare(markers[2].visible, false, "Hover is not selection")
+      const image = grabImage(host)
+      function sample(tab) {
+        const point = tab.mapToItem(host, tab.width - 1.5 * tab.tabUnit, tab.height / 2)
+        return image.pixel(Math.round(point.x), Math.round(point.y))
+      }
+      compare(sample(tabs[1]).toString(), host.panel.accent.toString())
+      verify(sample(tabs[2]).toString() !== host.panel.accent.toString())
+      verify(sample(tabs[0]).toString() !== host.panel.accent.toString())
+
+      // The marker never takes clicks: selecting through it and closing
+      // through the hover control still work.
+      let selected = ""
+      let closed = ""
+      host.panel.sessionSelected.connect(function(id) { selected = id })
+      host.panel.dismissSessionRequested.connect(function(id) { closed = id })
+      mouseClick(tabs[1], tabs[1].width - 1.5 * tabs[1].tabUnit, tabs[1].height - 10 * tabs[1].tabUnit)
+      compare(selected, "two")
+      const close = findChild(tabs[1], "closeSessionTab")
+      mouseMove(tabs[1], tabs[1].width / 2, tabs[1].height / 2)
+      tryVerify(function() { return close.opacity > 0.5 })
+      mouseClick(close, close.width / 2, close.height / 2)
+      compare(closed, "two")
+
+      host.panel.selectedSessionId = "three"
+      compare(markers.map(item => item.visible), [false, false, true], "The marker follows selection")
+      host.panel.selectedSessionId = ""
+      compare(markers.map(item => item.visible), [false, false, false])
+      compare(findChild(host, "activitySelectionMarker").visible, true, "Activity uses the same marker")
+      host.panel.showingPrevious = true
+      compare(findChild(host, "activitySelectionMarker").visible, false)
+      compare(findChild(host, "previousSelectionMarker").visible, true)
+      host.panel.showingPrevious = false
+      host.panel.selectedSessionId = "two"
+      verify(waitForRendering(host))
+      grabImage(host).save("/tmp/companion-session-selection-marker.png")
+    }
+
     function test_visual_preview() {
       const host = createTemporaryObject(panelComponent, scene)
       const active = session("one", "running", "")

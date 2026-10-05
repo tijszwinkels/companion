@@ -28,7 +28,7 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
   let emit!: Parameters<AgentBackend['run']>[2];
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'lazy-tools',
         label: 'Lazy tool fixture',
         dependencies: {},
@@ -210,7 +210,7 @@ test('stopping expires active reads and archives complete partial output for res
   await setup.sessions.remove(setup.id);
   const restarted = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'unused',
         label: 'Unused',
         dependencies: {},
@@ -280,7 +280,7 @@ for (const kind of ['assistant', 'tool'] as const) {
     await writeFile(join(storage, 'tool-transcripts.sqlite'), 'not a sqlite database');
     const sessions = new AgentSessions(
       {
-        backend: {
+        pi: {
           id: 'storage-failure',
           label: 'Storage failure fixture',
           dependencies: {},
@@ -421,7 +421,7 @@ for (const damage of ['missing', 'corrupt']) {
         assert.fail('Do not resume while reopening');
       },
     };
-    const restarted = new AgentSessions({ backend }, () => {}, setup.directory);
+    const restarted = new AgentSessions({ pi: backend }, () => {}, setup.directory);
     try {
       await restarted.loadPrevious();
       assert.equal(restarted.previousSnapshot().length, 1);
@@ -441,7 +441,7 @@ for (const damage of ['missing', 'corrupt']) {
     // Closing with unavailable details must preserve their IDs. Restoring the
     // original private database makes the complete text readable again.
     await writeFile(path, database, { mode: 0o600 });
-    const recovered = new AgentSessions({ backend }, () => {}, setup.directory);
+    const recovered = new AgentSessions({ pi: backend }, () => {}, setup.directory);
     try {
       await recovered.loadPrevious();
       await recovered.reopen(setup.id);
@@ -494,7 +494,7 @@ test('legacy archives remain grouped and lazy through corrupt-store reopen, foll
   await writeFile(join(storage, 'tool-transcripts.sqlite'), 'corrupt store');
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'ordinary-follow-up',
         label: 'Ordinary follow-up',
         dependencies: {},
@@ -635,7 +635,7 @@ test('legacy fallback saves retain the grouped display limit after adding follow
   await writeFile(join(storage, 'tool-transcripts.sqlite'), 'corrupt store');
   const sessions = new AgentSessions(
     {
-      backend: {
+      pi: {
         id: 'fixture',
         label: 'Fixture',
         dependencies: {},

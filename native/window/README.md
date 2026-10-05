@@ -17,8 +17,9 @@ The shared panel also provides per-conversation next-turn model selection, tab
 dragging and Alt+Shift+Up/Down reordering, and a draggable rail divider. These
 controls remain in the same QML body across Window/Sidebar/Dock. Open-tab order
 is owned by the listener and survives reconnects; rail width lasts for the UI
-process. “Go to session one” through nine follows that visible order and only
-selects the UI/order captured before transcription. See the
+process. “Go to session one” through sixteen (also numerals 1–16) follows
+that visible order and only selects the UI/order captured before transcription.
+At most 16 conversation tabs can be open. See the
 [desktop contract](../../src/desktop/README.md#model-selection-ordering-and-spoken-navigation)
 for scope, persistence and stale-request handling.
 
@@ -43,6 +44,19 @@ resize an ordinary surface directly can change its content size while Hyprland
 keeps the outer window at the previous size. The shortcut regression executes
 the shipped Lua with inert compositor objects; live geometry still needs a
 coordinated check after updating the installed adapter's bindings.
+
+## Panel browser
+
+The header's **Browser** control shows a minimal web browser in place of the
+chat, inside the same persistent body, so it survives Window/Sidebar/Dock moves
+and returns to the same conversation, draft and pins. Its controls are hidden
+behind a slim status strip (hover, click or Ctrl+L). It uses its own named,
+persistent WebEngine profile, separate from the restricted widget profile, and
+refuses pop-ups, downloads, permissions and non-web schemes with a visible
+notice. Script dialogs appear as a small in-panel dialog the user answers.
+It needs Qt WebEngine 6.9+; with 6.8 the control shows a message instead. Only
+this standalone host enables it; the portable Quickshell panel never loads it. See [the panel browser guide](../../docs/panel-browser.md) for
+behaviour, storage, limits and tests.
 
 ## Build without activating
 

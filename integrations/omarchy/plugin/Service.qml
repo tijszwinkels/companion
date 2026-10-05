@@ -24,6 +24,8 @@ Item {
   property bool textInputAvailable: false
   property string pendingUtterance: ""
   property var intents: []
+  // {enabled: bool}, or null when the listener has no transcription cleanup.
+  property var transcriptionCleanup: null
   property var agentActions: ({})
   property string lastError: ""
   property string lastErrorAction: ""
@@ -49,6 +51,7 @@ Item {
   onPanelOpenedChanged: Qt.callLater(root.reportPanelState)
   onOnlineChanged: {
     if (online) {
+      if (native.ready) Qt.callLater(root.reportObserverState)
       Qt.callLater(root.reportPanelState)
       Qt.callLater(root.reportMediaPlayback)
     }
@@ -70,7 +73,7 @@ Item {
       root.pendingHistoryInsert = null
       playback.resumePaused()
       if (ready) {
-        root.send({action: "panel-state", id: "", composerFocused: false, keyboardFocused: false})
+        root.reportObserverState()
         native.send({action: "claim"})
       }
     }
@@ -133,6 +136,14 @@ Item {
     onPageRequested: request => root.send(request)
   }
 
+  // While the native window owns the panel, this observer still keeps its own
+  // conversations. Declare once per connection that routine state messages
+  // may omit them; this neutral report never claims selection or focus.
+  function reportObserverState() {
+    root.send({action: "panel-state", id: "", composerFocused: false, keyboardFocused: false,
+      incrementalSessions: true})
+  }
+
   function reportPanelState() {
     if (native.ready) return
     // A retained selection without a displayed panel is not a voice target.
@@ -141,7 +152,7 @@ Item {
       composerFocused: id !== "" && sidePanel.composerFocusId === id,
       keyboardFocused: sidePanel.keyboardFocused,
       visible: agentSessions.panelVisible, navigationToken: agentSessions.navigationToken,
-      draftHost: true})
+      draftHost: true, incrementalSessions: true})
   }
 
   // The listener only asks the panel that advertised draftHost. Apply the text
@@ -345,11 +356,11 @@ Item {
         // mouse click or tooltip. Only changed routing state replaces the list.
         const intents = message.intents || []
         if (JSON.stringify(root.intents) !== JSON.stringify(intents)) root.intents = intents
+        const cleanup = message.transcriptionCleanup || null
+        if (JSON.stringify(root.transcriptionCleanup) !== JSON.stringify(cleanup)) root.transcriptionCleanup = cleanup
         root.updateAgentActions(message.agentActions)
-        agentSessions.replace(message.sessions || [])
-        agentSessions.orderRevision = message.sessionOrderRevision || ""
+        agentSessions.applyState(message)
         agentSessions.controlsAvailable = message.sessionControlsAvailable === true
-        agentSessions.previousSessions = message.previousSessions || []
         // Activate the panel only after its first/reconnected snapshot is ready,
         // so it never animates a stale phrase retained from the old connection.
         root.online = message.ready
@@ -572,6 +583,7 @@ Item {
     activityHistory.disconnected()
     agentSessions.disconnectControls()
     root.intents = []
+    root.transcriptionCleanup = null
     root.agentActions = ({})
     root.cancel()
 
@@ -648,6 +660,7 @@ Item {
     processing: root.processing
     history: root.history
     intents: root.intents
+    transcriptionCleanup: root.transcriptionCleanup
     activityHistoryModel: activityHistory.model
     activityHistoryAvailable: activityHistory.available
     historyDeletionAvailable: root.historyDeletionAvailable
@@ -662,10 +675,11 @@ Item {
     unreadSessionIds: agentSessions.unreadIds
     previousSessions: agentSessions.previousSessions
     showingPrevious: agentSessions.showingPrevious
-    controlError: ["set-agent-model", "set-agent-thinking", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
+    controlError: ["set-agent-model", "set-agent-thinking", "move-agent", "close-agent", "reopen-agent", "stop-agent", "stop-agent-run", "focus-agent", "set-intent-enabled", "set-transcription-cleanup", "paste", "start-history-agent", "label-history", "delete-history", "activity-history"].includes(root.lastErrorAction) ? root.lastError : ""
     selectedSessionId: agentSessions.selectedId
     onCloseRequested: root.closePanel()
     onIntentEnabledRequested: (name, enabled, mode) => root.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})
+    onTranscriptionCleanupRequested: enabled => root.send({action: "set-transcription-cleanup", enabled: enabled})
     onHistoryActionRequested: (action, id, value) => root.historyAction(action, id, value)
     onSessionSelected: id => agentSessions.select(id)
     onPreviousRequested: agentSessions.showingPrevious = true

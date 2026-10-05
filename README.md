@@ -5,24 +5,33 @@ one intent, and routes the sensor frame to a subscribed processor. Explicit
 command prefixes skip intent inference.
 The previous experiment lives in `../companion_spike`.
 
+**New installation? Start with the [complete installation guide](docs/installation.md)**
+for humans and coding agents: you set up Pi first, then Pi can follow the rest with
+you: prerequisites, ASR/model downloads, local or trusted-LAN inference, agent setup,
+desktop integration, optional login startup, privacy and first-run checkpoints.
+A fresh Omarchy 4.0.4 VM installation, done by Pi with a local model, passed except the
+audio path; see the guide's validation status.
+
 Developing Companion, including from a Companion agent session? Start with
 [the development guide](docs/development.md) for the source map, configuration,
 tests, documentation and the separate backend/UI/adapter update steps.
 
 ## Run
 
-From a terminal inside the Hyprland desktop session:
+After completing the [installation checkpoints](docs/installation.md), run from
+a terminal inside the Hyprland desktop session. **The following starts microphone
+capture and types detected dictation into the active application.** Select the
+intended text field first; add `--paused` to start with microphone capture off.
+Even paused startup takes and discards one active-window screenshot, so display
+harmless content before launching. Ctrl+C stops capture, inference, and child processes.
 
 ```sh
 cd ~/Work/companion
-npm ci
-npm run asr:build
 npm start
 ```
 
-This starts microphone capture and **types detected dictation into the active
-application**. Select the intended text field and speak. Ctrl+C stops capture,
-inference, and child processes.
+To start Companion paused after each desktop login instead, see
+[Start Companion after login](docs/installation.md#8-start-companion-after-login-optional).
 
 - **“insert hello”** types `hello`, without pressing Enter.
 - **“enter hello”** types `hello`, then presses Enter.
@@ -34,7 +43,9 @@ These prefixes bypass the intent LLM. Matching is case-insensitive and accepts p
 after the command, such as “Insert, hello”. It matches whole prefixes: “entering”
 does not trigger “enter”. A command with no following text does nothing.
 
-To observe without typing, pressing Enter, or launching an agent:
+To observe without dispatched typing, Enter, or agent starts, use preview.
+**It still captures, can call the classifier, and retains desktop history/audio/PNG.**
+See the [data and stopping guidance](docs/installation.md#before-you-begin).
 
 ```sh
 npm start -- --preview
@@ -80,11 +91,18 @@ native session state and retains it when the conversation is saved and reopened.
 
 `START_CODING_AGENT_SESSION` is also available to the intent recognizer, for
 questions addressed to the computer's AI assistant. Each invocation starts an
-independent Pi session in `~/companion/agents`. **“new session …”** bypasses intent
-inference and uses the coding model (Astra by default). It replaces the old
-“new coding agent” shortcut. **“quick question …”** is a separate, prefix-only
-`QUICK_QUESTION` processor using local Qwen through the same Pi backend. Both
-send the captured screenshot and utterance and open an ordinary conversation tab.
+independent agent session in `~/companion/agents` using the configured coding
+harness: Pi by default, or Claude Code when `codingDefaultHarness` is
+`claude-code`. **“new session …”** bypasses intent inference and does the same;
+on Pi it uses the coding model (Astra by default). It replaces the old
+“new coding agent” shortcut. **“new claude session …”** always starts Claude
+Code with the configured Claude model, and **“new pi session …”** always
+starts Pi with the coding model. A Claude Code conversation keeps the effort
+it started with; its footer can switch the next turn to another Claude model in
+the same Claude history. **“quick question …”** is a separate, prefix-only
+`QUICK_QUESTION` processor using local Qwen through the same Pi backend. All of
+them send the captured screenshot and utterance and open an ordinary
+conversation tab.
 
 When an agent conversation is selected in the visible sidebar,
 `CONTINUE_OPEN_AGENT_CONVERSATION` joins the classifier's choices. With its input
@@ -174,8 +192,9 @@ rendering by default. Switching tabs keeps the host's size. Scrolling
 up stops following the stream until you return to the bottom. Conversation wheel
 and touchpad scrolling use a 3× multiplier, confined to the transcript area.
 
-Agents can also publish reusable **interactive widgets** from
-[`widget-library/`](widget-library/README.md): compact diagrams, comparisons,
+Agents can also publish reusable **interactive widgets** from the user widget
+library, `~/companion/widget-library` by default (see
+[library location](widget-library/README.md#library-location)): compact diagrams, comparisons,
 charts, to-do lists and WebGL views. The agent supplies props or calls a declared
 action instead of repeating the implementation. A hover arrow opens a dedicated
 Chromium window sharing the same saved state. Widgets may be pinned above the
@@ -198,6 +217,9 @@ is independently clickable: turning off recognition leaves that processor's
 explicit shortcut usable, and turning off its shortcut leaves recognition usable.
 Off and context-unavailable routes appear grey, with a written state beneath the
 label. `IGNORE` always remains available as the required no-action fallback.
+**Clean up transcriptions** (above the cards, default off) sends the text routes
+a cleaned-up version of what you said. History keeps the raw transcript next to
+the cleaned text; see [transcription cleanup](docs/transcription-cleanup.md).
 Switches persist in `~/companion/disabled-intents.json`; existing disabled intents
 migrate as disabled in both modes. A disabled prefix remains reserved and is
 skipped, never reinterpreted as dictation or another command. Conversation-owned
@@ -284,7 +306,7 @@ the partial answer; a hard crash may lose the current turn's unsaved output, but
 its saved question is recovered as stopped. A missing Pi transcript still permits
 viewing history, but continuing it fails visibly instead of starting without context.
 This first version permits four simultaneous
-questions and twelve tabs, with a 256 KiB/200-message display limit per session.
+questions and sixteen tabs, with a 256 KiB/200-message display limit per session.
 Tool output is clipped to 16 KiB in a bubble. Interactive Pi extension dialogs
 are cancelled with a visible explanation rather than left waiting for a terminal.
 Per-session speech routing remains for the next iteration.
@@ -343,7 +365,10 @@ Speech audio for each saved transcript is retained alongside its screenshot at
 The WAV is uncompressed 16 kHz mono PCM16, encoded exactly like the input to
 transcription. Audio is saved even if screen capture or the later action fails,
 and for ignored speech. Old records and `--text` input have no audio file.
-Segments with failed or empty transcription, and overload drops, are not retained.
+Worker failures and overload drops are not retained. Eligible final empty ASR
+results are saved separately as `~/companion/asr-empty/YYYY-MM-DD/<clip-uuid>/audio.wav`
+and `metadata.json`; they have no transcript-history row and are not removed by
+Activity deletion. See [recording details](src/desktop/README.md).
 
 Say **“label previous correct”** or **“label previous incorrect”** to give feedback
 on the preceding utterance's selected intent. These standalone shortcuts bypass
@@ -367,6 +392,9 @@ including storage and sounds, for isolated CLI use.
 
 ## Prerequisites and configuration
 
+For acquisition and ordered setup commands, use the [installation guide](docs/installation.md).
+The defaults below describe existing source configuration, not a clean-machine installer.
+
 - Node.js 22.19 or newer.
 - Hyprland, `hyprctl`, `grim`, `pw-record`, `pw-play`, `wtype`, and util-linux
   `flock` on PATH.
@@ -383,11 +411,15 @@ including storage and sounds, for isolated CLI use.
 
 The bundled Silero VAD runs locally with ONNX Runtime. Transcription is local.
 For utterances without a matching prefix, the configured model endpoint receives
-the utterance, window identity, and PNG. Prefix commands make no model request.
+the utterance, window identity, and PNG. Prefixes bypass classification; agent-start/quick-question prefixes still call
+their configured model, and optional transcription cleanup can call the local
+model for text-delivery prefixes.
 With desktop history enabled, screenshots and speech audio for saved transcripts
 are retained under `~/companion/data`. Transcription itself uses private pipes and
-creates no temporary audio files. `--no-desktop` disables history and artifact
-storage.
+creates no temporary audio files. Eligible empty ASR results are also saved as
+diagnostic audio under `~/companion/asr-empty`. `--no-desktop` disables these
+desktop stores; it does not disable capture, model requests, typing, or independent
+agent conversation storage. See [retention and deletion](docs/installation.md#storage-deletion-and-egress).
 
 Optionally copy `companion.config.example.json` to `companion.config.json`.
 Supported configuration is defined in [src/config.ts](src/config.ts):
@@ -574,15 +606,22 @@ processed. The worker holds one active and up to two queued utterances; addition
 utterances are explicitly logged as dropped. Prefix commands use this same queue
 and preserve speech order; they do not overtake an earlier LLM request. File input
 waits for each result.
+
+Speech end is **provisional**: after 224 ms of silence, ASR and then the intent
+LLM start immediately. If speech resumes before the utterance commits to an
+action, the attempt is held; a continuation replaces it with the retranscribed
+whole utterance, while a rejected burst releases it unchanged. Shortcut commands
+still commit only after the old 800 ms of quiet. See [speech timing](docs/speech-timing.md).
 Silero requires 128 ms of detected speech (four 32 ms frames), so short words such
 as "stop", "yes", and "no" can reach transcription. Shorter triggers are discarded;
 lead-in and ending silence do not count toward that minimum. The detector uses
-0.65/0.35 start/continue probabilities, 800 ms ending silence, 256 ms preroll,
+0.65/0.35 start/continue probabilities, a 224 ms provisional ending silence, 256 ms preroll,
 and a 30-second segment limit. Audio startup loads one persistent
 Parakeet worker before capture. Successful utterances reuse it. Pause keeps an idle
 model warm; cancellation during ASR kills the worker, and the next utterance loads
 a replacement. Shutdown closes it. Failures are never replayed and the transcriber
-has no additional queue. [Protocol, recovery and measured latency](native/asr-worker/README.md).
+has no additional queue. An empty result from clearly audible input gets one padded
+retry on the same worker ([details](docs/short-phrase-recognition.md#empty-result-retry)). [Protocol, recovery and measured latency](native/asr-worker/README.md).
 
 The pre-ASR digital-silence guard measures the strongest 128 ms audio window at
 the existing RMS floor of 0.0005. Averaging over a whole utterance could otherwise

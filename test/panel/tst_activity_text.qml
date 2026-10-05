@@ -30,7 +30,7 @@ Item {
       const input = findChild(page, "activityTextArea")
       const start = input.y
       compare(input.y + input.height, page.height)
-      page.contentY = Math.max(0, page.contentHeight - page.viewportHeight)
+      page.scrollTo(page.contentHeight - page.viewportHeight)
       wait(0)
       compare(input.y, start)
       page.height = 420

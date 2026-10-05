@@ -95,11 +95,9 @@ Item {
       verify(waitForRendering(host));
       const page = findChild(host, "fullActivityStatus");
       const history = findChild(host, "historySection");
-      const position = Math.max(0, Math.min(page.contentHeight - page.viewportHeight, history.y));
-      if (page.contentY !== position) {
-        page.contentY = position;
-        verify(waitForRendering(host));
-      }
+      const list = findChild(page, "activityScroll");
+      page.scrollTo(history.mapToItem(list.contentItem, 0, 0).y - list.originY);
+      verify(waitForRendering(host));
     }
 
     function test_text_zoom_follows_activity_history_library_and_conversation() {
@@ -306,6 +304,88 @@ Item {
       compare(findChild(card, "history-action-paste").enabled, false);
     }
 
+    function test_cleaned_text_appears_below_the_raw_transcript_with_its_own_copy_action() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const cleaned = entry(1, null);
+      cleaned.utterance = "um so open the uh design";
+      cleaned.cleanupEnabled = true;
+      cleaned.cleanupStatus = "cleaned";
+      cleaned.cleanedText = "Open the design.";
+      cleaned.cleanupFallback = null;
+      const fallback = entry(2, null);
+      fallback.cleanupEnabled = true;
+      fallback.cleanupStatus = "fallback";
+      fallback.cleanedText = null;
+      fallback.cleanupFallback = "timeout";
+      state.update("run", cleaned);
+      state.update("run", fallback);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      showHistory(host);
+
+      const card = findChild(host, "history-utterance-1");
+      compare(findChild(card, "historyUtterance").text, "um so open the uh design", "Raw text stays the main text");
+      const line = findChild(card, "historyCleanup");
+      verify(line.visible);
+      compare(line.text, "Cleaned: Open the design.");
+      mouseMove(card, 10, 10);
+      tryCompare(card, "actionsVisible", true);
+      verify(findChild(card, "history-action-copy-cleaned").visible);
+
+      const other = findChild(host, "history-utterance-2");
+      compare(findChild(other, "historyCleanup").text, "Cleanup fell back to the raw transcript (timeout)");
+      mouseMove(other, 10, 10);
+      tryCompare(other, "actionsVisible", true);
+      compare(findChild(other, "history-action-copy-cleaned").visible, false);
+    }
+
+    function test_text_from_an_earlier_attempt_is_labeled_and_unspecified_is_not() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const recovered = entry(1, null);
+      recovered.outcome = "error";
+      recovered.transcriptSource = "earlier-attempt";
+      const ordinary = entry(2, null);
+      ordinary.transcriptSource = null;
+      state.update("run", recovered);
+      state.update("run", ordinary);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      showHistory(host);
+
+      const line = findChild(findChild(host, "history-utterance-1"), "historyTranscriptSource");
+      verify(line.visible);
+      compare(line.text, "Text from an earlier part of this utterance; the full recording was not transcribed");
+      compare(findChild(findChild(host, "history-utterance-2"), "historyTranscriptSource").visible, false);
+    }
+
+    function test_an_audio_only_record_is_labeled_and_offers_no_text_actions() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const audioOnly = entry(1, null);
+      audioOnly.utterance = "";
+      audioOnly.intent = null;
+      audioOnly.outcome = "error";
+      audioOnly.transcriptSource = "audio-only";
+      state.update("run", audioOnly);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      showHistory(host);
+
+      const card = findChild(host, "history-utterance-1");
+      const line = findChild(card, "historyTranscriptSource");
+      verify(line.visible);
+      compare(line.text, "Audio only: no speech was recognized, so nothing was sent");
+      mouseMove(card, 10, 10);
+      tryCompare(card, "actionsVisible", true);
+      for (const action of ["copy", "paste", "start-history-agent"])
+        compare(findChild(card, "history-action-" + action).visible, false, action);
+    }
+
     function test_collapsing_keeps_history_and_shortcuts_are_on_intent_cards() {
       const state = createTemporaryObject(stateComponent, scene);
       state.reset("run");
@@ -349,7 +429,7 @@ Item {
       verify(waitForRendering(host));
       grabImage(host).save("/tmp/companion-activity-history-preview-narrow.png");
       const card = findChild(host, "history-utterance-2");
-      verify(card.width <= findChild(host, "activityHistoryList").width);
+      verify(card.width <= findChild(host, "activityScroll").width);
       verify(findChild(card, "historyDetectedIntent").width <= card.width);
       const detected = findChild(card, "historyDetectedIntent");
       verify(detected.mapToItem(card, 0, detected.height).y <= card.height, "Wrapped metadata stays inside its card");

@@ -47,7 +47,7 @@ export function widgetTools(endpoint: string, token: string) {
         'Discover a widget and inspect its schema before publishing. If a keyword search is empty, list the library: a generic comparison or chart may fit. Supply props instead of repeating HTML or JavaScript. Existing widgets can be inspected by id, updated or called through their declared actions.',
       ],
       description:
-        'List widget names, descriptions and actions. Use name to inspect a schema/example, or id to read an existing instance’s current props, revision, actions and lastViewport (widthCssPixels, heightCssPixels, textScale; null if no measurement is available in this process). These are the last known sidebar dimensions, not a fixed size or the pop-out size. Search with query. Bundles live in Companion’s widget-library directory.',
+        'List widget names, descriptions and actions. Use name to inspect a schema/example, or id to read an existing instance’s current props, revision, actions and lastViewport (widthCssPixels, heightCssPixels, textScale; null if no measurement is available in this process). These are the last known sidebar dimensions, not a fixed size or the pop-out size. Search with query. Widget source lives in the listed directory, Companion’s configured widget library.',
       parameters: Type.Object({
         query: Type.Optional(Type.String({ maxLength: 100 })),
         name: Type.Optional(Type.String({ maxLength: 48 })),

@@ -117,6 +117,27 @@ Item {
       compare(composer.text, "")
     }
 
+    function test_session_less_state_keeps_drafts_and_rendered_conversation() {
+      // The listener's routine state may omit conversations. Applying it must
+      // not rebuild tabs, so composer drafts and attribution stay in place.
+      const state = createTemporaryObject(stateComponent, parent)
+      state.applyState({sessions: [conversation("visible", "Visible"), conversation("hidden", "Hidden")],
+        sessionOrderRevision: "order"})
+      const panel = createTemporaryObject(panelComponent, parent, {sessions: Qt.binding(() => state.sessions)})
+      panel.selectedSessionId = "visible"
+      verify(waitForRendering(panel))
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Unsent words"
+      compare(panel.applyDraft(draft("hidden", "Agent proposal")).outcome, "inserted")
+
+      for (let index = 0; index < 5; index++) state.applyState({speaking: true})
+      compare(state.sessions.length, 2)
+      compare(composer.text, "Unsent words")
+      panel.selectedSessionId = "hidden"
+      compare(composer.text, "Agent proposal")
+      verify(findChild(panel, "agentDraftSource").visible)
+    }
+
     function test_agent_messages_are_labelled_with_their_source() {
       const panel = createTemporaryObject(panelComponent, parent)
       const fromAgent = message("agent", "user", "Can you run the tests?")

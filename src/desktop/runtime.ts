@@ -12,21 +12,78 @@ import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
 import { command } from '../system/command.ts';
 import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
-import { UtteranceHistory } from './history.ts';
+import { UtteranceHistory, type HistoryEntry } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
-import { DesktopServer } from './server.ts';
+import { DesktopServer, type SnapshotOptions } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
+import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
 import { IntentPreferences } from './intent-preferences.ts';
+import { CleanupPreference } from './cleanup-preference.ts';
+import type { TranscriptionCleanupSetting } from '../core/transcription-cleanup/setting.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
 import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
-import type { AgentDraftOutcome, AgentDraftRequest } from '../agents/types.ts';
+import type {
+  AgentBrowserOpenOutcome,
+  AgentBrowserOpenRequest,
+  AgentDraftOutcome,
+  AgentDraftRequest,
+} from '../agents/types.ts';
 
 /** A connected panel must confirm a forwarded draft within this time. */
 const draftConfirmationMilliseconds = 5000;
+
+/**
+ * A panel answers a browser-open request once the page loaded or failed, or
+ * after its own shorter wait (about 8 seconds) with "loading". This bound
+ * only covers a panel that never answers.
+ */
+const browserConfirmationMilliseconds = 15000;
+
+/** Outcomes a panel may report for a browser-open request. */
+const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
+  'loaded',
+  'loading',
+  'load-failed',
+  'superseded',
+  'cancelled',
+  'refused',
+  'not-selected',
+  'busy',
+  'panel-hidden',
+  'unsupported',
+]);
+
+/**
+ * Actions that act on the desktop itself: the compositor's focused window,
+ * keyboard delivery, media playback reports, composer focus and composer
+ * drafts. A remote panel (such as the phone gateway) cannot observe or own
+ * any of these, so the listener refuses them for remote connections.
+ */
+const desktopOnlyActions = new Set([
+  'paste',
+  'submit-utterance',
+  'media-playback',
+  'composer-focus',
+  'agent-draft-result',
+  'agent-browser-open-result',
+]);
+
+/**
+ * A remote panel observes and controls conversations without becoming the
+ * desktop's selected conversation. Its selection is private to its connection,
+ * so looking at a chat on the phone never redirects desktop dictation, voice
+ * navigation, keyboard focus guards or agent drafts.
+ */
+interface RemoteClient {
+  /** Conversation shown by this remote panel, or empty for other pages. */
+  selection: string;
+  /** Last actions sent to this client, to avoid resending unchanged controls. */
+  lastActionsKey: string;
+}
 
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
@@ -52,6 +109,25 @@ export class DesktopRuntime {
   private readonly server: DesktopServer;
   private readonly sounds: SoundFeedback;
   private readonly processing = new Set<number>();
+
+  // One record per continued utterance (docs/speech-timing.md, D4). Frames
+  // the pipeline reported as superseded (attemptSuperseded) belong to a
+  // continuation chain; only they are deferred, never a row merely because of
+  // its outcome. A chain member's row waits in `supersededRows`, unpublished
+  // and held against paste/label/delete, until the final attempt of its chain
+  // settles; it is then retired or published as an ordinary row. Both
+  // collections are emptied when their chain settles, on every exit path.
+  private readonly chainMembers = new Set<number>();
+  private readonly supersededRows = new Map<number, HistoryEntry>();
+  // Superseded frames named by a settled chain before they finished. Not
+  // expected (the sensor worker is serial); such a row is simply kept.
+  private readonly unsettledSuperseded = new Set<number>();
+  // Frames still in progress whose WAV has been published, so a chain's final
+  // attempt is known to own the whole utterance before anything is removed.
+  private readonly recordedAudio = new Set<number>();
+  // Retirements run after dispatch, off the sensor worker; close() awaits them.
+  private readonly retirements = new Set<Promise<void>>();
+
   // Reports belong to their connections, so a vanished adapter cannot leave
   // listening paused forever or clear another adapter's active playback.
   private readonly mediaClients = new Set<number>();
@@ -75,6 +151,7 @@ export class DesktopRuntime {
   private router?: UserSensorRouter;
   private pipeline?: Pick<SensorPipeline, 'submitText'>;
   private readonly intentPreferences: IntentPreferences;
+  private readonly cleanupPreference: CleanupPreference;
   private lastAgentActions?: AgentActions;
   private routingRevision = 0;
   private cachedAgentActions?: {
@@ -86,9 +163,18 @@ export class DesktopRuntime {
   // latest panel report. The most recently active panel receives a draft.
   private readonly draftHosts = new Map<number, number>();
   private draftReportSequence = 0;
+  // Connections that declared the remote role, keyed by server client ID.
+  private readonly remoteClients = new Map<number, RemoteClient>();
   private readonly pendingDrafts = new Map<
     string,
     { clientId: number; finish(outcome: AgentDraftOutcome): void }
+  >();
+  // Panels with a built-in browser (the standalone native window), by client,
+  // with the sequence of their latest panel report, like draft hosts.
+  private readonly browserHosts = new Map<number, number>();
+  private readonly pendingBrowserOpens = new Map<
+    string,
+    { clientId: number; finish(outcome: AgentBrowserOpenOutcome): void }
   >();
 
   constructor(
@@ -102,6 +188,8 @@ export class DesktopRuntime {
       sounds: boolean;
       agents?: AgentSessions;
       mediaPause?: boolean;
+      /** The live transcription cleanup switch; absent hides the UI control. */
+      cleanup?: TranscriptionCleanupSetting;
     },
     private readonly run: RunCommand = command,
   ) {
@@ -109,15 +197,24 @@ export class DesktopRuntime {
     this.intentPreferences = new IntentPreferences(
       join(dirname(options.database), 'disabled-intents.json'),
     );
+    this.cleanupPreference = new CleanupPreference(
+      join(dirname(options.database), 'transcription-cleanup.json'),
+    );
     this.databaseLock = new InstanceLock(options.database + '.lock');
     this.sounds = new SoundFeedback(log, signal, options.sounds && !options.preview, run);
     this.server = new DesktopServer(
       options.socket,
-      () => this.snapshot(),
+      (snapshotOptions) => this.snapshot(snapshotOptions),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
+        // A remote panel never owned desktop routing state; only forget it.
+        if (this.remoteClients.delete(clientId)) {
+          return;
+        }
         this.draftHosts.delete(clientId);
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
+        this.browserHosts.delete(clientId);
+        this.abandonBrowserOpens(clientId, 'The panel disconnected before confirming.');
         const navigationRemoved = this.navigation?.clientId === clientId;
         if (navigationRemoved) {
           this.navigation = undefined;
@@ -145,6 +242,7 @@ export class DesktopRuntime {
       },
     );
     options.agents?.setDraftHost((request, signal) => this.requestDraft(request, signal));
+    options.agents?.setBrowserHost((request, signal) => this.requestBrowserOpen(request, signal));
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
@@ -152,8 +250,16 @@ export class DesktopRuntime {
       if (event.type === 'agent-removed' && event.id === this.panelSession) {
         this.setPanelState('', false, this.panelClient);
       }
+      // Clients upsert `agent-session` by ID, so a late flush for a closed
+      // conversation (for example a rolled-back model choice) would add its
+      // tab back. Incremental clients no longer receive the periodic full
+      // snapshot that used to remove it again, so never publish that delta.
+      if (event.type === 'agent-session' && !options.agents?.has(event.session.id)) {
+        return;
+      }
       this.server.publish(event);
       this.publishAgentActions();
+      this.publishRemoteAgentActions();
     });
 
     this.activity = {
@@ -200,12 +306,22 @@ export class DesktopRuntime {
         this.history.add(transcript);
         this.server.broadcast();
       },
-      screenshotCaptured: (id, screenshot) => this.history.saveScreenshot(id, screenshot),
-      audioCaptured: (id, samples) => this.history.saveAudio(id, samples),
+      screenshotCaptured: async (id, screenshot) => {
+        await this.history.saveScreenshot(id, screenshot);
+      },
+      audioCaptured: async (id, samples) => {
+        if (await this.history.saveAudio(id, samples)) {
+          this.recordedAudio.add(id);
+        }
+      },
       emptyAudioCaptured: (clip) => saveEmptyAudioClip(dirname(options.database), clip),
       intentRequested: (id, request) => this.history.saveIntentRequest(id, request),
       intentRecognized: (id, intent) => {
         this.history.setIntent(id, intent);
+        this.server.broadcast();
+      },
+      transcriptionCleanup: (id, record) => {
+        this.history.saveCleanup(id, record);
         this.server.broadcast();
       },
       labelPrevious: (id, correct) => {
@@ -227,17 +343,36 @@ export class DesktopRuntime {
 
         this.server.broadcast();
       },
+      attemptSuperseded: (id) => {
+        this.chainMembers.add(id);
+
+        // Hold its row at once if it already has one: the replaced attempt can
+        // still be finishing (for example, a model ignoring cancellation), and
+        // no paste, label or question may start from it meanwhile. A row that
+        // appears later is held at `finished`.
+        const row = this.history.entryId(id);
+        if (row) {
+          this.history.holdForRetirement(row);
+        }
+      },
+      continuationSettled: (finalId, supersededIds) => {
+        this.settleContinuation(finalId, supersededIds);
+      },
       finished: (id) => {
         this.frameComposerRevisions.delete(id);
         this.processing.delete(id);
         this.delivery.finish(id);
+        this.recordedAudio.delete(id);
         const entry = this.history.finish(id);
-        if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
-          this.server.publish({
-            type: 'activity-entry',
-            sessionId: this.activityHistory.sessionId,
-            entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
-          });
+        const chainSettled = this.unsettledSuperseded.delete(id);
+
+        if (entry && this.chainMembers.has(id) && !chainSettled) {
+          // Its continuation normally owns the whole utterance; decide when
+          // that chain settles (settleContinuation) rather than show it now.
+          this.history.holdForRetirement(entry.id);
+          this.supersededRows.set(id, entry);
+        } else if (entry && entry.outcome !== 'processing' && entry.outcome !== 'delivering') {
+          this.publishActivity(entry);
         }
         this.server.broadcast();
       },
@@ -267,7 +402,62 @@ export class DesktopRuntime {
   private readonly routingChanged = () => {
     this.routingRevision++;
     this.server.broadcast();
+    this.publishRemoteAgentActions();
   };
+
+  /**
+   * Choice and stop controls for one remote client's own selection. Built from
+   * the same interaction data and voice-collision rules as the desktop panel,
+   * but never from the desktop's selected conversation.
+   */
+  private remoteAgentActions(selection: string): AgentActions {
+    const id = this.options.agents?.has(selection) ? selection : '';
+    const interaction: InteractionContext = {
+      agentSessionId: id,
+      agentComposerFocused: false,
+      revision: this.interactionRevision,
+      ...(id ? this.options.agents?.interaction(id) : {}),
+    };
+    return {
+      sessionId: id,
+      choices: agentChoiceStates({ interaction }, this.router?.reservedPrefixes() ?? []),
+      stopRunId: interaction.agentRunId ?? '',
+    };
+  }
+
+  /** Send each remote client its controls when they change; skip unchanged ones. */
+  private publishRemoteAgentActions(onlyClientId?: number): void {
+    for (const [clientId, remote] of this.remoteClients) {
+      if (onlyClientId !== undefined && clientId !== onlyClientId) {
+        continue;
+      }
+
+      const actions = this.remoteAgentActions(remote.selection);
+
+      // Choice sets are small and immutable; serializing them is the simplest
+      // exact change check, and it runs once per remote client per event.
+      const key = JSON.stringify(actions);
+      if (key === remote.lastActionsKey) {
+        continue;
+      }
+
+      remote.lastActionsKey = key;
+      this.server.publishTo(clientId, { type: 'remote-agent-actions', actions });
+    }
+  }
+
+  /**
+   * Choice, stop-run and tool-page requests must come from the panel that is
+   * showing that conversation. Desktop panels use the global selection;
+   * remote panels use their own connection's selection.
+   */
+  private showsConversation(clientId: number, id: unknown): boolean {
+    const remote = this.remoteClients.get(clientId);
+    if (remote) {
+      return typeof id === 'string' && id !== '' && remote.selection === id;
+    }
+    return clientId === this.panelClient && id === this.panelSession;
+  }
 
   private agentActions(): AgentActions {
     const interaction = this.interactionContext();
@@ -331,6 +521,13 @@ export class DesktopRuntime {
 
       await this.history.open();
 
+      // Apply the saved cleanup choice before the pipeline accepts any
+      // utterance. A missing file keeps cleanup off.
+      if (this.options.cleanup) {
+        this.options.cleanup.set(await this.cleanupPreference.load());
+        this.options.cleanup.on('change', this.cleanupChanged);
+      }
+
       // Prepare cues even when starting muted, so the desktop can enable them
       // later without restarting. Preview mode remains silent throughout.
       if (!this.options.preview) {
@@ -346,6 +543,10 @@ export class DesktopRuntime {
       throw error;
     }
   }
+
+  private readonly cleanupChanged = () => {
+    this.server.broadcast();
+  };
 
   private readonly pauseChanged = () => {
     if (this.pause.paused) {
@@ -369,7 +570,22 @@ export class DesktopRuntime {
     this.server.broadcast();
   }
 
-  private snapshot(): object {
+  /**
+   * The UI state message body. With `sessions: false` (a connection that keeps
+   * conversations from incremental agent events), the conversation fields are
+   * omitted rather than resent: absence means "unchanged since the connect
+   * snapshot and the events that followed it".
+   */
+  private snapshot(options: SnapshotOptions): object {
+    const agents = this.options.agents;
+    const conversations = options.sessions
+      ? {
+          sessions: agents?.snapshot() ?? [],
+          sessionOrderRevision: agents?.order().revision ?? '',
+          previousSessions: agents?.previousSnapshot() ?? [],
+        }
+      : {};
+
     return {
       protocol: 1,
       ready: this.ready,
@@ -385,11 +601,11 @@ export class DesktopRuntime {
       activityHistoryCount: this.activityHistory.count,
       historyDeletionAvailable: !this.options.preview,
       textInputAvailable: Boolean(this.pipeline),
-      sessions: this.options.agents?.snapshot() ?? [],
-      sessionOrderRevision: this.options.agents?.order().revision ?? '',
-      sessionControlsAvailable: Boolean(this.options.agents),
-      previousSessions: this.options.agents?.previousSnapshot() ?? [],
+      ...conversations,
+      sessionControlsAvailable: Boolean(agents),
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
+      // Null hides the switch (no cleanup support in this listener).
+      transcriptionCleanup: this.options.cleanup ? { enabled: this.options.cleanup.enabled } : null,
       agentActions: this.agentActions(),
     };
   }
@@ -445,7 +661,7 @@ export class DesktopRuntime {
       !order ||
       !Number.isInteger(index) ||
       index < 0 ||
-      index > 8 ||
+      index >= MAX_OPEN_AGENT_SESSIONS ||
       captured.clientId !== this.navigation.clientId ||
       captured.token !== this.navigation.token ||
       captured.orderRevision !== order.revision ||
@@ -483,6 +699,103 @@ export class DesktopRuntime {
       return true;
     }
     return false;
+  }
+
+  private publishActivity(entry: HistoryEntry): void {
+    this.server.publish({
+      type: 'activity-entry',
+      sessionId: this.activityHistory.sessionId,
+      entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
+    });
+  }
+
+  /**
+   * The final attempt of a continued utterance has settled, just before its
+   * own `finished`. Its superseded predecessors are retired only when the final
+   * attempt owns the whole utterance: its row exists and its WAV, which
+   * contains every earlier part's raw audio, was published. Its outcome does
+   * not matter; an error, cancellation or ignored result is the record the
+   * user recovers from, including the pipeline's recovered-failure record with
+   * the earlier words. A fresh PNG is not required: without one, the earlier
+   * screen is lost with its attempt rather than attached to the final record.
+   * If the final attempt does not own the utterance (its WAV or row could not
+   * be written), the predecessors are kept as explicit residual rows.
+   */
+  private settleContinuation(finalId: number, supersededIds: readonly number[]): void {
+    const owned = this.history.entryId(finalId) !== undefined && this.recordedAudio.has(finalId);
+
+    const predecessors: HistoryEntry[] = [];
+    for (const id of supersededIds) {
+      this.chainMembers.delete(id);
+      const entry = this.supersededRows.get(id);
+      if (entry) {
+        this.supersededRows.delete(id);
+        predecessors.push(entry);
+      } else if (this.processing.has(id)) {
+        this.unsettledSuperseded.add(id);
+      }
+    }
+
+    if (!predecessors.length) {
+      return;
+    }
+
+    if (!owned) {
+      this.log(
+        'retention-incomplete',
+        `Keeping superseded ${predecessors.map((entry) => entry.id).join(', ')}: ` +
+          'the final attempt was not fully recorded',
+        finalId,
+      );
+      for (const entry of predecessors) {
+        this.history.releaseRetirement(entry.id);
+        // Publish only a row that still exists: never recreate a card.
+        const current = this.history.find(entry.id);
+        if (current) {
+          this.publishActivity(current);
+        }
+      }
+      return;
+    }
+
+    const retirement = this.retire(predecessors).finally(() => {
+      this.retirements.delete(retirement);
+    });
+    this.retirements.add(retirement);
+  }
+
+  /**
+   * Remove superseded rows and their recordings one at a time. A row that
+   * cannot be retired (for example, one with an earlier paste reference, or a
+   * failed file or SQLite removal) stays as an explicit residual row, logged
+   * as `retention-incomplete` and shown as a normal Activity card; nothing
+   * reports a removal that did not happen. Files are removed first, so such a
+   * row may have lost some recordings; the final attempt owns the audio.
+   */
+  private async retire(entries: HistoryEntry[]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        await this.history.retireSuperseded(entry.id);
+        this.history.releaseRetirement(entry.id);
+        this.log('retired', `Superseded attempt ${entry.id}; its continuation keeps the utterance`);
+        this.server.publish({
+          type: 'history-deleted',
+          id: entry.id,
+          sessionId: this.activityHistory.sessionId,
+        });
+      } catch (error) {
+        // Kept as an explicit residual row. With files removed first, some of
+        // its recordings may already be gone; the final attempt owns the audio.
+        this.history.releaseRetirement(entry.id);
+        const message = error instanceof Error ? error.message : String(error);
+        this.log('retention-incomplete', `Keeping superseded ${entry.id}: ${message}`);
+        const current = this.history.find(entry.id);
+        if (current) {
+          this.publishActivity(current);
+        }
+      }
+    }
+    this.server.broadcast();
   }
 
   private publishFeedback(id: string): void {
@@ -576,6 +889,100 @@ export class DesktopRuntime {
     });
   }
 
+  /**
+   * The native panel that shows web pages: the visible navigation owner if it
+   * has a browser, otherwise the browser panel that reported most recently.
+   * Remote panels never report one, so they are never asked.
+   */
+  private browserClient(): number | undefined {
+    const visible = this.navigation?.clientId;
+    if (visible !== undefined && this.browserHosts.has(visible)) {
+      return visible;
+    }
+    let newest: number | undefined;
+    let newestSequence = -1;
+    for (const [clientId, sequence] of this.browserHosts) {
+      if (sequence > newestSequence) {
+        newest = clientId;
+        newestSequence = sequence;
+      }
+    }
+    return newest;
+  }
+
+  /**
+   * Ask one native panel to show a web page for the calling conversation and
+   * wait for its explicit answer. The request is a one-time event, never part
+   * of snapshots, so reconnects cannot replay it. Once sent, timeout,
+   * disconnect or turn cancellation are `unconfirmed`. Never retried.
+   */
+  private requestBrowserOpen(
+    request: AgentBrowserOpenRequest,
+    signal: AbortSignal,
+  ): Promise<AgentBrowserOpenOutcome> {
+    if (signal.aborted) {
+      return Promise.resolve({ outcome: 'offline', reason: 'The agent turn has ended.' });
+    }
+    const clientId = this.browserClient();
+    if (clientId === undefined) {
+      // A connected panel without a browser (Quickshell, an older UI) is not
+      // the same as no panel at all.
+      if (this.draftHosts.size > 0) {
+        return Promise.resolve({
+          outcome: 'unsupported',
+          reason: 'The connected Companion panel has no built-in browser.',
+        });
+      }
+      return Promise.resolve({ outcome: 'offline', reason: '' });
+    }
+
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const finish = (outcome: AgentBrowserOpenOutcome) => {
+        if (!this.pendingBrowserOpens.delete(requestId)) {
+          return;
+        }
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancelled);
+        resolve(outcome);
+      };
+      const timer = setTimeout(
+        () =>
+          finish({
+            outcome: 'unconfirmed',
+            reason: 'The panel did not answer within 15 seconds.',
+          }),
+        browserConfirmationMilliseconds,
+      );
+      const cancelled = () =>
+        finish({
+          outcome: 'unconfirmed',
+          reason: 'The agent turn ended before the panel answered.',
+        });
+
+      this.pendingBrowserOpens.set(requestId, { clientId, finish });
+      signal.addEventListener('abort', cancelled, { once: true });
+
+      const sent = this.server.publishTo(clientId, {
+        type: 'agent-browser-open',
+        requestId,
+        id: request.sessionId,
+        url: request.url,
+      });
+      if (!sent) {
+        finish({ outcome: 'offline', reason: 'The panel disconnected.' });
+      }
+    });
+  }
+
+  private abandonBrowserOpens(clientId: number | undefined, reason: string): void {
+    for (const pending of [...this.pendingBrowserOpens.values()]) {
+      if (clientId === undefined || pending.clientId === clientId) {
+        pending.finish({ outcome: 'unconfirmed', reason });
+      }
+    }
+  }
+
   private abandonDrafts(clientId: number | undefined, reason: string): void {
     for (const pending of [...this.pendingDrafts.values()]) {
       if (clientId === undefined || pending.clientId === clientId) {
@@ -592,6 +999,55 @@ export class DesktopRuntime {
     }
 
     const request = value as Record<string, unknown>;
+    const remote = this.remoteClients.get(clientId);
+
+    if (request.action === 'client-role') {
+      // Declared once, before any other report, so this connection never
+      // becomes a desktop selection, navigation owner or draft host.
+      if (request.role !== 'remote') {
+        throw Error('Expected role "remote"');
+      }
+      if (remote) {
+        return 'role-recorded';
+      }
+      if (
+        this.panelClient === clientId ||
+        this.composerClient === clientId ||
+        this.navigation?.clientId === clientId ||
+        this.draftHosts.has(clientId) ||
+        this.browserHosts.has(clientId) ||
+        this.mediaClients.has(clientId)
+      ) {
+        throw Error('Declare the remote role before reporting desktop panel state');
+      }
+      this.remoteClients.set(clientId, { selection: '', lastActionsKey: '' });
+      this.publishRemoteAgentActions(clientId);
+      return 'role-recorded';
+    }
+
+    if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
+      throw Error('This action is only available on the desktop');
+    }
+
+    if (request.action === 'start-agent') {
+      if (!remote) {
+        throw Error('Only remote panels start typed conversations this way');
+      }
+      if (!this.options.agents) {
+        throw Error('Agent sessions are unavailable');
+      }
+      if (typeof request.text !== 'string') {
+        throw Error('Enter between 1 and 4000 characters');
+      }
+      if (request.profile !== 'coding' && request.profile !== 'quickQuestion') {
+        throw Error('Expected profile "coding" or "quickQuestion"');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      const id = this.options.agents.startRemote(request.text, request.profile, this.signal);
+      return { outcome: 'started', id };
+    }
 
     if (request.action === 'delete-history') {
       if (typeof request.id !== 'string') {
@@ -628,7 +1084,7 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected a tool group, revision and page position');
       }
-      if (clientId !== this.panelClient || request.id !== this.panelSession) {
+      if (!this.showsConversation(clientId, request.id)) {
         throw Error('This conversation is no longer selected');
       }
       return this.options.agents.toolPage({
@@ -688,7 +1144,8 @@ export class DesktopRuntime {
         return 'preview';
       }
       const frame = await this.history.recordedFrame(request.id);
-      this.options.agents.start(frame, this.signal);
+      // A phone may reuse the saved frame, but must not redirect desktop focus.
+      this.options.agents.start(frame, this.signal, 'coding', undefined, Boolean(remote));
       return 'started';
     }
 
@@ -717,6 +1174,17 @@ export class DesktopRuntime {
         `${name} (${mode ?? 'both'}): ${enabled ? 'enabled' : 'disabled'}`,
       );
       return enabled ? 'intent-enabled' : 'intent-disabled';
+    }
+
+    if (request.action === 'set-transcription-cleanup') {
+      if (!this.options.cleanup || typeof request.enabled !== 'boolean') {
+        throw Error('Expected a boolean transcription cleanup state');
+      }
+      const cleanup = this.options.cleanup;
+      const enabled = request.enabled;
+      await this.cleanupPreference.set(enabled, () => cleanup.set(enabled));
+      this.log('cleanup-control', `Transcription cleanup ${enabled ? 'enabled' : 'disabled'}`);
+      return enabled ? 'cleanup-enabled' : 'cleanup-disabled';
     }
 
     if (request.action === 'media-playback') {
@@ -759,19 +1227,71 @@ export class DesktopRuntime {
       return 'draft-recorded';
     }
 
+    if (request.action === 'agent-browser-open-result') {
+      if (
+        typeof request.requestId !== 'string' ||
+        typeof request.outcome !== 'string' ||
+        !browserPanelOutcomes.has(request.outcome as AgentBrowserOpenOutcome['outcome']) ||
+        (request.reason !== undefined &&
+          (typeof request.reason !== 'string' || request.reason.length > 600)) ||
+        (request.url !== undefined &&
+          (typeof request.url !== 'string' || request.url.length > 4096))
+      ) {
+        throw Error('Expected a browser request id and outcome');
+      }
+      // Only the panel that was asked can answer; a late answer is refused.
+      const pending = this.pendingBrowserOpens.get(request.requestId);
+      if (!pending || pending.clientId !== clientId) {
+        throw Error('This browser request has expired');
+      }
+      const outcome: AgentBrowserOpenOutcome = {
+        outcome: request.outcome as AgentBrowserOpenOutcome['outcome'],
+        reason: (request.reason as string | undefined) ?? '',
+      };
+      // Page text (such as its title) is never forwarded to the agent.
+      if (typeof request.url === 'string' && request.url) {
+        outcome.url = request.url;
+      }
+      pending.finish(outcome);
+      return 'browser-recorded';
+    }
+
+    if (request.action === 'panel-state' && remote) {
+      // Remote panels report only which conversation they show. Focus,
+      // navigation and draft fields describe the desktop and are ignored.
+      if (
+        typeof request.id !== 'string' ||
+        (request.id !== '' && !this.options.agents?.has(request.id))
+      ) {
+        throw Error('Expected a visible agent session id (or empty id)');
+      }
+      remote.selection = request.id;
+      this.publishRemoteAgentActions(clientId);
+      return 'panel-recorded';
+    }
+
     if (request.action === 'panel-state') {
       if (
         typeof request.id !== 'string' ||
         (request.draftHost !== undefined && typeof request.draftHost !== 'boolean') ||
+        (request.browserHost !== undefined && typeof request.browserHost !== 'boolean') ||
         (request.visible !== undefined && typeof request.visible !== 'boolean') ||
         (request.navigationToken !== undefined &&
           (typeof request.navigationToken !== 'string' || request.navigationToken.length > 128)) ||
         typeof request.composerFocused !== 'boolean' ||
         (request.keyboardFocused !== undefined && typeof request.keyboardFocused !== 'boolean') ||
+        (request.incrementalSessions !== undefined &&
+          typeof request.incrementalSessions !== 'boolean') ||
         (!request.id && request.composerFocused) ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
         throw Error('Expected a visible agent session id (or empty id) and composerFocused');
+      }
+      // Clients that apply agent-session/order/history/removed/restored events
+      // to retained conversations say so once; routine state messages to them
+      // then omit transcripts. Older adapters keep receiving full snapshots.
+      if (request.incrementalSessions === true) {
+        this.server.enableIncrementalSessions(clientId);
       }
       // New clients report Activity/Previous visibility too. Older adapters
       // keep their existing conversation behavior, without voice navigation.
@@ -790,6 +1310,13 @@ export class DesktopRuntime {
         this.draftHosts.set(clientId, ++this.draftReportSequence);
       } else {
         this.draftHosts.delete(clientId);
+      }
+      // Only the standalone native window has the built-in browser.
+      if (request.browserHost === true) {
+        this.browserHosts.set(clientId, ++this.draftReportSequence);
+      } else {
+        this.browserHosts.delete(clientId);
+        this.abandonBrowserOpens(clientId, 'The panel no longer offers its browser.');
       }
       this.setPanelKeyboardFocus(
         request.keyboardFocused === true || request.composerFocused,
@@ -829,7 +1356,7 @@ export class DesktopRuntime {
         throw Error('Expected a conversation, choice revision, and option index');
       }
       // A queued click from a tab that has since been hidden cannot submit.
-      if (clientId !== this.panelClient || request.id !== this.panelSession) {
+      if (!this.showsConversation(clientId, request.id)) {
         throw Error('This conversation is no longer selected');
       }
       this.options.agents.selectChoice(
@@ -850,8 +1377,7 @@ export class DesktopRuntime {
         throw Error('Expected a conversation and running turn id');
       }
       if (
-        clientId !== this.panelClient ||
-        request.id !== this.panelSession ||
+        !this.showsConversation(clientId, request.id) ||
         !(await this.options.agents.stopRun(request.id, request.runId))
       ) {
         throw Error('This agent run is no longer current');
@@ -903,6 +1429,15 @@ export class DesktopRuntime {
         });
       }
       return this.modelDiscovery;
+    }
+
+    // A static allowlist plus one configuration read: no discovery process to
+    // coalesce, and independent of Pi so a Pi failure cannot block Claude.
+    if (request.action === 'claude-models') {
+      if (!this.options.agents) {
+        throw Error('Agent sessions are unavailable');
+      }
+      return this.options.agents.claudeModels();
     }
 
     if (request.action === 'set-agent-model') {
@@ -960,7 +1495,7 @@ export class DesktopRuntime {
       if (request.action === 'close-agent') {
         await this.options.agents.remove(request.id);
       } else if (request.action === 'reopen-agent') {
-        await this.options.agents.reopen(request.id);
+        await this.options.agents.reopen(request.id, !remote);
         return 'reopened';
       } else {
         await this.options.agents.stop(request.id);
@@ -1068,11 +1603,17 @@ export class DesktopRuntime {
     this.unsubscribeAgents?.();
     this.options.agents?.setDraftHost(undefined);
     this.abandonDrafts(undefined, 'Companion is shutting down.');
+    this.options.agents?.setBrowserHost(undefined);
+    this.abandonBrowserOpens(undefined, 'Companion is shutting down.');
     this.ready = false;
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);
+    this.options.cleanup?.off('change', this.cleanupChanged);
 
     try {
+      // The pipeline is idle by now; let pending retirements finish while the
+      // database and clients are still available.
+      await Promise.allSettled([...this.retirements]);
       await this.server.close();
       await this.sounds.close();
     } finally {

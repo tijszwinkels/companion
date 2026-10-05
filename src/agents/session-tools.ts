@@ -1,5 +1,7 @@
 import { StringEnum, Type } from '@earendil-works/pi-ai';
 
+import { MAX_OPEN_AGENT_SESSIONS } from './session-limit.ts';
+
 const sessionId = Type.String({
   minLength: 36,
   maxLength: 36,
@@ -19,7 +21,31 @@ const focus = Type.Optional(
  * calling conversation from its token, so an agent cannot claim another sender.
  * Errors are thrown, which Pi reports to the model as failed tool results.
  */
-export function sessionTools(endpoint: string, token: string) {
+/**
+ * Optional session tool features a listener announces with each lease, in the
+ * `COMPANION_SESSION_TOOLS_CAPABILITIES` environment variable (comma-separated).
+ *
+ * Pi extensions and the Claude MCP bridge are loaded from disk for every turn,
+ * while a running listener keeps the code it started with. After a source
+ * update without a restart, an older listener would otherwise receive calls it
+ * cannot serve. A tool that needs newer listener support is therefore offered
+ * only when the listener positively announced it; absent or unknown values
+ * mean an older listener, which keeps exactly its original tools.
+ */
+export const sessionToolCapabilities = ['browser-open'] as const;
+export type SessionToolCapability = (typeof sessionToolCapabilities)[number];
+
+/** Parse the announced capabilities; anything unrecognised is ignored. */
+export function parseSessionToolCapabilities(value: string | undefined): SessionToolCapability[] {
+  const announced = (value ?? '').split(',').map((item) => item.trim());
+  return sessionToolCapabilities.filter((capability) => announced.includes(capability));
+}
+
+export function sessionTools(
+  endpoint: string,
+  token: string,
+  capabilities: readonly string[] = [],
+) {
   async function invoke(
     method: string,
     callId: string,
@@ -64,8 +90,8 @@ export function sessionTools(endpoint: string, token: string) {
       ],
       description:
         'List Companion conversations. "open" contains every open tab: id, title, status, busy, queuedMessages, ' +
-        'profile, model and self (your own conversation). "previous" contains saved conversations that can be ' +
-        'reopened, newest first, filtered by an optional case-insensitive title query and limited (default 20, ' +
+        'profile, harness ("pi" or "claude-code"), model and self (your own conversation). "previous" contains ' +
+        'saved conversations that can be reopened, newest first, filtered by an optional case-insensitive title query and limited (default 20, ' +
         'maximum 50); previousMatches is the total before the limit. No transcripts or unsent drafts are returned.',
       parameters: Type.Object({
         query: Type.Optional(Type.String({ maxLength: 100 })),
@@ -79,16 +105,22 @@ export function sessionTools(endpoint: string, token: string) {
       promptSnippet: 'Start a new Companion conversation with a first message for its agent.',
       promptGuidelines: [
         'Use companion_session_start only when the user asks for a new or parallel Companion conversation. The first message immediately starts that conversation’s agent.',
+        'Pass harness "claude-code" only when the user asks for Claude or Claude Code, and harness "pi" when they ask for Pi or Codex; otherwise omit harness.',
       ],
       description:
         'Start a new Companion conversation (a new tab) whose agent immediately answers text. The message is ' +
         'labelled as written by your conversation’s agent, not by the user. profile is "coding" (default) or ' +
-        '"quickQuestion"; model optionally selects an available provider/model for that conversation, otherwise its ' +
-        'profile default applies. The tab opens in the background unless focus is true. Returns the new session. ' +
-        'At most 12 tabs and 4 running agents exist at once.',
+        '"quickQuestion". harness is "pi" or "claude-code" (the native Claude Code CLI); it defaults to the ' +
+        'configured coding harness, and quick questions always use Pi. model optionally selects the ' +
+        'conversation’s model, otherwise the configured default applies: for Pi an available provider/model, for ' +
+        'Claude Code a Claude model ID without provider such as claude-opus-5-5. A Claude Code conversation keeps ' +
+        'its model for its lifetime and fails visibly if Claude Code does not run exactly that model. The tab opens ' +
+        `in the background unless focus is true. Returns the new session. At most ${MAX_OPEN_AGENT_SESSIONS} tabs and 4 running agents ` +
+        'exist at once.',
       parameters: Type.Object({
         text,
         profile: Type.Optional(StringEnum(['coding', 'quickQuestion'] as const)),
+        harness: Type.Optional(StringEnum(['pi', 'claude-code'] as const)),
         model: Type.Optional(Type.String({ minLength: 3, maxLength: 300 })),
         focus,
       }),
@@ -100,7 +132,7 @@ export function sessionTools(endpoint: string, token: string) {
       promptSnippet: 'Reopen a saved Companion conversation as a tab, keeping its history.',
       description:
         'Reopen a saved conversation from companion_sessions "previous" as an open tab. Its id, transcript, ' +
-        'profile and model choice are preserved; nothing is sent and no agent turn starts. Opens in the ' +
+        'profile, harness and model choice are preserved; nothing is sent and no agent turn starts. Opens in the ' +
         'background unless focus is true. An already open id returns outcome "already-open".',
       parameters: Type.Object({ id: sessionId, focus }),
       method: 'reopen',
@@ -160,9 +192,43 @@ export function sessionTools(endpoint: string, token: string) {
       }),
       method: 'draft',
     },
+    {
+      name: 'companion_browser_open',
+      label: 'Open in Companion browser',
+      promptSnippet:
+        'Show a web page in the browser built into the Companion panel, in place of this conversation.',
+      promptGuidelines: [
+        'Use companion_browser_open when the user asks to see or open a web page in Companion. It only shows the page to the user; you cannot read, click or type in it, and none of its content (not even its title) is returned to you.',
+        'Pass a complete https:// address (or http://localhost… for a local app). Do not retry after "unconfirmed" or a refusal; tell the user instead.',
+      ],
+      description:
+        'Open an absolute https:// URL (or http:// on localhost) in the Companion panel’s built-in browser, ' +
+        'which replaces this conversation’s view until the user returns to chat; drafts and pins are kept. ' +
+        'It works only while the Companion panel is showing and this conversation is the one selected in it; ' +
+        'a hidden panel is never shown for you. Returns outcome "loaded", "loading" (still loading when the ' +
+        'panel answered), "load-failed" (with the reason, such as an invalid certificate or a refused ' +
+        'redirect) or "superseded", and the address shown after redirects. Failures: panel-hidden, ' +
+        'cancelled (the user chose to stay on a page that asked before leaving), not-selected, busy (the user is typing an address or answering a page dialog), unsupported (no ' +
+        'native browser), refused, offline, or unconfirmed (do not retry; ask the user). Pop-ups, downloads ' +
+        'and permissions stay blocked, and signing in to sites is up to the user.',
+      parameters: Type.Object({
+        url: Type.String({
+          minLength: 1,
+          maxLength: 2048,
+          description: 'Absolute https:// URL, or http://localhost:PORT/… for a local app',
+        }),
+      }),
+      method: 'browser-open',
+      requires: 'browser-open' as SessionToolCapability,
+    },
   ];
 
-  return definitions.map(({ method, ...definition }) => ({
+  // Omit tools whose listener support was not announced (see above).
+  const offered = definitions.filter((definition) => {
+    const required = (definition as { requires?: string }).requires;
+    return required === undefined || capabilities.includes(required);
+  });
+  return offered.map(({ method, requires: _requires, ...definition }) => ({
     ...definition,
     execute: (callId: string, parameters: Record<string, unknown>, signal?: AbortSignal) =>
       invoke(method, callId, parameters, signal),
@@ -174,8 +240,11 @@ export default function registerSessionTools(pi: {
 }): void {
   const endpoint = process.env.COMPANION_SESSION_TOOLS_ENDPOINT;
   const token = process.env.COMPANION_SESSION_TOOLS_TOKEN;
+  const capabilities = parseSessionToolCapabilities(
+    process.env.COMPANION_SESSION_TOOLS_CAPABILITIES,
+  );
   if (endpoint && token) {
-    for (const tool of sessionTools(endpoint, token)) {
+    for (const tool of sessionTools(endpoint, token, capabilities)) {
       pi.registerTool(tool);
     }
   }

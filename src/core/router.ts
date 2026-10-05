@@ -7,11 +7,67 @@ import type { InspectableModule, RegisteredProcessor } from './module.ts';
 import { DeliveryInterruptedError, IntentDisabledError } from './delivery-error.ts';
 import type { ScopedIntent, ScopedIntentSource } from './scoped-intent.ts';
 import { voiceLabel } from './voice-shortcut.ts';
+import {
+  isTextRoute,
+  type InvalidReason,
+  type TextRoute,
+} from './transcription-cleanup/contract.ts';
+import type {
+  CleanupFallbackReason,
+  TranscriptionCleanupRecord,
+} from './transcription-cleanup/record.ts';
+
+/** One json-cleanup-v1 detection: the intent plus, for a text route, its text. */
+export interface CleanupDetection {
+  intent: string;
+  /** Cleaned text for a valid text-route answer; null otherwise. */
+  text: string | null;
+  /** Set when a text route's cleaned text broke the contract; use the raw text. */
+  fallback: InvalidReason | null;
+}
+import { UtteranceSupersededError, type DispatchCommitment } from './utterance-continuation.ts';
 
 /** Allows the router to use either the Pi detector or a test implementation. */
 export interface Detector extends InspectableModule {
   detect(frame: UserSensorFrame, intents: readonly Intent[], signal: AbortSignal): Promise<string>;
+
+  /**
+   * Required only while transcription cleanup is on: one call that returns
+   * the intent together with cleaned text. Throws, like `detect`, when the
+   * response has no usable intent.
+   */
+  detectWithCleanup?(
+    frame: UserSensorFrame,
+    intents: readonly Intent[],
+    signal: AbortSignal,
+  ): Promise<CleanupDetection>;
 }
+
+/** Result of cleaning an explicit shortcut's text. The route is never part of it. */
+export type FixedRouteCleanup =
+  { kind: 'cleaned'; text: string } | { kind: 'raw-text'; reason: CleanupFallbackReason };
+
+/** The cleanup-only call for explicit shortcuts, or a test implementation. */
+export interface TextCleaner extends InspectableModule {
+  /**
+   * Never throws for a failed model call (it returns `raw-text`); throws only
+   * when `signal` was aborted, in which case nothing may be delivered.
+   */
+  clean(
+    route: TextRoute,
+    text: string,
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+  ): Promise<FixedRouteCleanup>;
+}
+
+/** Read once per routed utterance; see TranscriptionCleanupSetting. */
+export interface CleanupSwitch {
+  readonly enabled: boolean;
+}
+
+/** Cleanup stays off unless a switch is supplied. */
+const CLEANUP_OFF: CleanupSwitch = { enabled: false };
 
 export type IntentMode = 'inference' | 'shortcut';
 
@@ -42,13 +98,24 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
   private readonly intentControllers = new Map<string, Record<IntentMode, AbortController>>();
   private readonly scopedSources: ScopedIntentSource[] = [];
 
+  /**
+   * `dependencies.cleaner` performs the explicit-shortcut cleanup call. The
+   * cleanup switch is read once at the start of each `route` call; while it is
+   * off, neither the cleaner nor `detectWithCleanup` is used and routing is
+   * exactly the bare-name behavior.
+   */
   constructor(
-    readonly dependencies: { readonly detector: Detector },
+    readonly dependencies: { readonly detector: Detector; readonly cleaner?: TextCleaner },
     private readonly log: Log,
     private readonly activity: Activity = {},
     readonly id = 'router',
+    private readonly cleanup: CleanupSwitch = CLEANUP_OFF,
   ) {
     super();
+
+    if (cleanup !== CLEANUP_OFF && !dependencies.cleaner) {
+      throw Error('Transcription cleanup requires a text cleaner');
+    }
   }
 
   intentStates(context: IntentContext = {}): IntentState[] {
@@ -227,9 +294,112 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     this.emit('change');
   }
 
-  async route(frame: UserSensorFrame, signal: AbortSignal): Promise<string> {
+  /**
+   * Choose and run exactly one action for a frame. A provisional speech attempt
+   * passes its commitment; each path awaits it immediately before its first
+   * decision (dispatch or skip), so resumed speech can still replace the
+   * attempt until then. Typed input and direct callers pass none.
+   */
+  async route(
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+    commitment?: DispatchCommitment,
+  ): Promise<string> {
     signal.throwIfAborted();
 
+    // Decide cleanup once for this utterance. A click on the switch while it
+    // is processed applies to the next utterance, never halfway through.
+    const cleanupEnabled = this.cleanup.enabled;
+
+    // Report exactly one cleanup record per routed utterance. With cleanup on,
+    // text routes report theirs just before dispatch, so the stored record is
+    // committed before any delivery side effect starts (typing can take long,
+    // or the process can die mid-delivery). Every other path, and every path
+    // while cleanup is off, reports in `finally` below.
+    let cleanupReported = false;
+    const reportCleanup = (record: TranscriptionCleanupRecord): void => {
+      if (cleanupReported) {
+        return;
+      }
+      cleanupReported = true;
+      this.activity.transcriptionCleanup?.(frame.id, record);
+    };
+
+    try {
+      return await this.routeFrame(frame, signal, commitment, cleanupEnabled, reportCleanup);
+    } catch (error) {
+      // Resumed speech replaced this provisional attempt before any decision.
+      // Its history row keeps the neutral "superseded" outcome, so it gets no
+      // cleanup record at all (the columns stay NULL, meaning unknown). An
+      // aborted detector request surfaces its own error, so the route signal's
+      // abort reason is checked too.
+      const superseded =
+        error instanceof UtteranceSupersededError ||
+        signal.reason instanceof UtteranceSupersededError;
+      if (superseded) {
+        cleanupReported = true;
+      }
+
+      throw error;
+    } finally {
+      reportCleanup(cleanupEnabled ? { enabled: true, status: 'no-text' } : { enabled: false });
+    }
+  }
+
+  /**
+   * Clean an explicit shortcut's text with the separate cleanup-only call.
+   * Returns the text to deliver: cleaned, or the raw text when cleanup failed.
+   * The processor was already chosen by the prefix; nothing here can change it.
+   */
+  private async cleanShortcutText(
+    route: TextRoute,
+    text: string,
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+    intentSignal: AbortSignal,
+    reportCleanup: (record: TranscriptionCleanupRecord) => void,
+  ): Promise<string> {
+    this.log('cleanup', `Cleaning ${route} shortcut text`, frame.id);
+
+    let result: FixedRouteCleanup;
+    try {
+      result = await this.dependencies.cleaner!.clean(
+        route,
+        text,
+        frame,
+        AbortSignal.any([signal, intentSignal]),
+      );
+    } catch (error) {
+      // Disabling the route during cleanup is the same user control as
+      // disabling it before delivery; shutdown/pause errors pass through.
+      if (intentSignal.aborted && !signal.aborted) {
+        throw new IntentDisabledError();
+      }
+      throw error;
+    }
+
+    if (result.kind === 'raw-text') {
+      this.log('cleanup', `Using raw text (${result.reason})`, frame.id);
+      reportCleanup({ enabled: true, status: 'fallback', reason: result.reason });
+      return text;
+    }
+
+    this.log(
+      'cleanup',
+      `Cleaned text (${text.length} → ${result.text.length} characters)`,
+      frame.id,
+    );
+    reportCleanup({ enabled: true, status: 'cleaned', text: result.text });
+    return result.text;
+  }
+
+  private async routeFrame(
+    frame: UserSensorFrame,
+    signal: AbortSignal,
+    commitment: DispatchCommitment | undefined,
+    cleanupEnabled: boolean,
+    reportCleanup: (record: TranscriptionCleanupRecord) => void,
+  ): Promise<string> {
     // Prefixes resolve locally before any inference. The existing pipeline still
     // awaits the action, preserving utterance order and avoiding racing keystrokes.
     for (const { prefix, processor } of this.prefixes) {
@@ -237,6 +407,11 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       if (utterance === undefined) {
         continue;
       }
+
+      // Shortcuts have no inference time in which a pause can be bridged. Like
+      // inference, they commit only after the speech quiet floor (800 ms since
+      // the latest speech), so "go to session ‹pause› three" still merges.
+      await commitment?.commit('shortcut', signal);
 
       const intentSignal = this.intentControllers.get(processor.name)!.shortcut.signal;
       if (intentSignal.aborted || processor.availableForPrefix?.(frame) === false) {
@@ -253,8 +428,23 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         return processor.name;
       }
 
+      // With cleanup on, text routes get their text cleaned by a separate
+      // call first. Other prefix commands (labels, navigation…) take no text.
+      let text = utterance;
+      if (cleanupEnabled && isTextRoute(processor.name)) {
+        text = await this.cleanShortcutText(
+          processor.name,
+          utterance,
+          frame,
+          signal,
+          intentSignal,
+          reportCleanup,
+        );
+        signal.throwIfAborted();
+      }
+
       this.log('dispatch', processor.name, frame.id);
-      await this.dispatch(processor, { ...frame, utterance }, signal, intentSignal);
+      await this.dispatch(processor, { ...frame, utterance: text }, signal, intentSignal);
       return processor.name;
     }
 
@@ -267,6 +457,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
         voiceLabel(intent.exactUtterance) === voiceLabel(frame.utterance),
     );
     if (exact) {
+      await commitment?.commit('shortcut', signal);
       this.log(
         'shortcut',
         `${JSON.stringify(exact.exactUtterance)} → ${exact.name} (LLM bypassed)`,
@@ -325,10 +516,29 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
     this.log('detect', 'Determining intent', frame.id);
     const started = performance.now();
-    const name = await this.dependencies.detector.detect(frame, intents, signal);
+
+    // Off: today's bare-name request, unchanged. On: one json-cleanup-v1
+    // request that returns the intent and the cleaned text together.
+    let name: string;
+    let detection: CleanupDetection | undefined;
+    if (cleanupEnabled) {
+      if (!this.dependencies.detector.detectWithCleanup) {
+        throw Error('This intent detector cannot clean up transcriptions');
+      }
+      detection = await this.dependencies.detector.detectWithCleanup(frame, intents, signal);
+      name = detection.intent;
+    } else {
+      name = await this.dependencies.detector.detect(frame, intents, signal);
+    }
 
     // Cancellation during inference must prevent the processor's side effect.
     signal.throwIfAborted();
+
+    // Commit once 800 ms have passed since the latest speech; a slower answer
+    // commits at once. If the user resumed speaking, wait until that speech is
+    // either merged into a new attempt (this one is then superseded) or
+    // rejected as noise. The same point covers cleanup on and off.
+    await commitment?.commit('inference', signal);
 
     const contextual = scopedByName.get(name);
     if (contextual) {
@@ -352,9 +562,32 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
     this.log('intent', `${name} (${Math.round(performance.now() - started)} ms)`, frame.id);
     this.activity.intentRecognized?.(frame.id, name);
+
+    // A text route delivers the cleaned text, or the raw text when the model's
+    // text broke the contract. Nothing partially cleaned is ever delivered.
+    let routedFrame = frame;
+    if (detection && isTextRoute(name)) {
+      if (detection.text !== null) {
+        this.log(
+          'cleanup',
+          `Cleaned text (${frame.utterance.length} → ${detection.text.length} characters)`,
+          frame.id,
+        );
+        reportCleanup({ enabled: true, status: 'cleaned', text: detection.text });
+        routedFrame = { ...frame, utterance: detection.text };
+      } else {
+        // A detector must name why it has no text; never invent a reason.
+        if (detection.fallback === null) {
+          throw Error('Cleanup detection returned a text route without text or a reason');
+        }
+        this.log('cleanup', `Using raw text (${detection.fallback})`, frame.id);
+        reportCleanup({ enabled: true, status: 'fallback', reason: detection.fallback });
+      }
+    }
+
     this.log('dispatch', name, frame.id);
 
-    await this.dispatch(processor, frame, signal, intentSignal);
+    await this.dispatch(processor, routedFrame, signal, intentSignal);
 
     return name;
   }

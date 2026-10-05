@@ -12,6 +12,8 @@ import { DeliveryControl } from '../../src/core/delivery-control.ts';
 import { createGraph, type Graph } from '../../src/core/graph.ts';
 import { graphToMermaid } from '../../src/core/graph-mermaid.ts';
 import { IntentDetector } from '../../src/core/intent-detector.ts';
+import { FixedRouteCleaner } from '../../src/core/transcription-cleanup/fixed-route-cleaner.ts';
+import { TranscriptionCleanupSetting } from '../../src/core/transcription-cleanup/setting.ts';
 import type { InspectableModule, RegisteredProcessor } from '../../src/core/module.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
@@ -21,12 +23,15 @@ import { SendTextToApplication } from '../../src/processors/send-text-to-applica
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { GoToSession } from '../../src/processors/go-to-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
+import { StartClaudeCodeSession } from '../../src/processors/start-claude-code-session.ts';
+import { StartPiSession } from '../../src/processors/start-pi-session.ts';
 import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { LabelPreviousCorrect } from '../../src/processors/label-previous-correct.ts';
 import { LabelPreviousIncorrect } from '../../src/processors/label-previous-incorrect.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { PiBackend } from '../../src/agents/pi-backend.ts';
+import { ClaudeCodeBackend } from '../../src/agents/claude/claude-backend.ts';
 import { Transcriber } from '../../src/sensors/audio/transcriber.ts';
 import { ActiveWindowSensor } from '../../src/sensors/screen/sensor.ts';
 import { desktopFixture } from '../desktop-fixture.ts';
@@ -240,15 +245,27 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   const activity = fixture.runtime.activity;
   const config = await loadConfig(configPath);
   const detector = new IntentDetector(config.llm);
-  const router = new UserSensorRouter({ detector }, () => {}, activity);
+  const cleaner = new FixedRouteCleaner(config.llm);
+  const router = new UserSensorRouter(
+    { detector, cleaner },
+    () => {},
+    activity,
+    'router',
+    new TranscriptionCleanupSetting(),
+  );
   const send = new SendTextToApplication(() => {}, false, undefined, activity);
   const enter = new EnterTextToApplication(() => {}, false, undefined, activity);
   send.subscribe(router);
   enter.subscribe(router);
   new Ignore(() => {}, activity).subscribe(router);
-  const sessions = new AgentSessions({ backend: new PiBackend() }, () => {});
+  const sessions = new AgentSessions(
+    { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
+    () => {},
+  );
   new StartCodingAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new QuickQuestion({ sessions }, () => {}, false, activity).subscribe(router);
+  new StartClaudeCodeSession({ sessions }, () => {}, false, activity).subscribe(router);
+  new StartPiSession({ sessions }, () => {}, false, activity).subscribe(router);
   new GoToSession(() => {}, false, activity).subscribe(router);
   new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
   new CloseAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
@@ -317,8 +334,9 @@ process.once('exit', () => {
       const graph = JSON.parse(stdout) as Graph;
       assert.deepEqual(graph, desktopGraph);
       assert.equal(graph.nodes[0].id, 'pipeline');
-      assert.equal(graph.nodes.length, 18);
-      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 10);
+      // Includes the transcription cleanup call used by explicit shortcuts.
+      assert.equal(graph.nodes.length, 22);
+      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 12);
     } else {
       assert.ok(stdout.startsWith('flowchart LR\n'));
     }
