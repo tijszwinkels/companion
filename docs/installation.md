@@ -875,8 +875,16 @@ listener normally; never delete its socket/lock or kill processes by name.
 The listener and UI keep running, so an agent's shell tool cannot host them. Either
 the human starts them in two desktop terminals as shown below, or, if you want
 Companion to start after each login anyway, run [step 8](#8-start-companion-after-login-optional)
-now: `companion-login enable --now` starts the same two programs, paused, as user
-services, and Pi can run it. Then continue with the checks below.
+now. From the checkout, this starts the same two programs, paused, as user services,
+with the patched writer first in their PATH, and Pi can run it:
+
+```bash
+cd "$HOME/Work/companion"
+bin/companion-login enable --now --wtype-dir "$HOME/.local/share/companion/wtype-candidate"
+bin/companion-login status   # the wtype line must show the candidate
+```
+
+Then continue with the checks below.
 
 **Activate, initially paused:** display a harmless editor before running this
 command. Startup loads ASR/VAD, opens desktop storage/control, reads saved sessions
