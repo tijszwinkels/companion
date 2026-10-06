@@ -142,6 +142,7 @@ function harness(
   const dispatched: { id: number; utterance: string }[] = [];
   const asrSignals: AbortSignal[] = [];
   const asrInputs: number[][] = [];
+  const asrLengths: number[] = [];
   const detectSignals: AbortSignal[] = [];
   const logs: { stage: string; detail: string; id?: number }[] = [];
 
@@ -232,6 +233,7 @@ function harness(
         transcribe: async (samples, signal, observe) => {
           asrSignals.push(signal);
           asrInputs.push(markers(samples));
+          asrLengths.push(samples.length);
           const known = options.transcript?.(samples);
           if (known !== undefined) {
             observe?.(known ? textDiagnostic : emptyDiagnostic);
@@ -298,6 +300,7 @@ function harness(
     dispatched,
     asrSignals,
     asrInputs,
+    asrLengths,
     detectSignals,
     transcriptions,
     detections,
@@ -317,7 +320,7 @@ test('spoken decisions commit 800 ms after speech: 576 ms after the provisional 
   assert.equal(SPEECH_QUIET_MS, 800);
   assert.equal(SPEECH_QUIET_MS - ENDPOINT_MS, 576);
   assert.equal(EMPTY_QUIET_MS, 1200, 'The empty-transcript window is unchanged');
-  assert.equal(MAX_UTTERANCE_SAMPLES, 16000 * 30);
+  assert.equal(MAX_UTTERANCE_SAMPLES, 16000 * 60, 'Single and combined utterances: one minute');
 });
 
 for (const route of ['inference', 'shortcut'] as const) {
@@ -361,7 +364,7 @@ test('a decision that is ready after the floor commits at once, without a timer'
 });
 
 test('no silence is assumed that was not measured', async () => {
-  // EOF or the 30-second limit can close a segment with little or no trailing
+  // EOF or the 60-second limit can close a segment with little or no trailing
   // silence, and direct callers have no VAD: the whole floor still applies.
   for (const trailingSilenceMs of [undefined, 0, 96, -50, Number.NaN, Infinity]) {
     const clock = new ManualClock();
@@ -731,7 +734,7 @@ test('a too-short tail at the end of the input delays an earlier result until 80
   await finish(setup);
 });
 
-test('a segment closed by EOF or the 30-second limit owes the floor it did not measure', async () => {
+test('a segment closed by EOF or the 60-second limit owes the floor it did not measure', async () => {
   for (const trailingSilenceMs of [0, 96]) {
     const setup = harness();
     setup.pipeline.submit(audio(0.1), undefined, undefined, trailingSilenceMs);
@@ -1192,17 +1195,68 @@ test('an unreadable fragment stays continuable and is retranscribed with its con
   assert.deepEqual(setup.emptyClips, [], 'A superseded fragment is not retained as empty');
 });
 
-test('a continuation beyond the 30-second cap becomes a separate request', async () => {
+// Both parts are longer than the old 31-second ASR bound on their own or
+// combined, and the restored pause counts towards the cap.
+const LONG_FIRST_PART_SAMPLES = 16000 * 40;
+const LONG_LEAD_IN_SAMPLES = 5120;
+const LONG_SECOND_PART_SAMPLES =
+  MAX_UTTERANCE_SAMPLES - LONG_FIRST_PART_SAMPLES - LONG_LEAD_IN_SAMPLES;
+
+test('a continuation that fills the 60-second cap exactly is one request and one action', async () => {
   const setup = harness();
-  setup.pipeline.submit(audio(0.1, MAX_UTTERANCE_SAMPLES - 1000));
+  setup.pipeline.submit(audio(0.1, LONG_FIRST_PART_SAMPLES));
   await settle();
   setup.transcriptions[0].answer('Long dictation');
   await settle();
 
   setup.pipeline.speechResumed();
-  setup.pipeline.submit(audio(0.2, 2000));
+  setup.pipeline.submit(
+    audio(0.2, LONG_SECOND_PART_SAMPLES),
+    undefined,
+    audio(0.05, LONG_LEAD_IN_SAMPLES),
+  );
+  await settle();
+  assert.equal(setup.detectSignals[0].aborted, true, 'The 40-second attempt is superseded');
+  assert.equal(setup.outcomes.get(1), 'superseded');
+  assert.equal(setup.transcribed.get(1), 'Long dictation', 'Its provisional text stays in history');
+
+  setup.transcriptions[1].answer('Long dictation that goes on');
+  await settle();
+  setup.detections[1].answer('SEND');
+  await finish(setup);
+
+  assert.deepEqual(setup.asrLengths, [LONG_FIRST_PART_SAMPLES, MAX_UTTERANCE_SAMPLES]);
+  assert.deepEqual(setup.asrInputs, [[0.1], [0.1, 0.05, 0.2]]);
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Long dictation that goes on' }]);
+  assert.deepEqual(setup.audioSaved.get(2), [0.1, 0.05, 0.2]);
+  assert.ok(setup.events.includes('settled 2 replacing 1'));
+  assert.equal(
+    setup.logs.some((entry) => entry.stage === 'continuation'),
+    false,
+    'Exactly at the cap is not a split',
+  );
+  assert.equal(setup.pipeline.failures, 0);
+});
+
+test('a continuation one sample beyond the 60-second cap becomes a separate request', async () => {
+  const setup = harness();
+  setup.pipeline.submit(audio(0.1, LONG_FIRST_PART_SAMPLES));
+  await settle();
+  setup.transcriptions[0].answer('Long dictation');
+  await settle();
+
+  setup.pipeline.speechResumed();
+  setup.pipeline.submit(
+    audio(0.2, LONG_SECOND_PART_SAMPLES + 1),
+    undefined,
+    audio(0.05, LONG_LEAD_IN_SAMPLES),
+  );
   await settle();
   assert.equal(setup.detectSignals[0].aborted, false);
+  assert.deepEqual(
+    setup.logs.filter((entry) => entry.stage === 'continuation').map((entry) => entry.id),
+    [1],
+  );
 
   setup.detections[0].answer('SEND');
   await advanceTo(setup, setup.clock.now() + SPEECH_QUIET_MS);
@@ -1211,11 +1265,16 @@ test('a continuation beyond the 30-second cap becomes a separate request', async
   setup.detections[1].answer('SEND');
   await finish(setup);
 
+  // The lead-in belongs only to a merge; the new request is the segment alone.
+  assert.deepEqual(setup.asrLengths, [LONG_FIRST_PART_SAMPLES, LONG_SECOND_PART_SAMPLES + 1]);
   assert.deepEqual(setup.asrInputs, [[0.1], [0.2]]);
   assert.deepEqual(
     setup.dispatched.map((entry) => entry.utterance),
     ['Long dictation', 'More'],
   );
+  assert.deepEqual(setup.audioSaved.get(1), [0.1]);
+  assert.deepEqual(setup.audioSaved.get(2), [0.2]);
+  assert.equal(setup.pipeline.failures, 0);
 });
 
 test('typed input is a boundary and never waits for speech holds or quiet windows', async () => {

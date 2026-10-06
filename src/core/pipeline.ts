@@ -185,7 +185,7 @@ export class SensorPipeline implements InspectableModule {
     }
 
     if (held.samples!.length + addedSamples > MAX_UTTERANCE_SAMPLES) {
-      this.log('continuation', 'Combined audio would exceed 30 s; starting a new request', held.id);
+      this.log('continuation', 'Combined audio would exceed 60 s; starting a new request', held.id);
       return false;
     }
 

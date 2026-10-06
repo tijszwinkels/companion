@@ -96,7 +96,7 @@ test('VAD caps continuous speech without losing independent subsequent segments'
   const frame = new Float32Array(512).fill(0.1);
   const segmenter = new Segmenter();
   const lengths: number[] = [];
-  for (let i = 0; i < 2000; i++) {
+  for (let i = 0; i < 4000; i++) {
     const result = segmenter.push(0.95, frame);
     if (result) {
       assert.equal(result.reason, 'limit');
@@ -104,7 +104,8 @@ test('VAD caps continuous speech without losing independent subsequent segments'
     }
   }
   assert.equal(lengths.length, 2);
-  assert.ok(lengths.every((length) => length <= 16000 * 30 + 512));
+  // 60 seconds is exactly 1875 frames, so each limit segment is exactly one minute.
+  assert.deepEqual(lengths, [16000 * 60, 16000 * 60]);
 });
 
 test('local Silero model loads and classifies digital silence as non-speech', async () => {

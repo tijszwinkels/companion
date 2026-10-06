@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../../src/config.ts';
 import { Transcriber, type TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
+import { MAX_UTTERANCE_SAMPLES } from '../../src/core/utterance-continuation.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { processor, screenshot, signal, testDetector, testSensors } from '../helpers.ts';
@@ -97,8 +98,8 @@ test('construction, silence, invalid samples and pre-cancellation acquire no wor
   assert.equal(await worker.transcriber.transcribe(new Float32Array(), signal()), '');
   assert.equal(await worker.transcriber.transcribe(new Float32Array(16000), signal()), '');
   await assert.rejects(
-    worker.transcriber.transcribe(new Float32Array(496001), signal()),
-    /31 seconds/,
+    worker.transcriber.transcribe(new Float32Array(16000 * 61 + 1), signal()),
+    /61 seconds/,
   );
   await assert.rejects(
     worker.transcriber.transcribe(new Float32Array([NaN]), signal()),
@@ -302,15 +303,17 @@ test('punctuation, silence and quiet input never send a retry', async (context) 
   assert.equal(diagnostics[2].retryMs, undefined);
 });
 
-test('the retry is skipped when padding would exceed the 31-second request bound', async (context) => {
+test('a one-minute utterance is retried; padding beyond the 61-second bound is not', async (context) => {
   const worker = await fixture(context, [{}], '', []);
   const diagnostics: TranscriptionDiagnostic[] = [];
   const observe = (entry: TranscriptionDiagnostic) => diagnostics.push(entry);
-  const limit = 16000 * 31;
+  const limit = 16000 * 61;
 
-  // Exactly at the bound once padded: retried. One sample longer: skipped.
-  // At the input bound itself: skipped, with the original request unchanged.
+  // The longest live utterance fits with its padding. Exactly at the bound once
+  // padded: retried. One sample longer: skipped. At the input bound itself:
+  // skipped, with the original request unchanged.
   for (const length of [
+    MAX_UTTERANCE_SAMPLES,
     limit - 2 * RETRY_PADDING_SAMPLES,
     limit - 2 * RETRY_PADDING_SAMPLES + 1,
     limit,
@@ -323,12 +326,81 @@ test('the retry is skipped when padding would exceed the 31-second request bound
 
   assert.deepEqual(
     (await requests(worker)).map((event) => event.samples),
-    [limit - 2 * RETRY_PADDING_SAMPLES, limit, limit - 2 * RETRY_PADDING_SAMPLES + 1, limit],
+    [
+      MAX_UTTERANCE_SAMPLES,
+      MAX_UTTERANCE_SAMPLES + 2 * RETRY_PADDING_SAMPLES,
+      limit - 2 * RETRY_PADDING_SAMPLES,
+      limit,
+      limit - 2 * RETRY_PADDING_SAMPLES + 1,
+      limit,
+    ],
   );
   assert.deepEqual(
     diagnostics.map((entry) => entry.emptyRetry),
-    ['empty', 'too-long', 'too-long'],
+    ['empty', 'empty', 'too-long', 'too-long'],
   );
+});
+
+test('cancelling a one-minute request reaps its worker; the next one gets a replacement', async (context) => {
+  const worker = await fixture(context, [{ request: 'hang' }, {}]);
+  const controller = new AbortController();
+
+  const operation = worker.transcriber.transcribe(
+    new Float32Array(MAX_UTTERANCE_SAMPLES).fill(0.1),
+    controller.signal,
+  );
+  const hung = await worker.waitFor('request');
+  assert.equal(hung.samples, MAX_UTTERANCE_SAMPLES);
+  controller.abort();
+  await assert.rejects(operation, /abort/i);
+  assertReaped(hung.pid);
+
+  assert.equal(
+    await worker.transcriber.transcribe(
+      new Float32Array(MAX_UTTERANCE_SAMPLES).fill(0.1),
+      signal(),
+    ),
+    'Dublin.',
+  );
+  const sent = await requests(worker);
+  assert.equal(sent.length, 2, 'The cancelled request is not replayed');
+  assert.notEqual(sent[1].pid, hung.pid);
+});
+
+test('the pipeline routes 45- and 60-second utterances through the real request bound', async (context) => {
+  const worker = await fixture(context);
+  const delivered: string[] = [];
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
+  processor('IGNORE', async (frame) => {
+    delivered.push(frame.utterance);
+  }).subscribe(router);
+
+  const pipeline = new SensorPipeline(
+    {
+      ...testSensors({
+        capture: async () => screenshot,
+        transcribe: async () => assert.fail('Replaced by the real transcriber'),
+      }),
+      transcriber: worker.transcriber,
+      router,
+    },
+    () => {},
+    signal(),
+  );
+
+  pipeline.submit(new Float32Array(16000 * 45).fill(0.1));
+  pipeline.submit(new Float32Array(MAX_UTTERANCE_SAMPLES).fill(0.1));
+  await pipeline.idle();
+
+  assert.deepEqual(
+    (await requests(worker)).map((event) => event.samples),
+    [16000 * 45, MAX_UTTERANCE_SAMPLES],
+  );
+  assert.deepEqual(delivered, ['Dublin.', 'Dublin.']);
+  assert.equal(pipeline.failures, 0);
 });
 
 test('a first-pass worker error is not retried', async (context) => {

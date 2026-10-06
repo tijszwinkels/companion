@@ -83,7 +83,7 @@ transcript logging is unchanged; keep the complete CLI log private.
 | `asr-start` | Human-readable startup notice before loading the resident Parakeet worker. Per-utterance `asr` records remain JSON. |
 | `audio-levels` | Five-second aggregate (plus a final partial window): decoded duration, RMS, peak amplitude and peak VAD probability, including sounds that never start a candidate. Persistent low peak probability indicates no onset. |
 | `vad` / `too-short` | A candidate reached onset but had fewer than 128 ms of voiced frames; preroll and silence are excluded from that count. |
-| `vad` / `accepted` | Candidate duration, voiced duration, ending silence (224 ms for a silence endpoint) and peak probability. `reason` distinguishes silence endpoint, 30-second limit and EOF. |
+| `vad` / `accepted` | Candidate duration, voiced duration, ending silence (224 ms for a silence endpoint) and peak probability. `reason` distinguishes silence endpoint, 60-second limit and EOF. |
 | `audio-end` | `eof`, `cancelled` or `failed`; cancellation discards an unfinished candidate. Capture/framing errors still propagate with their existing error detail. |
 | `asr` / `silence` | Pre-ASR energy filter rejected the buffer. Includes whole-buffer and strongest-window RMS. No request was sent. |
 | `asr` / `empty` or `punctuation` | The worker answered, but its final result supplied no usable words. |
@@ -185,9 +185,9 @@ sends exactly one request. No other outcome is retried:
   a replacement worker. Only a later utterance can do that.
 - Input whose strongest-128-ms-window RMS is below 0.005 (ten times the silence
   floor) is not retried (`emptyRetry: "quiet"`), for the reason shown below.
-- Input that padding would push past the 31-second request bound is not retried
-  (`too-long`). Live segments are capped at 30 seconds, so this affects only
-  direct callers near the bound.
+- Input that padding would push past the 61-second request bound is not retried
+  (`too-long`). Live segments and combined continuations are capped at 60
+  seconds, so this affects only direct callers near the bound.
 - The caller's samples are never modified. Empty-clip retention uses the final
   outcome and saves the original segment; a recovered result follows the ordinary
   transcript path, and its recording is the original, unpadded segment.

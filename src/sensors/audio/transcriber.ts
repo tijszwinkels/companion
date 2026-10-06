@@ -3,8 +3,12 @@ import { encodePcm16, SAMPLE_RATE } from './segmenter.ts';
 import type { InspectableModule } from '../../core/module.ts';
 import { audioLevels, MIN_SPEECH_WINDOW_RMS, type AudioLevels } from './levels.ts';
 
-/** The worker's protocol bound; also the longest input this module accepts. */
-const MAX_REQUEST_SAMPLES = SAMPLE_RATE * 31;
+/**
+ * The worker's protocol bound; also the longest input this module accepts.
+ * One second above the 60-second utterance cap leaves room for the empty-result
+ * retry's padding (2 × 250 ms) around even the longest utterance.
+ */
+const MAX_REQUEST_SAMPLES = SAMPLE_RATE * 61;
 
 /**
  * Digital silence added on each side of the one retry after an empty result.
@@ -26,7 +30,7 @@ const MIN_EMPTY_RETRY_WINDOW_RMS = MIN_SPEECH_WINDOW_RMS * 10;
  * What happened after a first decoder pass returned no text at all:
  * - `recovered`, `punctuation`, `empty`, `error`: the padded retry's result.
  * - `quiet`: no retry; the input is below the retry energy floor.
- * - `too-long`: no retry; padding would exceed the 31-second request bound.
+ * - `too-long`: no retry; padding would exceed the 61-second request bound.
  */
 export type EmptyRetryOutcome =
   'recovered' | 'punctuation' | 'empty' | 'error' | 'quiet' | 'too-long';
@@ -114,7 +118,7 @@ export class Transcriber implements SpeechTranscriber {
   ): Promise<string> {
     return this.run(signal, async (operationSignal) => {
       if (samples.length > MAX_REQUEST_SAMPLES) {
-        throw Error('Utterance exceeds 31 seconds');
+        throw Error('Utterance exceeds 61 seconds');
       }
 
       const started = performance.now();

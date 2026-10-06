@@ -9,7 +9,9 @@ use parakeet_rs::{ParakeetTDT, Transcriber};
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 
-const MAX_SAMPLES: usize = 16_000 * 31;
+/// One second above the parent's 60-second utterance cap, so the parent's
+/// empty-result retry (250 ms of padding on each side) fits the longest input.
+const MAX_SAMPLES: usize = 16_000 * 61;
 
 /// Bound the allocation before reading audio, and distinguish clean EOF from a
 /// truncated message. No filenames, audio, transcripts or library errors escape
@@ -106,6 +108,22 @@ mod tests {
         assert_eq!(
             read_samples(&mut input).unwrap().unwrap(),
             vec![-1.0, 0.0, 32767.0 / 32768.0]
+        );
+        assert!(read_samples(&mut input).unwrap().is_none());
+    }
+
+    #[test]
+    fn accepts_a_padded_sixty_second_utterance_at_the_bound() {
+        // 60 s of speech plus 2 × 250 ms of retry padding fits below 61 s.
+        assert_eq!(MAX_SAMPLES, 976_000);
+        assert!(16_000 * 60 + 2 * 4_000 <= MAX_SAMPLES);
+
+        let mut bytes = Vec::from((MAX_SAMPLES as u32).to_le_bytes());
+        bytes.resize(4 + MAX_SAMPLES * 2, 0);
+        let mut input = bytes.as_slice();
+        assert_eq!(
+            read_samples(&mut input).unwrap().unwrap().len(),
+            MAX_SAMPLES
         );
         assert!(read_samples(&mut input).unwrap().is_none());
     }

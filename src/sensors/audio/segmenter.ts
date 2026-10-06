@@ -15,7 +15,9 @@ export const VAD_SETTINGS = {
   // merges resumed speech until dispatch commits (see core/utterance-continuation.ts).
   // Silence is counted in whole frames, so the effective value is ENDPOINT_MS.
   silenceMs: 200,
-  maxMs: 30000,
+  // Long enough to speak naturally for a minute. 60000 ms is exactly 1875
+  // frames, so a `limit` segment holds exactly MAX_UTTERANCE_SAMPLES.
+  maxMs: 60000,
   preRollMs: 256,
 };
 
@@ -51,7 +53,7 @@ export interface Segment {
   /**
    * Silence counted at the end of `samples`, in milliseconds: ENDPOINT_MS for a
    * `silence` endpoint, and whatever silence had accumulated (often 0) when the
-   * 30-second `limit` or the end of the input closed the segment. The speech
+   * 60-second `limit` or the end of the input closed the segment. The speech
    * ended this long before the segment was returned; the commitment floor is
    * measured from that moment (core/utterance-continuation.ts).
    */

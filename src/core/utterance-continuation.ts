@@ -69,9 +69,10 @@ export const EMPTY_QUIET_MS = 1200;
 
 /**
  * Product choice D3: combined audio (including the restored pause) is limited
- * to the segmenter's existing 30-second cap. A continuation that would exceed
- * it is not merged; the held attempt proceeds and the continuation becomes a
- * new request, as a 30-second `limit` segment split would today.
+ * to the segmenter's 60-second cap. A continuation that would exceed it is not
+ * merged; the held attempt proceeds and the continuation becomes a new request,
+ * as a 60-second `limit` segment split would. The transcriber's 61-second
+ * request bound leaves room for its empty-result retry padding.
  */
 export const MAX_UTTERANCE_SAMPLES = (SAMPLE_RATE * VAD_SETTINGS.maxMs) / 1000;
 
@@ -111,7 +112,7 @@ export interface AttemptTiming {
    * The silence at the end of the admitted segment, as measured by the
    * segmenter (`Segment.trailingSilenceMs`). The speech ended this long before
    * admission. A silence endpoint measures 224 ms; a segment closed by the
-   * 30-second limit or at end of file may end in less, often 0. The default,
+   * 60-second limit or at end of file may end in less, often 0. The default,
    * 0, is for callers without VAD: no silence is assumed that was not heard.
    */
   trailingSilenceMs?: number;
@@ -149,7 +150,7 @@ export interface TranscriptChain {
    * Frame ids of this utterance's attempts that were superseded, oldest first.
    * The chain's final attempt reports them when it settles, so the desktop can
    * keep one record per utterance (Activity.continuationSettled). Bounded by
-   * the number of pauses within the 30-second combined audio cap.
+   * the number of pauses within the 60-second combined audio cap.
    */
   supersededAttempts: number[];
 }

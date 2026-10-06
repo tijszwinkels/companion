@@ -73,11 +73,11 @@ test('VAD reports rejected duration separately from accepted silence, EOF and li
   // starts with the full 256 ms preroll before its 128 ms of speech.
   assert.equal(reports.at(-1)?.audioMs, 384);
 
-  for (let index = 0; index < 938; index++) {
+  for (let index = 0; index < 1875; index++) {
     segmenter.push(0.8, frame);
   }
   assert.equal(reports.at(-1)?.reason, 'limit');
-  assert.equal(reports.at(-1)?.audioMs, 30016);
+  assert.equal(reports.at(-1)?.audioMs, 60000);
   segmenter.finish();
   assert.equal(reports.length, 4, 'Empty EOF does not repeat the last report');
 });
@@ -108,10 +108,10 @@ test('a segment carries the silence measured after its speech, never an assumed 
   assert.equal(segment?.reason, 'end');
   assert.equal(segment?.trailingSilenceMs, 64);
 
-  // The 30-second limit three frames after the speech: 96 ms.
+  // The 60-second limit three frames after the speech: 96 ms.
   const limited = new Segmenter();
   segment = undefined;
-  for (let index = 0; index < 935; index++) {
+  for (let index = 0; index < 1872; index++) {
     assert.equal(limited.push(0.9, frame), undefined);
   }
   for (let index = 0; !segment; index++) {

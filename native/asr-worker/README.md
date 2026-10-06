@@ -67,7 +67,7 @@ Only one operation is allowed; overlapping calls fail immediately. SensorPipelin
 still owns one active plus two pending frames. Screenshots still start at speech
 end. No routing, prefix, prompt, delivery or 800 ms silence-boundary behavior was
 changed by the worker (the later [provisional endpoint](../../docs/speech-timing.md)
-changed the boundary separately). The 31-second input bound, RMS silence threshold of 0.0005, punctuation
+changed the boundary separately). The input bound (31 seconds then; now 61 seconds, the 60-second utterance cap plus retry padding), RMS silence threshold of 0.0005, punctuation
 filter and 4000 UTF-16-code-unit transcript bound are preserved. The silence floor
 now applies to the strongest 128 ms window, so quiet short speech is not diluted
 by endpoint silence. It does not normalize or trim the model input. PCM16 conversion
@@ -83,7 +83,7 @@ Failed, timed-out and cancelled requests are never retried or replayed. The one
 exception is a successful but **empty** result: the transcriber sends the same
 samples once more, with 250 ms of digital silence on each side, to the same worker
 within the same operation timeout. Punctuation-only results, quiet input below the
-retry floor, and input that padding would push past 31 seconds are not retried. See
+retry floor, and input that padding would push past 61 seconds are not retried. See
 [empty-result retry](../../docs/short-phrase-recognition.md#empty-result-retry).
 A later utterance can create one replacement after the previous process has closed. Repeated failures consume one
 attempt per new utterance, never a background restart loop. An idle worker exit is
@@ -107,7 +107,7 @@ The executable accepts `--model DIRECTORY`. After loading, stdout emits:
 
 Each stdin request consists of a little-endian unsigned 32-bit sample count,
 followed by that many signed little-endian 16-bit PCM samples (16 kHz, mono).
-The helper checks `1 <= count <= 496000` before allocating. Only one request may
+The helper checks `1 <= count <= 976000` (61 seconds) before allocating. Only one request may
 be outstanding. The empty-result retry is an ordinary second request after the
 first response. No request IDs, retry protocol or cancellation messages are needed:
 cancellation destroys the process, so its response cannot be mistaken for a later
@@ -166,6 +166,14 @@ Model SHA-256:
 - decoder_joint-model.int8.onnx: `eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70`
 - vocab.txt: `d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d`
 - Fixture: `523c26311148fb0aba901a1cca4809d4b80b4850749790c00b3ab523cc19ff7d`
+
+One-minute input, measured 2026-10-06 on the same host with this worker and
+model: the public fixture repeated with 300 ms gaps took about 2.5 s for 60 s
+(real-time factor about 0.04), well within the 90-second operation timeout even
+with the retry. Worker RSS rose from about 0.97 GB after loading to about 1.23 GB
+after 30 s inputs and 1.4–1.85 GB after 60 s inputs; it stays resident until the
+worker exits. Repeated audio is not natural speech: transcription quality of a
+continuous spoken minute was not measured.
 
 `npm test` uses disposable subprocesses to test worker reuse, bounded responses,
 UTF-8 fragmentation, invalid protocol, cancellation/timeout/close during startup

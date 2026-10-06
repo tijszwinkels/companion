@@ -27,10 +27,11 @@ the product constants), `src/core/pipeline.ts` (merge, supersession, cleanup) an
 | Spoken commitment floor | `SPEECH_QUIET_MS = LEGACY_ENDPOINT_MS` | **800 ms** after the latest VAD-detected speech ended, for inference and shortcuts. After a silence endpoint 224 ms have already passed at admission, so **576 ms** remain. |
 | Empty-transcript window | `EMPTY_QUIET_MS` | **1200 ms** after the provisional endpoint (see the evaluation). |
 | Restored pause | `CONTINUATION_GAP_MS = 800 − 224 − 256` | **320 ms** of audio after the previous candidate that the preroll cannot hold (`Segment.leadIn`). |
-| Combined audio cap | `MAX_UTTERANCE_SAMPLES` | 30 s, the segmenter's existing `maxMs`. |
+| Combined audio cap | `MAX_UTTERANCE_SAMPLES` | 60 s, the segmenter's `maxMs` (raised from 30 s on 2026-10-06). |
 
 The 0.65/0.35 VAD thresholds, the 128 ms voiced minimum, the 256 ms preroll and
-the 30-second segment cap are unchanged.
+the segment cap were unchanged by this feature. The cap was later raised from 30
+to 60 seconds for single and combined utterances.
 
 ## Lifecycle of a spoken utterance
 
@@ -61,7 +62,7 @@ the 30-second segment cap are unchanged.
 
 Every listener exit path releases an open hold: a rejected candidate, EOF
 (including a too-short tail), pause/abort, capture or VAD failure. A candidate
-closed by the 30-second `limit` is an accepted segment and follows `submit`.
+closed by the 60-second `limit` is an accepted segment and follows `submit`.
 
 ### Commitment points by route
 
@@ -85,7 +86,7 @@ day and never the model's completion time.
   last voiced frame (`Segment.trailingSilenceMs`) and the listener submits the
   segment in the same tick; `submit` requires this (a later submission would only
   anchor the floor late). The attempt's speech end is admission time minus that
-  silence. A silence endpoint measured 224 ms; a segment closed by the 30-second
+  silence. A silence endpoint measured 224 ms; a segment closed by the 60-second
   `limit` or at end of input measured less, often 0, and owes the rest of the
   800 ms. No silence is assumed that was not heard.
 - **Queueing, ASR and inference** after admission (processing-queue delay, not a
@@ -101,7 +102,7 @@ day and never the model's completion time.
   after the burst ended, the empty window 1200 ms after the burst was rejected,
   exactly as they count from an endpoint.
 - **Other releases** (typed input as a boundary, pause, capture or VAD failure,
-  shutdown, a continuation over the 30-second cap) end a hold because no later
+  shutdown, a continuation over the 60-second cap) end a hold because no later
   sound can join the attempt any more. Waiting longer could not change the
   outcome, so the attempt keeps its deadlines. (Previously every release
   restarted the shortcut and empty windows.)
@@ -142,8 +143,8 @@ day and never the model's completion time.
   between the parts restarts the lead-in, so audio before the burst is not
   restored.
 - **Memory.** The combined buffer is copied when the continuation is admitted,
-  before the old job's `finally` clears its samples. It is limited to 30 s
-  (1.9 MB of Float32). A transcript chain retains only the latest usable text.
+  before the old job's `finally` clears its samples. It is limited to 60 s
+  (3.84 MB of Float32). A transcript chain retains only the latest usable text.
 - **Targets.** The combined attempt captures a fresh screenshot and interaction
   context at its own endpoint, matching the old "capture at speech end". The
   existing target and composer checks therefore apply to the final utterance.
@@ -161,8 +162,9 @@ constant or one branch:
   log). The empty combined clip is still retained under the usual floors; if
   that optional write fails, the failure is logged and counted, and the earlier
   transcript is still routed.
-- **D3** A continuation that would make the combined audio exceed 30 s is not
-  merged: the held attempt proceeds and the continuation is a new request.
+- **D3** A continuation that would make the combined audio exceed 60 s (30 s
+  until 2026-10-06) is not merged: the held attempt proceeds and the
+  continuation is a new request.
 - **D4** (revised by Tijs, 2026-09-27: one retained final utterance per
   continuation chain, prospectively). An attempt superseded before its ASR
   result arrived writes no row, WAV or empty clip, as before. An attempt
@@ -308,7 +310,7 @@ pages and backups can still contain the removed text; nothing is purged.
 | `release` | The resumed sound was rejected, or can no longer join the job; the held job continues. |
 | `superseded` | On the old job: replaced by the named continuation, then again when its processing ends. |
 | `queued … (continues N)` | The combined job and the attempt it replaces. |
-| `continuation` | The combined audio would exceed 30 s; the segment is a new request. |
+| `continuation` | The combined audio would exceed 60 s; the segment is a new request. |
 | `fallback` | Combined audio had no text; the earlier transcript is routed (D2). |
 | `retired` | Desktop: a superseded row and its recordings were removed; its continuation keeps the utterance. |
 | `recovered` | The final attempt failed before its own transcript; the earlier words (or audio only, if there were none) are recorded with the combined audio. |
