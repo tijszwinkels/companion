@@ -65,9 +65,7 @@ and is written so that the Pi coding agent can do most of the work with you:
 you install Pi, then Pi follows the remaining steps and asks you whenever it
 needs your password or your eyes on the screen.
 
-A fresh install on an Omarchy 4.0.4 virtual machine, done by Pi with a local
-model, has passed every step except the audio path, which that machine
-lacked. Expect some rough edges: this is an early project.
+Companion is an early project, so expect some rough edges.
 
 You will need:
 
