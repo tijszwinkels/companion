@@ -13,39 +13,9 @@ the prepared task prompt, and it works through steps 1–8 with you. Pi asks you
 run anything that needs your password or your eyes on the desktop. You can also
 follow every step yourself.
 
-**Validation status (2026-10-01):** source-checked against Companion base
-`736c7a130c7c7b0a08e2d58a9fe7087a2a5daf91`. The public ASR fixture has historical
-native-decoder evidence linked below and also passed independent review using
-existing matching model files and a built worker. The new examples have isolated
-synthetic checks. **This guide has not been executed on a fresh Omarchy PC.** On
-2026-10-03 it was rehearsed in a fresh Omarchy 4.0.4 x86_64 KVM guest with software
-rendering and no audio device. After `omarchy update`, the step-1 packages were
-installed with the list _including_ distro `nodejs npm`; the reduced Omarchy list
-below has not been run as written. The source came from a local Git bundle of
-the reviewed commit, so the public `git clone` was not exercised. On that
-checkout, the step-2 builds and checks, the step-3 download and ASR fixture, Pi
-discovery, the adapter, a paused launch with the native UI and a typed `insert`
-passed. Against an existing trusted vLLM server (not the candidate recipe below),
-the vision check, Pi `READY`, one classifier routing, a quick question and the
-read-tool checkpoint also passed with synthetic input. Model installation and
-serving, GPU sizing, real microphone/screenshot/typing and intent quality still
-need validation. A candidate
-recipe below is not a promise of supported hardware or measured model quality.
-
-**Pi-first order and login startup (2026-10-05):** step 0, the Pi task prompt and
-step 8 are new in this revision. `companion-login` has isolated synthetic tests
-(fake `systemctl`, temporary home). On a fresh Omarchy 4.0.4 x86_64 KVM guest
-(software rendering, no audio device), a human did step 0 and then Pi 0.99.1 with a
-local Qwen model on a trusted LAN vLLM server (keyless, 128K context) followed
-steps 1–8 of commit `c9841c6`. The human ran only `omarchy update`, `sudo pacman`
-and the desktop checks Pi asked for. Builds, the ASR fixture, the vision check, Pi
-discovery, the adapter, the patched wtype, a quick question and the read-tool
-checkpoint passed. The exact-text check was byte-exact through step 8 services,
-a manual `npm start` and services started by a real password login (paused, one
-listener and one UI). `companion-login disable` left nothing starting at the next
-login. The source again came from a local Git bundle, so the public clone was not
-exercised. The test harness, not the guide, needed fixes for guest credentials and
-the idle lock. Dictation, the spoken classifier and intent quality remain untested.
+**Status:** Companion is an early project made for Omarchy. The model-server
+recipe in step 4 is a candidate, not a promise of supported hardware or model
+quality, and how well intent classification works depends on the model you choose.
 
 ## Before you begin
 
@@ -430,10 +400,7 @@ Recent npm 11 releases may instead report dependency install scripts as “not y
 covered by allowScripts” and skip them; the build and checks below are what
 establish a usable checkout, so do not approve scripts merely to silence that notice.
 Companion's [VAD explicitly uses CPU](../src/sensors/audio/vad.ts); the Rust ASR
-build remains separate. This behavior is source-checked. In the clean x86_64
-rehearsal (npm 11.19.1), npm withheld the dependency scripts, so the flag's skip
-path itself was not exercised; the build, ASR and launch checks still passed.
-Other npm versions may run the postinstall. Recheck the package's install behavior
+build remains separate. Other npm versions may run the postinstall. Recheck the package's install behavior
 when upgrading the lockfile.
 
 For Window mode without LayerShellQt/private Wayland headers, use
@@ -982,12 +949,11 @@ resident UI; save drafts first. Stop the model server and SSH tunnel in their ow
 terminals if no longer needed. Already executed tool actions are not rolled back;
 detached processes an agent created may need their own shutdown.
 
-**Known issue with `npm start` and Ctrl+C:** in the 2026-10-03 Omarchy rehearsal
-(npm 11.19.1), Ctrl+C ended the listener started through `npm start` without its
-orderly shutdown (no `stopped` line; SQLite's write-ahead log was left
-unconsolidated). Running `./node_modules/.bin/tsx src/cli.ts …` with the same
-options stopped cleanly. The step 8 services run node directly and stop with a single
-signal. Other npm versions and terminals are untested.
+**Known issue with `npm start` and Ctrl+C:** with npm 11.19.1, Ctrl+C ends a
+listener started through `npm start` without its orderly shutdown (no `stopped`
+line; SQLite's write-ahead log is left unconsolidated). Running
+`./node_modules/.bin/tsx src/cli.ts …` with the same options stops cleanly. The
+step 8 services run node directly and stop with a single signal.
 
 For services started by [step 8](#8-start-companion-after-login-optional), use
 `systemctl --user stop companion-listener.service companion-ui.service` instead of
@@ -1186,23 +1152,3 @@ checks and phone pairing. A trusted network/account boundary is required; no
 public unauthenticated listener or Funnel route is implied. `--phone` is an explicit
 listener opt-in, not the default. Revocation, stopping the gateway and removing a
 persistent Serve route are distinct steps in that guide.
-
-## Fresh-install acceptance record
-
-Keep a small private report: OS/architecture/GPU and relevant versions; Companion
-commit; selected model/license/revision/hashes; on-device versus LAN/cloud decision;
-each checkpoint's result; failures and changes made. Mark these separately:
-
-- **Source checked:** commands, config fields, documented defaults and data flow.
-- **Synthetic checked:** graph/config parsing, public ASR fixture, generated image,
-  Pi no-tools prompt and applicable isolated tests, each only if actually run.
-- **Live checked:** real microphone, screenshot, typing, UI/adapter and each agent
-  harness/model, only after explicit activation and successful observation.
-- **Fresh install checked:** all prerequisites installed on the intended clean
-  machine and the complete workflow repeated there. Done once for this guide in a
-  fresh Omarchy VM guest, except the audio path (see the validation status above).
-
-Do not upload keys, real screenshots/audio, native session histories or personal
-configuration with the report. The [development guide](development.md) maps further
-component tests; live tests can capture/type/call models and are not safe substitutes
-for the non-capturing checkpoints above.
