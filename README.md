@@ -4,7 +4,11 @@
 want typed and it appears in the app you are using; ask a question and an AI
 agent that can see your screen answers in a side panel.
 
-<!-- SCREENSHOT: hero -->
+<p align="center">
+  <img src="docs/images/conversation.png" width="520"
+       alt="Companion's panel showing a quick question. The user asked &quot;Quick question, what does this error mean?&quot; with a screenshot of a terminal showing a failing test; the Pi agent explains the TypeError, suggests a one-line fix and offers buttons to go ahead, explain further or stop.">
+</p>
+<p align="center"><sub>A spoken quick question about a terminal error, answered in Companion's panel (scripted demo data, no real model).</sub></p>
 
 ## What it is
 
@@ -45,8 +49,6 @@ be explicit, start your sentence with a command word instead.
 - **Never lose a sentence.** Everything you said is kept in a local history.
   With the Omarchy integration, hold **Super+Alt+V** to pick a recent utterance
   and paste it again.
-
-<!-- SCREENSHOT: conversation -->
 
 The panel can be a normal window, a sidebar or a dock. Its Activity tab shows
 what Companion heard and what it decided, and lets you switch individual
