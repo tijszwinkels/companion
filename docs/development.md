@@ -8,11 +8,12 @@ For a new machine, follow the [installation guide](installation.md) first. It
 includes model acquisition, agent setup and explicit capture/activation checkpoints;
 this developer guide assumes those prerequisites.
 
-Two companion references hold material that used to live in the README:
-[using Companion](using-companion.md) (start modes, voice prefixes, panel,
-shortcuts, history, prerequisites and `companion.config.json`) and
-[architecture and internals](architecture.md) (module graph, data flow and review
-order, text delivery, tests and code style).
+Material that used to live in the README is in two places:
+[using Companion](using-companion.md) is the short user guide, and
+[architecture and internals](architecture.md) holds the module graph, data flow
+and review order, text delivery, tests, code style and the detailed behavior and
+configuration reference (start modes, prefix rules, panel, history,
+prerequisites and `companion.config.json`).
 
 ## Find the right directory
 

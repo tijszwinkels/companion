@@ -235,7 +235,7 @@ the Wayland windows and monitor choice. With the standalone host running, that
 host owns the conversation surfaces and the adapter bridges shortcuts, theme,
 media and focus restoration through `NativeBridge.qml`. Future desktop
 adapters can reuse that body or consume the same desktop state protocol. See
-[quick questions](../../docs/using-companion.md#quick-questions) for Pi setup and session limits.
+[quick questions](../../docs/architecture.md#quick-questions) for Pi setup and session limits.
 
 The global shortcut uses Hyprland's resident
 [press/release protocol](https://quickshell.org/docs/v0.2.0/types/Quickshell.Hyprland/GlobalShortcut/)

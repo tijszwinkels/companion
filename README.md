@@ -94,14 +94,12 @@ section lists every store and what leaves the machine.
 
 - [Installation guide](docs/installation.md): setup, first launch, starting at
   login, troubleshooting and uninstalling.
-- [Using Companion](docs/using-companion.md): every command word, shortcut,
-  panel feature and configuration option.
+- [Using Companion](docs/using-companion.md): command words, shortcuts, the
+  panel and settings.
 - [Development guide](docs/development.md): source map, configuration, tests
-  and how to update a running installation. The
-  [architecture notes](docs/architecture.md) explain the module graph and data
-  flow.
+  and how to update a running installation.
 - [Widget authoring](widget-library/README.md) and
-  [local web apps](docs/local-apps.md) for building things agents can show.
+  [local web apps](docs/local-apps.md) for building your own views and tools.
 - An experimental [phone panel](docs/mobile-startup.md) lets you follow
   conversations, and start new ones, from your phone over your own private
   network.
