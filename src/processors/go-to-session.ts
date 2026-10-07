@@ -54,9 +54,12 @@ function inferredIndex(utterance: string): number {
     const word = match[0];
     const before = text.slice(0, match.index);
     const after = text.slice(match.index + word.length);
-    // A sign ("-6", "- six") or decimal/grouping part (".6", "6.5", "1,000", "6:30").
+    // A written or spoken sign ("-6", "- six", "minus six") or decimal/grouping
+    // part (".6", "point six", "6.5", "1,000", "6:30").
     const malformed =
-      /[-+−]\s*$/u.test(before) || /[.,:]$/u.test(before) || /^[.,:]\p{N}/u.test(after);
+      /(?:[-+−]|\b(?:minus|negative|plus|point|dot))\s*$/u.test(before) ||
+      /[.,:]$/u.test(before) ||
+      /^[.,:]\p{N}/u.test(after);
 
     if (/\p{N}/u.test(word)) {
       indexes.push(!malformed && /^[1-9][0-9]?$/u.test(word) ? Number(word) - 1 : -1);

@@ -722,8 +722,8 @@ model selects the intent only; the processor then scans the whole raw utterance
 one through sixteen. A second number, an ordinal, a decimal, signed,
 out-of-range or other number word, or none at all is skipped and only logged:
 “two ideas, switch to session six”, “go to the sixth one” and “session nein” do
-nothing. Punctuation separates words but cannot hide a number, and “.6”, “- 6”
-or “6.5” is never read as 6. Because “one” is often a pronoun (“that one”, “one
+nothing. Punctuation separates words but cannot hide a number, and “.6”, “- 6”,
+“minus six”, “point six” or “6.5” is never read as 6. Because “one” is often a pronoun (“that one”, “one
 of them”), it is a target only right after “session”, “tab”, “conversation”,
 “chat” or “number”; elsewhere it counts as an ambiguous mention, so “switch to
 one” is skipped. There is no homophone repair, title matching or

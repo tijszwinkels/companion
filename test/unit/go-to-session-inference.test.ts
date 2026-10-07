@@ -156,6 +156,14 @@ test('inferred navigation skips missing, multiple, ordinal, homophone and malfor
     'switch to session +6',
     'switch to session 6.5',
     'version 2.0, switch to session six',
+    // Review round 2: spoken signs and decimal markers are malformed too.
+    'switch to session minus six',
+    'switch to session minus 6',
+    'switch to session negative 6',
+    'switch to session plus six',
+    'switch to session point six',
+    'switch to session point 6',
+    'switch to session dot six',
     // Review round 1: "one" without a navigation noun is ambiguous, not discarded.
     'switch to session one of six',
     'switch to the left one',
@@ -296,13 +304,15 @@ test('both cleanup modes navigate from the raw utterance without changing the co
     await run.route('switch to session .6');
     await run.route('two,please switch to session six');
     await run.route('switch to session one of six');
+    await run.route('switch to session minus six');
+    await run.route('switch to session point 6');
     assert.deepEqual(run.selected, [5]);
-    assert.deepEqual(run.outcomes, ['selected', 'skipped', 'skipped', 'skipped', 'skipped']);
+    assert.deepEqual(run.outcomes, ['selected', ...Array(6).fill('skipped')]);
     assert.deepEqual(
       run.records,
       cleanup
-        ? [...Array.from({ length: 5 }, () => ({ enabled: true, status: 'no-text' }))]
-        : Array.from({ length: 5 }, () => ({ enabled: false })),
+        ? [...Array.from({ length: 7 }, () => ({ enabled: true, status: 'no-text' }))]
+        : Array.from({ length: 7 }, () => ({ enabled: false })),
     );
   }
 });
