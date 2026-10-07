@@ -39,8 +39,12 @@ as a possible destination: messages go from the router into the selected
 processor. Registration does not deliver a message, and the router does not
 broadcast frames to every subscriber.
 
-The prefix-only `GoToSession` processor reserves `go to session` and has no LLM
-instruction. It parses one exact numeral or cardinal number word from 1–16, then calls
+The `GoToSession` processor reserves `go to session`. Its shortcut parses one
+exact numeral or cardinal number word from 1–16. It also has an LLM instruction,
+offered only while navigation is captured. The router passes the route
+(`'shortcut'` or `'inference'`) as the third `process` argument; the inferred
+route takes the single explicit number from the whole utterance, and skips
+none, several or invalid ones. Both then call
 `Activity.selectSession(context, index)`. The desktop runtime validates the
 captured `InteractionContext.agentNavigation` client/token/order against current
 state before sending a targeted UI selection event. Invalid, disabled, hidden,
