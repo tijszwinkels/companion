@@ -5,10 +5,10 @@ want typed and it appears in the app you are using; ask a question and an AI
 agent that can see your screen answers in a side panel.
 
 <p align="center">
-  <img src="docs/images/conversation.png" width="520"
-       alt="Companion's panel showing a quick question. The user asked &quot;Quick question, what does this error mean?&quot; with a screenshot of a terminal showing a failing test; the Pi agent explains the TypeError, suggests a one-line fix and offers buttons to go ahead, explain further or stop.">
+  <img src="docs/images/companion-demo.gif" width="560"
+       alt="Animated demo of Companion's panel. A conversation named Today shows a to-do widget with four garden-club tasks, one already ticked off. The spoken sentence &quot;New session, draft the garden club newsletter&quot; appears in the activity strip, a new tab named Garden newsletter opens, makes one tool call and writes a short newsletter draft with buttons to make it shorter or add photos. Then &quot;Go to session one&quot; switches back to the Today tab.">
 </p>
-<p align="center"><sub>A spoken quick question about a terminal error, answered in Companion's panel (scripted demo data, no real model).</sub></p>
+<p align="center"><sub>A to-do list in a daily conversation, a spoken “new session” for one task, and back again (scripted demo data, no real model).</sub></p>
 
 ## What it is
 
