@@ -22,6 +22,7 @@ import { LabelPreviousIncorrect } from './processors/label-previous-incorrect.ts
 import { ExternalSessionServer } from './agents/external/server.ts';
 import { externalSocketPath } from './agents/external/paths.ts';
 import { AgentSessions } from './agents/sessions.ts';
+import { HarnessLiveStateReporter, parseAgentHarnessUrl } from './agents/harness-live-state.ts';
 import { agentDirectory } from './agents/settings.ts';
 import { userWidgetLibrary } from './widgets/library-path.ts';
 import { PiBackend } from './agents/pi-backend.ts';
@@ -73,6 +74,7 @@ async function main(): Promise<void> {
       'external-sessions': { type: 'boolean', default: false },
       'external-socket': { type: 'string' },
       'widget-library': { type: 'string' },
+      'agent-harness-url': { type: 'string' },
       paused: { type: 'boolean', default: false },
       'no-startup-capture': { type: 'boolean', default: false },
       phone: { type: 'boolean', default: false },
@@ -96,6 +98,9 @@ Usage: npm start -- [options]
   --external-socket PATH Override its private socket path; requires --external-sessions
   --widget-library PATH  Widget source directory (default: COMPANION_WIDGET_LIBRARY,
                      else ~/companion/widget-library)
+  --agent-harness-url URL  Opt-in: report busy Pi conversations to a local
+                     agent-harness, e.g. http://127.0.0.1:8877 (default:
+                     COMPANION_AGENT_HARNESS_URL, else off; loopback only)
   --paused           Start paused; resume through the desktop control
   --no-startup-capture
                      Skip the startup screenshot check, e.g. at login before
@@ -168,11 +173,21 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   // Every asynchronous stage observes this signal, so Ctrl+C cancels the whole
   // session, including an in-flight transcription or intent request.
   const controller = new AbortController();
+  // Opt-in: tell a local agent-harness which Pi conversations are busy, so
+  // its session status (and the Omarchy indicator) stays right while Pi is
+  // silently thinking or running tools. Off unless a URL is configured.
+  const harnessUrl = values['agent-harness-url'] ?? process.env.COMPANION_AGENT_HARNESS_URL;
+  let liveState: HarnessLiveStateReporter | undefined;
+  if (harnessUrl !== undefined && harnessUrl !== '') {
+    liveState = new HarnessLiveStateReporter({ url: parseAgentHarnessUrl(harnessUrl), log });
+  }
+
   const agents = new AgentSessions(
     { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
     log,
     agentDirectory(),
     widgetLibrary,
+    liveState,
   );
   const stop = () => {
     controller.abort();

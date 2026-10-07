@@ -169,6 +169,34 @@ backends. Never point these tests at the live listener or personal session store
 The feature is off unless the listener is explicitly started with
 `--external-sessions`; activation remains a separate user decision.
 
+## agent-harness live state
+
+`src/agents/harness-live-state.ts` tells a local agent-harness which Pi
+conversations are busy, so its session status (and tools that read it, such as
+the Omarchy agent indicator) does not drop a conversation to idle while Pi is
+silently thinking or running tools. It is off unless the listener is started
+with `--agent-harness-url http://127.0.0.1:8877` or
+`COMPANION_AGENT_HARNESS_URL` (loopback `http://` only).
+
+- Signal: `AgentSessions` busy, i.e. from turn start until Pi has settled
+  (`agent_settled`, after retries/compaction) and the turn is saved, across
+  queued follow-ups. Reported from `flush`, the single place every busy change
+  passes through.
+- Identity: only Pi conversations, as `ses_<conversation id without dashes>`
+  (Pi runs with `--session-id <conversation id>`). Claude Code conversations
+  are not reported.
+- Wire: `PUT /v1/sessions/<id>/live-state` with `busy` + 45 s lease, renewed
+  every 15 s, and one `idle` at the end. Metadata only. Requires an
+  agent-harness that has this route; an older harness answers 404/405 and
+  nothing changes.
+- Never blocks a conversation: fire-and-forget, one request in flight per
+  conversation (latest state coalesced), 3 s timeout, failures logged once per
+  outage. If Companion stops, the harness lets the lease expire and falls back
+  to its transcript rule.
+
+Tests (`test/unit/harness-live-state.test.ts`) use a fake `fetch` and the
+scripted-backend fixture; nothing contacts a real harness.
+
 ## Local app development
 
 `bin/companion-app` registers, runs and opens trusted local web apps; nothing
