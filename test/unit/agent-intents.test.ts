@@ -11,7 +11,7 @@ import { defaultAgentSettings, defaultQuickQuestionSettings } from '../../src/ag
 import { chatMessage, type AgentBackend } from '../../src/agents/types.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
-import type { UserSensorFrame } from '../../src/core/frame.ts';
+import type { InteractionContext, UserSensorFrame } from '../../src/core/frame.ts';
 import { CloseAgentSession } from '../../src/processors/close-agent-session.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
@@ -729,6 +729,77 @@ test('go to session rejects positions above 16 even if a client reports extra ID
     assert.equal(outcomes.at(-1), 'skipped');
   }
   assert.deepEqual(selectedIndexes, [15, 15]);
+});
+
+test('inferred navigation keeps the captured order, owner and visibility safeguards', async (context) => {
+  const setup = await fixture(context);
+  for (let index = 1; index < 6; index++) {
+    setup.sessions.start({ ...frame, utterance: `Session ${index + 1}` }, signal());
+    await setup.sessions.idle();
+  }
+  const offered: string[][] = [];
+  const router = new UserSensorRouter(
+    {
+      detector: testDetector({
+        async detect(_input, intents) {
+          offered.push(intents.map((intent) => intent.name));
+          return intents.some((intent) => intent.name === 'GO_TO_SESSION')
+            ? 'GO_TO_SESSION'
+            : 'IGNORE';
+        },
+      }),
+    },
+    () => {},
+    setup.feedback,
+  );
+  new Ignore(() => {}).subscribe(router);
+  new GoToSession(() => {}, false, setup.feedback).subscribe(router);
+
+  async function visible(token: string, shown = true) {
+    setup.desktop.send({
+      action: 'panel-state',
+      id: '',
+      composerFocused: false,
+      visible: shown,
+      navigationToken: token,
+    });
+    await setup.desktop.reply('panel-state');
+    return setup.activity.interactionContext!();
+  }
+  const selections = (id: string) =>
+    setup.desktop.messages.filter((message) => message.type === 'agent-select' && message.id === id)
+      .length;
+  const route = (utterance: string, interaction: InteractionContext) =>
+    router.route({ ...frame, utterance, interaction }, signal());
+
+  const captured = await visible('first-page');
+  const sixth = captured.agentNavigation!.ids[5];
+  await route("Hey, let's switch to session six", captured);
+  assert.equal(setup.outcomes.at(-1), 'selected');
+  await waitFor(() => selections(sixth) === 1);
+
+  await route('switch to session seven', captured);
+  assert.equal(setup.outcomes.at(-1), 'skipped', 'Missing positions never select another one');
+
+  const order = setup.sessions.order();
+  setup.sessions.move(order.ids[1], order.ids[0], order.revision);
+  await route('switch to session two', captured);
+  assert.equal(setup.outcomes.at(-1), 'skipped', 'Reordering invalidates captured speech');
+
+  const reordered = await visible('second-page');
+  await visible('another-page');
+  await route('switch to session six', reordered);
+  assert.equal(setup.outcomes.at(-1), 'skipped', 'Changing pages invalidates captured speech');
+
+  const beforeClose = await visible('before-close');
+  await setup.sessions.remove(beforeClose.agentNavigation!.ids[0]);
+  await route('switch to session one', beforeClose);
+  assert.equal(setup.outcomes.at(-1), 'skipped');
+
+  const hidden = await visible('hidden', false);
+  await route('switch to session one', hidden);
+  assert.equal(offered.at(-1)!.includes('GO_TO_SESSION'), false, 'Hidden panels are not offered');
+  assert.equal(selections(sixth), 1);
 });
 
 test('navigation is delivered only to the captured UI connection and disconnect invalidates it', async (context) => {

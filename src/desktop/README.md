@@ -708,13 +708,24 @@ Previous visibility, panel visibility or connection changes. Token-only reports
 update routing without sending a state snapshot. Selection or navigation
 availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
-ordered IDs/revision. The prefix-only `GO_TO_SESSION` processor accepts exactly
+ordered IDs/revision. The `GO_TO_SESSION` shortcut accepts exactly
 “go to session 1” through “go to session 16”, also one through sixteen, with ordinary
 ASR casing/spacing/terminal punctuation. Ordinals, partial, missing, and
 out-of-range suffixes are consumed, as are disabled shortcuts; none is passed
 to inference or conversation text. At most 16 conversation tabs can be open; requests for higher positions
-are rejected even if a stale client reports extra IDs. This processor has its
-own shortcut toggle and no inference toggle.
+are rejected even if a stale client reports extra IDs.
+
+Intent recognition may also choose `GO_TO_SESSION`, for example for “hey, let's
+switch to session six”. It is offered only while navigation is captured. The
+model selects the intent only; the processor then scans the whole raw utterance
+(also with transcription cleanup on) for exactly one explicit number, digits or
+one through sixteen. A second number, an ordinal, a decimal, signed,
+out-of-range or other number word, or none at all is skipped and only logged:
+“two ideas, switch to session six”, “go to the sixth one” and “session nein” do
+nothing. A “one” after a determiner (“that one”, “the next one”) or before “of”
+is a pronoun, not a number. There is no homophone repair, title matching or
+reading of numbers from the screenshot or conversation context. The shortcut and
+inference routes have separate toggles; the shortcut keeps its strict parser.
 
 Immediately before dispatch the runtime rechecks the client, token, membership
 and order revision. It sends only that connection

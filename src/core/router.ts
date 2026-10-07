@@ -209,9 +209,10 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     frame: UserSensorFrame,
     signal: AbortSignal,
     intentSignal: AbortSignal,
+    route: IntentMode,
   ): Promise<void> {
     try {
-      await processor.process(frame, AbortSignal.any([signal, intentSignal]));
+      await processor.process(frame, AbortSignal.any([signal, intentSignal]), route);
     } catch (error) {
       // Preserve partial-delivery uncertainty. Cancellation before typing is a
       // normal user control, even though the overall listener remains active.
@@ -444,7 +445,13 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       }
 
       this.log('dispatch', processor.name, frame.id);
-      await this.dispatch(processor, { ...frame, utterance: text }, signal, intentSignal);
+      await this.dispatch(
+        processor,
+        { ...frame, utterance: text },
+        signal,
+        intentSignal,
+        'shortcut',
+      );
       return processor.name;
     }
 
@@ -587,7 +594,7 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
 
     this.log('dispatch', name, frame.id);
 
-    await this.dispatch(processor, routedFrame, signal, intentSignal);
+    await this.dispatch(processor, routedFrame, signal, intentSignal, 'inference');
 
     return name;
   }

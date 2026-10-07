@@ -1,4 +1,4 @@
-import type { UserSensorRouter } from './router.ts';
+import type { IntentMode, UserSensorRouter } from './router.ts';
 import type { InspectableModule } from './module.ts';
 import type { AgentChoiceSet } from '../agents/choices.ts';
 import type { AgentConversationContext } from '../agents/conversation-context.ts';
@@ -98,8 +98,11 @@ export interface UserSensorProcessor extends InspectableModule {
 
   subscribe(router: UserSensorRouter): void;
 
-  /** LLM routing preserves the frame; prefix routing copies it with the remaining text. */
-  process(frame: UserSensorFrame, signal: AbortSignal): Promise<void>;
+  /**
+   * LLM routing preserves the frame; prefix routing copies it with the remaining
+   * text. The router names the route; direct callers may omit it.
+   */
+  process(frame: UserSensorFrame, signal: AbortSignal, route?: IntentMode): Promise<void>;
 }
 
 /** Logging is injected so the modules do not depend on terminal presentation. */
