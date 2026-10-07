@@ -226,8 +226,11 @@ and become selectable when it has finished and the session can accept a follow-u
 The four-concurrent-agent limit also controls availability. If another session
 takes the last slot during inference, the selection is skipped rather than
 starting an extra run or reporting a submission error.
-The model should finish its answer after offering choices, not wait for the user
-inside the tool. The composer always permits writing freeform text, including
+The model should offer the choices first and then write its complete answer as
+visible text, not wait for the user inside the tool. The tool result repeats this
+because the user never sees thinking: asked to answer before the call, Claude
+models often wrote the answer only in thinking and ended with a one-line pointer
+to the choices. The composer always permits writing freeform text, including
 while the agent runs; choosing an option preserves that draft.
 Freeform speech and typed submissions during a turn queue in that conversation.
 They immediately invalidate its old choices; the current turn cannot publish

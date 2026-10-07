@@ -145,6 +145,27 @@ test('native tool accepts both presentation forms, atomically validates labels, 
   await assert.rejects(choiceTool.execute('cancel', { options: ['Yes'] }, AbortSignal.abort()));
 });
 
+// Opus 5.5 and Sonnet 5.5 sometimes drafted their whole answer in thinking
+// right before calling companion_choices, then ended with a one-line "pick a
+// choice" text. The user never sees thinking, so the answer was lost. In a
+// synthetic Claude Code A/B, asking for the answer before the call made this
+// much worse (28 of 40 turns); offering choices first and then asking for the
+// answer as visible text lost none of 48. These checks keep that ordering.
+test('choice guidance asks for the visible answer after the choices, never only in thinking', async () => {
+  const guidance = [choiceTool.description, ...choiceTool.promptGuidelines].join('\n');
+
+  assert.match(guidance, /offer the choices first/i);
+  assert.match(guidance, /then write your complete answer as visible text/i);
+  assert.doesNotMatch(guidance, /before (calling|offering)/i);
+
+  const offered = await choiceTool.execute('tool-1', { options: ['Yes'] }, signal());
+  const resultText = offered.content[0].text;
+
+  assert.match(resultText, /^Choices offered\./);
+  assert.match(resultText, /write your complete answer as visible text/i);
+  assert.match(resultText, /never sees your thinking/i);
+});
+
 test('exact choices select the captured conversation once, with description or label payload', async (context) => {
   const setup = await fixture(context);
   const first = await setup.start();
