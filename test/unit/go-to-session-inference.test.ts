@@ -98,7 +98,12 @@ test('inferred navigation selects the one explicit number anywhere in the uttera
     ['Hey go to session 2 and explain', 2],
     ['Please, go to session four', 4],
     ['let me see number 12', 12],
-    ['switch to session six, that one', 6],
+    ['switch to session one, of course', 1],
+    ['go to tab one', 1],
+    ['number one, please', 1],
+    ['session 6, please', 6],
+    ['Switch to session six.', 6],
+    ['okay - switch to session six', 6],
   ] as const) {
     const run = setup();
     assert.equal(await run.route(utterance), 'GO_TO_SESSION', utterance);
@@ -143,6 +148,24 @@ test('inferred navigation skips missing, multiple, ordinal, homophone and malfor
     'switch to session si',
     'switch to session sixes',
     'hundreds of tabs, go to session six',
+    'switch to session six and a half',
+    // Review round 1: malformed expressions never yield their valid suffix.
+    'switch to session .6',
+    'switch to session - 6',
+    'switch to session -six',
+    'switch to session +6',
+    'switch to session 6.5',
+    'version 2.0, switch to session six',
+    // Review round 1: "one" without a navigation noun is ambiguous, not discarded.
+    'switch to session one of six',
+    'switch to the left one',
+    'switch to one',
+    'one more thing, switch to session six',
+    'switch to session six, that one',
+    // Review round 1: punctuation cannot hide a second number.
+    'two,please switch to session six',
+    'two.switch to session six',
+    'session six,seven',
   ]) {
     const run = setup();
     assert.equal(await run.route(utterance), 'GO_TO_SESSION', utterance);
@@ -270,16 +293,16 @@ test('both cleanup modes navigate from the raw utterance without changing the co
     const run = setup({ cleanup: cleanup || undefined });
     await run.route("Hey, let's switch to session six");
     await run.route('two ideas, switch to session six');
+    await run.route('switch to session .6');
+    await run.route('two,please switch to session six');
+    await run.route('switch to session one of six');
     assert.deepEqual(run.selected, [5]);
-    assert.deepEqual(run.outcomes, ['selected', 'skipped']);
+    assert.deepEqual(run.outcomes, ['selected', 'skipped', 'skipped', 'skipped', 'skipped']);
     assert.deepEqual(
       run.records,
       cleanup
-        ? [
-            { enabled: true, status: 'no-text' },
-            { enabled: true, status: 'no-text' },
-          ]
-        : [{ enabled: false }, { enabled: false }],
+        ? [...Array.from({ length: 5 }, () => ({ enabled: true, status: 'no-text' }))]
+        : Array.from({ length: 5 }, () => ({ enabled: false })),
     );
   }
 });

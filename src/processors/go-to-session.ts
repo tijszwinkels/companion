@@ -26,38 +26,13 @@ const spokenNumbers = [
 
 // Inferred requests count every number they mention, so these only ever cause a skip.
 const otherNumberWords =
-  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|hundred|thousand|million|billion)s?$/u;
+  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|hundred|thousand|million|billion|half|halves)s?$/u;
 const ordinalWords =
   /^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|(?:thir|four|fif|six|seven|eigh|nine)teenth|(?:twen|thir|for|fif|six|seven|eigh|nine)tieth|hundredth|thousandth|millionth)$/u;
 
-// "That one" or "the next one" is a pronoun, not an explicit session number.
-const pronounDeterminers = new Set([
-  'a',
-  'an',
-  'another',
-  'any',
-  'each',
-  'every',
-  'last',
-  'latest',
-  'new',
-  'next',
-  'no',
-  'old',
-  'only',
-  'other',
-  'previous',
-  'right',
-  'same',
-  'some',
-  'that',
-  'the',
-  'these',
-  'this',
-  'those',
-  'what',
-  'which',
-]);
+// "One" is often a pronoun ("that one", "the left one", "one of them"). It is a
+// target only right after a navigation noun; elsewhere it is an ambiguous mention.
+const explicitOne = /(?:session|tab|conversation|chat|number)\s+$/u;
 
 /** Exact shortcut suffix: one complete numeral or cardinal label, nothing else. */
 function shortcutIndex(utterance: string): number {
@@ -68,27 +43,26 @@ function shortcutIndex(utterance: string): number {
 /**
  * The model chose navigation but supplies no target. Accept exactly one explicit
  * number in the whole utterance; any second, ordinal, decimal, signed or
- * out-of-range number makes the request ambiguous, never a guess.
+ * out-of-range number makes the request ambiguous, never a guess. Punctuation
+ * separates words, so it cannot hide a mention or join two of them.
  */
 function inferredIndex(utterance: string): number {
-  const words = [
-    ...utterance
-      .toLowerCase()
-      .matchAll(/(?<![\p{L}\p{N}])([-+−]?)([\p{L}\p{N}]+(?:[.,'’][\p{L}\p{N}]+)*)/gu),
-  ];
+  const text = utterance.toLowerCase();
   const indexes: number[] = [];
 
-  for (const [position, [, sign, word]] of words.entries()) {
+  for (const match of text.matchAll(/[\p{L}\p{N}]+/gu)) {
+    const word = match[0];
+    const before = text.slice(0, match.index);
+    const after = text.slice(match.index + word.length);
+    // A sign ("-6", "- six") or decimal/grouping part (".6", "6.5", "1,000", "6:30").
+    const malformed =
+      /[-+−]\s*$/u.test(before) || /[.,:]$/u.test(before) || /^[.,:]\p{N}/u.test(after);
+
     if (/\p{N}/u.test(word)) {
-      indexes.push(!sign && /^[1-9][0-9]?$/u.test(word) ? Number(word) - 1 : -1);
+      indexes.push(!malformed && /^[1-9][0-9]?$/u.test(word) ? Number(word) - 1 : -1);
     } else if (spokenNumbers.includes(word)) {
-      const pronoun =
-        word === 'one' &&
-        (pronounDeterminers.has(words[position - 1]?.[2] ?? '') ||
-          words[position + 1]?.[2] === 'of');
-      if (!pronoun) {
-        indexes.push(spokenNumbers.indexOf(word));
-      }
+      const explicit = word !== 'one' || explicitOne.test(before);
+      indexes.push(!malformed && explicit ? spokenNumbers.indexOf(word) : -1);
     } else if (otherNumberWords.test(word) || ordinalWords.test(word)) {
       indexes.push(-1);
     }
