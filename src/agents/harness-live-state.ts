@@ -13,27 +13,44 @@
  * `AgentSessions` on every session change. Output: `PUT
  * <harness>/v1/sessions/<harnessSessionId>/live-state` requests carrying only
  * metadata (`busy` or `idle`, a sequence number and a lease). No prompt,
- * transcript, title or path is sent.
+ * transcript, title or path is sent. The harness accepts them only for
+ * conversations whose transcript carries Companion's owner entry (written by
+ * `live-state-owner-extension.ts`).
  *
  * Timing: `busy` is sent at once and renewed every `heartbeatMs` (15 s) with
  * a lease of `leaseSeconds` (45 s). If Companion stops renewing (crash,
  * shutdown, network trouble), the harness lets the lease expire and falls
- * back to its transcript rule, so nothing can stay "busy" forever. `idle` is
- * sent once when the turn has ended.
+ * back to its transcript rule, so nothing can stay "busy" forever.
+ *
+ * Final `idle`: owed as soon as any `busy` was attempted for the turn, even
+ * when no `busy` was acknowledged. A `busy` response can be lost after the
+ * harness applied it, and the harness may discover the conversation only
+ * after the first `busy` (404 before Pi has written its transcript; 409 until
+ * the owner entry is on disk). An undelivered `idle` is retried a few times
+ * (`idleRetryDelaysMs`). The idle also tells the harness where the finished
+ * turn's transcript ended, so those lines cannot make it look busy again.
  *
  * Failure handling: reporting must never slow down or break a conversation.
- * `update` is synchronous and only schedules work; requests time out after
- * `requestTimeoutMs`; errors are logged once per outage and otherwise
- * ignored. A 404 is expected right after a conversation starts, before the
- * harness has seen Pi's transcript; the next heartbeat simply retries.
+ * `update` is synchronous and only schedules work; every request has an
+ * overall deadline (`requestTimeoutMs`); errors are logged once per outage.
  *
  * Concurrency: at most one request per conversation is in flight. Changes
  * that arrive meanwhile are coalesced: when the request finishes, the latest
  * state is sent once. Every request carries a fresh sequence number, so the
  * harness ignores an older request that arrives late.
+ *
+ * Shutdown: `close()` stops heartbeats and retries, but still delivers a
+ * coalesced final `idle` and waits for requests in flight, within
+ * `closeTimeoutMs`.
+ *
+ * Transport: plain `node:http` through a dedicated agent, so environment
+ * proxy settings (`NODE_USE_ENV_PROXY`, `HTTP_PROXY`) are never consulted and
+ * redirects are never followed: the request goes to the loopback URL or
+ * nowhere.
  */
 
 import { randomUUID } from 'node:crypto';
+import http from 'node:http';
 
 /** What `AgentSessions` tells a live-state reporter. */
 export interface SessionLiveState {
@@ -46,9 +63,15 @@ export interface SessionLiveState {
   /** The conversation was closed in this listener. */
   forget(conversationId: string): void;
 
-  /** Stop heartbeats and wait (briefly) for requests already sent. */
+  /** Stop heartbeats and deliver what is still owed, within a short budget. */
   close(): Promise<void>;
 }
+
+/**
+ * Sends one PUT with a JSON body. Resolves to the HTTP status, or 0 when no
+ * response arrived (connection error, timeout). Never rejects.
+ */
+export type LiveStateTransport = (url: string, body: string, timeoutMs: number) => Promise<number>;
 
 type Log = (component: string, message: string) => void;
 
@@ -59,10 +82,12 @@ export interface HarnessLiveStateOptions {
   heartbeatMs?: number;
   leaseSeconds?: number;
   requestTimeoutMs?: number;
-  /** Upper bound for `close()` waiting on in-flight requests. */
+  /** Upper bound for `close()` waiting on owed and in-flight requests. */
   closeTimeoutMs?: number;
+  /** Delays before re-sending an undelivered final `idle`. */
+  idleRetryDelaysMs?: number[];
   /** Injectable for tests. */
-  fetch?: typeof fetch;
+  transport?: LiveStateTransport;
 }
 
 /** Per conversation: what we want the harness to know, and what it knows. */
@@ -70,13 +95,16 @@ interface ConversationReport {
   conversationId: string;
   harnessSessionId: string;
   busy: boolean;
-  /** The last state the harness accepted from us, if any. */
-  announced: 'busy' | 'idle' | undefined;
+  /** A `busy` was sent for the current turn, so an `idle` is owed. */
+  idleOwed: boolean;
   heartbeat: ReturnType<typeof setInterval> | undefined;
   inFlight: boolean;
   /** Something changed while a request was in flight; send again after it. */
   sendAgain: boolean;
-  /** Closed in Companion: drop the entry once the final request is done. */
+  /** Undelivered final `idle` retries used so far, and the pending timer. */
+  idleRetries: number;
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Closed in Companion: drop the entry once nothing is owed any more. */
   forgotten: boolean;
 }
 
@@ -99,14 +127,16 @@ export class HarnessLiveStateReporter implements SessionLiveState {
   private readonly leaseSeconds: number;
   private readonly requestTimeoutMs: number;
   private readonly closeTimeoutMs: number;
-  private readonly fetchImplementation: typeof fetch;
+  private readonly idleRetryDelaysMs: number[];
+  private readonly transport: LiveStateTransport;
 
   constructor(private readonly options: HarnessLiveStateOptions) {
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
     this.leaseSeconds = options.leaseSeconds ?? 45;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 3_000;
     this.closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
-    this.fetchImplementation = options.fetch ?? fetch;
+    this.idleRetryDelaysMs = options.idleRetryDelaysMs ?? [2_000, 5_000, 15_000];
+    this.transport = options.transport ?? httpTransport;
   }
 
   update(conversationId: string, busy: boolean, harnessSessionId: string | undefined): void {
@@ -124,10 +154,12 @@ export class HarnessLiveStateReporter implements SessionLiveState {
         conversationId,
         harnessSessionId,
         busy: false,
-        announced: undefined,
+        idleOwed: false,
         heartbeat: undefined,
         inFlight: false,
         sendAgain: false,
+        idleRetries: 0,
+        retryTimer: undefined,
         forgotten: false,
       };
       this.conversations.set(conversationId, report);
@@ -138,14 +170,13 @@ export class HarnessLiveStateReporter implements SessionLiveState {
       return;
     }
     report.busy = busy;
+    this.cancelIdleRetry(report);
 
     if (busy) {
       this.startHeartbeat(report);
-      this.send(report);
-      return;
+    } else {
+      this.stopHeartbeat(report);
     }
-
-    this.stopHeartbeat(report);
     this.send(report);
   }
 
@@ -163,15 +194,22 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     this.closed = true;
     for (const report of this.conversations.values()) {
       this.stopHeartbeat(report);
+      this.cancelIdleRetry(report);
     }
 
-    // Requests already on their way (typically the final `idle` of turns
-    // that Companion just aborted) get a short grace period, no more.
-    const pending = Promise.allSettled([...this.pendingRequests]);
-    const timeout = new Promise<void>((resolve) => {
-      setTimeout(resolve, this.closeTimeoutMs).unref();
-    });
-    await Promise.race([pending, timeout]);
+    // Requests on their way, and final `idle`s coalesced behind them, get
+    // a short grace period together, no more.
+    const deadline = Date.now() + this.closeTimeoutMs;
+    while (this.pendingRequests.size > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        break;
+      }
+      const timeout = new Promise<void>((resolve) => {
+        setTimeout(resolve, remaining).unref();
+      });
+      await Promise.race([Promise.allSettled([...this.pendingRequests]), timeout]);
+    }
     this.conversations.clear();
   }
 
@@ -189,6 +227,14 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     }
   }
 
+  private cancelIdleRetry(report: ConversationReport): void {
+    if (report.retryTimer !== undefined) {
+      clearTimeout(report.retryTimer);
+      report.retryTimer = undefined;
+    }
+    report.idleRetries = 0;
+  }
+
   /** Send the conversation's current state, coalescing with a request in flight. */
   private send(report: ConversationReport): void {
     if (report.inFlight) {
@@ -197,29 +243,36 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     }
 
     const state: 'busy' | 'idle' = report.busy ? 'busy' : 'idle';
-    if (state === 'idle' && report.announced !== 'busy') {
-      // The harness never accepted `busy` from us, so there is nothing to end.
+    if (state === 'idle' && !report.idleOwed) {
+      // No `busy` was sent for this turn, so there is nothing to end.
+      this.dropIfDone(report);
       return;
+    }
+    if (state === 'busy') {
+      report.idleOwed = true;
     }
 
     report.inFlight = true;
     report.sendAgain = false;
     this.sequence += 1;
-    const body = {
+    const body = JSON.stringify({
       source: 'companion',
       producer: this.producer,
       sequence: this.sequence,
       state,
       lease_seconds: this.leaseSeconds,
-    };
+    });
+    const url = `${this.options.url}/v1/sessions/${encodeURIComponent(report.harnessSessionId)}/live-state`;
 
-    const request = this.put(report.harnessSessionId, body)
+    const request = this.transport(url, body, this.requestTimeoutMs)
       .then((status) => this.recordResult(report, state, status))
       .finally(() => {
         report.inFlight = false;
         this.pendingRequests.delete(request);
 
-        if (report.sendAgain && !this.closed) {
+        // A coalesced change is delivered even during close(): it is usually
+        // the final `idle` of a turn that Companion just stopped.
+        if (report.sendAgain) {
           this.send(report);
           return;
         }
@@ -228,29 +281,12 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     this.pendingRequests.add(request);
   }
 
-  /** One HTTP request; resolves to the status code, or 0 when it failed. */
-  private async put(harnessSessionId: string, body: object): Promise<number> {
-    const url = `${this.options.url}/v1/sessions/${encodeURIComponent(harnessSessionId)}/live-state`;
-    try {
-      const response = await this.fetchImplementation(url, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-        redirect: 'error',
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
-      });
-      // The body is small and not needed; release the connection.
-      await response.body?.cancel();
-      return response.status;
-    } catch (error) {
-      this.logFailure(`agent-harness unreachable: ${String(error)}`);
-      return 0;
-    }
-  }
-
   private recordResult(report: ConversationReport, state: 'busy' | 'idle', status: number): void {
     if (status === 200) {
-      report.announced = state;
+      if (state === 'idle') {
+        report.idleOwed = false;
+        report.idleRetries = 0;
+      }
       if (this.failing) {
         this.failing = false;
         this.options.log(LOG_COMPONENT, 'agent-harness accepts live state again');
@@ -258,19 +294,48 @@ export class HarnessLiveStateReporter implements SessionLiveState {
       return;
     }
 
-    if (status === 404) {
-      // The harness has not seen this conversation's transcript yet. The next
-      // heartbeat retries; an `idle` for an unknown session needs no retry.
-      return;
+    // 404: the harness has not seen this conversation's transcript yet.
+    // 409: it has, but not yet Companion's owner entry. Both are expected
+    // right after a conversation starts; a heartbeat retries `busy`.
+    const notYetKnown = status === 404 || status === 409;
+    if (status === 0) {
+      this.logFailure('agent-harness unreachable');
+    } else if (!notYetKnown) {
+      this.logFailure(`agent-harness refused live state (HTTP ${status})`);
     }
 
-    if (status !== 0) {
-      this.logFailure(`agent-harness refused live state (HTTP ${status})`);
+    // An undelivered final `idle` is retried a few times when the outcome is
+    // uncertain (transport) or may change soon (discovery, owner entry).
+    const retryable = status === 0 || notYetKnown || status >= 500;
+    if (state === 'idle' && retryable) {
+      this.scheduleIdleRetry(report);
+    } else if (state === 'idle') {
+      // A definite refusal: give up on this turn's idle.
+      report.idleOwed = false;
     }
   }
 
+  private scheduleIdleRetry(report: ConversationReport): void {
+    if (this.closed || report.busy) {
+      return;
+    }
+    const delay = this.idleRetryDelaysMs[report.idleRetries];
+    if (delay === undefined) {
+      // Retries exhausted; the harness's lease and transcript rule take over.
+      report.idleOwed = false;
+      return;
+    }
+    report.idleRetries += 1;
+    report.retryTimer = setTimeout(() => {
+      report.retryTimer = undefined;
+      this.send(report);
+    }, delay);
+    report.retryTimer.unref();
+  }
+
   private dropIfDone(report: ConversationReport): void {
-    if (report.forgotten && !report.busy && !report.inFlight) {
+    const owesNothing = !report.idleOwed && report.retryTimer === undefined;
+    if (report.forgotten && !report.busy && !report.inFlight && owesNothing) {
       this.stopHeartbeat(report);
       this.conversations.delete(report.conversationId);
     }
@@ -284,6 +349,53 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     this.options.log(LOG_COMPONENT, `${message}; conversations keep running, retrying quietly`);
   }
 }
+
+// A private agent: unlike Node's global agent it never picks up proxy
+// settings from the environment, and it does not keep idle sockets open.
+const directAgent = new http.Agent({ keepAlive: false });
+
+/** `LiveStateTransport` over plain HTTP to the configured loopback address. */
+export const httpTransport: LiveStateTransport = (url, body, timeoutMs) =>
+  new Promise<number>((resolve) => {
+    const target = new URL(url);
+    let settled = false;
+    const finish = (status: number) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(deadline);
+        resolve(status);
+      }
+    };
+
+    const request = http.request(
+      {
+        agent: directAgent,
+        hostname: target.hostname.replace(/^\[|\]$/g, ''),
+        port: target.port,
+        path: target.pathname,
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+        },
+      },
+      (response) => {
+        // The small response body is not needed; drain it to free the socket.
+        response.resume();
+        finish(response.statusCode ?? 0);
+      },
+    );
+
+    // One overall deadline, covering connect, headers and a slow server.
+    const deadline = setTimeout(() => {
+      request.destroy(Error('timeout'));
+      finish(0);
+    }, timeoutMs);
+    deadline.unref();
+
+    request.on('error', () => finish(0));
+    request.end(body);
+  });
 
 /**
  * Accept only a loopback `http://` base URL without credentials or path, so a

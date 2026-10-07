@@ -2,58 +2,56 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
 import {
   HarnessLiveStateReporter,
   parseAgentHarnessUrl,
+  type LiveStateTransport,
   type SessionLiveState,
 } from '../../src/agents/harness-live-state.ts';
+import registerLiveStateOwner, {
+  liveStateOwnerEntryType,
+} from '../../src/agents/live-state-owner-extension.ts';
 import { deferred, frame, signal } from '../helpers.ts';
 import { harnessFixture } from '../harness-fixture.ts';
 import { waitFor } from '../desktop-fixture.ts';
 import { defaultAgentSettings } from '../../src/agents/settings.ts';
 
 // ---------------------------------------------------------------------------
-// Reporter with a fake fetch. Nothing listens on the network.
+// Reporter with a fake transport. Nothing listens on the network.
 // ---------------------------------------------------------------------------
 
 interface SentRequest {
   url: string;
-  method: string;
   body: Record<string, unknown>;
 }
 
 /**
- * A fake `fetch` that records each request and answers with the next scripted
- * status (200 when the script is empty). `hold()` makes the next request wait
- * until the test releases it.
+ * A fake transport that records each request and answers with the next
+ * scripted status (200 when the script is empty; 0 means "no response").
+ * `hold()` makes the next request wait until the test releases it.
  */
 function fakeHarness() {
   const sent: SentRequest[] = [];
   const statuses: number[] = [];
   let held: ReturnType<typeof deferred<void>> | undefined;
-  let failNext = false;
 
-  const fetchImplementation = (async (input: string | URL | Request, init?: RequestInit) => {
-    sent.push({
-      url: String(input),
-      method: String(init?.method),
-      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-    });
+  const transport: LiveStateTransport = async (url, body) => {
+    sent.push({ url, body: JSON.parse(body) as Record<string, unknown> });
     const gate = held;
     held = undefined;
     if (gate) {
       await gate.promise;
     }
-    if (failNext) {
-      failNext = false;
-      throw Error('connection refused');
-    }
-    return new Response('{}', { status: statuses.shift() ?? 200 });
-  }) as typeof fetch;
+    return statuses.shift() ?? 200;
+  };
 
   return {
     sent,
-    fetch: fetchImplementation,
+    transport,
     respond(...codes: number[]) {
       statuses.push(...codes);
     },
@@ -61,21 +59,27 @@ function fakeHarness() {
       held = deferred<void>();
       return held;
     },
-    failOnce() {
-      failNext = true;
+    states() {
+      return sent.map((request) => request.body.state);
     },
   };
 }
 
-function reporter(harness: ReturnType<typeof fakeHarness>, logs: string[] = [], heartbeatMs = 40) {
+function reporter(
+  harness: ReturnType<typeof fakeHarness>,
+  logs: string[] = [],
+  heartbeatMs = 40,
+  idleRetryDelaysMs = [20, 20, 20],
+) {
   return new HarnessLiveStateReporter({
     url: 'http://127.0.0.1:8877',
     log: (_component, message) => logs.push(message),
     heartbeatMs,
     leaseSeconds: 45,
     requestTimeoutMs: 500,
-    closeTimeoutMs: 100,
-    fetch: harness.fetch,
+    closeTimeoutMs: 300,
+    idleRetryDelaysMs,
+    transport: harness.transport,
   });
 }
 
@@ -95,7 +99,6 @@ test('busy is sent at once, renewed by heartbeats, and ended by one idle', async
 
   assert.equal(harness.sent.length, count, 'heartbeats stop after idle');
   assert.ok(harness.sent.slice(0, -1).every((request) => request.body.state === 'busy'));
-  assert.equal(harness.sent[0].method, 'PUT');
   assert.equal(harness.sent[0].url, `http://127.0.0.1:8877/v1/sessions/${HARNESS_ID}/live-state`);
 
   const sequences = harness.sent.map((request) => request.body.sequence as number);
@@ -145,9 +148,7 @@ test('one request in flight per conversation; changes meanwhile are coalesced', 
   await delay(50);
   await live.close();
 
-  assert.equal(harness.sent.length, 2);
-  assert.equal(harness.sent[0].body.state, 'busy');
-  assert.equal(harness.sent[1].body.state, 'idle', 'only the latest state follows');
+  assert.deepEqual(harness.states(), ['busy', 'idle'], 'only the latest state follows');
 });
 
 test('an unreachable harness never throws and is logged once per outage', async () => {
@@ -155,11 +156,8 @@ test('an unreachable harness never throws and is logged once per outage', async 
   const logs: string[] = [];
   const live = reporter(harness, logs);
 
-  harness.failOnce();
+  harness.respond(0, 0);
   assert.doesNotThrow(() => live.update('conversation', true, HARNESS_ID));
-  await waitFor(() => harness.sent.length >= 1);
-  harness.failOnce();
-  await waitFor(() => harness.sent.length >= 2);
   await waitFor(() => harness.sent.length >= 3);
   await live.close();
 
@@ -168,37 +166,85 @@ test('an unreachable harness never throws and is logged once per outage', async 
   assert.ok(logs.some((line) => line.includes('accepts live state again')));
 });
 
-test('a 404 before the harness has seen the transcript is retried by the heartbeat', async () => {
+test('a 404/409 before the harness knows the conversation is quiet and retried', async () => {
   const harness = fakeHarness();
   const logs: string[] = [];
   const live = reporter(harness, logs);
 
-  harness.respond(404, 404);
+  harness.respond(404, 409);
   live.update('conversation', true, HARNESS_ID);
   await waitFor(() => harness.sent.length >= 3);
   live.update('conversation', false, HARNESS_ID);
   await waitFor(() => harness.sent.at(-1)?.body.state === 'idle');
   await live.close();
 
-  assert.equal(logs.length, 0, '404 is expected, not an error');
+  assert.equal(logs.length, 0, '404/409 are expected, not errors');
 });
 
-test('an idle after only 404s is not sent: the harness never knew it was busy', async () => {
+test('the final idle is sent even though busy was never acknowledged (short turn)', async () => {
+  // Review finding: busy → 404 (transcript not written yet); the harness then
+  // discovers the conversation; the turn ends before the next heartbeat.
   const harness = fakeHarness();
   const live = reporter(harness, [], 10_000);
 
   harness.respond(404);
   live.update('conversation', true, HARNESS_ID);
   await waitFor(() => harness.sent.length === 1);
-  await delay(20);
+  await delay(10);
   live.update('conversation', false, HARNESS_ID);
-  await delay(50);
+  await waitFor(() => harness.sent.length === 2);
   await live.close();
 
-  assert.equal(harness.sent.length, 1);
+  assert.deepEqual(harness.states(), ['busy', 'idle']);
 });
 
-test('forget ends a busy conversation; close stops heartbeats without waiting long', async () => {
+test('an undelivered idle is retried a bounded number of times', async () => {
+  const harness = fakeHarness();
+  const live = reporter(harness, [], 10_000, [20, 20]);
+
+  live.update('conversation', true, HARNESS_ID);
+  await waitFor(() => harness.sent.length === 1);
+  harness.respond(0, 404, 0, 0);
+  live.update('conversation', false, HARNESS_ID);
+  await delay(200);
+  await live.close();
+
+  // One attempt plus two retries, then the harness's lease takes over.
+  assert.deepEqual(harness.states(), ['busy', 'idle', 'idle', 'idle']);
+});
+
+test('an idle retry stops when the conversation becomes busy again', async () => {
+  const harness = fakeHarness();
+  const live = reporter(harness, [], 10_000, [60]);
+
+  live.update('conversation', true, HARNESS_ID);
+  await waitFor(() => harness.sent.length === 1);
+  harness.respond(0);
+  live.update('conversation', false, HARNESS_ID);
+  await waitFor(() => harness.sent.length === 2);
+  live.update('conversation', true, HARNESS_ID);
+  await delay(120);
+  await live.close();
+
+  assert.deepEqual(harness.states(), ['busy', 'idle', 'busy'], 'no stale idle after the new busy');
+});
+
+test('close delivers a final idle coalesced behind a busy in flight', async () => {
+  // Review finding: busy in flight → update(false) → close() must not drop the idle.
+  const harness = fakeHarness();
+  const live = reporter(harness, [], 10_000);
+
+  const gate = harness.hold();
+  live.update('conversation', true, HARNESS_ID);
+  live.update('conversation', false, HARNESS_ID);
+  const closing = live.close();
+  gate.resolve();
+  await closing;
+
+  assert.deepEqual(harness.states(), ['busy', 'idle']);
+});
+
+test('forget ends a busy conversation; close is bounded and stops heartbeats', async () => {
   const harness = fakeHarness();
   const live = reporter(harness);
 
@@ -210,6 +256,7 @@ test('forget ends a busy conversation; close stops heartbeats without waiting lo
   live.update('other', true, 'ses_' + 'b'.repeat(32));
   await waitFor(() => harness.sent.at(-1)?.body.state === 'busy');
   harness.hold(); // the next request never answers
+  await waitFor(() => harness.sent.length >= 4);
   const started = Date.now();
   await live.close();
   assert.ok(Date.now() - started < 1_000, 'close is bounded');
@@ -218,6 +265,99 @@ test('forget ends a busy conversation; close stops heartbeats without waiting lo
   assert.equal(harness.sent.length, count, 'no heartbeats after close');
   live.update('late', true, HARNESS_ID);
   assert.equal(harness.sent.length, count, 'updates after close are ignored');
+});
+
+test('the HTTP transport ignores environment proxies and does not follow redirects', async () => {
+  // Real sockets, local only: a target and a "proxy" on loopback ports. The
+  // check runs in a child process with NODE_USE_ENV_PROXY and HTTP_PROXY set.
+  const hits = { target: 0, proxy: 0, redirected: 0 };
+  const target = createServer((request, response) => {
+    if (request.url?.startsWith('/redirect')) {
+      response.writeHead(302, { location: `http://127.0.0.1:${portOf(target)}/landing` }).end();
+      return;
+    }
+    if (request.url?.startsWith('/landing')) {
+      hits.redirected += 1;
+    } else {
+      hits.target += 1;
+    }
+    request.resume();
+    response.writeHead(200).end('{}');
+  });
+  const proxy = createServer((request, response) => {
+    hits.proxy += 1;
+    request.resume();
+    response.writeHead(200).end('{}');
+  });
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const module = new URL('../../src/agents/harness-live-state.ts', import.meta.url).href;
+    const script = `
+      const { httpTransport } = await import(${JSON.stringify(module)});
+      const base = 'http://127.0.0.1:${portOf(target)}';
+      const direct = await httpTransport(base + '/v1/sessions/x/live-state', '{}', 2000);
+      const redirect = await httpTransport(base + '/redirect', '{}', 2000);
+      console.log(JSON.stringify({ direct, redirect }));
+    `;
+    const proxyUrl = `http://127.0.0.1:${portOf(proxy)}`;
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile(
+        process.execPath,
+        ['--import', 'tsx', '--input-type=module', '--eval', script],
+        {
+          env: {
+            ...process.env,
+            NODE_USE_ENV_PROXY: '1',
+            HTTP_PROXY: proxyUrl,
+            http_proxy: proxyUrl,
+            NO_PROXY: '',
+            no_proxy: '',
+          },
+          timeout: 20_000,
+        },
+        (error, stdout) => (error ? reject(error) : resolve(stdout)),
+      );
+    });
+
+    assert.deepEqual(JSON.parse(output.trim().split('\n').at(-1) ?? '{}'), {
+      direct: 200,
+      redirect: 302,
+    });
+    assert.deepEqual(hits, { target: 1, proxy: 0, redirected: 0 });
+  } finally {
+    target.close();
+    proxy.close();
+  }
+});
+
+function portOf(server: ReturnType<typeof createServer>): number {
+  return (server.address() as AddressInfo).port;
+}
+
+test('the owner extension marks a conversation once', () => {
+  const appended: { customType: string; data: unknown }[] = [];
+  let handler: ((event: unknown, context: unknown) => void) | undefined;
+  const entries: { type?: string; customType?: string }[] = [{ type: 'message' }];
+  registerLiveStateOwner({
+    on(_event, registered) {
+      handler = registered as typeof handler;
+    },
+    appendEntry(customType, data) {
+      appended.push({ customType, data });
+      entries.push({ type: 'custom', customType });
+    },
+  });
+  const context = { sessionManager: { getEntries: () => entries } };
+
+  handler?.({}, context);
+  handler?.({}, context); // the next Companion turn starts a new Pi process
+
+  assert.deepEqual(appended, [
+    { customType: liveStateOwnerEntryType, data: { source: 'companion' } },
+  ]);
+  assert.equal(liveStateOwnerEntryType, 'agent-harness.live-state-owner');
 });
 
 test('only loopback http URLs are accepted', () => {

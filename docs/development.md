@@ -185,17 +185,26 @@ with `--agent-harness-url http://127.0.0.1:8877` or
 - Identity: only Pi conversations, as `ses_<conversation id without dashes>`
   (Pi runs with `--session-id <conversation id>`). Claude Code conversations
   are not reported.
+- Ownership: every Companion Pi process loads
+  `src/agents/live-state-owner-extension.ts`, which writes one custom transcript
+  entry (`agent-harness.live-state-owner`, `{"source": "companion"}`) per
+  conversation. It is never sent to the model. The harness accepts Companion's
+  reports only for sessions whose transcript carries it.
 - Wire: `PUT /v1/sessions/<id>/live-state` with `busy` + 45 s lease, renewed
-  every 15 s, and one `idle` at the end. Metadata only. Requires an
-  agent-harness that has this route; an older harness answers 404/405 and
-  nothing changes.
+  every 15 s, and one `idle` at the end. Metadata only. The idle is owed once a
+  busy was attempted (acknowledged or not) and retried a few times if it cannot
+  be delivered. Requires an agent-harness that has this route; an older harness
+  answers 404/405 and nothing changes.
 - Never blocks a conversation: fire-and-forget, one request in flight per
-  conversation (latest state coalesced), 3 s timeout, failures logged once per
-  outage. If Companion stops, the harness lets the lease expire and falls back
-  to its transcript rule.
+  conversation (latest state coalesced), 3 s overall deadline, failures logged
+  once per outage; `close()` still delivers a coalesced final idle within 2 s.
+  Plain `node:http` through a private agent: environment proxies are ignored and
+  redirects are not followed. If Companion stops, the harness lets the lease
+  expire and falls back to its transcript rule.
 
-Tests (`test/unit/harness-live-state.test.ts`) use a fake `fetch` and the
-scripted-backend fixture; nothing contacts a real harness.
+Tests (`test/unit/harness-live-state.test.ts`) use a fake transport, local
+loopback servers for the proxy/redirect check, and the scripted-backend
+fixture; nothing contacts a real harness.
 
 ## Local app development
 
