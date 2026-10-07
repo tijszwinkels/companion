@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 
 import {
   HarnessLiveStateReporter,
+  httpTransport,
   parseAgentHarnessUrl,
   type LiveStateTransport,
   type SessionLiveState,
@@ -242,6 +243,59 @@ test('close delivers a final idle coalesced behind a busy in flight', async () =
   await closing;
 
   assert.deepEqual(harness.states(), ['busy', 'idle']);
+});
+
+test('a short new turn during an idle request still gets its own final idle', async () => {
+  // Review finding: idle(A) is applied but its 200 is held; turn B starts and
+  // ends meanwhile. A's late acknowledgement must not cancel B's idle.
+  const harness = fakeHarness();
+  const live = reporter(harness, [], 10_000);
+
+  live.update('conversation', true, HARNESS_ID);
+  await waitFor(() => harness.sent.length === 1);
+  const gate = harness.hold();
+  live.update('conversation', false, HARNESS_ID);
+  await waitFor(() => harness.sent.length === 2);
+  live.update('conversation', true, HARNESS_ID);
+  live.update('conversation', false, HARNESS_ID);
+  gate.resolve();
+  await waitFor(() => harness.sent.length === 3);
+  await delay(50);
+  await live.close();
+
+  assert.deepEqual(harness.states(), ['busy', 'idle', 'idle'], "B's idle follows A's");
+});
+
+test('the HTTP transport closes a response whose body never finishes', async () => {
+  // Review finding: headers arrive, the body never does. The request must
+  // complete with the status and leave no socket open.
+  let open = 0;
+  const stalled = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { 'content-length': '1000000' });
+    response.flushHeaders();
+    // ...and never write the body or end the response.
+  });
+  stalled.on('connection', (socket) => {
+    open += 1;
+    socket.on('close', () => {
+      open -= 1;
+    });
+  });
+  await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const url = `http://127.0.0.1:${portOf(stalled)}/v1/sessions/x/live-state`;
+    const statuses = [];
+    for (let index = 0; index < 3; index++) {
+      statuses.push(await httpTransport(url, '{}', 500));
+    }
+    assert.deepEqual(statuses, [200, 200, 200]);
+    await waitFor(() => open === 0, 1_000);
+  } finally {
+    stalled.closeAllConnections();
+    stalled.close();
+  }
 });
 
 test('forget ends a busy conversation; close is bounded and stops heartbeats', async () => {

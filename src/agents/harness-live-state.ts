@@ -22,8 +22,8 @@
  * shutdown, network trouble), the harness lets the lease expire and falls
  * back to its transcript rule, so nothing can stay "busy" forever.
  *
- * Final `idle`: owed as soon as any `busy` was attempted for the turn, even
- * when no `busy` was acknowledged. A `busy` response can be lost after the
+ * Final `idle`: owed for every turn (every busy period), even when no `busy`
+ * was sent or acknowledged for it. A `busy` response can be lost after the
  * harness applied it, and the harness may discover the conversation only
  * after the first `busy` (404 before Pi has written its transcript; 409 until
  * the owner entry is on disk). An undelivered `idle` is retried a few times
@@ -95,8 +95,15 @@ interface ConversationReport {
   conversationId: string;
   harnessSessionId: string;
   busy: boolean;
-  /** A `busy` was sent for the current turn, so an `idle` is owed. */
-  idleOwed: boolean;
+  /**
+   * Turns are numbered: each busy period gets the next number. `idleFor` is
+   * the newest turn whose final `idle` the harness has accepted (or that we
+   * gave up on). An `idle` is owed while `turn > idleFor`. Keeping numbers,
+   * not a flag, means a late acknowledgement for an older turn's idle can
+   * never cancel the idle owed for a newer turn.
+   */
+  turn: number;
+  idleFor: number;
   heartbeat: ReturnType<typeof setInterval> | undefined;
   inFlight: boolean;
   /** Something changed while a request was in flight; send again after it. */
@@ -154,7 +161,8 @@ export class HarnessLiveStateReporter implements SessionLiveState {
         conversationId,
         harnessSessionId,
         busy: false,
-        idleOwed: false,
+        turn: 0,
+        idleFor: 0,
         heartbeat: undefined,
         inFlight: false,
         sendAgain: false,
@@ -173,6 +181,7 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     this.cancelIdleRetry(report);
 
     if (busy) {
+      report.turn += 1;
       this.startHeartbeat(report);
     } else {
       this.stopHeartbeat(report);
@@ -243,14 +252,12 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     }
 
     const state: 'busy' | 'idle' = report.busy ? 'busy' : 'idle';
-    if (state === 'idle' && !report.idleOwed) {
-      // No `busy` was sent for this turn, so there is nothing to end.
+    if (state === 'idle' && !this.idleOwed(report)) {
       this.dropIfDone(report);
       return;
     }
-    if (state === 'busy') {
-      report.idleOwed = true;
-    }
+    // The turn this request speaks for, checked when its answer arrives.
+    const turn = report.turn;
 
     report.inFlight = true;
     report.sendAgain = false;
@@ -265,7 +272,7 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     const url = `${this.options.url}/v1/sessions/${encodeURIComponent(report.harnessSessionId)}/live-state`;
 
     const request = this.transport(url, body, this.requestTimeoutMs)
-      .then((status) => this.recordResult(report, state, status))
+      .then((status) => this.recordResult(report, state, turn, status))
       .finally(() => {
         report.inFlight = false;
         this.pendingRequests.delete(request);
@@ -281,11 +288,27 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     this.pendingRequests.add(request);
   }
 
-  private recordResult(report: ConversationReport, state: 'busy' | 'idle', status: number): void {
+  private idleOwed(report: ConversationReport): boolean {
+    return report.turn > report.idleFor;
+  }
+
+  /** The final idle of `turn` (and every older turn) is settled. */
+  private settleIdle(report: ConversationReport, turn: number): void {
+    report.idleFor = Math.max(report.idleFor, turn);
+  }
+
+  private recordResult(
+    report: ConversationReport,
+    state: 'busy' | 'idle',
+    turn: number,
+    status: number,
+  ): void {
     if (status === 200) {
       if (state === 'idle') {
-        report.idleOwed = false;
-        report.idleRetries = 0;
+        this.settleIdle(report, turn);
+        if (!this.idleOwed(report)) {
+          report.idleRetries = 0;
+        }
       }
       if (this.failing) {
         this.failing = false;
@@ -311,7 +334,7 @@ export class HarnessLiveStateReporter implements SessionLiveState {
       this.scheduleIdleRetry(report);
     } else if (state === 'idle') {
       // A definite refusal: give up on this turn's idle.
-      report.idleOwed = false;
+      this.settleIdle(report, turn);
     }
   }
 
@@ -322,7 +345,7 @@ export class HarnessLiveStateReporter implements SessionLiveState {
     const delay = this.idleRetryDelaysMs[report.idleRetries];
     if (delay === undefined) {
       // Retries exhausted; the harness's lease and transcript rule take over.
-      report.idleOwed = false;
+      this.settleIdle(report, report.turn);
       return;
     }
     report.idleRetries += 1;
@@ -334,7 +357,7 @@ export class HarnessLiveStateReporter implements SessionLiveState {
   }
 
   private dropIfDone(report: ConversationReport): void {
-    const owesNothing = !report.idleOwed && report.retryTimer === undefined;
+    const owesNothing = !this.idleOwed(report) && report.retryTimer === undefined;
     if (report.forgotten && !report.busy && !report.inFlight && owesNothing) {
       this.stopHeartbeat(report);
       this.conversations.delete(report.conversationId);
@@ -380,9 +403,12 @@ export const httpTransport: LiveStateTransport = (url, body, timeoutMs) =>
         },
       },
       (response) => {
-        // The small response body is not needed; drain it to free the socket.
-        response.resume();
+        // Only the status matters. Close the connection right away instead of
+        // reading the body: a server that sends headers but never finishes
+        // its body must not keep a socket (or this process) alive.
         finish(response.statusCode ?? 0);
+        response.destroy();
+        request.destroy();
       },
     );
 

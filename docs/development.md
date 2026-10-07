@@ -191,15 +191,17 @@ with `--agent-harness-url http://127.0.0.1:8877` or
   conversation. It is never sent to the model. The harness accepts Companion's
   reports only for sessions whose transcript carries it.
 - Wire: `PUT /v1/sessions/<id>/live-state` with `busy` + 45 s lease, renewed
-  every 15 s, and one `idle` at the end. Metadata only. The idle is owed once a
-  busy was attempted (acknowledged or not) and retried a few times if it cannot
-  be delivered. Requires an agent-harness that has this route; an older harness
+  every 15 s, and one `idle` at the end. Metadata only. Every busy period (turn)
+  owes its own final idle, whether or not a busy was sent or acknowledged for
+  it; turns are numbered so a late answer for an older turn cannot cancel a
+  newer one. An undelivered idle is retried a few times. Requires an agent-harness that has this route; an older harness
   answers 404/405 and nothing changes.
 - Never blocks a conversation: fire-and-forget, one request in flight per
   conversation (latest state coalesced), 3 s overall deadline, failures logged
   once per outage; `close()` still delivers a coalesced final idle within 2 s.
-  Plain `node:http` through a private agent: environment proxies are ignored and
-  redirects are not followed. If Companion stops, the harness lets the lease
+  Plain `node:http` through a private agent: environment proxies are ignored,
+  redirects are not followed, and the connection is closed as soon as the status
+  arrives (the body is never read). If Companion stops, the harness lets the lease
   expire and falls back to its transcript rule.
 
 Tests (`test/unit/harness-live-state.test.ts`) use a fake transport, local
