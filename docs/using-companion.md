@@ -7,18 +7,29 @@ the [installation guide](installation.md); for a short overview, the
 
 ## Start and stop
 
-From a terminal on your Hyprland desktop:
+If you set up [start Companion after login](installation.md#8-start-companion-after-login-optional),
+Companion is already running (paused) after you log in. To start it by hand
+instead, use two terminals on your Hyprland desktop, one for Companion itself
+and one for its panel:
 
 ```sh
 cd ~/Work/companion
 npm start -- --paused
 ```
 
+```sh
+cd ~/Work/companion
+npm run ui
+```
+
+Use the same options as in
+[step 7 of the installation guide](installation.md#7-first-launch-first-useful-workflow-and-stopping)
+if your setup needs them.
+
 `--paused` starts with the microphone off; without it Companion starts
 listening and typing straight away, so put the cursor somewhere harmless first.
-**Ctrl+C** in that terminal stops Companion and any agent work it started.
-To start Companion automatically when you log in, see
-[start Companion after login](installation.md#8-start-companion-after-login-optional).
+**Ctrl+C** in the first terminal stops Companion and any agent work it
+started. Closing the panel window only hides it.
 
 Useful options:
 
@@ -58,9 +69,10 @@ Every question or new session includes a screenshot of the window you were
 looking at. When an agent offers buttons such as **Yes** or **More detail**,
 you can also say the button's label.
 
-Companion only types into the window you were in when you finished speaking.
-If you switch windows before it types, it skips the text rather than typing in
-the wrong place; you can paste it later from history.
+Before typing, Companion checks that the window you were in when you finished
+speaking is still active, and skips the text if it is not; you can paste it
+later from history. Keep the intended field focused until typing finishes: the
+check cannot tell fields or browser tabs apart.
 
 ## The panel
 
@@ -83,7 +95,9 @@ to see details) and any widgets it shows. In a conversation you can:
   the agent is still working, follow-ups queue up (up to eight) and run in order;
 - press **Stop** to interrupt, or **Close session** to stop it and move it to
   **Previous sessions** at the bottom of the tab rail, where you can reopen it later;
-- pick a different **Model** and **Effort** for the next turn at the bottom;
+- pick a different **Model** for the next turn at the bottom. Pi conversations
+  can also change **Effort** when the model supports it; Claude Code keeps the
+  effort it started with;
 - click the attached screenshot to view it full size;
 - hover a message for its **Copy** button.
 

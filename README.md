@@ -46,9 +46,9 @@ be explicit, start your sentence with a command word instead.
   conversation has a text box, and follow-ups queue while the agent works.
 - **Get visual answers.** Agents can show interactive widgets in the panel,
   such as diagrams, comparisons, charts and to-do lists.
-- **Never lose a sentence.** Everything you said is kept in a local history.
-  With the Omarchy integration, hold **Super+Alt+V** to pick a recent utterance
-  and paste it again.
+- **Recover recent transcriptions.** Companion keeps what it transcribed in a
+  local history. With the Omarchy integration, hold **Super+Alt+V** to pick a
+  recent utterance and paste it again.
 
 The panel can be a normal window, a sidebar or a dock. Its Activity tab shows
 what Companion heard and what it decided, and lets you switch individual
