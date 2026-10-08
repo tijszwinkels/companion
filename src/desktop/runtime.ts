@@ -61,8 +61,9 @@ const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
 /**
  * Actions that act on the desktop itself: the compositor's focused window,
  * keyboard delivery, media playback reports, composer focus, composer
- * drafts and the capture-storage switch. A remote panel (such as the phone gateway) cannot observe or own
- * any of these, so the listener refuses them for remote connections.
+ * drafts and the capture-storage switch. A remote panel (such as the phone
+ * gateway) cannot observe or own any of these, so the listener refuses them
+ * for remote connections.
  */
 const desktopOnlyActions = new Set([
   'paste',
@@ -146,6 +147,11 @@ export class DesktopRuntime {
   // Capture-storage admission of each frame still in progress, from its
   // transcript. Every capture write and spoken label rechecks it.
   private readonly frameStorage = new Map<number, CaptureAdmission>();
+  // Frames in progress for which capture storage refused a write, and those
+  // for which a WAV or PNG was published. A frame that was refused and saved
+  // nothing is recorded as "Not saved" once all its writes have settled.
+  private readonly refusedCaptures = new Set<number>();
+  private readonly savedCaptures = new Set<number>();
   // Retirements run after dispatch, off the sensor worker; close() awaits them.
   private readonly retirements = new Set<Promise<void>>();
 
@@ -341,8 +347,10 @@ export class DesktopRuntime {
         const saved = await options.captureStorage.publish(this.frameStorage.get(id), (current) =>
           this.history.saveScreenshot(id, screenshot, current),
         );
-        if (saved === undefined) {
-          this.history.markCaptureNotSaved(id);
+        if (saved === 'saved') {
+          this.savedCaptures.add(id);
+        } else if (saved === undefined) {
+          this.refusedCaptures.add(id);
         }
       },
       audioCaptured: async (id, samples) => {
@@ -351,9 +359,10 @@ export class DesktopRuntime {
         );
         if (saved === 'saved') {
           this.recordedAudio.add(id);
+          this.savedCaptures.add(id);
         } else if (saved === undefined) {
           this.unrecordedAudio.add(id);
-          this.history.markCaptureNotSaved(id);
+          this.refusedCaptures.add(id);
         }
       },
       emptyAudioCaptured: (clip) =>
@@ -404,6 +413,16 @@ export class DesktopRuntime {
         this.recordedAudio.delete(id);
         this.unrecordedAudio.delete(id);
         this.frameStorage.delete(id);
+
+        // Every write of this frame has settled (the pipeline awaits them).
+        // If storage was turned off before anything was published, say so
+        // honestly. A partly saved capture keeps "on"; labeling still needs
+        // each of its files and refuses it.
+        if (this.refusedCaptures.delete(id) && !this.savedCaptures.has(id)) {
+          this.history.markCaptureNotSaved(id);
+        }
+        this.savedCaptures.delete(id);
+
         const entry = this.history.finish(id);
         const chainSettled = this.unsettledSuperseded.delete(id);
 

@@ -74,6 +74,10 @@ or older screenshot. Copy and insert still work. A conversation message whose
 screenshot was not saved stores `screenshotSaved: false` and never shows the
 conversation's PNG from an earlier capture.
 
+An observation whose files were only partly written when storage was turned
+off (for example its WAV, but not its PNG) keeps `on`: something was saved.
+It cannot be labeled, because a required file is missing.
+
 Continued speech while off still ends in exactly one Activity record and one
 action. Deliberately not saving the audio is not a recording failure; a real
 write failure while on keeps the existing recovery behavior.

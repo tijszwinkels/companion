@@ -827,3 +827,55 @@ test('U2: the setting is strictly typed, desktop-only, and reported to every cli
   );
   assert.ok(pendingSeen || policy.enabled, 'Pending is published when it lasts long enough');
 });
+
+test('a capture partly saved before an Off is not called "Not saved", and cannot be labeled', async (context) => {
+  const policy = CaptureStoragePolicy.enabledForTesting();
+  const setup = await desktopFixture(async () => Buffer.alloc(0), undefined, {
+    captureStorage: policy,
+  });
+  context.after(setup.close);
+  const activity = setup.runtime.activity;
+
+  // Fully refused: the Off came before either write.
+  activity.transcribed?.({ ...frame, id: 1, input: 'speech', storage: activity.admitCapture?.(0) });
+  // Partly saved: its WAV was published before the Off, its PNG was not.
+  activity.transcribed?.({ ...frame, id: 2, input: 'speech', storage: activity.admitCapture?.(0) });
+  await activity.audioCaptured?.(2, canaryAudio(160));
+  await policy.setEnabled(false);
+  await activity.audioCaptured?.(1, canaryAudio(160));
+  await activity.screenshotCaptured?.(1, canaryScreenshot);
+  await activity.screenshotCaptured?.(2, canaryScreenshot);
+  for (const id of [1, 2]) {
+    activity.intentRecognized?.(id, 'IGNORE');
+    activity.outcome?.(id, 'ignored');
+    activity.finished?.(id);
+  }
+
+  const rows = setup.database
+    .prepare('SELECT id, capture_storage AS storage FROM utterances ORDER BY rowid')
+    .all() as { id: string; storage: string }[];
+  assert.deepEqual(
+    rows.map((row) => row.storage),
+    ['off', 'on'],
+  );
+  const files = recordingFiles(await inventory(setup.directory));
+  assert.deepEqual(
+    files.map((path) => path.split('/').slice(2).join('/')),
+    [`audio/${rows[1].id}.wav`],
+  );
+
+  // Labeling stays refused for both, also after opting in again.
+  await policy.setEnabled(true);
+  const router = new UserSensorRouter(
+    { detector: testDetector({ detect: async () => 'IGNORE' }) },
+    () => {},
+  );
+  processor('IGNORE').subscribe(router);
+  await setup.runtime.connectRouter(router);
+  for (const row of rows) {
+    setup.send({ action: 'label-history', id: row.id, correct: true });
+    const reply = await setup.reply('label-history');
+    assert.equal(reply.type, 'error');
+  }
+  assert.deepEqual(feedbackRows(setup), []);
+});

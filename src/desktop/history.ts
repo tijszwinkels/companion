@@ -591,8 +591,8 @@ export class UtteranceHistory {
   }
 
   /**
-   * Capture storage was turned off before this observation's files were
-   * published. Record that honestly ("Not saved") instead of leaving `on`.
+   * Capture storage was turned off before any of this observation's files
+   * were published. Record that honestly ("Not saved") instead of `on`.
    */
   markCaptureNotSaved(frameId: number): void {
     const id = this.frameEntries.get(frameId);
