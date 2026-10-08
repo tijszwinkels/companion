@@ -61,10 +61,10 @@ resumes listening.
 
 Companion is built from source and is currently made for
 [Omarchy](https://omarchy.org) (Arch Linux with the Hyprland desktop). The
-**[installation guide](docs/installation.md)** walks you through everything,
-and is written so that the Pi coding agent can do most of the work with you:
-you install Pi, then Pi follows the remaining steps and asks you whenever it
-needs your password or your eyes on the screen.
+**[installation guide](docs/installation.md)** is written for your coding agent:
+get any coding agent working, such as Pi, Claude Code or Codex, point it at the
+guide, and it does the rest, asking you whenever it needs your password, a
+decision or your eyes on the screen.
 
 Companion is an early project, so expect some rough edges.
 
