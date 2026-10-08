@@ -95,9 +95,15 @@ controls, or add broad permission-bypass flags to make a check pass. Stop on a
 failed checkpoint, diagnose it, and report untested steps honestly.
 
 Your tools usually cannot type a password, see the screen or press desktop
-shortcuts. For `sudo`, `omarchy update` and other commands that prompt, show the
-exact command, ask the human to run it in their own terminal, and wait for the
-result. For desktop checkpoints, say exactly what they should see or press.
+shortcuts. For package installs, show the user the exact package list, then run
+`pkexec pacman -S --needed --noconfirm <packages>` yourself: Omarchy's graphical
+password dialog shows the command, and the user typing their password there is
+the approval. `--noconfirm` only skips pacman's own Y/n question; on a conflict
+its default answer stops the install. You see the output and exit status, so
+verify and continue. For genuinely interactive commands such as `omarchy update`,
+open a visible desktop terminal with the command already typed in, let the user
+handle its prompts, and verify the result afterwards. For desktop checkpoints,
+say exactly what they should see or press.
 Never put a password in a command, file or environment variable. Contact only the
 model endpoint you were given and the download sites this guide names; do not
 scan other hosts or ports. Commands that keep running (a listener, UI, model
@@ -195,6 +201,9 @@ sudo pacman -S --needed git rust base-devel openssl ca-certificates \
   cmake pkgconf pipewire wireplumber grim wtype util-linux ffmpeg python \
   qt6-base qt6-declarative qt6-webengine qt6-wayland layer-shell-qt
 ```
+
+An agent runs this as `pkexec pacman -S --needed --noconfirm …` with the same
+package list, as described in its [contract](#contract-for-an-agent-following-this-guide).
 
 This does not install/replace Omarchy, Hyprland or GPU drivers. Follow your OS's
 supported installation process for those. For the vLLM recipe you will also need
