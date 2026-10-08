@@ -10,6 +10,7 @@ import type { Screenshot, UserSensorFrame } from '../../src/core/frame.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { LabelPreviousCorrect } from '../../src/processors/label-previous-correct.ts';
+import { isRemoteAction } from '../../src/remote/protocol.ts';
 import { encodeWav, ENDPOINT_MS } from '../../src/sensors/audio/segmenter.ts';
 import type { TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import { desktopFixture, waitFor } from '../desktop-fixture.ts';
@@ -808,6 +809,20 @@ test('U2: the setting is strictly typed, desktop-only, and reported to every cli
   assert.equal(refused.type, 'error');
   assert.match(refused.message!, /only available on the desktop/);
   assert.equal(policy.enabled, false);
+  // The phone gateway has no such action at all (no allowlist expansion).
+  assert.equal(isRemoteAction('set-capture-storage'), false);
+
+  // A phone's existing label action is refused while storage is off.
+  const phoneEntry = await finishedRow(remote, 7, {
+    input: 'typed',
+    screenshot: true,
+    audio: false,
+  });
+  remote.send({ action: 'label-history', id: phoneEntry, correct: true });
+  const phoneLabel = await remote.reply('label-history');
+  assert.equal(phoneLabel.type, 'error');
+  assert.match(phoneLabel.message!, /Labeling requires capture storage/);
+  assert.deepEqual(feedbackRows(remote), []);
 
   // Pending and final states reach clients from the backend, in order.
   setup.messages.length = 0;
