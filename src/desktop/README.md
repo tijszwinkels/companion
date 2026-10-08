@@ -108,6 +108,7 @@ Commands:
 {"action":"toggle-sounds"}
 {"action":"set-intent-enabled","name":"SEND_TEXT_TO_APPLICATION","mode":"inference","enabled":false}
 {"action":"set-transcription-cleanup","enabled":true}
+{"action":"set-capture-storage","enabled":false}
 {"action":"paste","id":"stable-uuid","target":"0x123abc"}
 {"action":"stop-agent","id":"question-uuid"}
 {"action":"close-agent","id":"question-uuid"}
@@ -172,7 +173,9 @@ feedback. The adapter renders newest first. The current run is not attached to
 every state snapshot, so microphone updates do not resend an ever-growing list.
 
 `label-history` accepts only completed entries from this run, and only a
-registered intent for an explicit correction. Disabled/context-ineligible
+registered intent for an explicit correction. It also requires capture storage
+and the entry's own saved capture ([capture storage](#capture-storage)); a
+refused label writes nothing. Disabled/context-ineligible
 intents are still valid labels: feedback describes the intended action, not an
 instruction to run it. A null prediction cannot be labeled. Original prediction
 and outcome remain unchanged. Label correct sets actual intent to the prediction;
@@ -256,6 +259,31 @@ the listener has no cleanup support (the UI then hides its switch).
 then applies the switch and broadcasts. It returns `cleanup-enabled` or
 `cleanup-disabled`. A missing file means off. See
 [transcription cleanup](../../docs/transcription-cleanup.md).
+
+### Capture storage
+
+Archiving captured audio and screenshots is off unless the user turns it on
+([guide](../../docs/capture-storage.md)). The state snapshot carries
+`captureStorage: {enabled, pending, saved, warning}`: `enabled` is the
+effective state, `pending` is `""`, `"enabling"` or `"disabling"`, and
+`saved: false` with a content-free `warning` means the effective state may
+differ from the saved preference (an unreadable file, or an Off that could not
+be saved). Older listeners omit the field; clients treat that as unavailable.
+
+`set-capture-storage` requires a boolean and is refused for remote clients.
+Enable saves `capture-storage.json` (0600, flushed, atomic, serialized) before
+opening admission. Disable closes admission at once, waits for publications
+already past their final check, then saves; the reply follows that barrier.
+Results are `capture-storage-enabled` and `capture-storage-disabled`; a failed
+save is an error reply, and storage then stays (or remains) off.
+
+History entries carry `captureStorage` (`"on"`, `"off"` or null for older rows)
+and `inputKind` (`"speech"`, `"typed"` or null), stored as the additive
+`capture_storage`/`input_kind` columns. `"off"` means the capture was
+deliberately not saved. While storage is off, or when an entry is `"off"` or
+lacks its readable PNG (and WAV for speech), `label-history` and the spoken
+label shortcuts are refused. `start-history-agent` still requires the original
+screenshot and never substitutes another one.
 
 History entries (snapshot `history`, `activity-entry` and Activity pages) carry
 `cleanupEnabled` (true/false/null), `cleanupStatus` (`cleaned`, `fallback`,
@@ -471,7 +499,9 @@ Use a left join to include unlabeled observations. `json_extract(intent_request,
 request reproduces its inputs, not a promise of identical output from a changed
 model server or a nondeterministic inference engine.
 
-The sensor pipeline saves the exact captured PNG before intent routing, at
+Only while [capture storage](#capture-storage) is on, and only for observations
+admitted while it was on, the sensor pipeline saves the exact captured PNG before
+intent routing, at
 `~/companion/data/YYYY-MM-DD/screenshots/<utterance-id>.png`. The day uses the
 observation's local date, not the later write time. Custom database paths use
 their parent directory as the data root. The file is written privately and
@@ -483,7 +513,7 @@ recording readers should only use the final `.png` and `.wav` filenames.
 A failed capture or old record has no screenshot file. A failed screenshot
 write keeps the transcript, records an error, and prevents routing that observation.
 
-Speech for each retained
+Under the same rule, speech for each retained
 transcript is saved as `~/companion/data/YYYY-MM-DD/audio/<utterance-id>.wav`.
 These uncompressed 16 kHz mono PCM16 WAVs use the same encoder and complete sample
 buffer as Voxtype's input, including the utterance's segmentation padding. They
@@ -496,7 +526,8 @@ saved. Storage failure leaves the transcript available and prevents the action.
 Successful writes survive later delivery failures and `IGNORE` decisions.
 
 Older records and supplied `--text` input have no audio. Transcript history still
-requires nonempty text. Empty ASR results have a separate diagnostic recording:
+requires nonempty text. While capture storage is on, empty ASR results have a
+separate diagnostic recording:
 `~/companion/asr-empty/YYYY-MM-DD/<clip-uuid>/audio.wav` and `metadata.json`.
 This separate top-level `asr-empty/` tree stays outside successful recordings in
 `data/`. The date uses the observation time; custom database paths use their parent
@@ -550,7 +581,10 @@ The standalone voice shortcuts **“label previous correct”** and **“label p
 incorrect”** register as `LABEL_PREVIOUS_CORRECT` and `LABEL_PREVIOUS_INCORRECT`.
 They have no LLM instructions. Unlike dictation prefixes, they accept an empty
 payload; additional text is rejected. Successful labeling records the command's outcome
-as `labeled` and plays the success cue. Preview mode writes no feedback.
+as `labeled` and plays the success cue. Preview mode writes no feedback. While
+capture storage is off, for a command spoken while it was off, or for a target
+without its saved capture, the command is `skipped`: nothing is written and no
+success cue plays.
 
 `intent_feedback` contains exactly these columns:
 

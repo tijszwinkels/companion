@@ -25,6 +25,13 @@ and the same file's `quickQuestion` model/thinking overrides. It still runs a
 normal Pi session with screenshots and the same conversation tools. Default:
 `pillar-vllm/qwen3.8-128k`, thinking `off`; the Pi executable is shared.
 
+A conversation started from speech (or from an Activity entry) sends its
+screenshot to the agent, Pi or Claude Code, in every case. Companion keeps a
+copy (`.companion-sessions/<id>.png`) only while
+[capture storage](../../docs/capture-storage.md) is on, and only for a
+screenshot admitted while it was on; otherwise the question stores
+`screenshotSaved: false` and never shows an earlier PNG of that conversation.
+
 The optional persisted `AgentSession.profile` is `coding` or `quickQuestion`.
 It belongs to the conversation, so queued/spoken/typed follow-ups and restored
 conversations select the same profile. Older archives without a profile keep
