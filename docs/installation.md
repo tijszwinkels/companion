@@ -17,60 +17,6 @@ follow every step yourself.
 recipe in step 4 is a candidate, not a promise of supported hardware or model
 quality, and how well intent classification works depends on the model you choose.
 
-## Before you begin
-
-**Launching `npm start` without flags immediately listens and can type into the
-focused application.** An explicit “enter …” can also submit that text. Window
-focus checks do not identify a browser tab or text field and cannot prevent every
-focus race. Start paused later in this guide, with an empty disposable editor.
-Even `--paused` takes one startup screenshot to check desktop capture; that image
-is not routed to a model or saved in history. Display harmless content before launch.
-
-**`--preview` suppresses dispatched actions, not observation or storage.** It can
-still open the microphone, capture screenshots, contact the classifier and retain
-transcripts/audio/images. `--text` and `--wav` also capture the live active window.
-`--no-desktop` disables desktop history/artifacts/sounds/control; it does not
-prevent capture, network calls, typing or independent agent persistence.
-`--graph` and `--help` are the non-capturing inspection modes.
-
-Choose where inference will happen before entering credentials or starting:
-
-| Choice                 | What runs on the desktop                                                         | What leaves it                                                                                                                                                |
-| ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| On-device              | ASR, intent vision server, Pi, local agent model, UI                             | Model/package downloads; agent tools and optional browser can still use the network. Local models alone do not enforce offline operation.                     |
-| Explicitly trusted LAN | ASR, Pi and UI; vision/model server on a machine you control                     | Transcript, window identity, screenshot and applicable conversation context go to that server. Agent requests include instructions, history and tool results. |
-| Optional cloud agent   | Local/LAN classifier and ASR; Pi or Claude Code calls a selected hosted provider | Agent prompts, screenshots, history and tool results go to that provider. Account terms, billing and retention are separate choices.                          |
-
-The classifier receives the utterance, PNG and window metadata, plus bounded
-excerpts from a visibly selected conversation when applicable. It has no tools.
-Agent sessions have tools and run as your user; quick questions are full Pi
-sessions too. Prefixes bypass **classification**, not necessarily model calls:
-“quick question …” and “new session …” call an agent. Optional transcription cleanup
-(default off) can also call the classifier for text-delivery prefixes.
-
-### Contract for an agent following this guide
-
-Inspect the OS, versions, existing files and available resources first. Report a
-concrete package/config/provider plan. Preserve existing settings; merge reviewed
-entries instead of replacing whole files. Use the same checkpoints as a human.
-Commands marked **install**, **download**, **activate**, or **live** change the
-machine or transmit data; execute them only within the user's granted scope.
-Obtain explicit human approval for privileged or destructive steps, credentials,
-provider/license choices and activation not already authorized. Never print keys,
-copy another person's agent directory, grant blanket project trust, weaken access
-controls, or add broad permission-bypass flags to make a check pass. Stop on a
-failed checkpoint, diagnose it, and report untested steps honestly.
-
-Your tools usually cannot type a password, see the screen or press desktop
-shortcuts. For `sudo`, `omarchy update` and other commands that prompt, show the
-exact command, ask the human to run it in their own terminal, and wait for the
-result. For desktop checkpoints, say exactly what they should see or press.
-Never put a password in a command, file or environment variable. Contact only the
-model endpoint you were given and the download sites this guide names; do not
-scan other hosts or ports. Commands that keep running (a listener, UI, model
-server or tunnel) block your shell tool; use [step 8](#8-start-companion-after-login-optional)
-services or ask the human to run them in a separate terminal.
-
 ## 0. Start with Pi
 
 This part is for the human. It takes a few minutes once a model endpoint exists.
@@ -79,7 +25,9 @@ Use a terminal inside your logged-in desktop session (on Omarchy: Super+Return).
 **You need a model endpoint before Pi can help.** Companion and Pi need an
 OpenAI-compatible chat endpoint whose model accepts images and tool calls; see
 [step 4](#4-set-up-an-image-capable-intent-and-agent-endpoint) for the requirements,
-a candidate server recipe and the trusted-LAN/SSH-tunnel variant. Setting up a
+a candidate server recipe and the trusted-LAN/SSH-tunnel variant, and
+[what leaves your desktop](#where-inference-runs-and-what-leaves-the-desktop)
+for each choice. Setting up a
 model server on another machine, or an SSH tunnel to it, is your task: Pi on this
 desktop cannot do it for you. Note its `/v1` URL, its served model ID, its context
 length and whether it needs an API key.
@@ -242,8 +190,8 @@ git clone https://github.com/tijszwinkels/companion.git "$HOME/Work/companion"
 git -C "$HOME/Work/companion" rev-parse HEAD
 ```
 
-`git clone` follows the current default branch, not the base named at the top of
-this guide. For a reviewed release, check out its exact commit now and record it.
+`git clone` follows the current default branch. For a reviewed release, check out
+its exact commit now and record it.
 
 **Hand the installation to Pi.** Paste this into the Pi conversation, filling in
 the brackets. Pi then reads this guide from your checkout and works through it:
@@ -265,6 +213,73 @@ look at or use the desktop, and tell me exactly what to do.
 Expect a plan first. Pi may need several of your replies; review each command it
 proposes for you before running it. If the conversation gets long, Pi compacts
 older history automatically.
+
+## Before step 1: notes for the agent
+
+From here on, the guide is written so that Pi, or another coding agent, can follow
+it with you. If you follow it yourself, read these notes as your own checklist.
+
+### Make the user aware of what Companion does
+
+Before the first launch in step 7, and again before any command that captures
+audio or the screen or types, explain these points to the user in plain words and
+wait until they confirm:
+
+- **Starting `npm start` without flags immediately listens and can type into the
+  focused application.** An explicit “enter …” can also submit that text. Window
+  focus checks do not identify a browser tab or text field and cannot prevent every
+  focus race. That is why this guide starts paused, with an empty disposable editor.
+  Even `--paused` takes one startup screenshot to check desktop capture; that image
+  is not routed to a model or saved in history. Ask the user to display harmless
+  content before launch.
+- **`--preview` suppresses dispatched actions, not observation or storage.** It can
+  still open the microphone, capture screenshots, contact the classifier and retain
+  transcripts/audio/images. `--text` and `--wav` also capture the live active window.
+  `--no-desktop` disables desktop history/artifacts/sounds/control; it does not
+  prevent capture, network calls, typing or independent agent persistence.
+  `--graph` and `--help` are the non-capturing inspection modes.
+- **Agents act as the user.** Agent sessions have tools and run with the user's
+  permissions; quick questions are full Pi sessions too.
+
+### Where inference runs and what leaves the desktop
+
+Confirm the user's choice and explain the matching row before configuring the
+classifier or any agent provider:
+
+| Choice                 | What runs on the desktop                                                         | What leaves it                                                                                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| On-device              | ASR, intent vision server, Pi, local agent model, UI                             | Model/package downloads; agent tools and optional browser can still use the network. Local models alone do not enforce offline operation.                     |
+| Explicitly trusted LAN | ASR, Pi and UI; vision/model server on a machine you control                     | Transcript, window identity, screenshot and applicable conversation context go to that server. Agent requests include instructions, history and tool results. |
+| Optional cloud agent   | Local/LAN classifier and ASR; Pi or Claude Code calls a selected hosted provider | Agent prompts, screenshots, history and tool results go to that provider. Account terms, billing and retention are separate choices.                          |
+
+The classifier receives the utterance, PNG and window metadata, plus bounded
+excerpts from a visibly selected conversation when applicable. It has no tools.
+Prefixes bypass **classification**, not necessarily model calls:
+“quick question …” and “new session …” call an agent. Optional transcription cleanup
+(default off) can also call the classifier for text-delivery prefixes.
+
+### Contract for an agent following this guide
+
+Inspect the OS, versions, existing files and available resources first. Report a
+concrete package/config/provider plan. Preserve existing settings; merge reviewed
+entries instead of replacing whole files. Use the same checkpoints as a human.
+Commands marked **install**, **download**, **activate**, or **live** change the
+machine or transmit data; execute them only within the user's granted scope.
+Obtain explicit human approval for privileged or destructive steps, credentials,
+provider/license choices and activation not already authorized. Never print keys,
+copy another person's agent directory, grant blanket project trust, weaken access
+controls, or add broad permission-bypass flags to make a check pass. Stop on a
+failed checkpoint, diagnose it, and report untested steps honestly.
+
+Your tools usually cannot type a password, see the screen or press desktop
+shortcuts. For `sudo`, `omarchy update` and other commands that prompt, show the
+exact command, ask the human to run it in their own terminal, and wait for the
+result. For desktop checkpoints, say exactly what they should see or press.
+Never put a password in a command, file or environment variable. Contact only the
+model endpoint you were given and the download sites this guide names; do not
+scan other hosts or ports. Commands that keep running (a listener, UI, model
+server or tunnel) block your shell tool; use [step 8](#8-start-companion-after-login-optional)
+services or ask the human to run them in a separate terminal.
 
 ## 1. Check the desktop and prerequisites
 

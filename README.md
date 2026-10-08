@@ -1,14 +1,11 @@
 # Companion
 
-**Talk to your Linux desktop.** Companion listens while you work: say what you
-want typed and it appears in the app you are using; ask a question and an AI
-agent that can see your screen answers in a side panel.
+**Talk to your Linux desktop.** No hotkeys, no wake word: Companion listens while
+you work and works out what you mean. Say what you want typed and it appears in
+the app you are using; ask a question and an AI agent that can see your screen
+answers in a side panel.
 
-<p align="center">
-  <img src="docs/images/companion-demo.gif" width="560"
-       alt="Animated demo of Companion's panel. A conversation named Today shows a to-do widget with four garden-club tasks, one already ticked off. The spoken sentence &quot;New session, draft the garden club newsletter&quot; appears in the activity strip, a new tab named Garden newsletter opens, makes one tool call and writes a short newsletter draft with buttons to make it shorter or add photos. Then &quot;Go to session one&quot; switches back to the Today tab.">
-</p>
-<p align="center"><sub>A to-do list in a daily conversation, a spoken “new session” for one task, and back again (scripted demo data, no real model).</sub></p>
+<!-- Demo recording goes here. -->
 
 ## What it is
 
@@ -44,6 +41,10 @@ be explicit, start your sentence with a command word instead.
 - **Keep the conversation going.** With a conversation open in the panel, just
   keep talking, or say **“continue session …”**. You can also type: every
   conversation has a text box, and follow-ups queue while the agent works.
+- **Run a team of agents.** Keep one conversation as your manager and let it
+  delegate: it can start other Companion sessions, send them follow-ups and get
+  their reports back, so it stays free to talk with you while they work. Up to
+  four agents run at the same time.
 - **Get visual answers.** Agents can show interactive widgets in the panel,
   such as diagrams, comparisons, charts and to-do lists.
 - **Recover recent transcriptions.** Companion keeps what it transcribed in a

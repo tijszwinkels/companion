@@ -312,7 +312,7 @@ does not trigger “enter”. A command with no following text does nothing.
 
 To observe without dispatched typing, Enter, or agent starts, use preview.
 **It still captures, can call the classifier, and retains desktop history/audio/PNG.**
-See the [data and stopping guidance](installation.md#before-you-begin).
+See the [data and stopping guidance](installation.md#make-the-user-aware-of-what-companion-does).
 
 ```sh
 npm start -- --preview
