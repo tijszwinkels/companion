@@ -140,7 +140,7 @@ test('feedback survives restart and uses insertion order, without jumping over a
 
   try {
     await history.open();
-    history.add({ ...frame, observedAt: 5000 });
+    history.add({ ...frame, observedAt: 5000 }, 'on');
     history.setIntent(1, 'SEND_TEXT_TO_APPLICATION');
     history.setOutcome(1, 'skipped');
     const original = history.snapshot()[0];
@@ -148,18 +148,20 @@ test('feedback survives restart and uses insertion order, without jumping over a
     history.close();
     await history.open();
 
-    history.add({ ...frame, observedAt: 1000, utterance: 'label previous incorrect' });
+    history.add({ ...frame, observedAt: 1000, utterance: 'label previous incorrect' }, 'on');
     history.setIntent(1, 'LABEL_PREVIOUS_INCORRECT');
-    assert.equal(history.labelPrevious(1, false), original.id);
+    const target = history.previousLabelTarget(1);
+    assert.equal(target, original.id);
+    history.label(target!, false);
     history.setOutcome(1, 'labeled');
     history.finish(1);
 
-    history.add({ ...frame, id: 2, utterance: 'Capture failed' });
+    history.add({ ...frame, id: 2, utterance: 'Capture failed' }, 'on');
     history.setOutcome(2, 'error');
     history.finish(2);
-    history.add({ ...frame, id: 3, utterance: 'label previous correct' });
+    history.add({ ...frame, id: 3, utterance: 'label previous correct' }, 'on');
     history.setIntent(3, 'LABEL_PREVIOUS_CORRECT');
-    assert.equal(history.labelPrevious(3, true), undefined);
+    assert.equal(history.previousLabelTarget(3), undefined);
     history.finish(3);
     history.close();
     await history.open();
@@ -256,11 +258,11 @@ test('screenshots use the observation local date and UUID filename, with no file
   try {
     await history.open();
     const observedAt = new Date(2026, 8, 19, 23, 59).getTime();
-    history.add({ ...frame, observedAt });
+    history.add({ ...frame, observedAt }, 'on');
     const entry = history.snapshot()[0];
-    await history.saveScreenshot(1, screenshot);
+    await history.saveScreenshot(1, screenshot, () => true);
     history.finish(1);
-    history.add({ ...frame, id: 2 });
+    history.add({ ...frame, id: 2 }, 'on');
     history.setOutcome(2, 'error');
     history.finish(2);
 

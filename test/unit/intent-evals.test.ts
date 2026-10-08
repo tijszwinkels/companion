@@ -91,6 +91,7 @@ async function fixture() {
       observedAt - 86_400_000,
       'screenshots',
       index === 6 ? Buffer.from('modified') : png,
+      () => true,
     );
   }
   return { root, path, record };
@@ -479,7 +480,7 @@ async function indexedDataset(count: number) {
   }
   database.close();
   for (const id of exampleIds) {
-    await saveArtifact(root, id, observedAt, 'screenshots', png);
+    await saveArtifact(root, id, observedAt, 'screenshots', png, () => true);
   }
   const directory = join(root, 'dataset');
   await exportDataset(path, directory);

@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import type { Activity } from '../core/activity.ts';
+import type { Activity, LabelPreviousResult } from '../core/activity.ts';
+import type { CaptureAdmission, CaptureStoragePolicy } from '../capture-storage/policy.ts';
 import type { InteractionContext, Log } from '../core/frame.ts';
 import { PauseControl } from '../core/pause-control.ts';
 import { DeliveryControl } from '../core/delivery-control.ts';
@@ -59,12 +60,14 @@ const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
 
 /**
  * Actions that act on the desktop itself: the compositor's focused window,
- * keyboard delivery, media playback reports, composer focus and composer
- * drafts. A remote panel (such as the phone gateway) cannot observe or own
+ * keyboard delivery, media playback reports, composer focus, composer
+ * drafts and the capture-storage switch. A remote panel (such as the phone gateway) cannot observe or own
  * any of these, so the listener refuses them for remote connections.
  */
 const desktopOnlyActions = new Set([
   'paste',
+  // Capture storage is a desktop privacy setting; v1 has no remote control.
+  'set-capture-storage',
   'submit-utterance',
   'media-playback',
   'composer-focus',
@@ -85,6 +88,17 @@ interface RemoteClient {
   lastActionsKey: string;
 }
 
+/** Shown wherever labeling is refused because capture storage is off. */
+const labelingRequiresStorage = 'Labeling requires capture storage';
+
+/**
+ * The live utterance database. Capture storage keeps its preference beside
+ * it, and needs that location even when the desktop service is disabled.
+ */
+export function defaultDatabasePath(): string {
+  return join(homedir(), 'companion', 'utterances.sqlite');
+}
+
 /** No Omarchy types or commands belong here; any local UI can use this service. */
 export function desktopPaths(): { database: string; socket: string } {
   const runtime = process.env.XDG_RUNTIME_DIR;
@@ -96,7 +110,7 @@ export function desktopPaths(): { database: string; socket: string } {
   }
 
   return {
-    database: join(homedir(), 'companion', 'utterances.sqlite'),
+    database: defaultDatabasePath(),
     socket: join(runtime, 'companion', 'control.sock'),
   };
 }
@@ -125,6 +139,13 @@ export class DesktopRuntime {
   // Frames still in progress whose WAV has been published, so a chain's final
   // attempt is known to own the whole utterance before anything is removed.
   private readonly recordedAudio = new Set<number>();
+  // Frames still in progress whose WAV was deliberately not saved because
+  // capture storage was off. Such an attempt also owns the whole utterance:
+  // there is simply no recording. An I/O failure is in neither set.
+  private readonly unrecordedAudio = new Set<number>();
+  // Capture-storage admission of each frame still in progress, from its
+  // transcript. Every capture write and spoken label rechecks it.
+  private readonly frameStorage = new Map<number, CaptureAdmission>();
   // Retirements run after dispatch, off the sensor worker; close() awaits them.
   private readonly retirements = new Set<Promise<void>>();
 
@@ -190,6 +211,11 @@ export class DesktopRuntime {
       mediaPause?: boolean;
       /** The live transcription cleanup switch; absent hides the UI control. */
       cleanup?: TranscriptionCleanupSetting;
+      /**
+       * The shared capture-storage policy, already loaded. It gates every
+       * Activity capture write and all labeling (docs/capture-storage.md).
+       */
+      captureStorage: CaptureStoragePolicy;
     },
     private readonly run: RunCommand = command,
   ) {
@@ -302,19 +328,38 @@ export class DesktopRuntime {
         this.sounds.play('processing');
         this.server.broadcast();
       },
+      admitCapture: (capturedForMs) => options.captureStorage.admit(capturedForMs),
       transcribed: (transcript) => {
-        this.history.add(transcript);
+        if (transcript.storage && !this.frameStorage.has(transcript.id)) {
+          this.frameStorage.set(transcript.id, transcript.storage);
+        }
+        const storage = options.captureStorage.allows(transcript.storage) ? 'on' : 'off';
+        this.history.add(transcript, storage);
         this.server.broadcast();
       },
       screenshotCaptured: async (id, screenshot) => {
-        await this.history.saveScreenshot(id, screenshot);
-      },
-      audioCaptured: async (id, samples) => {
-        if (await this.history.saveAudio(id, samples)) {
-          this.recordedAudio.add(id);
+        const saved = await options.captureStorage.publish(this.frameStorage.get(id), (current) =>
+          this.history.saveScreenshot(id, screenshot, current),
+        );
+        if (saved === undefined) {
+          this.history.markCaptureNotSaved(id);
         }
       },
-      emptyAudioCaptured: (clip) => saveEmptyAudioClip(dirname(options.database), clip),
+      audioCaptured: async (id, samples) => {
+        const saved = await options.captureStorage.publish(this.frameStorage.get(id), (current) =>
+          this.history.saveAudio(id, samples, current),
+        );
+        if (saved === 'saved') {
+          this.recordedAudio.add(id);
+        } else if (saved === undefined) {
+          this.unrecordedAudio.add(id);
+          this.history.markCaptureNotSaved(id);
+        }
+      },
+      emptyAudioCaptured: (clip) =>
+        options.captureStorage.publish(clip.storage, (current) =>
+          saveEmptyAudioClip(dirname(options.database), clip, current),
+        ),
       intentRequested: (id, request) => this.history.saveIntentRequest(id, request),
       intentRecognized: (id, intent) => {
         this.history.setIntent(id, intent);
@@ -324,13 +369,7 @@ export class DesktopRuntime {
         this.history.saveCleanup(id, record);
         this.server.broadcast();
       },
-      labelPrevious: (id, correct) => {
-        const target = this.history.labelPrevious(id, correct);
-        if (target) {
-          this.publishFeedback(target);
-        }
-        return target;
-      },
+      labelPrevious: (id, correct) => this.labelPrevious(id, correct),
       outcome: (id, outcome, destination) => {
         this.history.setOutcome(id, outcome);
 
@@ -363,6 +402,8 @@ export class DesktopRuntime {
         this.processing.delete(id);
         this.delivery.finish(id);
         this.recordedAudio.delete(id);
+        this.unrecordedAudio.delete(id);
+        this.frameStorage.delete(id);
         const entry = this.history.finish(id);
         const chainSettled = this.unsettledSuperseded.delete(id);
 
@@ -521,6 +562,10 @@ export class DesktopRuntime {
 
       await this.history.open();
 
+      // The CLI loaded the capture-storage choice before constructing this
+      // runtime; only publish its later changes.
+      this.options.captureStorage.on('change', this.captureStorageChanged);
+
       // Apply the saved cleanup choice before the pipeline accepts any
       // utterance. A missing file keeps cleanup off.
       if (this.options.cleanup) {
@@ -545,6 +590,10 @@ export class DesktopRuntime {
   }
 
   private readonly cleanupChanged = () => {
+    this.server.broadcast();
+  };
+
+  private readonly captureStorageChanged = () => {
     this.server.broadcast();
   };
 
@@ -606,6 +655,8 @@ export class DesktopRuntime {
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
       // Null hides the switch (no cleanup support in this listener).
       transcriptionCleanup: this.options.cleanup ? { enabled: this.options.cleanup.enabled } : null,
+      // Absent in older listeners: clients treat that as unavailable, not off.
+      captureStorage: this.options.captureStorage.state,
       agentActions: this.agentActions(),
     };
   }
@@ -701,6 +752,63 @@ export class DesktopRuntime {
     return false;
   }
 
+  /**
+   * Label one entry from its original capture. Refused, with nothing
+   * written, while capture storage is off, or when the entry's own capture
+   * was not saved or is no longer readable. The policy is checked again
+   * after the file checks, at the synchronous write: an Off (even a quick
+   * off→on) that happened meanwhile wins.
+   */
+  private async labelEntry(id: string, correct: boolean, actualIntent?: string | null) {
+    const storage = this.options.captureStorage;
+    if (!storage.enabled) {
+      throw Error(labelingRequiresStorage);
+    }
+    const generation = storage.generation;
+
+    const unavailable = await this.history.labelingUnavailable(id);
+    if (unavailable) {
+      throw Error(unavailable);
+    }
+
+    if (!storage.enabled || storage.generation !== generation) {
+      throw Error(labelingRequiresStorage);
+    }
+    this.history.label(id, correct, actualIntent);
+    this.publishFeedback(id);
+  }
+
+  /**
+   * Spoken "label previous correct/incorrect". Besides the checks of
+   * `labelEntry`, the command itself must have been admitted while storage
+   * was on, and that admission must still hold: a command spoken while off
+   * is never revived by turning storage on before it is routed.
+   */
+  private async labelPrevious(frameId: number, correct: boolean): Promise<LabelPreviousResult> {
+    const storage = this.options.captureStorage;
+    const command = this.frameStorage.get(frameId);
+    if (!storage.allows(command)) {
+      return { outcome: 'skipped', reason: labelingRequiresStorage };
+    }
+
+    const target = this.history.previousLabelTarget(frameId);
+    if (!target) {
+      return { outcome: 'skipped', reason: 'No preceding intent available in history to label' };
+    }
+
+    const unavailable = await this.history.labelingUnavailable(target);
+    if (unavailable) {
+      return { outcome: 'skipped', reason: unavailable };
+    }
+
+    if (!storage.allows(command)) {
+      return { outcome: 'skipped', reason: labelingRequiresStorage };
+    }
+    this.history.label(target, correct);
+    this.publishFeedback(target);
+    return { outcome: 'labeled', id: target };
+  }
+
   private publishActivity(entry: HistoryEntry): void {
     this.server.publish({
       type: 'activity-entry',
@@ -713,7 +821,11 @@ export class DesktopRuntime {
    * The final attempt of a continued utterance has settled, just before its
    * own `finished`. Its superseded predecessors are retired only when the final
    * attempt owns the whole utterance: its row exists and its WAV, which
-   * contains every earlier part's raw audio, was published. Its outcome does
+   * contains every earlier part's raw audio, was published, or was
+   * deliberately not saved because capture storage was off. In that case
+   * there is no recording to own, and the final row is still the one record
+   * of the utterance; a predecessor's files from before an Off are removed
+   * with it, like any superseded attempt's. Its outcome does
    * not matter; an error, cancellation or ignored result is the record the
    * user recovers from, including the pipeline's recovered-failure record with
    * the earlier words. A fresh PNG is not required: without one, the earlier
@@ -722,7 +834,9 @@ export class DesktopRuntime {
    * be written), the predecessors are kept as explicit residual rows.
    */
   private settleContinuation(finalId: number, supersededIds: readonly number[]): void {
-    const owned = this.history.entryId(finalId) !== undefined && this.recordedAudio.has(finalId);
+    const owned =
+      this.history.entryId(finalId) !== undefined &&
+      (this.recordedAudio.has(finalId) || this.unrecordedAudio.has(finalId));
 
     const predecessors: HistoryEntry[] = [];
     for (const id of supersededIds) {
@@ -1129,12 +1243,11 @@ export class DesktopRuntime {
         if (this.options.preview) {
           return 'preview';
         }
-        this.history.label(
+        await this.labelEntry(
           request.id,
           request.correct,
           request.actualIntent as string | null | undefined,
         );
-        this.publishFeedback(request.id);
         return 'labeled';
       }
       if (!this.options.agents) {
@@ -1185,6 +1298,22 @@ export class DesktopRuntime {
       await this.cleanupPreference.set(enabled, () => cleanup.set(enabled));
       this.log('cleanup-control', `Transcription cleanup ${enabled ? 'enabled' : 'disabled'}`);
       return enabled ? 'cleanup-enabled' : 'cleanup-disabled';
+    }
+
+    if (request.action === 'set-capture-storage') {
+      // Strictly a boolean; anything else is refused without a change.
+      if (typeof request.enabled !== 'boolean') {
+        throw Error('Expected a boolean capture storage state');
+      }
+      const enabled = request.enabled;
+      await this.options.captureStorage.setEnabled(enabled);
+      this.log(
+        'capture-storage',
+        enabled
+          ? 'Saving captured audio and screenshots'
+          : 'Captured audio and screenshots not saved',
+      );
+      return enabled ? 'capture-storage-enabled' : 'capture-storage-disabled';
     }
 
     if (request.action === 'media-playback') {
@@ -1609,6 +1738,7 @@ export class DesktopRuntime {
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);
     this.options.cleanup?.off('change', this.cleanupChanged);
+    this.options.captureStorage.off('change', this.captureStorageChanged);
 
     try {
       // The pipeline is idle by now; let pending retirements finish while the

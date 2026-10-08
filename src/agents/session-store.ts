@@ -45,18 +45,32 @@ export class SessionStore {
     return join(this.directory, `${id}.${extension}`);
   }
 
-  async screenshot(id: string, png: Buffer): Promise<string> {
+  /**
+   * Save a conversation's screenshot. `current` is the capture-storage check
+   * (CaptureStoragePolicy.publish), called immediately before the rename:
+   * when storage was turned off meanwhile, nothing is published (an earlier
+   * PNG is not replaced) and the result is undefined.
+   */
+  async screenshot(id: string, png: Buffer, current: () => boolean): Promise<string | undefined> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const path = this.path(id, 'png');
-    await this.replace(path, png);
-    return pathToFileURL(path).href;
+    const published = await this.replace(path, png, current);
+    return published ? pathToFileURL(path).href : undefined;
   }
 
-  private async replace(path: string, content: string | Buffer): Promise<void> {
+  private async replace(
+    path: string,
+    content: string | Buffer,
+    current: () => boolean = () => true,
+  ): Promise<boolean> {
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
+      if (!current()) {
+        return false;
+      }
       await rename(temporary, path);
+      return true;
     } finally {
       await rm(temporary, { force: true });
     }
@@ -179,6 +193,7 @@ export class SessionStore {
         toolName: message.toolName,
         input: message.input,
         screenshot: message.screenshot,
+        ...(message.screenshotSaved === false ? { screenshotSaved: false as const } : {}),
         // Queued messages are display history, never instructions to replay
         // after reopening a tab or restarting Companion.
         state: ['queued', 'running'].includes(message.state) ? 'error' : message.state,
@@ -206,7 +221,14 @@ export class SessionStore {
           toolGroup: { count: group.count, revision: group.revision },
         };
       }
-      if (message.screenshot && message.kind === 'user' && screenshotUrl) {
+      // The conversation's one PNG belongs to a saved capture. A message whose
+      // own screenshot was not saved must not borrow it.
+      if (
+        message.screenshot &&
+        message.kind === 'user' &&
+        screenshotUrl &&
+        message.screenshotSaved !== false
+      ) {
         restored.screenshotUrl = screenshotUrl;
       }
 

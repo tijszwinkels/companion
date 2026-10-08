@@ -77,7 +77,7 @@ test('private atomic snapshots retain PNG bytes and derive attachment URLs on re
   session.messages[0].screenshot = true;
   session.messages[0].screenshotUrl = 'https://untrusted.example/image';
   session.completedTurnId = 'live-completion';
-  const url = await store.screenshot(session.id, frame.screenshot.png);
+  const url = (await store.screenshot(session.id, frame.screenshot.png, () => true))!;
   await store.save(session);
   assert.equal((await stat(path)).mode & 0o777, 0o700);
   for (const extension of ['json', 'png']) {

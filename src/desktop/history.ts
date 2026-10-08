@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -47,6 +47,15 @@ export interface HistoryEntry {
    * whole recording was transcribed.
    */
   transcriptSource: TranscriptSource | null;
+  /**
+   * The capture-storage decision for this observation (docs/capture-storage.md).
+   * `off`: its audio/screenshot were deliberately not saved ("Not saved"); the
+   * entry can never be labeled. `on`: they were saved unless a write failed.
+   * Null: unknown (rows from before capture storage, or an older checkout).
+   */
+  captureStorage: 'on' | 'off' | null;
+  /** `speech` or `typed` Activity text; null when unknown (older rows). */
+  inputKind: 'speech' | 'typed' | null;
 }
 
 /** Row shape before booleans are decoded; SQLite stores them as integers. */
@@ -57,7 +66,8 @@ const ENTRY_COLUMNS = `id, observed_at AS observedAt, transcript AS utterance,
       application, recognized_intent AS intent, outcome,
       cleanup_enabled AS cleanupEnabled, cleanup_status AS cleanupStatus,
       cleaned_text AS cleanedText, cleanup_fallback AS cleanupFallback,
-      transcript_source AS transcriptSource`;
+      transcript_source AS transcriptSource, capture_storage AS captureStorage,
+      input_kind AS inputKind`;
 
 function decodeEntry(row: HistoryRow): HistoryEntry {
   return {
@@ -173,6 +183,11 @@ export class UtteranceHistory {
           'transcript_source',
           "TEXT CHECK (transcript_source IN ('earlier-attempt', 'audio-only'))",
         ],
+        // Capture storage (see HistoryEntry.captureStorage): additive for the
+        // same reason. Existing rows stay NULL ("unknown"); nothing is inferred
+        // from existing files and no recording is touched.
+        ['capture_storage', "TEXT CHECK (capture_storage IN ('on', 'off'))"],
+        ['input_kind', "TEXT CHECK (input_kind IN ('speech', 'typed'))"],
       ];
       for (const [name, definition] of additiveColumns) {
         if (!utteranceColumns.some((column) => column.name === name)) {
@@ -425,7 +440,11 @@ export class UtteranceHistory {
     this.awaitingRetirement.delete(id);
   }
 
-  add(transcript: Transcript): void {
+  /**
+   * Create the row for an observation. `captureStorage` is the storage
+   * decision the desktop runtime made for it (see HistoryEntry).
+   */
+  add(transcript: Transcript, captureStorage: 'on' | 'off'): void {
     if (this.frameEntries.has(transcript.id)) {
       return;
     }
@@ -442,8 +461,9 @@ export class UtteranceHistory {
     this.db
       .prepare(
         `INSERT INTO utterances
-      (id, observed_at, transcript, application, window_title, window_address, transcript_source)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      (id, observed_at, transcript, application, window_title, window_address, transcript_source,
+        capture_storage, input_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -453,6 +473,8 @@ export class UtteranceHistory {
         application?.title ?? null,
         application?.address ?? null,
         transcript.source ?? null,
+        captureStorage,
+        transcript.input ?? null,
       );
 
     this.frameEntries.set(transcript.id, id);
@@ -512,33 +534,110 @@ export class UtteranceHistory {
     }
   }
 
-  /** Resolves true once the PNG is published; false when the frame has no row. */
-  async saveScreenshot(frameId: number, screenshot: Screenshot): Promise<boolean> {
+  /**
+   * Publish the PNG. `current` is the capture-storage check (see
+   * saveArtifact). Resolves `saved` once published, `no-row` when the frame
+   * has no row, and undefined when capture storage stopped it.
+   */
+  async saveScreenshot(
+    frameId: number,
+    screenshot: Screenshot,
+    current: () => boolean,
+  ): Promise<'saved' | 'no-row' | undefined> {
     const id = this.frameEntries.get(frameId);
 
     if (!id) {
-      return false;
+      return 'no-row';
     }
 
     const entry = this.find(id)!;
-    await saveArtifact(dirname(this.path), id, entry.observedAt, 'screenshots', screenshot.png);
-    return true;
+    const directory = dirname(this.path);
+    const saved = await saveArtifact(
+      directory,
+      id,
+      entry.observedAt,
+      'screenshots',
+      screenshot.png,
+      current,
+    );
+    return saved ? 'saved' : undefined;
   }
 
-  /** Resolves true once the WAV is published; false when the frame has no row. */
-  async saveAudio(frameId: number, samples: Float32Array): Promise<boolean> {
+  /** Publish the WAV; results as for `saveScreenshot`. */
+  async saveAudio(
+    frameId: number,
+    samples: Float32Array,
+    current: () => boolean,
+  ): Promise<'saved' | 'no-row' | undefined> {
     const id = this.frameEntries.get(frameId);
 
     if (!id) {
-      return false;
+      return 'no-row';
     }
 
     const entry = this.find(id)!;
     // Use the same PCM16 encoding as Voxtype's input, without resampling or
     // trimming. The pipeline retains ownership until this write settles.
     const wav = encodeWav(samples);
-    await saveArtifact(dirname(this.path), id, entry.observedAt, 'audio', wav);
-    return true;
+    const saved = await saveArtifact(
+      dirname(this.path),
+      id,
+      entry.observedAt,
+      'audio',
+      wav,
+      current,
+    );
+    return saved ? 'saved' : undefined;
+  }
+
+  /**
+   * Capture storage was turned off before this observation's files were
+   * published. Record that honestly ("Not saved") instead of leaving `on`.
+   */
+  markCaptureNotSaved(frameId: number): void {
+    const id = this.frameEntries.get(frameId);
+
+    if (id) {
+      this.db.prepare("UPDATE utterances SET capture_storage = 'off' WHERE id = ?").run(id);
+    }
+  }
+
+  /**
+   * Why this entry cannot be labeled from its original capture, or undefined
+   * when it can. Called only while capture storage is on. An entry recorded
+   * with storage off never qualifies, even if storage is on now (no
+   * backfill). Otherwise its original screenshot must be a readable PNG, and
+   * spoken input also needs its WAV. Typed input has no WAV, and rows from
+   * before capture storage (unknown input) are only held to the screenshot,
+   * because typed and spoken rows cannot be told apart there.
+   */
+  async labelingUnavailable(id: string): Promise<string | undefined> {
+    const entry = this.find(id);
+    if (!entry) {
+      return 'Utterance not found';
+    }
+    if (entry.captureStorage === 'off') {
+      return 'This entry was not saved, so it cannot be labeled';
+    }
+
+    const directory = dirname(this.path);
+    const png = await fileStart(artifactPath(directory, id, entry.observedAt, 'screenshots'), 8);
+    if (!png?.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+      return 'The original screenshot for this entry is unavailable';
+    }
+
+    if (entry.inputKind === 'speech') {
+      const wav = await fileStart(artifactPath(directory, id, entry.observedAt, 'audio'), 12);
+      if (
+        !wav ||
+        wav.toString('ascii', 0, 4) !== 'RIFF' ||
+        wav.toString('ascii', 8, 12) !== 'WAVE'
+      ) {
+        return 'The original audio for this entry is unavailable';
+      }
+    }
+
+    return undefined;
   }
 
   /** The row UUID of a frame that is still being processed. */
@@ -547,11 +646,13 @@ export class UtteranceHistory {
   }
 
   /**
-   * Label the preceding non-label utterance, even across a restart. Use insertion
-   * order rather than the wall clock, which can move backwards. Repeated feedback
-   * corrects the same target instead of evaluating the labeling command itself.
+   * The utterance a spoken "label previous" command refers to: the preceding
+   * non-label utterance, even across a restart. Use insertion order rather
+   * than the wall clock, which can move backwards. Repeated feedback corrects
+   * the same target instead of evaluating the labeling command itself.
+   * Undefined when there is no eligible target; nothing is written.
    */
-  labelPrevious(frameId: number, correct: boolean): string | undefined {
+  previousLabelTarget(frameId: number): string | undefined {
     const commandId = this.frameEntries.get(frameId);
 
     if (!commandId) {
@@ -574,7 +675,6 @@ export class UtteranceHistory {
       return undefined;
     }
 
-    this.label(previous.id, correct);
     return previous.id;
   }
 
@@ -733,5 +833,25 @@ export class UtteranceHistory {
   close(): void {
     this.database?.close();
     this.database = undefined;
+  }
+}
+
+/** The first bytes of a file, or undefined when it is missing or shorter. */
+async function fileStart(path: string, length: number): Promise<Buffer | undefined> {
+  let file;
+  try {
+    file = await open(path, 'r');
+  } catch {
+    return undefined;
+  }
+
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await file.read(buffer, 0, length, 0);
+    return bytesRead === length ? buffer : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    await file.close();
   }
 }

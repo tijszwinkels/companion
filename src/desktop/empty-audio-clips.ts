@@ -12,8 +12,17 @@ import { recordingDate } from './artifacts.ts';
  * publishes the WAV and its numeric metadata together; an interrupted write
  * can leave a .tmp directory, which readers must ignore. These clips contain
  * no screenshot, window context, transcript, or inferred intent.
+ *
+ * `current` is the capture-storage check (CaptureStoragePolicy.publish),
+ * called immediately before the publishing rename. When storage was turned
+ * off meanwhile, this clip's own temporary directory is removed and the
+ * result is undefined: nothing was saved, and that is not an I/O failure.
  */
-export async function saveEmptyAudioClip(directory: string, clip: EmptyAudioClip): Promise<string> {
+export async function saveEmptyAudioClip(
+  directory: string,
+  clip: EmptyAudioClip,
+  current: () => boolean,
+): Promise<string | undefined> {
   const id = randomUUID();
   const parent = join(directory, 'asr-empty', recordingDate(clip.observedAt));
   const destination = join(parent, id);
@@ -43,6 +52,11 @@ export async function saveEmptyAudioClip(directory: string, clip: EmptyAudioClip
       mode: 0o600,
       flag: 'wx',
     });
+
+    if (!current()) {
+      return undefined;
+    }
+
     await rename(temporary, destination);
   } finally {
     await rm(temporary, { recursive: true, force: true });

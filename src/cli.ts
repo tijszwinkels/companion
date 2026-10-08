@@ -38,7 +38,9 @@ import { DeliveryControl } from './core/delivery-control.ts';
 import { failureOutcome } from './core/delivery-error.ts';
 import { createGraph } from './core/graph.ts';
 import { graphToMermaid } from './core/graph-mermaid.ts';
-import { DesktopRuntime, desktopPaths } from './desktop/runtime.ts';
+import { DesktopRuntime, defaultDatabasePath, desktopPaths } from './desktop/runtime.ts';
+import { CaptureStoragePolicy } from './capture-storage/policy.ts';
+import { CaptureStoragePreference } from './capture-storage/preference.ts';
 import { PhoneAccessHook } from './remote/service/desktop-hook.ts';
 import { command } from './system/command.ts';
 import type { Log } from './core/frame.ts';
@@ -182,12 +184,30 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     liveState = new HarnessLiveStateReporter({ url: parseAgentHarnessUrl(harnessUrl), log });
   }
 
+  // Saving captured audio and screenshots is off unless the user turned it
+  // on (~/companion/capture-storage.json, beside the utterance database).
+  // Load the choice before anything can capture or start an agent turn, in
+  // every mode, including --no-desktop: agent conversations save their
+  // screenshots independently of the desktop service.
+  const captureStorage = new CaptureStoragePolicy(
+    new CaptureStoragePreference(join(dirname(defaultDatabasePath()), 'capture-storage.json')),
+  );
+  await captureStorage.load();
+  if (!values.graph) {
+    const { enabled, warning } = captureStorage.state;
+    log(
+      'capture-storage',
+      warning || (enabled ? 'Saving captured audio and screenshots' : 'Captures are not saved'),
+    );
+  }
+
   const agents = new AgentSessions(
     { pi: new PiBackend(), 'claude-code': new ClaudeCodeBackend() },
     log,
     agentDirectory(),
     widgetLibrary,
     liveState,
+    captureStorage,
   );
   const stop = () => {
     controller.abort();
@@ -232,6 +252,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         mediaPause: values.text === undefined && !values.wav,
         agents,
         cleanup,
+        captureStorage,
       });
       await desktop.start();
     }
@@ -260,7 +281,12 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       phone.start();
     }
 
-    const activity = desktop?.activity ?? { delivery: new DeliveryControl() };
+    // Without the desktop nothing writes Activity captures, but frames still
+    // carry their capture-storage admission to agent conversations.
+    const activity = desktop?.activity ?? {
+      delivery: new DeliveryControl(),
+      admitCapture: (capturedForMs: number) => captureStorage.admit(capturedForMs),
+    };
 
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
     const detector = new IntentDetector(config.llm, undefined, 'detector', activity);
@@ -325,7 +351,13 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
 
     // Supplied text enters the same routing path but needs no audio resources.
     if (values.text !== undefined) {
-      const transcript: Transcript = { id: 1, observedAt: Date.now(), utterance: values.text };
+      const transcript: Transcript = {
+        id: 1,
+        observedAt: Date.now(),
+        utterance: values.text,
+        input: 'typed',
+        storage: activity.admitCapture?.(0),
+      };
       activity.processing?.(1);
       const interaction = activity.interactionContext?.();
 

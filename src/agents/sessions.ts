@@ -21,6 +21,7 @@ import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
 import { promptText } from './agent-origin.ts';
 import type { SessionLiveState } from './harness-live-state.ts';
+import { CaptureStoragePolicy, type CaptureAdmission } from '../capture-storage/policy.ts';
 import { claudeCodeModelCatalog } from './claude/models.ts';
 import {
   SessionToolError,
@@ -81,6 +82,12 @@ interface RunningSession {
    * It closes only after the requesting turn completes with nothing queued.
    */
   closeAfterTurn: boolean;
+  /**
+   * Capture-storage admission of the first turn's screenshot: the sensor
+   * frame's own, or decided when the conversation was created. The PNG copy
+   * in the conversation directory is written only while it still allows it.
+   */
+  screenshotStorage?: CaptureAdmission;
   /**
    * A conversation started by speech whose harness is not yet recorded in the
    * view. Reading the configuration is asynchronous, but tab creation is not,
@@ -163,6 +170,9 @@ export class AgentSessions implements InspectableModule {
     widgetLibrary = bundledLibraryDirectory,
     // Optional: reports busy Pi conversations to a local agent-harness.
     private readonly liveState?: SessionLiveState,
+    // Gates the automatic conversation screenshot copy. Absent means a fixed
+    // "off" policy: nothing is saved unless the listener passes its policy.
+    private readonly captureStorage: CaptureStoragePolicy = new CaptureStoragePolicy(),
   ) {
     // Graph inspection shows each wired backend under its harness name.
     const dependencies: Record<string, InspectableModule> = { pi: backends.pi };
@@ -615,6 +625,7 @@ export class AgentSessions implements InspectableModule {
       {
         text: frame.utterance,
         screenshot: frame.screenshot,
+        storage: frame.storage,
         frameId: frame.id,
         profile,
         harness,
@@ -652,6 +663,8 @@ export class AgentSessions implements InspectableModule {
     request: {
       text: string;
       screenshot?: UserSensorFrame['screenshot'];
+      /** The frame's admission; absent (history recovery) is decided now. */
+      storage?: CaptureAdmission;
       frameId?: number;
       profile: AgentProfile;
       harness?: AgentHarness;
@@ -719,6 +732,9 @@ export class AgentSessions implements InspectableModule {
       widgetReservations: new Map(),
       depth: request.origin?.depth ?? 0,
       closeAfterTurn: false,
+      screenshotStorage: request.screenshot
+        ? (request.storage ?? this.captureStorage.admit())
+        : undefined,
     };
 
     // Record the harness now when it is fully known; otherwise the first turn
@@ -921,11 +937,19 @@ export class AgentSessions implements InspectableModule {
       // settings accepted before this turn began, like the Pi overrides above.
       let claudeCode = session.view.claudeCode;
       if (prompt.screenshot) {
+        // The live screenshot always reaches the agent (below). Only the copy
+        // kept with the conversation depends on capture storage.
         const question = session.view.messages[0];
-        question.screenshotUrl = await this.store.screenshot(
-          session.view.id,
-          prompt.screenshot.png,
+        const png = prompt.screenshot.png;
+        const url = await this.captureStorage.publish(session.screenshotStorage, (current) =>
+          this.store.screenshot(session.view.id, png, current),
         );
+        if (url) {
+          question.screenshotUrl = url;
+        } else {
+          delete question.screenshotUrl;
+          question.screenshotSaved = false;
+        }
         session.changed.set(question.id, question);
       }
       // A new conversation records its harness before the first save, so the

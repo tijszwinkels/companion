@@ -33,6 +33,7 @@ import type { AgentBackend } from '../../src/agents/types.ts';
 import { PauseControl } from '../../src/core/pause-control.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { stopped } from '../desktop-fixture.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 const run = promisify(execFile);
 
@@ -88,6 +89,7 @@ export class SyntheticListener {
       this.controller.signal,
       {
         database: join(this.directory, 'utterances.sqlite'),
+        captureStorage: CaptureStoragePolicy.enabledForTesting(),
         socket: this.socketPath,
         preview: false,
         sounds: false,

@@ -1,3 +1,4 @@
+import type { CaptureAdmission } from '../capture-storage/policy.ts';
 import type { IntentMode, UserSensorRouter } from './router.ts';
 import type { InspectableModule } from './module.ts';
 import type { AgentChoiceSet } from '../agents/choices.ts';
@@ -38,6 +39,12 @@ export interface UserSensorFrame {
   screenshot: Screenshot;
   /** Sidebar state captured with the screenshot, before transcription/inference. */
   interaction?: InteractionContext;
+  /**
+   * Capture-storage admission of the observation. Pipeline frames always
+   * carry one; an explicit history action has none, and agent sessions then
+   * decide when the conversation starts. Never makes anything saveable alone.
+   */
+  storage?: CaptureAdmission;
 }
 
 export interface InteractionContext {

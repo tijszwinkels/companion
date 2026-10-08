@@ -67,6 +67,7 @@ import { SendTextToApplication } from '../../src/processors/send-text-to-applica
 import type { RunCommand } from '../../src/sensors/screen/capture.ts';
 import { desktopFixture, waitFor } from '../desktop-fixture.ts';
 import { frame, processor, signal } from '../helpers.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1095,7 +1096,7 @@ test('cleanup recordings are version 2, never exported for exact replay, and ref
       .run(ids[1]!, 2, cleanup, 'IGNORE');
     for (const id of ids) {
       database.prepare('INSERT INTO intent_feedback VALUES (?, 1, NULL, ?)').run(id, 'IGNORE');
-      await saveArtifact(root, id, 1, 'screenshots', png);
+      await saveArtifact(root, id, 1, 'screenshots', png, () => true);
     }
     database.close();
 
@@ -1142,13 +1143,16 @@ test('history keeps the raw transcript beside cleanup results without changing t
       { enabled: false },
     ];
     for (let index = 0; index < records.length; index++) {
-      history.add({ id: index + 1, observedAt: 1000 + index, utterance: `um hello ${index}` });
+      history.add(
+        { id: index + 1, observedAt: 1000 + index, utterance: `um hello ${index}` },
+        'on',
+      );
       history.saveCleanup(index + 1, records[index]!);
       // The first record is kept.
       history.saveCleanup(index + 1, { enabled: false });
     }
     // An utterance that never reached routing (or an older checkout's row).
-    history.add({ id: 9, observedAt: 2000, utterance: 'um unknown' });
+    history.add({ id: 9, observedAt: 2000, utterance: 'um unknown' }, 'on');
 
     const entries = history.snapshot().reverse();
     assert.deepEqual(
@@ -1295,6 +1299,7 @@ test('a saved "on" choice is applied at startup; without the setting the switch 
     controller.signal,
     {
       database: join(root, 'utterances.sqlite'),
+      captureStorage: CaptureStoragePolicy.enabledForTesting(),
       socket: join(root, 'control.sock'),
       preview: true,
       sounds: false,

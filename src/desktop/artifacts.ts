@@ -5,6 +5,11 @@ import { dirname, join } from 'node:path';
  * Save an observation's PNG or WAV under its utterance UUID. Both artifact types
  * share local-day folders and private atomic writes. Filenames link to SQLite
  * through the UUID; no filesystem paths are stored in the database.
+ *
+ * `current` is the capture-storage check (CaptureStoragePolicy.publish). It
+ * is called immediately before the rename that publishes the file; if
+ * storage was turned off meanwhile, only this write's temporary file is
+ * removed and false is returned. True means the file was published.
  */
 export async function saveArtifact(
   directory: string,
@@ -12,7 +17,8 @@ export async function saveArtifact(
   observedAt: number,
   kind: 'screenshots' | 'audio',
   content: Buffer,
-): Promise<void> {
+  current: () => boolean,
+): Promise<boolean> {
   const path = artifactPath(directory, id, observedAt, kind);
   const temporary = `${path}.tmp`;
 
@@ -22,7 +28,13 @@ export async function saveArtifact(
     // The sequential sensor worker owns this UUID. Publish only a complete file
     // so a later reader can treat its presence as a finished recording.
     await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
+
+    if (!current()) {
+      return false;
+    }
+
     await rename(temporary, path);
+    return true;
   } finally {
     await rm(temporary, { force: true });
   }

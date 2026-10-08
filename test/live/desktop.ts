@@ -13,6 +13,7 @@ import { PauseControl } from '../../src/core/pause-control.ts';
 import { DesktopRuntime, desktopPaths } from '../../src/desktop/runtime.ts';
 import { activeWindow } from '../../src/sensors/screen/capture.ts';
 import { command } from '../../src/system/command.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 const controller = new AbortController();
 const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]);
@@ -29,6 +30,7 @@ const runtime = new DesktopRuntime(
   {
     ...desktopPaths(),
     database: join(directory, 'utterances.sqlite'),
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
     sounds: false,
     preview: false,
   },

@@ -13,6 +13,7 @@ import { UtteranceHistory } from '../../src/desktop/history.ts';
 import { DesktopServer } from '../../src/desktop/server.ts';
 import { deferred } from '../helpers.ts';
 import { createConnection } from 'node:net';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 test('unclean owner death releases locks and simultaneous stale-socket recovery admits one owner', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'companion-ownership-'));
@@ -20,6 +21,7 @@ test('unclean owner death releases locks and simultaneous stale-socket recovery 
   const socketPath = join(directory, 'control.sock');
   const runtimeModule = new URL('../../src/desktop/runtime.ts', import.meta.url).href;
   const pauseModule = new URL('../../src/core/pause-control.ts', import.meta.url).href;
+  const storageModule = new URL('../../src/capture-storage/policy.ts', import.meta.url).href;
   const child = spawn(
     process.execPath,
     [
@@ -30,9 +32,10 @@ test('unclean owner death releases locks and simultaneous stale-socket recovery 
       `
     import { DesktopRuntime } from ${JSON.stringify(runtimeModule)};
     import { PauseControl } from ${JSON.stringify(pauseModule)};
+    import { CaptureStoragePolicy } from ${JSON.stringify(storageModule)};
     const runtime = new DesktopRuntime(new PauseControl(), () => {}, new AbortController().signal, {
       database: ${JSON.stringify(databasePath)}, socket: ${JSON.stringify(socketPath)},
-      preview: true, sounds: false
+      preview: true, sounds: false, captureStorage: CaptureStoragePolicy.enabledForTesting()
     });
     await runtime.start();
     runtime.activity.transcribed({ id: 1, observedAt: 1, utterance: 'Interrupted automatic send' });
@@ -52,6 +55,7 @@ test('unclean owner death releases locks and simultaneous stale-socket recovery 
   const makeRuntime = (socket = socketPath) =>
     new DesktopRuntime(new PauseControl(), () => {}, controller.signal, {
       database: databasePath,
+      captureStorage: CaptureStoragePolicy.enabledForTesting(),
       socket,
       preview: true,
       sounds: false,
@@ -147,8 +151,8 @@ test('crash recovery distinguishes pending work from started automatic and manua
 
   try {
     await history.open();
-    history.add({ id: 1, observedAt: 1, utterance: 'Not delivered' });
-    history.add({ id: 2, observedAt: 2, utterance: 'Delivery may have begun' });
+    history.add({ id: 1, observedAt: 1, utterance: 'Not delivered' }, 'on');
+    history.add({ id: 2, observedAt: 2, utterance: 'Delivery may have begun' }, 'on');
     history.markDeliveryStarted(2);
     const id = history.snapshot()[0].id;
     history.beginPaste(id, '0xabc');
@@ -323,7 +327,7 @@ for (const existingTable of ['utterances', 'paste_events']) {
 
     try {
       await history.open();
-      history.add({ id: 1, observedAt: 1, utterance: 'Recovered setup' });
+      history.add({ id: 1, observedAt: 1, utterance: 'Recovered setup' }, 'on');
       const entry = history.snapshot()[0];
       const paste = history.beginPaste(entry.id, '0xabc');
       history.markPasteStarted(paste, 'fixture');

@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import WebSocket from 'ws';
 
 import { AgentSessions } from '../src/agents/sessions.ts';
+import { CaptureStoragePolicy } from '../src/capture-storage/policy.ts';
 import type { AgentBackend, ClaudeCodeAgentBackend } from '../src/agents/types.ts';
 import { DeviceStore } from '../src/remote/devices.ts';
 import { Gateway, type GatewayServiceOptions } from '../src/remote/gateway.ts';
@@ -86,6 +87,10 @@ export async function remoteFixture(
     },
     () => {},
     directory,
+    undefined,
+    undefined,
+    // Conversation screenshots are saved only while capture storage is on.
+    CaptureStoragePolicy.enabledForTesting(),
   );
 
   const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);

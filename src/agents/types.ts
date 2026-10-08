@@ -43,6 +43,13 @@ export interface AgentMessage {
   toolGroup?: { count: number; revision: string; legacy?: boolean; unavailable?: boolean };
   /** Local, private PNG attachment; omitted while saving or on older messages. */
   screenshotUrl?: string;
+  /**
+   * False when the screenshot sent with this message was deliberately not
+   * saved because capture storage was off. Such a message never shows the
+   * conversation's saved PNG, which may belong to an earlier capture.
+   * Absent on saved screenshots and older messages.
+   */
+  screenshotSaved?: false;
   /** Validated reference; its private view URL is regenerated when reopening. */
   widget?: WidgetAttachment;
   /** Present only on user-kind messages written by another conversation's agent. */

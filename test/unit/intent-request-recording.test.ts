@@ -57,8 +57,8 @@ async function fixture(reply = 'IGNORE', status = 200) {
     config,
     received,
     async seed(id = frame.id) {
-      history.add({ ...frame, id });
-      await history.saveScreenshot(id, screenshot);
+      history.add({ ...frame, id }, 'on');
+      await history.saveScreenshot(id, screenshot, () => true);
       return history.snapshot()[0].id;
     },
     record: (id: number, request: string) => history.saveIntentRequest(id, request),

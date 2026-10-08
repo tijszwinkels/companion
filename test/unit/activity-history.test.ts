@@ -72,6 +72,8 @@ test('history feedback targets its explicit row and publishes corrected labels w
   processor('INSERT').subscribe(router);
   await setup.runtime.connectRouter(router);
   const first = setup.seed(1);
+  // Labeling needs the entry's original screenshot (docs/capture-storage.md).
+  await setup.runtime.activity.screenshotCaptured?.(1, screenshot);
   setup.runtime.activity.intentRecognized?.(1, 'IGNORE');
   setup.runtime.activity.outcome?.(1, 'ignored');
   setup.runtime.activity.finished?.(1);

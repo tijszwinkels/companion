@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
 import {
@@ -41,6 +42,10 @@ async function fixture(context: { after(callback: () => Promise<void>): void }) 
     },
     () => {},
     directory,
+    undefined,
+    undefined,
+    // Conversation screenshots are saved only while capture storage is on.
+    CaptureStoragePolicy.enabledForTesting(),
   );
   const events: SessionEvent[] = [];
   sessions.subscribe((event) => events.push(event));

@@ -23,10 +23,10 @@ async function storage() {
     history,
     database,
     async seed(frameId = 1) {
-      history.add({ ...frame, id: frameId });
+      history.add({ ...frame, id: frameId }, 'on');
       const id = history.snapshot()[0].id;
-      await history.saveScreenshot(frameId, screenshot);
-      await history.saveAudio(frameId, new Float32Array([0.1, -0.1]));
+      await history.saveScreenshot(frameId, screenshot, () => true);
+      await history.saveAudio(frameId, new Float32Array([0.1, -0.1]), () => true);
       history.setIntent(frameId, 'IGNORE');
       history.setOutcome(frameId, 'ignored');
       history.finish(frameId);
@@ -82,7 +82,7 @@ test('processing and pending pastes prevent deletion; a claimed deletion blocks 
   const setup = await storage();
   context.after(setup.close);
   const { history } = setup;
-  history.add(frame);
+  history.add(frame, 'on');
   const id = history.snapshot()[0].id;
   await assert.rejects(history.delete(id), /finish processing or pasting/);
   history.setOutcome(frame.id, 'ignored');
@@ -174,6 +174,8 @@ test('removed Activity entries keep paging positions and carry no transcript in 
         cleanedText: null,
         cleanupFallback: null,
         transcriptSource: null,
+        captureStorage: null,
+        inputKind: null,
       },
       { correct: null, actualIntent: null },
     );

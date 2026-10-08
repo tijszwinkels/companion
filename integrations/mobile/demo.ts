@@ -35,6 +35,7 @@ import { UserSensorRouter } from '../../src/core/router.ts';
 import { runApp } from '../../src/apps/launcher.ts';
 import { AppRegistry } from '../../src/apps/registry.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 
@@ -259,6 +260,8 @@ const runtime = new DesktopRuntime(
     preview: false,
     sounds: false,
     agents: sessions,
+    // Synthetic demo: storage on, in memory only, so labeling can be shown.
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
   },
   async () => {
     throw Error('The demo never runs desktop commands');

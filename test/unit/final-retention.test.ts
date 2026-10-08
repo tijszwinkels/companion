@@ -902,9 +902,9 @@ test('retirement is limited to finished, unreferenced superseded rows', async ()
   await history.open();
   try {
     const record = async (frameId: number, outcome: 'superseded' | 'ignored') => {
-      history.add({ ...frame, id: frameId, utterance: `Attempt ${frameId}` });
-      await history.saveAudio(frameId, audio(0.1));
-      await history.saveScreenshot(frameId, screenshot);
+      history.add({ ...frame, id: frameId, utterance: `Attempt ${frameId}` }, 'on');
+      await history.saveAudio(frameId, audio(0.1), () => true);
+      await history.saveScreenshot(frameId, screenshot, () => true);
       history.setOutcome(frameId, outcome);
       return history.entryId(frameId)!;
     };
@@ -937,14 +937,14 @@ test('retirement is limited to finished, unreferenced superseded rows', async ()
     await assert.rejects(history.delete(active), /continuing utterance/);
 
     // An audio-only record keeps its empty transcript, but offers no text.
-    history.add({ ...frame, id: 5, utterance: '', source: 'audio-only' });
+    history.add({ ...frame, id: 5, utterance: '', source: 'audio-only' }, 'on');
     const audioOnly = history.entryId(5)!;
     history.finish(5);
     assert.equal(history.find(audioOnly)?.transcriptSource, 'audio-only');
     assert.throws(() => history.beginPaste(audioOnly, '0xabc'), /audio only/);
     await assert.rejects(history.recordedFrame(audioOnly), /audio only/);
-    history.add({ ...frame, id: 6, utterance: '' });
-    history.add({ ...frame, id: 7, utterance: 'Invented', source: 'audio-only' });
+    history.add({ ...frame, id: 6, utterance: '' }, 'on');
+    history.add({ ...frame, id: 7, utterance: 'Invented', source: 'audio-only' }, 'on');
     assert.equal(history.entryId(6), undefined, 'Empty text needs the audio-only marker');
     assert.equal(history.entryId(7), undefined, 'An audio-only record has no text');
 
@@ -958,8 +958,8 @@ test('retirement is limited to finished, unreferenced superseded rows', async ()
     );
 
     // A late write for a finished frame cannot recreate a record or file.
-    assert.equal(await history.saveAudio(1, audio(0.2)), false);
-    assert.equal(await history.saveScreenshot(1, screenshot), false);
+    assert.equal(await history.saveAudio(1, audio(0.2), () => true), 'no-row');
+    assert.equal(await history.saveScreenshot(1, screenshot, () => true), 'no-row');
     const data = join(directory, 'data', recordingDate(frame.observedAt));
     const wavs = await readdir(join(data, 'audio'));
     assert.equal(wavs.includes(`${active}.wav`), false);

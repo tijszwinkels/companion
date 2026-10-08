@@ -120,8 +120,8 @@ try {
           captured.push(samples.slice());
         },
         emptyAudioCaptured: async (clip) => {
-          const id = await saveEmptyAudioClip(directory, clip);
-          const saved = join(directory, 'asr-empty', recordingDate(clip.observedAt), id);
+          const id = await saveEmptyAudioClip(directory, clip, () => true);
+          const saved = join(directory, 'asr-empty', recordingDate(clip.observedAt), id!);
 
           // Exercise real empty-result persistence only with this public fixture.
           // The pipeline must still own intact samples until publication finishes.

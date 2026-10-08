@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { PauseControl } from '../src/core/pause-control.ts';
 import { DesktopRuntime } from '../src/desktop/runtime.ts';
+import { CaptureStoragePolicy } from '../src/capture-storage/policy.ts';
 import type { RunCommand } from '../src/sensors/screen/capture.ts';
 import { frame } from './helpers.ts';
 import type { AgentSessions } from '../src/agents/sessions.ts';
@@ -118,6 +119,8 @@ export async function desktopFixture(
     sounds?: boolean;
     preview?: boolean;
     cleanup?: TranscriptionCleanupSetting;
+    /** Defaults to a policy that is already on, as before capture storage. */
+    captureStorage?: CaptureStoragePolicy;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-regression-'));
@@ -129,7 +132,15 @@ export async function desktopFixture(
     pause,
     () => {},
     controller.signal,
-    { database: databasePath, socket: path, preview: false, sounds: false, agents, ...options },
+    {
+      database: databasePath,
+      socket: path,
+      preview: false,
+      sounds: false,
+      agents,
+      ...options,
+      captureStorage: options.captureStorage ?? CaptureStoragePolicy.enabledForTesting(),
+    },
     run,
   );
   await runtime.start();
@@ -158,8 +169,10 @@ export async function desktopFixture(
     controller,
     database,
     messages,
+    /** A row admitted like a live capture (saved while storage is on). */
     seed(id = frame.id) {
-      runtime.activity.transcribed?.({ ...frame, id });
+      const storage = runtime.activity.admitCapture?.(0);
+      runtime.activity.transcribed?.({ ...frame, id, input: 'typed', storage });
       return database.prepare('SELECT id FROM utterances ORDER BY rowid DESC LIMIT 1').get()!.id;
     },
     send(request: object) {

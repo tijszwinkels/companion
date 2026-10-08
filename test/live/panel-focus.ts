@@ -16,6 +16,7 @@ import { PauseControl } from '../../src/core/pause-control.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { frame, processor, testDetector } from '../helpers.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 assert.equal(process.env.COMPANION_TEST_NESTED, '1', 'Run through nested-hyprland.py --focus');
 const signal = AbortSignal.timeout(30000);
@@ -374,6 +375,7 @@ try {
   const databasePath = join(directory, 'history.sqlite');
   historyRuntime = new DesktopRuntime(new PauseControl(), () => {}, runtimeController.signal, {
     database: databasePath,
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
     socket: join(socketDirectory, 'control.sock'),
     preview: false,
     sounds: false,

@@ -36,15 +36,18 @@ export class LabelPreviousIncorrect implements UserSensorProcessor {
       return;
     }
 
-    const id = this.activity.labelPrevious?.(frame.id, false);
+    const result = await this.activity.labelPrevious?.(frame.id, false);
 
-    if (!id) {
-      this.log('skipped', 'No preceding intent available in history to label', frame.id);
+    // Skipped labels (no eligible target, or capture storage is off) write
+    // nothing and get no success cue.
+    if (!result || result.outcome === 'skipped') {
+      const reason = result?.reason ?? 'No preceding intent available in history to label';
+      this.log('skipped', reason, frame.id);
       this.activity.outcome?.(frame.id, 'skipped');
       return;
     }
 
-    this.log('feedback', `Labeled ${id} incorrect`, frame.id);
+    this.log('feedback', `Labeled ${result.id} incorrect`, frame.id);
     this.activity.outcome?.(frame.id, 'labeled');
   }
 }

@@ -10,6 +10,7 @@ import { PauseControl } from '../../src/core/pause-control.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { SoundFeedback } from '../../src/desktop/sounds.ts';
 import { deferred } from '../helpers.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 interface ControlMessage {
   type: string;
@@ -55,6 +56,7 @@ test('desktop sound controls work from a muted start independently of listening'
   const controller = new AbortController();
   const runtime = new DesktopRuntime(pause, () => {}, controller.signal, {
     database: join(directory, 'utterances.sqlite'),
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
     socket,
     sounds: false,
     preview: false,
@@ -94,6 +96,7 @@ test('preview cannot enable audible feedback through desktop controls', async ()
   const controller = new AbortController();
   const runtime = new DesktopRuntime(new PauseControl(), () => {}, controller.signal, {
     database: join(directory, 'utterances.sqlite'),
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
     socket,
     sounds: true,
     preview: true,
@@ -120,6 +123,7 @@ test('speech state reaches the desktop independently of processing and clears on
   const controller = new AbortController();
   const runtime = new DesktopRuntime(pause, () => {}, controller.signal, {
     database: join(directory, 'utterances.sqlite'),
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
     socket,
     sounds: false,
     preview: true,

@@ -21,12 +21,12 @@ test('WAV storage uses the observation date and survives restart; text-only reco
 
   try {
     await history.open();
-    history.add({ ...frame, observedAt: new Date(2026, 8, 19, 23, 59).getTime() });
+    history.add({ ...frame, observedAt: new Date(2026, 8, 19, 23, 59).getTime() }, 'on');
     const original = history.snapshot()[0];
-    await history.saveAudio(frame.id, samples);
+    await history.saveAudio(frame.id, samples, () => true);
     history.setOutcome(frame.id, 'ignored');
     history.finish(frame.id);
-    history.add({ ...frame, id: 2, utterance: 'Supplied text without audio' });
+    history.add({ ...frame, id: 2, utterance: 'Supplied text without audio' }, 'on');
     history.finish(2);
     history.close();
     await history.open();

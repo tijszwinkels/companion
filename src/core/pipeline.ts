@@ -1,6 +1,7 @@
 import type { InteractionContext, Log, Screenshot } from './frame.ts';
 import type { UserSensorRouter } from './router.ts';
 import type { Activity, TranscriptSource } from './activity.ts';
+import { notAdmitted, type CaptureAdmission } from '../capture-storage/policy.ts';
 import { failureOutcome } from './delivery-error.ts';
 import type { InspectableModule } from './module.ts';
 import type { ScreenSensor } from '../sensors/screen/sensor.ts';
@@ -49,6 +50,12 @@ interface Job {
   attempt?: ProvisionalAttempt;
   /** Speech only: shared by every attempt of one spoken utterance. */
   chain?: TranscriptChain;
+  /**
+   * Whether this observation's audio/screenshot may be archived. Decided at
+   * admission; a continuation keeps the admission of the attempt that began
+   * the utterance, so speech that straddles an opt-in is never archived.
+   */
+  storage: CaptureAdmission;
   /** Set when processing has ended, before the sample buffer is cleared. */
   settled: boolean;
 }
@@ -244,6 +251,20 @@ export class SensorPipeline implements InspectableModule {
       : undefined;
     const routeSignal = attempt ? AbortSignal.any([jobSignal, attempt.signal]) : jobSignal;
 
+    // Capture storage is decided once per spoken utterance, for the whole
+    // span of its audio: the samples plus the measured trailing silence, so
+    // the estimated start is never later than the real one. A continuation
+    // inherits the original decision and its later revocation.
+    let storage: CaptureAdmission;
+    if (replaces) {
+      storage = replaces.storage;
+    } else {
+      const capturedForMs = observation.samples
+        ? (observation.samples.length / 16000) * 1000 + (trailingSilenceMs ?? 0)
+        : 0;
+      storage = this.activity.admitCapture?.(capturedForMs) ?? notAdmitted;
+    }
+
     // Supersede before admitting the replacement: the old attempt's routing is
     // aborted now, and its samples were already copied into the combined buffer.
     if (replaces) {
@@ -289,6 +310,7 @@ export class SensorPipeline implements InspectableModule {
       interaction,
       attempt,
       chain: attempt ? (replaces?.chain ?? { supersededAttempts: [] }) : undefined,
+      storage,
       settled: false,
     };
     this.newest = job;
@@ -396,6 +418,8 @@ export class SensorPipeline implements InspectableModule {
         utterance: earlierText ?? '',
         application: capture.application ?? capture.screenshot?.window,
         source: earlierText !== undefined ? 'earlier-attempt' : 'audio-only',
+        input: 'speech',
+        storage: job.storage,
       });
 
       const recordings = await Promise.allSettled([
@@ -505,8 +529,17 @@ export class SensorPipeline implements InspectableModule {
                 observedAt: job.observedAt,
                 samples: job.samples,
                 diagnostic: transcription,
+                storage: job.storage,
               });
-              this.log('asr-recorded', `Empty transcript audio saved (${clipId})`, job.id);
+              if (clipId) {
+                this.log('asr-recorded', `Empty transcript audio saved (${clipId})`, job.id);
+              } else {
+                this.log(
+                  'asr-not-saved',
+                  'Empty transcript audio not saved (capture storage off)',
+                  job.id,
+                );
+              }
             } catch (error) {
               // Without earlier text this remains a failed job, as before. With
               // earlier text (D2), the diagnostic clip is optional: report the
@@ -542,6 +575,8 @@ export class SensorPipeline implements InspectableModule {
           utterance,
           application: capture.application ?? capture.screenshot?.window,
           source,
+          input: job.samples ? 'speech' : 'typed',
+          storage: job.storage,
         });
         recorded = true;
 
@@ -579,6 +614,7 @@ export class SensorPipeline implements InspectableModule {
             utterance,
             screenshot: capture.screenshot,
             interaction: job.interaction,
+            storage: job.storage,
           },
           job.routeSignal,
           job.attempt,

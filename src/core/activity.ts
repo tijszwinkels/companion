@@ -1,3 +1,4 @@
+import type { CaptureAdmission } from '../capture-storage/policy.ts';
 import type { DeliveryControl } from './delivery-control.ts';
 import type { InteractionContext, Screenshot } from './frame.ts';
 import type { TranscriptionDiagnostic } from '../sensors/audio/transcriber.ts';
@@ -40,6 +41,13 @@ export interface Transcript {
   utterance: string;
   application?: { address: string; app: string; title: string };
   source?: TranscriptSource;
+  /** Spoken (has audio) or typed Activity text (never has audio). */
+  input?: 'speech' | 'typed';
+  /**
+   * Whether this observation's audio/screenshot may be archived (see
+   * CaptureStoragePolicy). Absent means not admitted: nothing is saved.
+   */
+  storage?: CaptureAdmission;
 }
 
 /** A failed recognition attempt, without a transcript or associated screenshot. */
@@ -48,7 +56,13 @@ export interface EmptyAudioClip {
   observedAt: number;
   samples: Float32Array;
   diagnostic: TranscriptionDiagnostic;
+  /** The attempt's capture-storage admission; absent means not admitted. */
+  storage?: CaptureAdmission;
 }
+
+/** What a spoken "label previous" command did; skipped labels write nothing. */
+export type LabelPreviousResult =
+  { outcome: 'labeled'; id: string } | { outcome: 'skipped'; reason: string };
 
 /** Optional feedback keeps the sensor pipeline independent of desktop services. */
 export interface Activity {
@@ -69,12 +83,25 @@ export interface Activity {
   deliveryStarted?(id: number): void;
   processing?(id: number): void;
   transcribed?(transcript: Transcript): void;
-  /** Persist the captured input before routing; shutdown waits for this write. */
+  /**
+   * Decide whether a capture that began `capturedForMs` ago may be archived.
+   * Called once per observation when it is admitted to the queue; a
+   * continuation keeps the admission of the attempt that started it.
+   */
+  admitCapture?(capturedForMs: number): CaptureAdmission;
+  /**
+   * Persist the captured input before routing, if its admission allows it
+   * (see `Transcript.storage`); shutdown waits for this write. Resolves
+   * without writing when storage is off; rejects only on a real failure.
+   */
   screenshotCaptured?(id: number, screenshot: Screenshot): Promise<void>;
   /** Persist the ASR input before the pipeline clears its owned sample buffer. */
   audioCaptured?(id: number, samples: Float32Array): Promise<void>;
-  /** Save qualified empty ASR input; return its UUID after both files are published. */
-  emptyAudioCaptured?(clip: EmptyAudioClip): Promise<string>;
+  /**
+   * Save qualified empty ASR input; return its UUID after both files are
+   * published, or undefined when capture storage did not allow saving it.
+   */
+  emptyAudioCaptured?(clip: EmptyAudioClip): Promise<string | undefined>;
   /** Persist the finalized model request before transport; absent for shortcuts. */
   intentRequested?(id: number, serializedRequest: string): void;
   intentRecognized?(id: number, intent: string): void;
@@ -84,8 +111,12 @@ export interface Activity {
    * Text routes report before dispatch; the raw transcript is `transcribed`.
    */
   transcriptionCleanup?(id: number, record: TranscriptionCleanupRecord): void;
-  /** Explicit feedback returns the labeled utterance UUID, or no eligible target. */
-  labelPrevious?(id: number, correct: boolean): string | undefined;
+  /**
+   * Explicit spoken feedback on the preceding utterance. Skipped when there
+   * is no eligible target, or when labeling is unavailable because capture
+   * storage is off (see docs/capture-storage.md); a skip writes nothing.
+   */
+  labelPrevious?(id: number, correct: boolean): Promise<LabelPreviousResult>;
   outcome?(id: number, outcome: UtteranceOutcome, destination?: UtteranceDestination): void;
   /**
    * A provisional attempt was replaced by a continuation (it will report the

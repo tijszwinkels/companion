@@ -13,6 +13,7 @@ import { PauseControl } from '../../src/core/pause-control.ts';
 import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { activeWindow } from '../../src/sensors/screen/capture.ts';
 import { command } from '../../src/system/command.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 
 assert.equal(process.env.COMPANION_TEST_NESTED, '1', 'Run through nested-hyprland.py');
 
@@ -27,6 +28,7 @@ const adapter = process.env.COMPANION_TEST_ADAPTER
   : new URL('../../integrations/omarchy/', import.meta.url);
 const runtime = new DesktopRuntime(new PauseControl(), () => {}, signal, {
   database: databasePath,
+  captureStorage: CaptureStoragePolicy.enabledForTesting(),
   socket,
   preview: false,
   sounds: false,

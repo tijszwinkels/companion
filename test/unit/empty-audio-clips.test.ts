@@ -41,16 +41,20 @@ test('empty ASR clips publish private PCM16 audio and matching metadata in the o
   const report = diagnostic();
 
   try {
-    const id = await saveEmptyAudioClip(directory, {
-      id: 66,
-      observedAt,
-      samples,
-      diagnostic: report,
-    });
+    const id = await saveEmptyAudioClip(
+      directory,
+      {
+        id: 66,
+        observedAt,
+        samples,
+        diagnostic: report,
+      },
+      () => true,
+    );
     const parent = join(directory, 'asr-empty/2026-09-23');
-    const clipDirectory = join(parent, id);
-    assert.match(id, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
-    assert.deepEqual(await readdir(parent), [id], 'No unpublished temporary directory remains');
+    const clipDirectory = join(parent, id!);
+    assert.match(id!, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+    assert.deepEqual(await readdir(parent), [id!], 'No unpublished temporary directory remains');
     assert.deepEqual((await readdir(clipDirectory)).sort(), ['audio.wav', 'metadata.json']);
     assert.deepEqual(await readFile(join(clipDirectory, 'audio.wav')), encodeWav(samples));
     assert.deepEqual(JSON.parse(await readFile(join(clipDirectory, 'metadata.json'), 'utf8')), {

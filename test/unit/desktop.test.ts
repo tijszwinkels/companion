@@ -22,12 +22,15 @@ test('SQLite retains all transcripts and original intent, with linked recovery o
     await history.open();
 
     for (let id = 1; id <= 105; id++) {
-      history.add({
-        id,
-        observedAt: id,
-        utterance: `Speech ${id}`,
-        application: { app: 'editor', title: 'Document', address: '0x123' },
-      });
+      history.add(
+        {
+          id,
+          observedAt: id,
+          utterance: `Speech ${id}`,
+          application: { app: 'editor', title: 'Document', address: '0x123' },
+        },
+        'on',
+      );
       history.setIntent(id, 'IGNORE');
       history.setOutcome(id, 'ignored');
       history.finish(id);
@@ -40,7 +43,7 @@ test('SQLite retains all transcripts and original intent, with linked recovery o
     history.finishPaste(pasteId, 'sent', 'terminal');
     const interruptedPaste = history.beginPaste(latest.id, '0x789');
     history.markPasteStarted(interruptedPaste, 'editor');
-    history.add({ id: 106, observedAt: 106, utterance: 'Unfinished' });
+    history.add({ id: 106, observedAt: 106, utterance: 'Unfinished' }, 'on');
     history.close();
     await history.open();
 
