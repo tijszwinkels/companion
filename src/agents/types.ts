@@ -98,6 +98,19 @@ export interface ClaudeCodeModelCatalog {
   model: string;
 }
 
+/**
+ * Claude Code only: the latest name Companion gave this conversation, and
+ * whether Claude Code confirmed it in its own session metadata (its native
+ * `rename_session` control request, which writes Claude Code's `custom-title`
+ * record). `pending` was not yet confirmed (for example, the turn ended first)
+ * and is sent again at the next turn's start; `failed` was explicitly refused
+ * by Claude Code and is not retried until the agent chooses a name again.
+ */
+export interface NativeTitleExport {
+  title: string;
+  state: 'pending' | 'published' | 'failed';
+}
+
 export interface AgentSession {
   id: string;
   title: string;
@@ -112,6 +125,12 @@ export interface AgentSession {
    * next turn (the picker may change it); `effort` is fixed at creation.
    */
   claudeCode?: ClaudeCodeConversationSettings;
+  /**
+   * Claude Code only, and only after Companion named the conversation: the
+   * export of that name to Claude Code's own session. Absent in older
+   * archives, whose titles are never exported retroactively.
+   */
+  nativeTitle?: NativeTitleExport;
   /** Explicit conversation choice; absence reloads the profile default each turn. */
   modelOverride?: string;
   /** Requested effort for subsequent turns; Pi adapts it to the chosen model. */
@@ -189,6 +208,11 @@ export interface AgentRunRequest<Settings = AgentSettings> {
    * Claude Code has confirmed the new model. Pi ignores it.
    */
   previousModel?: string;
+  /**
+   * Claude Code only: the conversation's native name export. A `pending`
+   * name is sent again once this turn's session is verified. Pi ignores it.
+   */
+  nativeTitle?: NativeTitleExport;
   widgets?: { endpoint: string; token: string };
   /**
    * Turn-scoped connection for the session lifecycle tools, with the optional
@@ -206,6 +230,8 @@ export interface AgentBackend<Settings = AgentSettings> extends InspectableModul
     emit: (message: AgentMessage) => void,
     replaceChoices?: (options: readonly AgentChoice[]) => void,
     renameSession?: (title: string) => void,
+    /** Claude Code only: progress of exporting a name to the native session. */
+    exportTitle?: (title: NativeTitleExport) => void,
   ): Promise<void>;
 }
 

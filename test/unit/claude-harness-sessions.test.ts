@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
+import { ClaudeCodeBackend } from '../../src/agents/claude/claude-backend.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
 import { defaultAgentSettings, defaultClaudeCodeSettings } from '../../src/agents/settings.ts';
 import type { AgentSession, ClaudeCodeSettings } from '../../src/agents/types.ts';
@@ -424,4 +426,197 @@ test('an unresolved Claude Code start retries while open but reopens as Pi', asy
   assert.equal(runs.at(-1)?.harness, 'pi');
   assert.equal(runs.at(-1)?.resume, true);
   assert.equal(view(closed).harness, undefined);
+});
+
+test('a Claude Code name export is saved, retried while pending and survives a restart', async (context) => {
+  const fixture = await harnessFixture(context, { configuration: claudeDefault });
+  const { sessions, runs, view, script, directory } = fixture;
+  const id = sessions.start(frame, signal());
+  // Turn 1 names the conversation; Claude Code never confirms the export.
+  script(
+    id,
+    async (run) => {
+      run.renameSession?.('🐛 Login fix');
+      run.exportTitle?.({ title: '🐛 Login fix', state: 'pending' });
+    },
+    async (run) => {
+      run.exportTitle?.({ title: '🐛 Login fix', state: 'published' });
+    },
+  );
+  await sessions.idle();
+
+  assert.equal(runs[0].nativeTitle, undefined, 'A new conversation has nothing to export');
+  assert.equal(view(id).title, '🐛 Login fix');
+  assert.deepEqual(view(id).nativeTitle, { title: '🐛 Login fix', state: 'pending' });
+  assert.deepEqual((await savedJson(directory, id)).nativeTitle, {
+    title: '🐛 Login fix',
+    state: 'pending',
+  });
+
+  // The next turn receives the pending export and records its confirmation.
+  sessions.followUp(id, 'Continue', signal());
+  await sessions.idle();
+  assert.deepEqual(runs[1].nativeTitle, { title: '🐛 Login fix', state: 'pending' });
+  assert.deepEqual(view(id).nativeTitle, { title: '🐛 Login fix', state: 'published' });
+
+  // A confirmation that arrives while the turn is being stopped still counts.
+  const entered = deferred<void>();
+  script(id, async (run) => {
+    entered.resolve();
+    await new Promise((resolve) => run.signal.addEventListener('abort', resolve));
+    run.exportTitle?.({ title: '🔐 Auth flow', state: 'published' });
+  });
+  sessions.followUp(id, 'Rename', signal());
+  await entered.promise;
+  await sessions.stop(id);
+  assert.equal(view(id).status, 'cancelled');
+  assert.deepEqual(view(id).nativeTitle, { title: '🔐 Auth flow', state: 'published' });
+
+  // After a restart the reopened conversation passes its export to the next turn.
+  await sessions.remove(id);
+  await sessions.close();
+  const restarted = fixture.open();
+  await restarted.loadPrevious();
+  await restarted.reopen(id);
+  assert.deepEqual(fixture.view(id, restarted).nativeTitle, {
+    title: '🔐 Auth flow',
+    state: 'published',
+  });
+  restarted.followUp(id, 'After restart', signal());
+  await restarted.idle();
+  assert.deepEqual(runs.at(-1)?.nativeTitle, { title: '🔐 Auth flow', state: 'published' });
+});
+
+test('Pi conversations never record a native name export', async (context) => {
+  const { sessions, runs, view, script, directory } = await harnessFixture(context);
+  const id = sessions.start(frame, signal());
+  script(id, async (run) => run.renameSession?.('🌱 Garden ideas'));
+  await sessions.idle();
+
+  assert.equal(runs[0].harness, 'pi');
+  assert.equal(view(id).title, '🌱 Garden ideas');
+  assert.equal(view(id).nativeTitle, undefined);
+  assert.equal('nativeTitle' in (await savedJson(directory, id)), false);
+});
+
+test('the store keeps valid Claude native name exports and drops damaged ones', async (context) => {
+  const { directory } = await harnessFixture(context);
+  const store = new SessionStore(join(directory, '.companion-sessions'));
+  const id = '11111111-2222-4333-8444-555555555555';
+  const path = join(directory, '.companion-sessions', `${id}.json`);
+  const claude = {
+    id,
+    title: 'Named',
+    status: 'completed',
+    model: 'claude-opus-5-5',
+    error: '',
+    updatedAt: 1,
+    messages: [],
+    harness: 'claude-code',
+    claudeCode: { model: 'claude-opus-5-5', effort: 'high' },
+  };
+  await mkdir(join(directory, '.companion-sessions'), { recursive: true });
+
+  for (const state of ['pending', 'published', 'failed']) {
+    await writeFile(path, JSON.stringify({ ...claude, nativeTitle: { title: ' Named ', state } }));
+    assert.deepEqual((await store.read(id)).nativeTitle, { title: 'Named', state }, state);
+  }
+
+  // Older archives have none; damaged records hide only themselves.
+  const damaged: unknown[] = [
+    undefined,
+    'Named',
+    { title: 'Named' },
+    { title: 'Named', state: 'confirmed' },
+    { title: '', state: 'published' },
+    { title: 'Two\nlines', state: 'published' },
+    { title: 'x'.repeat(41), state: 'published' },
+  ];
+  for (const nativeTitle of damaged) {
+    await writeFile(path, JSON.stringify({ ...claude, nativeTitle }));
+    const restored = await store.read(id);
+    assert.equal(restored.title, 'Named');
+    assert.equal('nativeTitle' in restored, false, JSON.stringify(nativeTitle));
+  }
+
+  // A Pi conversation never restores one.
+  const { harness: _harness, claudeCode: _claudeCode, ...pi } = claude;
+  await writeFile(
+    path,
+    JSON.stringify({
+      ...pi,
+      model: 'configured/one',
+      nativeTitle: { title: 'Named', state: 'published' },
+    }),
+  );
+  assert.equal('nativeTitle' in (await store.read(id)), false);
+});
+
+test('Stop before a Claude naming result keeps the old title and exports nothing', async (context) => {
+  const fixture = await harnessFixture(context, { configuration: claudeDefault });
+  const { sessions, view, script, directory } = fixture;
+  // The production backend, driven by the scripted Claude Code CLI fixture.
+  const executable = join(directory, 'fixture-claude');
+  await copyFile(
+    fileURLToPath(new URL('../fixtures/claude-stream.mjs', import.meta.url)),
+    executable,
+  );
+  await chmod(executable, 0o700);
+  const settings: ClaudeCodeSettings = { executable, model: 'claude-opus-5-5', effort: 'high' };
+  const backend = new ClaudeCodeBackend();
+  const id = sessions.start(frame, signal());
+  let stopped: Promise<void> | undefined;
+  script(
+    id,
+    (run) =>
+      backend.run(
+        { id, directory, settings, prompt: { text: 'name ok' }, resume: false },
+        run.signal,
+        (message) => {
+          run.emit(message);
+          // Stop as the naming call starts, before its result is processed.
+          if (message.kind === 'tool' && message.state === 'running') {
+            stopped ??= sessions.stop(id);
+          }
+        },
+        () => {},
+        run.renameSession,
+        run.exportTitle,
+      ),
+    (run) =>
+      backend.run(
+        {
+          id,
+          directory,
+          settings,
+          prompt: { text: 'hello' },
+          resume: true,
+          nativeTitle: run.nativeTitle,
+        },
+        run.signal,
+        run.emit,
+        () => {},
+        run.renameSession,
+        run.exportTitle,
+      ),
+  );
+  await sessions.idle();
+  await stopped;
+
+  const title = view(id).title;
+  assert.equal(view(id).status, 'cancelled');
+  assert.notEqual(title, '🐛 Login fix');
+  assert.equal(view(id).nativeTitle, undefined);
+
+  // The next ordinary turn has nothing to publish either.
+  sessions.followUp(id, 'Continue', signal());
+  await sessions.idle();
+  assert.equal(view(id).status, 'completed');
+  assert.equal(view(id).title, title);
+  assert.equal(view(id).nativeTitle, undefined);
+  assert.equal('nativeTitle' in (await savedJson(directory, id)), false);
+  assert.doesNotMatch(
+    await readFile(join(directory, 'claude-sessions', id), 'utf8'),
+    /custom-title/,
+  );
 });

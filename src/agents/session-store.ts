@@ -14,11 +14,13 @@ import {
   claudeCodeEffortLevels,
   type AgentMessage,
   type AgentSession,
+  type NativeTitleExport,
   type PreviousSession,
 } from './types.ts';
 import { toolCallLimit, ToolTranscripts } from './tool-transcripts.ts';
 import { panelMessageLimit } from './transcript-limits.ts';
 import { parseOrigin } from './agent-origin.ts';
+import { parseSessionName } from './session-name.ts';
 
 const sessionId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
@@ -297,6 +299,7 @@ export class SessionStore {
         ? {
             harness: session.harness,
             claudeCode: { model: session.claudeCode!.model, effort: session.claudeCode!.effort },
+            ...nativeTitleField(session.nativeTitle),
           }
         : {}),
       error: session.error,
@@ -343,6 +346,31 @@ export class SessionStore {
       }
     }
     return entries;
+  }
+}
+
+/**
+ * A Claude Code conversation's native name export is optional bookkeeping. A
+ * damaged record is dropped rather than hiding the conversation; the next
+ * name the agent chooses is exported again.
+ */
+function nativeTitleField(value: unknown): Pick<AgentSession, 'nativeTitle'> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  const { title, state } = value as Record<string, unknown>;
+  if (!['pending', 'published', 'failed'].includes(state as string)) {
+    return {};
+  }
+  try {
+    return {
+      nativeTitle: {
+        title: parseSessionName(title),
+        state: state as NativeTitleExport['state'],
+      },
+    };
+  } catch {
+    return {};
   }
 }
 
