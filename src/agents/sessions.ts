@@ -20,6 +20,7 @@ import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from 
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
 import { promptText } from './agent-origin.ts';
+import type { SessionLiveState } from './harness-live-state.ts';
 import { claudeCodeModelCatalog } from './claude/models.ts';
 import {
   SessionToolError,
@@ -158,6 +159,8 @@ export class AgentSessions implements InspectableModule {
     private readonly log: Log,
     private readonly directory = agentDirectory(),
     widgetLibrary = bundledLibraryDirectory,
+    // Optional: reports busy Pi conversations to a local agent-harness.
+    private readonly liveState?: SessionLiveState,
   ) {
     // Graph inspection shows each wired backend under its harness name.
     const dependencies: Record<string, InspectableModule> = { pi: backends.pi };
@@ -1309,6 +1312,10 @@ export class AgentSessions implements InspectableModule {
     clearTimeout(session.timer);
     session.timer = undefined;
     this.flushTools(session);
+    // Every busy transition passes through here (turn start, follow-up,
+    // drain end), so this is the single place that informs the reporter.
+    // It only schedules work and can never block the conversation.
+    this.liveState?.update(session.view.id, session.busy, harnessSessionId(session));
     const event: SessionEvent = {
       type: 'agent-session',
       session: { ...session.view, messages: [...session.changed.values()] },
@@ -1349,6 +1356,7 @@ export class AgentSessions implements InspectableModule {
       const { messages: _messages, ...summary } = session.view;
       this.previous.set(id, summary);
       this.sessions.delete(id);
+      this.liveState?.forget(id);
       for (const listener of this.listeners) {
         listener({ type: 'agent-removed', id });
       }
@@ -1731,6 +1739,8 @@ export class AgentSessions implements InspectableModule {
       this.cancelPending(session);
     }
     await this.idle();
+    // After idle(): every drain has ended, so the final `idle` reports are sent.
+    await this.liveState?.close();
     await this.sessionTools.close();
     await this.widgets.close();
     this.listeners.clear();
@@ -1746,6 +1756,22 @@ function adoptClaudeCode(view: AgentSession, settings: ClaudeCodeConversationSet
   view.harness = 'claude-code';
   view.claudeCode = { model: settings.model, effort: settings.effort };
   view.model = settings.model;
+}
+
+/**
+ * The agent-harness id of a Pi conversation, or undefined while the
+ * conversation's harness is unresolved or it runs on Claude Code. Pi persists
+ * the conversation under `--session-id <conversation id>`, and agent-harness
+ * names that transcript `ses_<conversation id without dashes>`.
+ */
+function harnessSessionId(session: RunningSession): string | undefined {
+  if (session.pendingHarness !== undefined) {
+    return undefined;
+  }
+  if (session.view.harness === 'claude-code') {
+    return undefined;
+  }
+  return 'ses_' + session.view.id.replaceAll('-', '').toLowerCase();
 }
 
 /** The harness's user-facing name, for messages about its own transcript. */
