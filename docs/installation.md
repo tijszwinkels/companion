@@ -29,13 +29,16 @@ Please install Companion on this computer. Clone
 https://github.com/tijszwinkels/companion.git to ~/Work/companion (if that folder
 already exists, inspect it instead of cloning over it). Read
 docs/installation.md completely, then follow it from step 1, including its notes
-for agents. Show me your plan before changing anything. When something needs sudo,
-a password, a login or my eyes on the screen, tell me exactly what to do and wait.
+for agents. Show me a short plan, then go ahead: you may run the guide's ordinary
+steps (clone, npm installs, builds, the downloads it names, files in my home
+directory, non-capturing checks) without asking. Only stop for my password, my
+choices (model, provider, keys, login startup), anything that listens, captures
+the screen or types, and anything destructive; then tell me exactly what to do.
 ```
 
-Expect a plan first. The agent asks you for the choices it cannot make: where the
-model for Companion runs, which provider or key to use, and whether Companion
-should start after login.
+Expect a short plan, then mostly progress reports. The agent asks you only for
+the choices it cannot make: where the model for Companion runs, which provider or
+key to use, and whether Companion should start after login.
 
 ## Before step 1: notes for the agent
 
@@ -84,12 +87,14 @@ Prefixes bypass **classification**, not necessarily model calls:
 ### Contract for an agent following this guide
 
 Inspect the OS, versions, existing files and available resources first. Report a
-concrete package/config/provider plan. Preserve existing settings; merge reviewed
-entries instead of replacing whole files. Use the same checkpoints as a human.
-Commands marked **install**, **download**, **activate**, or **live** change the
-machine or transmit data; execute them only within the user's granted scope.
-Obtain explicit human approval for privileged or destructive steps, credentials,
-provider/license choices and activation not already authorized. Never print keys,
+short package/config/provider plan, then proceed without asking again. Preserve
+existing settings; merge reviewed entries instead of replacing whole files. Use
+the same checkpoints as a human, and report them briefly as you pass them.
+The handoff prompt in step 0 grants the guide's ordinary **install** and
+**download** steps: run them without asking. Ask only for what that grant leaves
+out: privileged steps (the password dialog), destructive changes, credentials,
+model/provider/license choices, and **activate** or **live** steps that listen,
+capture the screen or type, unless the user already authorized them. Never print keys,
 copy another person's agent directory, grant blanket project trust, weaken access
 controls, or add broad permission-bypass flags to make a check pass. Stop on a
 failed checkpoint, diagnose it, and report untested steps honestly.
