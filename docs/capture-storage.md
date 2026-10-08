@@ -24,7 +24,14 @@ While off, Companion writes none of these automatic files:
 
 This holds in every listener mode, including `--no-desktop`, `--text` and
 `--wav`, for Pi and Claude Code conversations, and for queued, continued and
-recovered utterances. Existing files are never deleted or rewritten.
+recovered utterances.
+
+The setting never deletes or rewrites completed captures, whether saved
+before or while it was on. The only removals are Companion's ordinary ones:
+an explicit Activity deletion, and the cleanup of a superseded attempt's own
+files when a continued utterance settles into its final record (this happens
+whether storage is on or off, and only to that in-flight attempt). Turning
+storage off does not delete anything that was already saved.
 
 Not covered: the screenshot and text sent to the intent model and to agents
 (they need it), native agent transcripts and provider-side retention, files an

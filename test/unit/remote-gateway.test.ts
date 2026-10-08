@@ -12,6 +12,7 @@ import WebSocket from 'ws';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway, checkGatewayOptions } from '../../src/remote/gateway.ts';
 import { parseRemoteRequest } from '../../src/remote/protocol.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 import { frame, signal } from '../helpers.ts';
 import { delay, freePort, remoteFixture, waitFor } from '../remote-fixture.ts';
 
@@ -360,6 +361,61 @@ test('screenshots are served only to authenticated devices that were shown them'
     headers: { Authorization: `Bearer ${token}` },
   });
   assert.equal(traversal.status, 404);
+});
+
+test('U4: an unsaved conversation screenshot is never granted or replaced by an older PNG', async (context) => {
+  const captureStorage = CaptureStoragePolicy.enabledForTesting();
+  const fixture = await withFixture(context, { captureStorage });
+  const { token } = await fixture.pair();
+  const phone = await fixture.phone(token);
+  await phone.engine('state');
+  const authorized = (url: string) =>
+    fetch(`${fixture.origin}/${url}`, { headers: { Authorization: `Bearer ${token}` } });
+
+  // Saved while capture storage is on: the phone may fetch it.
+  const saved = fixture.sessions.start({ ...frame, utterance: 'Saved screen' }, signal());
+  const savedEvent = await phone.engine(
+    'agent-session',
+    (value) => value.session.id === saved && value.session.messages[0]?.screenshotUrl,
+  );
+  const savedUrl = savedEvent.session.messages[0].screenshotUrl as string;
+  assert.equal(savedUrl, `api/screenshots/${saved}`);
+
+  // Started after storage was turned off: the live screenshot still reaches
+  // the agent, but no copy exists and the phone gets no image link.
+  await captureStorage.setEnabled(false);
+  const unsaved = fixture.sessions.start({ ...frame, utterance: 'Unsaved screen' }, signal());
+  const unsavedEvent = await phone.engine(
+    'agent-session',
+    (value) => value.session.id === unsaved && value.session.messages[0]?.screenshotSaved === false,
+  );
+  assert.equal(unsavedEvent.session.messages[0].screenshotUrl, undefined);
+  await waitFor(() => fixture.runs.some((run) => run.request.id === unsaved));
+  const unsavedRun = fixture.runs.find((run) => run.request.id === unsaved)!;
+  assert.deepEqual(unsavedRun.request.prompt.screenshot?.png, frame.screenshot.png);
+  assert.equal((await authorized(`api/screenshots/${unsaved}`)).status, 404);
+
+  // Even with an older PNG under the same ID on disk, reopening the unsaved
+  // conversation neither shows nor grants it.
+  for (const run of fixture.runs) {
+    run.finish();
+  }
+  await fixture.sessions.idle();
+  await fixture.sessions.remove(unsaved);
+  const sessions = join(fixture.directory, '.companion-sessions');
+  await writeFile(join(sessions, `${unsaved}.png`), 'older-capture-canary');
+  phone.messages.length = 0;
+  await fixture.sessions.reopen(unsaved, false);
+  const restored = await phone.engine('agent-restored', (value) => value.session.id === unsaved);
+  assert.equal(restored.session.messages[0].screenshot, true);
+  assert.equal(restored.session.messages[0].screenshotUrl, undefined);
+  assert.equal((await authorized(`api/screenshots/${unsaved}`)).status, 404);
+
+  // The earlier saved image is still served, with authentication only.
+  const historical = await authorized(savedUrl);
+  assert.equal(historical.status, 200);
+  assert.deepEqual(Buffer.from(await historical.arrayBuffer()), frame.screenshot.png);
+  assert.equal((await fetch(`${fixture.origin}/${savedUrl}`)).status, 401);
 });
 
 test('revoking a device closes its live connection and refuses its token', async (context) => {
