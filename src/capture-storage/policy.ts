@@ -244,6 +244,13 @@ export class CaptureStoragePolicy extends EventEmitter {
       throw Error('Capture storage was turned off again before it could be turned on');
     }
 
+    // Another queued client may already have saved and enabled this choice.
+    // Keep that durable On (and its admissions) rather than risk a redundant
+    // save whose failure would incorrectly report that storage stays off.
+    if (this.effective && this.savedState) {
+      return;
+    }
+
     this.enabling = true;
     this.emit('change');
 

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 import { CaptureStoragePolicy, type CaptureAdmission } from '../../src/capture-storage/policy.ts';
+import { CaptureStoragePreference } from '../../src/capture-storage/preference.ts';
 import type { Screenshot, UserSensorFrame } from '../../src/core/frame.ts';
 import { SensorPipeline } from '../../src/core/pipeline.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
@@ -769,6 +772,63 @@ test('F2/F4: spoken "label previous correct" is skipped without a success cue wh
   await assert.rejects(stat(join(setup.fixture.directory, 'disabled-intents.json')), {
     code: 'ENOENT',
   });
+});
+
+test('P3/P4: two desktop clients enabling together receive truthful durable On despite a redundant-save fault', async (context) => {
+  const temporary = await desktopFixture(async () => Buffer.alloc(0));
+  context.after(temporary.close);
+  class FailSecondSave extends CaptureStoragePreference {
+    calls = 0;
+    override async save(enabled: boolean): Promise<void> {
+      this.calls++;
+      if (this.calls === 2) {
+        throw Error('Synthetic second-client preference failure');
+      }
+      await super.save(enabled);
+    }
+  }
+  const path = join(temporary.directory, 'capture-storage.json');
+  const preference = new FailSecondSave(path);
+  const policy = new CaptureStoragePolicy(preference);
+  const setup = await desktopFixture(async () => Buffer.alloc(0), undefined, {
+    captureStorage: policy,
+  });
+  context.after(setup.close);
+  const otherClient = createConnection(setup.socketPath);
+  context.after(() => otherClient.destroy());
+  otherClient.setEncoding('utf8');
+  const response = deferred<{ type: string; result?: string; message?: string }>();
+  let buffered = '';
+  otherClient.on('data', (data: string) => {
+    buffered += data;
+    let newline: number;
+    while ((newline = buffered.indexOf('\n')) >= 0) {
+      const message = JSON.parse(buffered.slice(0, newline));
+      buffered = buffered.slice(newline + 1);
+      if (message.action === 'set-capture-storage') {
+        response.resolve(message);
+      }
+    }
+  });
+  await once(otherClient, 'connect');
+
+  setup.send({ action: 'set-capture-storage', enabled: true });
+  otherClient.write(JSON.stringify({ action: 'set-capture-storage', enabled: true }) + '\n');
+  for (const reply of [await setup.reply('set-capture-storage'), await response.promise]) {
+    assert.equal(reply.type, 'result');
+    assert.equal(reply.result, 'capture-storage-enabled');
+  }
+  assert.equal(preference.calls, 1);
+  assert.deepEqual(policy.state, { enabled: true, pending: '', saved: true, warning: '' });
+  assert.deepEqual(await new CaptureStoragePreference(path).load(), {
+    status: 'saved',
+    enabled: true,
+  });
+  await finishedRow(setup, 1, { input: 'typed', screenshot: true, audio: false });
+  const row = setup.database
+    .prepare('SELECT capture_storage, screenshot_saved FROM utterances')
+    .get();
+  assert.deepEqual({ ...row }, { capture_storage: 'on', screenshot_saved: 1 });
 });
 
 test('U2: the setting is strictly typed, desktop-only, and reported to every client', async (context) => {

@@ -180,6 +180,132 @@ test('P4: a failed enable stays off; a failed disable stays off for this run and
   assert.deepEqual(policy.state, { enabled: false, pending: '', saved: true, warning: '' });
 });
 
+test('P3/P4: overlapping and repeated durable On requests succeed without another fallible save', async () => {
+  const saving = deferred<void>();
+  const started = deferred<void>();
+  class FailSecondSave extends ScriptedPreference {
+    calls = 0;
+    override async save(enabled: boolean): Promise<void> {
+      this.calls++;
+      if (this.calls > 1) {
+        throw Error('Synthetic redundant save failure');
+      }
+      started.resolve();
+      await saving.promise;
+      await super.save(enabled);
+    }
+  }
+  const time = clock();
+  const preference = new FailSecondSave();
+  const policy = new CaptureStoragePolicy(preference, time.now);
+  const first = policy.setEnabled(true);
+  const second = policy.setEnabled(true);
+  await started.promise;
+  assert.equal(policy.admit().eligible, false, 'No admission before the first durable save');
+  saving.resolve();
+  await Promise.all([first, second]);
+
+  const admission = policy.admit();
+  const generation = policy.generation;
+  time.advance(200);
+  await policy.setEnabled(true);
+  assert.equal(preference.calls, 1, 'Satisfied requests do not risk a redundant write');
+  assert.deepEqual(policy.state, { enabled: true, pending: '', saved: true, warning: '' });
+  assert.equal(policy.generation, generation, 'Repeated On does not revoke admitted work');
+  assert.equal(policy.admit(1000).eligible, true, 'Repeated On preserves the acquisition bound');
+  assert.equal(await policy.publish(admission, async (current) => current()), true);
+});
+
+test('P3/P4: a saved On loaded at startup is also an idempotent request', async () => {
+  class SavedOn extends CaptureStoragePreference {
+    calls = 0;
+    override async load() {
+      return { status: 'saved' as const, enabled: true };
+    }
+    override async save(): Promise<void> {
+      this.calls++;
+      throw Error('Synthetic redundant save failure');
+    }
+  }
+  const preference = new SavedOn('/nonexistent/capture-storage.json');
+  const policy = new CaptureStoragePolicy(preference);
+  await policy.load();
+  const admission = policy.admit(Number.NEGATIVE_INFINITY);
+  await policy.setEnabled(true);
+  assert.equal(preference.calls, 0, 'No new persistence attempted');
+  assert.equal(policy.allows(admission), true);
+  assert.deepEqual(policy.state, { enabled: true, pending: '', saved: true, warning: '' });
+});
+
+test('P4: an overlapping On retries after an actual failed enable instead of treating Off as satisfied', async () => {
+  const preference = new ScriptedPreference();
+  preference.failNext = true;
+  const policy = new CaptureStoragePolicy(preference);
+  const results = await Promise.allSettled([policy.setEnabled(true), policy.setEnabled(true)]);
+  assert.equal(results[0].status, 'rejected');
+  assert.equal(results[1].status, 'fulfilled');
+  assert.deepEqual(preference.saves, [true]);
+  assert.deepEqual(policy.state, { enabled: true, pending: '', saved: true, warning: '' });
+  assert.equal(policy.admit().eligible, true);
+});
+
+test('P3/T2: Off overtakes both overlapping enables while the first save is held', async () => {
+  const saving = deferred<void>();
+  const started = deferred<void>();
+  class HeldPreference extends ScriptedPreference {
+    override async save(enabled: boolean): Promise<void> {
+      if (enabled) {
+        started.resolve();
+        await saving.promise;
+      }
+      await super.save(enabled);
+    }
+  }
+  const preference = new HeldPreference();
+  const policy = new CaptureStoragePolicy(preference);
+  const results = Promise.allSettled([policy.setEnabled(true), policy.setEnabled(true)]);
+  await started.promise;
+  const off = policy.setEnabled(false);
+  assert.equal(policy.admit().eligible, false);
+  saving.resolve();
+  assert.deepEqual(
+    (await results).map((result) => result.status),
+    ['rejected', 'rejected'],
+  );
+  await off;
+  assert.deepEqual(preference.saves, [true, false]);
+  assert.deepEqual(policy.state, { enabled: false, pending: '', saved: true, warning: '' });
+});
+
+test('P3/P4/T1: a duplicate On cannot bypass Off publication draining or a failed Off save', async () => {
+  const preference = new ScriptedPreference();
+  const policy = new CaptureStoragePolicy(preference);
+  await policy.setEnabled(true);
+  const admission = policy.admit();
+  const renaming = deferred<void>();
+  const published = policy.publish(admission, async (current) => {
+    assert.equal(current(), true);
+    await renaming.promise;
+    return 'already renamed';
+  });
+  const duplicate = policy.setEnabled(true);
+  preference.failNext = true;
+  const off = policy.setEnabled(false);
+  const laterOn = policy.setEnabled(true);
+  await assert.rejects(duplicate, /turned off again/);
+  assert.equal(policy.enabled, false, 'Later On waits for the Off barrier');
+  assert.equal(policy.allows(admission), false);
+  assert.equal(policy.state.pending, 'disabling');
+  assert.deepEqual(preference.saves, [true], 'Off has not saved ahead of the publication');
+  renaming.resolve();
+  assert.equal(await published, 'already renamed');
+  await assert.rejects(off, /off, but the choice could not be saved/);
+  await laterOn;
+  assert.deepEqual(preference.saves, [true, true], 'Explicit later On repairs the failed Off save');
+  assert.deepEqual(policy.state, { enabled: true, pending: '', saved: true, warning: '' });
+  assert.equal(policy.allows(admission), false, 'Later On does not revive old work');
+});
+
 test('T1: Off closes admission at once and is acknowledged only after in-flight publications settle', async () => {
   const policy = CaptureStoragePolicy.enabledForTesting();
   const admission = policy.admit();
