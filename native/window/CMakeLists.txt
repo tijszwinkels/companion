@@ -39,6 +39,7 @@ install(TARGETS companionwidgets LIBRARY DESTINATION lib/companion/qml/Companion
 install(FILES ../widget-renderer/qmldir DESTINATION lib/companion/qml/Companion/Widgets)
 install(DIRECTORY ../../integrations/window ../../integrations/panel DESTINATION share/companion/integrations)
 install(FILES companion.desktop DESTINATION share/applications)
+install(FILES ../../LICENSE ../../LICENSING.md DESTINATION share/licenses/companion-ui)
 if(COMPANION_SIDEBAR)
     install(FILES protocols/hyprland-focus-grab-v1.xml DESTINATION share/licenses/companion-ui)
 endif()
