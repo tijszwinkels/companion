@@ -12,6 +12,7 @@ import {
   type AgentRunRequest,
   type ClaudeCodeAgentBackend,
   type ClaudeCodeSettings,
+  type NativeTitleExport,
 } from '../types.ts';
 import { ClaudeTranscript, companionMcpServerName } from './claude-transcript.ts';
 import { bridgeEnvironment, writeMcpConfig, type McpConfigFile } from './mcp-config.ts';
@@ -69,6 +70,7 @@ const terminateGraceMilliseconds = 750;
 
 const settingsRequestId = 'companion-settings';
 const interruptRequestId = 'companion-interrupt';
+const renameRequestPrefix = 'companion-rename-';
 
 /**
  * Pending Tijs's product decision: without `--strict-mcp-config`, Companion's
@@ -120,6 +122,7 @@ export class ClaudeCodeBackend implements ClaudeCodeAgentBackend {
     emit: (message: AgentMessage) => void,
     replaceChoices?: (options: readonly AgentChoice[]) => void,
     renameSession?: (title: string) => void,
+    exportTitle?: (title: NativeTitleExport) => void,
   ): Promise<void> {
     signal.throwIfAborted();
 
@@ -135,6 +138,7 @@ export class ClaudeCodeBackend implements ClaudeCodeAgentBackend {
       this.startupTimeouts,
       replaceChoices,
       renameSession,
+      exportTitle,
     );
     await turn.run();
   }
@@ -165,6 +169,14 @@ class ClaudeTurn {
   private stdoutBuffer = '';
   private stderrTail = '';
 
+  /** This conversation's native name export, as last reported to Companion. */
+  private nativeTitle: NativeTitleExport | undefined;
+  /** Unanswered `rename_session` requests, by request ID, with their titles. */
+  private readonly renameRequests = new Map<string, string>();
+  /** Only the answer to the latest rename decides the export's state. */
+  private latestRenameRequest = '';
+  private renameCount = 0;
+
   private finish: (error?: unknown) => void = () => {};
   private readonly completion: Promise<void>;
 
@@ -175,8 +187,10 @@ class ClaudeTurn {
     private readonly startupTimeouts: ClaudeCodeStartupTimeouts,
     private readonly replaceChoices?: (options: readonly AgentChoice[]) => void,
     private readonly renameSession?: (title: string) => void,
+    private readonly exportTitle?: (title: NativeTitleExport) => void,
   ) {
     this.settings = request.settings;
+    this.nativeTitle = request.nativeTitle;
 
     for (const lease of [request.widgets, request.sessionTools]) {
       if (lease) {
@@ -356,7 +370,7 @@ class ClaudeTurn {
 
   /** Split stdout into stream-json records, with the same size guards as Pi. */
   private receiveOutput(text: string): void {
-    if (this.settled) {
+    if (this.settled && this.renameRequests.size === 0) {
       return;
     }
 
@@ -372,9 +386,14 @@ class ClaudeTurn {
           throw Error('Claude Code returned an oversized stream-json record');
         }
         if (line.trim()) {
-          this.receive(JSON.parse(line));
+          if (this.settled) {
+            this.receiveAfterResult(JSON.parse(line));
+          } else {
+            this.receive(JSON.parse(line));
+          }
         }
-        if (this.settled) {
+        // After the result, only answers to outstanding renames still count.
+        if (this.settled && this.renameRequests.size === 0) {
           return;
         }
 
@@ -385,7 +404,21 @@ class ClaudeTurn {
         throw Error('Claude Code returned an unterminated stream-json record');
       }
     } catch (error) {
+      // After the result the turn is already settled: stop reading, and any
+      // unanswered rename stays pending for the next turn.
+      this.renameRequests.clear();
       this.finish(this.redactError(error));
+    }
+  }
+
+  /**
+   * Claude Code answers control requests written before stdin closed, even
+   * after its result, while it finishes writing its transcript.
+   */
+  private receiveAfterResult(value: unknown): void {
+    const event = object(value);
+    if (event.type === 'control_response') {
+      this.receiveControlResponse(object(event.response));
     }
   }
 
@@ -416,6 +449,11 @@ class ClaudeTurn {
       this.verifyInit(event);
       this.initVerified = true;
       clearTimeout(this.startupTimer);
+      // A name a previous turn could not confirm, now that this verified
+      // session (and its native transcript) exists.
+      if (this.request.nativeTitle?.state === 'pending') {
+        this.publishTitle(this.request.nativeTitle.title);
+      }
     }
 
     // Fail closed: nothing counts before a fully verified init. A stream that
@@ -439,7 +477,13 @@ class ClaudeTurn {
   }
 
   private receiveControlResponse(response: Record<string, unknown>): void {
-    if (response.request_id !== settingsRequestId || this.promptSent) {
+    const requestId = response.request_id;
+    if (typeof requestId === 'string' && this.renameRequests.has(requestId)) {
+      this.receiveRenameResponse(requestId, response);
+      return;
+    }
+
+    if (requestId !== settingsRequestId || this.promptSent) {
       return;
     }
 
@@ -661,12 +705,91 @@ class ClaudeTurn {
       if (reported === undefined || reported.kind !== 'name' || !this.renameSession) {
         return;
       }
+      let title: string;
       try {
-        this.renameSession(parseSessionName(reported.title));
+        title = parseSessionName(reported.title);
+        this.renameSession(title);
       } catch {
         // A malformed display name cannot invalidate an otherwise valid answer.
+        return;
       }
+      this.publishTitle(title);
     }
+  }
+
+  /**
+   * Name Claude Code's own session as Companion named the conversation, with
+   * Claude Code's native `rename_session` control request. Claude Code writes
+   * its `custom-title` transcript record itself; Companion never edits the
+   * transcript. `source: 'host'` marks an explicit name from the program
+   * hosting the session, not an AI-generated title, and `session_id` makes
+   * Claude Code refuse the request for any other session.
+   *
+   * The export stays `pending` until Claude Code answers. A turn that ends
+   * first leaves it pending, and the next turn sends it again. An unchanged
+   * name that Claude Code already confirmed is not sent again.
+   */
+  private publishTitle(title: string): void {
+    if (!this.exportTitle) {
+      return;
+    }
+    if (this.nativeTitle?.title === title && this.nativeTitle.state === 'published') {
+      return;
+    }
+
+    this.setNativeTitle({ title, state: 'pending' });
+    const child = this.child;
+    if (this.signal.aborted || !child || !child.stdin.writable) {
+      return;
+    }
+
+    this.renameCount += 1;
+    const requestId = `${renameRequestPrefix}${this.renameCount}`;
+    this.renameRequests.set(requestId, title);
+    this.latestRenameRequest = requestId;
+    this.send({
+      type: 'control_request',
+      request_id: requestId,
+      request: { subtype: 'rename_session', title, source: 'host', session_id: this.request.id },
+    });
+  }
+
+  /**
+   * Claude Code answers renames in order, so an earlier answer never decides
+   * the state of a later name. A refusal is reported once in the transcript;
+   * Companion's own title is unaffected.
+   */
+  private receiveRenameResponse(requestId: string, response: Record<string, unknown>): void {
+    const title = this.renameRequests.get(requestId)!;
+    this.renameRequests.delete(requestId);
+    if (requestId !== this.latestRenameRequest) {
+      return;
+    }
+
+    if (response.subtype === 'success') {
+      this.setNativeTitle({ title, state: 'published' });
+      return;
+    }
+
+    this.setNativeTitle({ title, state: 'failed' });
+    this.emit(
+      chatMessage(
+        `title-warning-${requestId}`,
+        'notice',
+        this.redact(
+          `Claude Code did not save the name “${title}” in its own session ` +
+            `(${String(response.error ?? 'no reason given')}). Companion still shows it.`,
+        ),
+      ),
+    );
+  }
+
+  private setNativeTitle(next: NativeTitleExport): void {
+    if (this.nativeTitle?.title === next.title && this.nativeTitle.state === next.state) {
+      return;
+    }
+    this.nativeTitle = next;
+    this.exportTitle?.({ ...next });
   }
 
   /**

@@ -40,6 +40,7 @@ import {
   type ClaudeCodeConversationSettings,
   type ClaudeCodeModelCatalog,
   type ClaudeCodeSettings,
+  type NativeTitleExport,
   type AgentBrowserHost,
   type AgentBrowserOpenOutcome,
   type AgentDraftHost,
@@ -111,6 +112,7 @@ interface PreparedTurn {
     emit: (message: AgentMessage) => void,
     replaceChoices: (options: readonly AgentChoice[]) => void,
     renameSession: (title: string) => void,
+    exportTitle: (title: NativeTitleExport) => void,
   ): Promise<void>;
 }
 
@@ -1026,6 +1028,15 @@ export class AgentSessions implements InspectableModule {
           // alongside the transcript, including when this turn is stopped.
           this.flush(session);
         },
+        (title) => {
+          // Claude Code's answer describes its own session, so it is kept even
+          // when this turn was stopped meanwhile; the end-of-turn save keeps it.
+          if (!acceptingUpdates || this.closed) {
+            return;
+          }
+          session.view.nativeTitle = { title: title.title, state: title.state };
+          this.flush(session);
+        },
       );
       session.view.status = session.controller.signal.aborted ? 'cancelled' : 'completed';
     } catch (error) {
@@ -1184,15 +1195,22 @@ export class AgentSessions implements InspectableModule {
       if (resume && view.model !== '' && view.model !== settings.model) {
         previousModel = view.model;
       }
+      const nativeTitle = view.nativeTitle;
       return {
         model: settings.model,
-        run: (request, signal, emit, replaceChoices, renameSession) =>
+        run: (request, signal, emit, replaceChoices, renameSession, exportTitle) =>
           backend.run(
-            { ...request, settings, ...(previousModel ? { previousModel } : {}) },
+            {
+              ...request,
+              settings,
+              ...(previousModel ? { previousModel } : {}),
+              ...(nativeTitle ? { nativeTitle: { ...nativeTitle } } : {}),
+            },
             signal,
             emit,
             replaceChoices,
             renameSession,
+            exportTitle,
           ),
       };
     }

@@ -15,6 +15,7 @@ import {
   type AgentSettings,
   type ClaudeCodeAgentBackend,
   type ClaudeCodeSettings,
+  type NativeTitleExport,
 } from '../src/agents/types.ts';
 
 /** One recorded backend invocation, from either harness. */
@@ -29,8 +30,13 @@ export interface HarnessRun {
   /** Claude Code only: the previous turn's model after a picker switch. */
   previousModel?: string;
   sessionTools?: { endpoint: string; token: string };
+  /** Claude Code only: the conversation's native name export at turn start. */
+  nativeTitle?: NativeTitleExport;
   signal: AbortSignal;
   emit: (message: AgentMessage) => void;
+  renameSession?: (title: string) => void;
+  /** Claude Code only. */
+  exportTitle?: (title: NativeTitleExport) => void;
 }
 
 /** A turn handler. It runs before the scripted answer is emitted. */
@@ -81,7 +87,8 @@ export async function harnessFixture(
         ),
       };
     },
-    async run(request, signal, emit) {
+    async run(request, signal, emit, _replaceChoices, renameSession, exportTitle) {
+      assert.equal(exportTitle, undefined, 'Pi has no native name export');
       await record({
         harness: 'pi',
         id: request.id,
@@ -92,6 +99,7 @@ export async function harnessFixture(
         sessionTools: request.sessionTools,
         signal,
         emit,
+        renameSession,
       });
     },
   };
@@ -101,7 +109,7 @@ export async function harnessFixture(
     id: 'harness-claude-fixture',
     label: 'Scripted Claude Code',
     dependencies: {},
-    async run(request, signal, emit) {
+    async run(request, signal, emit, _replaceChoices, renameSession, exportTitle) {
       await record({
         harness: 'claude-code',
         id: request.id,
@@ -111,8 +119,11 @@ export async function harnessFixture(
         settings: request.settings,
         previousModel: request.previousModel,
         sessionTools: request.sessionTools,
+        nativeTitle: request.nativeTitle,
         signal,
         emit,
+        renameSession,
+        exportTitle,
       });
     },
   };

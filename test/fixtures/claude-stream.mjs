@@ -5,7 +5,14 @@
 // Conversations are marker files under ./claude-sessions in its working
 // directory. The first word of the prompt selects a scenario.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 
 const option = (name) => {
   const index = process.argv.indexOf(name);
@@ -35,6 +42,9 @@ const resultsToken = bridge.env.COMPANION_CLAUDE_RESULTS_TOKEN;
 
 let buffered = '';
 let stalled = false;
+// How this turn answers `rename_session`: 'success', 'refuse', 'silent' or
+// 'delayed' (success, 50 ms later, so a second rename is sent meanwhile).
+let renameAnswer = 'success';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
   buffered += chunk;
@@ -45,8 +55,13 @@ process.stdin.on('data', (chunk) => {
     void receive(message);
   }
 });
-// Like Claude Code in --print mode: stdin EOF ends the process.
-process.stdin.on('end', () => process.exit(0));
+// Like Claude Code in --print mode: stdin EOF ends the process, once the
+// control requests written before it are answered.
+const answering = new Set();
+process.stdin.on('end', async () => {
+  await Promise.all(answering);
+  process.exit(0);
+});
 
 async function receive(message) {
   if (message.type === 'control_request' && message.request.subtype === 'get_settings') {
@@ -76,6 +91,53 @@ async function receive(message) {
         request_id: message.request_id,
         response: { applied: { model: appliedModel, effort: appliedEffort } },
       },
+    });
+    return;
+  }
+
+  // Like Claude Code 2.1.289: validate, then record the name as session
+  // metadata (Claude Code appends a `custom-title` record to its transcript).
+  if (message.type === 'control_request' && message.request.subtype === 'rename_session') {
+    const { title, source, session_id: target } = message.request;
+    appendFileSync('renames.jsonl', JSON.stringify(message.request) + '\n');
+    if (renameAnswer === 'silent') {
+      return;
+    }
+    if (renameAnswer === 'delayed') {
+      const pending = new Promise((resolve) => setTimeout(resolve, 50));
+      answering.add(pending);
+      await pending;
+      answering.delete(pending);
+    }
+    let error;
+    if (typeof title !== 'string') {
+      error = 'rename_session: title must be a string';
+    } else if (source != null && source !== 'remote' && source !== 'host') {
+      error = "rename_session: source must be 'remote' or 'host'";
+    } else if (!title.trim()) {
+      error = 'title must be non-empty';
+    } else if (target !== undefined && target !== sessionId) {
+      error = 'session_id is not the current session';
+    } else if (renameAnswer === 'refuse') {
+      error = 'fixture refused the name';
+    }
+    if (error) {
+      send({
+        type: 'control_response',
+        response: { subtype: 'error', request_id: message.request_id, error },
+      });
+      return;
+    }
+    if (existsSync(sessionFile)) {
+      appendFileSync(
+        sessionFile,
+        '\n' + JSON.stringify({ type: 'custom-title', customTitle: title, sessionId }),
+      );
+    }
+    send({ type: 'system', subtype: 'session_title_changed', title, session_id: sessionId });
+    send({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: message.request_id },
     });
     return;
   }
@@ -121,7 +183,9 @@ function record(message) {
     }),
   );
   mkdirSync('claude-sessions', { recursive: true });
-  writeFileSync(sessionFile, 'transcript');
+  if (!existsSync(sessionFile)) {
+    writeFileSync(sessionFile, 'transcript');
+  }
 }
 
 function init(overrides = {}) {
@@ -352,13 +416,28 @@ async function answer(message) {
   }
 
   if (scenario === 'name') {
-    if (variant !== 'unreported') {
-      await report({ kind: 'name', toolUseId: 'toolu_name', title: '🐛 Login fix' });
+    if (variant === 'refused') {
+      renameAnswer = 'refuse';
     }
-    toolCall('msg_name', 'toolu_name', 'mcp__companion__companion_name_session', {
-      title: '🐛 Login fix',
-    });
-    toolResult('toolu_name', 'Conversation named 🐛 Login fix.', variant === 'failed');
+    if (variant === 'silent' || variant === 'stall') {
+      renameAnswer = 'silent';
+    }
+    if (variant === 'twice') {
+      renameAnswer = 'delayed';
+    }
+    const titles = variant === 'twice' ? ['🐛 Login fix', '🔐 Auth flow'] : ['🐛 Login fix'];
+    for (const [index, title] of titles.entries()) {
+      const id = `toolu_name${index}`;
+      if (variant !== 'unreported') {
+        await report({ kind: 'name', toolUseId: id, title });
+      }
+      toolCall(`msg_name${index}`, id, 'mcp__companion__companion_name_session', { title });
+      toolResult(id, `Conversation named ${title}.`, variant === 'failed');
+    }
+    if (variant === 'stall') {
+      stalled = true;
+      return;
+    }
     streamText('msg_answer', ['## Answer\n**42**']);
     success();
     return;

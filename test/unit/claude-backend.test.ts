@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +10,12 @@ import { fileURLToPath } from 'node:url';
 
 import { ClaudeCodeBackend } from '../../src/agents/claude/claude-backend.ts';
 import type { AgentChoice } from '../../src/agents/choices.ts';
-import type { AgentMessage, AgentRunRequest, ClaudeCodeSettings } from '../../src/agents/types.ts';
+import type {
+  AgentMessage,
+  AgentRunRequest,
+  ClaudeCodeSettings,
+  NativeTitleExport,
+} from '../../src/agents/types.ts';
 import { screenshot, signal } from '../helpers.ts';
 import { waitFor } from '../desktop-fixture.ts';
 
@@ -500,6 +506,184 @@ test('successful naming calls rename the conversation; failed or unreported ones
     );
     assert.deepEqual(titles, expected, variant);
   }
+});
+
+/** Run one turn and collect its titles, native exports, notices and rename requests. */
+async function naming(
+  directory: string,
+  turn: AgentRunRequest<ClaudeCodeSettings>,
+  options: { exportTitles?: boolean; signal?: AbortSignal } = {},
+) {
+  const titles: string[] = [];
+  const exports: NativeTitleExport[] = [];
+  const notices: string[] = [];
+  await rm(join(directory, 'renames.jsonl'), { force: true });
+  const run = new ClaudeCodeBackend().run(
+    turn,
+    options.signal ?? signal(),
+    (message) => {
+      if (message.kind === 'notice') {
+        notices.push(message.text);
+      }
+    },
+    () => {},
+    (title) => titles.push(title),
+    options.exportTitles === false ? undefined : (title) => exports.push(title),
+  );
+  let failure: unknown;
+  await run.catch((error: unknown) => {
+    failure = error;
+  });
+  const renames = (await readFile(join(directory, 'renames.jsonl'), 'utf8').catch(() => ''))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const transcript = await readFile(join(directory, 'claude-sessions', turn.id), 'utf8').catch(
+    () => '',
+  );
+  return { titles, exports, notices, renames, transcript, failure };
+}
+
+test('a successful name is published to the native Claude session and confirmed', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const turn = request(directory, settings, 'name ok');
+
+  const result = await naming(directory, turn);
+
+  assert.deepEqual(result.titles, ['🐛 Login fix']);
+  // Claude Code's native control request, for exactly this session.
+  assert.deepEqual(result.renames, [
+    { subtype: 'rename_session', title: '🐛 Login fix', source: 'host', session_id: turn.id },
+  ]);
+  // Its answer arrives after the turn's result and still confirms the export.
+  assert.deepEqual(result.exports, [
+    { title: '🐛 Login fix', state: 'pending' },
+    { title: '🐛 Login fix', state: 'published' },
+  ]);
+  assert.match(result.transcript, /"type":"custom-title","customTitle":"🐛 Login fix"/);
+  assert.deepEqual(result.notices, []);
+});
+
+test('failed, unreported or untracked naming calls never reach the native session', async (context) => {
+  const { directory, settings } = await fixture(context);
+
+  for (const variant of ['failed', 'unreported']) {
+    const result = await naming(directory, request(directory, settings, `name ${variant}`));
+    assert.deepEqual(result.titles, [], variant);
+    assert.deepEqual(result.exports, [], variant);
+    assert.deepEqual(result.renames, [], variant);
+  }
+
+  // A caller that does not track exports gets the Companion title only.
+  const untracked = await naming(directory, request(directory, settings, 'name ok'), {
+    exportTitles: false,
+  });
+  assert.deepEqual(untracked.titles, ['🐛 Login fix']);
+  assert.deepEqual(untracked.renames, []);
+});
+
+test('a refused native rename is reported as failed, not as published', async (context) => {
+  const { directory, settings } = await fixture(context);
+
+  const result = await naming(directory, request(directory, settings, 'name refused'));
+
+  assert.deepEqual(result.titles, ['🐛 Login fix'], 'Companion keeps its own title');
+  assert.deepEqual(result.exports, [
+    { title: '🐛 Login fix', state: 'pending' },
+    { title: '🐛 Login fix', state: 'failed' },
+  ]);
+  assert.equal(result.notices.length, 1);
+  assert.match(result.notices[0], /did not save the name “🐛 Login fix”.*fixture refused the name/);
+  assert.equal(result.failure, undefined, 'The answer itself still succeeds');
+  assert.doesNotMatch(result.transcript, /custom-title/);
+});
+
+test('an unanswered rename stays pending and is sent again by the next turn', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const first = request(directory, settings, 'name silent');
+
+  const silent = await naming(directory, first);
+  assert.deepEqual(silent.exports, [{ title: '🐛 Login fix', state: 'pending' }]);
+  assert.equal(silent.failure, undefined);
+
+  const retried = await naming(directory, {
+    ...first,
+    prompt: { text: 'hello' },
+    resume: true,
+    nativeTitle: { title: '🐛 Login fix', state: 'pending' },
+  });
+  assert.deepEqual(retried.renames, [
+    { subtype: 'rename_session', title: '🐛 Login fix', source: 'host', session_id: first.id },
+  ]);
+  assert.deepEqual(retried.exports, [{ title: '🐛 Login fix', state: 'published' }]);
+  assert.match(retried.transcript, /"customTitle":"🐛 Login fix"/);
+
+  // Published and failed exports are not retried by an ordinary turn.
+  for (const state of ['published', 'failed'] as const) {
+    const quiet = await naming(directory, {
+      ...first,
+      prompt: { text: 'hello' },
+      resume: true,
+      nativeTitle: { title: '🐛 Login fix', state },
+    });
+    assert.deepEqual(quiet.renames, [], state);
+    assert.deepEqual(quiet.exports, [], state);
+  }
+});
+
+test('repeating a confirmed name sends nothing; a later name supersedes an earlier one', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const first = request(directory, settings, 'hello');
+  await naming(directory, first);
+
+  const same = await naming(directory, {
+    ...first,
+    prompt: { text: 'name ok' },
+    resume: true,
+    nativeTitle: { title: '🐛 Login fix', state: 'published' },
+  });
+  assert.deepEqual(same.titles, ['🐛 Login fix']);
+  assert.deepEqual(same.renames, []);
+  assert.deepEqual(same.exports, []);
+
+  // A failed name chosen again is an explicit new attempt.
+  const again = await naming(directory, {
+    ...first,
+    prompt: { text: 'name ok' },
+    resume: true,
+    nativeTitle: { title: '🐛 Login fix', state: 'failed' },
+  });
+  assert.equal(again.renames.length, 1);
+  assert.deepEqual(again.exports.at(-1), { title: '🐛 Login fix', state: 'published' });
+
+  const twice = await naming(directory, {
+    ...first,
+    prompt: { text: 'name twice' },
+    resume: true,
+  });
+  assert.deepEqual(
+    twice.renames.map((rename) => rename.title),
+    ['🐛 Login fix', '🔐 Auth flow'],
+  );
+  assert.deepEqual(twice.exports.at(-1), { title: '🔐 Auth flow', state: 'published' });
+  assert.ok(
+    !twice.exports.some((entry) => entry.title === '🐛 Login fix' && entry.state === 'published'),
+    'The superseded name is never reported as the published one',
+  );
+});
+
+test('a stopped turn leaves an unanswered name pending', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const controller = new AbortController();
+  const turn = request(directory, settings, 'name stall');
+
+  const running = naming(directory, turn, { signal: controller.signal });
+  await waitFor(() => existsSync(join(directory, 'renames.jsonl')));
+  controller.abort();
+  const result = await running;
+
+  assert.equal((result.failure as Error | undefined)?.name, 'AbortError');
+  assert.deepEqual(result.exports, [{ title: '🐛 Login fix', state: 'pending' }]);
 });
 
 test('the result route rejects reports after its turn has ended', async (context) => {
