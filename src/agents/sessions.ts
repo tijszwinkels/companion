@@ -1031,7 +1031,12 @@ export class AgentSessions implements InspectableModule {
         (title) => {
           // Claude Code's answer describes its own session, so it is kept even
           // when this turn was stopped meanwhile; the end-of-turn save keeps it.
-          if (!acceptingUpdates || this.closed) {
+          // A new pending name after Stop was rejected as a title above.
+          if (
+            !acceptingUpdates ||
+            this.closed ||
+            (title.state === 'pending' && session.controller.signal.aborted)
+          ) {
             return;
           }
           session.view.nativeTitle = { title: title.title, state: title.state };

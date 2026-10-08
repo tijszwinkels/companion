@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
+import { ClaudeCodeBackend } from '../../src/agents/claude/claude-backend.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
 import { defaultAgentSettings, defaultClaudeCodeSettings } from '../../src/agents/settings.ts';
 import type { AgentSession, ClaudeCodeSettings } from '../../src/agents/types.ts';
@@ -548,4 +550,73 @@ test('the store keeps valid Claude native name exports and drops damaged ones', 
     }),
   );
   assert.equal('nativeTitle' in (await store.read(id)), false);
+});
+
+test('Stop before a Claude naming result keeps the old title and exports nothing', async (context) => {
+  const fixture = await harnessFixture(context, { configuration: claudeDefault });
+  const { sessions, view, script, directory } = fixture;
+  // The production backend, driven by the scripted Claude Code CLI fixture.
+  const executable = join(directory, 'fixture-claude');
+  await copyFile(
+    fileURLToPath(new URL('../fixtures/claude-stream.mjs', import.meta.url)),
+    executable,
+  );
+  await chmod(executable, 0o700);
+  const settings: ClaudeCodeSettings = { executable, model: 'claude-opus-5-5', effort: 'high' };
+  const backend = new ClaudeCodeBackend();
+  const id = sessions.start(frame, signal());
+  let stopped: Promise<void> | undefined;
+  script(
+    id,
+    (run) =>
+      backend.run(
+        { id, directory, settings, prompt: { text: 'name ok' }, resume: false },
+        run.signal,
+        (message) => {
+          run.emit(message);
+          // Stop as the naming call starts, before its result is processed.
+          if (message.kind === 'tool' && message.state === 'running') {
+            stopped ??= sessions.stop(id);
+          }
+        },
+        () => {},
+        run.renameSession,
+        run.exportTitle,
+      ),
+    (run) =>
+      backend.run(
+        {
+          id,
+          directory,
+          settings,
+          prompt: { text: 'hello' },
+          resume: true,
+          nativeTitle: run.nativeTitle,
+        },
+        run.signal,
+        run.emit,
+        () => {},
+        run.renameSession,
+        run.exportTitle,
+      ),
+  );
+  await sessions.idle();
+  await stopped;
+
+  const title = view(id).title;
+  assert.equal(view(id).status, 'cancelled');
+  assert.notEqual(title, '🐛 Login fix');
+  assert.equal(view(id).nativeTitle, undefined);
+
+  // The next ordinary turn has nothing to publish either.
+  sessions.followUp(id, 'Continue', signal());
+  await sessions.idle();
+  assert.equal(view(id).status, 'completed');
+  assert.equal(view(id).title, title);
+  assert.equal(view(id).nativeTitle, undefined);
+  assert.equal('nativeTitle' in (await savedJson(directory, id)), false);
+  assert.doesNotMatch(
+    await readFile(join(directory, 'claude-sessions', id), 'utf8'),
+    /custom-title/,
+  );
 });

@@ -269,9 +269,12 @@ other session.
 `AgentSession.nativeTitle` (`{title, state}`, Claude Code conversations only)
 records the export:
 
-- `pending`: sent but not yet confirmed, or not sendable (the turn was stopped
-  or Claude Code's stdin had closed). The next turn sends it again once its
-  `system/init` is verified, so the native transcript already exists.
+- `pending`: sent but not yet confirmed (for example, the turn was stopped or
+  Claude Code exited first), or not sendable because Claude Code's stdin had
+  closed. The next turn sends it again once its `system/init` is verified, so
+  the native transcript already exists. A naming result processed after Stop
+  is rejected as Companion's title and is never exported; an answer to a
+  rename sent before Stop still counts.
 - `published`: Claude Code answered `success` to the latest rename. An
   unchanged confirmed name is not sent again.
 - `failed`: Claude Code refused it. The turn shows one notice; Companion's own

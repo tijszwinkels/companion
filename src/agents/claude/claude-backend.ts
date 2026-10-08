@@ -730,7 +730,10 @@ class ClaudeTurn {
    * name that Claude Code already confirmed is not sent again.
    */
   private publishTitle(title: string): void {
-    if (!this.exportTitle) {
+    // After Stop, Companion rejects new names (its output is still read while
+    // Claude Code is interrupted), so they must not become an export either.
+    // Answers to renames sent before Stop still count.
+    if (!this.exportTitle || this.signal.aborted) {
       return;
     }
     if (this.nativeTitle?.title === title && this.nativeTitle.state === 'published') {
@@ -739,7 +742,7 @@ class ClaudeTurn {
 
     this.setNativeTitle({ title, state: 'pending' });
     const child = this.child;
-    if (this.signal.aborted || !child || !child.stdin.writable) {
+    if (!child || !child.stdin.writable) {
       return;
     }
 

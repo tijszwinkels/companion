@@ -686,6 +686,33 @@ test('a stopped turn leaves an unanswered name pending', async (context) => {
   assert.deepEqual(result.exports, [{ title: '🐛 Login fix', state: 'pending' }]);
 });
 
+test('a name whose result arrives after Stop never becomes a native export', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const controller = new AbortController();
+  const exports: NativeTitleExport[] = [];
+  const turn = request(directory, settings, 'name ok');
+
+  // Stop while the naming call runs: its successful result is in the same
+  // output, which is still read while Claude Code is interrupted.
+  const run = new ClaudeCodeBackend().run(
+    turn,
+    controller.signal,
+    (message) => {
+      if (message.kind === 'tool' && message.state === 'running') {
+        controller.abort();
+      }
+    },
+    () => {},
+    () => {},
+    (title) => exports.push(title),
+  );
+  await run.catch(() => {});
+
+  assert.ok(controller.signal.aborted);
+  assert.deepEqual(exports, []);
+  assert.equal(existsSync(join(directory, 'renames.jsonl')), false, 'No rename was sent');
+});
+
 test('the result route rejects reports after its turn has ended', async (context) => {
   const { directory, settings } = await fixture(context);
   await new ClaudeCodeBackend().run(request(directory, settings, 'hello'), signal(), () => {});
