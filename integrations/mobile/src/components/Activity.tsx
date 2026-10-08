@@ -12,7 +12,7 @@
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 
-import type { ActivityEntry, IntentState } from '../../../../src/remote/protocol.ts';
+import type { ActivityEntry, EngineState, IntentState } from '../../../../src/remote/protocol.ts';
 import { clockTime, copyText, intentLabel } from '../format.ts';
 import { useAppState, useStore } from '../hooks.ts';
 import type { AppState } from '../store.ts';
@@ -45,6 +45,18 @@ export function listeningStatus(state: AppState): {
   return { title: 'Listening', description: '', tone: '' };
 }
 
+/**
+ * Labeling needs capture storage on the computer. An older listener does not
+ * report the setting; its own rules apply there. Either way the listener,
+ * not this view, enforces the rule; the phone cannot change the setting.
+ */
+function labelingAvailable(storage: EngineState['captureStorage']): boolean {
+  if (!storage) {
+    return true;
+  }
+  return storage.enabled && storage.pending !== 'disabling';
+}
+
 export function ActivityPage() {
   const state = useAppState();
   const engine = state.engine;
@@ -66,7 +78,12 @@ export function ActivityPage() {
         <VoiceShortcuts intents={intents} />
         <Intentions intents={intents} online={online} />
         <Section title="History" detail={String(entries.length)}>
-          <History entries={entries} labels={labels} intents={intents} />
+          <History
+            entries={entries}
+            labels={labels}
+            intents={intents}
+            labelingAvailable={labelingAvailable(engine?.captureStorage)}
+          />
         </Section>
         <div style={{ height: '16px' }} />
       </div>
@@ -330,6 +347,7 @@ function History(props: {
   entries: ActivityEntry[];
   labels: Map<string, string>;
   intents: IntentState[];
+  labelingAvailable: boolean;
 }) {
   const state = useAppState();
   const store = useStore();
@@ -356,6 +374,7 @@ function History(props: {
           online={online}
           deletable={state.engine?.historyDeletionAvailable === true}
           intents={props.intents}
+          labelingAvailable={props.labelingAvailable}
         />
       ))}
     </>
@@ -386,10 +405,13 @@ function HistoryCard(props: {
   intents: IntentState[];
   online: boolean;
   deletable: boolean;
+  labelingAvailable: boolean;
 }) {
   const store = useStore();
   const { entry } = props;
   const audioOnly = entry.transcriptSource === 'audio-only';
+  // Its audio and screenshot were deliberately not saved (capture storage off).
+  const notSaved = entry.captureStorage === 'off';
   const [choosing, setChoosing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -408,7 +430,14 @@ function HistoryCard(props: {
 
   const feedback =
     entry.correct === true ? 'correct' : entry.correct === false ? 'incorrect' : undefined;
-  const canLabel = props.online && entry.intent !== null && !busy;
+  const labelable = props.labelingAvailable && !notSaved;
+  const canLabel = props.online && entry.intent !== null && !busy && labelable;
+  let labelingReason = '';
+  if (entry.intent !== null && !props.labelingAvailable) {
+    labelingReason = 'Labeling requires capture storage.';
+  } else if (entry.intent !== null && notSaved) {
+    labelingReason = "Labeling requires this entry's saved capture.";
+  }
 
   return (
     <article class="history-card" aria-label={`Utterance at ${clockTime(entry.observedAt)}`}>
@@ -420,6 +449,7 @@ function HistoryCard(props: {
             : 'Text from an earlier part of this utterance; the full recording was not transcribed.'}
         </p>
       )}
+      {notSaved && <p class="hint not-saved">Not saved · audio and screenshot were not kept.</p>}
       <div class="facts">
         <span>{clockTime(entry.observedAt)}</span>
         {entry.application && <span class="pill">{entry.application}</span>}
@@ -447,7 +477,8 @@ function HistoryCard(props: {
         </button>
         <button
           class="action small"
-          disabled={!props.online || busy || audioOnly}
+          // It starts from the saved screenshot; never substitute another one.
+          disabled={!props.online || busy || audioOnly || notSaved}
           onClick={() =>
             act(async () => {
               await store.request('start-history-agent', { id: entry.id });
@@ -493,6 +524,7 @@ function HistoryCard(props: {
           </button>
         )}
       </div>
+      {labelingReason && <p class="hint labeling-unavailable">{labelingReason}</p>}
 
       {confirmDelete && (
         <Sheet title="Delete Activity entry?" onClose={() => setConfirmDelete(false)}>
@@ -516,7 +548,7 @@ function HistoryCard(props: {
           </div>
         </Sheet>
       )}
-      {choosing && (
+      {choosing && labelable && (
         <div class="intent-picker">
           <div class="hint">What should it have been?</div>
           <div class="chips">

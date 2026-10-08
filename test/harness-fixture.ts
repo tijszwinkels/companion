@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AgentSessions } from '../src/agents/sessions.ts';
+import type { CaptureStoragePolicy } from '../src/capture-storage/policy.ts';
 import type { SessionLiveState } from '../src/agents/harness-live-state.ts';
 import { defaultAgentSettings } from '../src/agents/settings.ts';
 import { sessionTools } from '../src/agents/session-tools.ts';
@@ -26,6 +27,8 @@ export interface HarnessRun {
   text: string;
   resume: boolean;
   screenshot: boolean;
+  /** The live screenshot bytes the backend received, if any. */
+  png?: Buffer;
   /** Pi receives `AgentSettings`; Claude Code receives `ClaudeCodeSettings`. */
   settings: AgentSettings | ClaudeCodeSettings;
   /** Claude Code only: the previous turn's model after a picker switch. */
@@ -55,6 +58,8 @@ export async function harnessFixture(
     configuration?: Record<string, unknown>;
     claudeCode?: boolean;
     liveState?: SessionLiveState;
+    /** Gates conversation screenshot copies; absent means always off. */
+    captureStorage?: CaptureStoragePolicy;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-harness-'));
@@ -100,6 +105,7 @@ export async function harnessFixture(
         text: request.prompt.text,
         resume: request.resume,
         screenshot: request.prompt.screenshot !== undefined,
+        png: request.prompt.screenshot?.png,
         settings: request.settings,
         sessionTools: request.sessionTools,
         signal,
@@ -121,6 +127,7 @@ export async function harnessFixture(
         text: request.prompt.text,
         resume: request.resume,
         screenshot: request.prompt.screenshot !== undefined,
+        png: request.prompt.screenshot?.png,
         settings: request.settings,
         previousModel: request.previousModel,
         sessionTools: request.sessionTools,
@@ -138,7 +145,14 @@ export async function harnessFixture(
 
   /** A listener instance over the same directory, as after a restart. */
   function open(): AgentSessions {
-    const sessions = new AgentSessions(backends, () => {}, directory, undefined, options.liveState);
+    const sessions = new AgentSessions(
+      backends,
+      () => {},
+      directory,
+      undefined,
+      options.liveState,
+      options.captureStorage,
+    );
     opened.push(sessions);
     return sessions;
   }

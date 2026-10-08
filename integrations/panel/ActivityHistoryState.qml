@@ -67,7 +67,10 @@ QtObject {
       // "earlier-attempt" when the text came from an earlier attempt of a
       // continued utterance, "audio-only" when there is no text; empty when
       // unspecified.
-      transcriptSource: entry.transcriptSource || ""
+      transcriptSource: entry.transcriptSource || "",
+      // "off" when this entry's capture was deliberately not saved; empty
+      // when saved or unknown.
+      captureStorage: entry.captureStorage || ""
     };
     // New completions normally insert at zero; feedback/pages locate their
     // stable sequence by binary search without scanning the whole session.

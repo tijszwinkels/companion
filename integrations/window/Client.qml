@@ -19,6 +19,8 @@ Item {
   property var intents: []
   // {enabled: bool}, or null when the listener has no transcription cleanup.
   property var transcriptionCleanup: null
+  // Null when the listener does not report capture storage: unavailable.
+  property var captureStorage: null
   property var agentActions: ({})
   property string error: ""
   property string errorAction: ""
@@ -160,6 +162,7 @@ Item {
     root.historyDeletionAvailable = false
     root.intents = []
     root.transcriptionCleanup = null
+    root.captureStorage = null
     root.agentActions = ({})
     activity.disconnected()
   }
@@ -178,6 +181,8 @@ Item {
       if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
       const cleanup = message.transcriptionCleanup || null
       if (JSON.stringify(cleanup) !== JSON.stringify(root.transcriptionCleanup)) root.transcriptionCleanup = cleanup
+      const storage = message.captureStorage || null
+      if (JSON.stringify(storage) !== JSON.stringify(root.captureStorage)) root.captureStorage = storage
       const actions = message.agentActions || {}
       if (JSON.stringify(actions) !== JSON.stringify(root.agentActions)) root.agentActions = actions
       sessions.applyState(message)

@@ -21,6 +21,16 @@ Rectangle {
   // "audio-only": no speech was recognized; only the recording is kept.
   property string transcriptSource: ""
   readonly property bool audioOnly: transcriptSource === "audio-only"
+  // Capture storage for this entry: "off" when its audio and screenshot were
+  // deliberately not saved ("Not saved"); empty when saved or unknown (older
+  // entries). A "Not saved" entry never offers recording-dependent actions.
+  property string captureStorage: ""
+  readonly property bool notSaved: captureStorage === "off"
+  // Whether the listener currently allows labeling at all (capture storage
+  // on). Older listeners do not report it and keep their own behavior.
+  property bool labelingAvailable: true
+  readonly property bool labelable: labelingAvailable && !notSaved
+  readonly property string labelingReason: !labelingAvailable ? "Labeling requires capture storage." : notSaved ? "Labeling requires this entry's saved capture." : ""
   required property var intents
   required property bool online
   property bool historyDeletionAvailable: false
@@ -170,6 +180,19 @@ Rectangle {
     }
 
     Text {
+      objectName: "historyNotSaved"
+      width: parent.width
+      visible: root.notSaved
+      text: "Not saved · audio and screenshot were not kept"
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.textScale
+      lineHeight: 1.3
+    }
+
+    Text {
       objectName: "historyCleanup"
       width: parent.width
       visible: root.cleanupStatus === "cleaned" || root.cleanupStatus === "fallback"
@@ -241,14 +264,16 @@ Rectangle {
             required property var modelData
             objectName: "history-action-" + modelData.action
             // An audio-only record has no text to copy, insert or ask about.
-            visible: (modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned") && !(root.audioOnly && ["copy", "paste", "start-history-agent"].includes(modelData.action))
+            // A new coding session starts from the saved screenshot, which a
+            // "Not saved" entry does not have; never substitute another one.
+            visible: (modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned") && !(root.audioOnly && ["copy", "paste", "start-history-agent"].includes(modelData.action)) && !(root.notSaved && modelData.action === "start-history-agent")
             text: modelData.title
             foreground: root.foreground
             selection: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.12)
             fontFamily: root.fontFamily
             unit: root.unit
             textScale: root.textScale
-            enabled: root.actionsVisible && (modelData.action === "copy" || modelData.action === "copy-cleaned" || root.online) && (!["correct", "incorrect"].includes(modelData.action) || root.intent !== "")
+            enabled: root.actionsVisible && (modelData.action === "copy" || modelData.action === "copy-cleaned" || root.online) && (!["correct", "incorrect"].includes(modelData.action) || (root.intent !== "" && root.labelable))
             onTriggered: {
               const action = modelData.action;
               if (action === "copy")
@@ -274,11 +299,24 @@ Rectangle {
       }
     }
 
+    // Why the label actions above are disabled; existing labels stay shown.
+    Text {
+      objectName: "historyLabelingUnavailable"
+      width: parent.width
+      visible: root.actionsVisible && root.intent !== "" && !root.labelable
+      text: root.labelingReason
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.textScale
+    }
+
     Column {
       width: parent.width
       spacing: 8 * root.unit
-      visible: root.choosingIntent
-      opacity: root.choosingIntent ? 1 : 0
+      visible: root.choosingIntent && root.labelable
+      opacity: visible ? 1 : 0
       Behavior on opacity {
         NumberAnimation {
           duration: 180
@@ -315,7 +353,7 @@ Rectangle {
               font.pixelSize: 11 * root.textScale
             }
             function choose() {
-              if (!root.online)
+              if (!root.online || !root.labelable)
                 return;
               root.actionRequested("label-history", root.entryId, {
                 correct: false,
@@ -327,7 +365,7 @@ Rectangle {
               id: optionMouse
               anchors.fill: parent
               hoverEnabled: true
-              enabled: root.online
+              enabled: root.online && root.labelable
               cursorShape: Qt.PointingHandCursor
               onClicked: parent.choose()
             }

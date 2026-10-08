@@ -16,6 +16,8 @@ ListView {
   // rows stay in the shared state, but no hidden cards are kept alive.
   property bool expanded: true
   property bool historyDeletionAvailable: false
+  // False while the listener reports capture storage off (no labeling).
+  property bool labelingAvailable: true
   required property var intents
   required property bool online
   required property color foreground
@@ -233,6 +235,8 @@ ListView {
       cleanupStatus: model.cleanupStatus
       cleanupFallback: model.cleanupFallback
       transcriptSource: model.transcriptSource
+      captureStorage: model.captureStorage
+      labelingAvailable: root.labelingAvailable
       intents: root.intents
       online: root.online
       historyDeletionAvailable: root.historyDeletionAvailable

@@ -288,6 +288,7 @@ Item {
     history: client.history
     intents: client.intents
     transcriptionCleanup: client.transcriptionCleanup
+    captureStorage: client.captureStorage
     agentActions: client.agentActions
     activityHistoryModel: client.activity.model
     activityHistoryAvailable: client.activity.available
@@ -338,6 +339,7 @@ Item {
     }
     onIntentEnabledRequested: (name, enabled, mode) => client.send({action: "set-intent-enabled", name: name, enabled: enabled, mode: mode})
     onTranscriptionCleanupRequested: enabled => client.send({action: "set-transcription-cleanup", enabled: enabled})
+    onCaptureStorageRequested: enabled => client.send({action: "set-capture-storage", enabled: enabled})
     onHistoryActionRequested: (action, id, value) => {
       if (action === "paste") {
         if (root.host.bridgeConnected) root.host.notify({type: "history-paste", id: id})

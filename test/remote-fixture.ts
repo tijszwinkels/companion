@@ -43,9 +43,12 @@ export async function remoteFixture(
     backend?: AgentBackend['run'];
     claudeBackend?: ClaudeCodeAgentBackend['run'];
     gateway?: Partial<GatewayServiceOptions>;
+    /** The listener's capture-storage policy; on (as before) by default. */
+    captureStorage?: CaptureStoragePolicy;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-remote-'));
+  const captureStorage = options.captureStorage ?? CaptureStoragePolicy.enabledForTesting();
   const runs: SyntheticRun[] = [];
 
   const run: AgentBackend['run'] =
@@ -90,10 +93,12 @@ export async function remoteFixture(
     undefined,
     undefined,
     // Conversation screenshots are saved only while capture storage is on.
-    CaptureStoragePolicy.enabledForTesting(),
+    captureStorage,
   );
 
-  const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);
+  const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions, {
+    captureStorage,
+  });
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
   const stateDirectory = join(directory, 'remote-state');

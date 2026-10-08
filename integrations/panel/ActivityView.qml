@@ -21,6 +21,11 @@ Item {
   property var history: []
   property var intents: []
   property var transcriptionCleanup: null
+  // Capture storage state from the listener; null when unavailable/unknown.
+  property var captureStorage: null
+  // Labeling needs capture storage. An older listener without the setting
+  // keeps its own behavior; the listener enforces this rule either way.
+  readonly property bool labelingAvailable: captureStorage === null || captureStorage === undefined || (captureStorage.enabled === true && captureStorage.pending !== "disabling")
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
@@ -57,6 +62,7 @@ Item {
   property string shortcutLabel: ""
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal transcriptionCleanupRequested(bool enabled)
+  signal captureStorageRequested(bool enabled)
   signal historyActionRequested(string action, string id, var value)
 
   // Page scroll position measured from the top of Listening. Tests and
@@ -168,6 +174,7 @@ Item {
     available: root.activityHistoryAvailable
     expanded: root.historyExpanded
     historyDeletionAvailable: root.historyDeletionAvailable
+    labelingAvailable: root.labelingAvailable
     intents: root.intents
     online: root.online
     foreground: root.foreground
@@ -245,8 +252,10 @@ Item {
         unit: root.unit
         textScale: root.textScale
         transcriptionCleanup: root.transcriptionCleanup
+        captureStorage: root.captureStorage
         onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
         onTranscriptionCleanupRequested: enabled => root.transcriptionCleanupRequested(enabled)
+        onCaptureStorageRequested: enabled => root.captureStorageRequested(enabled)
       }
 
       CollapsibleSection {

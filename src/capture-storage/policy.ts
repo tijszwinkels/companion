@@ -208,6 +208,8 @@ export class CaptureStoragePolicy extends EventEmitter {
    * then tells the truth (still off, or off but not saved).
    */
   setEnabled(enabled: boolean): Promise<void> {
+    // Any Off requested after this point overtakes this request.
+    const offRequestsBefore = this.offRequests;
     if (!enabled) {
       // Close admission now, ahead of any change that is still queued.
       this.offRequests++;
@@ -216,13 +218,19 @@ export class CaptureStoragePolicy extends EventEmitter {
       this.emit('change');
     }
 
-    const change = this.changes.then(() => (enabled ? this.enable() : this.disable()));
+    const change = this.changes.then(() =>
+      enabled ? this.enable(offRequestsBefore) : this.disable(),
+    );
     this.changes = change.catch(() => {});
     return change;
   }
 
-  private async enable(): Promise<void> {
-    const offRequestsBefore = this.offRequests;
+  private async enable(offRequestsBefore: number): Promise<void> {
+    // Already overtaken by an Off requested after this enable: do nothing.
+    if (this.offRequests !== offRequestsBefore) {
+      throw Error('Capture storage was turned off again before it could be turned on');
+    }
+
     this.enabling = true;
     this.emit('change');
 
@@ -233,8 +241,8 @@ export class CaptureStoragePolicy extends EventEmitter {
         throw Error('Capture storage could not be saved, so it stays off');
       }
 
-      // A later Off arrived while saving: it is queued behind this change
-      // and will save "off" again. Never open admission in between.
+      // A later Off arrived (before or while saving): it is queued behind
+      // this change and will save "off" again. Never open admission.
       if (this.offRequests !== offRequestsBefore) {
         throw Error('Capture storage was turned off again before it could be turned on');
       }

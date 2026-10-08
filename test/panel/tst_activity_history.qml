@@ -280,6 +280,11 @@ Item {
       mouseMove(card, 10, 10);
       tryCompare(card, "actionsVisible", true);
       wait(180);
+      // The Storage setting makes the header taller; keep the hovered card's
+      // action row inside this fixed-height test window.
+      findChild(host, "fullActivityStatus").scrollToItem(card);
+      verify(waitForRendering(host));
+      tryCompare(card, "actionsVisible", true);
       mouseClick(findChild(card, "history-action-paste"));
       compare(requests[0].action, "paste");
       compare(requests[0].id, "utterance-1");
@@ -292,6 +297,8 @@ Item {
       compare(card.feedback, "incorrect");
       compare(card.tone.toString(), "#f17f90");
       wait(180);
+      findChild(host, "fullActivityStatus").scrollToItem(card);
+      verify(waitForRendering(host));
       const choice = findChild(card, "history-correction-START_CODING_AGENT_SESSION");
       mouseClick(choice);
       compare(requests[3].value.actualIntent, "START_CODING_AGENT_SESSION");
@@ -302,6 +309,56 @@ Item {
       compare(card.tone.toString(), "#65d6a1");
       host.panel.online = false;
       compare(findChild(card, "history-action-paste").enabled, false);
+    }
+
+    function test_capture_storage_off_disables_labeling_and_marks_unsaved_entries() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const legacy = entry(1, true);
+      const unsaved = entry(2, null);
+      unsaved.captureStorage = "off";
+      state.update("run", legacy);
+      state.update("run", unsaved);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      findChild(host, "listeningArea").expanded = false;
+      host.panel.captureStorage = {enabled: false, pending: "", saved: true, warning: ""};
+      verify(waitForRendering(host));
+      showHistory(host);
+
+      // Storage off: labeling is disabled everywhere, including older saved
+      // entries, while their existing label stays visible.
+      const old = findChild(host, "history-utterance-1");
+      compare(old.feedback, "correct");
+      compare(old.labelable, false);
+      compare(findChild(old, "historyNotSaved").visible, false, "Older entries are not claimed unsaved");
+      old.choosingIntent = true;
+      compare(findChild(old, "history-action-correct").enabled, false);
+      compare(findChild(old, "history-action-incorrect").enabled, false);
+      verify(findChild(old, "history-action-start-history-agent").visible, "Saved media stay usable");
+      compare(findChild(old, "historyLabelingUnavailable").text, "Labeling requires capture storage.");
+      verify(findChild(old, "historyLabelingUnavailable").visible);
+      old.choosingIntent = false;
+
+      // A new unsaved entry says so and offers nothing that needs its capture.
+      const card = findChild(host, "history-utterance-2");
+      verify(findChild(card, "historyNotSaved").visible);
+      compare(findChild(card, "historyNotSaved").text, "Not saved · audio and screenshot were not kept");
+      compare(findChild(card, "history-action-start-history-agent").visible, false);
+      verify(findChild(card, "history-action-copy").visible, "Text actions still work");
+
+      // Storage on again: older entries can be labeled; unsaved ones never.
+      host.panel.captureStorage = {enabled: true, pending: "", saved: true, warning: ""};
+      compare(old.labelable, true);
+      compare(card.labelable, false);
+      card.choosingIntent = true;
+      compare(findChild(card, "history-action-correct").enabled, false);
+      compare(findChild(card, "historyLabelingUnavailable").text, "Labeling requires this entry's saved capture.");
+      card.choosingIntent = false;
+
+      // While an Off is being acknowledged, labeling is already unavailable.
+      host.panel.captureStorage = {enabled: false, pending: "disabling", saved: true, warning: ""};
+      compare(old.labelable, false);
     }
 
     function test_cleaned_text_appears_below_the_raw_transcript_with_its_own_copy_action() {

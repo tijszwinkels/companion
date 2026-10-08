@@ -31,6 +31,7 @@ Item {
   property var history: []
   property var intents: []
   property var transcriptionCleanup: null
+  property var captureStorage: null
   property var activityHistoryModel: null
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
@@ -157,6 +158,7 @@ Item {
   signal closeRequested()
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal transcriptionCleanupRequested(bool enabled)
+  signal captureStorageRequested(bool enabled)
   signal historyActionRequested(string action, string id, var value)
   signal sessionSelected(string id)
   onSessionSelected: id => {
@@ -934,6 +936,7 @@ Item {
       history: root.history
       intents: root.intents
       transcriptionCleanup: root.transcriptionCleanup
+      captureStorage: root.captureStorage
       activityHistoryModel: root.activityHistoryModel
       activityHistoryAvailable: root.activityHistoryAvailable
       historyDeletionAvailable: root.historyDeletionAvailable
@@ -941,6 +944,7 @@ Item {
       shortcutLabel: root.shortcutLabel
       onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
       onTranscriptionCleanupRequested: enabled => root.transcriptionCleanupRequested(enabled)
+      onCaptureStorageRequested: enabled => root.captureStorageRequested(enabled)
       onHistoryActionRequested: (action, id, value) => root.historyActionRequested(action, id, value)
     }
 

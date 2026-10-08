@@ -17,8 +17,13 @@ Item {
   property real textScale: unit
   // {enabled: bool} from the listener, or null when it has no cleanup support.
   property var transcriptionCleanup: null
+  // {enabled, pending, saved, warning} from the listener, or null when it does
+  // not report capture storage (an older listener, or disconnected). Null is
+  // "unavailable", never "off".
+  property var captureStorage: null
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal transcriptionCleanupRequested(bool enabled)
+  signal captureStorageRequested(bool enabled)
 
   // Older listeners cannot honor independent switches; avoid silently changing
   // both modes if this UI was refreshed before its backend was restarted.
@@ -325,6 +330,117 @@ Item {
         Accessible.checked: cleanupChip.cleanupEnabled
         Accessible.onToggleAction: if (root.online && cleanupChip.available)
           root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
+      }
+
+      // Capture storage, like cleanup, follows the backend snapshot only: a
+      // click requests the opposite state and shows the listener's pending
+      // and saved states. Nothing changes optimistically.
+      Text {
+        objectName: "storageHeading"
+        topPadding: 4 * root.unit
+        text: "Storage"
+        color: root.muted
+        font.family: root.fontFamily
+        font.pixelSize: 11 * root.textScale
+      }
+      Rectangle {
+        id: storageChip
+        readonly property bool available: root.online && root.captureStorage !== null && root.captureStorage !== undefined
+        readonly property bool storageEnabled: available && root.captureStorage.enabled === true
+        readonly property string pending: available ? (root.captureStorage.pending || "") : ""
+        readonly property string warning: available && root.captureStorage.saved === false ? (root.captureStorage.warning || "") : ""
+        readonly property bool actionable: available && pending === ""
+        readonly property bool active: storageEnabled && pending === ""
+        readonly property color storageColor: "#8fb8de"
+        readonly property color warningColor: "#e3b36b"
+        readonly property string stateText: !root.online ? "Disconnected" : !available ? "Unavailable · restart the Companion listener to use this setting" : pending === "enabling" ? "Turning on…" : pending === "disabling" ? "Turning off…" : storageEnabled ? "On · new captures are saved" : "Off · new captures are not saved; labeling is unavailable"
+        function toggle() {
+          if (storageChip.actionable)
+            root.captureStorageRequested(!storageChip.storageEnabled);
+        }
+        objectName: "captureStorageSwitch"
+        width: Math.min(parent.width, Math.max(root.cardWidth, 480 * root.textScale))
+        height: storageLabels.height + 22 * root.unit
+        radius: 10 * root.unit
+        activeFocusOnTab: true
+        color: active ? Qt.rgba(storageColor.r, storageColor.g, storageColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
+        border.color: activeFocus || storageMouse.containsMouse ? storageColor : warning ? warningColor : active ? Qt.rgba(storageColor.r, storageColor.g, storageColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
+        Keys.onSpacePressed: storageChip.toggle()
+        Keys.onReturnPressed: storageChip.toggle()
+        Keys.onEnterPressed: storageChip.toggle()
+
+        Rectangle {
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: 11 * root.unit
+          width: 6 * root.unit
+          height: width
+          radius: width / 2
+          color: storageChip.active ? storageChip.storageColor : root.muted
+          opacity: storageChip.active ? 1 : 0.4
+        }
+
+        Column {
+          id: storageLabels
+          x: 11 * root.unit
+          anchors.verticalCenter: parent.verticalCenter
+          width: Math.max(0, parent.width - 34 * root.unit)
+          spacing: 5 * root.unit
+          Text {
+            width: parent.width
+            text: "Save captured audio and screenshots"
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: storageChip.active ? root.foreground : root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 13 * root.textScale
+          }
+          Text {
+            objectName: "captureStorageState"
+            width: parent.width
+            text: storageChip.stateText
+            wrapMode: Text.WordWrap
+            color: storageChip.active ? storageChip.storageColor : root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.textScale
+          }
+          Text {
+            objectName: "captureStorageWarning"
+            width: parent.width
+            visible: storageChip.warning !== ""
+            text: storageChip.warning
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: storageChip.warningColor
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.textScale
+          }
+          Text {
+            objectName: "captureStorageExplanation"
+            width: parent.width
+            text: "Save automatic captures for playback and inspection. Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate."
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 10 * root.textScale
+          }
+        }
+        MouseArea {
+          id: storageMouse
+          anchors.fill: parent
+          enabled: storageChip.actionable
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: storageChip.toggle()
+        }
+        Accessible.role: Accessible.CheckBox
+        Accessible.name: "Save captured audio and screenshots: " + storageChip.stateText + (storageChip.warning ? ". " + storageChip.warning : "")
+        Accessible.description: "Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate."
+        Accessible.checkable: true
+        Accessible.checked: storageChip.storageEnabled
+        Accessible.onToggleAction: storageChip.toggle()
+        Accessible.onPressAction: storageChip.toggle()
       }
     }
   }

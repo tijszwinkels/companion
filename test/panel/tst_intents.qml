@@ -153,6 +153,61 @@ Item {
       compare(requests, [true, false], "Offline clicks send nothing")
     }
 
+    function test_capture_storage_switch_reports_unavailable_pending_and_unsaved_states() {
+      const host = createTemporaryObject(viewComponent, scene)
+      const panel = host.panel
+      const controls = findChild(findChild(panel, "fullActivityStatus"), "intentControls")
+      const chip = findChild(controls, "captureStorageSwitch")
+      const state = findChild(controls, "captureStorageState")
+      const warning = findChild(controls, "captureStorageWarning")
+      let requests = []
+      panel.captureStorageRequested.connect(function(enabled) { requests.push(enabled) })
+
+      // An older listener reports nothing: unavailable, never "off".
+      verify(chip.visible)
+      compare(chip.actionable, false)
+      verify(state.text.startsWith("Unavailable"))
+      showItem(host, chip)
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [], "No setting is sent to a listener that does not support it")
+
+      panel.captureStorage = {enabled: false, pending: "", saved: true, warning: ""}
+      compare(state.text, "Off · new captures are not saved; labeling is unavailable")
+      compare(chip.Accessible.checked, false)
+      verify(findChild(controls, "captureStorageExplanation").text.includes("Native agent/model-provider retention is separate"))
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [true])
+      compare(chip.storageEnabled, false, "Wait for the backend acknowledgement")
+
+      panel.captureStorage = {enabled: false, pending: "enabling", saved: true, warning: ""}
+      compare(state.text, "Turning on…")
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [true], "No second request while one is pending")
+
+      panel.captureStorage = {enabled: true, pending: "", saved: true, warning: ""}
+      compare(state.text, "On · new captures are saved")
+      compare(chip.Accessible.checked, true)
+      // Keyboard users reach and toggle the same control.
+      chip.forceActiveFocus(Qt.TabFocusReason)
+      keyClick(Qt.Key_Space)
+      compare(requests, [true, false])
+
+      panel.captureStorage = {enabled: false, pending: "disabling", saved: true, warning: ""}
+      compare(state.text, "Turning off…")
+      compare(chip.storageEnabled, false, "Off applies at once; only the acknowledgement is pending")
+
+      const unsaved = "Capture storage is off for now, but this choice could not be saved. After a restart Companion may save captures again."
+      panel.captureStorage = {enabled: false, pending: "", saved: false, warning: unsaved}
+      verify(warning.visible)
+      compare(warning.text, unsaved)
+      verify(chip.Accessible.name.includes(unsaved))
+
+      panel.online = false
+      compare(state.text, "Disconnected")
+      mouseClick(chip, chip.width / 2, chip.height / 2)
+      compare(requests, [true, false], "Offline clicks send nothing")
+    }
+
     function test_context_changes_update_labels_without_disabling_the_intent() {
       const host = createTemporaryObject(viewComponent, scene)
       const controls = findChild(findChild(host, "fullActivityStatus"), "intentControls")

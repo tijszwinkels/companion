@@ -8,6 +8,7 @@ import { chatMessage } from '../../src/agents/types.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { frame, signal } from '../helpers.ts';
 import { remoteFixture, waitFor } from '../remote-fixture.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
 import { TestBrowser, chromiumPath, type TestPage } from './browser.ts';
 
 /**
@@ -323,7 +324,9 @@ test('activity shows this run and labels feedback', { skip }, async (context) =>
   const { fixture, browser } = await setup(context);
   const runtime = fixture.desktop.runtime;
   const observed = { ...frame, id: 41, utterance: 'Synthetic utterance for labels' };
-  runtime.activity.transcribed?.(observed);
+  // Labeling needs a saved capture: admit it like live input and save its PNG.
+  runtime.activity.transcribed?.({ ...observed, storage: runtime.activity.admitCapture?.(0) });
+  await runtime.activity.screenshotCaptured?.(observed.id, observed.screenshot);
   runtime.activity.intentRecognized?.(observed.id, 'IGNORE');
   runtime.activity.outcome?.(observed.id, 'ignored');
   runtime.activity.finished?.(observed.id);
@@ -341,6 +344,53 @@ test('activity shows this run and labels feedback', { skip }, async (context) =>
   await page.tap('.history-card .chip');
   await page.waitFor(`document.querySelector('.pill.good')`);
 });
+
+test(
+  'with capture storage off the phone shows Not saved, disables labeling and cannot label',
+  { skip },
+  async (context) => {
+    const captureStorage = new CaptureStoragePolicy();
+    const { fixture, browser } = await setup(context, { captureStorage });
+    const activity = fixture.desktop.runtime.activity;
+    const observed = { ...frame, id: 42, utterance: 'Synthetic utterance while off' };
+    activity.transcribed?.({ ...observed, storage: activity.admitCapture?.(0) });
+    await activity.screenshotCaptured?.(observed.id, observed.screenshot);
+    activity.intentRecognized?.(observed.id, 'IGNORE');
+    activity.outcome?.(observed.id, 'ignored');
+    activity.finished?.(observed.id);
+
+    const page = await pairedPhone(fixture, browser);
+    await page.tap('.rail-activity');
+    await page.waitFor(`document.querySelector('.history-card .not-saved')`);
+    assert.match(await text(page, '.history-card .not-saved'), /Not saved/);
+    assert.match(await text(page, '.labeling-unavailable'), /Labeling requires capture storage/);
+    for (const selector of ['.chip.label-correct', '.chip:not(.label-correct)']) {
+      assert.equal(
+        await page.evaluate(`document.querySelector('.history-card ${selector}').disabled`),
+        true,
+      );
+    }
+    // A screenshot-dependent session is not offered without the screenshot.
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('.history-card .actions button:nth-child(2)').disabled`,
+      ),
+      true,
+    );
+    // Nothing was saved and no label exists for this row.
+    const row = fixture.desktop.database
+      .prepare(
+        "SELECT id, capture_storage FROM utterances WHERE transcript = 'Synthetic utterance while off'",
+      )
+      .get()!;
+    assert.equal(row.capture_storage, 'off');
+    assert.equal(
+      fixture.desktop.database.prepare('SELECT COUNT(*) AS count FROM intent_feedback').get()!
+        .count,
+      0,
+    );
+  },
+);
 
 test(
   'Activity explains audio-only and recovered records without offering an empty question',
@@ -372,6 +422,8 @@ test(
       id: 92,
       utterance: 'Earlier supplied words',
       source: 'earlier-attempt',
+      // Admitted while storage is on, so it is not a "Not saved" entry.
+      storage: activity.admitCapture?.(0),
     });
     activity.outcome?.(92, 'error');
     activity.finished?.(92);

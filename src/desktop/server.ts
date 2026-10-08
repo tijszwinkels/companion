@@ -396,6 +396,7 @@ export class DesktopServer {
           action === 'toggle-sounds' ||
           action === 'set-intent-enabled' ||
           action === 'set-transcription-cleanup' ||
+          action === 'set-capture-storage' ||
           action === 'activity-history' ||
           action === 'agent-tool-page' ||
           action === 'agent-models' ||

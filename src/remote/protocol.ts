@@ -14,6 +14,7 @@ import type { AgentSession, PreviousSession } from '../agents/types.ts';
 import type { IntentState } from '../core/router.ts';
 import type { ActivityHistoryEntry, ActivityHistoryRemoval } from '../desktop/activity-history.ts';
 import type { HistoryEntry } from '../desktop/history.ts';
+import type { CaptureStorageState } from '../capture-storage/policy.ts';
 
 export type {
   ActivityHistoryEntry as ActivityEntry,
@@ -169,6 +170,11 @@ export interface EngineState {
   sessionControlsAvailable: boolean;
   previousSessions?: PreviousSession[];
   intents: IntentState[];
+  /**
+   * Read-only capture-storage state. Absent from older listeners, which
+   * means unknown, not off. The phone cannot change it (no remote action).
+   */
+  captureStorage?: CaptureStorageState;
 }
 
 export interface ActivityPage {
