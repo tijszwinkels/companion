@@ -2,7 +2,7 @@ import type { Log } from '../../core/frame.ts';
 import type { SensorPipeline } from '../../core/pipeline.ts';
 import type { Activity } from '../../core/activity.ts';
 import { audioFrames } from './capture.ts';
-import { Segmenter } from './segmenter.ts';
+import { FRAME_SAMPLES, SAMPLE_RATE, Segmenter, type Segment } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
 import { CaptureDiagnostics } from './capture-diagnostics.ts';
 
@@ -20,6 +20,18 @@ import { CaptureDiagnostics } from './capture-diagnostics.ts';
  * from the moment it is told, so the commitment floor counts from when speech
  * actually ended, not from when the segment closed.
  */
+/**
+ * The fastest rate, in samples per millisecond, at which the recorder can
+ * deliver captured audio: 16 kHz plus 0.2% for clock drift (real devices
+ * stay within about 0.01%). Because capture cannot run faster than this, the
+ * sample at stream position p was acquired no earlier than
+ * `recorderStarted + p / maximumSamplesPerMs`, however long VAD, the pipe or
+ * the queue delayed its processing. A file replay decodes faster than real
+ * time; its bound is then earlier than processing, which only makes
+ * archiving less likely.
+ */
+const maximumSamplesPerMs = (SAMPLE_RATE / 1000) * 1.002;
+
 export async function listen(
   vad: VoiceActivityDetector,
   pipeline: SensorPipeline,
@@ -39,9 +51,23 @@ export async function listen(
   let completed = false;
   vad.reset();
 
+  // Capture-storage admission (docs/capture-storage.md): the recorder starts
+  // after this moment, and `received` counts every sample it delivered. A
+  // segment ends with the newest frame, so its first sample's position is
+  // `received - samples.length`. One extra frame is subtracted because the
+  // last frame of a file is padded with silence. That position gives a
+  // conservative earliest acquisition time on the capture-storage clock.
+  const recorderStarted = activity.captureClock?.() ?? 0;
+  let received = 0;
+  const capturedFrom = (segment: Segment) => {
+    const firstSample = Math.max(0, received - segment.samples.length - FRAME_SAMPLES);
+    return recorderStarted + firstSample / maximumSamplesPerMs;
+  };
+
   try {
     for await (const frame of audioFrames(signal, options)) {
       signal.throwIfAborted();
+      received += frame.length;
       const wasSpeaking = segmenter.speaking;
       const wasCollecting = segmenter.collecting;
       const probability = await vad.probability(frame);
@@ -73,7 +99,13 @@ export async function listen(
 
       if (segment) {
         log('utterance', `Speech ended (${segment.reason})`);
-        pipeline.submit(segment.samples, signal, segment.leadIn, segment.trailingSilenceMs);
+        pipeline.submit(
+          segment.samples,
+          signal,
+          segment.leadIn,
+          segment.trailingSilenceMs,
+          capturedFrom(segment),
+        );
 
         // Files decode faster than real time. Keep every file segment by waiting
         // for the worker; microphone capture always continues independently.
@@ -89,7 +121,13 @@ export async function listen(
 
     if (tail) {
       log('utterance', 'Speech ended (end)');
-      pipeline.submit(tail.samples, signal, tail.leadIn, tail.trailingSilenceMs);
+      pipeline.submit(
+        tail.samples,
+        signal,
+        tail.leadIn,
+        tail.trailingSilenceMs,
+        capturedFrom(tail),
+      );
     } else if (tailWasOpen) {
       // A too-short tail at the end of the input is a rejected burst like any
       // other: its sound was the latest speech, so the held attempt's floor

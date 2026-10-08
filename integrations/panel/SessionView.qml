@@ -265,6 +265,8 @@ Item {
         toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
         toolRevision: message.toolGroup ? message.toolGroup.revision : "",
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
+        // False only when capture storage deliberately did not save it.
+        screenshotNotSaved: message.screenshotSaved === false,
         fromExternal: message.origin ? message.origin.kind === "external" : false,
         fromAgent: message.origin !== undefined && message.origin !== null,
         originTitle: message.origin ? message.origin.title || "" : "",
@@ -344,6 +346,7 @@ Item {
       required property string state
       required property bool screenshot
       required property string screenshotUrl
+      required property bool screenshotNotSaved
       required property bool toolUnavailable
       required property int toolCount
       required property string toolRevision
@@ -430,7 +433,7 @@ Item {
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
               : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
-                + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : " · screenshot unavailable") : "") : "Pi"
+                + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") : "Pi"
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: bubble.originLinked ? root.accent

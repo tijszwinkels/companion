@@ -75,6 +75,18 @@ Item {
       compare(question.getText(0, question.length), "**literal**")
     }
 
+    function test_unsaved_screenshot_says_not_saved_and_shows_no_image() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const unsaved = message("unsaved", "user", "Question while storage was off")
+      unsaved.screenshotSaved = false
+      const missing = message("missing", "user", "Question whose image is gone")
+      panel.sessions = [session([unsaved, missing])]
+      panel.selectedSessionId = "question-1"
+      tryVerify(function() { return findChild(panel, "bubble-missing") !== null })
+      compare(findChild(findChild(panel, "bubble-unsaved"), "messageHeading").text, "You · screenshot not saved")
+      compare(findChild(findChild(panel, "bubble-missing"), "messageHeading").text, "You · screenshot unavailable")
+    }
+
     function test_agent_heading_opens_source_tab_without_sending_a_message() {
       const panel = createTemporaryObject(panelComponent, parent)
       const incoming = message("agent-message", "user", "Please check this")

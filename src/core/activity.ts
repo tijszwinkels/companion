@@ -83,12 +83,15 @@ export interface Activity {
   deliveryStarted?(id: number): void;
   processing?(id: number): void;
   transcribed?(transcript: Transcript): void;
+  /** The capture-storage clock (monotonic ms) that `admitCapture` compares against. */
+  captureClock?(): number;
   /**
-   * Decide whether a capture that began `capturedForMs` ago may be archived.
+   * Decide whether a capture whose earliest sample was acquired no earlier
+   * than `capturedFrom` (on `captureClock`; default now) may be archived.
    * Called once per observation when it is admitted to the queue; a
    * continuation keeps the admission of the attempt that started it.
    */
-  admitCapture?(capturedForMs: number): CaptureAdmission;
+  admitCapture?(capturedFrom?: number): CaptureAdmission;
   /**
    * Persist the captured input before routing, if its admission allows it
    * (see `Transcript.storage`); shutdown waits for this write. Resolves

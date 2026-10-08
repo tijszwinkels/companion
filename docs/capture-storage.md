@@ -57,7 +57,10 @@ The CLI loads the choice before it accepts any capture or agent request.
 
 - **On** saves the choice first. Only captures that _start_ afterwards are
   saved: speech that began before the click is not, and nothing from an
-  earlier off period is saved later. A failed save leaves storage off.
+  earlier off period is saved later. A failed save leaves storage off; if
+  the failure came after the new file was already in place (for example
+  while syncing its directory), the panel warns that a restart may load
+  "on", and turning it off again saves "off".
 - **Off** applies immediately to new and in-flight captures. The click is
   acknowledged only after files that were already being renamed into place
   have settled; after that no late write can create or replace a capture. A
@@ -71,19 +74,38 @@ Each utterance keeps the decision made when it was admitted, through
 continuations, retries and queued agent turns. A continued utterance that
 straddles a change is not saved.
 
+When speech starts is decided from the recorder, not from when Companion
+gets round to processing it. The listener counts the samples the recorder
+delivered since it started; since capture cannot run faster than real time
+(allowing 0.2% clock drift), a segment's first sample was acquired no
+earlier than the recorder start plus its position. That bound is compared
+with the moment storage was turned on, so audio that was already buffered
+while storage was off stays unsaved, however long voice detection or the
+queue delayed it. In a very long listening period the drift allowance makes
+the first few seconds to a minute after an opt-in count as straddling;
+those utterances are not saved. A conversation started from an Activity
+entry ("New coding session") takes its decision when the request arrives,
+before the saved screenshot is read.
+
 ## Not saved entries
 
-Activity entries record `capture_storage` (`on`/`off`, null for older rows)
-and `input_kind` (`speech`/`typed`). An `off` entry shows **Not saved**. It has
-no recording to play back or inspect, and "New coding session" (which starts
-from the saved screenshot) is not offered; Companion never substitutes a newer
-or older screenshot. Copy and insert still work. A conversation message whose
-screenshot was not saved stores `screenshotSaved: false` and never shows the
-conversation's PNG from an earlier capture.
+Activity entries record `capture_storage` (`on`/`off`, null for older rows),
+`input_kind` (`speech`/`typed`) and whether their screenshot and WAV were
+actually published (`screenshot_saved`, `audio_saved`). An `off` entry shows
+**Not saved**. It has no recording to play back or inspect, and "New coding
+session" (which starts from the saved screenshot) is not offered; Companion
+never substitutes a newer or older screenshot. Copy and insert still work.
 
-An observation whose files were only partly written when storage was turned
-off (for example its WAV, but not its PNG) keeps `on`: something was saved.
-It cannot be labeled, because a required file is missing.
+An observation whose files were only partly written (its WAV published just
+before an Off, but not its PNG; or a write that failed) keeps `on`, because
+something was saved, and shows **Partly saved** with what is missing. It
+cannot be labeled, and without its screenshot no coding session can start
+from it.
+
+A conversation message whose screenshot was not saved stores
+`screenshotSaved: false`. The desktop and phone show "screenshot not saved"
+for it (not "unavailable", which means an unknown or missing file) and never
+show the conversation's PNG from an earlier capture.
 
 Continued speech while off still ends in exactly one Activity record and one
 action. Deliberately not saving the audio is not a recording failure; a real
@@ -100,10 +122,14 @@ requires capture storage:
   requests and spoken "label previous correct/incorrect" without writing
   anything or playing the success cue. Existing labels stay.
 - While on, an entry can be labeled only if its own capture was saved and is
-  still readable: a valid PNG, plus the WAV for spoken input. Typed input
-  needs no WAV. Older rows (from before this setting) are held to the PNG,
-  because typed and spoken rows cannot be told apart there. Entries created
-  while off never become labelable.
+  still complete: a PNG whose chunks and checksums are intact through its
+  end, plus, for spoken input, a 16 kHz mono PCM WAV with a nonempty data
+  chunk inside the file. Typed input needs no WAV. Older rows (from before
+  this setting) are held to the PNG, because typed and spoken rows cannot be
+  told apart there. Entries created while off, and partly saved entries,
+  never become labelable. Activity cards disable labeling for entries the
+  listener knows are incomplete; the listener checks the files again before
+  writing any label.
 - A spoken label command must itself have been admitted while storage was
   on; one spoken during an off period is not revived by turning storage on.
 

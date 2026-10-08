@@ -5,10 +5,10 @@ import type { ScreenSensor } from '../src/sensors/screen/sensor.ts';
 import type { SpeechTranscriber } from '../src/sensors/audio/transcriber.ts';
 import type { CommitClock } from '../src/core/utterance-continuation.ts';
 
-/** A tiny PNG and a stable window identity; no desktop access is needed. */
+/** A tiny, complete PNG (valid chunk CRCs) and a stable window identity; no desktop access is needed. */
 export const screenshot: Screenshot = {
   png: Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
     'base64',
   ),
   capturedAt: 1000,

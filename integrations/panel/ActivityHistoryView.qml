@@ -236,6 +236,8 @@ ListView {
       cleanupFallback: model.cleanupFallback
       transcriptSource: model.transcriptSource
       captureStorage: model.captureStorage
+      labelingUnavailable: model.labelingUnavailable
+      screenshotMissing: model.screenshotMissing
       labelingAvailable: root.labelingAvailable
       intents: root.intents
       online: root.online

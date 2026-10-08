@@ -412,6 +412,9 @@ function HistoryCard(props: {
   const audioOnly = entry.transcriptSource === 'audio-only';
   // Its audio and screenshot were deliberately not saved (capture storage off).
   const notSaved = entry.captureStorage === 'off';
+  // Some required original was not kept (the listener says which).
+  const partlySaved = !notSaved && Boolean(entry.labelingUnavailable);
+  const screenshotMissing = notSaved || entry.screenshotSaved === false;
   const [choosing, setChoosing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -430,13 +433,15 @@ function HistoryCard(props: {
 
   const feedback =
     entry.correct === true ? 'correct' : entry.correct === false ? 'incorrect' : undefined;
-  const labelable = props.labelingAvailable && !notSaved;
+  const labelable = props.labelingAvailable && !notSaved && !partlySaved;
   const canLabel = props.online && entry.intent !== null && !busy && labelable;
   let labelingReason = '';
   if (entry.intent !== null && !props.labelingAvailable) {
     labelingReason = 'Labeling requires capture storage.';
   } else if (entry.intent !== null && notSaved) {
     labelingReason = "Labeling requires this entry's saved capture.";
+  } else if (entry.intent !== null && partlySaved) {
+    labelingReason = "Labeling requires this entry's complete saved capture.";
   }
 
   return (
@@ -450,6 +455,7 @@ function HistoryCard(props: {
         </p>
       )}
       {notSaved && <p class="hint not-saved">Not saved · audio and screenshot were not kept.</p>}
+      {partlySaved && <p class="hint partly-saved">Partly saved · {entry.labelingUnavailable}.</p>}
       <div class="facts">
         <span>{clockTime(entry.observedAt)}</span>
         {entry.application && <span class="pill">{entry.application}</span>}
@@ -478,7 +484,7 @@ function HistoryCard(props: {
         <button
           class="action small"
           // It starts from the saved screenshot; never substitute another one.
-          disabled={!props.online || busy || audioOnly || notSaved}
+          disabled={!props.online || busy || audioOnly || screenshotMissing}
           onClick={() =>
             act(async () => {
               await store.request('start-history-agent', { id: entry.id });

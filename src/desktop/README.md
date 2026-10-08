@@ -277,12 +277,16 @@ already past their final check, then saves; the reply follows that barrier.
 Results are `capture-storage-enabled` and `capture-storage-disabled`; a failed
 save is an error reply, and storage then stays (or remains) off.
 
-History entries carry `captureStorage` (`"on"`, `"off"` or null for older rows)
-and `inputKind` (`"speech"`, `"typed"` or null), stored as the additive
-`capture_storage`/`input_kind` columns. `"off"` means the capture was
-deliberately not saved. While storage is off, or when an entry is `"off"` or
-lacks its readable PNG (and WAV for speech), `label-history` and the spoken
-label shortcuts are refused. `start-history-agent` still requires the original
+History entries carry `captureStorage` (`"on"`, `"off"` or null for older rows),
+`inputKind` (`"speech"`, `"typed"` or null), `screenshotSaved` and `audioSaved`
+(whether that file was published; null for older rows), and a derived
+`labelingUnavailable` reason (null when the required originals were saved),
+stored as the additive `capture_storage`, `input_kind`, `screenshot_saved` and
+`audio_saved` columns. `"off"` means the capture was deliberately not saved.
+While storage is off, or when an entry has a `labelingUnavailable` reason or
+lacks a complete PNG (and WAV for speech), `label-history` and the spoken label
+shortcuts are refused. Speech is admitted from a recorder-position bound passed
+by the listener (`SensorPipeline.submit`'s `capturedFrom`, on the policy clock). `start-history-agent` still requires the original
 screenshot and never substitutes another one.
 
 History entries (snapshot `history`, `activity-entry` and Activity pages) carry

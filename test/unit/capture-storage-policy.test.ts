@@ -242,10 +242,13 @@ test('T2: off→on never revives earlier admissions, straddling captures or an o
   await policy.setEnabled(true);
   assert.equal(policy.allows(whileOff), false, 'Off-started work stays unsaved');
 
-  // Speech that began 500 ms before the opt-in straddles it.
+  // Speech whose first sample may date from before the opt-in straddles it.
+  const enabledAt = time.now();
   time.advance(200);
-  assert.equal(policy.admit(500).eligible, false);
-  assert.equal(policy.admit(100).eligible, true);
+  assert.equal(policy.admit(enabledAt - 300).eligible, false);
+  assert.equal(policy.admit(enabledAt).eligible, true);
+  assert.equal(policy.admit(enabledAt + 100).eligible, true);
+  assert.equal(policy.admit().eligible, true, 'Default: starting now');
 
   const beforeToggle = policy.admit();
   await policy.setEnabled(false);

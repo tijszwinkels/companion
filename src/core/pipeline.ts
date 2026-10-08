@@ -65,8 +65,20 @@ interface Job {
  * voiced frame (see `submit`); a continuation also names the attempt it replaces.
  */
 type JobInput =
-  | { samples: Float32Array; trailingSilenceMs: number; text?: never; replaces?: Job }
-  | { text: string; samples?: never; trailingSilenceMs?: never; replaces?: never };
+  | {
+      samples: Float32Array;
+      trailingSilenceMs: number;
+      capturedFrom?: number;
+      text?: never;
+      replaces?: Job;
+    }
+  | {
+      text: string;
+      samples?: never;
+      trailingSilenceMs?: never;
+      capturedFrom?: never;
+      replaces?: never;
+    };
 
 /** Audio/VAD continues independently; one worker routes frames in speech order. */
 export class SensorPipeline implements InspectableModule {
@@ -118,25 +130,34 @@ export class SensorPipeline implements InspectableModule {
    * waiting in the queue, counts as quiet time. A merged attempt ends in the
    * new segment, so the same value applies. Callers without VAD pass nothing:
    * no silence is assumed, and the full floor counts from admission.
+   *
+   * `capturedFrom` is a lower bound, on the capture-storage clock
+   * (Activity.captureClock), for when the first of these samples was
+   * acquired. It decides whether the utterance may be archived; see
+   * docs/capture-storage.md.
    */
   submit(
     samples: Float32Array,
     signal = this.signal,
     leadIn: Float32Array = new Float32Array(0),
     trailingSilenceMs = 0,
+    capturedFrom?: number,
   ): boolean {
     const held = this.held;
     this.held = undefined;
 
     if (held && this.continuable(held, leadIn.length + samples.length)) {
       const combined = concatenate([held.samples!, leadIn, samples]);
-      return this.enqueue({ samples: combined, trailingSilenceMs, replaces: held }, signal);
+      return this.enqueue(
+        { samples: combined, trailingSilenceMs, capturedFrom, replaces: held },
+        signal,
+      );
     }
 
     // Not a continuation (or not mergeable): the held attempt proceeds with
     // its own deadlines, because this speech can no longer join it.
     held?.attempt!.release();
-    return this.enqueue({ samples, trailingSilenceMs }, signal);
+    return this.enqueue({ samples, trailingSilenceMs, capturedFrom }, signal);
   }
 
   /**
@@ -221,7 +242,7 @@ export class SensorPipeline implements InspectableModule {
   }
 
   private enqueue(input: JobInput, signal: AbortSignal, target?: string): boolean {
-    const { replaces, trailingSilenceMs, ...observation } = input;
+    const { replaces, trailingSilenceMs, capturedFrom, ...observation } = input;
 
     if (signal.aborted || this.signal.aborted) {
       replaces?.attempt!.release();
@@ -251,18 +272,21 @@ export class SensorPipeline implements InspectableModule {
       : undefined;
     const routeSignal = attempt ? AbortSignal.any([jobSignal, attempt.signal]) : jobSignal;
 
-    // Capture storage is decided once per spoken utterance, for the whole
-    // span of its audio: the samples plus the measured trailing silence, so
-    // the estimated start is never later than the real one. A continuation
-    // inherits the original decision and its later revocation.
+    // Capture storage is decided once per spoken utterance, from when its
+    // earliest sample was acquired. The listener passes a conservative bound
+    // from its recorder position (`capturedFrom`), which does not move later
+    // when VAD or the queue falls behind. Other callers (supplied audio,
+    // tests) fall back to now minus the audio span. A continuation inherits
+    // the original decision and its later revocation. Typed text starts now.
     let storage: CaptureAdmission;
     if (replaces) {
       storage = replaces.storage;
+    } else if (observation.samples) {
+      const spanMs = (observation.samples.length / 16000) * 1000 + (trailingSilenceMs ?? 0);
+      const from = capturedFrom ?? (this.activity.captureClock?.() ?? 0) - spanMs;
+      storage = this.activity.admitCapture?.(from) ?? notAdmitted;
     } else {
-      const capturedForMs = observation.samples
-        ? (observation.samples.length / 16000) * 1000 + (trailingSilenceMs ?? 0)
-        : 0;
-      storage = this.activity.admitCapture?.(capturedForMs) ?? notAdmitted;
+      storage = this.activity.admitCapture?.() ?? notAdmitted;
     }
 
     // Supersede before admitting the replacement: the old attempt's routing is

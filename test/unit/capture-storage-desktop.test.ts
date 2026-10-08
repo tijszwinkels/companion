@@ -624,7 +624,7 @@ async function finishedRow(
     ...frame,
     id,
     input: options.input,
-    storage: activity.admitCapture?.(0),
+    storage: activity.admitCapture?.(),
   });
   if (options.screenshot) {
     await activity.screenshotCaptured?.(id, canaryScreenshot);
@@ -852,9 +852,9 @@ test('a capture partly saved before an Off is not called "Not saved", and cannot
   const activity = setup.runtime.activity;
 
   // Fully refused: the Off came before either write.
-  activity.transcribed?.({ ...frame, id: 1, input: 'speech', storage: activity.admitCapture?.(0) });
+  activity.transcribed?.({ ...frame, id: 1, input: 'speech', storage: activity.admitCapture?.() });
   // Partly saved: its WAV was published before the Off, its PNG was not.
-  activity.transcribed?.({ ...frame, id: 2, input: 'speech', storage: activity.admitCapture?.(0) });
+  activity.transcribed?.({ ...frame, id: 2, input: 'speech', storage: activity.admitCapture?.() });
   await activity.audioCaptured?.(2, canaryAudio(160));
   await policy.setEnabled(false);
   await activity.audioCaptured?.(1, canaryAudio(160));

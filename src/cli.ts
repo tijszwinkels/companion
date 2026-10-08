@@ -285,7 +285,8 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // carry their capture-storage admission to agent conversations.
     const activity = desktop?.activity ?? {
       delivery: new DeliveryControl(),
-      admitCapture: (capturedForMs: number) => captureStorage.admit(capturedForMs),
+      captureClock: () => captureStorage.time(),
+      admitCapture: (capturedFrom?: number) => captureStorage.admit(capturedFrom),
     };
 
     // Subscriptions provide prefix shortcuts and/or the detector's prompt entries.
@@ -356,7 +357,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
         observedAt: Date.now(),
         utterance: values.text,
         input: 'typed',
-        storage: activity.admitCapture?.(0),
+        storage: activity.admitCapture?.(),
       };
       activity.processing?.(1);
       const interaction = activity.interactionContext?.();

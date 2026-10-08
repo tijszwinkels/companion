@@ -171,7 +171,7 @@ export async function desktopFixture(
     messages,
     /** A row admitted like a live capture (saved while storage is on). */
     seed(id = frame.id) {
-      const storage = runtime.activity.admitCapture?.(0);
+      const storage = runtime.activity.admitCapture?.();
       runtime.activity.transcribed?.({ ...frame, id, input: 'typed', storage });
       return database.prepare('SELECT id FROM utterances ORDER BY rowid DESC LIMIT 1').get()!.id;
     },

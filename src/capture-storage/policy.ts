@@ -47,6 +47,10 @@ const unreadableWarning =
 const unsavedOffWarning =
   'Capture storage is off for now, but this choice could not be saved. After a restart Companion may save captures again.';
 
+/** Shown when a failed enable may still have left "on" in the saved file. */
+const failedEnableWarning =
+  'Capture storage stays off, but the saved setting may now say on. After a restart Companion may save captures. Turn it off again to save off.';
+
 /**
  * The one capture-specific storage gate shared by every automatic writer of
  * Companion-owned audio and screenshots (Activity WAV/PNG, empty-ASR
@@ -148,13 +152,22 @@ export class CaptureStoragePolicy extends EventEmitter {
   }
 
   /**
-   * Admit a capture that began `capturedForMs` milliseconds ago. It is
-   * eligible only if storage was on, in the current generation, for that
-   * entire span: speech that started before an opt-in is never archived.
+   * The policy's monotonic clock, in milliseconds. Capture sources stamp
+   * their acquisition with it, so admission compares like with like.
    */
-  admit(capturedForMs = 0): CaptureAdmission {
-    const startedAt = this.now() - Math.max(0, capturedForMs);
-    const eligible = this.effective && startedAt >= this.enabledAt;
+  time(): number {
+    return this.now();
+  }
+
+  /**
+   * Admit a capture whose earliest sample was acquired no earlier than
+   * `capturedFrom` (on `time()`; default: now). It is eligible only if storage
+   * was on, in the current generation, from that moment: speech that started
+   * before an opt-in is never archived. Callers pass a conservative lower
+   * bound; an earlier value only makes a capture less likely to be saved.
+   */
+  admit(capturedFrom: number = this.now()): CaptureAdmission {
+    const eligible = this.effective && capturedFrom >= this.enabledAt;
 
     return Object.freeze({ generation: this.generationNumber, eligible });
   }
@@ -238,6 +251,10 @@ export class CaptureStoragePolicy extends EventEmitter {
       try {
         await this.preference?.save(true);
       } catch {
+        // The save can fail after the new file was renamed into place (for
+        // example while syncing its directory). Never claim that the old
+        // "off" is still what a restart would load unless the file says so.
+        await this.checkAfterFailedEnable();
         throw Error('Capture storage could not be saved, so it stays off');
       }
 
@@ -280,6 +297,27 @@ export class CaptureStoragePolicy extends EventEmitter {
       this.disablesPending--;
       this.emit('change');
     }
+  }
+
+  /**
+   * After a failed enable, compare the file with the effective "off" state.
+   * A file that still says off (or is missing) matches it; anything else,
+   * including a file that cannot be read now, may load "on" after a restart.
+   */
+  private async checkAfterFailedEnable(): Promise<void> {
+    let saved: Awaited<ReturnType<CaptureStoragePreference['load']>> = { status: 'invalid' };
+    try {
+      saved = (await this.preference?.load()) ?? { status: 'invalid' };
+    } catch {
+      // Treated as unknown below.
+    }
+
+    const matchesOff = saved.status === 'missing' || (saved.status === 'saved' && !saved.enabled);
+    if (matchesOff) {
+      return;
+    }
+    this.savedState = false;
+    this.warningText = failedEnableWarning;
   }
 
   /** Start a new "on" generation for captures that begin at or after `since`. */

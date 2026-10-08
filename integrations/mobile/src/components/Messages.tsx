@@ -70,7 +70,14 @@ function UserMessage(props: { message: AgentMessage }) {
   return (
     <div class={classes.join(' ')}>
       {from && <div class={fromClass}>{from}</div>}
-      {message.screenshot && <Screenshot url={message.screenshotUrl} />}
+      {message.screenshot && message.screenshotSaved === false && (
+        // Deliberately not kept (capture storage off): never a placeholder
+        // for an image that might still load, and never an older image.
+        <div class="state-note screenshot-not-saved">Screenshot not saved</div>
+      )}
+      {message.screenshot && message.screenshotSaved !== false && (
+        <Screenshot url={message.screenshotUrl} />
+      )}
       {message.text && <div class="bubble">{message.text}</div>}
       {message.state === 'queued' && <div class="state-note">Queued · sends after this answer</div>}
       {message.state === 'error' && <div class="state-note">Not delivered</div>}

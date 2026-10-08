@@ -70,7 +70,11 @@ QtObject {
       transcriptSource: entry.transcriptSource || "",
       // "off" when this entry's capture was deliberately not saved; empty
       // when saved or unknown.
-      captureStorage: entry.captureStorage || ""
+      captureStorage: entry.captureStorage || "",
+      // Why the listener knows this entry cannot be labeled (its saved
+      // originals are incomplete); empty when it can or does not report it.
+      labelingUnavailable: entry.labelingUnavailable || "",
+      screenshotMissing: entry.screenshotSaved === false
     };
     // New completions normally insert at zero; feedback/pages locate their
     // stable sequence by binary search without scanning the whole session.

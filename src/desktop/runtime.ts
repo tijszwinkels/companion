@@ -334,7 +334,8 @@ export class DesktopRuntime {
         this.sounds.play('processing');
         this.server.broadcast();
       },
-      admitCapture: (capturedForMs) => options.captureStorage.admit(capturedForMs),
+      captureClock: () => options.captureStorage.time(),
+      admitCapture: (capturedFrom) => options.captureStorage.admit(capturedFrom),
       transcribed: (transcript) => {
         if (transcript.storage && !this.frameStorage.has(transcript.id)) {
           this.frameStorage.set(transcript.id, transcript.storage);
@@ -1275,7 +1276,12 @@ export class DesktopRuntime {
       if (this.options.preview) {
         return 'preview';
       }
-      const frame = await this.history.recordedFrame(request.id);
+      // Decide the conversation screenshot copy now, before the asynchronous
+      // read: a request made while capture storage was off stays unsaved even
+      // if storage is turned on before the read completes.
+      const storage = this.options.captureStorage.admit();
+      const recorded = await this.history.recordedFrame(request.id);
+      const frame = { ...recorded, storage };
       // A phone may reuse the saved frame, but must not redirect desktop focus.
       this.options.agents.start(frame, this.signal, 'coding', undefined, Boolean(remote));
       return 'started';

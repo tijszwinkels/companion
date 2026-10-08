@@ -356,6 +356,25 @@ Item {
       compare(findChild(card, "historyLabelingUnavailable").text, "Labeling requires this entry's saved capture.");
       card.choosingIntent = false;
 
+      // A partly saved entry (its screenshot was not kept) stays unlabelable
+      // and offers no screenshot-dependent session, even while storage is on.
+      const partial = entry(3, null);
+      partial.captureStorage = "on";
+      partial.screenshotSaved = false;
+      partial.labelingUnavailable = "The original screenshot for this entry was not saved";
+      state.update("run", partial);
+      tryVerify(() => findChild(host, "history-utterance-3") !== null);
+      const partialCard = findChild(host, "history-utterance-3");
+      compare(partialCard.labelable, false);
+      compare(findChild(partialCard, "historyNotSaved").visible, false);
+      verify(findChild(partialCard, "historyPartlySaved").visible);
+      compare(findChild(partialCard, "historyPartlySaved").text, "Partly saved · The original screenshot for this entry was not saved");
+      compare(findChild(partialCard, "history-action-start-history-agent").visible, false);
+      partialCard.choosingIntent = true;
+      compare(findChild(partialCard, "history-action-correct").enabled, false);
+      compare(findChild(partialCard, "historyLabelingUnavailable").text, "Labeling requires this entry's complete saved capture.");
+      partialCard.choosingIntent = false;
+
       // While an Off is being acknowledged, labeling is already unavailable.
       host.panel.captureStorage = {enabled: false, pending: "disabling", saved: true, warning: ""};
       compare(old.labelable, false);

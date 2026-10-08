@@ -176,6 +176,9 @@ test('removed Activity entries keep paging positions and carry no transcript in 
         transcriptSource: null,
         captureStorage: null,
         inputKind: null,
+        screenshotSaved: null,
+        audioSaved: null,
+        labelingUnavailable: null,
       },
       { correct: null, actualIntent: null },
     );

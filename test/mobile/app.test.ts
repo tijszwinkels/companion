@@ -325,7 +325,7 @@ test('activity shows this run and labels feedback', { skip }, async (context) =>
   const runtime = fixture.desktop.runtime;
   const observed = { ...frame, id: 41, utterance: 'Synthetic utterance for labels' };
   // Labeling needs a saved capture: admit it like live input and save its PNG.
-  runtime.activity.transcribed?.({ ...observed, storage: runtime.activity.admitCapture?.(0) });
+  runtime.activity.transcribed?.({ ...observed, storage: runtime.activity.admitCapture?.() });
   await runtime.activity.screenshotCaptured?.(observed.id, observed.screenshot);
   runtime.activity.intentRecognized?.(observed.id, 'IGNORE');
   runtime.activity.outcome?.(observed.id, 'ignored');
@@ -353,7 +353,7 @@ test(
     const { fixture, browser } = await setup(context, { captureStorage });
     const activity = fixture.desktop.runtime.activity;
     const observed = { ...frame, id: 42, utterance: 'Synthetic utterance while off' };
-    activity.transcribed?.({ ...observed, storage: activity.admitCapture?.(0) });
+    activity.transcribed?.({ ...observed, storage: activity.admitCapture?.() });
     await activity.screenshotCaptured?.(observed.id, observed.screenshot);
     activity.intentRecognized?.(observed.id, 'IGNORE');
     activity.outcome?.(observed.id, 'ignored');
@@ -393,6 +393,60 @@ test(
 );
 
 test(
+  'the phone shows partly saved entries and unsaved conversation screenshots honestly',
+  { skip },
+  async (context) => {
+    const captureStorage = CaptureStoragePolicy.enabledForTesting();
+    const { fixture, browser } = await setup(context, { captureStorage });
+    const activity = fixture.desktop.runtime.activity;
+
+    // Its WAV was published before an Off; its PNG was refused after it.
+    activity.transcribed?.({
+      ...frame,
+      id: 43,
+      utterance: 'Synthetic partly saved',
+      input: 'speech',
+      storage: activity.admitCapture?.(),
+    });
+    await activity.audioCaptured?.(43, new Float32Array(160).fill(0.1));
+    await captureStorage.setEnabled(false);
+    await activity.screenshotCaptured?.(43, frame.screenshot);
+    activity.intentRecognized?.(43, 'IGNORE');
+    activity.outcome?.(43, 'ignored');
+    activity.finished?.(43);
+
+    // A conversation started while off: the agent gets the image, no copy kept.
+    fixture.sessions.start({ ...frame, utterance: 'Unsaved screen question' }, signal());
+
+    await captureStorage.setEnabled(true);
+    const page = await pairedPhone(fixture, browser);
+    await page.tap('.rail-activity');
+    await page.waitFor(`document.querySelector('.history-card .partly-saved')`);
+    assert.match(
+      await text(page, '.history-card .partly-saved'),
+      /Partly saved · The original screenshot for this entry was not saved/,
+    );
+    assert.match(await text(page, '.labeling-unavailable'), /complete saved capture/);
+    assert.equal(
+      await page.evaluate(`document.querySelector('.history-card .chip.label-correct').disabled`),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('.history-card .actions button:nth-child(2)').disabled`,
+      ),
+      true,
+    );
+
+    await page.tap('.session-tab');
+    await page.waitFor(`document.querySelector('.screenshot-not-saved')`);
+    assert.match(await text(page, '.screenshot-not-saved'), /Screenshot not saved/);
+    assert.equal(await page.evaluate(`document.querySelector('.screenshot-thumb')`), null);
+    assert.deepEqual(page.errors, []);
+  },
+);
+
+test(
   'Activity explains audio-only and recovered records without offering an empty question',
   { skip },
   async (context) => {
@@ -422,9 +476,11 @@ test(
       id: 92,
       utterance: 'Earlier supplied words',
       source: 'earlier-attempt',
-      // Admitted while storage is on, so it is not a "Not saved" entry.
-      storage: activity.admitCapture?.(0),
+      // Admitted while storage is on, with its screenshot saved, so a coding
+      // session can start from it.
+      storage: activity.admitCapture?.(),
     });
+    await activity.screenshotCaptured?.(92, frame.screenshot);
     activity.outcome?.(92, 'error');
     activity.finished?.(92);
     await page.waitFor(`document.querySelectorAll('.history-card').length === 2`);

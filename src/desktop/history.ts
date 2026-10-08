@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -12,6 +12,7 @@ import type {
 } from '../core/transcription-cleanup/record.ts';
 import { encodeWav } from '../sensors/audio/segmenter.ts';
 import { artifactPath, removeArtifacts, saveArtifact } from './artifacts.ts';
+import { completePng, completeWav } from './capture-media.ts';
 
 export interface IntentFeedback {
   correct: boolean | null;
@@ -56,10 +57,31 @@ export interface HistoryEntry {
   captureStorage: 'on' | 'off' | null;
   /** `speech` or `typed` Activity text; null when unknown (older rows). */
   inputKind: 'speech' | 'typed' | null;
+  /**
+   * Whether this observation's screenshot / WAV was actually published.
+   * False after a refusal by capture storage or a failed write; null for
+   * rows from before capture storage, where only the files can tell.
+   */
+  screenshotSaved: boolean | null;
+  audioSaved: boolean | null;
+  /**
+   * Why this entry cannot be labeled from its original capture, as far as
+   * the database knows; null when its required originals were saved (or the
+   * row is older). Labeling also requires capture storage to be on, and the
+   * listener checks the files themselves again before writing a label.
+   */
+  labelingUnavailable: string | null;
 }
 
 /** Row shape before booleans are decoded; SQLite stores them as integers. */
-type HistoryRow = Omit<HistoryEntry, 'cleanupEnabled'> & { cleanupEnabled: number | null };
+type HistoryRow = Omit<
+  HistoryEntry,
+  'cleanupEnabled' | 'screenshotSaved' | 'audioSaved' | 'labelingUnavailable'
+> & {
+  cleanupEnabled: number | null;
+  screenshotSaved: number | null;
+  audioSaved: number | null;
+};
 
 // Every entry query selects the same columns in the same order.
 const ENTRY_COLUMNS = `id, observed_at AS observedAt, transcript AS utterance,
@@ -67,13 +89,39 @@ const ENTRY_COLUMNS = `id, observed_at AS observedAt, transcript AS utterance,
       cleanup_enabled AS cleanupEnabled, cleanup_status AS cleanupStatus,
       cleaned_text AS cleanedText, cleanup_fallback AS cleanupFallback,
       transcript_source AS transcriptSource, capture_storage AS captureStorage,
-      input_kind AS inputKind`;
+      input_kind AS inputKind, screenshot_saved AS screenshotSaved, audio_saved AS audioSaved`;
+
+function decodeBoolean(value: number | null): boolean | null {
+  return value === null ? null : value === 1;
+}
 
 function decodeEntry(row: HistoryRow): HistoryEntry {
-  return {
+  const entry = {
     ...row,
-    cleanupEnabled: row.cleanupEnabled === null ? null : row.cleanupEnabled === 1,
+    cleanupEnabled: decodeBoolean(row.cleanupEnabled),
+    screenshotSaved: decodeBoolean(row.screenshotSaved),
+    audioSaved: decodeBoolean(row.audioSaved),
   };
+  return { ...entry, labelingUnavailable: savedMediaProblem(entry) };
+}
+
+/**
+ * The recorded reason an entry lacks the originals a label needs: its
+ * screenshot, and for spoken input its WAV. Typed input needs no WAV.
+ */
+function savedMediaProblem(
+  entry: Pick<HistoryEntry, 'captureStorage' | 'inputKind' | 'screenshotSaved' | 'audioSaved'>,
+): string | null {
+  if (entry.captureStorage === 'off') {
+    return 'This entry was not saved, so it cannot be labeled';
+  }
+  if (entry.screenshotSaved === false) {
+    return 'The original screenshot for this entry was not saved';
+  }
+  if (entry.inputKind === 'speech' && entry.audioSaved === false) {
+    return 'The original audio for this entry was not saved';
+  }
+  return null;
 }
 
 /**
@@ -188,6 +236,8 @@ export class UtteranceHistory {
         // from existing files and no recording is touched.
         ['capture_storage', "TEXT CHECK (capture_storage IN ('on', 'off'))"],
         ['input_kind', "TEXT CHECK (input_kind IN ('speech', 'typed'))"],
+        ['screenshot_saved', 'INTEGER CHECK (screenshot_saved IN (0, 1))'],
+        ['audio_saved', 'INTEGER CHECK (audio_saved IN (0, 1))'],
       ];
       for (const [name, definition] of additiveColumns) {
         if (!utteranceColumns.some((column) => column.name === name)) {
@@ -462,8 +512,8 @@ export class UtteranceHistory {
       .prepare(
         `INSERT INTO utterances
       (id, observed_at, transcript, application, window_title, window_address, transcript_source,
-        capture_storage, input_kind)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        capture_storage, input_kind, screenshot_saved, audio_saved)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
       )
       .run(
         id,
@@ -560,7 +610,11 @@ export class UtteranceHistory {
       screenshot.png,
       current,
     );
-    return saved ? 'saved' : undefined;
+    if (!saved) {
+      return undefined;
+    }
+    this.db.prepare('UPDATE utterances SET screenshot_saved = 1 WHERE id = ?').run(id);
+    return 'saved';
   }
 
   /** Publish the WAV; results as for `saveScreenshot`. */
@@ -587,7 +641,11 @@ export class UtteranceHistory {
       wav,
       current,
     );
-    return saved ? 'saved' : undefined;
+    if (!saved) {
+      return undefined;
+    }
+    this.db.prepare('UPDATE utterances SET audio_saved = 1 WHERE id = ?').run(id);
+    return 'saved';
   }
 
   /**
@@ -604,35 +662,32 @@ export class UtteranceHistory {
 
   /**
    * Why this entry cannot be labeled from its original capture, or undefined
-   * when it can. Called only while capture storage is on. An entry recorded
-   * with storage off never qualifies, even if storage is on now (no
-   * backfill). Otherwise its original screenshot must be a readable PNG, and
-   * spoken input also needs its WAV. Typed input has no WAV, and rows from
-   * before capture storage (unknown input) are only held to the screenshot,
-   * because typed and spoken rows cannot be told apart there.
+   * when it can. Called only while capture storage is on. The recorded state
+   * comes first (`HistoryEntry.labelingUnavailable`): an entry recorded with
+   * storage off never qualifies, even if storage is on now (no backfill).
+   * Then the files themselves: the original screenshot must be a complete
+   * PNG, and spoken input also needs a complete WAV. Typed input has no WAV,
+   * and rows from before capture storage (unknown input) are only held to
+   * the screenshot, because typed and spoken rows cannot be told apart there.
    */
   async labelingUnavailable(id: string): Promise<string | undefined> {
     const entry = this.find(id);
     if (!entry) {
       return 'Utterance not found';
     }
-    if (entry.captureStorage === 'off') {
-      return 'This entry was not saved, so it cannot be labeled';
+    if (entry.labelingUnavailable) {
+      return entry.labelingUnavailable;
     }
 
     const directory = dirname(this.path);
-    const png = await fileStart(artifactPath(directory, id, entry.observedAt, 'screenshots'), 8);
-    if (!png?.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    const png = await readOriginal(artifactPath(directory, id, entry.observedAt, 'screenshots'));
+    if (!png || !completePng(png)) {
       return 'The original screenshot for this entry is unavailable';
     }
 
     if (entry.inputKind === 'speech') {
-      const wav = await fileStart(artifactPath(directory, id, entry.observedAt, 'audio'), 12);
-      if (
-        !wav ||
-        wav.toString('ascii', 0, 4) !== 'RIFF' ||
-        wav.toString('ascii', 8, 12) !== 'WAVE'
-      ) {
+      const wav = await readOriginal(artifactPath(directory, id, entry.observedAt, 'audio'));
+      if (!wav || !completeWav(wav)) {
         return 'The original audio for this entry is unavailable';
       }
     }
@@ -836,22 +891,11 @@ export class UtteranceHistory {
   }
 }
 
-/** The first bytes of a file, or undefined when it is missing or shorter. */
-async function fileStart(path: string, length: number): Promise<Buffer | undefined> {
-  let file;
+/** A saved original, or undefined when it is missing or unreadable. */
+async function readOriginal(path: string): Promise<Buffer | undefined> {
   try {
-    file = await open(path, 'r');
+    return await readFile(path);
   } catch {
     return undefined;
-  }
-
-  try {
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await file.read(buffer, 0, length, 0);
-    return bytesRead === length ? buffer : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    await file.close();
   }
 }

@@ -79,7 +79,16 @@ const baseFrame: UserSensorFrame = {
   id: 7,
   observedAt: 1000,
   utterance: 'um so send the report uh tomorrow',
-  screenshot: frame.screenshot,
+  // The exact PNG bytes the master hashes below were pinned with. The shared
+  // helper's PNG later had its IDAT checksum corrected; nothing in this
+  // request path decodes the image, so keep the original bytes here.
+  screenshot: {
+    ...frame.screenshot,
+    png: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  },
   interaction: { agentSessionId: '', agentComposerFocused: false, revision: 3 },
 };
 
@@ -269,8 +278,8 @@ test('switch on: one request that is exactly the evaluated json-cleanup-v1 trans
     // The cleanup request equals the offline experiment's transformation of
     // the bare-name recording: same messages, screenshot, flags; the prompt
     // sentences replaced and the section appended; max_tokens 512.
-    const bare = restoreIntentRequest(records[0]!, frame.screenshot.png);
-    const cleanup = restoreIntentRequest(records[1]!, frame.screenshot.png);
+    const bare = restoreIntentRequest(records[0]!, baseFrame.screenshot.png);
+    const cleanup = restoreIntentRequest(records[1]!, baseFrame.screenshot.png);
     assert.equal(cleanup.version, 2);
     assert.equal(cleanup.promptVariant, 'json-cleanup-v1');
     assert.deepEqual(cleanup.body, transformRecordedRequest(bare, 512).body);

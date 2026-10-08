@@ -26,11 +26,17 @@ Rectangle {
   // entries). A "Not saved" entry never offers recording-dependent actions.
   property string captureStorage: ""
   readonly property bool notSaved: captureStorage === "off"
+  // The listener's reason this entry lacks a saved original a label needs
+  // (for example a screenshot that was not kept); empty otherwise.
+  property string labelingUnavailable: ""
+  // The original screenshot is known not to exist: nothing may start from it.
+  property bool screenshotMissing: false
+  readonly property bool partlySaved: !notSaved && labelingUnavailable !== ""
   // Whether the listener currently allows labeling at all (capture storage
   // on). Older listeners do not report it and keep their own behavior.
   property bool labelingAvailable: true
-  readonly property bool labelable: labelingAvailable && !notSaved
-  readonly property string labelingReason: !labelingAvailable ? "Labeling requires capture storage." : notSaved ? "Labeling requires this entry's saved capture." : ""
+  readonly property bool labelable: labelingAvailable && !notSaved && labelingUnavailable === ""
+  readonly property string labelingReason: !labelingAvailable ? "Labeling requires capture storage." : notSaved ? "Labeling requires this entry's saved capture." : partlySaved ? "Labeling requires this entry's complete saved capture." : ""
   required property var intents
   required property bool online
   property bool historyDeletionAvailable: false
@@ -193,6 +199,19 @@ Rectangle {
     }
 
     Text {
+      objectName: "historyPartlySaved"
+      width: parent.width
+      visible: root.partlySaved
+      text: "Partly saved · " + root.labelingUnavailable
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.textScale
+      lineHeight: 1.3
+    }
+
+    Text {
       objectName: "historyCleanup"
       width: parent.width
       visible: root.cleanupStatus === "cleaned" || root.cleanupStatus === "fallback"
@@ -266,7 +285,7 @@ Rectangle {
             // An audio-only record has no text to copy, insert or ask about.
             // A new coding session starts from the saved screenshot, which a
             // "Not saved" entry does not have; never substitute another one.
-            visible: (modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned") && !(root.audioOnly && ["copy", "paste", "start-history-agent"].includes(modelData.action)) && !(root.notSaved && modelData.action === "start-history-agent")
+            visible: (modelData.action !== "copy-cleaned" || root.cleanupStatus === "cleaned") && !(root.audioOnly && ["copy", "paste", "start-history-agent"].includes(modelData.action)) && !((root.notSaved || root.screenshotMissing) && modelData.action === "start-history-agent")
             text: modelData.title
             foreground: root.foreground
             selection: Qt.rgba(root.tone.r, root.tone.g, root.tone.b, 0.12)
