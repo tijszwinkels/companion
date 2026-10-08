@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access } from 'node:fs/promises';
+import { access, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -9,6 +9,7 @@ import { Gateway } from '../../src/remote/gateway.ts';
 import { frame, signal } from '../helpers.ts';
 import { remoteFixture, waitFor } from '../remote-fixture.ts';
 import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
+import { artifactPath } from '../../src/desktop/artifacts.ts';
 import { TestBrowser, chromiumPath, type TestPage } from './browser.ts';
 
 /**
@@ -421,10 +422,10 @@ test(
     await captureStorage.setEnabled(true);
     const page = await pairedPhone(fixture, browser);
     await page.tap('.rail-activity');
-    await page.waitFor(`document.querySelector('.history-card .partly-saved')`);
+    await page.waitFor(`document.querySelector('.history-card .original-unavailable')`);
     assert.match(
-      await text(page, '.history-card .partly-saved'),
-      /Partly saved · The original screenshot for this entry was not saved/,
+      await text(page, '.history-card .original-unavailable'),
+      /The original screenshot for this entry was not saved/,
     );
     assert.match(await text(page, '.labeling-unavailable'), /complete saved capture/);
     assert.equal(
@@ -445,6 +446,81 @@ test(
     assert.deepEqual(page.errors, []);
   },
 );
+
+for (const loss of ['missing screenshot', 'corrupt audio'] as const) {
+  test(
+    `the phone updates a saved Activity entry after later ${loss}`,
+    { skip },
+    async (context) => {
+      const { fixture, browser } = await setup(context);
+      const activity = fixture.desktop.runtime.activity;
+      activity.transcribed?.({ ...frame, input: 'speech', storage: activity.admitCapture?.() });
+      await activity.audioCaptured?.(frame.id, new Float32Array(160).fill(0.1));
+      await activity.screenshotCaptured?.(frame.id, frame.screenshot);
+      activity.intentRecognized?.(frame.id, 'IGNORE');
+      activity.outcome?.(frame.id, 'ignored');
+      activity.finished?.(frame.id);
+      const entry = fixture.desktop.database
+        .prepare('SELECT id, observed_at FROM utterances')
+        .get() as { id: string; observed_at: number };
+
+      const page = await pairedPhone(fixture, browser);
+      await page.tap('.rail-activity');
+      await page.waitFor(
+        `document.querySelector('.history-card .chip.label-correct:not([disabled])')`,
+      );
+      const path = artifactPath(
+        fixture.desktop.directory,
+        entry.id,
+        entry.observed_at,
+        loss === 'missing screenshot' ? 'screenshots' : 'audio',
+      );
+      if (loss === 'missing screenshot') {
+        await rm(path);
+      } else {
+        await writeFile(path, Buffer.from('RIFF\0\0\0\0WAVE', 'latin1'));
+      }
+      // The stale phone action reaches the real backend refusal. Its ordered
+      // availability event corrects the visible card without a manual reload.
+      await page.tap('.history-card .chip.label-correct');
+      await page.waitFor(`document.querySelector('.history-card .original-unavailable')`);
+      await page.waitFor(`document.querySelector('.history-card .chip.label-correct').disabled`);
+      assert.match(await text(page, '.history-card .original-unavailable'), /unavailable/);
+      const screenshotMissing = loss === 'missing screenshot';
+      assert.equal(
+        await page.evaluate(
+          `document.querySelector('.history-card .actions button:nth-child(2)').disabled`,
+        ),
+        screenshotMissing,
+      );
+      assert.equal(
+        fixture.desktop.database.prepare('SELECT COUNT(*) AS n FROM intent_feedback').get()!.n,
+        0,
+      );
+
+      // Reconnect hydrates current eligibility rather than the saved flags.
+      await page.navigate(`${fixture.origin}/`);
+      await page.waitFor(`document.querySelector('.shell')`);
+      if (!(await page.evaluate(`Boolean(document.querySelector('.rail'))`))) {
+        await page.tap('button[aria-label="Show sessions"]');
+      }
+      await page.waitFor(`document.querySelector('.rail-activity')`);
+      await page.tap('.rail-activity');
+      await page.waitFor(`document.querySelector('.history-card .original-unavailable')`);
+      assert.equal(
+        await page.evaluate(`document.querySelector('.history-card .chip.label-correct').disabled`),
+        true,
+      );
+      assert.equal(
+        await page.evaluate(
+          `document.querySelector('.history-card .actions button:nth-child(2)').disabled`,
+        ),
+        screenshotMissing,
+      );
+      assert.deepEqual(page.errors, []);
+    },
+  );
+}
 
 test(
   'Activity explains audio-only and recovered records without offering an empty question',

@@ -13,7 +13,7 @@ import { activeWindow, type RunCommand } from '../sensors/screen/capture.ts';
 import { command } from '../system/command.ts';
 import { InstanceLock } from '../system/instance-lock.ts';
 import { typeText } from '../system/type-text.ts';
-import { UtteranceHistory, type HistoryEntry } from './history.ts';
+import { UtteranceHistory, type HistoryEntry, type OriginalProblem } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
 import { DesktopServer, type SnapshotOptions } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
@@ -152,6 +152,12 @@ export class DesktopRuntime {
   // nothing is recorded as "Not saved" once all its writes have settled.
   private readonly refusedCaptures = new Set<number>();
   private readonly savedCaptures = new Set<number>();
+  // Originals found missing or corrupt after they were saved (a refused label
+  // or history question, or an Activity page refresh). The database keeps
+  // what was published; this records what is known to be usable now, so
+  // clients stop offering labels and screenshot-dependent actions for them.
+  // In memory: each listener run rediscovers losses when they matter.
+  private readonly lostOriginals = new Map<string, OriginalProblem>();
   // Retirements run after dispatch, off the sensor worker; close() awaits them.
   private readonly retirements = new Set<Promise<void>>();
 
@@ -665,7 +671,7 @@ export class DesktopRuntime {
       soundsEnabled: this.sounds.enabled,
       processing: this.processing.size,
       preview: this.options.preview,
-      history: this.ready ? this.history.snapshot() : [],
+      history: this.ready ? this.history.snapshot().map((entry) => this.current(entry)) : [],
       activitySessionId: this.activityHistory.sessionId,
       activityHistoryCount: this.activityHistory.count,
       historyDeletionAvailable: !this.options.preview,
@@ -788,7 +794,8 @@ export class DesktopRuntime {
 
     const unavailable = await this.history.labelingUnavailable(id);
     if (unavailable) {
-      throw Error(unavailable);
+      this.noteLostOriginal(id, unavailable);
+      throw Error(unavailable.reason);
     }
 
     if (!storage.enabled || storage.generation !== generation) {
@@ -818,7 +825,8 @@ export class DesktopRuntime {
 
     const unavailable = await this.history.labelingUnavailable(target);
     if (unavailable) {
-      return { outcome: 'skipped', reason: unavailable };
+      this.noteLostOriginal(target, unavailable);
+      return { outcome: 'skipped', reason: unavailable.reason };
     }
 
     if (!storage.allows(command)) {
@@ -833,8 +841,50 @@ export class DesktopRuntime {
     this.server.publish({
       type: 'activity-entry',
       sessionId: this.activityHistory.sessionId,
-      entry: this.activityHistory.update(entry, this.history.feedback(entry.id)),
+      entry: this.activityHistory.update(this.current(entry), this.history.feedback(entry.id)),
     });
+  }
+
+  /** An entry as clients should see it now, including originals found lost. */
+  private current(entry: HistoryEntry): HistoryEntry {
+    const lost = this.lostOriginals.get(entry.id);
+    if (!lost) {
+      return entry;
+    }
+    return {
+      ...entry,
+      labelingUnavailable: entry.labelingUnavailable ?? lost.reason,
+      screenshotUnavailable: entry.screenshotUnavailable || lost.screenshot,
+    };
+  }
+
+  /**
+   * An original turned out to be missing or unusable. Remember it and update
+   * this run's Activity card at once, so fresh pages and other clients stop
+   * offering labels (and, without a screenshot, history questions). A
+   * problem the database already records needs no extra entry.
+   */
+  private noteLostOriginal(id: string, problem: OriginalProblem | undefined): void {
+    const entry = this.history.find(id);
+    if (!entry) {
+      return;
+    }
+    // Keep publication provenance in the database. This cache holds only
+    // the result of checking the originals now; a restored usable file can
+    // clear a former loss on the next explicit page refresh.
+    const lost = problem?.reason === entry.labelingUnavailable ? undefined : problem;
+    const known = this.lostOriginals.get(id);
+    if (known?.reason === lost?.reason && known?.screenshot === lost?.screenshot) {
+      return;
+    }
+    if (lost) {
+      this.lostOriginals.set(id, lost);
+    } else {
+      this.lostOriginals.delete(id);
+    }
+    if (this.activityHistory.has(id)) {
+      this.publishActivity(entry);
+    }
   }
 
   /**
@@ -942,7 +992,7 @@ export class DesktopRuntime {
     this.server.publish({
       type: 'activity-entry',
       sessionId: this.activityHistory.sessionId,
-      entry: this.activityHistory.update(entry, this.history.feedback(id)),
+      entry: this.activityHistory.update(this.current(entry), this.history.feedback(id)),
     });
   }
 
@@ -1243,7 +1293,22 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected the current Activity session and a valid history range');
       }
-      return this.activityHistory.page(request.after as number, request.through as number);
+      const after = request.after as number;
+      const through = request.through as number;
+
+      // Refresh what this page says about originals: a saved file that has
+      // since disappeared or become corrupt must not keep offering labels
+      // or questions. Validate one bounded original at a time, only on an
+      // explicit page read; no watcher or repeated microphone-state scan.
+      const page = this.activityHistory.page(after, through);
+      for (const entry of page.entries) {
+        if ('deleted' in entry) {
+          continue;
+        }
+        const problem = await this.history.labelingUnavailable(entry.id);
+        this.noteLostOriginal(entry.id, problem);
+      }
+      return this.activityHistory.page(after, through);
     }
 
     if (request.action === 'label-history' || request.action === 'start-history-agent') {
@@ -1280,7 +1345,17 @@ export class DesktopRuntime {
       // read: a request made while capture storage was off stays unsaved even
       // if storage is turned on before the read completes.
       const storage = this.options.captureStorage.admit();
-      const recorded = await this.history.recordedFrame(request.id);
+      let recorded: Awaited<ReturnType<UtteranceHistory['recordedFrame']>>;
+      try {
+        recorded = await this.history.recordedFrame(request.id);
+      } catch (error) {
+        // A missing or invalid original screenshot: stop offering this.
+        const message = error instanceof Error ? error.message : String(error);
+        if (/screenshot/i.test(message)) {
+          this.noteLostOriginal(request.id, { reason: message, screenshot: true });
+        }
+        throw error;
+      }
       const frame = { ...recorded, storage };
       // A phone may reuse the saved frame, but must not redirect desktop focus.
       this.options.agents.start(frame, this.signal, 'coding', undefined, Boolean(remote));

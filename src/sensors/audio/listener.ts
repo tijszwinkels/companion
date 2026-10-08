@@ -5,6 +5,20 @@ import { audioFrames } from './capture.ts';
 import { FRAME_SAMPLES, SAMPLE_RATE, Segmenter, type Segment } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
 import { CaptureDiagnostics } from './capture-diagnostics.ts';
+import { notAdmitted } from '../../capture-storage/policy.ts';
+
+/**
+ * The fastest rate, in samples per millisecond, at which the microphone
+ * recorder can deliver captured audio: 16 kHz plus 0.2% for clock drift
+ * (real devices stay within about 0.01%). Live capture cannot run faster than
+ * this, so the sample at stream position p was acquired no earlier than
+ * `recorderStarted + p / maximumSamplesPerMs`, however long VAD, the pipe or
+ * the queue delayed its processing. This does not hold for a file: ffmpeg
+ * decodes it faster than real time, so a later position may already be
+ * buffered long before this formula's time. File input therefore uses the
+ * admission from before decoding for every segment (see `listen`).
+ */
+const maximumSamplesPerMs = (SAMPLE_RATE / 1000) * 1.002;
 
 /**
  * One listening period owns its recorder and segmenter; pause discards both.
@@ -20,18 +34,6 @@ import { CaptureDiagnostics } from './capture-diagnostics.ts';
  * from the moment it is told, so the commitment floor counts from when speech
  * actually ended, not from when the segment closed.
  */
-/**
- * The fastest rate, in samples per millisecond, at which the recorder can
- * deliver captured audio: 16 kHz plus 0.2% for clock drift (real devices
- * stay within about 0.01%). Because capture cannot run faster than this, the
- * sample at stream position p was acquired no earlier than
- * `recorderStarted + p / maximumSamplesPerMs`, however long VAD, the pipe or
- * the queue delayed its processing. A file replay decodes faster than real
- * time; its bound is then earlier than processing, which only makes
- * archiving less likely.
- */
-const maximumSamplesPerMs = (SAMPLE_RATE / 1000) * 1.002;
-
 export async function listen(
   vad: VoiceActivityDetector,
   pipeline: SensorPipeline,
@@ -52,12 +54,18 @@ export async function listen(
   vad.reset();
 
   // Capture-storage admission (docs/capture-storage.md): the recorder starts
-  // after this moment, and `received` counts every sample it delivered. A
-  // segment ends with the newest frame, so its first sample's position is
-  // `received - samples.length`. One extra frame is subtracted because the
-  // last frame of a file is padded with silence. That position gives a
-  // conservative earliest acquisition time on the capture-storage clock.
+  // after this moment, and `received` counts every sample it delivered.
+  //
+  // Microphone: a segment ends with the newest frame, so its first sample's
+  // position is `received - samples.length` (one extra frame is subtracted
+  // as a margin). That position gives a conservative earliest acquisition
+  // time on the capture-storage clock.
+  //
+  // File (--wav): the whole file may be decoded and buffered at once, so
+  // every segment retains the admission from before decoding starts. A
+  // replay begun while off stays unsaved, including equal-clock transitions.
   const recorderStarted = activity.captureClock?.() ?? 0;
+  const replayAdmission = options.file ? (activity.admitCapture?.() ?? notAdmitted) : undefined;
   let received = 0;
   const capturedFrom = (segment: Segment) => {
     const firstSample = Math.max(0, received - segment.samples.length - FRAME_SAMPLES);
@@ -105,6 +113,7 @@ export async function listen(
           segment.leadIn,
           segment.trailingSilenceMs,
           capturedFrom(segment),
+          replayAdmission,
         );
 
         // Files decode faster than real time. Keep every file segment by waiting
@@ -127,6 +136,7 @@ export async function listen(
         tail.leadIn,
         tail.trailingSilenceMs,
         capturedFrom(tail),
+        replayAdmission,
       );
     } else if (tailWasOpen) {
       // A too-short tail at the end of the input is a rejected burst like any

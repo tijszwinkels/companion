@@ -279,15 +279,23 @@ save is an error reply, and storage then stays (or remains) off.
 
 History entries carry `captureStorage` (`"on"`, `"off"` or null for older rows),
 `inputKind` (`"speech"`, `"typed"` or null), `screenshotSaved` and `audioSaved`
-(whether that file was published; null for older rows), and a derived
-`labelingUnavailable` reason (null when the required originals were saved),
-stored as the additive `capture_storage`, `input_kind`, `screenshot_saved` and
-`audio_saved` columns. `"off"` means the capture was deliberately not saved.
+(whether that file was published; null for older rows), a derived
+`labelingUnavailable` reason (null when no original-media problem is known),
+and `screenshotUnavailable` (true when the original was not saved or has
+been found missing/corrupt). Publication fields remain unchanged when an
+original is later lost. Activity page reads validate current originals,
+and failed label/history-image reads publish an updated card to all clients.
+The additive `capture_storage`, `input_kind`, `screenshot_saved` and
+`audio_saved` database columns preserve publication provenance; current
+availability is derived. `"off"` means the capture was deliberately not saved.
 While storage is off, or when an entry has a `labelingUnavailable` reason or
 lacks a complete PNG (and WAV for speech), `label-history` and the spoken label
 shortcuts are refused. Speech is admitted from a recorder-position bound passed
-by the listener (`SensorPipeline.submit`'s `capturedFrom`, on the policy clock). `start-history-agent` still requires the original
-screenshot and never substitutes another one.
+by the listener (`SensorPipeline.submit`'s `capturedFrom`, on the policy clock).
+File replay instead retains its start admission through every segment,
+including after Off/On transitions. `start-history-agent` requires a validated
+original screenshot and never substitutes another one; its admission precedes
+the asynchronous original-image read.
 
 History entries (snapshot `history`, `activity-entry` and Activity pages) carry
 `cleanupEnabled` (true/false/null), `cleanupStatus` (`cleaned`, `fallback`,

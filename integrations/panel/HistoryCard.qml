@@ -31,12 +31,13 @@ Rectangle {
   property string labelingUnavailable: ""
   // The original screenshot is known not to exist: nothing may start from it.
   property bool screenshotMissing: false
-  readonly property bool partlySaved: !notSaved && labelingUnavailable !== ""
+  // Saved, but an original is incomplete or no longer usable.
+  readonly property bool originalUnavailable: !notSaved && labelingUnavailable !== ""
   // Whether the listener currently allows labeling at all (capture storage
   // on). Older listeners do not report it and keep their own behavior.
   property bool labelingAvailable: true
   readonly property bool labelable: labelingAvailable && !notSaved && labelingUnavailable === ""
-  readonly property string labelingReason: !labelingAvailable ? "Labeling requires capture storage." : notSaved ? "Labeling requires this entry's saved capture." : partlySaved ? "Labeling requires this entry's complete saved capture." : ""
+  readonly property string labelingReason: !labelingAvailable ? "Labeling requires capture storage." : notSaved ? "Labeling requires this entry's saved capture." : originalUnavailable ? "Labeling requires this entry's complete saved capture." : ""
   required property var intents
   required property bool online
   property bool historyDeletionAvailable: false
@@ -199,10 +200,10 @@ Rectangle {
     }
 
     Text {
-      objectName: "historyPartlySaved"
+      objectName: "historyOriginalUnavailable"
       width: parent.width
-      visible: root.partlySaved
-      text: "Partly saved · " + root.labelingUnavailable
+      visible: root.originalUnavailable
+      text: root.labelingUnavailable + "."
       textFormat: Text.PlainText
       wrapMode: Text.Wrap
       color: root.muted

@@ -69,6 +69,7 @@ type JobInput =
       samples: Float32Array;
       trailingSilenceMs: number;
       capturedFrom?: number;
+      captureAdmission?: CaptureAdmission;
       text?: never;
       replaces?: Job;
     }
@@ -77,6 +78,7 @@ type JobInput =
       samples?: never;
       trailingSilenceMs?: never;
       capturedFrom?: never;
+      captureAdmission?: never;
       replaces?: never;
     };
 
@@ -135,6 +137,9 @@ export class SensorPipeline implements InspectableModule {
    * (Activity.captureClock), for when the first of these samples was
    * acquired. It decides whether the utterance may be archived; see
    * docs/capture-storage.md.
+   * File replay instead passes `captureAdmission`, retained before decoding
+   * starts. Its samples can arrive faster than a realtime clock, and a later
+   * opt-in must not admit any segment of that earlier replay.
    */
   submit(
     samples: Float32Array,
@@ -142,6 +147,7 @@ export class SensorPipeline implements InspectableModule {
     leadIn: Float32Array = new Float32Array(0),
     trailingSilenceMs = 0,
     capturedFrom?: number,
+    captureAdmission?: CaptureAdmission,
   ): boolean {
     const held = this.held;
     this.held = undefined;
@@ -149,7 +155,7 @@ export class SensorPipeline implements InspectableModule {
     if (held && this.continuable(held, leadIn.length + samples.length)) {
       const combined = concatenate([held.samples!, leadIn, samples]);
       return this.enqueue(
-        { samples: combined, trailingSilenceMs, capturedFrom, replaces: held },
+        { samples: combined, trailingSilenceMs, capturedFrom, captureAdmission, replaces: held },
         signal,
       );
     }
@@ -157,7 +163,7 @@ export class SensorPipeline implements InspectableModule {
     // Not a continuation (or not mergeable): the held attempt proceeds with
     // its own deadlines, because this speech can no longer join it.
     held?.attempt!.release();
-    return this.enqueue({ samples, trailingSilenceMs, capturedFrom }, signal);
+    return this.enqueue({ samples, trailingSilenceMs, capturedFrom, captureAdmission }, signal);
   }
 
   /**
@@ -242,7 +248,7 @@ export class SensorPipeline implements InspectableModule {
   }
 
   private enqueue(input: JobInput, signal: AbortSignal, target?: string): boolean {
-    const { replaces, trailingSilenceMs, capturedFrom, ...observation } = input;
+    const { replaces, trailingSilenceMs, capturedFrom, captureAdmission, ...observation } = input;
 
     if (signal.aborted || this.signal.aborted) {
       replaces?.attempt!.release();
@@ -280,7 +286,16 @@ export class SensorPipeline implements InspectableModule {
     // the original decision and its later revocation. Typed text starts now.
     let storage: CaptureAdmission;
     if (replaces) {
-      storage = replaces.storage;
+      // A continuation cannot strengthen either the original admission or
+      // an explicit source admission. This also covers a replay continuing
+      // an earlier attempt across an Off boundary.
+      storage =
+        captureAdmission &&
+        (!captureAdmission.eligible || captureAdmission.generation !== replaces.storage.generation)
+          ? notAdmitted
+          : replaces.storage;
+    } else if (captureAdmission) {
+      storage = captureAdmission;
     } else if (observation.samples) {
       const spanMs = (observation.samples.length / 16000) * 1000 + (trailingSilenceMs ?? 0);
       const from = capturedFrom ?? (this.activity.captureClock?.() ?? 0) - spanMs;

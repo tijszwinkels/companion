@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -71,12 +71,28 @@ export interface HistoryEntry {
    * listener checks the files themselves again before writing a label.
    */
   labelingUnavailable: string | null;
+  /**
+   * The original screenshot is known to be unusable: never saved, or found
+   * missing/corrupt later (the desktop runtime adds those). Nothing that
+   * needs the original screenshot may start from this entry.
+   */
+  screenshotUnavailable: boolean;
+}
+
+/** Why an entry's originals cannot be used, and whether the screenshot is affected. */
+export interface OriginalProblem {
+  reason: string;
+  screenshot: boolean;
 }
 
 /** Row shape before booleans are decoded; SQLite stores them as integers. */
 type HistoryRow = Omit<
   HistoryEntry,
-  'cleanupEnabled' | 'screenshotSaved' | 'audioSaved' | 'labelingUnavailable'
+  | 'cleanupEnabled'
+  | 'screenshotSaved'
+  | 'audioSaved'
+  | 'labelingUnavailable'
+  | 'screenshotUnavailable'
 > & {
   cleanupEnabled: number | null;
   screenshotSaved: number | null;
@@ -102,7 +118,11 @@ function decodeEntry(row: HistoryRow): HistoryEntry {
     screenshotSaved: decodeBoolean(row.screenshotSaved),
     audioSaved: decodeBoolean(row.audioSaved),
   };
-  return { ...entry, labelingUnavailable: savedMediaProblem(entry) };
+  return {
+    ...entry,
+    labelingUnavailable: savedMediaProblem(entry),
+    screenshotUnavailable: entry.captureStorage === 'off' || entry.screenshotSaved === false,
+  };
 }
 
 /**
@@ -670,25 +690,28 @@ export class UtteranceHistory {
    * and rows from before capture storage (unknown input) are only held to
    * the screenshot, because typed and spoken rows cannot be told apart there.
    */
-  async labelingUnavailable(id: string): Promise<string | undefined> {
+  async labelingUnavailable(id: string): Promise<OriginalProblem | undefined> {
     const entry = this.find(id);
     if (!entry) {
-      return 'Utterance not found';
+      return { reason: 'Utterance not found', screenshot: false };
     }
-    if (entry.labelingUnavailable) {
-      return entry.labelingUnavailable;
+    if (entry.captureStorage === 'off' || entry.screenshotSaved === false) {
+      return { reason: entry.labelingUnavailable!, screenshot: entry.screenshotUnavailable };
     }
 
     const directory = dirname(this.path);
     const png = await readOriginal(artifactPath(directory, id, entry.observedAt, 'screenshots'));
     if (!png || !completePng(png)) {
-      return 'The original screenshot for this entry is unavailable';
+      return { reason: screenshotUnavailableReason, screenshot: true };
     }
 
     if (entry.inputKind === 'speech') {
+      if (entry.audioSaved === false) {
+        return { reason: entry.labelingUnavailable!, screenshot: false };
+      }
       const wav = await readOriginal(artifactPath(directory, id, entry.observedAt, 'audio'));
       if (!wav || !completeWav(wav)) {
-        return 'The original audio for this entry is unavailable';
+        return { reason: audioUnavailableReason, screenshot: false };
       }
     }
 
@@ -773,18 +796,16 @@ export class UtteranceHistory {
     if (!entry) {
       throw Error('Utterance not found');
     }
+    if (entry.screenshotUnavailable) {
+      throw Error('The original screenshot is unavailable for this utterance');
+    }
     const row = this.db
       .prepare('SELECT window_address, window_title FROM utterances WHERE id = ?')
       .get(id) as { window_address: string | null; window_title: string | null };
     const path = artifactPath(dirname(this.path), entry.id, entry.observedAt, 'screenshots');
-    let png: Buffer;
-    try {
-      png = await readFile(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw Error('The original screenshot is unavailable for this utterance');
-      }
-      throw error;
+    const png = await readOriginal(path);
+    if (!png) {
+      throw Error('The original screenshot is unavailable for this utterance');
     }
     // Reading the screenshot yields. Deletion may have begun or completed
     // since the first lookup; do not start a new agent from that stale read.
@@ -792,10 +813,7 @@ export class UtteranceHistory {
     if (!this.find(id)) {
       throw Error('Utterance not found');
     }
-    if (
-      png.length < 24 ||
-      !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-    ) {
+    if (!completePng(png)) {
       throw Error('The recorded screenshot is not a valid PNG');
     }
     return {
@@ -891,11 +909,36 @@ export class UtteranceHistory {
   }
 }
 
-/** A saved original, or undefined when it is missing or unreadable. */
+const screenshotUnavailableReason = 'The original screenshot for this entry is unavailable';
+const audioUnavailableReason = 'The original audio for this entry is unavailable';
+
+/** Bound reads too: a damaged file must not allocate arbitrary memory. */
+const maximumOriginalBytes = 256 * 1024 * 1024;
+
+/** A bounded, regular saved original, or undefined when it cannot be used. */
 async function readOriginal(path: string): Promise<Buffer | undefined> {
+  let file: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    return await readFile(path);
+    file = await open(path, 'r');
+    const status = await file.stat();
+    if (!status.isFile() || status.size === 0 || status.size > maximumOriginalBytes) {
+      return undefined;
+    }
+    // Read only the declared size from this descriptor, even if another
+    // process grows or replaces the path. A truncated read is unavailable.
+    const bytes = Buffer.alloc(status.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) {
+        return undefined;
+      }
+      offset += bytesRead;
+    }
+    return bytes;
   } catch {
     return undefined;
+  } finally {
+    await file?.close();
   }
 }

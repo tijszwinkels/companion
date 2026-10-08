@@ -83,7 +83,11 @@ with the moment storage was turned on, so audio that was already buffered
 while storage was off stays unsaved, however long voice detection or the
 queue delayed it. In a very long listening period the drift allowance makes
 the first few seconds to a minute after an opt-in count as straddling;
-those utterances are not saved. A conversation started from an Activity
+those utterances are not saved. A file replayed with `--wav` is decoded
+faster than real time, so this bound does not apply: every utterance of a
+replay keeps the admission made before decoding started. A replay begun
+while storage was off is never saved, and an Off revokes all its later
+segments even after a quick opt-in. A conversation started from an Activity
 entry ("New coding session") takes its decision when the request arrives,
 before the saved screenshot is read.
 
@@ -98,9 +102,14 @@ never substitutes a newer or older screenshot. Copy and insert still work.
 
 An observation whose files were only partly written (its WAV published just
 before an Off, but not its PNG; or a write that failed) keeps `on`, because
-something was saved, and shows **Partly saved** with what is missing. It
+something was saved, and its card says which original was not saved. It
 cannot be labeled, and without its screenshot no coding session can start
-from it.
+from it. The same applies to an original that was saved but later turns out
+missing or damaged: the listener notices when a label or question is
+refused, and validates the original files whenever an Activity page is
+loaded, then updates the card for connected desktop and phone clients.
+Refreshing also detects a restored usable original. These are this run's
+observations; the database keeps what was originally published.
 
 A conversation message whose screenshot was not saved stores
 `screenshotSaved: false`. The desktop and phone show "screenshot not saved"
@@ -122,10 +131,14 @@ requires capture storage:
   requests and spoken "label previous correct/incorrect" without writing
   anything or playing the success cue. Existing labels stay.
 - While on, an entry can be labeled only if its own capture was saved and is
-  still complete: a PNG whose chunks and checksums are intact through its
-  end, plus, for spoken input, a 16 kHz mono PCM WAV with a nonempty data
-  chunk inside the file. Typed input needs no WAV. Older rows (from before
-  this setting) are held to the PNG, because typed and spoken rows cannot be
+  still complete: a PNG with a supported header, intact chunks and checksums,
+  and image data that decompresses (with its own checksum) to exactly the
+  size the header describes; plus, for spoken input, a 16 kHz mono PCM WAV
+  whose format and nonempty data chunks lie inside its declared RIFF size.
+  Validation bounds both file reads and decompressed image data to 256 MiB;
+  larger originals are unavailable for these actions. Typed input needs no
+  WAV. Older rows (from before this setting) are held to the PNG, because
+  typed and spoken rows cannot be
   told apart there. Entries created while off, and partly saved entries,
   never become labelable. Activity cards disable labeling for entries the
   listener knows are incomplete; the listener checks the files again before

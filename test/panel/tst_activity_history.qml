@@ -367,8 +367,8 @@ Item {
       const partialCard = findChild(host, "history-utterance-3");
       compare(partialCard.labelable, false);
       compare(findChild(partialCard, "historyNotSaved").visible, false);
-      verify(findChild(partialCard, "historyPartlySaved").visible);
-      compare(findChild(partialCard, "historyPartlySaved").text, "Partly saved · The original screenshot for this entry was not saved");
+      verify(findChild(partialCard, "historyOriginalUnavailable").visible);
+      compare(findChild(partialCard, "historyOriginalUnavailable").text, "The original screenshot for this entry was not saved.");
       compare(findChild(partialCard, "history-action-start-history-agent").visible, false);
       partialCard.choosingIntent = true;
       compare(findChild(partialCard, "history-action-correct").enabled, false);
@@ -378,6 +378,47 @@ Item {
       // While an Off is being acknowledged, labeling is already unavailable.
       host.panel.captureStorage = {enabled: false, pending: "disabling", saved: true, warning: ""};
       compare(old.labelable, false);
+    }
+
+    function test_later_original_loss_overrides_publication_flags_and_stale_pages() {
+      const state = createTemporaryObject(stateComponent, scene);
+      state.reset("run");
+      const saved = entry(1, true);
+      saved.captureStorage = "on";
+      saved.screenshotSaved = true;
+      saved.audioSaved = true;
+      state.update("run", saved);
+      const host = createTemporaryObject(viewComponent, scene);
+      host.panel.activityHistoryModel = state.model;
+      host.panel.captureStorage = {enabled: true, pending: "", saved: true, warning: ""};
+      findChild(host, "listeningArea").expanded = false;
+      showHistory(host);
+      const card = findChild(host, "history-utterance-1");
+      compare(card.labelable, true);
+      verify(findChild(card, "history-action-start-history-agent").visible);
+
+      const lost = Object.assign({}, saved, {
+        revision: 2,
+        screenshotUnavailable: true,
+        labelingUnavailable: "The original screenshot for this entry is unavailable"
+      });
+      state.update("run", lost);
+      compare(card.feedback, "correct", "Existing labels are preserved");
+      compare(card.labelable, false);
+      compare(findChild(card, "history-action-start-history-agent").visible, false);
+      verify(findChild(card, "historyOriginalUnavailable").visible);
+      verify(findChild(card, "history-action-copy").visible);
+      state.page({sessionId: "run", entries: [saved], next: null});
+      compare(card.labelable, false, "A delayed page cannot revive a known lost original");
+
+      const audioLost = Object.assign({}, saved, {
+        revision: 3,
+        screenshotUnavailable: false,
+        labelingUnavailable: "The original audio for this entry is unavailable"
+      });
+      state.update("run", audioLost);
+      compare(card.labelable, false);
+      verify(findChild(card, "history-action-start-history-agent").visible, "An intact screenshot still supports a history question");
     }
 
     function test_cleaned_text_appears_below_the_raw_transcript_with_its_own_copy_action() {
