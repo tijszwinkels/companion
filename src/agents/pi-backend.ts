@@ -57,6 +57,10 @@ export class PiBackend implements AgentBackend {
         fileURLToPath(new URL('./choice-tool.ts', import.meta.url)),
         '--extension',
         fileURLToPath(new URL('./session-name-tool.ts', import.meta.url)),
+        // Marks the transcript as driven by Companion, so agent-harness accepts
+        // this conversation's live busy/idle reports (harness-live-state.ts).
+        '--extension',
+        fileURLToPath(new URL('./live-state-owner-extension.ts', import.meta.url)),
         ...(request.widgets
           ? ['--extension', fileURLToPath(new URL('./widget-tools.ts', import.meta.url))]
           : []),

@@ -108,6 +108,12 @@ for (const variant of ['success', 'invalid', 'timeout', 'exit']) {
         fileURLToPath(new URL('../../src/agents/session-name-tool.ts', import.meta.url)),
       ),
     );
+    assert.ok(
+      captured.argv.includes(
+        fileURLToPath(new URL('../../src/agents/live-state-owner-extension.ts', import.meta.url)),
+      ),
+      'every Companion Pi process marks its transcript as Companion-driven',
+    );
     assert.throws(() => process.kill(captured.pid, 0), { code: 'ESRCH' });
   });
 }

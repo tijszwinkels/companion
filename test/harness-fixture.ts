@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AgentSessions } from '../src/agents/sessions.ts';
+import type { SessionLiveState } from '../src/agents/harness-live-state.ts';
 import { defaultAgentSettings } from '../src/agents/settings.ts';
 import { sessionTools } from '../src/agents/session-tools.ts';
 import {
@@ -44,7 +45,11 @@ export type HarnessScript = (run: HarnessRun) => Promise<void>;
  */
 export async function harnessFixture(
   context: { after(callback: () => Promise<unknown>): void },
-  options: { configuration?: Record<string, unknown>; claudeCode?: boolean } = {},
+  options: {
+    configuration?: Record<string, unknown>;
+    claudeCode?: boolean;
+    liveState?: SessionLiveState;
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-harness-'));
   const configurationPath = join(directory, 'companion-agent.json');
@@ -122,7 +127,7 @@ export async function harnessFixture(
 
   /** A listener instance over the same directory, as after a restart. */
   function open(): AgentSessions {
-    const sessions = new AgentSessions(backends, () => {}, directory);
+    const sessions = new AgentSessions(backends, () => {}, directory, undefined, options.liveState);
     opened.push(sessions);
     return sessions;
   }
