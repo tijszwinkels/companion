@@ -42,7 +42,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "GPL-3.0-only",
   "type": "module",
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",
