@@ -154,6 +154,11 @@ current page heading. Streaming transcripts are readable regions rather than
 announcing every partial token. Notifications reserve layout space so they do
 not cover navigation or send controls.
 
+Long conversations show a bounded recent window. **Load older**, **Newer**,
+**Refresh** and **Latest** navigate older history without changing the draft or
+starting a turn. A history page stays still while new answers arrive; Refresh
+reads its current version. Very large messages show labelled text fragments.
+
 The small-height layout keeps the transcript and footer scrollable. Automated
 Chromium viewport resizing is not evidence of real iOS keyboard behavior.
 

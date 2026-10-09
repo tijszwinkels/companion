@@ -44,11 +44,13 @@ Item {
       view.session = fixture(200, 210)
       const requests = []
       view.toolPageRequested.connect(request => requests.push(request))
+      view.applyDraft({id: "fixture", text: "Keep my draft", source: {title: "Fixture"}})
       view.loadHistory("before", view.shownHistory.start, "", false)
       compare(requests.length, 1)
       view.toolPageReceived(reply(requests[0], fixture(190, 200)))
       compare(view.messageCount, 10)
       compare(view.historyPage.messages[0].id, "row-190")
+      compare(findChild(view, "sessionComposer").text, "Keep my draft")
       compare(view.followEnd, false)
       view.loadHistory("before", view.shownHistory.start, "", false)
       view.session = fixture(300, 310, 1, "other")
@@ -76,6 +78,18 @@ Item {
       view.session = fixture(201, 211, 1, "fixture", "reopened")
       view.toolPageReceived(reply(requests[2], fixture(190, 200)))
       compare(view.historyPage, null)
+    }
+    function test_disconnect_invalidates_pending_page_without_discarding_draft() {
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = fixture(200, 210)
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      view.applyDraft({id: "fixture", text: "Still unsent", source: {title: "Fixture"}})
+      view.loadHistory("before", view.shownHistory.start, "", false)
+      view.online = false
+      view.toolPageReceived(reply(requests[0], fixture(190, 200)))
+      compare(view.historyPage, null)
+      compare(findChild(view, "sessionComposer").text, "Still unsent")
     }
     function test_reading_freezes_before_eviction_and_anchor_jump_fetches_directly() {
       const view = createTemporaryObject(viewComponent, parent)

@@ -72,7 +72,6 @@ interface RunningSession {
   closing: boolean;
   busy: boolean;
   pending: AgentMessage[];
-  widgetReservations: Map<string, AgentMessage>;
   modelWrite?: Promise<void>;
   /**
    * Agent-to-agent hops behind the prompt of the current/last turn: 0 for a
@@ -234,25 +233,9 @@ export class AgentSessions implements InspectableModule {
     if (!session || session.closing || this.closed) {
       throw Error('Widget conversation is closing');
     }
-    const messages = new Map(session.view.messages.map((message) => [message.id, message]));
-    for (const record of records) {
-      messages.set(
-        'widget:' + record.id,
-        chatMessage('widget:' + record.id, 'assistant', record.text),
-      );
-    }
-    // Canonical widget writes remain independent of the bounded display page.
-    // Keep reservations until publication settles, without treating historical
-    // rows as a quota that can reject a valid widget transaction.
-    for (const record of records) {
-      const id = 'widget:' + record.id;
-      session.widgetReservations.set(id, messages.get(id)!);
-    }
-    return () => {
-      for (const record of records) {
-        session.widgetReservations.delete('widget:' + record.id);
-      }
-    };
+    // The service retains its transaction/release contract, but canonical
+    // widgets no longer compete with historical rows for display admission.
+    return () => {};
   }
 
   /** Read-only startup: old conversations appear in history, without launching agents. */
@@ -759,7 +742,6 @@ export class AgentSessions implements InspectableModule {
       closing: false,
       busy: true,
       pending: [],
-      widgetReservations: new Map(),
       depth: request.origin?.depth ?? 0,
       closeAfterTurn: false,
       screenshotStorage: request.screenshot
@@ -1368,6 +1350,10 @@ export class AgentSessions implements InspectableModule {
     // drain end), so this is the single place that informs the reporter.
     // It only schedules work and can never block the conversation.
     this.liveState?.update(session.view.id, session.busy, harnessSessionId(session));
+    if (session.changed.size > 0) {
+      // Includes terminal tool-state recovery performed outside message().
+      session.historyRevision = (session.historyRevision ?? 0) + 1;
+    }
     const display = this.display(session);
     const previous = session.displayed;
     // Newly entering rows must be sent even if they were not changed in this
@@ -1510,7 +1496,6 @@ export class AgentSessions implements InspectableModule {
         closing: false,
         busy: false,
         pending: [],
-        widgetReservations: new Map(),
         depth: 0,
         closeAfterTurn: false,
       });
@@ -1836,12 +1821,4 @@ function harnessSessionId(session: RunningSession): string | undefined {
     return undefined;
   }
   return 'ses_' + session.view.id.replaceAll('-', '').toLowerCase();
-}
-
-/** The harness's user-facing name, for messages about its own transcript. */
-function harnessName(view: AgentSession): string {
-  if (view.harness === 'claude-code') {
-    return 'Claude Code';
-  }
-  return 'Pi';
 }

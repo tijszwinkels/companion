@@ -1,9 +1,10 @@
 import type { AgentMessage, AgentSession } from './types.ts';
+import { panelMessageLimit, panelTextLimit } from './transcript-limits.ts';
 
 /** Display budgets, not storage or model-context limits. One page is retained
  * by each reader; tool bodies continue to use the separate tool-page API. */
-export const historyPageRows = 200;
-export const historyPageText = 64 * 1024;
+export const historyPageRows = panelMessageLimit;
+export const historyPageText = panelTextLimit;
 
 /** A position between UTF-16 units of input + text in an append-only row list.
  * At row boundaries offset is zero. Empty rows (tools/widgets) still advance. */

@@ -373,6 +373,12 @@ Item {
   }
 
   onSessionChanged: synchronize()
+  onOnlineChanged: {
+    if (!root.online) {
+      root.historyPending = ""
+      historyDeadline.stop()
+    }
+  }
   onVisibleChanged: Qt.callLater(root.followLatestMessage)
   Component.onCompleted: synchronize()
   ListModel { id: messages }

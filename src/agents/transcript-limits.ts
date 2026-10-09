@@ -1,8 +1,7 @@
-// One display-history count for live updates, saved snapshots and recovery from
-// canonical widget state. This limit is independent of the model's context size.
-export const panelMessageLimit = 4_000;
+// Limits for one recent or historical DISPLAY PAGE, never for persisted history
+// or admitting a model turn. Older rows/text remain accessible by paging.
+export const panelMessageLimit = 200;
 
-// Ordinary display text/input, measured using JavaScript string length (UTF-16
-// code units). Tool groups occupy one row and carry no input/output text here.
-// Share this budget between streamed messages and widget admission.
-export const panelTextLimit = 1_000_000;
+// JavaScript UTF-16 units of text + input. Tools carry only body-free summaries;
+// giant ordinary messages span labelled fragments on successive pages.
+export const panelTextLimit = 64 * 1024;

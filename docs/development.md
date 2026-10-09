@@ -32,26 +32,26 @@ milestones. User instructions can waive review for a particular change.
 
 ## Source and documentation map
 
-| Responsibility                                                                         | Source                                                          | Guide                                                                                      |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| CLI assembly and config                                                                | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                       |
-| Speech/typed observation queue, context and intent selection                           | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)     |
-| Capture, VAD and persistent ASR                                                        | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md) |
-| Provisional endpoint, speech continuation and commitment                               | `src/core/utterance-continuation.ts`, `src/core/pipeline.ts`    | [Speech timing](speech-timing.md)                                                          |
-| Pi/Claude Code sessions, harness selection, follow-up queue, choices, naming and tools | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                 |
-| History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                           |
-| Shared Activity/conversation components                                                | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                |
-| Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                  |
-| In-panel web browser (native window only)                                              | `integrations/panel/PanelBrowser*.{qml,mjs}`                    | [Panel browser](panel-browser.md)                                                          |
-| Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                         |
-| Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                            |
-| Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                     |
-| Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                           |
-| Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                          |
-| Capture storage: archiving audio/screenshots (default off) and labeling gate           | `src/capture-storage/`                                          | [Capture storage](capture-storage.md)                                                      |
-| Opt-in phone gateway, its supervised service and phone panel | `src/remote/`, `bin/companion-phone`, `integrations/mobile/` | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md) |
-| Opt-in listener/UI start after desktop login (systemd user units) | `src/login-startup/`, `bin/companion-login` | [Installation step 8](installation.md#8-start-companion-after-login-optional) |
-| Trusted local web apps: registry, lifecycle, app windows, phone app proxy | `src/apps/`, `bin/companion-app` | [Local apps](local-apps.md) |
+| Responsibility                                                                         | Source                                                          | Guide                                                                                                           |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| CLI assembly and config                                                                | `src/cli.ts`, `src/config.ts`                                   | [User guide](../README.md), [module contracts](module-interfaces.md)                                            |
+| Speech/typed observation queue, context and intent selection                           | `src/core/`, `src/processors/`                                  | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)                          |
+| Capture, VAD and persistent ASR                                                        | `src/sensors/`, `native/asr-worker/`                            | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md)                      |
+| Provisional endpoint, speech continuation and commitment                               | `src/core/utterance-continuation.ts`, `src/core/pipeline.ts`    | [Speech timing](speech-timing.md)                                                                               |
+| Pi/Claude Code sessions, harness selection, follow-up queue, choices, naming and tools | `src/agents/`                                                   | [Agent contracts](../src/agents/README.md)                                                                      |
+| History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                    | [Storage and protocol](../src/desktop/README.md)                                                                |
+| Shared Activity/conversation components                                                | `integrations/panel/`                                           | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                                     |
+| Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                        | [Native setup and validation](../native/window/README.md)                                                       |
+| In-panel web browser (native window only)                                              | `integrations/panel/PanelBrowser*.{qml,mjs}`                    | [Panel browser](panel-browser.md)                                                                               |
+| Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                         | [Adapter guide](../integrations/omarchy/README.md)                                                              |
+| Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/` | [Widget authoring](../widget-library/README.md)                                                                 |
+| Native WebEngine profile/module                                                        | `native/widget-renderer/`                                       | [Native renderer](../native/widget-renderer/README.md)                                                          |
+| Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                | [Patched writer and activation](../integrations/wtype/README.md)                                                |
+| Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                               | [Transcription cleanup](transcription-cleanup.md)                                                               |
+| Capture storage: archiving audio/screenshots (default off) and labeling gate           | `src/capture-storage/`                                          | [Capture storage](capture-storage.md)                                                                           |
+| Opt-in phone gateway, its supervised service and phone panel                           | `src/remote/`, `bin/companion-phone`, `integrations/mobile/`    | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md) |
+| Opt-in listener/UI start after desktop login (systemd user units)                      | `src/login-startup/`, `bin/companion-login`                     | [Installation step 8](installation.md#8-start-companion-after-login-optional)                                   |
+| Trusted local web apps: registry, lifecycle, app windows, phone app proxy              | `src/apps/`, `bin/companion-app`                                | [Local apps](local-apps.md)                                                                                     |
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -82,17 +82,20 @@ call the classifier. Old design proposals contain historical prompt snapshots.
 | `~/companion/agents/claude-tools.json` (proposed, opt-in; not created by Companion) | Pi-parity tool groups for Claude Code conversations (desktop, OpenRig, web); see [parity tools](../src/agents/claude/parity/README.md).                                                                                                          |
 | `~/companion/disabled-intents.json`                                                 | Independent persisted inference/shortcut switches.                                                                                                                                                                                               |
 | `~/companion/transcription-cleanup.json`                                            | Transcription cleanup switch; missing means off.                                                                                                                                                                                                 |
-| `~/companion/capture-storage.json`                                                  | Whether captured audio/screenshots are archived; missing or invalid means off ([capture storage](capture-storage.md)).                                                                                                                         |
+| `~/companion/capture-storage.json`                                                  | Whether captured audio/screenshots are archived; missing or invalid means off ([capture storage](capture-storage.md)).                                                                                                                           |
 
 A Claude Code conversation's model changes only through its footer picker, for
 the next turn and in the same Claude history; its effort never changes.
 
 Do not edit literal user-approved prompts as part of an unrelated refactor.
-The live panel transcript currently has limits of **4,000 bubbles** and
-**1,000,000 UTF-16 code units**, defined in `src/agents/transcript-limits.ts`.
-Consecutive tool calls share one collapsed bubble. Their inputs/results are
-stored separately and loaded only on expansion in bounded pages; they consume
-no panel text budget. See [lazy tool transcript pages](../src/desktop/README.md#lazy-tool-transcript-pages)
+Conversation history is retained independently of the display. Recent and
+historical pages contain at most **200 bubbles / 65,536 UTF-16 text/input units**,
+defined in `src/agents/transcript-limits.ts`; these limits never reject a turn.
+The panel and phone offer Load older, Newer, Refresh and Latest. See
+[paged conversation history](../src/desktop/README.md#paged-conversation-history)
+for window/delta semantics and compatibility. Consecutive tool calls share one
+collapsed bubble. Their inputs/results are stored separately and loaded only on
+expansion in bounded pages; they consume no panel text budget. See [lazy tool transcript pages](../src/desktop/README.md#lazy-tool-transcript-pages)
 for the protocol and separate storage limits.
 
 ## Validate without activating
@@ -129,14 +132,14 @@ incomplete registry/isolation review.
 
 These are separate operations, not an automatic deployment script:
 
-| Changed component                        | Activation                                                                                                                                       |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Listener TypeScript, pipeline, agents    | Stop the existing listener in its terminal, then `npm start` from the intended checkout.                                                         |
-| Rust ASR helper                          | `npm run asr:build` in that checkout, then restart the listener.                                                                                 |
-| Standalone native C++ or Qt dependencies | `npm run ui:build`, then stop/relaunch the UI with `npm run ui`. Rebuild after Qt upgrades because Sidebar/Dock use matching private Qt headers. |
-| Source-launched UI QML                   | Stop/relaunch the UI; restarting the listener does not reload it. Packaged UI assets require their own update.                                   |
-| Installed Omarchy QML or Lua             | `npm run omarchy:install` from a Hyprland desktop terminal. QML changes rescan the plugin; changed bindings can reload Hyprland.                 |
-| Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Claude conversations keep effort; only their picker changes model. |
+| Changed component                        | Activation                                                                                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Listener TypeScript, pipeline, agents    | Stop the existing listener in its terminal, then `npm start` from the intended checkout.                                                                            |
+| Rust ASR helper                          | `npm run asr:build` in that checkout, then restart the listener.                                                                                                    |
+| Standalone native C++ or Qt dependencies | `npm run ui:build`, then stop/relaunch the UI with `npm run ui`. Rebuild after Qt upgrades because Sidebar/Dock use matching private Qt headers.                    |
+| Source-launched UI QML                   | Stop/relaunch the UI; restarting the listener does not reload it. Packaged UI assets require their own update.                                                      |
+| Installed Omarchy QML or Lua             | `npm run omarchy:install` from a Hyprland desktop terminal. QML changes rescan the plugin; changed bindings can reload Hyprland.                                    |
+| Pi/Claude Code model settings            | Edit the profile config; the next turn reloads it without a listener restart. Claude conversations keep effort; only their picker changes model.                    |
 | Login services (`bin/companion-login`)   | `systemctl --user restart companion-listener.service companion-ui.service` after rebuilding; rerun `companion-login enable` when Node/Pi/wtype/config paths change. |
 
 Save unsent drafts before stopping the UI. Its window close button hides the

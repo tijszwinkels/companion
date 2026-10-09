@@ -667,8 +667,10 @@ the question text visible. Image bytes never travel to the UI socket. URLs are
 computed from the validated session UUID, not trusted from serialized content.
 
 Between snapshots, `{"type":"agent-session","session":{...}}` carries current
-session metadata and **only changed messages**. Upsert by session/message ID in
-arrival order; do not replace the entire conversation with this partial array.
+session metadata and **only changed or newly entering window messages**. Upsert by
+session/message ID, then retain and order exactly the IDs in `session.history.ids`.
+Do not replace the window with this partial array or retain evicted IDs. For older
+listeners without `history`, use the legacy unbounded arrival-order upsert.
 Streaming updates are coalesced every 40 ms; a terminal status flushes pending
 messages immediately. `{"type":"agent-removed","id":"..."}` removes a tab. The
 listener never publishes `agent-session` for a conversation that is no longer
@@ -915,15 +917,87 @@ Preview, rejected delivery, cancellation and close have no success sound. All cu
 share the existing mute/cancellation queue and are checked against real Silero VAD
 using synthetic audio. No speaker-to-microphone acoustic guarantee is implied.
 
+### Paged conversation history
+
+Authoritative history stays in the session's atomic JSON archive, with full tool
+bodies in the existing separate SQLite store. Ordinary history is not capped at
+4,000 rows or 1M text units. Agent continuity, canonical widget state, origin
+anchors and save/reopen operate on that full retained history, not a UI page.
+No migration or deletion is performed. JSON saves, reopening and listener memory
+still scale with total history; this is not a new storage engine or retention policy.
+
+Snapshots and restored events contain only the recent window, bounded to 200 rows
+and 65,536 UTF-16 units of `input + text`. Live `history` metadata contains:
+
+- `start` and `end`: `{index, offset}` positions in the authoritative append-only
+  row list. `offset` addresses UTF-16 units in `input + text`; zero at row boundaries.
+- `total`: current authoritative row count; `revision`: live content-change counter.
+- `ids`: ordered IDs in the recent window, authoritative for incremental eviction.
+
+Deltas include changed and newly entering rows only. Update those rows, then prune
+and order by `ids`; reconnect replaces the recent window completely. Optional
+`pinnedMessage` is the canonical pin's attachment independently of window membership
+(with body omitted); null means no canonical pin. None of these projection fields
+are saved to the archive. Archives and in-memory source rows are never fragments.
+
+An explicit page request uses the existing selected-conversation ownership check:
+
+```json
+{
+  "action": "agent-history-page",
+  "requestId": "history-click-1",
+  "id": "session-uuid",
+  "epoch": "live-toolEpoch",
+  "direction": "before",
+  "index": 200,
+  "offset": 0
+}
+```
+
+`direction` is `before` (page ending at that position) or `after` (page starting
+there). An optional `anchor` is an existing message ID: it selects an `after` page
+starting at that row, used for origin tool-group navigation without intermediate
+fetches. The result is `{id, epoch, messages, history}` inside the usual correlated
+result envelope. Read errors go only to the requester. Invalid positions, unknown
+anchors, foreign selection and an old close/reopen epoch are refused. Integer
+positions never select files, URLs or model history. Appends preserve positions;
+if an updated message shrinks past a requested offset, return to Latest to reset it.
+
+A row larger than the remaining page budget is projected with
+`historyFragment: {start, end, total}` (UTF-16 units of `input + text`). The next or
+previous page continues that row; concatenating its fragments recovers all original
+units. Clients label fragments and copy only the displayed fragment. Tool groups
+still have empty bodies and use their own detail paging protocol below.
+
+Desktop/native, portable Omarchy and phone retain one historical page, replacing
+it on Older/Newer. Refresh reads current canonical content from the same start;
+Latest restores live following. Historical pages are labelled snapshots when their
+revision differs from the live window. Reading an evicted recent window freezes
+that bounded page instead of moving the reader. Responses are correlated with the
+request and tab lifetime; navigation/Latest supersedes pending pages. Loading
+older history never changes drafts, submits text or starts a model. Origin jumps
+load and align the group without expanding tool output. Pins remain independent
+of the page. The phone sanitizes screenshot/widget URLs in page replies as in
+ordinary session events; widgets remain desktop-only placeholders there.
+
+Upgrade listener and clients together for paging/eviction. Older clients can
+still display recent snapshots and deltas, but cannot request older pages or evict
+by window membership; their local rows can grow until reconnect. Updated clients
+retain legacy upsert behavior with older listeners. Old listener builds with
+archive caps may refuse newly grown conversations; preserve current source or a
+backup rather than truncating history to downgrade. Activation is a separate
+human decision; building these clients does not reload the running app.
+
 ### Lazy tool transcript pages
 
 Consecutive tool calls are one `kind: "tool"` message, with empty `text`/`input`
 and `toolGroup: {count, revision}`. Its server-generated UUID remains stable as
 calls start, update and finish. An intervening user, assistant or notice starts a
 new group. Updates to an older call retain that group's original position.
-Snapshots and incremental events contain these summaries only. Ordinary text
-still has the 1,000,000 UTF-16-unit display budget; a group consumes one of the
-4,000 display rows, regardless of its call count or output length.
+Snapshots, history pages and incremental events contain these summaries only.
+A group consumes one row of the bounded display page and no text budget,
+regardless of its call count or output length. It remains available for detail
+paging even when outside the recent window.
 
 Expansion sends a private request on the existing socket:
 
@@ -971,7 +1045,7 @@ text, including anything that resembles HTML, a URL or a command.
 
 Full tool text is stored in `.companion-sessions/tool-transcripts.sqlite`,
 using a private directory (0700), database (0600), atomic SQLite transactions and
-UTF-16LE blobs. Session JSON normally remains an atomic, compact display snapshot;
+UTF-16LE blobs. Session JSON remains an atomic complete chat history with compact tool summaries;
 preserve both files when backing up or moving conversations. Legacy JSON tools migrate
 when read, keeping their original archive untouched until the next normal save.
 If migration cannot write the database, legacy groups page their text from the
@@ -1027,7 +1101,7 @@ For a remote connection:
   empty for other pages). Focus, `visible`, `navigationToken` and `draftHost` are
   ignored. It never changes the desktop's selected conversation, speech routing,
   `go to session` navigation, keyboard delivery guards or draft hosting.
-- `choose-agent`, `stop-agent-run` and `agent-tool-page` check that connection's
+- `choose-agent`, `stop-agent-run`, `agent-tool-page` and `agent-history-page` check that connection's
   own selection instead of the desktop selection. The desktop cannot act on a
   conversation merely because a phone shows it, and vice versa.
 - Choice and stop controls for its selection arrive only on that connection as

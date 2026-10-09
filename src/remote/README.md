@@ -235,6 +235,13 @@ local to the gateway; it does not forward desktop incremental/focus/navigation
 fields to the listener, and requires no listener restart. The desktop protocol
 and its per-client selection remain unchanged. No compression is enabled.
 
+Conversation windows follow the [paged-history contract](../desktop/README.md#paged-conversation-history):
+merge delta rows then retain exactly `history.ids`. `agent-history-page` is a
+nonmutating, selected-conversation read; it is validated by the remote allowlist
+and answered only to its requester. Page replies and canonical pin attachments
+receive the same screenshot authorization and local widget-URL removal as
+session snapshots. Retained history is never exposed through an unbounded reply.
+
 Desktop-selection events (`agent-actions`, `agent-draft`, `agent-select`) are not
 relayed; the phone uses `remote-agent-actions` for its own selection. Only the
 declared remote event set is forwarded, and initial snapshots stay at the gateway

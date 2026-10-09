@@ -1,14 +1,23 @@
 # Conversation tools
 
-## Panel history limit
+## Paged panel history
 
-The panel retains up to 4,000 message bubbles per conversation. Consecutive tool
-calls share one collapsed bubble without crossing intervening chat messages.
-The separate text/input limit is 1,000,000 JavaScript UTF-16 code units; tool
-details consume none of that budget. These are display-history limits, not the
-model's context size. Long conversations within these limits can be closed and
-reopened; exceeding either still fails the turn. Loading older ordinary chat
-history on demand remains future work.
+Companion retains the complete conversation separately from the displayed page.
+The recent window and each requested older/newer page contain at most 200 rows
+and 65,536 JavaScript UTF-16 text/input units. These are display budgets, not
+admission limits or model context limits: crossing them does not fail a turn.
+Individual oversized messages span explicitly labelled fragments. Load older,
+Newer, Refresh and Latest navigate one bounded page at a time on desktop and phone.
+Historical pages are snapshots; updates offer explicit refresh without moving the
+reader. Consecutive tool calls share one collapsed row without crossing chat.
+Canonical pinned widgets remain available outside the current transcript page.
+
+Stored JSON history remains whole-file and is fully loaded when opening a tab;
+this change bounds display/transport, not total storage or listener memory. It
+neither rewrites old archives proactively nor alters the harness's model history.
+Close/reopen and further turns retain the same conversation. See the
+[paging contract](../desktop/README.md#paged-conversation-history) for client and
+downgrade compatibility.
 
 Tool inputs/results stay in private disk storage and are read on explicit
 expansion in pages of at most 8,192 UTF-16 units. Separate storage admission caps
@@ -479,9 +488,9 @@ The Pi backend also loads `widget-tools.ts` when the turn has a widget lease.
 `companion_widgets`, `companion_widget`, `companion_widget_update`,
 `companion_widget_call` and `companion_widget_present` discover, publish, mutate
 and place reusable widgets. See [the widget guide](../../widget-library/README.md)
-for schemas, retained bundles, durable state and renderer limits. Widgets and
-their fallback text participate in the shared transcript bounds; tool output is
-not an unlimited extra transcript store.
+for schemas, retained bundles, durable state and renderer limits. Widget fallback
+text is paged like ordinary messages; display budgets never reject canonical
+widget transactions. Tool output retains its separate storage admission limits.
 
 ### Try it in the desktop sidebar
 
