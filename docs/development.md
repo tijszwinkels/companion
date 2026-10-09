@@ -88,7 +88,7 @@ A Claude Code conversation's model changes only through its footer picker, for
 the next turn and in the same Claude history; its effort never changes.
 
 Do not edit literal user-approved prompts as part of an unrelated refactor.
-The live panel transcript currently has limits of **800 bubbles** and
+The live panel transcript currently has limits of **4,000 bubbles** and
 **1,000,000 UTF-16 code units**, defined in `src/agents/transcript-limits.ts`.
 Consecutive tool calls share one collapsed bubble. Their inputs/results are
 stored separately and loaded only on expansion in bounded pages; they consume

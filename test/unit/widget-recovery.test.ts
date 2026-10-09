@@ -19,7 +19,7 @@ class SummaryRenderer extends WidgetRenderer {
   }
 }
 
-for (const count of [200, 799, 800]) {
+for (const count of [200, 799, 800, 3_999, 4_000]) {
   test(`canonical widget recovery respects the shared limit with ${count} saved bubbles`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'companion-widget-recovery-'));
     const widgetsDirectory = join(directory, '.companion-widgets');
@@ -78,11 +78,11 @@ for (const count of [200, 799, 800]) {
       await sessions.reopen(saved.id);
       for (let pass = 0; pass < 2; pass++) {
         const view = sessions.snapshot()[0];
-        assert.equal(view.messages.length, Math.min(count + 1, 800));
+        assert.equal(view.messages.length, Math.min(count + 1, 4_000));
         assert.deepEqual(view.messages.slice(0, count), saved.messages);
         const visuals = view.messages.filter((message) => message.widget);
-        assert.equal(visuals.length, count < 800 ? 1 : 0);
-        if (count < 800) {
+        assert.equal(visuals.length, count < 4_000 ? 1 : 0);
+        if (count < 4_000) {
           assert.equal(visuals[0].widget!.id, widgetId);
           assert.equal(visuals[0].text, 'Recovered widget');
         }

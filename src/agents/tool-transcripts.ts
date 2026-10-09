@@ -8,7 +8,7 @@ import { chatMessage, type AgentMessage } from './types.ts';
 // A page's worst-case JSON escaping is below 50 KiB, well below the desktop
 // socket's 2 MiB backpressure threshold. Only one page is retained by the UI.
 export const toolPageUnits = 8192;
-// Storage admission is independent of the 800-row / 1M-unit display budget.
+// Storage admission is independent of the 4000-row / 1M-unit display budget.
 // Reject explicitly before writing; never truncate a tool to fit this budget.
 export const toolCallLimit = 100_000;
 export const toolStorageBytes = 256 * 1024 * 1024;

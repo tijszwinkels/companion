@@ -2,7 +2,7 @@
 
 ## Panel history limit
 
-The panel retains up to 800 message bubbles per conversation. Consecutive tool
+The panel retains up to 4,000 message bubbles per conversation. Consecutive tool
 calls share one collapsed bubble without crossing intervening chat messages.
 The separate text/input limit is 1,000,000 JavaScript UTF-16 code units; tool
 details consume none of that budget. These are display-history limits, not the

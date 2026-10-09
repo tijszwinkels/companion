@@ -58,7 +58,7 @@ for (const size of [262_145, 999_999, 1_000_000, 1_000_001]) {
   });
 }
 
-for (const count of [201, 800, 801]) {
+for (const count of [201, 800, 801, 4_000, 4_001]) {
   test(`panel history handles ${count} bubbles through completion and reopen`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'companion-transcript-limit-'));
     const backend: AgentBackend = {
@@ -78,9 +78,9 @@ for (const count of [201, 800, 801]) {
       const id = sessions.start(frame, signal());
       await sessions.idle();
       const view = sessions.snapshot()[0];
-      assert.equal(view.status, count <= 800 ? 'completed' : 'error');
-      assert.equal(view.messages.length, Math.min(count, 800));
-      if (count > 800) {
+      assert.equal(view.status, count <= 4_000 ? 'completed' : 'error');
+      assert.equal(view.messages.length, Math.min(count, 4_000));
+      if (count > 4_000) {
         assert.match(view.error, /panel transcript limit/);
       } else {
         assert.equal(view.error, '');

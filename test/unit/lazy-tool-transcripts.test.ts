@@ -379,13 +379,14 @@ test('Pi event adapter delivers >16K inputs/results intact and releases complete
   );
 });
 
-test('tools share the 800-row limit but do not reduce ordinary 1M-unit text allowance', async (context) => {
+test('tools share the 4000-row limit but do not reduce ordinary 1M-unit text allowance', async (context) => {
   const setup = await fixture(context);
   const userUnits = setup.sessions.snapshot()[0].messages[0].text.length;
   setup.emit(tool('a', 'tool output'.repeat(100000)));
   setup.emit(chatMessage('answer', 'assistant', 'x'.repeat(1_000_000 - userUnits)));
-  for (let index = 0; index < 797; index++) setup.emit(chatMessage('empty-' + index, 'notice', ''));
-  assert.equal(setup.sessions.snapshot()[0].messages.length, 800);
+  for (let index = 0; index < 3_997; index++)
+    setup.emit(chatMessage('empty-' + index, 'notice', ''));
+  assert.equal(setup.sessions.snapshot()[0].messages.length, 4_000);
   setup.emit(tool('a', 'updated tool output'.repeat(100000)));
   assert.throws(
     () => setup.emit(chatMessage('over-text', 'assistant', 'x')),
@@ -394,7 +395,7 @@ test('tools share the 800-row limit but do not reduce ordinary 1M-unit text allo
   assert.throws(() => setup.emit(tool('new-group', 'another tool')), /panel transcript limit/);
   await setup.finish();
   const view = setup.sessions.snapshot()[0];
-  assert.equal(view.messages.length, 800);
+  assert.equal(view.messages.length, 4_000);
   assert.equal(
     view.messages.reduce((units, m) => units + m.text.length + m.input.length, 0),
     1_000_000,
