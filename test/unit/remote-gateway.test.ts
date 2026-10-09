@@ -10,6 +10,8 @@ import { promisify } from 'node:util';
 import WebSocket from 'ws';
 
 import { DeviceStore } from '../../src/remote/devices.ts';
+import { chatMessage } from '../../src/agents/types.ts';
+import type { HistoryPage } from '../../src/agents/history-pages.ts';
 import { Gateway, checkGatewayOptions } from '../../src/remote/gateway.ts';
 import { parseRemoteRequest } from '../../src/remote/protocol.ts';
 import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
@@ -361,6 +363,67 @@ test('screenshots are served only to authenticated devices that were shown them'
     headers: { Authorization: `Bearer ${token}` },
   });
   assert.equal(traversal.status, 404);
+});
+
+test('remote history pages and canonical pins sanitize local URLs outside the recent window', async (context) => {
+  const fixture = await withFixture(context);
+  const id = fixture.sessions.start(frame, signal());
+  await waitFor(() => fixture.runs.length === 1);
+  const run = fixture.runs[0];
+  run.emit({
+    ...chatMessage('widget-fixture', 'assistant', 'Synthetic widget'),
+    widget: {
+      id: '00000000-0000-4000-8000-000000000001',
+      name: 'fixture',
+      revision: 1,
+      presentation: { placement: 'pinned', heightPercent: 25, replaceActivity: true },
+      viewUrl: 'http://localhost:1234/private-capability',
+    },
+  });
+  for (let index = 0; index < 450; index++)
+    run.emit(chatMessage('row-' + index, 'assistant', 'Synthetic history'));
+  run.finish();
+  await fixture.sessions.idle();
+  const { token } = await fixture.pair();
+  const phone = await fixture.phone(token);
+  const snapshot = await phone.engine('state');
+  const view = snapshot.sessions[0];
+  assert.equal(view.messages.length, 200);
+  assert.equal(view.pinnedMessage.widget.viewUrl, undefined);
+  assert.ok(!JSON.stringify(snapshot).includes('private-capability'));
+  assert.equal(
+    (
+      await fetch(`${fixture.origin}/api/screenshots/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    ).status,
+    404,
+  );
+  phone.send({ requestId: 'history-selection', action: 'panel-state', id });
+  await phone.reply('history-selection');
+  phone.send({
+    requestId: 'history-page',
+    action: 'agent-history-page',
+    id,
+    epoch: view.toolEpoch,
+    direction: 'after',
+    index: 0,
+    offset: 0,
+  });
+  const reply = (await phone.reply('history-page')) as { type: string; result: HistoryPage };
+  assert.equal(reply.type, 'result');
+  assert.equal(reply.result.messages[0].screenshotUrl, `api/screenshots/${id}`);
+  assert.equal(reply.result.messages[1].widget!.viewUrl, undefined);
+  assert.ok(!JSON.stringify(reply).includes('file:'));
+  assert.ok(!JSON.stringify(reply).includes('private-capability'));
+  assert.equal(
+    (
+      await fetch(`${fixture.origin}/api/screenshots/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    ).status,
+    200,
+  );
 });
 
 test('U4: an unsaved conversation screenshot is never granted or replaced by an older PNG', async (context) => {

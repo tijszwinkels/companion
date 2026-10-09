@@ -344,6 +344,73 @@ test('private socket delivers correlated bounded pages only to the selected conv
   assert.ok(!JSON.stringify(error).includes('socket-private'));
 });
 
+test('bounded incremental projections hydrate entering rows and remove evicted ones', async (context) => {
+  const setup = await fixture(context);
+  let retained = setup.sessions.snapshot()[0].messages;
+  let updates = 0;
+  setup.sessions.subscribe((event) => {
+    if (event.type !== 'agent-session') return;
+    const values = new Map(retained.map((row) => [row.id, row]));
+    for (const row of event.session.messages) values.set(row.id, row);
+    retained = event.session.history!.ids.map((id) => {
+      assert.ok(values.has(id), 'Every entering row is hydrated');
+      return values.get(id)!;
+    });
+    assert.ok(retained.length <= 200);
+    assert.ok(retained.reduce((sum, row) => sum + row.text.length + row.input.length, 0) <= 65536);
+    updates++;
+  });
+  for (let index = 0; index < 4200; index++)
+    setup.emit(chatMessage('row-' + index, 'assistant', 'first'));
+  await waitFor(() => updates > 0);
+  setup.emit(chatMessage('row-4199', 'assistant', 'changed'));
+  setup.emit(chatMessage('row-4200', 'assistant', 'entering'));
+  await setup.finish();
+  assert.deepEqual(retained, setup.sessions.snapshot()[0].messages);
+  assert.equal(retained.at(-2)!.text, 'changed');
+  assert.equal(retained.at(-1)!.text, 'entering');
+});
+
+test('history pages require selected socket ownership and reject stale epochs and malformed cursors', async (context) => {
+  const setup = await fixture(context);
+  const desktop = await desktopFixture(
+    async () => assert.fail('No keyboard input'),
+    setup.sessions,
+  );
+  context.after(() => desktop.close());
+  setup.emit(chatMessage('large', 'assistant', 'private-synthetic'.repeat(100000)));
+  const request = {
+    action: 'agent-history-page',
+    requestId: 'history-1',
+    id: setup.id,
+    epoch: setup.sessions.snapshot()[0].toolEpoch,
+    direction: 'after',
+    index: 0,
+    offset: 0,
+  };
+  desktop.send(request);
+  assert.equal((await desktop.reply(request.action)).type, 'error');
+  desktop.send({ action: 'panel-state', id: setup.id, composerFocused: false });
+  await desktop.reply('panel-state');
+  desktop.send(request);
+  const result = await desktop.reply(request.action);
+  assert.equal(result.type, 'result');
+  assert.ok(JSON.stringify(result).includes('private-synthetic'));
+  assert.ok(JSON.stringify(result).length < 70 * 1024);
+  for (const invalid of [
+    { epoch: randomUUID() },
+    { index: -1 },
+    { offset: 100000000 },
+    { direction: 'all' },
+    { anchor: 'missing' },
+  ]) {
+    desktop.send({ ...request, ...invalid });
+    const result = await desktop.reply(request.action);
+    assert.equal(result.type, 'error');
+    assert.ok(!JSON.stringify(result).includes('private-synthetic'));
+  }
+});
+
 test('Pi event adapter delivers >16K inputs/results intact and releases completed calls', async (context) => {
   const { PiTranscript } = await import('../../src/agents/pi-transcript.ts');
   const setup = await fixture(context);

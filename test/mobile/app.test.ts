@@ -110,6 +110,57 @@ function horizontalOverflow(page: TestPage): Promise<number> {
   );
 }
 
+test(
+  'bounded phone history pages preserve drafts, read position and oversized text',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Paging fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    const run = fixture.runs[0];
+    run.emit(
+      chatMessage(
+        'giant',
+        'assistant',
+        'Beginning marker ' + 'large '.repeat(180000) + ' End marker',
+      ),
+    );
+    for (let index = 0; index < 450; index++)
+      run.emit(chatMessage('history-' + index, 'assistant', 'History row ' + index));
+    const page = await pairedPhone(fixture, browser);
+    await page.waitFor(`document.querySelector('.session-tab')`);
+    await page.tap('.session-tab');
+    await page.waitFor(`document.querySelector('.history-controls')`);
+    await page.tap('#composer');
+    await page.type('Unsent draft');
+    assert.equal(await page.evaluate(`document.querySelectorAll('[data-message-id]').length`), 200);
+    await page.tap('.history-controls button');
+    await page.waitFor(
+      `document.querySelector('.history-controls').textContent.includes('Refresh')`,
+    );
+    assert.match(await text(page, '.messages'), /History row 50/);
+    assert.equal(await page.evaluate(`document.querySelector('#composer').value`), 'Unsent draft');
+    assert.equal(await page.evaluate(`document.querySelectorAll('[data-message-id]').length`), 200);
+    run.emit(chatMessage('history-451', 'assistant', 'New live row'));
+    await page.waitFor(
+      `document.querySelector('.history-controls').textContent.includes('newer updates')`,
+    );
+    assert.match(await text(page, '.messages'), /History row 50/);
+    assert.ok(!(await text(page, '.messages')).includes('New live row'));
+    await page.tap('.history-controls button');
+    await page.waitFor(`document.querySelector('.messages').textContent.includes('End marker')`);
+    assert.match(await text(page, '.messages'), /copy includes this fragment only/);
+    assert.ok((await text(page, '.messages')).length < 70000);
+    await page.tap('.history-controls button:last-of-type');
+    await page.waitFor(`document.querySelector('.messages').textContent.includes('New live row')`);
+    assert.equal(await page.evaluate(`document.querySelector('#composer').value`), 'Unsent draft');
+    assert.ok((await horizontalOverflow(page)) <= 0);
+    assert.deepEqual(page.errors, []);
+    run.finish();
+    await fixture.sessions.idle();
+  },
+);
+
 test('pairing, navigation and layout at phone sizes', { skip }, async (context) => {
   const { fixture, browser } = await setup(context);
   fixture.sessions.start({ ...frame, utterance: 'Synthetic question with a screenshot' }, signal());
