@@ -47,9 +47,8 @@ it with you. If you follow it yourself, read these notes as your own checklist.
 
 ### Make the user aware of what Companion does
 
-Before the first launch in step 7, and again before any command that captures
-audio or the screen or types, explain these points to the user in plain words and
-wait until they confirm:
+Once, before the first launch in step 7, explain these points to the user in a few
+plain sentences and wait until they confirm:
 
 - **Starting `npm start` without flags immediately listens and can type into the
   focused application.** An explicit “enter …” can also submit that text. Window
@@ -98,6 +97,13 @@ capture the screen or type, unless the user already authorized them. Never print
 copy another person's agent directory, grant blanket project trust, weaken access
 controls, or add broad permission-bypass flags to make a check pass. Stop on a
 failed checkpoint, diagnose it, and report untested steps honestly.
+
+**Test it yourself and keep the user's part small.** Use this guide's defaults
+unless something on this machine calls for a change. Run every checkpoint you can
+check yourself (commands, exit codes, logs, the non-capturing checks) and report
+results in a line or two; do not walk the user through checks you can verify.
+Involve the user only for what needs a human: passwords, real choices, and trying
+Companion at the end of step 7.
 
 Your tools usually cannot type a password, see the screen or press desktop
 shortcuts. For package installs, show the user the exact package list, then run
@@ -347,6 +353,29 @@ before increasing a deadline. The existing `asr:bench` additionally compares wit
 Voxtype 1.0.1 and its model location; it is not a fresh-install prerequisite.
 
 ## 4. Set up an image-capable intent and agent endpoint
+
+Companion uses a model for two jobs, and they can come from different places:
+
+- **Intent classification** runs on every utterance and receives a screenshot of
+  the active window together with the transcript. It must answer quickly, and
+  because it sees the user's screen all day, a model on their own hardware is
+  recommended.
+- **Agent conversations** run less often and need a capable model with tool calls.
+  The provider the user already uses for their coding agent is usually a good
+  choice; see the [optional cloud coding profile](#optional-cloud-coding-profile).
+
+For the classifier, work down this list and explain the choice to the user:
+
+1. Check for a local NVIDIA GPU (`nvidia-smi`) with enough memory for the
+   [candidate recipe](#candidate-nvidialinux-recipe-on-device-or-on-the-trusted-server)
+   (its weights alone are about 17.5 GB). If there is one, offer that recipe.
+2. Otherwise ask whether the user has an image-capable model server on their own
+   network ([trusted LAN variant](#trusted-lan-variant)).
+3. Otherwise suggest a fast hosted, OpenAI-compatible provider with an
+   image-capable model, such as Groq. Check its current models and terms, and tell
+   the user plainly that every screenshot and transcript then goes to that provider.
+
+Whatever is chosen must meet the requirements below.
 
 The built-in defaults `qwen3.8-128k` and Pi's `pillar-vllm/qwen3.8-128k` are
 installation-specific names. They neither download a model nor identify a portable
@@ -770,7 +799,9 @@ hyprctl configerrors
 ```
 
 **Checkpoint:** no configuration errors, a Companion microphone control appears,
-and Super+Alt+C toggles the panel. It can show “Not running” until step 7.
+and Super+Alt+C toggles the panel. Until step 7 starts Companion, that is the
+adapter's fallback panel: it says “Not running” and lacks the Window/Sidebar/Dock
+controls. Tell the user this is expected, so it does not look like a broken install.
 A conflicting shortcut or wrong shell format is a stop-and-review condition;
 do not repeatedly reload or replace personal bindings to force installation.
 The adapter is optional for the listener but needed for the documented focus,
@@ -807,101 +838,60 @@ command -v wtype   # must print …/.local/share/companion/wtype-candidate/wtype
 
 **Checkpoint:** the build printed `nothing installed`, `command -v wtype` in the
 listener's terminal prints the candidate, and `/usr/bin/wtype` is unchanged. The
-text check itself follows in step 7, through Companion. Do not use a live chat
-composer as a typing test.
+user's first dictation in step 7 confirms it in practice.
 
-## 7. First launch, first useful workflow, and stopping
+## 7. First launch, try it, and stopping
 
-First ensure the endpoint (or SSH tunnel), API key and Pi executable are available
-in the listener's environment. Run as your ordinary desktop user. Close an older
-listener normally; never delete its socket/lock or kill processes by name.
-
-The listener and UI keep running, so an agent's shell tool cannot host them. Either
-the human starts them in two desktop terminals as shown below, or, if you want
-Companion to start after each login anyway, run [step 8](#8-start-companion-after-login-optional)
-now. From the checkout, this starts the same two programs, paused, as user services,
-with the patched writer first in their PATH, and Pi can run it:
+**Start Companion, paused.** The listener and UI keep running, so an agent's shell
+tool cannot host them. Start them as the [step 8](#8-start-companion-after-login-optional)
+user services, which you can run yourself, with the patched writer first in their
+PATH:
 
 ```bash
 cd "$HOME/Work/companion"
 bin/companion-login enable --now --wtype-dir "$HOME/.local/share/companion/wtype-candidate"
-bin/companion-login status   # the wtype line must show the candidate
 ```
 
-Then continue with the checks below.
-
-**Activate, initially paused:** display a harmless editor before running this
-command. Startup loads ASR/VAD, opens desktop storage/control, reads saved sessions
-and captures one active-window screenshot as an availability check, even while
-paused. This startup image is not routed or persisted. Microphone capture starts
-off. This is not a read-only storage check and does not start the model server.
+If the user declined login startup, open two visible desktop terminals with these
+commands typed in instead, and let them press Enter:
 
 ```bash
 cd "$HOME/Work/companion"
 export PATH="$HOME/.local/share/companion/wtype-candidate:$PATH"
-command -v wtype
-npm start -- --config "$PWD/companion.config.json" --paused --no-sounds
+./node_modules/.bin/tsx src/cli.ts --config "$PWD/companion.config.json" --paused
 ```
-
-In a second desktop terminal, **launch the UI**:
 
 ```bash
-cd "$HOME/Work/companion"
-npm run ui
+cd "$HOME/Work/companion" && npm run ui
 ```
 
-Expect a Window/Sidebar/Dock interface, a connected Activity page and “Paused”.
-The adapter hands conversation display to the native host. Qt's default palette
-can work without Omarchy, but its shortcut/focus bridge then does not. A second
-UI invocation talks to the existing process; closing its window only hides it.
+A manual start takes one screenshot of the active window as a startup check (not
+sent anywhere or saved); the services skip it. Microphone capture stays off until
+the user resumes listening.
 
-Before resuming, display only synthetic content and select an empty editor field.
-You are about to capture the microphone and the active window. With desktop mode
-on, transcripts, PNGs and WAVs are retained, including ignored utterances and
-eligible empty-result diagnostic audio. Server/agent data flows follow your
-selected providers. Do not speak credentials.
+**Check it yourself.** `bin/companion-login status` shows both services running and
+the candidate `wtype`; `~/.local/state/companion/listener.log` shows a paused start
+without errors, and `ui.log` a connected UI. Together with the speech, vision and Pi
+checks from steps 3–5, this covers the pipeline without capturing the user's
+desktop. Do not ask the user to run test scripts.
 
-1. **Live preview (optional):** stop the paused listener with Ctrl+C, then run
-   `npm start -- --config "$PWD/companion.config.json" --preview --seconds 10`.
-   Say a harmless sentence. Expect capture → ASR → intent → preview logs. It can
-   capture/transmit/store data, despite not dispatching typing or agent starts.
-   The ten-second option stops like Ctrl+C, cancelling in-flight ASR/intent work;
-   finish speaking well before the limit or later stages may not appear. Stop
-   preview before starting ordinary mode.
-2. **Exact text delivery (no microphone needed):** open a disposable browser text
-   field, for example Chromium with the address `data:text/html,<textarea autofocus></textarea>`,
-   and click into it. Press Super+Alt+D, then Super+Alt+0 to select Activity, and
-   submit `insert let's just keep it open. Done, (a+b)=c; ok? "yes"!` in its input.
-   If the UI says “Could not focus Companion. Click the input to continue.” (seen
-   with the standalone window in a virtual machine), click the Activity input
-   instead; it still returns focus to the field you used last.
-   Activity returns focus to the field and types the text without the classifier.
-   **Checkpoint:** the field contains exactly `let's just keep it open. Done, (a+b)=c; ok? "yes"!`,
-   with no Enter and nothing missing. A truncated result such as `ope` means the
-   listener is using stock wtype: check `command -v wtype` in its terminal (or
-   `bin/companion-login status` for step 8 services) before going further.
-3. **Literal dictation:** start paused again, focus the disposable editor, then
-   toggle Listening or press Super+Alt+P. Say “insert hello world”. Expect exactly
-   `hello world`, without Enter. “enter hello world” explicitly presses Enter, so
-   test it only in a field where submission has no external effect. Pause again.
-4. **Classifier:** with synthetic screen content and an approved endpoint, try
-   ordinary dictation without a prefix. Verify the selected intent and outcome in
-   Activity before trusting it for real work. There is no quality certification
-   for the candidate model; misroutes need investigation, not a silent model swap.
-5. **First useful agent workflow:** while paused, keep a harmless editor behind the
-   panel. Press Super+Alt+D to focus its current input, then Super+Alt+0 to select
-   Activity, and submit “quick question, explain what an
-   installation checkpoint is; do not run tools.” Activity restores application
-   focus, captures it and routes the typed request without ASR/WAV. Expect an answer
-   in a new Pi tab using your `companion-local` model. Confirm that actual
-   model in the UI. Conversation-composer follow-ups go directly to that session
-   and do not capture another attachment.
-6. **Tool checkpoint:** only after approving agent tool access, ask that conversation
-   to read the starter `AGENTS.md` and summarize its constraints, without changing
-   files. Expect a visible read-tool result and an answer. Failure here can reveal
-   tool-parser incompatibility despite a successful color/text test. Stop before
-   entrusting the candidate model with edits. Test a coding or optional Claude
-   conversation separately; success on Pi does not validate Claude.
+**Hand it to the user.** In a few sentences: Companion is running and paused;
+Super+Alt+C shows the panel, now with its Window/Sidebar/Dock controls; Super+Alt+P
+or the bar button starts listening. Suggest trying ordinary dictation into an
+editor, “quick question, …” about something on screen, and “new session, …”. The
+Activity tab shows what Companion heard and decided. Ask them to tell you what
+does not work.
+
+**If something goes wrong,** diagnose rather than retry blindly:
+
+- Punctuation disappears or text is cut short (“open.” becomes “ope”): the listener
+  uses stock `wtype`; check `bin/companion-login status` or `command -v wtype` in
+  its terminal.
+- “Could not focus Companion” after Super+Alt+D (seen with the standalone window in
+  virtual machines): clicking the Activity input works.
+- A wrong intent: check it in Activity. There is no quality certification for the
+  candidate model; misroutes need investigation, not a silent model swap.
+- An agent answers but cannot use tools: the server's tool-call parser (step 4).
 
 **Pause is not Stop.** Listening off closes the recorder, discards partial speech
 and cancels pending sensor work. Existing agent turns and explicit history recovery
@@ -946,7 +936,8 @@ What starts at login:
   capture starts only when you resume listening (bar button or Super+Alt+P).
 - The native UI, **hidden**. Super+Alt+C, the bar button or `npm run ui` shows it.
 
-**Enable**, from a desktop terminal in the checkout, after steps 1–7 pass. Run it in
+**Enable**, from a desktop terminal in the checkout, after steps 1–6 pass (step 7
+normally does this for you). Run it in
 a terminal whose PATH finds the Node.js and Pi you set up: the services get that
 PATH, fixed at this moment, because systemd does not read your shell startup files.
 
@@ -991,8 +982,8 @@ systemctl --user stop companion-listener.service companion-ui.service
 
 **Checkpoint:** after logging in again, `status` shows both services
 `active/running` and the candidate `wtype`, the listener is paused at login, the UI
-is connected and shows **Paused**, and the logs contain no errors. Repeat step 7's
-exact text delivery check once: the services must type the same exact text. `stop` waits for the listener's orderly
+is connected and shows **Paused**, and the logs contain no errors. `stop` waits for
+the listener's orderly
 shutdown, which also stops its Pi children; `systemctl` kills whatever remains after
 30 seconds. Each start replaces the previous log file. The logs contain transcripts,
 window titles and agent progress, like the terminal output; they are kept in your

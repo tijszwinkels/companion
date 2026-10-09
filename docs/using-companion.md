@@ -23,7 +23,7 @@ npm run ui
 ```
 
 Use the same options as in
-[step 7 of the installation guide](installation.md#7-first-launch-first-useful-workflow-and-stopping)
+[step 7 of the installation guide](installation.md#7-first-launch-try-it-and-stopping)
 if your setup needs them.
 
 `--paused` starts with the microphone off; without it Companion starts
