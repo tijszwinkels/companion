@@ -19,8 +19,8 @@ class SummaryRenderer extends WidgetRenderer {
   }
 }
 
-for (const count of [200, 799, 800]) {
-  test(`canonical widget recovery respects the shared limit with ${count} saved bubbles`, async () => {
+for (const count of [200, 4000, 4200]) {
+  test(`canonical widget recovery is independent of the display window with ${count} saved bubbles`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'companion-widget-recovery-'));
     const widgetsDirectory = join(directory, '.companion-widgets');
     const store = new SessionStore(join(directory, '.companion-sessions'));
@@ -66,10 +66,19 @@ for (const count of [200, 799, 800]) {
             widget: 'todo',
             requestId: 'recovery',
             props: { title: 'Recovered widget', items: [] },
+            presentation: { placement: 'pinned', heightPercent: 25 },
           }),
         });
         assert.equal(response.status, 200);
         widgetId = ((await response.json()) as { id: string }).id;
+        if (count === 4200) {
+          const [{ reference }] = await widgets.restored(saved.id);
+          saved.messages.unshift({
+            ...chatMessage('widget:' + widgetId, 'assistant', 'Stale summary'),
+            widget: reference,
+          });
+          await store.save(saved);
+        }
       } finally {
         await widgets.close();
       }
@@ -78,11 +87,28 @@ for (const count of [200, 799, 800]) {
       await sessions.reopen(saved.id);
       for (let pass = 0; pass < 2; pass++) {
         const view = sessions.snapshot()[0];
-        assert.equal(view.messages.length, Math.min(count + 1, 800));
-        assert.deepEqual(view.messages.slice(0, count), saved.messages);
+        assert.equal(view.messages.length, 200);
+        assert.equal(view.history!.total, count + 1);
+        assert.equal(view.pinnedMessage!.widget!.id, widgetId, 'Canonical pin survives eviction');
         const visuals = view.messages.filter((message) => message.widget);
-        assert.equal(visuals.length, count < 800 ? 1 : 0);
-        if (count < 800) {
+        if (count === 4200) {
+          assert.equal(visuals.length, 0);
+          const older = sessions.historyPage({
+            id: saved.id,
+            epoch: view.toolEpoch!,
+            direction: 'after',
+            index: 0,
+            offset: 0,
+          });
+          assert.equal(
+            older.messages[0].text,
+            'Recovered widget',
+            'Old pages use canonical widget state',
+          );
+          assert.equal(older.messages[0].widget!.id, widgetId);
+        } else {
+          assert.deepEqual(view.messages.slice(0, -1), saved.messages.slice(-199));
+          assert.equal(visuals.length, 1);
           assert.equal(visuals[0].widget!.id, widgetId);
           assert.equal(visuals[0].text, 'Recovered widget');
         }

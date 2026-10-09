@@ -384,6 +384,20 @@ button {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
+}
+
+.history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.history-controls > span {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 /* The page may scroll when expanded controls or a keyboard leave too little

@@ -555,7 +555,13 @@ export class Store {
           messages[index] = message;
         }
       }
-      session = { ...update, messages };
+      const retained = update.history
+        ? update.history.ids.flatMap((id) => {
+            const index = positions.get(id);
+            return index === undefined ? [] : [messages[index]];
+          })
+        : messages;
+      session = { ...update, messages: retained };
     }
 
     sessions.set(update.id, session);

@@ -155,8 +155,13 @@ test('close and restart keep history dormant; reopen restores the same UUID and 
   const events: SessionEvent[] = [];
   restarted.subscribe((event) => events.push(event));
   await restarted.reopen(id);
-  const { completedTurnId: _completion, toolEpoch: oldEpoch, ...saved } = before;
-  const { toolEpoch: newEpoch, ...reopened } = restarted.snapshot()[0];
+  const {
+    completedTurnId: _completion,
+    toolEpoch: oldEpoch,
+    history: _oldWindow,
+    ...saved
+  } = before;
+  const { toolEpoch: newEpoch, history: _newWindow, ...reopened } = restarted.snapshot()[0];
   assert.notEqual(newEpoch, oldEpoch);
   assert.deepEqual(reopened, saved);
   assert.equal(requests.length, 1);

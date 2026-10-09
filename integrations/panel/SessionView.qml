@@ -43,6 +43,16 @@ Item {
   property string displayedId: ""
   property bool followEnd: true
   property var drafts: ({})
+  // One historical page, separate from the continuously updated recent window.
+  // Never accumulate all pages or feed a page back into authoritative state.
+  property var historyPage: null
+  property var previousLive: null
+  property string historyPending: ""
+  property string historyError: ""
+  property var historyRequest: null
+  readonly property var shownHistory: historyPage ? historyPage.history : session ? session.history : null
+  readonly property bool hasOlder: shownHistory !== null && shownHistory !== undefined && (shownHistory.start.index > 0 || shownHistory.start.offset > 0)
+  readonly property bool historyChanged: historyPage !== null && session && session.history && historyPage.history.revision !== session.history.revision
   // Conversation id -> title of the agent conversation that drafted its unsent
   // text. Cleared when that composer becomes empty or its message is sent.
   property var draftSources: ({})
@@ -73,6 +83,58 @@ Item {
   signal stopRunRequested(string id, string runId)
   signal screenshotRequested(url source, string title)
   signal originRequested(string sessionId, string groupId)
+
+  function loadHistory(direction, position, anchor, refresh) {
+    if (!root.online || !root.session || !root.session.history || root.historyPending) return
+    root.historyError = ""
+    root.historyPending = "history-" + Date.now() + "-" + Math.random().toString(36).slice(2)
+    root.historyRequest = {id: root.displayedId, epoch: root.session.toolEpoch,
+      direction: direction, anchor: anchor || "", refresh: refresh === true, y: transcript.contentY}
+    historyDeadline.restart()
+    const request = {action: "agent-history-page", requestId: root.historyPending,
+      id: root.displayedId, epoch: root.session.toolEpoch, direction: direction,
+      index: position.index, offset: position.offset}
+    if (anchor) request.anchor = anchor
+    root.toolPageRequested(request)
+  }
+
+  function latestHistory() {
+    root.historyPending = ""
+    root.historyRequest = null
+    historyDeadline.stop()
+    root.historyPage = null
+    root.historyError = ""
+    root.followEnd = true
+    root.synchronize()
+  }
+
+  onToolPageReceived: reply => {
+    if (reply.action !== "agent-history-page" || !root.historyPending || reply.requestId !== root.historyPending) return
+    const request = root.historyRequest
+    root.historyPending = ""
+    historyDeadline.stop()
+    if (!root.session || request.id !== root.displayedId || request.epoch !== root.session.toolEpoch) return
+    if (reply.type === "error") { root.historyError = reply.message || "History unavailable"; return }
+    const page = reply.result
+    if (!page || page.id !== request.id || page.epoch !== request.epoch) return
+    root.followEnd = false
+    root.historyPage = page
+    root.synchronize()
+    Qt.callLater(function() {
+      if (root.historyPage !== page) return
+      transcript.forceLayout()
+      if (request.anchor) root.jumpToToolGroup(request.anchor)
+      else if (request.refresh) transcript.contentY = Math.max(transcript.originY, Math.min(request.y, transcript.originY + Math.max(0, transcript.contentHeight - transcript.height)))
+      else if (request.direction === "before") transcript.positionViewAtEnd()
+      else transcript.positionViewAtBeginning()
+    })
+  }
+
+  Timer {
+    id: historyDeadline
+    interval: 10000
+    onTriggered: { root.historyPending = ""; root.historyError = "History request timed out; try again." }
+  }
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
 
@@ -240,8 +302,9 @@ Item {
       Qt.callLater(function() {
         if (root.displayedId === sessionId) transcript.positionViewAtIndex(index, ListView.Beginning)
       })
-      break
+      return
     }
+    root.loadHistory("after", {index: 0, offset: 0}, groupId, false)
   }
 
   function synchronize() {
@@ -250,13 +313,31 @@ Item {
       root.clearMessageSelection()
       if (root.displayedId) root.drafts[root.displayedId] = composer.text
       messages.clear()
+      root.historyPage = null
+      root.previousLive = null
+      root.historyPending = ""
+      root.historyError = ""
+      historyDeadline.stop()
       root.displayedId = id
       root.followEnd = true
       composer.text = root.drafts[id] || ""
       root.inputError = ""
     }
 
-    const incoming = root.session ? root.session.messages : []
+    if (root.previousLive && root.session && root.previousLive.toolEpoch !== root.session.toolEpoch) {
+      root.historyPage = null
+      root.historyPending = ""
+      historyDeadline.stop()
+    }
+    // If a rolling recent window would evict rows while reading, freeze the
+    // old bounded page instead of jumping the reader to unrelated content.
+    if (!root.historyPage && !root.followEnd && root.previousLive && root.previousLive.history && root.session && root.session.history
+        && JSON.stringify(root.previousLive.history.start) !== JSON.stringify(root.session.history.start)) {
+      root.historyPage = {id: root.displayedId, epoch: root.session.toolEpoch,
+        history: root.previousLive.history, messages: root.previousLive.messages}
+    }
+    root.previousLive = root.session
+    const incoming = root.historyPage ? root.historyPage.messages : root.session ? root.session.messages : []
     for (let index = 0; index < incoming.length; index++) {
       const message = incoming[index]
       const row = {messageId: message.id, kind: message.kind, body: message.text,
@@ -273,12 +354,17 @@ Item {
         // External origins carry unverified labels, never a linkable conversation.
         originSessionId: message.origin && message.origin.kind === "agent" ? message.origin.sessionId || "" : "",
         originGroupId: message.origin && message.origin.kind === "agent" ? message.origin.sourceGroupId || "" : "",
+        fragmentLabel: message.historyFragment ? " · text " + (message.historyFragment.start + 1) + "–" + message.historyFragment.end + " of " + message.historyFragment.total : "",
         widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
-      if (index < messages.count) {
-        messages.set(index, row)
-      } else {
-        messages.append(row)
+      if (index >= messages.count || messages.get(index).messageId !== message.id) {
+        let existing = -1
+        for (let candidate = index + 1; candidate < messages.count; candidate++) {
+          if (messages.get(candidate).messageId === message.id) { existing = candidate; break }
+        }
+        if (existing >= 0) messages.move(existing, index, 1)
+        else messages.insert(index, row)
       }
+      messages.set(index, row)
     }
     while (messages.count > incoming.length) {
       messages.remove(messages.count - 1)
@@ -291,16 +377,40 @@ Item {
   Component.onCompleted: synchronize()
   ListModel { id: messages }
 
+  Column {
+    id: historyControls
+    width: parent.width
+    spacing: 4 * root.unit
+    visible: root.hasOlder || root.historyPage !== null || root.historyError !== ""
+    height: visible ? implicitHeight : 0
+    Flow {
+      width: parent.width
+      spacing: 6 * root.unit
+      Button { objectName: "olderHistory"; text: "Load older"; enabled: root.hasOlder && root.online && !root.historyPending
+        onClicked: root.loadHistory("before", root.shownHistory.start, "", false) }
+      Button { objectName: "newerHistory"; text: "Newer"; visible: root.historyPage !== null; enabled: !!(root.online && !root.historyPending && root.shownHistory && root.session && root.session.history && (root.shownHistory.end.index < root.session.history.total || root.shownHistory.end.offset > 0))
+        onClicked: root.loadHistory("after", root.shownHistory.end, "", false) }
+      Button { objectName: "refreshHistory"; text: "Refresh"; visible: root.historyPage !== null; enabled: root.online && !root.historyPending
+        onClicked: root.loadHistory("after", root.shownHistory.start, "", true) }
+      Button { objectName: "latestHistory"; text: "Latest"; visible: root.historyPage !== null; onClicked: root.latestHistory() }
+    }
+    Text {
+      width: parent.width; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 11 * root.unit
+      text: root.historyError || (root.historyPending ? "Loading history…" : root.historyChanged ? "History page · newer updates available" : root.historyPage ? "History page" : "Recent history")
+    }
+  }
+
   ListView {
     id: transcript
     objectName: "sessionTranscript"
     anchors.fill: parent
+    anchors.topMargin: historyControls.height + (historyControls.visible ? 8 * root.unit : 0)
     anchors.bottomMargin: inputSection.height + 12 * root.unit
     clip: true
     spacing: 12 * root.unit
     model: messages
     boundsBehavior: Flickable.StopAtBounds
-    onMovementEnded: root.followEnd = atYEnd
+    onMovementEnded: root.followEnd = atYEnd && root.historyPage === null
     onContentHeightChanged: Qt.callLater(root.followLatestMessage)
     onHeightChanged: Qt.callLater(root.followLatestMessage)
 
@@ -326,7 +436,7 @@ Item {
         transcript.contentY = Math.max(beginning, Math.min(end, transcript.contentY - pixels * root.scrollSpeed))
         // Changing contentY directly does not emit movementEnded. Update this
         // now, before a queued streaming update can jump back to the bottom.
-        root.followEnd = transcript.atYEnd
+        root.followEnd = transcript.atYEnd && root.historyPage === null
         event.accepted = true
       }
     }
@@ -351,6 +461,7 @@ Item {
       required property int toolCount
       required property string toolRevision
       required property string widgetJson
+      required property string fragmentLabel
       // Written by another conversation's agent through session tools.
       required property bool fromExternal
       required property bool fromAgent
@@ -433,7 +544,7 @@ Item {
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
               : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
-                + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") : "Pi"
+                + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") + bubble.fragmentLabel : "Pi" + bubble.fragmentLabel
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: bubble.originLinked ? root.accent

@@ -399,6 +399,7 @@ export class DesktopServer {
           action === 'set-capture-storage' ||
           action === 'activity-history' ||
           action === 'agent-tool-page' ||
+          action === 'agent-history-page' ||
           action === 'agent-models' ||
           action === 'claude-models' ||
           action === 'set-agent-model' ||

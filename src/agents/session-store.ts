@@ -18,7 +18,6 @@ import {
   type PreviousSession,
 } from './types.ts';
 import { toolCallLimit, ToolTranscripts } from './tool-transcripts.ts';
-import { panelMessageLimit } from './transcript-limits.ts';
 import { parseOrigin } from './agent-origin.ts';
 import { parseSessionName } from './session-name.ts';
 
@@ -90,6 +89,9 @@ export class SessionStore {
         'acceptsFollowUp',
         'completedTurnId',
         'openInBackground',
+        'history',
+        'historyFragment',
+        'pinnedMessage',
       ].includes(key)
         ? undefined
         : value,
@@ -159,7 +161,6 @@ export class SessionStore {
         !agentThinkingLevels.includes(session.thinkingOverride)) ||
       !Number.isFinite(session.updatedAt) ||
       !Array.isArray(session.messages) ||
-      session.messages.length > panelMessageLimit + toolCallLimit ||
       !validHarness(session)
     ) {
       throw Error('Invalid saved conversation');
@@ -277,9 +278,6 @@ export class SessionStore {
         grouped.push(fallback);
       }
       index += entries.length - 1;
-    }
-    if (grouped.length > panelMessageLimit) {
-      throw Error('Invalid saved conversation');
     }
     let toolRecoveryFailed = false;
     if (grouped.some((message) => message.toolGroup && !message.toolGroup.legacy)) {

@@ -12,6 +12,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
+import type { HistoryPage, HistoryPosition } from '../../../../src/agents/history-pages.ts';
 import type { RemoteAgentActions } from '../../../../src/remote/protocol.ts';
 import { useAppState, useStore } from '../hooks.ts';
 import { listeningStatus } from './Activity.tsx';
@@ -83,11 +84,101 @@ function MessageList(props: { session: AgentSession }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const followRef = useRef(true);
+  const store = useStore();
+  const state = useAppState();
+  const [page, setPage] = useState<HistoryPage | null>(null);
+  const [pending, setPending] = useState(false);
+  const [pageError, setPageError] = useState('');
+  const generation = useRef(0);
+  const identity = useRef('');
+  const previousLive = useRef<AgentSession | null>(null);
+  const pageScroll = useRef<'start' | 'end' | number | null>(null);
+  const key = session.id + ':' + session.toolEpoch;
+  // Invalidate synchronously during navigation, before an old promise can
+  // commit into this newly selected conversation. No stale page can send text.
+  if (identity.current !== key) {
+    identity.current = key;
+    generation.current++;
+    previousLive.current = null;
+    if (page) setPage(null);
+    if (pending) setPending(false);
+    if (pageError) setPageError('');
+    followRef.current = true;
+  }
+  const previous = previousLive.current;
+  if (
+    !page &&
+    !followRef.current &&
+    previous?.history &&
+    session.history &&
+    JSON.stringify(previous.history.start) !== JSON.stringify(session.history.start)
+  ) {
+    setPage({
+      id: previous.id,
+      epoch: previous.toolEpoch ?? '',
+      messages: previous.messages,
+      history: previous.history,
+    });
+  }
+  previousLive.current = session;
+  const history = page?.history ?? session.history;
+  const older = history && (history.start.index > 0 || history.start.offset > 0);
+  const newer =
+    page &&
+    session.history &&
+    (page.history.end.index < session.history.total || page.history.end.offset > 0);
+
+  async function loadPage(
+    direction: 'before' | 'after',
+    position: HistoryPosition,
+    refresh = false,
+  ) {
+    if (pending) return;
+    const token = ++generation.current;
+    const owner = identity.current;
+    const scroll = scroller.current?.scrollTop ?? 0;
+    setPending(true);
+    setPageError('');
+    try {
+      const result = (await store.connection.request('agent-history-page', {
+        id: session.id,
+        epoch: session.toolEpoch ?? '',
+        direction,
+        ...position,
+      })) as HistoryPage;
+      if (
+        token !== generation.current ||
+        owner !== identity.current ||
+        result.id !== session.id ||
+        result.epoch !== session.toolEpoch
+      )
+        return;
+      followRef.current = false;
+      setFollowing(false);
+      pageScroll.current = refresh ? scroll : direction === 'before' ? 'end' : 'start';
+      setPage(result);
+    } catch (error) {
+      if (token === generation.current && owner === identity.current) setPageError(String(error));
+    } finally {
+      if (token === generation.current && owner === identity.current) setPending(false);
+    }
+  }
+
+  useEffect(
+    () => () => {
+      generation.current++;
+    },
+    [],
+  );
 
   // Keep the newest message in view while following; respect manual scrolling.
   useLayoutEffect(() => {
     const element = scroller.current;
-    if (element && followRef.current) {
+    if (element && pageScroll.current !== null) {
+      const target = pageScroll.current;
+      pageScroll.current = null;
+      element.scrollTop = target === 'end' ? element.scrollHeight : target === 'start' ? 0 : target;
+    } else if (element && followRef.current && !page) {
       element.scrollTop = element.scrollHeight;
     }
   });
@@ -103,7 +194,7 @@ function MessageList(props: { session: AgentSession }) {
     if (!element) {
       return;
     }
-    const atEnd = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    const atEnd = !page && element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     followRef.current = atEnd;
     if (atEnd !== following) {
       setFollowing(atEnd);
@@ -111,6 +202,11 @@ function MessageList(props: { session: AgentSession }) {
   }
 
   function jump() {
+    generation.current++;
+    setPending(false);
+    setPage(null);
+    setPageError('');
+    pageScroll.current = 'end';
     const element = scroller.current;
     if (element) {
       followRef.current = true;
@@ -121,15 +217,64 @@ function MessageList(props: { session: AgentSession }) {
 
   return (
     <div class="message-area">
+      {(older || page || pageError) && (
+        <div class="history-controls">
+          <button
+            class="action small"
+            disabled={!older || pending || state.connection.status !== 'online'}
+            onClick={() => history && loadPage('before', history.start)}
+          >
+            Load older
+          </button>
+          {page && (
+            <>
+              <button
+                class="action small"
+                disabled={!newer || pending || state.connection.status !== 'online'}
+                onClick={() => loadPage('after', page.history.end)}
+              >
+                Newer
+              </button>
+              <button
+                class="action small"
+                disabled={pending || state.connection.status !== 'online'}
+                onClick={() => loadPage('after', page.history.start, true)}
+              >
+                Refresh
+              </button>
+              <button class="action small" onClick={jump}>
+                Latest
+              </button>
+            </>
+          )}
+          <span role="status">
+            {pageError ||
+              (pending
+                ? 'Loading history…'
+                : page
+                  ? page.history.revision !== session.history?.revision
+                    ? 'History page · newer updates available'
+                    : 'History page'
+                  : 'Recent history')}
+          </span>
+        </div>
+      )}
       <div class="scroll" ref={scroller} onScroll={scrolled} role="region" aria-label="Messages">
         <div class="messages">
-          {session.messages.map((message) => (
-            <Message
-              key={message.id}
-              message={message}
-              sessionId={session.id}
-              toolEpoch={session.toolEpoch ?? ''}
-            />
+          {(page?.messages ?? session.messages).map((message) => (
+            <div key={message.id} data-message-id={message.id}>
+              {message.historyFragment && (
+                <div class="state-note">
+                  Text {message.historyFragment.start + 1}–{message.historyFragment.end} of{' '}
+                  {message.historyFragment.total} · copy includes this fragment only
+                </div>
+              )}
+              <Message
+                message={message}
+                sessionId={session.id}
+                toolEpoch={session.toolEpoch ?? ''}
+              />
+            </div>
           ))}
         </div>
       </div>

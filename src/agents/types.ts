@@ -2,6 +2,7 @@ import type { WidgetAttachment } from '../widgets/types.ts';
 import type { Screenshot } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import type { AgentChoice, AgentChoiceSet } from './choices.ts';
+import type { HistoryWindow } from './history-pages.ts';
 
 /**
  * Provenance of a message written by another Companion conversation's agent
@@ -52,6 +53,8 @@ export interface AgentMessage {
   screenshotSaved?: false;
   /** Validated reference; its private view URL is regenerated when reopening. */
   widget?: WidgetAttachment;
+  /** Display-only slice of an oversized message; never persisted. */
+  historyFragment?: { start: number; end: number; total: number };
   /** Present only on user-kind messages written by another conversation's agent. */
   origin?: AgentMessageOrigin;
 }
@@ -144,6 +147,10 @@ export interface AgentSession {
   thinkingOverride?: AgentSettings['thinking'];
   error: string;
   messages: AgentMessage[];
+  /** Display-only bounded window; absence means the legacy full transcript. */
+  history?: HistoryWindow;
+  /** Canonical pin independent of the transcript page (body omitted). */
+  pinnedMessage?: AgentMessage | null;
   updatedAt: number;
   /** Live affordances are deliberately not restored from saved transcripts. */
   choices?: AgentChoiceSet;

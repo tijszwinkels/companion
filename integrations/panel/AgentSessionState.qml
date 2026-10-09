@@ -209,7 +209,10 @@ QtObject {
           messages[position] = message
         }
       }
-      entries[index] = Object.assign({}, patch, {messages: messages})
+      // Window membership is authoritative; omitted rows are retained only if
+      // their ID remains in the bounded projection. Old listeners omit history.
+      const retained = patch.history ? patch.history.ids.map(id => messages.find(row => row.id === id)).filter(row => row !== undefined) : messages
+      entries[index] = Object.assign({}, patch, {messages: retained})
     }
     root.sessions = entries
     root.announce([patch])

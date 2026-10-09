@@ -341,7 +341,7 @@ Item {
     try {
       const message = JSON.parse(line)
       agentSessions.controlReceived(message)
-      if (message.action === "agent-tool-page") { sidePanel.toolPageReceived(message); return }
+      if (message.action === "agent-tool-page" || message.action === "agent-history-page") { sidePanel.toolPageReceived(message); return }
 
       if (message.type === "state" && message.protocol === 1) {
         root.paused = message.paused

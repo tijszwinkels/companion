@@ -211,7 +211,7 @@ Item {
     } else if (message.type === "activity-entry") {
       activity.update(message.sessionId, message.entry)
     } else if (message.type === "result" || message.type === "error") {
-      if (message.action === "agent-tool-page") { root.toolPageReceived(message); return }
+      if (message.action === "agent-tool-page" || message.action === "agent-history-page") { root.toolPageReceived(message); return }
       const failure = message.type === "error" ? message.message : ""
       if (message.action === "send-agent") root.finishInput(failure)
       if (message.action === "submit-utterance") root.finishUtterance(failure)

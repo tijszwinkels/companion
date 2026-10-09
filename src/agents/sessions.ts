@@ -15,7 +15,7 @@ import {
 import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
 import { MAX_OPEN_AGENT_SESSIONS } from './session-limit.ts';
 import { SessionStore } from './session-store.ts';
-import { panelMessageLimit, panelTextLimit } from './transcript-limits.ts';
+import { historyPage, type HistoryPage, type HistoryPageRequest } from './history-pages.ts';
 import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
@@ -60,6 +60,8 @@ interface RunningSession {
   controller: AbortController;
   done: Promise<void>;
   changed: Map<string, AgentMessage>;
+  historyRevision?: number;
+  displayed?: Map<string, AgentMessage>;
   // Only the latest cumulative partial per active call, bounded below. Terminal
   // updates supersede it; flush/stop persist the last accepted partial.
   pendingTools: Map<string, AgentMessage>;
@@ -239,15 +241,9 @@ export class AgentSessions implements InspectableModule {
         chatMessage('widget:' + record.id, 'assistant', record.text),
       );
     }
-    const size = [...messages.values()].reduce(
-      (total, message) => total + message.text.length + message.input.length,
-      0,
-    );
-    if (messages.size > panelMessageLimit || size > panelTextLimit) {
-      throw Error('The panel transcript limit was reached');
-    }
-    // Reserve space across the atomic widget write. Concurrent streamed text
-    // cannot consume it before the committed visual reaches the transcript.
+    // Canonical widget writes remain independent of the bounded display page.
+    // Keep reservations until publication settles, without treating historical
+    // rows as a quota that can reject a valid widget transaction.
     for (const record of records) {
       const id = 'widget:' + record.id;
       session.widgetReservations.set(id, messages.get(id)!);
@@ -294,10 +290,7 @@ export class AgentSessions implements InspectableModule {
   }
 
   snapshot(): AgentSession[] {
-    return [...this.sessions.values()].map(({ view }) => ({
-      ...view,
-      messages: [...view.messages],
-    }));
+    return [...this.sessions.values()].map((session) => this.display(session));
   }
 
   /** The Map order is also the visible tab order. Moves retain every run object. */
@@ -509,6 +502,43 @@ export class AgentSessions implements InspectableModule {
       session.modelWrite = undefined;
       this.modelChanges.delete(id);
     }
+  }
+
+  /** Project only a recent bounded window. Authoritative history stays in view
+   * for persistence, context, canonical widgets and source-anchor lookup. */
+  private display(session: RunningSession): AgentSession {
+    const page = historyPage(session.view, session.historyRevision ?? 0);
+    const pinned = session.view.messages.find(
+      (message) => message.widget?.presentation.placement === 'pinned',
+    );
+    return {
+      ...session.view,
+      messages: page.messages,
+      history: page.history,
+      pinnedMessage: pinned ? { ...pinned, text: '', input: '' } : null,
+    };
+  }
+
+  historyPage(request: HistoryPageRequest): HistoryPage {
+    const session = this.sessions.get(request.id);
+    if (this.closed || !session || session.closing || request.epoch !== session.view.toolEpoch) {
+      throw Error('History is unavailable in this conversation');
+    }
+    let index = request.index;
+    let offset = request.offset;
+    if (request.anchor !== undefined) {
+      index = session.view.messages.findIndex((message) => message.id === request.anchor);
+      if (index < 0) {
+        throw Error('History anchor is unavailable');
+      }
+      offset = 0;
+    }
+    return historyPage(
+      session.view,
+      session.historyRevision ?? 0,
+      request.anchor ? 'after' : request.direction,
+      { index, offset },
+    );
   }
 
   toolPage(request: ToolPageRequest): ToolPage {
@@ -1289,43 +1319,18 @@ export class AgentSessions implements InspectableModule {
         (last?.toolGroup && !last.toolGroup.legacy && !last.toolGroup.unavailable
           ? last.id
           : randomUUID());
-      if (
-        new Set([
-          ...session.view.messages.map((entry) => entry.id),
-          ...session.widgetReservations.keys(),
-          groupId,
-        ]).size > panelMessageLimit
-      ) {
-        throw Error(
-          `The panel transcript limit was reached. The full session is saved in ${harnessName(session.view)}.`,
-        );
-      }
       const toolId = message.id;
       message = this.store.tools.put(session.view.id, message, groupId);
       session.pendingTools.delete(toolId);
     }
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
-    const reserved = new Map(session.view.messages.map((entry) => [entry.id, entry]));
-    for (const [id, entry] of session.widgetReservations) {
-      reserved.set(id, entry);
-    }
-    reserved.set(message.id, message);
-    const totalSize = [...reserved.values()].reduce(
-      (size, entry) => size + entry.text.length + entry.input.length,
-      0,
-    );
-    if (totalSize > panelTextLimit || reserved.size > panelMessageLimit) {
-      throw Error(
-        `The panel transcript limit was reached. The full session is saved in ${harnessName(session.view)}.`,
-      );
-    }
-
     if (index < 0) {
       session.view.messages.push(message);
     } else {
       session.view.messages[index] = message;
     }
     session.changed.set(message.id, message);
+    session.historyRevision = (session.historyRevision ?? 0) + 1;
     if (message.kind === 'assistant' && message.state === 'done') {
       this.log('answer', message.text);
     }
@@ -1363,9 +1368,17 @@ export class AgentSessions implements InspectableModule {
     // drain end), so this is the single place that informs the reporter.
     // It only schedules work and can never block the conversation.
     this.liveState?.update(session.view.id, session.busy, harnessSessionId(session));
+    const display = this.display(session);
+    const previous = session.displayed;
+    // Newly entering rows must be sent even if they were not changed in this
+    // flush. Window IDs tell clients what to evict and retain in exact order.
+    const messages = display.messages.filter(
+      (message) => previous?.get(message.id) !== message || session.changed.has(message.id),
+    );
+    session.displayed = new Map(display.messages.map((message) => [message.id, message]));
     const event: SessionEvent = {
       type: 'agent-session',
-      session: { ...session.view, messages: [...session.changed.values()] },
+      session: { ...display, messages },
     };
     session.changed.clear();
     for (const listener of this.listeners) {
@@ -1463,7 +1476,7 @@ export class AgentSessions implements InspectableModule {
           const index = view.messages.findIndex((entry) => entry.id === message.id);
           if (index >= 0) {
             view.messages[index] = message;
-          } else if (view.messages.length < panelMessageLimit) {
+          } else {
             view.messages.push(message);
           }
         }
@@ -1503,7 +1516,11 @@ export class AgentSessions implements InspectableModule {
       });
       this.previous.delete(id);
       for (const listener of this.listeners) {
-        listener({ type: 'agent-restored', session: view, ...(reveal ? {} : { reveal: false }) });
+        listener({
+          type: 'agent-restored',
+          session: this.display(this.sessions.get(id)!),
+          ...(reveal ? {} : { reveal: false }),
+        });
       }
       this.publishHistory();
       this.publishOrder();

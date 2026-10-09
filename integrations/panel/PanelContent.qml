@@ -110,7 +110,10 @@ Item {
   }
   readonly property var selectedSession: !showingPrevious && sessions.find(entry => entry.id === selectedSessionId) || null
   property var locallyUnpinned: ({})
-  readonly property var pinnedMessage: selectedSession && selectedSession.messages.find(message =>
+  function widgetMessages(session) {
+    return session.pinnedMessage ? [session.pinnedMessage].concat(session.messages) : session.messages
+  }
+  readonly property var pinnedMessage: selectedSession && widgetMessages(selectedSession).find(message =>
     message.widget && message.widget.viewUrl && message.widget.presentation.placement === "pinned"
       && !root.isLocallyUnpinned(message.widget)) || null
   readonly property bool fullWidget: pinnedMessage !== null && pinnedMessage.widget.presentation.heightPercent === 100
@@ -242,7 +245,7 @@ Item {
     synchronizeTabs()
     const dismissed = Object.assign({}, root.locallyUnpinned)
     for (const id of Object.keys(dismissed)) {
-      const stillPinned = root.sessions.some(session => session.messages.some(message =>
+      const stillPinned = root.sessions.some(session => root.widgetMessages(session).some(message =>
         message.widget && message.widget.id === id && root.isLocallyUnpinned(message.widget)
           && message.widget.presentation.placement === "pinned"))
       if (!stillPinned) delete dismissed[id]

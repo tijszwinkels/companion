@@ -1252,6 +1252,34 @@ export class DesktopRuntime {
       return 'deleted';
     }
 
+    if (request.action === 'agent-history-page') {
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.epoch !== 'string' ||
+        typeof request.requestId !== 'string' ||
+        request.requestId.length > 128 ||
+        !['before', 'after'].includes(request.direction as string) ||
+        !Number.isSafeInteger(request.index) ||
+        !Number.isSafeInteger(request.offset) ||
+        (request.anchor !== undefined &&
+          (typeof request.anchor !== 'string' || request.anchor.length > 200))
+      ) {
+        throw Error('Expected a conversation, epoch and history position');
+      }
+      if (!this.showsConversation(clientId, request.id)) {
+        throw Error('This conversation is no longer selected');
+      }
+      return this.options.agents.historyPage({
+        id: request.id,
+        epoch: request.epoch,
+        direction: request.direction as 'before' | 'after',
+        index: request.index as number,
+        offset: request.offset as number,
+        anchor: request.anchor as string | undefined,
+      });
+    }
+
     if (request.action === 'agent-tool-page') {
       if (
         !this.options.agents ||

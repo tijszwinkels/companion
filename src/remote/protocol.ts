@@ -58,6 +58,14 @@ export interface RemoteActionParameters {
   'set-agent-model': { id: string; model: string };
   'set-agent-thinking': { id: string; thinking: string };
   'move-agent': { id: string; beforeId: string; revision: string };
+  'agent-history-page': {
+    id: string;
+    epoch: string;
+    direction: 'before' | 'after';
+    index: number;
+    offset: number;
+    anchor?: string;
+  };
   'agent-tool-page': {
     id: string;
     epoch: string;
@@ -297,6 +305,16 @@ const shapes: Record<RemoteAction, ActionShape> = {
   'set-agent-thinking': { required: { id: sessionId, thinking: text(20) } },
   'move-agent': {
     required: { id: sessionId, beforeId: optionalSessionId, revision: nonEmptyText(64) },
+  },
+  'agent-history-page': {
+    required: {
+      id: sessionId,
+      epoch: nonEmptyText(64),
+      direction: (value) => value === 'before' || value === 'after',
+      index: count,
+      offset: count,
+    },
+    optional: { anchor: nonEmptyText(200) },
   },
   'agent-tool-page': {
     required: {

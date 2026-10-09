@@ -437,6 +437,13 @@ export class Relay {
 
   private replyFor(request: RemoteRequest, message: Record<string, unknown>): Reply {
     if (message.type === 'result') {
+      if (
+        request.action === 'agent-history-page' &&
+        message.result &&
+        typeof message.result === 'object'
+      ) {
+        this.rewriteSession(message.result as { id?: unknown; messages?: unknown });
+      }
       return {
         type: 'result',
         requestId: request.requestId,
@@ -513,7 +520,11 @@ export class Relay {
     }
 
     for (const session of sessions) {
-      this.rewriteSession(session as { id?: unknown; messages?: unknown });
+      const value = session as { id?: unknown; messages?: unknown; pinnedMessage?: unknown };
+      this.rewriteSession(value);
+      if (value.pinnedMessage) {
+        this.rewriteSession({ id: value.id, messages: [value.pinnedMessage] });
+      }
     }
   }
 

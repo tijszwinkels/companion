@@ -427,7 +427,10 @@ test('activity-only updates do not resend open conversations to incremental clie
 
   const hydration = states(client).at(-1)!;
   assert.equal((hydration.sessions as unknown[]).length, 10);
-  assert.ok(client.bytes() > openConversationCharacters, 'Connect hydration is complete');
+  assert.ok(
+    client.bytes() > 10 * 64 * 1024,
+    'Connect hydration includes ten bounded recent windows',
+  );
 
   client.socket.write(
     JSON.stringify({

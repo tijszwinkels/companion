@@ -379,26 +379,48 @@ test('Pi event adapter delivers >16K inputs/results intact and releases complete
   );
 });
 
-test('tools share the 800-row limit but do not reduce ordinary 1M-unit text allowance', async (context) => {
+test('old tools remain pageable after crossing row and text display budgets', async (context) => {
   const setup = await fixture(context);
   const userUnits = setup.sessions.snapshot()[0].messages[0].text.length;
   setup.emit(tool('a', 'tool output'.repeat(100000)));
   setup.emit(chatMessage('answer', 'assistant', 'x'.repeat(1_000_000 - userUnits)));
-  for (let index = 0; index < 797; index++) setup.emit(chatMessage('empty-' + index, 'notice', ''));
-  assert.equal(setup.sessions.snapshot()[0].messages.length, 800);
+  const initial = setup.sessions.snapshot()[0];
+  const first = setup.sessions.historyPage({
+    id: setup.id,
+    epoch: initial.toolEpoch!,
+    direction: 'after',
+    index: 0,
+    offset: 0,
+  });
+  const group = first.messages.find((row) => row.toolGroup)!;
+  for (let index = 0; index < 4200; index++)
+    setup.emit(chatMessage('empty-' + index, 'notice', ''));
+  assert.equal(setup.sessions.snapshot()[0].messages.length, 200);
   setup.emit(tool('a', 'updated tool output'.repeat(100000)));
-  assert.throws(
-    () => setup.emit(chatMessage('over-text', 'assistant', 'x')),
-    /panel transcript limit/,
-  );
-  assert.throws(() => setup.emit(tool('new-group', 'another tool')), /panel transcript limit/);
+  setup.emit(chatMessage('over-text', 'assistant', 'x'));
+  setup.emit(tool('new-group', 'another tool'));
   await setup.finish();
   const view = setup.sessions.snapshot()[0];
-  assert.equal(view.messages.length, 800);
-  assert.equal(
-    view.messages.reduce((units, m) => units + m.text.length + m.input.length, 0),
-    1_000_000,
-  );
+  assert.equal(view.messages.length, 200);
+  assert.ok(view.history!.total > 4000);
+  const anchored = setup.sessions.historyPage({
+    id: setup.id,
+    epoch: view.toolEpoch!,
+    direction: 'after',
+    index: 0,
+    offset: 0,
+    anchor: group.id,
+  });
+  assert.equal(anchored.messages[0].id, group.id);
+  const detail = setup.sessions.toolPage({
+    id: setup.id,
+    epoch: view.toolEpoch!,
+    groupId: group.id,
+    revision: anchored.messages[0].toolGroup!.revision,
+    index: 0,
+    offset: 0,
+  });
+  assert.match(detail.text, /updated tool output/);
   await setup.sessions.remove(setup.id);
   await setup.sessions.reopen(setup.id);
   assert.deepEqual(setup.sessions.snapshot()[0].messages, view.messages);
