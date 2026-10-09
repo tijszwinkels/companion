@@ -923,7 +923,7 @@ calls start, update and finish. An intervening user, assistant or notice starts 
 new group. Updates to an older call retain that group's original position.
 Snapshots and incremental events contain these summaries only. Ordinary text
 still has the 1,000,000 UTF-16-unit display budget; a group consumes one of the
-800 display rows, regardless of its call count or output length.
+4,000 display rows, regardless of its call count or output length.
 
 Expansion sends a private request on the existing socket:
 
