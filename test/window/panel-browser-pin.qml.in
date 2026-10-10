@@ -1,0 +1,694 @@
+import QtQuick
+import QtTest
+import QtWebEngine
+import "@WINDOW@" as Native
+
+// The manual browser pin inside the real standalone window body, with a
+// synthetic backend, a real native widget for pin conflicts and loopback
+// pages. Presentation moves use the test host's ordinary offscreen surfaces,
+// not Wayland layer shell; muted audio and frozen timers stand in for sound.
+TestCase {
+  id: testCase
+  name: "PanelBrowserPin"
+  when: windowShown
+
+  readonly property string origin: @ORIGIN@
+  readonly property var reference: @REFERENCE@
+  readonly property var secondReference: @SECOND_REFERENCE@
+  property var body: null
+  property var panel: null
+  property var composer: null
+  property int sequence: 0
+
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+
+  // Conversation "one" or "two"; `widget` adds a pinned native widget.
+  function conversation(id, widget) {
+    const messages = [{id: "note-" + id, role: "assistant", kind: "assistant", text: "Earlier answer in " + id,
+      toolName: "", input: "", state: "", screenshot: ""}]
+    if (widget) {
+      messages.push({id: "visual-" + id, role: "assistant", kind: "widget", text: "Pinned list",
+        widget: Object.assign({}, id === "one" ? reference : secondReference, {presentation: {
+          placement: "pinned", heightPercent: 40, replaceActivity: false}}),
+        toolName: "", input: "", state: "", screenshot: ""})
+    }
+    return {id: id, title: id === "one" ? "First chat" : "Second chat", status: "idle", messages: messages}
+  }
+  function snapshot(sessions) {
+    fakeBackend.received({type: "state", protocol: 1, ready: true, sessionControlsAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: sessions})
+  }
+  function evaluate(view, script) {
+    let done = false
+    let result = null
+    view.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 5000, script)
+    return result
+  }
+  function type(text) {
+    for (const character of text) keyClick(character)
+  }
+  function browser() {
+    return findChild(body, "panelBrowser")
+  }
+  function loader() {
+    return findChild(body, "panelBrowserLoader")
+  }
+  // The shared body item that lays out the pin, Activity strip and chat.
+  function area() {
+    return loader().parent
+  }
+  function countViews(item) {
+    let count = item.objectName === "panelBrowserView" ? 1 : 0
+    for (const child of item.children) count += countViews(child)
+    return count
+  }
+  function select(id) {
+    const tab = id === "" ? findChild(body, "activityTab") : findChild(body, "tab-" + id)
+    verify(tab !== null && tab.visible, "tab " + id)
+    waitForRendering(tab)
+    mouseClick(tab)
+    tryCompare(panel, "selectedSessionId", id)
+  }
+  function revealControls() {
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryCompare(browser(), "controlsShown", true)
+  }
+  function openBrowser() {
+    const button = findChild(body, "panelBrowserButton")
+    verify(button.visible, "the header offers the browser")
+    mouseClick(button)
+    tryVerify(function() { return panel.browsing })
+  }
+  // The view's url changes before the new document commits; wait for the
+  // document itself, so later clicks reach the new page.
+  function openPage(path) {
+    const view = browser()
+    verify(view.openAddress(origin + path))
+    tryVerify(function() {
+      return !view.loading && evaluate(view.page, "location.href") === origin + path
+    }, 10000, path)
+  }
+  // Pin from the full browser with a real click on the toolbar's Pin.
+  function pin() {
+    verify(panel.browsing)
+    const view = browser()
+    view.notice = ""
+    revealControls()
+    const button = findChild(view, "panelBrowser-pin")
+    verify(button !== null && button.visible && button.enabled)
+    waitForRendering(view)
+    const position = button.mapToItem(body, 0, 0)
+    mouseClick(button)
+    tryVerify(function() { return panel.browserPinVisible }, 3000, "the page is pinned: " + view.notice
+      + " controls " + view.controlsShown + " button " + position.x + "," + position.y + " " + button.width
+      + "x" + button.height + " selected " + panel.selectedSessionId)
+    verify(!panel.browsing)
+    tryVerify(function() { return composer.activeFocus }, 2000, "pinning returns to the chat input")
+  }
+  function counter(view) {
+    return Number(evaluate(view.page, "document.title"))
+  }
+  function verifyRunning(view) {
+    tryCompare(view.page, "lifecycleState", WebEngineView.LifecycleState.Active, 3000)
+    verify(!view.page.audioMuted)
+    const before = counter(view)
+    tryVerify(function() { return counter(view) > before }, 3000, "page timers run")
+  }
+  function verifyFrozen(view) {
+    tryCompare(view.page, "lifecycleState", WebEngineView.LifecycleState.Frozen, 3000)
+    verify(view.page.audioMuted, "a page that is not shown is muted")
+  }
+  // The pin, the Activity strip and the chat do not overlap, and the chat
+  // keeps at least its measured minimum (input, controls and transcript).
+  function verifyLayout() {
+    const page = loader()
+    const chat = findChild(body, "sessionView")
+    const strip = findChild(body, "activityStrip")
+    verify(page.visible && chat.visible)
+    verify(page.height >= browser().chromeHeight - 0.5, "the strip stays reachable: " + page.height)
+    verify(strip.y >= page.y + page.height, "Activity strip below the pin")
+    // Below the chat's own minimum there is nothing to share; the pin then
+    // keeps only its strip, like a pinned widget keeps nothing.
+    if (area().browserPinMaximumHeight >= browser().chromeHeight) {
+      verify(chat.y >= strip.y + strip.height, "chat below the Activity strip: chat " + chat.y + " strip " + strip.y
+        + "+" + strip.height + " pin " + page.y + "+" + page.height + " area " + area().height)
+      verify(chat.height >= chat.minimumHeight - 1, "chat keeps its minimum: " + chat.height + " < " + chat.minimumHeight)
+    }
+    verify(page.height <= Math.max(browser().chromeHeight, area().contentHeight * panel.browserPinMaximumPercent / 100) + 0.5,
+      "never a full pin")
+  }
+  function expectedPinHeight() {
+    return Math.max(browser().chromeHeight, Math.min(area().contentHeight * panel.browserPinPercent / 100,
+      area().browserPinMaximumHeight))
+  }
+  function request(id, url) {
+    const requestId = "pin-request-" + (++sequence)
+    fakeBackend.received({type: "agent-browser-open", requestId: requestId, id: id, url: url})
+    return requestId
+  }
+  function answer(requestId) {
+    let found = []
+    tryVerify(function() {
+      found = fakeBackend.sent.filter(function(message) {
+        return message.action === "agent-browser-open-result" && message.requestId === requestId
+      })
+      return found.length > 0
+    }, 10000, "answer to " + requestId)
+    wait(50)
+    compare(fakeBackend.sent.filter(function(message) {
+      return message.action === "agent-browser-open-result" && message.requestId === requestId
+    }).length, 1, "exactly one answer")
+    return found[0]
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    panel = body.panel
+    TestHost.attach(body)
+    TestHost.show(true)
+    snapshot([conversation("one"), conversation("two")])
+    body.client.sessions.select("one")
+    tryCompare(panel, "selectedSessionId", "one")
+    composer = findChild(body, "sessionComposer")
+    composer.text = "Draft one"
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+    wait(100)
+  }
+
+  function test_01_pin_moves_the_page_above_the_chat() {
+    compare(panel.browserPinPercent, 35, "the pin starts at 35%")
+    openBrowser()
+    tryVerify(function() { return findChild(browser(), "panelBrowserAddress").activeFocus })
+    type(origin + "/counter")
+    keyClick(Qt.Key_Return)
+    const view = browser()
+    tryVerify(function() { return view.page !== null && counter(view) > 0 }, 10000)
+    const page = view.page
+    compare(evaluate(page, "window.retainedPage = 'page'"), "page")
+
+    // Full view offers Pin, Chat and Close.
+    revealControls()
+    verify(findChild(view, "panelBrowser-pin").visible)
+    verify(findChild(view, "panelBrowser-chat").visible)
+    verify(findChild(view, "panelBrowser-close").visible)
+    pin()
+
+    compare(panel.browserPinOwnerId, "one")
+    verify(view.pinned)
+    verify(findChild(body, "sessionView").visible)
+    verify(findChild(body, "sessionModelFooter").visible)
+    verify(findChild(body, "panelBrowserButton").visible, "the header can show the page in full")
+    tryVerify(function() { return composer.activeFocus }, 2000, "pinning returns to the chat input")
+    compare(body.composerId, "one", "the composer is still the voice target")
+    compare(composer.text, "Draft one")
+    fuzzyCompare(loader().height, expectedPinHeight(), 0.5)
+    verify(loader().height > 0.3 * area().contentHeight, "35% of the area at this size: " + loader().height)
+    verifyLayout()
+
+    // The same page and item keep running in the pin; there is one view.
+    compare(view.page, page)
+    compare(evaluate(page, "window.retainedPage"), "page")
+    compare(countViews(body), 1)
+    verifyRunning(view)
+
+    // The pinned toolbar offers Chat, Unpin and Close instead of Pin, in one
+    // row at this width.
+    revealControls()
+    verify(!findChild(view, "panelBrowserToolbar").twoRows)
+    verify(findChild(view, "panelBrowser-unpin").visible)
+    verify(findChild(view, "panelBrowser-pin") === null)
+    keyClick(Qt.Key_Escape)
+    tryVerify(function() { return page.activeFocus })
+  }
+
+  function test_02_height_is_adjustable_capped_and_never_full() {
+    // A tall window leaves room above the chat's minimum for dragging.
+    const window = body.Window.window
+    const width = window.width
+    const height = window.height
+    window.height = 1000
+    tryCompare(body, "height", 1000)
+    tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+    verify(area().browserPinMaximumHeight > loader().height + 100, "room to grow: " + area().browserPinMaximumHeight
+      + " window " + window.height + " content " + area().contentHeight + " body " + area().height
+      + " chat minimum " + findChild(body, "sessionView").minimumHeight + " strip " + findChild(body, "activityStrip").height
+      + " pin " + loader().height)
+    const grip = findChild(body, "browserPinResize")
+    verify(grip.visible)
+    const chat = findChild(body, "sessionView")
+
+    // A real pointer drag on the grip grows the pin.
+    const before = loader().height
+    mousePress(grip, grip.width / 2, grip.height / 2)
+    mouseMove(grip, grip.width / 2, grip.height / 2 + 60)
+    mouseRelease(grip, grip.width / 2, grip.height / 2 + 60)
+    tryVerify(function() { return loader().height > before + 40 }, 2000, "drag grows the pin: " + loader().height)
+    fuzzyCompare(loader().height, expectedPinHeight(), 0.5)
+    verifyLayout()
+
+    // Dragging far past the limit stops at what the chat leaves.
+    mousePress(grip, grip.width / 2, grip.height / 2)
+    mouseMove(grip, grip.width / 2, area().height + 400)
+    mouseRelease(grip, grip.width / 2, area().height + 400)
+    fuzzyCompare(loader().height, area().browserPinMaximumHeight, 0.5)
+    verify(panel.browserPinPercent <= panel.browserPinMaximumPercent)
+    verifyLayout()
+
+    // Dragging above the top stops at the minimum share.
+    mousePress(findChild(body, "browserPinResize"), grip.width / 2, grip.height / 2)
+    mouseMove(grip, grip.width / 2, -area().height)
+    mouseRelease(grip, grip.width / 2, -area().height)
+    compare(panel.browserPinPercent, panel.browserPinMinimumPercent)
+    verifyLayout()
+
+    // Keyboard: the focused grip steps by 5%.
+    grip.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    fuzzyCompare(panel.browserPinPercent, panel.browserPinMinimumPercent + 5, 0.01)
+    keyClick(Qt.Key_Up)
+    fuzzyCompare(panel.browserPinPercent, panel.browserPinMinimumPercent, 0.01)
+
+    // Even a requested 100% stays below the full area.
+    panel.resizeBrowserPin(area().contentHeight)
+    verify(panel.browserPinPercent <= panel.browserPinMaximumPercent)
+    verifyLayout()
+
+    // Text zoom grows the chat's measured minimum; the pin yields.
+    panel.browserPinPercent = 70
+    const unzoomed = loader().height
+    chat.zoomPercent = 200
+    tryVerify(function() { return chat.height >= chat.minimumHeight - 1 }, 2000)
+    verify(loader().height < unzoomed, "zoom shrinks the pin: " + unzoomed + " -> " + loader().height)
+    verifyLayout()
+    chat.zoomPercent = 100
+
+    // A narrow, short window and a larger theme unit stay usable.
+    window.width = 360
+    window.height = 720
+    tryCompare(body, "width", 360)
+    tryCompare(body, "height", 720)
+    body.command({action: "theme", values: {unit: 1.25}})
+    panel.browserPinPercent = 35
+    tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+    verifyLayout()
+    const view = browser()
+    revealControls()
+    const toolbar = findChild(view, "panelBrowserToolbar")
+    verify(toolbar.twoRows, "a narrow toolbar wraps its exit buttons")
+    const reload = findChild(view, "panelBrowser-reload")
+    const firstRow = reload.mapToItem(toolbar, 0, 0).y + reload.height
+    for (const action of ["back", "forward", "reload", "chat", "unpin", "close"]) {
+      const button = findChild(view, "panelBrowser-" + action)
+      const position = button.mapToItem(toolbar, 0, 0)
+      verify(position.x >= 0 && position.x + button.width <= toolbar.width + 0.5, action + " fits the toolbar")
+      verify(position.y + button.height <= toolbar.height + 0.5, action + " is inside the toolbar")
+      if (["chat", "unpin", "close"].indexOf(action) >= 0) verify(position.y >= firstRow, action + " is on the second row")
+    }
+    verify(findChild(view, "panelBrowserAddress").width > 60, "the address field keeps a usable width")
+    keyClick(Qt.Key_Escape)
+
+    // A panel too short for the chat itself still keeps the pin's strip.
+    window.height = 300
+    tryCompare(body, "height", 300)
+    compare(area().browserPinMaximumHeight, 0)
+    tryVerify(function() { return loader().height >= view.chromeHeight - 0.5 }, 2000)
+    verifyLayout()
+
+    body.command({action: "theme", values: {unit: 1}})
+    window.width = width
+    window.height = height
+    tryCompare(body, "width", width)
+    tryCompare(body, "height", height)
+    panel.browserPinPercent = 35
+    tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+  }
+
+  function test_03_typing_dialogs_and_page_focus() {
+    const view = browser()
+    const page = view.page
+    composer.forceActiveFocus()
+    composer.cursorPosition = composer.text.length
+    type(" and more")
+    compare(composer.text, "Draft one and more")
+
+    // A page alert while the composer has focus does not take it.
+    evaluate(page, "setTimeout(() => { alert('From the pinned page') }, 0)")
+    tryVerify(function() { return view.pendingDialog !== null })
+    verify(findChild(view, "panelBrowserDialog").visible)
+    verify(composer.activeFocus, "the dialog did not take the composer's focus")
+    type("!")
+    compare(composer.text, "Draft one and more!")
+    compare(body.composerId, "one")
+    mouseClick(findChild(view, "panelBrowserDialog-OK"))
+    tryVerify(function() { return view.pendingDialog === null })
+    verify(composer.activeFocus)
+
+    // Clicking the page gives it focus; it is never a voice or agent target.
+    waitForRendering(page)
+    mouseClick(page, 40, 40)
+    tryVerify(function() { return page.activeFocus })
+    compare(body.composerId, "")
+    verify(!body.inputFocused)
+
+    // Keyboard escape: Ctrl+L, then Tab to Chat and Enter.
+    revealControls()
+    const address = findChild(view, "panelBrowserAddress")
+    tryVerify(function() { return address.activeFocus })
+    const chatButton = findChild(view, "panelBrowser-chat")
+    for (let step = 0; step < 6 && !chatButton.activeFocus; step++) keyClick(Qt.Key_Tab)
+    verify(chatButton.activeFocus, "Chat is reachable by Tab")
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return composer.activeFocus })
+    verify(panel.browserPinVisible, "Chat keeps the pin")
+
+    // The focus-input command also returns from the page to the composer.
+    page.forceActiveFocus()
+    tryVerify(function() { return page.activeFocus })
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return composer.activeFocus })
+    verify(panel.browserPinVisible)
+    body.releaseFocus(false)
+
+    // A page question pending while its owner is not shown waits, frozen.
+    composer.forceActiveFocus()
+    evaluate(page, "setTimeout(() => { window.answered = confirm('Keep?') ? 'kept' : 'declined' }, 0)")
+    tryVerify(function() { return view.pendingDialog !== null })
+    verify(composer.activeFocus)
+    select("two")
+    verify(!loader().visible)
+    verify(view.pendingDialog !== null, "the question is still pending")
+    compare(view.userBusyReason(), "A page dialog is waiting for the user's answer.")
+    select("one")
+    tryVerify(function() { return findChild(view, "panelBrowserDialog").visible })
+    waitForRendering(view)
+    mouseClick(findChild(view, "panelBrowserDialog-Cancel"))
+    tryVerify(function() { return view.pendingDialog === null }, 2000, "Cancel answered the question")
+    tryVerify(function() { return evaluate(page, "window.answered") === "declined" }, 3000,
+      "the page received the answer")
+  }
+
+  function test_04_other_pages_and_a_hidden_panel_freeze_and_mute_the_pin() {
+    const view = browser()
+    const page = view.page
+    verifyRunning(view)
+
+    for (const destination of ["two", "", "previous"]) {
+      if (destination === "previous") {
+        mouseClick(findChild(body, "previousSessionsButton"))
+        tryVerify(function() { return panel.showingPrevious })
+      } else {
+        select(destination)
+      }
+      verify(!panel.browserPinVisible, "not shown on " + destination)
+      verify(!loader().visible)
+      verifyFrozen(view)
+      const frozenAt = counter(view)
+      wait(300)
+      compare(counter(view), frozenAt, "timers stay stopped on " + destination)
+      compare(panel.browserPinOwnerId, "one", "the owner keeps its pin")
+    }
+
+    // The other conversation's composer is unaffected by the pin.
+    select("two")
+    composer.forceActiveFocus()
+    type("Draft two")
+    compare(body.composerId, "two")
+    verify(!loader().visible)
+
+    // Returning to the owner shows and wakes the same page.
+    keyClick(Qt.Key_1, Qt.AltModifier)
+    tryCompare(panel, "selectedSessionId", "one")
+    tryVerify(function() { return panel.browserPinVisible && loader().visible })
+    compare(view.page, page)
+    compare(composer.text, "Draft one and more!")
+    verifyRunning(view)
+
+    // A hidden panel freezes and mutes the pinned page; showing it resumes.
+    TestHost.hide()
+    tryVerify(function() { return !TestHost.opened })
+    verifyFrozen(view)
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.opened })
+    verifyRunning(view)
+
+    // The full browser in a hidden panel keeps running, as before.
+    openBrowser()
+    compare(panel.browserPinOwnerId, "", "the full browser takes the page out of the pin")
+    TestHost.hide()
+    tryVerify(function() { return !TestHost.opened })
+    wait(500)
+    compare(page.lifecycleState, WebEngineView.LifecycleState.Active)
+    verify(!page.audioMuted)
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.opened })
+    pin()
+    verifyRunning(view)
+  }
+
+  function test_05_presentation_moves_and_reconnects_keep_the_pin() {
+    const view = browser()
+    const page = view.page
+    panel.browserPinPercent = 45
+    for (const mode of ["sidebar", "dock", "window"]) {
+      TestHost.setPresentation(mode)
+      compare(TestHost.presentation, mode)
+      verify(panel.browserPinVisible, mode)
+      compare(panel.browserPinOwnerId, "one")
+      compare(panel.browserPinPercent, 45)
+      compare(view.page, page, "same page after " + mode)
+      compare(countViews(body), 1, "no duplicate view after " + mode)
+      tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+      wait(200)
+      compare(page.lifecycleState, WebEngineView.LifecycleState.Active, "a move does not freeze the pin")
+    }
+
+    // A disconnect and a fresh snapshot keep pin, draft and selection.
+    fakeBackend.disconnected()
+    tryVerify(function() { return !panel.online })
+    verify(panel.browserPinVisible)
+    snapshot([conversation("one"), conversation("two")])
+    tryVerify(function() { return panel.online })
+    compare(panel.selectedSessionId, "one")
+    verify(panel.browserPinVisible)
+    compare(view.page, page)
+    compare(composer.text, "Draft one and more!")
+    panel.browserPinPercent = 35
+  }
+
+  function test_06_one_pin_slot_never_displaces_a_widget() {
+    const view = browser()
+    const page = view.page
+
+    // An agent pins a widget above the pinned page: the widget shows, the
+    // page waits frozen behind it with an explanation; both are kept.
+    fakeBackend.received({type: "agent-session", session: conversation("one", true)})
+    tryVerify(function() { return panel.browserPinSuspended })
+    const pinned = findChild(body, "pinnedWidget")
+    tryVerify(function() { return pinned.rendered }, 15000, pinned.error)
+    verify(findChild(body, "pinnedWidgetArea").visible)
+    verify(!loader().visible)
+    verify(findChild(body, "browserPinSuspendedNote").visible)
+    verify(findChild(body, "browserPinSuspendedUnpin").visible)
+    compare(panel.browserPinOwnerId, "one")
+    verifyFrozen(view)
+    compare(composer.text, "Draft one and more!")
+
+    // Unpinning the widget brings the same page back.
+    mouseClick(findChild(body, "widgetBackToChat"))
+    tryVerify(function() { return panel.browserPinVisible })
+    verify(!findChild(body, "browserPinSuspendedNote").visible)
+    compare(view.page, page)
+    verifyRunning(view)
+
+    // In the other conversation: pin the page, then a widget arrives there.
+    select("two")
+    openBrowser()
+    pin()
+    compare(panel.browserPinOwnerId, "two")
+    fakeBackend.received({type: "agent-session", session: conversation("two", true)})
+    tryVerify(function() { return panel.browserPinSuspended })
+    tryVerify(function() { return findChild(body, "pinnedWidget").rendered }, 15000)
+    const widgetView = findChild(body, "nativeWidgetBrowser")
+    compare(evaluate(widgetView, "window.retainedWidget = 'widget'"), "widget")
+
+    // The escape route unpins only the page; the widget stays as it was.
+    mouseClick(findChild(body, "browserPinSuspendedUnpin"))
+    tryCompare(panel, "browserPinOwnerId", "")
+    verify(!panel.browserPinSuspended)
+    verify(panel.pinnedMessage !== null)
+    compare(findChild(body, "nativeWidgetBrowser"), widgetView)
+    compare(evaluate(widgetView, "window.retainedWidget"), "widget")
+
+    // Pin is refused while the conversation has a pinned widget.
+    openBrowser()
+    revealControls()
+    mouseClick(findChild(view, "panelBrowser-pin"))
+    wait(100)
+    verify(panel.browsing, "still the full browser")
+    compare(panel.browserPinOwnerId, "")
+    verify(view.notice.indexOf("pinned widget") >= 0, view.notice)
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    compare(findChild(body, "nativeWidgetBrowser"), widgetView)
+    compare(evaluate(widgetView, "window.retainedWidget"), "widget")
+
+    // Pin is refused on Activity too.
+    select("")
+    openBrowser()
+    revealControls()
+    mouseClick(findChild(view, "panelBrowser-pin"))
+    wait(100)
+    verify(panel.browsing)
+    verify(view.notice.indexOf("Choose a conversation") >= 0, view.notice)
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+  }
+
+  function test_07_closing_the_owner_never_moves_the_page() {
+    select("one")
+    openBrowser()
+    pin()
+    const view = browser()
+
+    // Closed in the background while the user types elsewhere.
+    select("two")
+    composer.forceActiveFocus()
+    composer.text = ""
+    type("Typing")
+    snapshot([conversation("two", true)])
+    tryCompare(panel, "browserPinOwnerId", "")
+    verify(composer.activeFocus, "typing stays in the other composer")
+    type(" on")
+    compare(composer.text, "Typing on")
+    verify(!loader().visible, "the page does not move to another conversation")
+    select("")
+    verify(!loader().visible)
+
+    // Closed while selected: Activity takes over and the page is not shown.
+    snapshot([conversation("one"), conversation("two", true)])
+    select("one")
+    openBrowser()
+    pin()
+    snapshot([conversation("two", true)])
+    tryVerify(function() { return panel.selectedSession === null })
+    compare(panel.browserPinOwnerId, "")
+    verify(!loader().visible)
+    verifyFrozen(view)
+
+    // The Browser button still finds the same page, frozen until shown.
+    const page = view.page
+    openBrowser()
+    compare(view.page, page)
+    verifyRunning(view)
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    snapshot([conversation("one"), conversation("two", true)])
+  }
+
+  function test_08_unpin_close_and_the_full_browser() {
+    select("one")
+    openBrowser()
+    pin()
+    const view = browser()
+    const page = view.page
+
+    // Unpin keeps the page loaded and frozen and returns to the chat input.
+    revealControls()
+    mouseClick(findChild(view, "panelBrowser-unpin"))
+    tryCompare(panel, "browserPinOwnerId", "")
+    verify(!loader().visible)
+    tryVerify(function() { return composer.activeFocus })
+    verifyFrozen(view)
+    openBrowser()
+    compare(view.page, page)
+
+    // Close in the pin unloads the page and unpins it.
+    pin()
+    revealControls()
+    mouseClick(findChild(view, "panelBrowser-close"))
+    tryVerify(function() { return view.page === null })
+    compare(panel.browserPinOwnerId, "")
+    verify(!loader().visible)
+    tryVerify(function() { return composer.activeFocus })
+  }
+
+  // companion_browser_open is unchanged: it opens the full browser. A request
+  // that changes nothing (busy, refused, not selected, hidden, cancelled)
+  // leaves the pin in place.
+  function test_09_agent_requests_keep_or_restore_the_pin() {
+    openBrowser()
+    revealControls()
+    findChild(browser(), "panelBrowserAddress").selectAll()
+    type(origin + "/")
+    keyClick(Qt.Key_Return)
+    const view = browser()
+    tryVerify(function() { return view.page !== null && view.pageUrl === origin + "/" && !view.loading }, 10000)
+    pin()
+
+    // Loaded: the full browser, not the pin.
+    const loaded = answer(request("one", origin + "/second"))
+    compare(loaded.outcome, "loaded")
+    verify(panel.browsing)
+    compare(panel.browserPinOwnerId, "")
+    pin()
+
+    // Typing an address in the pin: busy, and the pin and text stay.
+    revealControls()
+    type("x")
+    compare(answer(request("one", origin + "/")).outcome, "busy")
+    verify(panel.browserPinVisible && !panel.browsing)
+    compare(view.addressText, "x")
+    keyClick(Qt.Key_Escape)
+
+    // Refused, background and hidden: nothing changes.
+    compare(answer(request("one", "file:///etc/passwd")).outcome, "refused")
+    verify(panel.browserPinVisible && !panel.browsing)
+    compare(answer(request("two", origin + "/")).outcome, "not-selected")
+    verify(panel.browserPinVisible && !panel.browsing)
+    TestHost.hide()
+    tryVerify(function() { return !TestHost.opened })
+    compare(answer(request("one", origin + "/")).outcome, "panel-hidden")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.opened })
+    verify(panel.browserPinVisible && !panel.browsing)
+    compare(view.pageUrl, origin + "/second")
+
+    // Cancelled: the user stays on a page that asks before leaving, so the
+    // request changed nothing and the pin comes back.
+    openPage("/leave")
+    let activated = false
+    for (let attempt = 0; attempt < 10 && !activated; attempt++) {
+      waitForRendering(view.page)
+      mouseClick(view.page, 60, 60)
+      activated = evaluate(view.page, "navigator.userActivation.hasBeenActive") === true
+    }
+    verify(activated, "the page registered a real user gesture")
+    const stay = request("one", origin + "/second")
+    tryVerify(function() { return view.pendingDialog !== null }, 5000, "the page asks before leaving")
+    verify(panel.browsing, "the request showed the full browser")
+    view.answerDialog(false)
+    compare(answer(stay).outcome, "cancelled")
+    tryVerify(function() { return panel.browserPinVisible && !panel.browsing })
+    compare(panel.browserPinOwnerId, "one")
+    compare(view.pageUrl, origin + "/leave")
+  }
+}

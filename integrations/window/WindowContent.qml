@@ -280,6 +280,9 @@ Item {
     anchors.margins: 2 * root.theme.unit
     nativeWidgets: root.nativeWidgets
     browserAvailable: root.nativeWidgets
+    // A Window/Sidebar/Dock move hides one surface and shows another; the
+    // panel stays shown throughout, so a pinned page is not frozen by it.
+    panelShown: root.host.opened || root.host.switching
     online: client.online
     paused: client.paused
     pauseReason: client.pauseReason

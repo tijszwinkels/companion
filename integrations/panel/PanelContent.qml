@@ -131,6 +131,40 @@ Item {
   // rest of the panel builds with 6.8. A failed load shows a message instead.
   property url browserSource: Qt.resolvedUrl("PanelBrowser.qml")
   readonly property bool browsing: browserOpen && browserAvailable
+  // The host's panel is on screen. Only a pinned page uses it: the full
+  // browser keeps running in a hidden panel, as in a hidden browser window.
+  property bool panelShown: true
+
+  // Manual browser pin. Instead of replacing the chat, the same browser page
+  // (one view, one profile) can sit above one conversation's chat. That
+  // conversation owns the pin: the page is shown only while it is selected,
+  // and is frozen and muted on other tabs, Activity, Previous sessions or in
+  // a hidden panel. There is one page, so opening the full browser (the
+  // header button or an agent) moves it out of the pin, and Close unloads it.
+  // Ownership is kept across reconnects and Window/Sidebar/Dock moves for as
+  // long as the conversation stays open; it is not saved across restarts.
+  property string browserPinOwnerId: ""
+  // The user's preferred pin height, as a share of the space below the header,
+  // so it follows the panel's size. The measured chat input and a readable
+  // transcript always win; see body.browserPinHeight. There is no full mode.
+  property real browserPinPercent: 35
+  readonly property real browserPinMinimumPercent: 15
+  readonly property real browserPinMaximumPercent: 80
+  // The pinned presentation applies (the full browser is not open), whether
+  // or not its owner is on screen right now.
+  readonly property bool browserPinned: browserPinOwnerId !== "" && browserAvailable && !browsing
+  readonly property bool browserPinOwnerSelected: browserPinned && !showingPrevious
+    && selectedSession !== null && selectedSessionId === browserPinOwnerId
+  // One pin slot per conversation: a pinned widget always keeps its place.
+  // When an agent pins a widget above a pinned page, the page waits, frozen,
+  // behind it (suspended) until the widget is unpinned or the user unpins the
+  // page; neither resource is dropped or changed.
+  readonly property bool browserPinVisible: browserPinOwnerSelected && pinnedMessage === null
+    && browserLoader.status === Loader.Ready
+  readonly property bool browserPinSuspended: browserPinOwnerSelected && pinnedMessage !== null
+  // The page is on screen and running. Otherwise its item is hidden, which
+  // freezes and mutes it.
+  readonly property bool browserShown: browsing || (browserPinVisible && panelShown)
   readonly property bool inputFocused: root.keyboardFocused && (root.composerFocusId !== "" || activityView.inputFocused)
   readonly property string composerFocusId: fullWidget || browsing ? "" : chat.composerFocusId
   onFullWidgetChanged: if (fullWidget) chat.releaseComposerFocus()
@@ -253,6 +287,12 @@ Item {
       if (!stillPinned) delete dismissed[id]
     }
     root.locallyUnpinned = dismissed
+
+    // A closed conversation takes its browser pin with it. The page stays
+    // loaded and frozen for the Browser button; it never moves to another tab.
+    if (root.browserPinOwnerId && !root.sessions.some(entry => entry.id === root.browserPinOwnerId)) {
+      root.browserPinOwnerId = ""
+    }
   }
 
   function isLocallyUnpinned(reference) {
@@ -265,6 +305,8 @@ Item {
   function openBrowser() {
     if (!root.browserAvailable) return
     root.browserStarted = true
+    // The full browser shows the one page, so it is no longer pinned.
+    root.browserPinOwnerId = ""
     root.browserOpen = true
     Qt.callLater(function() {
       if (root.browsing && browserLoader.item) browserLoader.item.focusBrowser()
@@ -309,12 +351,30 @@ Item {
       return
     }
     // Show the browser first, so the page is awake (not frozen) when it loads.
+    // A pinned page moves into the full browser, like the header button. If
+    // the request does not start (refused), the pin is untouched.
     const wasBrowsing = root.browsing
+    const displacedPinOwnerId = root.browserPinOwnerId
     root.browserOpen = true
-    if (!browser.openFromAgent(request.url, answer)) {
+    const settle = function(result) {
+      // The user chose to stay on a page that asked before leaving: the
+      // request changed nothing, so the pin it displaced comes back, unless
+      // the user has meanwhile left the full browser or pinned again.
+      const restorePin = result.outcome === "cancelled" && displacedPinOwnerId !== ""
+        && root.browsing && root.browserPinOwnerId === ""
+        && root.sessions.some(entry => entry.id === displacedPinOwnerId)
+      if (restorePin) {
+        root.browserPinOwnerId = displacedPinOwnerId
+        root.browserOpen = false
+      }
+      answer(result)
+    }
+    if (!browser.openFromAgent(request.url, settle)) {
       root.browserOpen = wasBrowsing
       return
     }
+    // A successful request shows the full browser, never the pin.
+    root.browserPinOwnerId = ""
     // Within an already focused window, typing continues in the page rather
     // than in the now hidden composer. An inactive window is left alone.
     if (!wasBrowsing && root.keyboardFocused) Qt.callLater(function() {
@@ -323,10 +383,52 @@ Item {
   }
 
   // Return from the browser to the page it covered, keeping the browser page.
+  // From a pinned page (its Chat button) this only moves to the chat input.
   function closeBrowser() {
-    if (!root.browserOpen) return
+    if (!root.browserOpen && !root.browserPinVisible) return
     root.browserOpen = false
     Qt.callLater(function() { if (root.keyboardFocused && !root.browsing) root.focusComposer() })
+  }
+
+  // The browser's Pin: show the page above the selected conversation's chat
+  // and return to that chat's input. Refused, with the reason in the browser's
+  // strip, where there is no conversation or its one pin slot holds a widget;
+  // the widget is never unpinned or replaced for it.
+  function pinBrowser() {
+    const browser = browserLoader.item
+    if (!root.browsing || !browser) return
+    if (root.showingPrevious || root.selectedSession === null) {
+      browser.notify("Choose a conversation first; the page is pinned above its chat.")
+      return
+    }
+    if (root.pinnedMessage !== null) {
+      browser.notify("This conversation already has a pinned widget. Unpin it first to pin the page.")
+      return
+    }
+    root.browserPinOwnerId = root.selectedSessionId
+    root.browserOpen = false
+    Qt.callLater(function() { if (root.keyboardFocused && root.browserPinVisible) chat.focusComposer() })
+  }
+
+  // Unpin keeps the page loaded and frozen; the Browser button reopens it.
+  function unpinBrowser() {
+    if (root.browserPinOwnerId === "") return
+    root.browserPinOwnerId = ""
+    Qt.callLater(function() { if (root.keyboardFocused && root.selectedSession !== null && !root.browsing) root.focusComposer() })
+  }
+
+  // Drag or keyboard resizing of the pin. `height` is in pixels below the
+  // header; the stored preference is a percentage, clamped to what is
+  // available right now, so a drag past the limit does not feel dead.
+  function resizeBrowserPin(height) {
+    if (body.contentHeight <= 0) return
+    const available = 100 * body.browserPinMaximumHeight / body.contentHeight
+    const largest = Math.min(root.browserPinMaximumPercent, available)
+    const requested = 100 * height / body.contentHeight
+    root.browserPinPercent = Math.max(root.browserPinMinimumPercent, Math.min(requested, largest))
+  }
+  function stepBrowserPin(percent) {
+    root.resizeBrowserPin(body.browserPinHeight + body.contentHeight * percent / 100)
   }
 
   function backToChat() {
@@ -746,6 +848,20 @@ Item {
     id: body
     readonly property real contentTop: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
     readonly property real contentHeight: Math.max(0, height - contentTop)
+    // A pinned page shares this area with the Activity strip, the chat's
+    // measured input and controls and a readable transcript (all of which grow
+    // with text zoom), plus both gaps. Those win; the page gets the rest, but
+    // never less than its status strip, which keeps Unpin and Close in reach.
+    // Computed while the owner is not shown too, so a returning page keeps
+    // its size and layout.
+    readonly property real browserPinMaximumHeight: Math.max(0, contentHeight - chat.minimumHeight
+      - 12 * root.unit - activityStrip.height - 12 * root.unit)
+    readonly property real browserPinHeight: Math.max(browserLoader.item ? browserLoader.item.chromeHeight : 0,
+      Math.min(contentHeight * root.browserPinPercent / 100, browserPinMaximumHeight))
+    // Where the page below a pin (widget or browser) starts.
+    readonly property real pinBottom: pinned.visible ? pinned.y + pinned.height + 12 * root.unit
+      : root.browserPinVisible ? browserLoader.y + browserLoader.height + 12 * root.unit
+      : contentTop
     anchors.left: rail.right
     anchors.right: parent.right
     anchors.top: parent.top
@@ -809,7 +925,7 @@ Item {
       fontFamily: root.fontFamily
       unit: root.unit
       onTriggered: root.openBrowser()
-      Accessible.name: "Open the panel browser"
+      Accessible.name: root.browserPinVisible ? "Show the pinned page in the full panel" : "Open the panel browser"
     }
 
     Text {
@@ -831,7 +947,7 @@ Item {
       objectName: "activityStrip"
       visible: !root.browsing && (root.selectedSession !== null || root.showingPrevious)
         && !root.fullWidget && !(root.pinnedMessage && root.pinnedMessage.widget.presentation.replaceActivity)
-      y: pinned.visible ? pinned.y + pinned.height + 12 * root.unit : body.contentTop
+      y: body.pinBottom
       width: parent.width
       online: root.online
       paused: root.paused
@@ -883,6 +999,32 @@ Item {
           unit: root.unit
           onTriggered: root.stopSessionRequested(root.selectedSessionId)
         }
+        // Escape from a browser pin that waits behind this widget.
+        PanelAction {
+          objectName: "browserPinSuspendedUnpin"
+          visible: root.browserPinSuspended
+          text: "Unpin browser"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.unpinBrowser()
+          Accessible.name: "Unpin the browser page waiting behind this widget"
+        }
+      }
+      Text {
+        objectName: "browserPinSuspendedNote"
+        visible: root.browserPinSuspended
+        anchors.left: widgetControls.right
+        anchors.leftMargin: 8 * root.unit
+        anchors.right: parent.right
+        anchors.verticalCenter: widgetControls.verticalCenter
+        text: "The pinned browser page waits until this widget is unpinned."
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: root.muted
+        font.family: root.fontFamily
+        font.pixelSize: 11 * root.unit
       }
       WidgetSurface {
         id: pinnedSurface
@@ -962,10 +1104,10 @@ Item {
       visible: root.selectedSession !== null && !root.fullWidget && !root.browsing
       widgetsRunning: root.online && root.animationsEnabled
       choiceHeightLimit: Math.max(48 * root.unit, Math.min(180 * root.unit,
-        (root.pinnedMessage ? body.contentHeight : chat.height) * 0.3))
+        (root.pinnedMessage || root.browserPinned ? body.contentHeight : chat.height) * 0.3))
       anchors.fill: parent
       anchors.topMargin: root.fullWidget ? body.contentTop : Math.min(body.height, activityStrip.visible ? activityStrip.y + activityStrip.height + 12 * root.unit
-        : pinned.visible ? pinned.y + pinned.height + 12 * root.unit : body.contentTop)
+        : body.pinBottom)
       session: root.selectedSession
       agentActions: root.agentActions
       paused: root.paused
@@ -989,17 +1131,58 @@ Item {
       onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
     }
 
+    // Drag (or, when focused, Up/Down) to change the pin's height. It sits in
+    // the gap below the page; pointer positions are mapped to the stable body,
+    // so the moving grip cannot feed back into the drag. Declared before the
+    // browser, so a revealed toolbar that extends below a short pin stays on
+    // top of it.
+    MouseArea {
+      id: browserPinResize
+      objectName: "browserPinResize"
+      visible: root.browserPinVisible
+      x: 0
+      y: browserLoader.y + browserLoader.height
+      width: parent.width
+      height: 12 * root.unit
+      hoverEnabled: true
+      preventStealing: true
+      activeFocusOnTab: true
+      cursorShape: Qt.SplitVCursor
+      onPositionChanged: mouse => {
+        if (pressed) {
+          const point = mapToItem(body, mouse.x, mouse.y)
+          root.resizeBrowserPin(point.y - body.contentTop)
+        }
+      }
+      Keys.onUpPressed: root.stepBrowserPin(-5)
+      Keys.onDownPressed: root.stepBrowserPin(5)
+      Rectangle {
+        anchors.centerIn: parent
+        readonly property bool active: browserPinResize.containsMouse || browserPinResize.pressed || browserPinResize.activeFocus
+        width: Math.min(parent.width, 48 * root.unit)
+        height: (active ? 3 : 1) * root.unit
+        radius: height / 2
+        color: active ? root.accent : root.selection
+      }
+      Accessible.role: Accessible.Grip
+      Accessible.name: "Resize the pinned browser page"
+      Accessible.description: Math.round(100 * browserLoader.height / Math.max(1, body.contentHeight)) + "% of the panel"
+    }
+
     // Loaded by URL, not by type, so hosts without Qt WebEngine never compile
-    // it. Once started it stays loaded (hidden while not browsing), keeping
-    // its page and profile across tab changes, reconnects and presentation
-    // moves.
+    // it. Once started it stays loaded (hidden while not shown), keeping its
+    // page and profile across tab changes, reconnects and presentation moves.
+    // The full browser and the pin are two geometries of this one item; a
+    // hidden item freezes and mutes its page.
     Loader {
       id: browserLoader
       objectName: "panelBrowserLoader"
       active: root.browserAvailable && root.browserStarted
-      visible: root.browsing
-      anchors.fill: parent
-      anchors.topMargin: body.contentTop
+      visible: root.browserShown
+      x: 0
+      y: body.contentTop
+      width: parent.width
+      height: root.browserPinned ? body.browserPinHeight : body.contentHeight
       source: active ? root.browserSource : ""
       onLoaded: {
         item.foreground = Qt.binding(function() { return root.foreground })
@@ -1009,8 +1192,12 @@ Item {
         item.background = Qt.binding(function() { return root.background })
         item.fontFamily = Qt.binding(function() { return root.fontFamily })
         item.unit = Qt.binding(function() { return root.unit })
-        item.shown = Qt.binding(function() { return root.browsing })
+        item.shown = Qt.binding(function() { return root.browserShown })
+        item.pinned = Qt.binding(function() { return root.browserPinned })
         item.returnRequested.connect(root.closeBrowser)
+        item.pinRequested.connect(root.pinBrowser)
+        item.unpinRequested.connect(root.unpinBrowser)
+        item.pageClosed.connect(root.unpinBrowser)
       }
     }
     Text {

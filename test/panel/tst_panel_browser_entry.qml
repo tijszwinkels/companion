@@ -47,6 +47,13 @@ Item {
         compare(findChild(panel, "panelBrowserLoader").item, null)
         compare(findChild(panel, "panelBrowser"), null)
         verify(findChild(panel, "sessionView").visible, "the chat stays visible")
+
+        // No pin either: there is no page to own or show.
+        panel.browserPinOwnerId = "one"
+        verify(!panel.browserPinned)
+        verify(!panel.browserPinVisible)
+        verify(!findChild(panel, "browserPinResize").visible)
+        compare(findChild(panel, "panelBrowserLoader").height, findChild(panel, "panelBrowserLoader").parent.contentHeight)
       }
     }
 

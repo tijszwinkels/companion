@@ -2,7 +2,8 @@ import QtQuick
 import QtWebEngine
 import "PanelBrowserPolicy.mjs" as Policy
 
-// Minimal web browser shown in place of the chat inside the Companion panel.
+// Minimal web browser shown in place of the chat inside the Companion panel,
+// or pinned above one conversation's chat (PanelContent decides which).
 //
 // Loaded only by the native host, which has initialized Qt WebEngine; portable
 // hosts never instantiate this file. PanelContent owns one instance for the
@@ -32,6 +33,10 @@ import "PanelBrowserPolicy.mjs" as Policy
 // the loading state and the latest notice. Hovering or clicking the strip, or
 // pressing Ctrl+L, reveals the toolbar. The toolbar stays while the pointer is
 // over it or while any of its controls has keyboard focus.
+//
+// This item only asks for presentation changes (Pin, Unpin, Chat, Close) with
+// signals. PanelContent owns where the page is shown, which conversation a pin
+// belongs to and whether pinning is allowed.
 FocusScope {
   id: root
   objectName: "panelBrowser"
@@ -46,12 +51,20 @@ FocusScope {
   property string fontFamily: "sans-serif"
   property real unit: 1
 
-  // PanelContent sets this while the browser replaces the chat. When chat is
-  // shown instead, the page stays loaded but is frozen and muted, so it keeps
-  // its place without running scripts or playing sound. Hiding the whole
-  // Companion window does not change item visibility, so it neither freezes
-  // nor mutes the page.
+  // PanelContent sets this while the page is on screen: replacing the chat,
+  // or pinned above its conversation while the panel is shown. Otherwise the
+  // page stays loaded but its item is hidden, which freezes and mutes it, so
+  // it keeps its place without running scripts or playing sound. Hiding the
+  // whole Companion window does not change the full browser's visibility, so
+  // there it neither freezes nor mutes the page; PanelContent hides a pinned
+  // page explicitly instead.
   property bool shown: false
+  // True while the page is pinned above a conversation instead of replacing
+  // it. It only changes which presentation controls the toolbar offers.
+  property bool pinned: false
+  // The strip's height: a pinned page never gets less, so its site, notices
+  // and the way to its controls stay visible.
+  readonly property real chromeHeight: strip.height
 
   readonly property var page: pageLoader.item
   readonly property string pageUrl: page ? page.url.toString() : ""
@@ -89,7 +102,12 @@ FocusScope {
   property var agentOpen: null
   property int agentOpenWait: 8000
 
+  // Chat: show the conversation (and its input); Pin/Unpin: change the
+  // presentation; pageClosed: Close unloaded the page, after returnRequested.
   signal returnRequested()
+  signal pinRequested()
+  signal unpinRequested()
+  signal pageClosed()
 
   function updateControls() {
     if (root.controlsWanted && (root.controlsFocused || root.page === null)) {
@@ -320,12 +338,14 @@ FocusScope {
 
   // Close unloads the page (the profile keeps cookies and site data); its
   // address stays in the field for reopening. Both actions return to chat.
+  // A closed page is no longer pinned anywhere.
   function closePage() {
     root.finishAgentOpen({outcome: "superseded", reason: "The user closed the page."})
     root.answerDialog(false)
     pageLoader.active = false
     root.loadError = ""
     root.returnRequested()
+    root.pageClosed()
   }
 
   function trigger(action) {
@@ -338,6 +358,8 @@ FocusScope {
       if (root.page.loading) root.page.stop()
       else root.page.reload()
     } else if (action === "chat") root.returnRequested()
+    else if (action === "pin") root.pinRequested()
+    else if (action === "unpin") root.unpinRequested()
     else if (action === "close") root.closePage()
   }
 
@@ -345,7 +367,7 @@ FocusScope {
     if (action === "back") return root.page !== null && root.page.canGoBack
     if (action === "forward") return root.page !== null && root.page.canGoForward
     if (action === "reload") return root.page !== null && root.pageUrl !== "" && root.pageUrl !== "about:blank"
-    if (action === "close") return root.page !== null
+    if (action === "close" || action === "pin") return root.page !== null
     return true
   }
 
@@ -354,6 +376,8 @@ FocusScope {
     if (action === "forward") return "›"
     if (action === "reload") return root.loading ? "×" : "↻"
     if (action === "chat") return "Chat"
+    if (action === "pin") return "Pin"
+    if (action === "unpin") return "Unpin"
     return "Close"
   }
 
@@ -361,8 +385,10 @@ FocusScope {
     if (action === "back") return "Back"
     if (action === "forward") return "Forward"
     if (action === "reload") return root.loading ? "Stop loading" : "Reload"
-    if (action === "chat") return "Back to chat, keeping this page"
-    return "Close page and return to chat"
+    if (action === "chat") return root.pinned ? "Go to the chat input, keeping this page pinned" : "Back to chat, keeping this page"
+    if (action === "pin") return "Pin this page above the conversation"
+    if (action === "unpin") return "Unpin this page, keeping it for the Browser button"
+    return root.pinned ? "Close and unpin this page" : "Close page and return to chat"
   }
 
   function permissionName(type) {
@@ -781,9 +807,13 @@ FocusScope {
     FocusScope {
       id: toolbar
       objectName: "panelBrowserToolbar"
+      // In a narrow panel the exit buttons move to a second row, so the
+      // address field keeps a usable width and nothing overlaps.
+      readonly property bool twoRows: width < navigation.width + exits.width + 140 * root.unit
+      readonly property real rowHeight: 34 * root.unit
       y: strip.height
       width: parent.width
-      height: 34 * root.unit
+      height: (twoRows ? 2 : 1) * rowHeight
       visible: root.controlsShown
 
       Rectangle {
@@ -801,7 +831,7 @@ FocusScope {
         id: navigation
         anchors.left: parent.left
         anchors.leftMargin: 4 * root.unit
-        anchors.verticalCenter: parent.verticalCenter
+        y: (toolbar.rowHeight - height) / 2
         spacing: 2 * root.unit
         Repeater {
           model: ["back", "forward", "reload"]
@@ -812,10 +842,10 @@ FocusScope {
       Rectangle {
         id: addressBox
         anchors.left: navigation.right
-        anchors.right: exits.left
+        anchors.right: toolbar.twoRows ? parent.right : exits.left
         anchors.leftMargin: 4 * root.unit
         anchors.rightMargin: 4 * root.unit
-        anchors.verticalCenter: parent.verticalCenter
+        y: (toolbar.rowHeight - height) / 2
         height: 26 * root.unit
         radius: 4 * root.unit
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
@@ -864,10 +894,12 @@ FocusScope {
         id: exits
         anchors.right: parent.right
         anchors.rightMargin: 4 * root.unit
-        anchors.verticalCenter: parent.verticalCenter
+        y: (toolbar.twoRows ? toolbar.rowHeight : 0) + (toolbar.rowHeight - height) / 2
         spacing: 2 * root.unit
+        // Pin (Unpin while pinned) comes last, so the full browser's keyboard
+        // order (Tab from the address to Chat, then Close) is kept.
         Repeater {
-          model: ["chat", "close"]
+          model: ["chat", "close", "pin"]
           delegate: buttonDelegate
         }
       }
@@ -880,8 +912,11 @@ FocusScope {
     Rectangle {
       id: button
       required property string modelData
-      objectName: "panelBrowser-" + modelData
-      enabled: root.actionEnabled(modelData)
+      // The presentation slot is one button whose action follows the pin, so
+      // pinning never recreates the toolbar buttons (or drops their focus).
+      readonly property string action: modelData === "pin" && root.pinned ? "unpin" : modelData
+      objectName: "panelBrowser-" + action
+      enabled: root.actionEnabled(action)
       implicitWidth: Math.max(26 * root.unit, label.implicitWidth + 12 * root.unit)
       implicitHeight: 26 * root.unit
       radius: 4 * root.unit
@@ -890,29 +925,29 @@ FocusScope {
       border.color: root.accent
       opacity: enabled ? 1 : 0.4
       activeFocusOnTab: true
-      Keys.onReturnPressed: root.trigger(modelData)
-      Keys.onEnterPressed: root.trigger(modelData)
-      Keys.onSpacePressed: root.trigger(modelData)
+      Keys.onReturnPressed: root.trigger(action)
+      Keys.onEnterPressed: root.trigger(action)
+      Keys.onSpacePressed: root.trigger(action)
 
       Text {
         id: label
         anchors.centerIn: parent
-        text: root.actionLabel(button.modelData)
+        text: root.actionLabel(button.action)
         textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: (button.modelData === "chat" || button.modelData === "close" ? 11 : 15) * root.unit
+        font.pixelSize: (["chat", "close", "pin", "unpin"].indexOf(button.action) >= 0 ? 11 : 15) * root.unit
       }
       MouseArea {
         id: mouse
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: root.trigger(button.modelData)
+        onClicked: root.trigger(button.action)
       }
       Accessible.role: Accessible.Button
-      Accessible.name: root.actionName(modelData)
-      Accessible.onPressAction: if (button.enabled) root.trigger(button.modelData)
+      Accessible.name: root.actionName(action)
+      Accessible.onPressAction: if (button.enabled) root.trigger(button.action)
     }
   }
 

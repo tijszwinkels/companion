@@ -54,6 +54,8 @@ behind a slim status strip (hover, click or Ctrl+L). It uses its own named,
 persistent WebEngine profile, separate from the restricted widget profile, and
 refuses pop-ups, downloads, permissions and non-web schemes with a visible
 notice. Script dialogs appear as a small in-panel dialog the user answers.
+**Pin** keeps the same page above one conversation's chat at an adjustable
+height; it is frozen and muted whenever that conversation is not shown.
 It needs Qt WebEngine 6.9+; with 6.8 the control shows a message instead. Only
 this standalone host enables it; the portable Quickshell panel never loads it. See [the panel browser guide](../../docs/panel-browser.md) for
 behaviour, storage, limits and tests.

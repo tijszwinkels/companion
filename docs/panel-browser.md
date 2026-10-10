@@ -1,9 +1,11 @@
 # Panel browser
 
 A minimal web browser inside the native Companion panel. It shows one
-ordinary web page in place of the chat and returns to the same conversation,
-drafts, pins and widgets afterwards. It is a desktop proof of concept: no
-agent tool, backend protocol, app registry or phone route opens or controls it.
+ordinary web page in place of the chat, or pinned above one conversation's
+chat, and returns to the same conversation, drafts, pins and widgets
+afterwards. It is desktop-only: no app registry or phone route reaches it, and
+agents can only ask it to show a page (see
+[below](#opening-a-page-from-an-agent)), never read or control it.
 
 Source: `integrations/panel/PanelBrowser.qml` (view, profile, controls) and
 `integrations/panel/PanelBrowserPolicy.mjs` (address rules). Only the native
@@ -30,13 +32,49 @@ a message saying so instead of a page; the rail returns as usual.
   page is frozen (scripts and timers stop) and muted; opening the browser
   again resumes it. Selecting a conversation, Activity or Previous sessions in
   the rail, and the focus-input shortcut, do the same. **Hiding the whole
-  Companion panel (×, the toggle shortcut) does not freeze or mute the page**;
-  it keeps running as it would in a hidden browser window.
+  Companion panel (×, the toggle shortcut) does not freeze or mute the full
+  browser's page**; it keeps running as it would in a hidden browser window.
+  A pinned page is different; see below.
 - While browsing, a conversation closed in the background (by an agent,
   another surface or a reconnect) does not move keyboard focus: typing stays
   in the page or the address field.
 - **Close** unloads the page and returns to chat. The address stays in the
   field for reopening; cookies and site data stay in the profile.
+
+### Pinning a page above a conversation
+
+- **Pin** (in the browser's controls) keeps the page visible above the
+  selected conversation's chat and returns to its input, so a preview stays in
+  view while you type. It is the same page and profile, with the same rights
+  and refusals; nothing is reloaded.
+- The pin starts at **35%** of the space below the panel header. Drag the thin
+  bar below the page, or focus it and press Up/Down, to change it between 15%
+  and 80%. The chat's input, controls and a few lines of conversation always
+  keep their room, also at larger text sizes, so the pin may be smaller than
+  asked in a short panel; it never covers the whole panel. In a very short
+  panel only its status strip remains. The height lasts for the UI process.
+- The pinned page has the same hidden controls (hover or click the strip, or
+  **Ctrl+L**): **Chat** moves to the conversation's input, **Close** unloads
+  the page, and **Unpin** (where Pin was) removes the pin but keeps the page
+  for the **Browser** button. In a narrow panel the controls wrap onto a second row.
+- **Only its own conversation shows it.** On another conversation, Activity,
+  Previous sessions, or while the Companion panel is hidden, the pinned page
+  is frozen and muted; it resumes when you come back. Moving between Window,
+  Sidebar and Dock keeps it running, at the same height.
+- Typing stays where you put it. Pinning does not move keyboard focus into the
+  page, and a dialog from a pinned page does not take focus from the chat
+  input; click the page to type in it. Spoken text goes into the
+  conversation's input only while that input has focus; focusing the page
+  clears that target.
+- There is one page. Opening the full browser (the header's **Browser**, or an
+  agent) moves the page out of the pin; pin it again from there. Closing the
+  conversation removes its pin; the page stays for the **Browser** button and
+  never appears in another conversation. Pins are not kept across restarts.
+- **One pin per conversation.** If the conversation has a pinned widget, Pin
+  is refused with a note; unpin the widget first. If an agent pins a widget
+  while the page is pinned, the widget is shown and the page waits behind it,
+  frozen, with a note and an **Unpin browser** button; unpinning the widget
+  brings the page back. Neither is lost or changed.
 
 ## Profile and storage
 
@@ -135,7 +173,10 @@ not even its title).
   they edited but left stays in the field; the strip shows the real site.
 - **Presentation:** the browser replaces the chat as if **Browser** had been
   clicked, with the controls hidden and the address field not focused. A hidden
-  (frozen) page is reused and woken. A hidden window is never shown or
+  (frozen) page is reused and woken. A pinned page is moved into the full
+  browser, never opened as a pin; if the user stays on a page that asked before
+  leaving (`cancelled`), the pin comes back. Answers that change nothing
+  (`busy`, `refused`, `not-selected`, `panel-hidden`) leave a pin in place. A hidden window is never shown or
   activated: the request is refused as `panel-hidden` and nothing changes, so a
   page the user cannot see is never reported as opened. In
   an already focused window, keyboard focus moves to the page instead of the
@@ -213,6 +254,21 @@ A late, foreign, malformed or remote answer is refused.
   A snapshot that removes the selected conversation leaves keyboard focus in
   the address field or the page.
   The widget keeps its separate off-the-record profile.
+- The same file's third test (`test/window/panel-browser-pin.qml.in`) pins the
+  page with real clicks in the real window body. It checks the 35% start,
+  pointer and keyboard resizing with its limits, the chat's measured minimum at
+  200% text zoom, a narrow and a too-short panel, and the wrapped toolbar. The
+  composer keeps focus and typing while a page alert appears; clicking the page
+  clears the voice target; Ctrl+L, Tab to Chat and the focus command return.
+  Other tabs, Activity, Previous sessions and a hidden panel freeze (stopped
+  timers) and mute the page, which resumes on return; the full browser in a
+  hidden panel still runs. Window/Sidebar/Dock moves and a reconnect keep the
+  owner, height and the single view. Two real native widgets cover refusal of
+  Pin, a later widget suspending the page, its return and the Unpin browser
+  escape. Closing the owner in the background leaves typing elsewhere, and the
+  page never shows under another conversation. Unpin, Close and agent requests
+  (`loaded`, `busy`, `refused`, `not-selected`, `panel-hidden`, `cancelled`)
+  cover the presentation rules above.
 - `test/unit/browser-open-tool.test.ts` (in `npm test`): identical Pi and
   Claude schemas, and the real lease, service and desktop socket with a
   synthetic panel. It covers address checks before any panel is asked, loopback
@@ -237,6 +293,7 @@ A late, foreign, malformed or remote answer is refused.
 
 These use offscreen software rendering, synthetic pages and temporary
 profiles. They do not establish live Wayland hover or focus, GPU behaviour,
-Sidebar/Dock layer-shell behaviour, audible playback, behaviour on an actual
+Sidebar/Dock layer-shell behaviour or fractional scaling of the pin, audible
+playback, behaviour on an actual
 Qt 6.8 installation, dialog handling during a real renderer crash, or
 compatibility with any real site or sign-in.

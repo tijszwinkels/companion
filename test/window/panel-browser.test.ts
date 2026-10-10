@@ -483,3 +483,70 @@ test(
     }
   },
 );
+
+// Manual browser pin (test/window/panel-browser-pin.qml.in): the same page
+// pinned above its owner conversation inside the real window body. Two real
+// native widgets, one per conversation, exercise the one-pin-slot conflicts.
+test('panel browser pins one page above its owner conversation', { timeout: 180000 }, async () => {
+  const directory = await mkdtemp('/tmp/companion-panel-browser-pin-test-');
+  let service: WidgetService | undefined;
+  let server: Server | undefined;
+
+  try {
+    const env = await environment(directory);
+
+    // Each publish reports its widget reference through this callback.
+    let latest: WidgetAttachment | undefined;
+    service = new WidgetService(join(directory, 'widgets'), async (_, value) => {
+      latest = value;
+    });
+
+    async function publish(requestId: string, title: string) {
+      const lease = await service!.lease(randomUUID(), new AbortController().signal);
+      const response = await fetch(lease.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + lease.token },
+        body: JSON.stringify({
+          method: 'publish',
+          widget: 'todo',
+          requestId,
+          props: { title, items: [{ id: 'one', text: 'Retained widget', completed: false }] },
+        }),
+      });
+      assert.equal(response.status, 200, await response.text());
+      assert.ok(latest);
+      return latest;
+    }
+
+    const first = await publish('panel-browser-pin-one', 'Pinned in the first chat');
+    const second = await publish('panel-browser-pin-two', 'Pinned in the second chat');
+    assert.notEqual(first.id, second.id);
+
+    server = createHttpServer(site([]));
+    const origin = `http://127.0.0.1:${await listen(server)}`;
+
+    const template = await readFile(new URL('./panel-browser-pin.qml.in', import.meta.url), 'utf8');
+    const path = join(directory, 'tst_panel_browser_pin.qml');
+    await writeFile(
+      path,
+      template
+        .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
+        .replace('@ORIGIN@', JSON.stringify(origin))
+        .replace('@REFERENCE@', JSON.stringify(first))
+        .replace('@SECOND_REFERENCE@', JSON.stringify(second)),
+    );
+    await runQml(path, env, 'panel-browser-pin', /Totals: 11 passed, 0 failed/);
+    await assert.rejects(stat(handlerLog(directory)), { code: 'ENOENT' });
+  } finally {
+    // A failing close must not leave the temporary home behind.
+    const closing: Promise<unknown>[] = [];
+    if (server) {
+      closing.push(close(server));
+    }
+    if (service) {
+      closing.push(service.close());
+    }
+    await Promise.allSettled(closing);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
