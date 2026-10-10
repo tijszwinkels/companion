@@ -535,7 +535,7 @@ test('panel browser pins one page above its owner conversation', { timeout: 1800
         .replace('@REFERENCE@', JSON.stringify(first))
         .replace('@SECOND_REFERENCE@', JSON.stringify(second)),
     );
-    await runQml(path, env, 'panel-browser-pin', /Totals: 12 passed, 0 failed/);
+    await runQml(path, env, 'panel-browser-pin', /Totals: 13 passed, 0 failed/);
     await assert.rejects(stat(handlerLog(directory)), { code: 'ENOENT' });
   } finally {
     // A failing close must not leave the temporary home behind.

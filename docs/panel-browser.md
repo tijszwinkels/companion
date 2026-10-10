@@ -65,9 +65,11 @@ a message saying so instead of a page; the rail returns as usual.
   page, and a dialog from a pinned page does not take focus from the chat
   input; click the page to type in it. A page question stays inside the pin
   (a long message scrolls). If the pin is too short for it, the strip says the
-  site is waiting for an answer and offers **Answer**, which shows the page
-  and its question in the full panel; answering (or **Chat**) returns the page
-  to its pin. Spoken text goes into the
+  site is waiting for an answer and offers **Answer** (Ctrl+L focuses it,
+  Enter presses it), which shows the page and its question in the full panel;
+  answering (or **Chat**) returns the page to its pin. If the conversation is
+  closed meanwhile, that full view ends and the question waits for the
+  **Browser** button. Spoken text goes into the
   conversation's input only while that input has focus; focusing the page
   clears that target.
 - There is one page. Opening the full browser (the header's **Browser**, or an
@@ -277,7 +279,8 @@ A late, foreign, malformed or remote answer is refused.
   input's focus. A 12-line alert in a small, narrow pin stays inside it with
   its message scrolling and its answer visible; a prompt in a pin too short
   for it (and at the strip-only floor) is offered through Answer and returns
-  to the pin, with the typed answer, once answered.
+  to the pin, with the typed answer, once answered; the same works by keyboard
+  alone, and closing the owner while answering hides and freezes the page.
 - `test/unit/browser-open-tool.test.ts` (in `npm test`): identical Pi and
   Claude schemas, and the real lease, service and desktop socket with a
   synthetic panel. It covers address checks before any panel is asked, loopback

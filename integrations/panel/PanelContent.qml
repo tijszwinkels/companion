@@ -298,6 +298,14 @@ Item {
     // loaded and frozen for the Browser button; it never moves to another tab.
     if (root.browserPinOwnerId && !root.sessions.some(entry => entry.id === root.browserPinOwnerId)) {
       root.browserPinOwnerId = ""
+      // Answering for that pin was a temporary full view of its page; it ends
+      // with the owner. The page (and its question) waits hidden and frozen.
+      if (root.browserAnsweringForPin) {
+        root.browserOpen = false
+        Qt.callLater(function() {
+          if (root.keyboardFocused && !root.browsing && root.selectedSession === null) root.forceActiveFocus(Qt.TabFocusReason)
+        })
+      }
     }
   }
 

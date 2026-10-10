@@ -801,4 +801,61 @@ TestCase {
     tryCompare(body, "height", height)
     panel.browserPinPercent = 35
   }
+
+  // Review round 2: Answer is reachable by keyboard alone, and closing the
+  // owner while answering ends that temporary full view.
+  function test_11_answer_by_keyboard_and_owner_closure() {
+    const view = browser()
+    const page = view.page
+    verify(panel.browserPinVisible)
+    panel.browserPinPercent = panel.browserPinMinimumPercent
+    tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+
+    // Ctrl+L focuses Answer while a question waits in the strip; Enter
+    // expands, the prompt takes typing, Enter returns to the pin.
+    composer.forceActiveFocus()
+    evaluate(page, "setTimeout(() => { window.answered = prompt('Name?', '') }, 0)")
+    tryVerify(function() { return view.dialogInStrip })
+    verify(composer.activeFocus)
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    const answerButton = findChild(view, "panelBrowserAnswer")
+    tryVerify(function() { return answerButton.activeFocus }, 2000, "Ctrl+L reaches Answer")
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return panel.browsing })
+    tryVerify(function() { return findChild(view, "panelBrowserDialogInput").activeFocus }, 2000)
+    type("keys")
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return panel.browserPinVisible && !panel.browsing })
+    tryVerify(function() { return composer.activeFocus }, 2000)
+    compare(evaluate(page, "window.answered"), "keys")
+
+    // Answering, then the owner closes: the temporary full view ends and the
+    // page waits hidden, frozen and muted with its question.
+    evaluate(page, "setTimeout(() => { window.answered = prompt('Again?', '') }, 0)")
+    tryVerify(function() { return view.dialogInStrip })
+    keyClick(Qt.Key_L, Qt.ControlModifier)
+    tryVerify(function() { return answerButton.activeFocus })
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return panel.browsing && panel.browserAnsweringForPin })
+    snapshot([conversation("two", true)])
+    tryVerify(function() { return panel.selectedSession === null })
+    compare(panel.browserPinOwnerId, "")
+    verify(!panel.browsing)
+    verify(!panel.browserAnsweringForPin)
+    verify(!loader().visible)
+    verifyFrozen(view)
+    verify(view.pendingDialog !== null, "the question still waits")
+    verify(findChild(body, "fullActivityStatus").visible)
+
+    // The Browser button shows it again in full; Cancel answers it.
+    openBrowser()
+    compare(view.page, page)
+    tryVerify(function() { return findChild(view, "panelBrowserDialogCard").visible })
+    mouseClick(findChild(view, "panelBrowserDialog-Cancel"))
+    tryVerify(function() { return view.pendingDialog === null })
+    view.trigger("chat")
+    tryVerify(function() { return !panel.browsing })
+    snapshot([conversation("one"), conversation("two", true)])
+    panel.browserPinPercent = 35
+  }
 }

@@ -163,9 +163,16 @@ FocusScope {
     else root.revealControls()
   }
 
-  // Keyboard/explicit reveal: show the toolbar and edit the address.
+  // Keyboard/explicit reveal: show the toolbar and edit the address. While a
+  // question waits in a short pin's strip, its Answer button comes first, so
+  // Ctrl+L then Enter answers it from the keyboard (Tab still reaches the
+  // address field and toolbar).
   function revealControls() {
     root.controlsShown = true
+    if (root.dialogInStrip) {
+      stripAnswer.forceActiveFocus()
+      return
+    }
     addressField.forceActiveFocus()
     addressField.selectAll()
   }
@@ -868,7 +875,13 @@ FocusScope {
         width: answerLabel.implicitWidth + 12 * root.unit
         height: parent.height - 4 * root.unit
         radius: 3 * root.unit
-        color: answerMouse.containsMouse ? root.selection : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+        color: answerMouse.containsMouse || activeFocus ? root.selection : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+        border.width: activeFocus ? Math.max(1, root.unit) : 0
+        border.color: root.accent
+        activeFocusOnTab: true
+        Keys.onReturnPressed: root.answerRequested()
+        Keys.onEnterPressed: root.answerRequested()
+        Keys.onSpacePressed: root.answerRequested()
         Text {
           id: answerLabel
           anchors.centerIn: parent
