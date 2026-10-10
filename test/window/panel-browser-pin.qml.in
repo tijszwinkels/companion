@@ -659,9 +659,14 @@ TestCase {
     compare(view.addressText, "x")
     keyClick(Qt.Key_Escape)
 
-    // Refused, background and hidden: nothing changes.
+    // Refused, background and hidden: nothing changes, not even the focus
+    // of the chat input the user is typing in (review round 1, finding 2).
+    composer.forceActiveFocus()
+    tryCompare(body, "composerId", "one")
     compare(answer(request("one", "file:///etc/passwd")).outcome, "refused")
     verify(panel.browserPinVisible && !panel.browsing)
+    verify(composer.activeFocus, "a refusal keeps the composer focused")
+    compare(body.composerId, "one")
     compare(answer(request("two", origin + "/")).outcome, "not-selected")
     verify(panel.browserPinVisible && !panel.browsing)
     TestHost.hide()
@@ -690,5 +695,110 @@ TestCase {
     tryVerify(function() { return panel.browserPinVisible && !panel.browsing })
     compare(panel.browserPinOwnerId, "one")
     compare(view.pageUrl, origin + "/leave")
+  }
+
+  // Review round 1, finding 1: a page question never spills out of a short
+  // pin. Where the card fits, it stays inside the page area with its message
+  // scrolling; where it does not, the strip asks and Answer expands.
+  function test_10_page_questions_fit_short_pins() {
+    const view = browser()
+    const page = view.page
+    verify(panel.browserPinVisible)
+    const window = body.Window.window
+    const width = window.width
+    const height = window.height
+    const chat = findChild(body, "sessionView")
+    const lines = []
+    for (let line = 1; line <= 12; line++) lines.push("Line " + line + " of a long question from the page")
+    const longText = JSON.stringify(lines.join("\n"))
+
+    // Narrow panel, small pin: a 12-line alert gets a bounded card.
+    window.width = 360
+    window.height = 900
+    tryCompare(body, "width", 360)
+    tryCompare(body, "height", 900)
+    panel.browserPinPercent = 30
+    tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+    composer.forceActiveFocus()
+    evaluate(page, "setTimeout(() => { alert(" + longText + ") }, 0)")
+    tryVerify(function() { return view.pendingDialog !== null })
+    verify(view.dialogFits, "the card fits this pin: pin " + loader().height + " card minimum "
+      + findChild(view, "panelBrowserDialog").minimumCardHeight)
+    const card = findChild(view, "panelBrowserDialogCard")
+    verify(card.visible)
+    waitForRendering(view)
+    const top = card.mapToItem(loader(), 0, 0).y
+    verify(top >= view.chromeHeight - 0.5, "below the strip: " + top)
+    verify(top + card.height <= loader().height + 0.5, "inside the pin: " + (top + card.height) + " > " + loader().height)
+    const messageView = findChild(view, "panelBrowserDialogMessageView")
+    verify(messageView.height < messageView.contentHeight, "the long message scrolls")
+    verify(messageView.interactive)
+    const ok = findChild(view, "panelBrowserDialog-OK")
+    const okTop = ok.mapToItem(loader(), 0, 0).y
+    verify(okTop >= top && okTop + ok.height <= loader().height + 0.5, "the answer is visible")
+    verify(composer.activeFocus, "the question did not take the composer's focus")
+    mouseClick(ok)
+    tryVerify(function() { return view.pendingDialog === null })
+    verify(composer.activeFocus)
+
+    // The smallest pin at the default size is too short for the card: the
+    // strip asks, and typing stays in the chat input.
+    window.width = width
+    window.height = height
+    tryCompare(body, "width", width)
+    tryCompare(body, "height", height)
+    panel.browserPinPercent = panel.browserPinMinimumPercent
+    tryVerify(function() { return Math.abs(loader().height - expectedPinHeight()) < 0.5 }, 2000)
+    composer.forceActiveFocus()
+    evaluate(page, "setTimeout(() => { window.answered = prompt(" + longText + ", 'draft') }, 0)")
+    tryVerify(function() { return view.pendingDialog !== null })
+    verify(!view.dialogFits)
+    verify(!card.visible, "no card spills out of the pin")
+    const answerButton = findChild(view, "panelBrowserAnswer")
+    verify(answerButton.visible)
+    verify(findChild(view, "panelBrowserStatus").text.indexOf("waiting for an answer") >= 0)
+    verify(composer.activeFocus, "the question did not take the composer's focus")
+    type("!")
+    compare(body.composerId, "one")
+    compare(view.userBusyReason(), "A page dialog is waiting for the user's answer.")
+
+    // Answer shows it in the full panel, focused; answering returns to the pin.
+    waitForRendering(view)
+    mouseClick(answerButton)
+    tryVerify(function() { return panel.browsing })
+    compare(panel.browserPinOwnerId, "one", "the pin keeps its owner while answering")
+    tryVerify(function() { return card.visible })
+    tryVerify(function() { return findChild(view, "panelBrowserDialogInput").activeFocus }, 2000)
+    compare(view.page, page)
+    keyClick(Qt.Key_A, Qt.ControlModifier)
+    type("yes")
+    keyClick(Qt.Key_Return)
+    tryVerify(function() { return view.pendingDialog === null })
+    tryVerify(function() { return panel.browserPinVisible && !panel.browsing })
+    tryVerify(function() { return composer.activeFocus }, 2000)
+    tryCompare(body, "composerId", "one")
+    compare(evaluate(page, "window.answered"), "yes")
+
+    // At the strip-only floor (short panel, 200% text) nothing spills either.
+    window.height = 420
+    tryCompare(body, "height", 420)
+    chat.zoomPercent = 200
+    tryVerify(function() { return loader().height <= view.chromeHeight + 0.5 }, 2000, "strip-only pin: " + loader().height)
+    evaluate(page, "setTimeout(() => { alert(" + longText + ") }, 0)")
+    tryVerify(function() { return view.pendingDialog !== null })
+    verify(!card.visible)
+    verify(answerButton.visible)
+    waitForRendering(view)
+    mouseClick(answerButton)
+    tryVerify(function() { return panel.browsing && card.visible })
+    mouseClick(findChild(view, "panelBrowserDialog-OK"))
+    tryVerify(function() { return panel.browserPinVisible && !panel.browsing })
+
+    chat.zoomPercent = 100
+    window.width = width
+    window.height = height
+    tryCompare(body, "width", width)
+    tryCompare(body, "height", height)
+    panel.browserPinPercent = 35
   }
 }

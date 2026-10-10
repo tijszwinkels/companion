@@ -165,10 +165,16 @@ Item {
   // The page is on screen and running. Otherwise its item is hidden, which
   // freezes and mutes it.
   readonly property bool browserShown: browsing || (browserPinVisible && panelShown)
+  // The full browser is open only to answer a question from the pinned page
+  // (the strip's Answer); the pin stays owned and comes back once answered.
+  property bool browserAnsweringForPin: false
   readonly property bool inputFocused: root.keyboardFocused && (root.composerFocusId !== "" || activityView.inputFocused)
   readonly property string composerFocusId: fullWidget || browsing ? "" : chat.composerFocusId
   onFullWidgetChanged: if (fullWidget) chat.releaseComposerFocus()
-  onBrowsingChanged: if (browsing) root.releaseComposerFocus()
+  onBrowsingChanged: {
+    if (browsing) root.releaseComposerFocus()
+    else root.browserAnsweringForPin = false
+  }
   readonly property bool keyboardFocused: root.Window.window !== null && root.Window.window.active
   // Activity and the session library share the conversation's reader zoom.
   // Keep geometry in theme units; only text and its measured layout grow.
@@ -350,6 +356,13 @@ Item {
       answer({outcome: "busy", reason: busy})
       return
     }
+    // Refuse a disallowed address before changing what is shown, so a refusal
+    // leaves the chat, its input focus and any pin exactly as they were.
+    const refusal = browser.addressRefusal(request.url)
+    if (refusal !== "") {
+      answer({outcome: "refused", reason: refusal})
+      return
+    }
     // Show the browser first, so the page is awake (not frozen) when it loads.
     // A pinned page moves into the full browser, like the header button. If
     // the request does not start (refused), the pin is untouched.
@@ -408,6 +421,27 @@ Item {
     root.browserPinOwnerId = root.selectedSessionId
     root.browserOpen = false
     Qt.callLater(function() { if (root.keyboardFocused && root.browserPinVisible) chat.focusComposer() })
+  }
+
+  // The strip's Answer on a pin too short for its page's question: show the
+  // page in the full browser, with the question focused (an explicit user
+  // request), keeping the pin's owner. Answering the question returns the
+  // page to its pin and the chat input; Chat does the same without answering.
+  function answerInFullBrowser() {
+    const browser = browserLoader.item
+    if (!root.browserPinVisible || !browser || !browser.pendingDialog) return
+    root.browserOpen = true
+    root.browserAnsweringForPin = true
+    Qt.callLater(function() { if (root.browsing && browserLoader.item) browserLoader.item.focusDialog() })
+  }
+  function browserDialogChanged() {
+    const browser = browserLoader.item
+    if (!root.browserAnsweringForPin || !browser || browser.pendingDialog !== null) return
+    root.browserAnsweringForPin = false
+    if (root.browsing && root.browserPinOwnerId !== "") {
+      root.browserOpen = false
+      Qt.callLater(function() { if (root.keyboardFocused && root.browserPinVisible) chat.focusComposer() })
+    }
   }
 
   // Unpin keeps the page loaded and frozen; the Browser button reopens it.
@@ -1198,6 +1232,8 @@ Item {
         item.pinRequested.connect(root.pinBrowser)
         item.unpinRequested.connect(root.unpinBrowser)
         item.pageClosed.connect(root.unpinBrowser)
+        item.answerRequested.connect(root.answerInFullBrowser)
+        item.pendingDialogChanged.connect(root.browserDialogChanged)
       }
     }
     Text {

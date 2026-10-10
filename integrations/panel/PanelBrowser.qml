@@ -93,6 +93,12 @@ FocusScope {
   property var pendingDialog: null
   property string pendingDialogHost: ""
   property bool pendingDialogFocus: false
+  // Whether the dialog card fits the page area with at least one line of its
+  // message. The card never grows beyond that area (a long message scrolls);
+  // a pinned page too short for it shows the question in the strip with an
+  // Answer button instead (answerRequested).
+  readonly property bool dialogFits: pageDialog.height >= pageDialog.minimumCardHeight + 2 * pageDialog.cardMargin
+  readonly property bool dialogInStrip: root.pendingDialog !== null && root.pinned && !root.dialogFits
   // An agent's open request (companion_browser_open) waiting for its page:
   // {answer, url, started}. Answered exactly once, from what actually happened:
   // loaded (including a same-document #fragment), load-failed, cancelled (the
@@ -104,10 +110,12 @@ FocusScope {
 
   // Chat: show the conversation (and its input); Pin/Unpin: change the
   // presentation; pageClosed: Close unloaded the page, after returnRequested.
+  // answerRequested: the strip's Answer, for a question too large for the pin.
   signal returnRequested()
   signal pinRequested()
   signal unpinRequested()
   signal pageClosed()
+  signal answerRequested()
 
   function updateControls() {
     if (root.controlsWanted && (root.controlsFocused || root.page === null)) {
@@ -175,6 +183,12 @@ FocusScope {
     if (root.pendingDialog) return "A page dialog is waiting for the user's answer."
     if (root.shown && addressField.activeFocus) return "The user is typing an address."
     return ""
+  }
+
+  // Why an agent's address is refused, or "" when the policy allows it. Lets
+  // PanelContent refuse before it changes anything on screen.
+  function addressRefusal(url) {
+    return Policy.addressFromInput(url).error
   }
 
   // Navigate for an agent. Unlike openAddress, this moves no keyboard focus,
@@ -301,12 +315,19 @@ FocusScope {
     root.pendingDialogHost = Policy.displayHost(request.securityOrigin.toString())
     dialogInput.text = request.type === JavaScriptDialogRequest.DialogTypePrompt ? request.defaultText : ""
     root.pendingDialog = request
-    if (root.pendingDialogFocus) {
-      if (request.type === JavaScriptDialogRequest.DialogTypePrompt) {
-        dialogInput.forceActiveFocus()
-        dialogInput.selectAll()
-      } else pageDialog.forceActiveFocus()
-    }
+    if (root.pendingDialogFocus) root.focusDialog()
+  }
+
+  // Keyboard focus to the pending dialog: when the page had it, or when the
+  // user explicitly asked to answer (the strip's Answer). Shown in the strip,
+  // the dialog keeps its keys (Enter, Escape) without a visible input.
+  function focusDialog() {
+    if (!root.pendingDialog) return
+    root.pendingDialogFocus = true
+    if (root.pendingDialog.type === JavaScriptDialogRequest.DialogTypePrompt && dialogCard.visible) {
+      dialogInput.forceActiveFocus()
+      dialogInput.selectAll()
+    } else pageDialog.forceActiveFocus()
   }
 
   // Resolve the pending dialog; OK/Leave accept, Cancel/Stay decline.
@@ -611,6 +632,21 @@ FocusScope {
     anchors.fill: pageLoader
     visible: root.pendingDialog !== null
     z: 1
+    // The card's height without its message, plus one message line: the
+    // least that still shows the origin, the question and its answers.
+    readonly property real cardMargin: 6 * root.unit
+    readonly property real cardPadding: 12 * root.unit
+    readonly property bool hasMessage: dialogMessage.text !== ""
+    readonly property bool hasPrompt: root.pendingDialog !== null
+      && root.pendingDialog.type === JavaScriptDialogRequest.DialogTypePrompt
+    readonly property real minimumCardHeight: 2 * cardPadding + dialogHost.implicitHeight
+      + (hasMessage ? dialogColumn.spacing + messageMetrics.height : 0)
+      + (hasPrompt ? dialogColumn.spacing + promptBox.height : 0)
+      + dialogColumn.spacing + dialogAnswers.implicitHeight
+    FontMetrics {
+      id: messageMetrics
+      font: dialogMessage.font
+    }
     Keys.onReturnPressed: root.answerDialog(true)
     Keys.onEnterPressed: root.answerDialog(true)
     Keys.onEscapePressed: root.answerDialog(root.pendingDialog !== null
@@ -625,9 +661,12 @@ FocusScope {
 
     Rectangle {
       id: dialogCard
+      objectName: "panelBrowserDialogCard"
       anchors.centerIn: parent
+      // The full browser always shows the card, as before; it only shrinks.
+      visible: root.dialogFits || !root.pinned
       width: Math.min(parent.width - 24 * root.unit, 380 * root.unit)
-      height: dialogColumn.implicitHeight + 24 * root.unit
+      height: dialogColumn.implicitHeight + 2 * pageDialog.cardPadding
       radius: 6 * root.unit
       color: root.background
       border.width: Math.max(1, root.unit)
@@ -641,8 +680,11 @@ FocusScope {
         spacing: 10 * root.unit
 
         Text {
+          id: dialogHost
           objectName: "panelBrowserDialogHost"
           width: parent.width
+          maximumLineCount: 2
+          elide: Text.ElideRight
           text: root.pendingDialog && root.pendingDialog.type === JavaScriptDialogRequest.DialogTypeBeforeUnload
             ? "Leave this page? Changes you made may not be saved."
             : (root.pendingDialogHost || "This page") + " says"
@@ -652,21 +694,35 @@ FocusScope {
           font.family: root.fontFamily
           font.pixelSize: 11 * root.unit
         }
-        Text {
-          objectName: "panelBrowserDialogMessage"
+        // The message scrolls inside whatever height the page area leaves.
+        Flickable {
+          id: dialogMessageView
+          objectName: "panelBrowserDialogMessageView"
           width: parent.width
-          visible: text !== ""
-          text: root.pendingDialog && root.pendingDialog.type !== JavaScriptDialogRequest.DialogTypeBeforeUnload
-            ? root.pendingDialog.message : ""
-          textFormat: Text.PlainText
-          wrapMode: Text.Wrap
-          maximumLineCount: 12
-          elide: Text.ElideRight
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: 13 * root.unit
+          visible: pageDialog.hasMessage
+          height: Math.min(dialogMessage.implicitHeight, Math.max(messageMetrics.height,
+            pageDialog.height - 2 * pageDialog.cardMargin - pageDialog.minimumCardHeight + messageMetrics.height))
+          contentHeight: dialogMessage.implicitHeight
+          interactive: contentHeight > height
+          boundsBehavior: Flickable.StopAtBounds
+          clip: true
+          Text {
+            id: dialogMessage
+            objectName: "panelBrowserDialogMessage"
+            width: parent.width
+            text: root.pendingDialog && root.pendingDialog.type !== JavaScriptDialogRequest.DialogTypeBeforeUnload
+              ? root.pendingDialog.message : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            maximumLineCount: 12
+            elide: Text.ElideRight
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: 13 * root.unit
+          }
         }
         Rectangle {
+          id: promptBox
           width: parent.width
           height: 26 * root.unit
           visible: root.pendingDialog !== null && root.pendingDialog.type === JavaScriptDialogRequest.DialogTypePrompt
@@ -695,6 +751,7 @@ FocusScope {
           }
         }
         Row {
+          id: dialogAnswers
           anchors.right: parent.right
           spacing: 6 * root.unit
           Repeater {
@@ -762,7 +819,7 @@ FocusScope {
         id: status
         objectName: "panelBrowserStatus"
         anchors.left: parent.left
-        anchors.right: revealHint.left
+        anchors.right: stripAnswer.visible ? stripAnswer.left : revealHint.left
         anchors.leftMargin: 8 * root.unit
         anchors.rightMargin: 8 * root.unit
         anchors.verticalCenter: parent.verticalCenter
@@ -778,7 +835,8 @@ FocusScope {
           const state = root.loadError !== "" ? " · " + root.loadError
             : root.loading ? " · Loading…" : ""
           const message = root.notice !== "" ? " · " + root.notice : ""
-          return site + local + state + message
+          const question = root.dialogInStrip ? " · " + (root.pendingDialogHost || "The page") + " is waiting for an answer" : ""
+          return site + local + state + question + message
         }
       }
 
@@ -797,6 +855,39 @@ FocusScope {
         anchors.fill: parent
         cursorShape: Qt.PointingHandCursor
         onClicked: root.revealControls()
+      }
+
+      // A question from a pin too short to show it: an explicit way to answer.
+      Rectangle {
+        id: stripAnswer
+        objectName: "panelBrowserAnswer"
+        visible: root.dialogInStrip
+        anchors.right: revealHint.left
+        anchors.rightMargin: 6 * root.unit
+        anchors.verticalCenter: parent.verticalCenter
+        width: answerLabel.implicitWidth + 12 * root.unit
+        height: parent.height - 4 * root.unit
+        radius: 3 * root.unit
+        color: answerMouse.containsMouse ? root.selection : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+        Text {
+          id: answerLabel
+          anchors.centerIn: parent
+          text: "Answer"
+          textFormat: Text.PlainText
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: 11 * root.unit
+        }
+        MouseArea {
+          id: answerMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.answerRequested()
+        }
+        Accessible.role: Accessible.Button
+        Accessible.name: "Answer the page's question in the full panel"
+        Accessible.onPressAction: root.answerRequested()
       }
       Accessible.role: Accessible.Button
       Accessible.name: "Show browser controls"
