@@ -396,13 +396,11 @@ Item {
     id: historyControls
     width: parent.width
     spacing: 4 * root.unit
-    visible: root.hasOlder || root.historyPage !== null || root.historyError !== ""
+    visible: root.historyPage !== null || root.historyError !== "" || root.historyPending !== ""
     height: visible ? implicitHeight : 0
     Flow {
       width: parent.width
       spacing: 6 * root.unit
-      Button { objectName: "olderHistory"; text: "Load older"; enabled: root.hasOlder && root.online && !root.historyPending
-        onClicked: root.loadHistory("before", root.shownHistory.start, "", false) }
       Button { objectName: "newerHistory"; text: "Newer"; visible: root.historyPage !== null; enabled: !!(root.online && !root.historyPending && root.shownHistory && root.session && root.session.history && (root.shownHistory.end.index < root.session.history.total || root.shownHistory.end.offset > 0))
         onClicked: root.loadHistory("after", root.shownHistory.end, "", false) }
       Button { objectName: "refreshHistory"; text: "Refresh"; visible: root.historyPage !== null; enabled: root.online && !root.historyPending
@@ -481,6 +479,19 @@ Item {
     spacing: 12 * root.unit
     model: messages
     boundsBehavior: Flickable.StopAtBounds
+    // Inline, not sticky: older history is offered at the loaded page's top.
+    header: Item {
+      width: transcript.width
+      visible: root.hasOlder
+      height: visible ? olderHistory.implicitHeight + 12 * root.unit : 0
+      Button {
+        id: olderHistory
+        objectName: "olderHistory"
+        text: "Load older"
+        enabled: root.hasOlder && root.online && !root.historyPending
+        onClicked: root.loadHistory("before", root.shownHistory.start, "", false)
+      }
+    }
     onMovementEnded: root.followEnd = atYEnd && root.historyPage === null
     onContentHeightChanged: Qt.callLater(root.followLatestMessage)
     onHeightChanged: Qt.callLater(root.followLatestMessage)

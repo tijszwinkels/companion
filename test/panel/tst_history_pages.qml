@@ -112,6 +112,43 @@ Item {
       compare(view.previousLive.toolEpoch, "new-wake-lifetime")
       compare(composer.text, "Unsent during wake")
     }
+    function test_older_action_scrolls_with_history_and_preserves_draft() {
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = fixture(200, 230)
+      view.applyDraft({id: "fixture", text: "Keep this draft", source: {title: "Fixture"}})
+      const transcript = findChild(view, "sessionTranscript")
+      const older = findChild(view, "olderHistory")
+      verify(waitForRendering(view))
+      verify(transcript.headerItem !== null, "Older action belongs to the scrolling header")
+      compare(older.parent, transcript.headerItem)
+      compare(transcript.anchors.topMargin, 0, "Recent history has no sticky paging toolbar")
+      tryVerify(() => transcript.atYEnd)
+      verify(older.mapToItem(transcript, 0, 0).y + older.height <= 0, "Older action is clipped at Latest")
+      mouseWheel(transcript, 100, 100, 0, 12000, Qt.NoButton)
+      tryVerify(() => transcript.atYBeginning)
+      const top = older.mapToItem(transcript, 0, 0).y
+      verify(top >= 0 && top + older.height <= transcript.height, "Wheel scrolling reaches the older action")
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      mouseClick(older)
+      compare(requests.length, 1)
+      compare(requests[0].direction, "before")
+      compare(requests[0].index, 200)
+      view.toolPageReceived(reply(requests[0], fixture(170, 200)))
+      compare(view.historyPage.messages[0].id, "row-170")
+      compare(findChild(view, "sessionComposer").text, "Keep this draft")
+      verify(findChild(view, "latestHistory").visible, "Historical navigation remains available")
+    }
+    function test_oldest_page_has_no_older_action_or_empty_toolbar() {
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = fixture(0, 20)
+      verify(waitForRendering(view))
+      const transcript = findChild(view, "sessionTranscript")
+      verify(transcript.headerItem !== null)
+      compare(transcript.headerItem.height, 0)
+      verify(!findChild(view, "olderHistory").visible)
+      compare(transcript.anchors.topMargin, 0)
+    }
     function test_window_deltas_prune_and_order_without_losing_retained_rows() {
       const state = createTemporaryObject(stateComponent, parent)
       state.replace([fixture(200, 205)])
