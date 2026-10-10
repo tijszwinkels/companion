@@ -31,6 +31,39 @@ Item {
   TestCase {
     name: "CompanionHistoryPages"
     when: windowShown
+    function test_epoch_reset_discards_old_lifetime_data() {
+      return [{tag: "reading recent", historical: false}, {tag: "reading history", historical: true}]
+    }
+    function test_epoch_reset_discards_old_lifetime(data) {
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = fixture(200, 210, 10, "fixture", "old-epoch")
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      view.applyDraft({id: "fixture", text: "Draft survives reopening", source: {title: "Fixture"}})
+      if (data.historical) {
+        view.loadHistory("before", view.shownHistory.start, "", false)
+        view.toolPageReceived(reply(requests[0], fixture(190, 200, 10)))
+      }
+      view.followEnd = false
+      view.loadHistory("before", view.shownHistory.start, "", false)
+      const pending = requests[requests.length - 1]
+      view.historyError = "Old lifetime error"
+      view.online = false
+      // Another client closes/reopens and continues this ID while disconnected.
+      view.session = fixture(210, 220, 1, "fixture", "new-epoch")
+      view.online = true
+      compare(view.historyPage, null, "Do not relabel old rows with the new epoch")
+      compare(view.shownHistory.start.index, 210)
+      compare(view.previousLive.toolEpoch, "new-epoch")
+      compare(view.historyPending, "")
+      compare(view.historyRequest, null)
+      compare(view.historyError, "")
+      compare(view.followEnd, true)
+      compare(view.messageCount, 10)
+      compare(findChild(view, "sessionComposer").text, "Draft survives reopening")
+      view.toolPageReceived(reply(pending, fixture(180, 190, 10)))
+      compare(view.historyPage, null, "Late old-epoch response is inert")
+    }
     function test_window_deltas_prune_and_order_without_losing_retained_rows() {
       const state = createTemporaryObject(stateComponent, parent)
       state.replace([fixture(200, 205)])

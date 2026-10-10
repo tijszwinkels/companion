@@ -325,8 +325,15 @@ Item {
     }
 
     if (root.previousLive && root.session && root.previousLive.toolEpoch !== root.session.toolEpoch) {
+      // A reconnect can reveal the same ID reopened by another client. Never
+      // freeze rows from the old lifetime under its successor's page token.
+      root.clearMessageSelection()
       root.historyPage = null
+      root.previousLive = null
       root.historyPending = ""
+      root.historyRequest = null
+      root.historyError = ""
+      root.followEnd = true
       historyDeadline.stop()
     }
     // If a rolling recent window would evict rows while reading, freeze the
