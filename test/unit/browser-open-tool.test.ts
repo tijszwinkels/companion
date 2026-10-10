@@ -105,7 +105,7 @@ async function fixture(context: { after(callback: () => Promise<unknown>): void 
   await waitFor(() => lease !== undefined);
 
   // The capabilities are those the listener announced with this very lease.
-  assert.deepEqual(lease!.capabilities, ['browser-open']);
+  assert.deepEqual(lease!.capabilities, ['browser-open', 'self-wakes']);
   const pi = sessionTools(lease!.endpoint, lease!.token, lease!.capabilities).find(
     (tool) => tool.name === 'companion_browser_open',
   )!;

@@ -1741,6 +1741,20 @@ export class DesktopRuntime {
       return 'moved';
     }
 
+    if (request.action === 'cancel-agent-wake') {
+      if (remote) {
+        throw Error('Timer controls require the native desktop');
+      }
+      if (
+        !this.options.agents ||
+        typeof request.id !== 'string' ||
+        typeof request.timerId !== 'string'
+      ) {
+        throw Error('Expected a conversation and timer ID');
+      }
+      return String(this.options.agents.cancelWake(request.id, request.timerId).outcome);
+    }
+
     if (
       request.action === 'stop-agent' ||
       request.action === 'close-agent' ||
@@ -1749,15 +1763,17 @@ export class DesktopRuntime {
       if (!this.options.agents || typeof request.id !== 'string') {
         throw Error('Expected an agent session id');
       }
+      let cancelledTimers = 0;
       if (request.action === 'close-agent') {
-        await this.options.agents.remove(request.id);
+        cancelledTimers = await this.options.agents.remove(request.id);
       } else if (request.action === 'reopen-agent') {
         await this.options.agents.reopen(request.id, !remote);
         return 'reopened';
       } else {
-        await this.options.agents.stop(request.id);
+        cancelledTimers = await this.options.agents.stop(request.id);
       }
-      return request.action === 'close-agent' ? 'closed' : 'stopped';
+      const outcome = request.action === 'close-agent' ? 'closed' : 'stopped';
+      return cancelledTimers ? `${outcome}; cancelled ${cancelledTimers} pending timers` : outcome;
     }
 
     if (request.action === 'toggle-pause') {

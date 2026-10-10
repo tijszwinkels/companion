@@ -75,6 +75,15 @@ export interface SessionDirectory {
  * actual tabs, FIFO queues and persisted history.
  */
 export interface SessionToolHost {
+  wake?(
+    owner: string,
+    turnId: string,
+    depth: number,
+    method: string,
+    command: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Record<string, unknown>;
+
   title(id: string): string | undefined;
   /** Stored tool group of the sender's outbound call, if it was retained. */
   sourceGroupId?(sender: string, turnId: string, toolCallId: string): string | undefined;
@@ -219,7 +228,9 @@ export class SessionToolService {
     return {
       endpoint: origin + '/session',
       token,
-      capabilities: sessionToolCapabilities,
+      capabilities: sessionToolCapabilities.filter(
+        (capability) => capability !== 'self-wakes' || this.host.wake !== undefined,
+      ),
       release,
     };
   }
@@ -363,6 +374,9 @@ export class SessionToolService {
       method !== 'close' &&
       method !== 'send' &&
       method !== 'draft' &&
+      method !== 'wake-schedule' &&
+      method !== 'wake-cancel' &&
+      method !== 'wake-list' &&
       method !== 'browser-open'
     ) {
       throw new SessionToolError('invalid', 'Unknown session tool method', 400);
@@ -384,12 +398,44 @@ export class SessionToolService {
     }
 
     const action =
-      method === 'browser-open'
-        ? this.openBrowser(lease, command)
-        : this.act(lease, method, command, requestId);
+      method === 'wake-schedule' || method === 'wake-cancel' || method === 'wake-list'
+        ? this.wake(lease, method, command)
+        : method === 'browser-open'
+          ? this.openBrowser(lease, command)
+          : this.act(lease, method, command, requestId);
     const reply = action.catch((error) => this.failure(error));
     lease.receipts.set(receiptKey, reply);
     return reply;
+  }
+
+  private async wake(
+    lease: Lease,
+    method: string,
+    command: Record<string, unknown>,
+  ): Promise<ToolReply> {
+    const fields =
+      method === 'wake-schedule'
+        ? ['afterSeconds', 'at', 'message', 'label', 'key', 'expiresAfterSeconds']
+        : method === 'wake-cancel'
+          ? ['timerId']
+          : ['recent'];
+    if (Object.keys(command).some((key) => !['method', 'requestId', ...fields].includes(key))) {
+      throw new SessionToolError('invalid', 'Unknown wake argument', 400);
+    }
+    this.assertLive(lease);
+    if (!this.host.wake) {
+      throw new SessionToolError('unsupported', 'Self wakes unavailable');
+    }
+    if (method !== 'wake-list') {
+      if (lease.actions >= maxLifecycleActionsPerTurn) {
+        throw new SessionToolError('limit', 'Session action limit reached', 429);
+      }
+      lease.actions++;
+    }
+    return {
+      status: 200,
+      body: this.host.wake(lease.owner, lease.turnId, lease.depth, method, command, lease.signal),
+    };
   }
 
   /**

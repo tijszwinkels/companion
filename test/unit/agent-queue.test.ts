@@ -1,3 +1,4 @@
+import { defaultAgentSettings } from '../../src/agents/settings.ts';
 import assert from 'node:assert/strict';
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,9 @@ interface Turn {
 /** Explicit turn gates exercise ordering without a live model or timing guesses. */
 async function fixture(context: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-agent-queue-'));
+  // This fixture tests turn admission, not concurrent first-use config creation.
+  // Seed settings before the four-agent case starts its simultaneous readers.
+  await writeFile(join(directory, 'companion-agent.json'), JSON.stringify(defaultAgentSettings));
   const turns: Turn[] = [];
   const active = new Set<string>();
   const sessions = new AgentSessions(

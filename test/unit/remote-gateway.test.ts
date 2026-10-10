@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { sessionTools } from '../../src/agents/session-tools.ts';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
@@ -370,6 +372,16 @@ test('remote history pages and canonical pins sanitize local URLs outside the re
   const id = fixture.sessions.start(frame, signal());
   await waitFor(() => fixture.runs.length === 1);
   const run = fixture.runs[0];
+  const lease = run.request.sessionTools!;
+  const schedule = sessionTools(lease.endpoint, lease.token, lease.capabilities).find(
+    (tool) => tool.name === 'companion_wake_schedule',
+  )!;
+  const receipt = await schedule.execute(randomUUID(), {
+    afterSeconds: 60,
+    label: 'Paging check',
+    message: 'Private wake instructions',
+  });
+  const timerId = String(receipt.details.timerId);
   run.emit({
     ...chatMessage('widget-fixture', 'assistant', 'Synthetic widget'),
     widget: {
@@ -413,9 +425,19 @@ test('remote history pages and canonical pins sanitize local URLs outside the re
   const reply = (await phone.reply('history-page')) as { type: string; result: HistoryPage };
   assert.equal(reply.type, 'result');
   assert.equal(reply.result.messages[0].screenshotUrl, `api/screenshots/${id}`);
-  assert.equal(reply.result.messages[1].widget!.viewUrl, undefined);
+  assert.equal(reply.result.messages.find((row) => row.widget)!.widget!.viewUrl, undefined);
   assert.ok(!JSON.stringify(reply).includes('file:'));
   assert.ok(!JSON.stringify(reply).includes('private-capability'));
+  assert.ok(!JSON.stringify(reply).includes('Private wake instructions'));
+  phone.send({ requestId: 'refuse-remote-wake', action: 'cancel-agent-wake', id, timerId });
+  assert.equal((await phone.reply('refuse-remote-wake')).type, 'error');
+  assert.equal(fixture.sessions.wakes.list(id)[0].state, 'scheduled');
+  assert.equal(fixture.sessions.cancelWake(id, timerId).outcome, 'cancelled');
+  assert.equal(
+    fixture.sessions.snapshot()[0].pinnedMessage!.widget!.id,
+    '00000000-0000-4000-8000-000000000001',
+  );
+
   assert.equal(
     (
       await fetch(`${fixture.origin}/api/screenshots/${id}`, {

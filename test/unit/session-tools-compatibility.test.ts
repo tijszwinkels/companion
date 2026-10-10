@@ -124,7 +124,7 @@ test('a current listener announces browser-open to Pi and to the Claude bridge',
   context.after(() => sessions.close());
   sessions.start({ ...frame, utterance: 'Check the lease' }, signal());
   await waitFor(() => announced !== undefined);
-  assert.deepEqual(announced, ['browser-open']);
+  assert.deepEqual(announced, ['browser-open', 'self-wakes']);
 
   // Pi receives it in its environment only when the lease has it.
   const executable = join(directory, 'fixture-pi');

@@ -1124,3 +1124,20 @@ Every result/error envelope now echoes a string `requestId` of at most 128
 characters when the request carried one, for correlation of concurrent replies.
 The Unix socket remains the only listener transport; network access, pairing and
 authentication belong to the separate gateway process.
+
+### Native self-wake visibility
+
+Conversation snapshots/updates optionally carry `wakes`: bounded timer summaries
+with ID, label, due/expiry, state, last transition, cancellation intent and linked
+turn ID. These are projections from the dedicated timer store, never restored
+as executable transcript messages. The shared panel shows a clock/count on tabs
+and an expandable list with local due time and zone, relative due/overdue time,
+status and Cancel. `scheduled-wake` message origins render as **Scheduled wake**,
+not **You**. Background restore uses the existing `reveal: false` contract.
+
+The native command `{"action":"cancel-agent-wake","id":"conversation-uuid",
+"timerId":"timer-uuid"}` returns the truthful cancellation outcome. It is not
+a phone/external scheduling API. Stop/close results include the cancelled count
+when nonzero; the tab close tooltip also states the number affected. Cancellation
+never edits drafts, selects tabs or requests desktop capture. Old listeners do
+not announce the tools, and old session snapshots have no timer UI.

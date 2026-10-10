@@ -1,3 +1,4 @@
+import { ConversationUnavailableError } from '../resume-error.ts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -808,7 +809,7 @@ class ClaudeTurn {
 
     if (this.request.resume && this.stderrTail.includes('No conversation found')) {
       this.finish(
-        Error(
+        new ConversationUnavailableError(
           'Claude Code could not resume this conversation. Its saved transcript is missing; start a new question.',
         ),
       );

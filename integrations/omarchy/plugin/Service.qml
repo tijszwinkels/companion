@@ -691,6 +691,7 @@ Item {
     onSessionSelected: id => agentSessions.select(id)
     onPreviousRequested: agentSessions.showingPrevious = true
     onReopenSessionRequested: id => root.send({action: "reopen-agent", id: id})
+    onCancelWakeRequested: (id, timerId) => root.send({action: "cancel-agent-wake", id: id, timerId: timerId})
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)

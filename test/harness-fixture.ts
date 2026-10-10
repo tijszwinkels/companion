@@ -33,7 +33,7 @@ export interface HarnessRun {
   settings: AgentSettings | ClaudeCodeSettings;
   /** Claude Code only: the previous turn's model after a picker switch. */
   previousModel?: string;
-  sessionTools?: { endpoint: string; token: string };
+  sessionTools?: { endpoint: string; token: string; capabilities?: readonly string[] };
   /** Claude Code only: the conversation's native name export at turn start. */
   nativeTitle?: NativeTitleExport;
   signal: AbortSignal;
@@ -60,6 +60,8 @@ export async function harnessFixture(
     liveState?: SessionLiveState;
     /** Gates conversation screenshot copies; absent means always off. */
     captureStorage?: CaptureStoragePolicy;
+    /** Injected UTC timer clock; no elapsed real timer needed in tests. */
+    wakeClock?: () => number;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-harness-'));
@@ -152,6 +154,7 @@ export async function harnessFixture(
       undefined,
       options.liveState,
       options.captureStorage,
+      options.wakeClock,
     );
     opened.push(sessions);
     return sessions;
@@ -193,9 +196,11 @@ export async function callTool(
   parameters: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   assert.ok(run.sessionTools, 'The turn must receive a session tool lease');
-  const tool = sessionTools(run.sessionTools.endpoint, run.sessionTools.token).find(
-    (definition) => definition.name === name,
-  );
+  const tool = sessionTools(
+    run.sessionTools.endpoint,
+    run.sessionTools.token,
+    run.sessionTools.capabilities,
+  ).find((definition) => definition.name === name);
   assert.ok(tool, `Unknown tool ${name}`);
   const result = await tool.execute(randomUUID(), parameters);
   return result.details;

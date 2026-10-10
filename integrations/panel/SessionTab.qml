@@ -23,6 +23,7 @@ Rectangle {
   property bool online: true
   property bool running: false
   property bool unread: false
+  property int wakeCount: 0
   property bool animationsEnabled: true
   readonly property bool spinning: running && online && animationsEnabled && visible
   readonly property color unreadColor: "#91dbb5"
@@ -54,6 +55,16 @@ Rectangle {
     : selected ? selection : hovered ? Qt.rgba(foreground.r, foreground.g, foreground.b, 0.06) : "transparent"
   border.width: unread ? root.tabUnit : 0
   border.color: Qt.rgba(unreadColor.r, unreadColor.g, unreadColor.b, 0.25)
+
+  Text {
+    objectName: "sessionWakeCount"
+    anchors.left: parent.left
+    anchors.top: parent.top
+    visible: root.wakeCount > 0
+    text: "◷" + root.wakeCount
+    color: root.accent
+    font.pixelSize: 10 * root.tabUnit
+  }
 
   HoverHandler { id: hover }
 
@@ -264,7 +275,7 @@ Rectangle {
     ToolTip {
       id: closeTip
       visible: closeMouse.containsMouse
-      text: "Close session · saved in Previous sessions"
+      text: root.wakeCount > 0 ? "Close and cancel " + root.wakeCount + " timers" : "Close session · saved in Previous sessions"
       delay: 400
       padding: 8 * root.tabUnit
       background: Rectangle {

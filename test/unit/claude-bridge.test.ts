@@ -329,3 +329,43 @@ test('the result route authenticates, validates and bounds reports', async (cont
   assert.equal((await post({ kind: 'name', toolUseId: 't', title: 'Fine' })).status, 200);
   assert.deepEqual(route.take('t'), { kind: 'name', title: 'Fine' });
 });
+
+test('the real Claude bridge gates all three self-wake tools and forwards occurrence IDs', async (context) => {
+  const service = await fakeService('/session', (body) => ({
+    outcome: body.method === 'wake-schedule' ? 'scheduled' : 'cancelled',
+    timerId: 'synthetic-timer',
+  }));
+  context.after(() => service.close());
+  const connection = {
+    COMPANION_SESSION_TOOLS_ENDPOINT: service.endpoint,
+    COMPANION_SESSION_TOOLS_TOKEN: 'a'.repeat(64),
+  };
+  const old = new BridgeClient(connection);
+  assert.equal(
+    (await old.request('tools/list')).result.tools.some((tool: { name: string }) =>
+      tool.name.startsWith('companion_wake_'),
+    ),
+    false,
+  );
+  await old.close();
+  const current = new BridgeClient({
+    ...connection,
+    COMPANION_SESSION_TOOLS_CAPABILITIES: 'self-wakes',
+  });
+  const offered = (await current.request('tools/list')).result.tools.filter(
+    (tool: { name: string }) => tool.name.startsWith('companion_wake_'),
+  );
+  assert.deepEqual(
+    offered.map((tool: { name: string }) => tool.name),
+    ['companion_wake_schedule', 'companion_wake_cancel', 'companion_wake_list'],
+  );
+  const scheduled = await current.call(
+    'companion_wake_schedule',
+    { afterSeconds: 60, label: 'Synthetic', message: 'Check' },
+    'wake-call',
+  );
+  assert.equal(scheduled.result.isError, undefined);
+  assert.equal(service.requests[0].body.requestId, 'wake-call');
+  assert.equal(service.requests[0].body.method, 'wake-schedule');
+  assert.equal(await current.close(), 0);
+});

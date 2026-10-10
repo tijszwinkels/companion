@@ -173,6 +173,7 @@ Item {
   onPreviousRequested: root.browserOpen = false
   signal reopenSessionRequested(string id)
   signal screenshotRequested(url source, string title)
+  signal cancelWakeRequested(string id, string timerId)
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
@@ -214,6 +215,7 @@ Item {
     for (let index = 0; index < root.sessions.length; index++) {
       const session = root.sessions[index]
       const row = {tabId: session.id, tabTitle: session.title,
+        tabWakeCount: (session.wakes || []).filter(t => t.state === "scheduled" || t.state === "waiting").length,
         tabRunning: session.status === "starting" || session.status === "running"}
       let position = index
       while (position < sessionTabs.count && sessionTabs.get(position).tabId !== session.id) position++
@@ -616,6 +618,7 @@ Item {
             SessionTab {
               required property string tabId
               required property string tabTitle
+              required property int tabWakeCount
               required property bool tabRunning
               required property int index
               objectName: "tab-" + tabId
@@ -625,6 +628,7 @@ Item {
               number: index + 1
               selected: !root.showingPrevious && root.selectedSessionId === tabId
               online: root.online
+              wakeCount: tabWakeCount
               running: tabRunning
               unread: root.unreadSessionIds[tabId] === true
               animationsEnabled: root.animationsEnabled
@@ -976,6 +980,7 @@ Item {
       onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
       openableOrigins: root.openableOrigins
       onOriginRequested: (id, groupId) => root.openOrigin(id, groupId)
+      onCancelWakeRequested: (id, timerId) => root.cancelWakeRequested(id, timerId)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)

@@ -32,7 +32,7 @@ const focus = Type.Optional(
  * only when the listener positively announced it; absent or unknown values
  * mean an older listener, which keeps exactly its original tools.
  */
-export const sessionToolCapabilities = ['browser-open'] as const;
+export const sessionToolCapabilities = ['browser-open', 'self-wakes'] as const;
 export type SessionToolCapability = (typeof sessionToolCapabilities)[number];
 
 /** Parse the announced capabilities; anything unrecognised is ignored. */
@@ -191,6 +191,40 @@ export function sessionTools(
         focus,
       }),
       method: 'draft',
+    },
+    {
+      name: 'companion_wake_schedule',
+      label: 'Schedule self wake',
+      description:
+        'Durably schedule one future turn in this conversation. Exactly one of afterSeconds or at (RFC3339 with offset). Delay 60 seconds–30 days. Default overdue grace one hour, maximum 24 hours. key replaces only an unstarted occurrence. A scheduled receipt means accepted, not completed. Stop and explicit close cancel pending timers. No new authority or review budget; reassess stale context before acting. You may schedule successive one-shots without a rearm-count limit; cancel obsolete waits and avoid pointless checks.',
+      parameters: Type.Object({
+        afterSeconds: Type.Optional(Type.Number({ minimum: 60, maximum: 2592000 })),
+        at: Type.Optional(Type.String()),
+        message: text,
+        label: Type.String({ minLength: 1, maxLength: 120 }),
+        key: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+        expiresAfterSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 86400 })),
+      }),
+      method: 'wake-schedule',
+      requires: 'self-wakes' as SessionToolCapability,
+    },
+    {
+      name: 'companion_wake_cancel',
+      label: 'Cancel self wake',
+      description:
+        'Cancel your own timer by stable ID, including while due and waiting. cancelled guarantees no subsequent dispatch for that occurrence. dispatch-started means cancellation came too late; it does not stop the current turn. Cancelling an old ID never cancels its replacement.',
+      parameters: Type.Object({ timerId: sessionId }),
+      method: 'wake-cancel',
+      requires: 'self-wakes' as SessionToolCapability,
+    },
+    {
+      name: 'companion_wake_list',
+      label: 'List self wakes',
+      description:
+        'List only this conversation’s active timers, plus up to 50 recent terminal records when recent is supplied.',
+      parameters: Type.Object({ recent: Type.Optional(Type.Integer({ minimum: 0, maximum: 50 })) }),
+      method: 'wake-list',
+      requires: 'self-wakes' as SessionToolCapability,
     },
     {
       name: 'companion_browser_open',

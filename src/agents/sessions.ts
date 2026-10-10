@@ -1,5 +1,10 @@
+import { lstat } from 'node:fs/promises';
+import { ConversationUnavailableError } from './resume-error.ts';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { WakeStore } from './wakes/store.ts';
+import { WakeScheduler } from './wakes/scheduler.ts';
+import { unstarted, type WakeRecord, type WakeSchedule, type WakeSummary } from './wakes/types.ts';
 
 import { WidgetService } from '../widgets/service.ts';
 import { bundledLibraryDirectory } from '../widgets/library-path.ts';
@@ -78,6 +83,8 @@ interface RunningSession {
    * human message, otherwise its origin's depth. Session tools extend it.
    */
   depth: number;
+  currentOrigin?: AgentMessageOrigin;
+  wake?: WakeRecord;
   /**
    * The conversation's own agent asked to close it (companion_session_close).
    * It closes only after the requesting turn completes with nothing queued.
@@ -150,6 +157,12 @@ export class AgentSessions implements InspectableModule {
   private orderRevision = randomUUID();
   private readonly modelChanges = new Set<string>();
   readonly sessionTools: SessionToolService;
+  readonly wakes: WakeScheduler;
+  private wakeWarningText = '';
+  private readonly wakePreparation = new Map<
+    string,
+    { configuration: string; session: RunningSession; controller: AbortController }
+  >();
   // The desktop runtime owns UI connections and therefore unsent drafts.
   private draftHost?: AgentDraftHost;
   // The desktop runtime also owns the native panel's built-in browser.
@@ -174,6 +187,7 @@ export class AgentSessions implements InspectableModule {
     // Gates the automatic conversation screenshot copy. Absent means a fixed
     // "off" policy: nothing is saved unless the listener passes its policy.
     private readonly captureStorage: CaptureStoragePolicy = new CaptureStoragePolicy(),
+    wakeClock: () => number = Date.now,
   ) {
     // Graph inspection shows each wired backend under its harness name.
     const dependencies: Record<string, InspectableModule> = { pi: backends.pi };
@@ -205,7 +219,19 @@ export class AgentSessions implements InspectableModule {
       undefined,
       (records) => this.validateWidgetChanges(records),
     );
+    this.wakes = new WakeScheduler(
+      new WakeStore(join(directory, '.companion-wakes'), (text) => this.wakeWarning(text)),
+      {
+        prepare: (record) => this.prepareWake(record),
+        admit: (record, claim) => this.admitWake(record, claim),
+        changed: (record) => this.wakeChanged(record),
+        warning: (text) => this.wakeWarning(text),
+      },
+      wakeClock,
+    );
     this.sessionTools = new SessionToolService({
+      wake: (owner, turnId, depth, method, command, signal) =>
+        this.wakeTool(owner, turnId, depth, method, command, signal),
       title: (id) => this.sessions.get(id)?.view.title,
       sourceGroupId: (sender, turnId, toolCallId) => this.sourceGroupId(sender, turnId, toolCallId),
       directory: (sender, query, limit) => this.sessionDirectory(sender, query, limit),
@@ -238,13 +264,285 @@ export class AgentSessions implements InspectableModule {
     return () => {};
   }
 
-  /** Read-only startup: old conversations appear in history, without launching agents. */
+  /** Restore history as data; only explicit durable timers may later admit a new turn. */
   async loadPrevious(): Promise<void> {
     for (const entry of await this.store.previous(this.log)) {
       if (!this.sessions.has(entry.id)) {
         this.previous.set(entry.id, entry);
       }
     }
+    this.wakes.open();
+    for (const owner of new Set(this.wakes.store.all().map((record) => record.owner))) {
+      if (!this.previous.has(owner) && !this.sessions.has(owner)) {
+        const deleted = await lstat(
+          join(this.directory, '.companion-sessions', `${owner}.json`),
+        ).then(
+          () => false,
+          (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+        );
+        if (deleted) {
+          this.wakes.deleteOwner(owner);
+        } else {
+          this.wakes.blockOwner(owner, 'Saved owner is malformed or unavailable');
+        }
+      }
+    }
+    this.wakes.start();
+  }
+
+  private wakeTool(
+    owner: string,
+    turnId: string,
+    depth: number,
+    method: string,
+    command: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Record<string, unknown> {
+    signal.throwIfAborted();
+    const session = this.sessions.get(owner);
+    if (
+      this.closed ||
+      !session ||
+      session.closing ||
+      session.closeAfterTurn ||
+      session.controller.signal.aborted
+    ) {
+      throw new SessionToolError('expired', 'Conversation stopped or closing');
+    }
+    if (method === 'wake-list') {
+      const recent = command.recent ?? 0;
+      if (typeof recent !== 'number' || !Number.isInteger(recent) || recent < 0 || recent > 50) {
+        throw new SessionToolError('invalid', 'recent must be 0–50');
+      }
+      return { timers: this.wakes.list(owner, recent) };
+    }
+    if (method === 'wake-cancel') {
+      if (typeof command.timerId !== 'string') {
+        throw new SessionToolError('invalid', 'timerId is required');
+      }
+      return this.wakes.cancel(owner, command.timerId);
+    }
+    const ancestry =
+      session.currentOrigin?.kind === 'scheduled-wake'
+        ? session.currentOrigin.ancestry
+        : session.currentOrigin;
+    return this.wakes.schedule(
+      {
+        owner,
+        turnId,
+        callId: String(command.requestId),
+        depth,
+        ancestry,
+        harness: session.view.harness ?? 'pi',
+        signal,
+      },
+      command as unknown as WakeSchedule,
+    );
+  }
+
+  private wakeWarning(text: string): void {
+    this.wakeWarningText = text.slice(0, 600);
+    this.log('agent-wake', this.wakeWarningText);
+    for (const session of this.sessions.values()) {
+      try {
+        this.message(session, chatMessage('wake-service-warning', 'notice', this.wakeWarningText));
+        this.flush(session);
+      } catch {
+        // Storage/size failures must not recursively report through the timer service.
+      }
+    }
+  }
+
+  private wakeConfiguration(view: AgentSession): string {
+    return JSON.stringify([
+      view.harness,
+      view.modelOverride,
+      view.thinkingOverride,
+      view.claudeCode,
+    ]);
+  }
+
+  private wakeNotice(record: WakeSummary): AgentMessage {
+    return chatMessage(
+      `wake:${record.id}`,
+      'notice',
+      `Timer ${record.label} · ${record.state} · ${new Date(record.dueAt).toISOString()} · ${record.id} · scheduled in ${record.schedulingTurn}${record.turnId ? ` · turn ${record.turnId}` : ''}${record.reason ? ` · ${record.reason}` : ''}`,
+    );
+  }
+
+  private wakeChanged(record: WakeRecord): void {
+    this.wakePreparation.delete(record.id);
+    const session = this.sessions.get(record.owner);
+    if (!session) {
+      return;
+    }
+    session.view.wakes = this.wakes.list(record.owner, 20);
+    // A single occurrence's notice is updated in place; successive transitions
+    // do not consume a transcript bubble each. Instruction text stays private.
+    try {
+      this.message(session, this.wakeNotice(record));
+      this.flush(session);
+    } catch (error) {
+      this.log('agent-wake', `Timer saved, transcript notice unavailable: ${String(error)}`);
+    }
+  }
+
+  private async prepareWake(record: WakeRecord): Promise<string> {
+    if (this.closed) {
+      return 'waiting';
+    }
+    let session = this.sessions.get(record.owner);
+    if (!session) {
+      if (!this.previous.has(record.owner)) {
+        return 'Owner conversation is deleted or its archive is missing';
+      }
+      if (
+        this.sessions.size + this.restoring.size >= MAX_OPEN_AGENT_SESSIONS ||
+        this.restoring.has(record.owner) ||
+        this.activeRuns() >= 4
+      ) {
+        return 'waiting';
+      }
+      try {
+        await this.reopen(record.owner, false);
+      } catch {
+        return 'Owner archive could not be restored';
+      }
+      session = this.sessions.get(record.owner);
+    }
+    if (
+      !session ||
+      session.closing ||
+      session.busy ||
+      session.pending.length ||
+      this.activeRuns() >= 4 ||
+      session.modelWrite ||
+      this.modelChanges.has(record.owner)
+    ) {
+      return 'waiting';
+    }
+    if (session.view.status === 'error' || session.controller.signal.aborted) {
+      return 'Preceding conversation turn failed or stopped';
+    }
+    if ((session.view.harness ?? 'pi') !== record.harness) {
+      return 'Owner harness changed';
+    }
+    const view = session.view;
+    const configuration = this.wakeConfiguration(view);
+    const controller = session.controller;
+    let readiness = 'ready';
+    try {
+      const prepared = await this.prepareTurn(view, true, {
+        modelOverride: view.modelOverride,
+        thinkingOverride: view.thinkingOverride,
+        claudeCode: view.claudeCode,
+      });
+      if (view.harness === 'claude-code') {
+        await this.checkClaudeModel(view, prepared.model);
+      } else if (this.backends.pi.models) {
+        const settings = await loadAgentSettings(this.directory, view.profile);
+        const models = await this.backends.pi.models(
+          settings,
+          this.directory,
+          AbortSignal.timeout(15_000),
+        );
+        if (!models.models.includes(prepared.model)) {
+          readiness = 'Configured wake model is unavailable; no fallback';
+        }
+      }
+    } catch (error) {
+      readiness = `Wake configuration unavailable: ${String(error).slice(0, 450)}`;
+    }
+    // Negative discovery results grant no more authority than positive ones.
+    // Revalidate every asynchronous outcome before admitting OR blocking work.
+    const current = this.wakes.store.get(record.id);
+    const liveSession = this.sessions.get(record.owner);
+    if (
+      !current ||
+      current.revision !== record.revision ||
+      !unstarted(current) ||
+      this.closed ||
+      liveSession !== session ||
+      session.controller !== controller ||
+      controller.signal.aborted ||
+      session.closing ||
+      session.closeAfterTurn ||
+      session.busy ||
+      session.pending.length ||
+      liveSession.view.status === 'error' ||
+      session.modelWrite ||
+      this.modelChanges.has(record.owner) ||
+      this.wakeConfiguration(session.view) !== configuration
+    ) {
+      return 'waiting';
+    }
+    if (readiness === 'ready') {
+      this.wakePreparation.set(record.id, { configuration, session, controller });
+    }
+    return readiness;
+  }
+
+  private admitWake(record: WakeRecord, claim: () => WakeRecord | undefined): boolean {
+    const session = this.sessions.get(record.owner);
+    const preparation = this.wakePreparation.get(record.id);
+    if (
+      this.closed ||
+      !session ||
+      session.closing ||
+      session.busy ||
+      session.pending.length ||
+      session.closeAfterTurn ||
+      session.modelWrite ||
+      this.modelChanges.has(record.owner) ||
+      this.activeRuns() >= 4 ||
+      (session.view.harness ?? 'pi') !== record.harness ||
+      session.controller.signal.aborted ||
+      session.view.status === 'error' ||
+      preparation?.session !== session ||
+      preparation.controller !== session.controller ||
+      preparation.configuration !== this.wakeConfiguration(session.view)
+    ) {
+      return false;
+    }
+    // No await between durable claim and busy reservation. Cancel, Stop and
+    // ordinary follow-ups are ordered on this same event loop.
+    this.wakePreparation.delete(record.id);
+    const claimed = claim();
+    if (!claimed) {
+      return false;
+    }
+    const ancestry =
+      record.ancestry?.kind === 'scheduled-wake' ? record.ancestry.ancestry : record.ancestry;
+    const origin: AgentMessageOrigin = {
+      kind: 'scheduled-wake',
+      timerId: record.id,
+      dueAt: record.dueAt,
+      schedulingTurn: record.schedulingTurn,
+      title: record.label,
+      depth: record.depth,
+      ...(ancestry ? { ancestry } : {}),
+    };
+    const message = { ...chatMessage(`wake-turn:${record.id}`, 'user', record.message), origin };
+    try {
+      session.wake = claimed;
+      this.prepareFollowUp(session, message);
+      this.wakeChanged(claimed);
+      session.done = this.drain(session, { text: promptText(record.message, origin) }, true);
+      return true;
+    } catch (error) {
+      session.wake = undefined;
+      session.busy = false;
+      session.view.status = 'error';
+      session.view.error = 'Scheduled wake could not enter the conversation';
+      this.wakes.transitionAttempt(claimed, 'failed', String(error));
+      this.flush(session);
+      return false;
+    }
+  }
+
+  /** Native user cancellation is scoped to the selected conversation by ID. */
+  cancelWake(owner: string, timerId: string): Record<string, unknown> {
+    return this.wakes.cancel(owner, timerId);
   }
 
   previousSnapshot(): PreviousSession[] {
@@ -743,6 +1041,7 @@ export class AgentSessions implements InspectableModule {
       busy: true,
       pending: [],
       depth: request.origin?.depth ?? 0,
+      currentOrigin: request.origin,
       closeAfterTurn: false,
       screenshotStorage: request.screenshot
         ? (request.storage ?? this.captureStorage.admit())
@@ -830,6 +1129,7 @@ export class AgentSessions implements InspectableModule {
   private prepareFollowUp(session: RunningSession, message: AgentMessage): void {
     this.message(session, { ...message, state: 'done' });
     session.depth = message.origin?.depth ?? 0;
+    session.currentOrigin = message.origin;
     session.controller = new AbortController();
     session.busy = true;
     session.view.status = 'starting';
@@ -932,9 +1232,12 @@ export class AgentSessions implements InspectableModule {
     resume: boolean,
     frameId?: number,
   ): Promise<void> {
-    const turnId = randomUUID();
+    const wake = session.wake;
+    session.wake = undefined;
+    const turnId = wake?.turnId ?? randomUUID();
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
+    let resumeBlocked = false;
     let widgetLease: WidgetLease | undefined;
     let sessionToolLease: Awaited<ReturnType<SessionToolService['lease']>> | undefined;
     try {
@@ -1003,6 +1306,10 @@ export class AgentSessions implements InspectableModule {
       } catch (error) {
         session.controller.signal.throwIfAborted();
         this.log('agent-session-tools', `Session tools unavailable: ${String(error)}`, frameId);
+      }
+      session.controller.signal.throwIfAborted();
+      if (wake) {
+        this.wakes.transitionAttempt(wake, 'started');
       }
       await turn.run(
         {
@@ -1084,6 +1391,7 @@ export class AgentSessions implements InspectableModule {
       );
       session.view.status = session.controller.signal.aborted ? 'cancelled' : 'completed';
     } catch (error) {
+      resumeBlocked = error instanceof ConversationUnavailableError;
       session.view.status = session.controller.signal.aborted ? 'cancelled' : 'error';
       if (session.view.status === 'error') {
         session.view.error = error instanceof Error ? error.message : String(error);
@@ -1146,6 +1454,28 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-history', session.view.error, frameId);
       }
       const completed = session.view.status === 'completed' && !session.controller.signal.aborted;
+      if (wake) {
+        try {
+          this.wakes.transitionAttempt(
+            wake,
+            completed ? 'completed' : resumeBlocked ? 'blocked' : 'failed',
+            session.view.error || (completed ? '' : 'Wake turn stopped'),
+          );
+        } catch (error) {
+          this.wakeWarning(
+            'Wake outcome could not be saved. Its external effects may have occurred; restart will mark delivery uncertain.',
+          );
+        }
+      }
+      if (!completed && !this.closed) {
+        try {
+          this.wakes.blockOwner(session.view.id, 'Preceding turn failed or stopped');
+        } catch {
+          this.wakeWarning(
+            'Could not save blocked timer state after a failed turn. Wake dispatch is halted in this listener. Failed writes are not durable; inspect and cancel pending timers before restarting.',
+          );
+        }
+      }
       if (completed) {
         // Keep the latest success in live snapshots, including while a queued
         // successor runs. A reconnect can then recover a missed completion.
@@ -1372,20 +1702,27 @@ export class AgentSessions implements InspectableModule {
     }
   }
 
-  async stop(id: string): Promise<void> {
+  async stop(id: string): Promise<number> {
     const session = this.sessions.get(id);
     if (!session) {
       throw Error('Question session not found');
     }
     session.controller.abort();
-    delete session.view.choices;
-    delete session.view.runId;
-    this.cancelPending(session);
-    this.flush(session);
+    session.closeAfterTurn = false;
+    let cancelledTimers = 0;
+    try {
+      cancelledTimers = this.wakes.cancelOwner(id, 'Human Stop or explicit close');
+    } finally {
+      delete session.view.choices;
+      delete session.view.runId;
+      this.cancelPending(session);
+      this.flush(session);
+    }
     await session.done;
+    return cancelledTimers;
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string): Promise<number> {
     const session = this.sessions.get(id);
     if (!session) {
       throw Error('Question session not found');
@@ -1395,7 +1732,7 @@ export class AgentSessions implements InspectableModule {
     }
     session.closing = true;
     try {
-      await this.stop(id);
+      const cancelledTimers = await this.stop(id);
       await this.widgets.deactivate(id);
       // Do not discard the visible tab if saving fails. Closing can be retried.
       await this.store.save(session.view);
@@ -1408,6 +1745,7 @@ export class AgentSessions implements InspectableModule {
       }
       this.publishHistory();
       this.publishOrder();
+      return cancelledTimers;
     } finally {
       session.closing = false;
       if (this.sessions.has(id)) {
@@ -1478,6 +1816,24 @@ export class AgentSessions implements InspectableModule {
               'This agent turn has ended; the conversation was not reopened',
               403,
             );
+      }
+      const wakes = this.wakes.list(id, 20);
+      const notices = wakes.map((wake) => this.wakeNotice(wake));
+      if (this.wakeWarningText) {
+        notices.push(chatMessage('wake-service-warning', 'notice', this.wakeWarningText));
+      }
+      if (wakes.length) {
+        view.wakes = wakes;
+      }
+      // This is authoritative history, not a bounded display page. Reconcile
+      // stable notice IDs without dropping old rows or duplicating a saved warning.
+      for (const notice of notices) {
+        const index = view.messages.findIndex((message) => message.id === notice.id);
+        if (index >= 0) {
+          view.messages[index] = notice;
+        } else {
+          view.messages.push(notice);
+        }
       }
       view.acceptsFollowUp = true;
       view.toolEpoch = randomUUID();
@@ -1672,6 +2028,7 @@ export class AgentSessions implements InspectableModule {
   ): Promise<{
     outcome: 'closed' | 'closing-after-turn' | 'already-closed';
     session: SessionToolSummary;
+    cancelledTimers?: number;
   }> {
     const session = this.sessions.get(id);
     if (!session) {
@@ -1685,7 +2042,12 @@ export class AgentSessions implements InspectableModule {
     // Closing now would stop the calling turn from inside its own tool call.
     if (id === sender) {
       session.closeAfterTurn = true;
-      return { outcome: 'closing-after-turn', session: this.summary(session.view) };
+      const cancelledTimers = this.wakes.cancelOwner(id, 'Agent requested explicit close');
+      return {
+        outcome: 'closing-after-turn',
+        session: this.summary(session.view),
+        cancelledTimers,
+      };
     }
 
     // Closing stops a running turn and cancels queued messages. An agent must
@@ -1697,8 +2059,8 @@ export class AgentSessions implements InspectableModule {
       );
     }
     signal.throwIfAborted();
-    await this.remove(id);
-    return { outcome: 'closed', session: this.summary(session.view) };
+    const cancelledTimers = await this.remove(id);
+    return { cancelledTimers, outcome: 'closed', session: this.summary(session.view) };
   }
 
   private sendFromAgent(
@@ -1745,7 +2107,10 @@ export class AgentSessions implements InspectableModule {
         source:
           request.origin.kind === 'external'
             ? { kind: 'external', title: request.origin.title }
-            : { sessionId: request.origin.sessionId, title: request.origin.title },
+            : {
+                sessionId: request.origin.kind === 'agent' ? request.origin.sessionId : request.id,
+                title: request.origin.title,
+              },
       },
       signal,
     );
@@ -1794,6 +2159,7 @@ export class AgentSessions implements InspectableModule {
     await this.widgets.close();
     this.listeners.clear();
     this.store.tools.close();
+    await this.wakes.close();
   }
 }
 

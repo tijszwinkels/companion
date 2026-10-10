@@ -76,6 +76,7 @@ Item {
     && root.Window.window && root.Window.window.active ? displayedId : ""
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
+  signal cancelWakeRequested(string id, string timerId)
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
@@ -355,6 +356,7 @@ Item {
         screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
         // False only when capture storage deliberately did not save it.
         screenshotNotSaved: message.screenshotSaved === false,
+        fromWake: message.origin ? message.origin.kind === "scheduled-wake" : false,
         fromExternal: message.origin ? message.origin.kind === "external" : false,
         fromAgent: message.origin !== undefined && message.origin !== null,
         originTitle: message.origin ? message.origin.title || "" : "",
@@ -413,11 +415,67 @@ Item {
     }
   }
 
+  Column {
+    id: wakePanel
+    y: historyControls.height + (historyControls.visible ? 8 * root.unit : 0)
+    width: parent.width
+    property bool expanded: false
+    property double now: Date.now()
+    readonly property var timers: root.session && root.session.wakes ? root.session.wakes : []
+    readonly property int pending: timers.filter(t => t.state === "scheduled" || t.state === "waiting").length
+    visible: timers.length > 0
+    height: visible ? implicitHeight : 0
+    Timer { interval: 1000; repeat: true; running: wakePanel.visible; onTriggered: wakePanel.now = Date.now() }
+    Button {
+      objectName: "wakeToggle"
+      text: "◷ " + wakePanel.pending + " pending timers" + (wakePanel.expanded ? " ▴" : " ▾")
+      onClicked: wakePanel.expanded = !wakePanel.expanded
+    }
+    ScrollView {
+      width: parent.width
+      height: visible ? Math.min(160 * root.unit, wakeRows.implicitHeight) : 0
+      visible: wakePanel.expanded
+      clip: true
+      Column {
+        id: wakeRows
+        width: wakePanel.width
+        Repeater {
+          model: wakePanel.timers
+          delegate: Row {
+            required property var modelData
+            width: wakeRows.width
+            Text {
+              width: parent.width - cancelTimer.width
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: 12 * root.unit
+              wrapMode: Text.Wrap
+              text: modelData.label + " · " + modelData.state
+                + "\n" + new Date(modelData.dueAt).toLocaleString() + " (" + Qt.formatDateTime(new Date(modelData.dueAt), "t") + ")"
+                + ((modelData.state === "scheduled" || modelData.state === "waiting")
+                  ? " · " + (modelData.dueAt >= wakePanel.now ? "in " : "overdue ") + Math.ceil(Math.abs(modelData.dueAt - wakePanel.now) / 60000) + " min" : "")
+                + "\nLast change: " + new Date(modelData.transitionedAt).toLocaleString()
+                + (modelData.reason ? " · " + modelData.reason : "")
+            }
+            Button {
+              id: cancelTimer
+              objectName: "cancelWakeButton"
+              text: "Cancel"
+              visible: modelData.state === "scheduled" || modelData.state === "waiting" || modelData.state === "dispatching" || modelData.state === "started"
+              enabled: root.online
+              onClicked: root.cancelWakeRequested(root.session.id, modelData.id)
+            }
+          }
+        }
+      }
+    }
+  }
+
   ListView {
     id: transcript
     objectName: "sessionTranscript"
     anchors.fill: parent
-    anchors.topMargin: historyControls.height + (historyControls.visible ? 8 * root.unit : 0)
+    anchors.topMargin: historyControls.height + (historyControls.visible ? 8 * root.unit : 0) + wakePanel.height
     anchors.bottomMargin: inputSection.height + 12 * root.unit
     clip: true
     spacing: 12 * root.unit
@@ -478,6 +536,7 @@ Item {
       // Written by another conversation's agent through session tools.
       required property bool fromExternal
       required property bool fromAgent
+      required property bool fromWake
       required property string originTitle
       required property string originSessionId
       required property string originGroupId
@@ -555,7 +614,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
+              : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") + bubble.fragmentLabel : "Pi" + bubble.fragmentLabel
             textFormat: Text.PlainText

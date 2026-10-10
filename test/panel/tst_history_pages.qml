@@ -64,6 +64,54 @@ Item {
       view.toolPageReceived(reply(pending, fixture(180, 190, 10)))
       compare(view.historyPage, null, "Late old-epoch response is inert")
     }
+    function test_wake_updates_keep_frozen_history_draft_selection_and_epoch_guards() {
+      const view = createTemporaryObject(viewComponent, parent)
+      const timer = {id: "timer", label: "Review", state: "scheduled", dueAt: Date.now() + 60000}
+      const initial = fixture(200, 210, 1)
+      initial.wakes = [timer]
+      view.session = initial
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      view.applyDraft({id: "fixture", text: "Unsent during wake", source: {title: "Fixture"}})
+      view.loadHistory("before", view.shownHistory.start, "", false)
+      view.toolPageReceived(reply(requests[0], fixture(190, 200)))
+      const frozen = view.historyPage
+      const composer = findChild(view, "sessionComposer")
+      composer.forceActiveFocus()
+      const toggle = findChild(view, "wakeToggle")
+      verify(waitForRendering(view))
+      mouseClick(toggle)
+      verify(waitForRendering(view))
+      const controls = findChild(view, "olderHistory")
+      const cancel = findChild(view, "cancelWakeButton")
+      verify(controls.visible && cancel.visible, "Paging and cancellation coexist")
+      let cancelled = null
+      view.cancelWakeRequested.connect((id, timerId) => cancelled = [id, timerId])
+      for (const state of ["waiting", "cancelled"]) {
+        const updated = fixture(201, 211, 2)
+        updated.wakes = [Object.assign({}, timer, {state: state})]
+        view.session = updated
+        compare(view.historyPage, frozen)
+        compare(view.shownHistory.start.index, 190)
+        compare(composer.text, "Unsent during wake")
+        compare(view.displayedId, "fixture")
+        if (state === "waiting") {
+          verify(waitForRendering(view))
+          mouseClick(findChild(view, "cancelWakeButton"))
+          compare(cancelled, ["fixture", "timer"])
+        }
+      }
+      view.loadHistory("before", view.shownHistory.start, "", false)
+      const stale = requests[requests.length - 1]
+      const reopened = fixture(300, 310, 1, "fixture", "new-wake-lifetime")
+      reopened.wakes = [Object.assign({}, timer, {state: "cancelled"})]
+      view.session = reopened
+      view.toolPageReceived(reply(stale, fixture(180, 190)))
+      compare(view.historyPage, null)
+      compare(view.shownHistory.start.index, 300)
+      compare(view.previousLive.toolEpoch, "new-wake-lifetime")
+      compare(composer.text, "Unsent during wake")
+    }
     function test_window_deltas_prune_and_order_without_losing_retained_rows() {
       const state = createTemporaryObject(stateComponent, parent)
       state.replace([fixture(200, 205)])

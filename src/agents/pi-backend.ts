@@ -1,3 +1,4 @@
+import { ConversationUnavailableError } from './resume-error.ts';
 import { clampThinkingLevel, type Api, type Model } from '@earendil-works/pi-ai';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -195,7 +196,7 @@ export class PiBackend implements AgentBackend {
         // --session-id creates a session if it has disappeared. A follow-up
         // must fail visibly in that case instead of silently losing context.
         if (request.resume && !(typeof state.messageCount === 'number' && state.messageCount > 0)) {
-          throw Error(
+          throw new ConversationUnavailableError(
             'Pi could not resume this conversation. Its saved transcript is missing or empty; start a new question.',
           );
         }

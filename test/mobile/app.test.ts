@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { sessionTools } from '../../src/agents/session-tools.ts';
 import assert from 'node:assert/strict';
 import { access, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -118,6 +120,15 @@ test(
     fixture.sessions.start({ ...frame, utterance: 'Paging fixture' }, signal());
     await waitFor(() => fixture.runs.length === 1);
     const run = fixture.runs[0];
+    const lease = run.request.sessionTools!;
+    const schedule = sessionTools(lease.endpoint, lease.token, lease.capabilities).find(
+      (tool) => tool.name === 'companion_wake_schedule',
+    )!;
+    const receipt = await schedule.execute(randomUUID(), {
+      afterSeconds: 60,
+      label: 'Phone history check',
+      message: 'Private instructions',
+    });
     run.emit(
       chatMessage(
         'giant',
@@ -141,6 +152,7 @@ test(
     assert.match(await text(page, '.messages'), /History row 50/);
     assert.equal(await page.evaluate(`document.querySelector('#composer').value`), 'Unsent draft');
     assert.equal(await page.evaluate(`document.querySelectorAll('[data-message-id]').length`), 200);
+    fixture.sessions.cancelWake(run.request.id, String(receipt.details.timerId));
     run.emit(chatMessage('history-451', 'assistant', 'New live row'));
     await page.waitFor(
       `document.querySelector('.history-controls').textContent.includes('newer updates')`,

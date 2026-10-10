@@ -10,7 +10,18 @@ import type { HistoryWindow } from './history-pages.ts';
  * receives an explicit header. `depth` counts agent-to-agent hops since the last
  * human-originated turn and bounds feedback loops between conversations.
  */
-export type AgentMessageOrigin = InternalAgentOrigin | ExternalAgentOrigin;
+export type AgentMessageOrigin = InternalAgentOrigin | ExternalAgentOrigin | ScheduledWakeOrigin;
+
+/** Earlier self-scheduled work; never a new human instruction or agent hop. */
+export interface ScheduledWakeOrigin {
+  kind: 'scheduled-wake';
+  timerId: string;
+  dueAt: number;
+  schedulingTurn: string;
+  title: string;
+  depth: number;
+  ancestry?: InternalAgentOrigin | ExternalAgentOrigin;
+}
 
 /** Local same-user caller. Its label is supplied, never authenticated. */
 export interface ExternalAgentOrigin {
@@ -154,6 +165,7 @@ export interface AgentSession {
   updatedAt: number;
   /** Live affordances are deliberately not restored from saved transcripts. */
   choices?: AgentChoiceSet;
+  wakes?: import('./wakes/types.ts').WakeSummary[];
   runId?: string;
   /** Fresh on reopening; rejects requests from a previous tab lifetime. */
   toolEpoch?: string;

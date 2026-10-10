@@ -92,6 +92,7 @@ export class SessionStore {
         'history',
         'historyFragment',
         'pinnedMessage',
+        'wakes',
       ].includes(key)
         ? undefined
         : value,

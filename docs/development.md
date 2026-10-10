@@ -237,3 +237,13 @@ on loopback, and `npm run test:mobile` drives the built app in headless Chromium
 Gateway and remote-role unit tests use temporary state and synthetic backends.
 Pairing a real phone, serving on a Tailscale address and running the production
 listener with this protocol are separate user decisions.
+
+## Self-wake scheduling
+
+The backend-owned one-shot scheduler is under `src/agents/wakes/`, independent
+of ordinary saved transcript queues. See the [agent contract](../src/agents/README.md#self-wake-timers)
+and [synthetic acceptance matrix](self-wake-validation.md). The timer suite uses
+injected time, disposable stores and scripted backends; do not substitute a live
+conversation or listener. Build/check/test commands do not authorize live timers,
+service restarts or activation. The exact combined backend/tool/UI revision needs
+independent cross-model review before a merge decision.

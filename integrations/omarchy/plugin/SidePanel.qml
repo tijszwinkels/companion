@@ -50,6 +50,7 @@ PanelWindow {
   signal sessionSelected(string id)
   signal previousRequested()
   signal reopenSessionRequested(string id)
+  signal cancelWakeRequested(string id, string timerId)
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
@@ -210,6 +211,7 @@ PanelWindow {
           root.screenshotSource = source
         }
         onSessionSelected: id => root.sessionSelected(id)
+        onCancelWakeRequested: (id, timerId) => root.cancelWakeRequested(id, timerId)
         onStopSessionRequested: id => root.stopSessionRequested(id)
         onDismissSessionRequested: id => root.dismissSessionRequested(id)
         onSendSessionRequested: (id, text) => root.sendSessionRequested(id, text)

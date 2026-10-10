@@ -565,7 +565,7 @@ test('Stop before a Claude naming result keeps the old title and exports nothing
   const settings: ClaudeCodeSettings = { executable, model: 'claude-opus-5-5', effort: 'high' };
   const backend = new ClaudeCodeBackend();
   const id = sessions.start(frame, signal());
-  let stopped: Promise<void> | undefined;
+  let stopped: Promise<number> | undefined;
   script(
     id,
     (run) =>

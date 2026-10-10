@@ -213,6 +213,8 @@ test('stopping expires active reads and archives complete partial output for res
   assert.equal(setup.sessions.snapshot()[0].messages[1].state, 'error');
   assert.throws(() => setup.sessions.toolPage(old), /changed/);
   await setup.sessions.remove(setup.id);
+  // A restart releases the old listener’s exclusive timer-store ownership.
+  await setup.sessions.close();
   const restarted = new AgentSessions(
     {
       pi: {

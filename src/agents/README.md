@@ -554,3 +554,93 @@ internal turn tokens. External messages/drafts are explicitly attributed to an
 unverified local label, with no internal sender/self identity. See the
 [external API contract](external/README.md) for activation, CLI commands, security,
 receipt lifetime, cancellation, limits and validation scope.
+
+## Self-wake timers
+
+A conversation can use `companion_wake_schedule`, `companion_wake_cancel` and
+`companion_wake_list` when its turn lease announces `self-wakes`. Pi and Claude
+share the definitions and backend authority checks. No external CLI scheduling
+operation exists. Ordinary self-send remains forbidden.
+
+Schedule takes a label (1–120 characters), message (1–4000), exactly one of
+`afterSeconds` or an RFC3339 `at` with an explicit offset, optional `key`, and
+optional `expiresAfterSeconds`. Delays are 60 seconds–30 days; overdue grace is
+one hour by default, configurable from one second to 24 hours. There may be
+three unstarted timers per conversation and 64 per listener. These are pending
+work limits, not a lifetime wake count. A wake can schedule another one-shot,
+including with the same purpose key. No immutable watch-chain deadline applies.
+
+Each successful schedule durably returns a new occurrence ID, due/expiry and
+state. Tool-call receipts survive restart. A purpose key atomically supersedes
+only its unstarted predecessor; an active predecessor retains its history.
+Cancelling an old ID never cancels its successor. Lists are self-only, omit
+instruction text, and optionally include up to 50 recent terminal entries.
+Cancel distinguishes `cancelled`, `already-cancelled`, `already-finished`,
+`dispatch-started`, and `unknown-or-not-owned`. A failed disk write never
+confirms cancellation. After dispatch, cancellation records intent without
+killing an unrelated turn or undoing tools.
+
+The backend owns a separate private `.companion-wakes/timers.sqlite` store,
+with FULL synchronous SQLite transactions and an exclusive kernel `flock`.
+A second owner refuses to open it. The directory is 0700 and files 0600;
+unsafe existing permissions, symlinks at these paths and hardlinked files are
+refused. Same-user filesystem access remains trusted. Malformed rows are
+quarantined with a warning; an unreadable database fails startup closed. The
+store keeps 100 recent terminal occurrences and 1000 receipts per owner;
+pruning diagnostic history never prevents a successor. Deleting owner data
+must call `wakes.deleteOwner` to erase timer instructions/receipts too; startup
+also removes timers whose owner no longer exists in open or saved history.
+
+Due timers remain removable scheduler entries outside the ordinary FIFO. Busy
+conversations, eight queued ordinary messages, four active agents and all 16
+tabs occupied defer delivery until capacity returns or grace expires. Already
+accepted ordinary messages always run first, preserving their own FIFO order.
+The final claim rechecks revision, expiry, conversation availability, settings
+and capacity synchronously with reserving the session. Preparation also captures
+the live session/controller identity: an intervening ordinary turn, Stop, close
+or current error prevents stale admission. Each sweep refreshes later candidates
+before any state change or restore; terminal records cannot return to waiting.
+Stop aborts the lease
+and cancels all unstarted timers; explicit close does likewise and reports the
+count. A self-close cancels them immediately and refuses further scheduling
+while the close is pending. Hide and tab selection do not cancel anything.
+Shutdown preserves undispatched timers. An unexpired timer may restore its
+saved owner quietly; it never creates a replacement conversation.
+
+Each wake retains task ancestry and cross-agent depth and carries a
+`scheduled-wake` origin. Its prompt identifies earlier agent intent, asks for
+reassessment, and grants no fresh human permission or review/restart budget.
+It attaches no screen capture and changes no draft, focus or selected tab.
+Backend resume verification still refuses a missing native transcript before
+sending a prompt; that occurrence becomes blocked. Provider errors and stopped
+or failed wake turns are terminal, never automatically retried. A failed
+ordinary predecessor blocks still-unstarted wakes. A failed cancellation or block
+write halts all wake admission and new scheduling in this listener, including
+already prepared work. It does not stop explicit ordinary follow-ups. The visible
+warning is honest about durability: repair storage and successfully retry pending
+cancellation before restarting, or the last committed timers may become eligible
+again. A successful retry saves cancellation without clearing the listener fault.
+
+### Crash and clock boundaries
+
+A dispatch claim, attempt ID and turn-admission ID commit in one transaction
+before invoking the backend. The display transcript save follows. A crash
+before the claim leaves an eligible timer; a crash after the claim, during the
+transcript save, after the started marker, or after backend execution but before
+the terminal save becomes `delivery-uncertain` on restart. None of these claimed
+occurrences is automatically replayed. This deliberately permits a missed wake
+between claim and backend invocation to avoid duplicate external effects; it
+does not promise exactly-once tools. Native status shows the durable transition,
+including failed, expired, blocked and uncertain outcomes, and archive reopen
+repairs notice text from the timer store.
+
+Node's monotonic timeout reconciles UTC deadlines once per second, including
+after suspend and wall-clock changes. Long delays use these bounded checks,
+not an overflowing long timeout or model polling. Backward changes never admit
+before the stored due instant; forward changes may expire a timer. Scheduling
+stops with a visible warning on scheduler storage failure, rather than looping
+notifications or retrying a provider. Restart is an operational decision.
+
+Synthetic coverage and the acceptance matrix are in
+[the self-wake validation guide](../../docs/self-wake-validation.md). Live model
+wakes and deployment require a separate bounded test/activation decision.

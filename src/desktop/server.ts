@@ -407,6 +407,7 @@ export class DesktopServer {
           action === 'move-agent' ||
           action === 'label-history' ||
           action === 'delete-history' ||
+          action === 'cancel-agent-wake' ||
           action === 'stop-agent' ||
           action === 'send-agent' ||
           action === 'submit-utterance' ||
