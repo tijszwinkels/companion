@@ -233,7 +233,10 @@ phrases visible. Each control toggles only its own mode, shows explicit On/Off (
 Always on) text, and waits for the next snapshot rather than changing optimistically;
 the card title is not a control. An enabled route without context stays On and says
 it needs conversation context. Cards form a responsive grid that adds columns in wide
-panels and wraps at enlarged reader zoom. If the server lacks these independent
+panels and wraps at enlarged reader zoom. Cards in one row share the tallest card's
+height and title height, so their edges and first controls line up. Transcription and
+Storage sit side by side when two readable cards fit and stack at full width otherwise.
+If the server lacks these independent
 fields, the refreshed UI requests a listener restart and disables the controls.
 
 `set-intent-enabled` accepts `mode: "inference"` or `mode: "shortcut"`. Omitting

@@ -390,6 +390,181 @@ Item {
       }
     }
 
+    // Group the visible activity cards by their row (top edge), left to right.
+    function cardRows(controls, inventory) {
+      const rows = []
+      for (const intent of inventory) {
+        const card = findChild(controls, "activity-" + intent.name)
+        let row = rows.find(entry => Math.abs(entry.y - card.y) < 0.5)
+        if (!row) {
+          row = {y: card.y, cards: []}
+          rows.push(row)
+        }
+        row.cards.push(card)
+      }
+      rows.sort((first, second) => first.y - second.y)
+      return rows
+    }
+
+    function verifyAlignedRows(controls, inventory, label) {
+      const rows = cardRows(controls, inventory)
+      for (let index = 0; index < rows.length; index++) {
+        const cards = rows[index].cards
+        const height = Math.max.apply(null, cards.map(card => card.height))
+        let tallestFits = false
+        for (const card of cards) {
+          compare(card.height, height, label + ": " + card.objectName + " shares its row's height")
+          const title = findChild(card, "activityTitle")
+          verify(title.contentHeight <= title.height + 0.5, label + ": titles keep every wrapped line")
+          const firstMode = findChild(card, "intentCardText").parent
+          compare(firstMode.mapToItem(card, 0, 0).y, findChild(cards[0], "intentCardText").parent.mapToItem(cards[0], 0, 0).y,
+            label + ": the first mode control starts at the same height across a row")
+          const last = findChild(card, "intentCardText").parent.parent
+          verify(last.mapToItem(card, 0, 0).y + last.height + 8 <= card.height + 0.5, label + ": modes stay inside their card")
+          if (Math.abs(card.height - (card.children[0].height + 22)) < 0.5)
+            tallestFits = true
+        }
+        verify(tallestFits, label + ": a row is only as tall as its tallest card's content")
+        if (index > 0)
+          verify(rows[index].y >= rows[index - 1].y + rows[index - 1].cards[0].height + controls.cardGap - 0.5, label + ": rows never overlap")
+      }
+      return rows
+    }
+
+    function test_activity_rows_share_content_aware_heights_data() {
+      return [
+        {tag: "wide", width: 1400, zoom: 100},
+        {tag: "default", width: 600, zoom: 100},
+        {tag: "dock", width: 900, zoom: 100},
+        {tag: "narrow", width: 360, zoom: 100},
+        {tag: "wide-zoomed", width: 1400, zoom: 200},
+        {tag: "long-labels", width: 1000, zoom: 125, long: true}
+      ]
+    }
+
+    function test_activity_rows_share_content_aware_heights(data) {
+      const host = createTemporaryObject(viewComponent, scene, {width: data.width, height: 1200})
+      const inventory = scene.fullInventory()
+      if (data.long) {
+        inventory[2].label = "Start a coding session in the project that is currently focused on screen, then keep listening"
+        inventory[6].prefixes = ["continue session", "carry on with the conversation that is open"]
+      }
+      host.panel.intents = inventory
+      host.panel.zoomPercent = data.zoom
+      verify(waitForRendering(host))
+      const controls = findChild(host, "intentControls")
+      const rows = verifyAlignedRows(controls, inventory, data.tag)
+      if (controls.columns > 1)
+        verify(rows.some(row => row.cards.length > 1), "Multi-column layouts have shared rows to align")
+      else
+        compare(rows.length, inventory.length, "A single column stacks one card per row")
+    }
+
+    function test_activity_rows_follow_content_and_width_changes() {
+      const host = createTemporaryObject(viewComponent, scene, {width: 1400, height: 1200})
+      const inventory = scene.fullInventory()
+      inventory[6].prefixAvailable = true
+      inventory[6].inferenceAvailable = true
+      host.panel.intents = inventory
+      verify(waitForRendering(host))
+      const controls = findChild(host, "intentControls")
+      // A new inventory recreates the cards, so look the neighbor up each time.
+      function neighbor() { return findChild(controls, "activity-START_PI_SESSION") }
+      compare(neighbor().y, findChild(controls, "activity-CONTINUE_OPEN_AGENT_CONVERSATION").y, "Both cards share the second row at this width")
+      const before = neighbor().height
+      verifyAlignedRows(controls, inventory, "with context")
+
+      // Losing conversation context adds explanations to one card: its whole
+      // row grows with it, and shrinks again once context returns.
+      host.panel.intents = scene.fullInventory()
+      verify(waitForRendering(host))
+      verify(neighbor().height > before, "The neighbor follows the taller card")
+      verifyAlignedRows(controls, scene.fullInventory(), "without context")
+      host.panel.intents = inventory
+      verify(waitForRendering(host))
+      compare(neighbor().height, before)
+
+      host.width = 600
+      verify(waitForRendering(host))
+      verify(controls.columns < 5)
+      verifyAlignedRows(controls, inventory, "after narrowing")
+    }
+
+    function test_transcription_and_storage_share_a_row_when_wide_and_stack_when_narrow_data() {
+      return [
+        {tag: "wide", width: 1400, zoom: 100, side: true},
+        {tag: "dock", width: 900, zoom: 100, side: true},
+        {tag: "default", width: 600, zoom: 100, side: false},
+        {tag: "narrow", width: 360, zoom: 100, side: false},
+        {tag: "wide-zoomed", width: 1400, zoom: 200, side: true},
+        {tag: "dock-zoomed", width: 900, zoom: 200, side: false},
+        {tag: "wide-warning", width: 1400, zoom: 100, side: true, warning: true},
+        {tag: "wide-storage-only", width: 1400, zoom: 100, side: true, storageOnly: true},
+        {tag: "narrow-storage-only", width: 360, zoom: 100, side: false, storageOnly: true}
+      ]
+    }
+
+    function test_transcription_and_storage_share_a_row_when_wide_and_stack_when_narrow(data) {
+      const host = createTemporaryObject(viewComponent, scene, {width: data.width, height: 1200})
+      host.panel.intents = scene.fullInventory()
+      host.panel.zoomPercent = data.zoom
+      if (!data.storageOnly)
+        host.panel.transcriptionCleanup = {enabled: true}
+      const unsaved = "Capture storage is off for now, but this choice could not be saved. After a restart Companion may save captures again."
+      host.panel.captureStorage = data.warning ? {enabled: false, pending: "", saved: false, warning: unsaved} : {enabled: true, pending: "", saved: true, warning: ""}
+      verify(waitForRendering(host))
+      const controls = findChild(host, "intentControls")
+      const cards = findChild(controls, "activityCards")
+      const cleanup = findChild(controls, "transcriptionCleanupSwitch")
+      const storage = findChild(controls, "captureStorageSwitch")
+      const cleanupHeading = findChild(controls, "transcriptionHeading")
+      const storageHeading = findChild(controls, "storageHeading")
+      function box(item) {
+        const position = item.mapToItem(controls, 0, 0)
+        return {x: position.x, y: position.y, right: position.x + item.width, bottom: position.y + item.height}
+      }
+      const storageBox = box(storage)
+      const half = (controls.width - controls.cardGap) / 2
+      verify(storageBox.y >= box(cards).bottom, "Settings stay apart from the activity cards")
+      verify(box(storageHeading).bottom <= storageBox.y + 0.5, "Storage keeps its heading above its card")
+      verify(storageBox.right <= controls.width + 0.5)
+      compare(findChild(storage, "captureStorageExplanation").text,
+        "Save automatic captures for playback and inspection. Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate.")
+      const explanation = findChild(storage, "captureStorageExplanation")
+      verify(box(explanation).bottom + 11 <= storageBox.bottom + 0.5, "The privacy explanation stays inside the card")
+      if (data.warning)
+        verify(findChild(storage, "captureStorageWarning").visible)
+
+      if (data.storageOnly) {
+        compare(cleanup.visible, false)
+        compare(cleanupHeading.visible, false)
+        compare(storageBox.x, 0)
+        compare(storage.width, data.side ? half : controls.width, "A lone storage card keeps its column width")
+        return
+      }
+      const cleanupBox = box(cleanup)
+      verify(box(cleanupHeading).bottom <= cleanupBox.y + 0.5, "Transcription keeps its heading above its card")
+      compare(cleanupBox.x, 0)
+      if (data.side) {
+        compare(storageBox.y, cleanupBox.y, "Transcription and Storage share one row")
+        compare(cleanup.width, half)
+        compare(storage.width, half)
+        compare(storageBox.x, half + controls.cardGap)
+        compare(storageBox.right, controls.width, "The row uses the available width")
+        compare(cleanup.height, storage.height, "Side by side, bottom edges line up")
+        verify(box(storageHeading).y === box(cleanupHeading).y)
+      } else {
+        compare(storageBox.x, 0)
+        compare(cleanup.width, controls.width, "Stacked settings use the full width")
+        compare(storage.width, controls.width)
+        verify(box(storageHeading).y >= cleanupBox.bottom, "Storage stacks below Transcription")
+        compare(cleanup.height, findChild(cleanup, "transcriptionCleanupState").parent.height + 22, "Stacked cards keep their own content height")
+      }
+      const cleanupState = findChild(cleanup, "transcriptionCleanupState")
+      verify(box(cleanupState).bottom + 11 <= cleanupBox.bottom + 0.5, "Cleanup text stays inside its card")
+      verify(Math.abs(cleanupState.parent.mapToItem(cleanup, 0, 0).y - explanation.parent.mapToItem(storage, 0, 0).y) < 0.5, "Both cards start their text at the same inset")
+    }
+
     function test_activity_preview_and_small_panel_scroll() {
       const host = createTemporaryObject(viewComponent, scene)
       verify(waitForRendering(host))

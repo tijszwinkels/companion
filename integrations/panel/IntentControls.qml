@@ -58,6 +58,26 @@ Item {
   readonly property real minimumCardWidth: 230 * textScale
   readonly property int columns: Math.max(1, Math.floor((width + cardGap) / (minimumCardWidth + cardGap)))
   readonly property real cardWidth: Math.max(0, (width - (columns - 1) * cardGap) / columns)
+  // Transcription and Storage share one row when two readable cards fit, and
+  // stack at full width otherwise. A lone card keeps the same column width.
+  readonly property real minimumSettingWidth: 300 * textScale
+  readonly property int settingColumns: width >= 2 * minimumSettingWidth + cardGap ? 2 : 1
+  readonly property real settingWidth: Math.max(0, (width - (settingColumns - 1) * cardGap) / settingColumns)
+  // Side by side, both settings cards take the taller one's height so their
+  // bottom edges line up like the activity cards above them.
+  readonly property real settingRowHeight: settingColumns > 1 && cleanupChip.available ? Math.max(cleanupChip.naturalHeight, storageChip.naturalHeight) : 0
+
+  // The tallest value of `key` among the activity cards in one grid row.
+  // Cards are read through the grid's children, so the row heights follow
+  // cards as they are created, removed or re-measured.
+  function activityRowMaximum(row, key) {
+    let largest = 0;
+    for (const child of activityCards.children) {
+      if (child.activityRow === row)
+        largest = Math.max(largest, child[key]);
+    }
+    return largest;
+  }
 
   readonly property var shortcuts: {
     const labels = [];
@@ -173,10 +193,16 @@ Item {
         }
       }
 
-      Flow {
+      // Cards in one row share the tallest card's height and the tallest
+      // title's height, so bottom edges and the first mode controls line up
+      // while each row stays only as tall as its content needs.
+      Grid {
+        id: activityCards
         objectName: "activityCards"
         width: parent.width
-        spacing: root.cardGap
+        columns: root.columns
+        columnSpacing: root.cardGap
+        rowSpacing: root.cardGap
         Repeater {
           model: root.activities
           // The card and its title are not clickable: only a mode control
@@ -184,10 +210,14 @@ Item {
           Rectangle {
             id: card
             required property var modelData
+            required property int index
             readonly property var intent: modelData.intent
+            readonly property int activityRow: Math.floor(index / root.columns)
+            readonly property real titleHeight: cardTitle.implicitHeight
+            readonly property real naturalHeight: cardContents.height + 22 * root.unit
             objectName: "activity-" + intent.name
             width: root.cardWidth
-            height: cardContents.height + 22 * root.unit
+            height: Math.max(naturalHeight, root.activityRowMaximum(activityRow, "naturalHeight"))
             radius: 10 * root.unit
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03)
             border.color: Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.22)
@@ -199,8 +229,10 @@ Item {
               width: Math.max(0, parent.width - 22 * root.unit)
               spacing: 8 * root.unit
               Text {
+                id: cardTitle
                 objectName: "activityTitle"
                 width: parent.width
+                height: Math.max(implicitHeight, root.activityRowMaximum(card.activityRow, "titleHeight"))
                 text: card.intent.label
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
@@ -237,210 +269,232 @@ Item {
         font.pixelSize: 11 * root.textScale
       }
 
-      // Cleanup applies to every text route, so it stays apart from the
-      // activity cards. Like them, its state follows the backend snapshot only.
-      Text {
-        objectName: "transcriptionHeading"
-        visible: cleanupChip.visible
-        topPadding: 4 * root.unit
-        text: "Transcription"
-        color: root.muted
-        font.family: root.fontFamily
-        font.pixelSize: 11 * root.textScale
-      }
-      Rectangle {
-        id: cleanupChip
-        readonly property bool available: root.transcriptionCleanup !== null && root.transcriptionCleanup !== undefined
-        readonly property bool cleanupEnabled: available && root.transcriptionCleanup.enabled === true
-        readonly property bool active: root.online && cleanupEnabled
-        readonly property color cleanupColor: "#8fcf9f"
-        readonly property string stateText: cleanupEnabled ? "On · text routes get cleaned-up text" : "Off · raw transcript"
-        objectName: "transcriptionCleanupSwitch"
-        visible: available
-        width: Math.min(parent.width, Math.max(root.cardWidth, 480 * root.textScale))
-        height: visible ? cleanupLabels.height + 22 * root.unit : 0
-        radius: 10 * root.unit
-        color: active ? Qt.rgba(cleanupColor.r, cleanupColor.g, cleanupColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
-        border.color: cleanupMouse.containsMouse ? cleanupColor : active ? Qt.rgba(cleanupColor.r, cleanupColor.g, cleanupColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
+      Grid {
+        objectName: "settingsCards"
+        width: parent.width
+        columns: root.settingColumns
+        columnSpacing: root.cardGap
+        rowSpacing: 12 * root.unit
 
-        Rectangle {
-          anchors.right: parent.right
-          anchors.top: parent.top
-          anchors.margins: 11 * root.unit
-          width: 6 * root.unit
-          height: width
-          radius: width / 2
-          color: cleanupChip.active ? cleanupChip.cleanupColor : root.muted
-          opacity: cleanupChip.active ? 1 : 0.4
-        }
-
+        // Cleanup applies to every text route, so it stays apart from the
+        // activity cards. Like them, its state follows the backend snapshot only.
         Column {
-          id: cleanupLabels
-          x: 11 * root.unit
-          anchors.verticalCenter: parent.verticalCenter
-          width: Math.max(0, parent.width - 34 * root.unit)
-          spacing: 5 * root.unit
-          Text {
-            width: parent.width
-            text: "Clean up transcriptions"
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            color: cleanupChip.active ? root.foreground : root.muted
-            font.family: root.fontFamily
-            font.pixelSize: 13 * root.textScale
-          }
-          Text {
-            objectName: "transcriptionCleanupState"
-            width: parent.width
-            text: "Cleanup · " + cleanupChip.stateText
-            wrapMode: Text.WordWrap
-            color: cleanupChip.active ? cleanupChip.cleanupColor : root.muted
-            font.family: root.fontFamily
-            font.pixelSize: 11 * root.textScale
-          }
-        }
-        MouseArea {
-          id: cleanupMouse
-          anchors.fill: parent
-          enabled: root.online && cleanupChip.available
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
-        }
-        ToolTip {
-          id: cleanupTip
-          visible: cleanupMouse.containsMouse
-          delay: 400
-          text: "Removes filler words and fixes punctuation before text is typed or sent.\nHistory keeps the raw transcript next to the cleaned text."
-          background: Rectangle {
-            color: root.selection
-            border.color: root.muted
-            radius: 4 * root.unit
-          }
-          contentItem: Text {
-            text: cleanupTip.text
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: 11 * root.textScale
-          }
-        }
-        Accessible.role: Accessible.CheckBox
-        Accessible.name: "Clean up transcriptions: " + cleanupChip.stateText
-        Accessible.checkable: true
-        Accessible.checked: cleanupChip.cleanupEnabled
-        Accessible.onToggleAction: if (root.online && cleanupChip.available)
-          root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
-      }
+          objectName: "transcriptionSetting"
+          visible: cleanupChip.available
+          width: root.settingWidth
+          spacing: 12 * root.unit
 
-      // Capture storage, like cleanup, follows the backend snapshot only: a
-      // click requests the opposite state and shows the listener's pending
-      // and saved states. Nothing changes optimistically.
-      Text {
-        objectName: "storageHeading"
-        topPadding: 4 * root.unit
-        text: "Storage"
-        color: root.muted
-        font.family: root.fontFamily
-        font.pixelSize: 11 * root.textScale
-      }
-      Rectangle {
-        id: storageChip
-        readonly property bool available: root.online && root.captureStorage !== null && root.captureStorage !== undefined
-        readonly property bool storageEnabled: available && root.captureStorage.enabled === true
-        readonly property string pending: available ? (root.captureStorage.pending || "") : ""
-        readonly property string warning: available && root.captureStorage.saved === false ? (root.captureStorage.warning || "") : ""
-        readonly property bool actionable: available && pending === ""
-        readonly property bool active: storageEnabled && pending === ""
-        readonly property color storageColor: "#8fb8de"
-        readonly property color warningColor: "#e3b36b"
-        readonly property string stateText: !root.online ? "Disconnected" : !available ? "Unavailable · restart the Companion listener to use this setting" : pending === "enabling" ? "Turning on…" : pending === "disabling" ? "Turning off…" : storageEnabled ? "On · new captures are saved" : "Off · new captures are not saved; labeling is unavailable"
-        function toggle() {
-          if (storageChip.actionable)
-            root.captureStorageRequested(!storageChip.storageEnabled);
-        }
-        objectName: "captureStorageSwitch"
-        width: Math.min(parent.width, Math.max(root.cardWidth, 480 * root.textScale))
-        height: storageLabels.height + 22 * root.unit
-        radius: 10 * root.unit
-        activeFocusOnTab: true
-        color: active ? Qt.rgba(storageColor.r, storageColor.g, storageColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
-        border.color: activeFocus || storageMouse.containsMouse ? storageColor : warning ? warningColor : active ? Qt.rgba(storageColor.r, storageColor.g, storageColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
-        Keys.onSpacePressed: storageChip.toggle()
-        Keys.onReturnPressed: storageChip.toggle()
-        Keys.onEnterPressed: storageChip.toggle()
-
-        Rectangle {
-          anchors.right: parent.right
-          anchors.top: parent.top
-          anchors.margins: 11 * root.unit
-          width: 6 * root.unit
-          height: width
-          radius: width / 2
-          color: storageChip.active ? storageChip.storageColor : root.muted
-          opacity: storageChip.active ? 1 : 0.4
-        }
-
-        Column {
-          id: storageLabels
-          x: 11 * root.unit
-          anchors.verticalCenter: parent.verticalCenter
-          width: Math.max(0, parent.width - 34 * root.unit)
-          spacing: 5 * root.unit
           Text {
-            width: parent.width
-            text: "Save captured audio and screenshots"
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            color: storageChip.active ? root.foreground : root.muted
-            font.family: root.fontFamily
-            font.pixelSize: 13 * root.textScale
-          }
-          Text {
-            objectName: "captureStorageState"
-            width: parent.width
-            text: storageChip.stateText
-            wrapMode: Text.WordWrap
-            color: storageChip.active ? storageChip.storageColor : root.muted
-            font.family: root.fontFamily
-            font.pixelSize: 11 * root.textScale
-          }
-          Text {
-            objectName: "captureStorageWarning"
-            width: parent.width
-            visible: storageChip.warning !== ""
-            text: storageChip.warning
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            color: storageChip.warningColor
-            font.family: root.fontFamily
-            font.pixelSize: 11 * root.textScale
-          }
-          Text {
-            objectName: "captureStorageExplanation"
-            width: parent.width
-            text: "Save automatic captures for playback and inspection. Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate."
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
+            objectName: "transcriptionHeading"
+            topPadding: 4 * root.unit
+            text: "Transcription"
             color: root.muted
             font.family: root.fontFamily
-            font.pixelSize: 10 * root.textScale
+            font.pixelSize: 11 * root.textScale
+          }
+          Rectangle {
+            id: cleanupChip
+            readonly property bool available: root.transcriptionCleanup !== null && root.transcriptionCleanup !== undefined
+            readonly property bool cleanupEnabled: available && root.transcriptionCleanup.enabled === true
+            readonly property bool active: root.online && cleanupEnabled
+            readonly property color cleanupColor: "#8fcf9f"
+            readonly property string stateText: cleanupEnabled ? "On · text routes get cleaned-up text" : "Off · raw transcript"
+            readonly property real naturalHeight: cleanupLabels.height + 22 * root.unit
+            objectName: "transcriptionCleanupSwitch"
+            visible: available
+            width: parent.width
+            height: visible ? Math.max(naturalHeight, root.settingRowHeight) : 0
+            radius: 10 * root.unit
+            color: active ? Qt.rgba(cleanupColor.r, cleanupColor.g, cleanupColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
+            border.color: cleanupMouse.containsMouse ? cleanupColor : active ? Qt.rgba(cleanupColor.r, cleanupColor.g, cleanupColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
+
+            Rectangle {
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: 11 * root.unit
+              width: 6 * root.unit
+              height: width
+              radius: width / 2
+              color: cleanupChip.active ? cleanupChip.cleanupColor : root.muted
+              opacity: cleanupChip.active ? 1 : 0.4
+            }
+
+            Column {
+              id: cleanupLabels
+              x: 11 * root.unit
+              y: 11 * root.unit
+              width: Math.max(0, parent.width - 34 * root.unit)
+              spacing: 5 * root.unit
+              Text {
+                width: parent.width
+                text: "Clean up transcriptions"
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: cleanupChip.active ? root.foreground : root.muted
+                font.family: root.fontFamily
+                font.pixelSize: 13 * root.textScale
+              }
+              Text {
+                objectName: "transcriptionCleanupState"
+                width: parent.width
+                text: "Cleanup · " + cleanupChip.stateText
+                wrapMode: Text.WordWrap
+                color: cleanupChip.active ? cleanupChip.cleanupColor : root.muted
+                font.family: root.fontFamily
+                font.pixelSize: 11 * root.textScale
+              }
+            }
+            MouseArea {
+              id: cleanupMouse
+              anchors.fill: parent
+              enabled: root.online && cleanupChip.available
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
+            }
+            ToolTip {
+              id: cleanupTip
+              visible: cleanupMouse.containsMouse
+              delay: 400
+              text: "Removes filler words and fixes punctuation before text is typed or sent.\nHistory keeps the raw transcript next to the cleaned text."
+              background: Rectangle {
+                color: root.selection
+                border.color: root.muted
+                radius: 4 * root.unit
+              }
+              contentItem: Text {
+                text: cleanupTip.text
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: 11 * root.textScale
+              }
+            }
+            Accessible.role: Accessible.CheckBox
+            Accessible.name: "Clean up transcriptions: " + cleanupChip.stateText
+            Accessible.checkable: true
+            Accessible.checked: cleanupChip.cleanupEnabled
+            Accessible.onToggleAction: if (root.online && cleanupChip.available)
+              root.transcriptionCleanupRequested(!cleanupChip.cleanupEnabled)
           }
         }
-        MouseArea {
-          id: storageMouse
-          anchors.fill: parent
-          enabled: storageChip.actionable
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: storageChip.toggle()
+
+        // Capture storage, like cleanup, follows the backend snapshot only: a
+        // click requests the opposite state and shows the listener's pending
+        // and saved states. Nothing changes optimistically.
+        Column {
+          objectName: "storageSetting"
+          width: root.settingWidth
+          spacing: 12 * root.unit
+
+          Text {
+            objectName: "storageHeading"
+            topPadding: 4 * root.unit
+            text: "Storage"
+            color: root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.textScale
+          }
+          Rectangle {
+            id: storageChip
+            readonly property bool available: root.online && root.captureStorage !== null && root.captureStorage !== undefined
+            readonly property bool storageEnabled: available && root.captureStorage.enabled === true
+            readonly property string pending: available ? (root.captureStorage.pending || "") : ""
+            readonly property string warning: available && root.captureStorage.saved === false ? (root.captureStorage.warning || "") : ""
+            readonly property bool actionable: available && pending === ""
+            readonly property bool active: storageEnabled && pending === ""
+            readonly property color storageColor: "#8fb8de"
+            readonly property color warningColor: "#e3b36b"
+            readonly property real naturalHeight: storageLabels.height + 22 * root.unit
+            readonly property string stateText: !root.online ? "Disconnected" : !available ? "Unavailable · restart the Companion listener to use this setting" : pending === "enabling" ? "Turning on…" : pending === "disabling" ? "Turning off…" : storageEnabled ? "On · new captures are saved" : "Off · new captures are not saved; labeling is unavailable"
+            function toggle() {
+              if (storageChip.actionable)
+                root.captureStorageRequested(!storageChip.storageEnabled);
+            }
+            objectName: "captureStorageSwitch"
+            width: parent.width
+            height: Math.max(naturalHeight, root.settingRowHeight)
+            radius: 10 * root.unit
+            activeFocusOnTab: true
+            color: active ? Qt.rgba(storageColor.r, storageColor.g, storageColor.b, 0.1) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.08)
+            border.color: activeFocus || storageMouse.containsMouse ? storageColor : warning ? warningColor : active ? Qt.rgba(storageColor.r, storageColor.g, storageColor.b, 0.55) : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.2)
+            Keys.onSpacePressed: storageChip.toggle()
+            Keys.onReturnPressed: storageChip.toggle()
+            Keys.onEnterPressed: storageChip.toggle()
+
+            Rectangle {
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: 11 * root.unit
+              width: 6 * root.unit
+              height: width
+              radius: width / 2
+              color: storageChip.active ? storageChip.storageColor : root.muted
+              opacity: storageChip.active ? 1 : 0.4
+            }
+
+            Column {
+              id: storageLabels
+              x: 11 * root.unit
+              y: 11 * root.unit
+              width: Math.max(0, parent.width - 34 * root.unit)
+              spacing: 5 * root.unit
+              Text {
+                width: parent.width
+                text: "Save captured audio and screenshots"
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: storageChip.active ? root.foreground : root.muted
+                font.family: root.fontFamily
+                font.pixelSize: 13 * root.textScale
+              }
+              Text {
+                objectName: "captureStorageState"
+                width: parent.width
+                text: storageChip.stateText
+                wrapMode: Text.WordWrap
+                color: storageChip.active ? storageChip.storageColor : root.muted
+                font.family: root.fontFamily
+                font.pixelSize: 11 * root.textScale
+              }
+              Text {
+                objectName: "captureStorageWarning"
+                width: parent.width
+                visible: storageChip.warning !== ""
+                text: storageChip.warning
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: storageChip.warningColor
+                font.family: root.fontFamily
+                font.pixelSize: 11 * root.textScale
+              }
+              Text {
+                objectName: "captureStorageExplanation"
+                width: parent.width
+                text: "Save automatic captures for playback and inspection. Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate."
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.muted
+                font.family: root.fontFamily
+                font.pixelSize: 10 * root.textScale
+              }
+            }
+            MouseArea {
+              id: storageMouse
+              anchors.fill: parent
+              enabled: storageChip.actionable
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: storageChip.toggle()
+            }
+            Accessible.role: Accessible.CheckBox
+            Accessible.name: "Save captured audio and screenshots: " + storageChip.stateText + (storageChip.warning ? ". " + storageChip.warning : "")
+            Accessible.description: "Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate."
+            Accessible.checkable: true
+            Accessible.checked: storageChip.storageEnabled
+            Accessible.onToggleAction: storageChip.toggle()
+            Accessible.onPressAction: storageChip.toggle()
+          }
         }
-        Accessible.role: Accessible.CheckBox
-        Accessible.name: "Save captured audio and screenshots: " + storageChip.stateText + (storageChip.warning ? ". " + storageChip.warning : "")
-        Accessible.description: "Turning this off does not stop live processing or text history. Native agent/model-provider retention is separate."
-        Accessible.checkable: true
-        Accessible.checked: storageChip.storageEnabled
-        Accessible.onToggleAction: storageChip.toggle()
-        Accessible.onPressAction: storageChip.toggle()
       }
     }
   }
