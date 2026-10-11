@@ -592,7 +592,7 @@ must call `wakes.deleteOwner` to erase timer instructions/receipts too; startup
 also removes timers whose owner no longer exists in open or saved history.
 
 Due timers remain removable scheduler entries outside the ordinary FIFO. Busy
-conversations, eight queued ordinary messages, four active agents and all 16
+conversations, eight queued ordinary messages, ten active agents and all 16
 tabs occupied defer delivery until capacity returns or grace expires. Already
 accepted ordinary messages always run first, preserving their own FIFO order.
 The final claim rechecks revision, expiry, conversation availability, settings
