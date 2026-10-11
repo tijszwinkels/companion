@@ -258,13 +258,15 @@ Item {
       const rows = []
       for (const section of ["listeningArea", "voiceSection", "intentionsSection", "historySection"]) {
         for (const count of [0, 80])
-          rows.push({tag: section + "-" + count, section: section, count: count})
+          rows.push({tag: section + "-" + count, section: section, count: count, width: 420})
+        // Several card columns, with Transcription and Storage side by side.
+        rows.push({tag: section + "-80-wide", section: section, count: 80, width: 1100})
       }
       return rows
     }
 
     function test_folding_a_section_keeps_its_heading_where_it_was_clicked(data) {
-      const fixture = makeHost(data.count, {width: 420, height: 520})
+      const fixture = makeHost(data.count, {width: data.width, height: 520})
       fixture.host.panel.intents = scene.fullInventory()
       fixture.host.panel.transcriptionCleanup = {enabled: false}
       verify(waitForRendering(fixture.host))
