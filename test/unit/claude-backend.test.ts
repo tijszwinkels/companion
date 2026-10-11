@@ -321,6 +321,9 @@ for (const [scenario, expected] of [
   ['bridge-unknown', /tool bridge did not start in Claude Code \(undefined\)/],
   ['no-init', /finished without its init event/],
   ['control', /requested an interactive decision/],
+  ['old-version', /Claude Code 2\.1\.269 is too old; Companion needs 2\.1\.270 or later/],
+  ['no-version', /did not report a usable version \(undefined\)/],
+  ['malformed-correlation', /malformed user_message_uuid/],
   ['error', /fixture model failure/],
   ['exit', /exited before finishing \(3\)\. fixture crash/],
   ['malformed', /JSON/],
@@ -728,7 +731,7 @@ test('the result route rejects reports after its turn has ended', async (context
   );
 });
 
-test('the first result ends the turn; later background turns are ignored', async (context) => {
+test('the result answering the prompt ends the turn; later background turns are ignored', async (context) => {
   const { directory, settings } = await fixture(context);
   const updates: AgentMessage[] = [];
 
@@ -743,6 +746,149 @@ test('the first result ends the turn; later background turns are ignored', async
     false,
   );
 });
+
+/** The final text and state of the turn's last message. */
+function finalAnswer(updates: AgentMessage[]): {
+  text: string;
+  state: AgentMessage['state'] | undefined;
+} {
+  const last = latest(updates).at(-1);
+  return { text: last?.text ?? '', state: last?.state };
+}
+
+test('each prompt carries a new request UUID, separate from the conversation ID', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new ClaudeCodeBackend();
+  const first = request(directory, settings, 'hello');
+
+  await backend.run(first, signal(), () => {});
+  const firstUuid: string = (await captured(directory)).message.uuid;
+  await backend.run({ ...first, prompt: { text: 'again' }, resume: true }, signal(), () => {});
+  const secondUuid: string = (await captured(directory)).message.uuid;
+
+  assert.match(firstUuid, /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+  assert.match(secondUuid, /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+  assert.notEqual(firstUuid, first.id);
+  assert.notEqual(secondUuid, firstUuid);
+});
+
+// A restored background-task notification's result (or any result for
+// another input) arrives before the prompt's own answer. On the base adapter
+// it ended the turn early, without the answer; the answer must be shown.
+for (const variant of ['separate', 'chunk', 'error', 'mismatched', 'batched'] as const) {
+  test(`an unrelated result (${variant}) before the answer does not end the turn`, async (context) => {
+    const { directory, settings } = await fixture(context);
+    const updates: AgentMessage[] = [];
+
+    await new ClaudeCodeBackend().run(
+      request(directory, settings, `notification ${variant}`),
+      signal(),
+      (message) => updates.push(message),
+    );
+
+    assert.deepEqual(finalAnswer(updates), { text: '## Answer\n**42**', state: 'done' });
+    const recorded = await captured(directory);
+    assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+  });
+}
+
+test('a resumed turn after a restored notification still shows its answer', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new ClaudeCodeBackend();
+  const first = request(directory, settings, 'hello');
+  await backend.run(first, signal(), () => {});
+
+  const updates: AgentMessage[] = [];
+  await backend.run(
+    { ...first, prompt: { text: 'notification separate' }, resume: true },
+    signal(),
+    (message) => updates.push(message),
+  );
+
+  const argv: string[] = (await captured(directory)).argv;
+  assert.equal(argv[argv.indexOf('--resume') + 1], first.id);
+  assert.deepEqual(finalAnswer(updates), { text: '## Answer\n**42**', state: 'done' });
+});
+
+test('an unrelated result does not fail a tool that is still running', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const updates: AgentMessage[] = [];
+
+  await new ClaudeCodeBackend().run(
+    request(directory, settings, 'notification tool'),
+    signal(),
+    (message) => updates.push(message),
+  );
+
+  const tools = updates.filter((message) => message.id === 'tool-toolu_running');
+  assert.deepEqual(
+    tools.map((tool) => tool.state),
+    ['running', 'done'],
+  );
+  assert.equal(tools.at(-1)?.text, 'slept');
+  assert.deepEqual(finalAnswer(updates), { text: '## Answer\n**42**', state: 'done' });
+});
+
+test('an exit after an unrelated result fails visibly with both reasons', async (context) => {
+  const { directory, settings } = await fixture(context);
+
+  await assert.rejects(
+    new ClaudeCodeBackend().run(
+      request(directory, settings, 'notification exit'),
+      signal(),
+      () => {},
+    ),
+    /exited before finishing \(3\)\. fixture crash\. Claude Code also reported: fixture notification failure/,
+  );
+  const recorded = await captured(directory);
+  assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+});
+
+test('an unrelated result before init neither fails nor ends startup', async (context) => {
+  const { directory, settings } = await fixture(context);
+  const backend = new ClaudeCodeBackend({ settingsMilliseconds: 5000, initMilliseconds: 300 });
+
+  await assert.rejects(
+    backend.run(request(directory, settings, 'notification before-init'), signal(), () => {}),
+    /did not confirm its session within 0\.3 seconds\. Claude Code also reported: fixture notification failure/,
+  );
+  const recorded = await captured(directory);
+  assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+});
+
+for (const variant of ['stall', 'uncorrelated'] as const) {
+  test(`Stop still works while waiting after an unrelated result (${variant})`, async (context) => {
+    const { directory, settings } = await fixture(context);
+    const controller = new AbortController();
+    const updates: AgentMessage[] = [];
+    let settled = false;
+
+    const run = new ClaudeCodeBackend()
+      .run(request(directory, settings, `notification ${variant}`), controller.signal, (message) =>
+        updates.push(message),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    run.catch(() => {});
+
+    // The stalled turn has emitted nothing; the uncorrelated one has shown
+    // its whole answer but, without the echo, is not this prompt's result.
+    if (variant === 'uncorrelated') {
+      await waitFor(() => finalAnswer(updates).text === '## Answer\n**42**', 3000);
+    } else {
+      await waitFor(() => existsSync(join(directory, 'request.json')), 3000);
+    }
+    await delay(200);
+    assert.equal(settled, false, 'An unrelated result must not settle the turn');
+
+    controller.abort();
+    await assert.rejects(run, { name: 'AbortError' });
+    assert.equal(await readFile(join(directory, 'interrupted'), 'utf8'), 'yes');
+    const recorded = await captured(directory);
+    assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+  });
+}
 
 test('tokens are redacted from transcripts and error messages', async (context) => {
   const { directory, settings } = await fixture(context);

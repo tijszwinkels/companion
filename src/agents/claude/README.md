@@ -132,15 +132,22 @@ claude --print --verbose --input-format stream-json --output-format stream-json
      whose turn failed before these checks passed is not announced on a
      retry with the same model either.
 4. Send one stream-json user message: the prompt text, plus (with a
-   screenshot) `Captured window: {…}` and a base64 PNG image block.
-5. Verify the `system/init` event: the session ID, the model, permission
-   mode `bypassPermissions`, and that the `companion` MCP server is
-   `connected` or `pending`; any other bridge state fails closed. Nothing
-   counts before a verified init: earlier transcript fragments are dropped,
-   and a `result` without one fails the turn instead of completing an
+   screenshot) `Captured window: {…}` and a base64 PNG image block. Its
+   `uuid` is a new random **request UUID** for this turn, separate from the
+   conversation's session ID (see [Request correlation](#request-correlation)).
+5. Verify the `system/init` event: the session ID, the model, a
+   `claude_code_version` of at least 2.1.270, permission mode
+   `bypassPermissions`, and that the `companion` MCP server is `connected`
+   or `pending`; any other bridge state fails closed. Claude Code sends an
+   init before each turn it runs on the process, so there can be more than
+   one; every init is checked, and the first ends startup. Nothing counts
+   before a verified init: earlier transcript fragments are dropped, and
+   this turn's `result` without one fails the turn instead of completing an
    unverified session.
-6. Map events to `AgentMessage`s until the **first** `result`, which ends the
-   turn. `is_error` fails it with Claude Code's reason.
+6. Map events to `AgentMessage`s until the `result` that answers this
+   turn's request UUID, which ends the turn. `is_error` on that result fails
+   it with Claude Code's reason. Results for other inputs do not end, fail
+   or finalize the turn (see below).
 7. Clean up whether the turn succeeded, failed or was cancelled:
    - A finished turn closes stdin and gets 2 s to exit by itself, so it can
      finish writing its transcript.
@@ -150,6 +157,52 @@ claude --print --verbose --input-format stream-json --output-format stream-json
      destroyed and the process is reaped, as in `pi-backend.ts`.
    - Finally the route is closed (its token dies with it) and the config
      directory is removed.
+
+### Request correlation
+
+A resumed conversation can restore a background-task notification that the
+previous Claude Code process left unfinished. Claude Code runs it as its own
+turn on the new process, without a model call, ahead of the prompt: an init,
+then an empty successful `result`. Before request correlation, Companion took
+that result for the answer. It ended the turn and stopped Claude Code before
+the prompt was answered, and the next resume added a “No response requested.”
+placeholder for the unanswered prompt.
+
+The rule is now:
+
+- Each prompt carries a new `uuid`. Claude Code echoes it in the `result`
+  that answers it, as `user_message_uuid` and in the list
+  `user_message_uuids` (prompts combined into one turn share a result).
+- Only a result naming this turn's UUID in either field ends the turn, with
+  success or with its error.
+- Any other result is unrelated: one without these fields (a notification),
+  or one naming other UUIDs. It is handled before the init check and before
+  the transcript. It does not settle or fail the turn, does not close the
+  turn's assistant or tool bubbles, does not close stdin and does not stop
+  reading the output that follows it, even in the same stdout chunk. The
+  reason of an unrelated error result is added to a later exit or startup
+  timeout message, because it may explain that failure.
+- Correlation fields of the wrong type fail the turn visibly.
+- While waiting after an unrelated result, the usual bounds apply: the
+  startup deadlines until the first verified init, a visible failure when
+  Claude Code exits, and Stop (which interrupts as usual). After this turn's
+  result, everything except rename answers is ignored, as before.
+
+Compatibility: the echo was verified without model calls on Claude Code
+2.1.270, 2.1.280, 2.1.284 and 2.1.289. A prompt without `uuid` gets a result
+without these fields, so correlation needs Companion to send it. An init
+reporting an older or missing `claude_code_version` fails the turn before
+anything counts, because such a CLI's own answer could not be recognized
+and the turn would never finish. A future Claude Code that stopped echoing
+the UUID would leave a turn running after its answer until Stop; it would
+not end a turn early.
+
+Not established live: the exact stdout sequence of a restored notification
+was not captured (it needs an orphaned background task from a previous
+process). The reconstruction above rests on Claude Code's transcript records,
+its embedded source and the no-cost correlation probes below. The fixture
+reproduces that sequence. Other output of an unrelated turn, if it had any,
+would still be shown in the current turn; only results carry the UUID.
 
 Guards shared with Pi:
 
@@ -373,7 +426,7 @@ effort, temp directory, not through `AgentSessions`).
 | Descendant retaining pipes cannot hang a turn                 | Same pipe release after escalation                                                                                                                                                                                                                                                                                                                                                          | Tested (success and cancel)                                                             |
 | stderr cap, oversized/unterminated/malformed records          | Same limits                                                                                                                                                                                                                                                                                                                                                                                 | Tested                                                                                  |
 | Interactive dialog request fails visibly                      | `control_request` from Claude Code fails visibly                                                                                                                                                                                                                                                                                                                                            | Tested                                                                                  |
-| Retries/compaction settle before finishing (`agent_settled`)  | Claude retries internally; the first `result` ends the turn; later background-task turns are ignored                                                                                                                                                                                                                                                                                        | Tested (post-result events ignored); probed (background task behaviour)                 |
+| Retries/compaction settle before finishing (`agent_settled`)  | Claude retries internally; the `result` echoing this turn's request UUID ends the turn; earlier unrelated results (restored notifications) and later background-task turns are ignored                                                                                                                                                                                                      | Tested (unrelated results, post-result events); probed (UUID echo, background tasks)    |
 | Model/API errors become a failed turn                         | `result.is_error` (e.g. unknown model → 404 text), synthetic error message marked `error`                                                                                                                                                                                                                                                                                                   | Tested; probed                                                                          |
 | `companion_choices` (only successful, correlated completions) | MCP tool + result route + tool-use ID correlation; same validation, notice and clearing                                                                                                                                                                                                                                                                                                     | Tested (ok/failed/unreported/mismatched/forged; real bridge); smoke                     |
 | `companion_name_session`                                      | MCP tool + result route → `renameSession`                                                                                                                                                                                                                                                                                                                                                   | Tested (ok/failed/unreported; real bridge); smoke                                       |
@@ -462,6 +515,27 @@ All probes ran in a throwaway `/tmp` working directory, mostly with
 - **Background tasks.** Bash may move long commands to the background. A
   `result` then arrives while the task runs, and a later task notification can
   start another model turn if stdin stays open.
+
+### Request UUID echo (2026-10-11)
+
+No-cost probes in a throwaway `/tmp` directory with `--no-session-persistence`
+(nothing written to `~/.claude/projects`), `--safe-mode --strict-mcp-config
+--tools ""`, sending the local command `/cost` (no model call, cost 0):
+
+- With `{"type":"user","uuid":U,"message":{…}}` — Companion's exact shape —
+  the `result` has `user_message_uuid: U` and `user_message_uuids: [U]` on
+  2.1.270, 2.1.280, 2.1.284 and 2.1.289. `command_lifecycle` events name U
+  as `command_uuid`.
+- Without `uuid`, the `result` has neither field (2.1.289).
+- Each turn on the same process is preceded by its own `system/init`, which
+  reports `claude_code_version`.
+- An error result is correlated too: an unknown model (`claude-bogus-9`)
+  fails at the API without tokens, with `is_error: true` and
+  `user_message_uuid: U` (2.1.289).
+- Claude Code's embedded source (2.1.289) adds these fields when assembling
+  a result, also on the no-query path that restored notifications use
+  (`shouldQuery: false`). These are implementation observations, not a
+  documented API.
 - **Permissions.** `--permission-mode bypassPermissions` is reported in
   `init.permissionMode`; tools run without prompts.
 
@@ -507,6 +581,11 @@ model. `--help` alone was not taken as proof.
   - init checks and failure modes, including malformed and oversized records;
   - tool bubbles and subagents;
   - choices and names, route expiry, and ignored post-result output;
+  - request correlation: a new request UUID per prompt; unrelated results
+    (notification, error, mismatched, same chunk) before the answer, on new
+    and resumed turns; batched results; a running tool; exit, startup
+    timeout and Stop after an unrelated result; uncorrelated answers;
+    malformed fields and old or missing versions;
   - redaction, cancellation and pipe-holding descendants.
 - `test/unit/claude-transcript.test.ts`: the event mapper.
 - `test/unit/claude-model-picker.test.ts`: the allowlist, next-turn switch,

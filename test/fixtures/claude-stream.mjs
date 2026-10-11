@@ -18,7 +18,16 @@ const option = (name) => {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 };
-const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+// While `batch` is an array, records are collected and later written with
+// one write, so the backend receives them in the same stdout chunk.
+let batch;
+const send = (value) => {
+  if (batch) {
+    batch.push(JSON.stringify(value) + '\n');
+    return;
+  }
+  process.stdout.write(JSON.stringify(value) + '\n');
+};
 
 const resumeId = option('--resume');
 const sessionId = resumeId ?? option('--session-id');
@@ -42,6 +51,9 @@ const resultsToken = bridge.env.COMPANION_CLAUDE_RESULTS_TOKEN;
 
 let buffered = '';
 let stalled = false;
+// The `uuid` of the prompt being answered. Like Claude Code 2.1.270 and later,
+// the result that answers it echoes it as `user_message_uuid(s)`.
+let requestUuid;
 // How this turn answers `rename_session`: 'success', 'refuse', 'silent' or
 // 'delayed' (success, 50 ms later, so a second rename is sent meanwhile).
 let renameAnswer = 'success';
@@ -154,6 +166,7 @@ async function receive(message) {
         subtype: 'error_during_execution',
         is_error: true,
         terminal_reason: 'aborted_tools',
+        ...correlation(),
       });
     }
     return;
@@ -196,7 +209,27 @@ function init(overrides = {}) {
     model: option('--model'),
     permissionMode: option('--permission-mode'),
     mcp_servers: [{ name: 'companion', status: 'connected' }],
+    claude_code_version: '2.1.289',
     ...overrides,
+  });
+}
+
+/** The fields by which a result names the prompt it answers. */
+function correlation(primary = requestUuid, all = [primary]) {
+  return { user_message_uuid: primary, user_message_uuids: all };
+}
+
+/**
+ * Like Claude Code running a restored background-task notification without
+ * a model call: an empty successful (or failed) result that names no prompt.
+ */
+function notificationResult(isError = false) {
+  send({
+    type: 'result',
+    subtype: 'success',
+    is_error: isError,
+    result: isError ? 'fixture notification failure' : '',
+    num_turns: 0,
   });
 }
 
@@ -238,8 +271,8 @@ function toolResult(id, content, isError = false) {
   });
 }
 
-function success(text = '## Answer\n**42**') {
-  send({ type: 'result', subtype: 'success', is_error: false, result: text });
+function success(text = '## Answer\n**42**', fields = correlation()) {
+  send({ type: 'result', subtype: 'success', is_error: false, result: text, ...fields });
 }
 
 /** Play the MCP bridge's part: report a result to the backend's loopback route. */
@@ -254,6 +287,7 @@ async function report(body, token = resultsToken) {
 
 async function answer(message) {
   record(message);
+  requestUuid = message.uuid;
   const text = message.message.content[0].text;
   const [scenario, variant] = text.split(' ');
 
@@ -299,6 +333,95 @@ async function answer(message) {
 
   if (scenario === 'wrong-session') {
     init({ session_id: '00000000-0000-4000-8000-000000000000' });
+    return;
+  }
+
+  if (scenario === 'old-version') {
+    init({ claude_code_version: '2.1.269' });
+    return;
+  }
+
+  if (scenario === 'no-version') {
+    init({ claude_code_version: undefined });
+    return;
+  }
+
+  // A failed notification before any init, then silence.
+  if (scenario === 'notification' && variant === 'before-init') {
+    notificationResult(true);
+    return;
+  }
+
+  // A restored background-task notification runs as its own turn on this
+  // process before the prompt's turn: an init, then a result naming no prompt.
+  if (scenario === 'notification') {
+    if (variant === 'chunk') {
+      batch = [];
+    }
+    init();
+    if (variant === 'tool') {
+      // Not seen live; proves an unrelated result cannot fail a running tool.
+      toolCall('msg_tool', 'toolu_running', 'Bash', { command: 'sleep 1' });
+    }
+    if (variant === 'mismatched') {
+      send({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: 'another prompt',
+        ...correlation('00000000-0000-4000-8000-000000000001'),
+      });
+    } else {
+      notificationResult(variant === 'error' || variant === 'exit');
+    }
+
+    if (variant === 'exit') {
+      process.stderr.write('fixture crash\n');
+      process.exit(3);
+    }
+    if (variant === 'stall') {
+      stalled = true;
+      return;
+    }
+    if (variant === 'tool') {
+      toolResult('toolu_running', 'slept');
+    }
+
+    init();
+    streamText('msg_answer', ['## Ans', 'wer\n**42**']);
+    if (variant === 'uncorrelated') {
+      // A protocol without the echo: the turn's own result names no prompt.
+      success(undefined, {});
+      return;
+    }
+    if (variant === 'batched') {
+      success(
+        undefined,
+        correlation('00000000-0000-4000-8000-000000000002', [
+          '00000000-0000-4000-8000-000000000002',
+          requestUuid,
+        ]),
+      );
+    } else {
+      success();
+    }
+
+    if (batch) {
+      process.stdout.write(batch.join(''));
+      batch = undefined;
+    }
+    return;
+  }
+
+  if (scenario === 'malformed-correlation') {
+    init();
+    send({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '',
+      user_message_uuid: 42,
+    });
     return;
   }
 
@@ -366,6 +489,7 @@ async function answer(message) {
       is_error: true,
       result: 'fixture model failure',
       terminal_reason: 'api_error',
+      ...correlation(),
     });
     return;
   }
@@ -456,7 +580,13 @@ async function answer(message) {
     success();
     // A background task later starts another model turn on the same process.
     streamText('msg_late', ['late background answer']);
-    send({ type: 'result', subtype: 'success', is_error: true, result: 'late failure' });
+    send({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      result: 'late failure',
+      ...correlation(),
+    });
     return;
   }
 

@@ -1,5 +1,6 @@
 import { ConversationUnavailableError } from '../resume-error.ts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { choiceToolName } from '../choice-tool.ts';
@@ -81,6 +82,15 @@ const renameRequestPrefix = 'companion-rename-';
 const isolateFromUserMcpServers = false;
 
 const uuidPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
+
+/**
+ * The oldest Claude Code known to echo a user message's `uuid` in the
+ * `result` that answers it (`user_message_uuid`/`user_message_uuids`).
+ * Verified without model calls on 2.1.270, 2.1.280, 2.1.284 and 2.1.289.
+ * An older or unversioned CLI is refused at init: without that echo, the
+ * turn's own result could not be told apart from an unrelated one.
+ */
+const minimumCorrelatingVersion = [2, 1, 270] as const;
 
 /**
  * Variables that describe a parent Claude Code session. Companion may itself
@@ -165,8 +175,20 @@ class ClaudeTurn {
   private promptSent = false;
   /** A `system/init` event passed every check. Nothing counts before it. */
   private initVerified = false;
-  /** The first `result` arrived. Everything after it is ignored. */
+  /**
+   * Identifies this turn's prompt, separately from the conversation's
+   * session ID. Claude Code echoes it in the `result` that answers the
+   * prompt; only that result settles the turn.
+   */
+  private readonly requestUuid = randomUUID();
+  /** This turn's own `result` arrived. Everything after it is ignored. */
   private settled = false;
+  /**
+   * The reason of the latest unrelated error `result`, such as a failed
+   * background-task notification. It never fails the turn by itself, but
+   * explains a later exit or startup timeout.
+   */
+  private unrelatedFailure: string | undefined;
   private stdoutBuffer = '';
   private stderrTail = '';
 
@@ -365,7 +387,9 @@ class ClaudeTurn {
   private startStartupDeadline(milliseconds: number, failure: string): void {
     clearTimeout(this.startupTimer);
     this.startupTimer = setTimeout(() => {
-      this.finish(Error(`${failure} within ${milliseconds / 1000} seconds`));
+      this.finish(
+        Error(this.withUnrelatedFailure(`${failure} within ${milliseconds / 1000} seconds`)),
+      );
     }, milliseconds);
   }
 
@@ -446,15 +470,32 @@ class ClaudeTurn {
       return;
     }
 
+    // Claude Code sends an init before each turn it runs on this process,
+    // which can include a restored background-task notification before the
+    // prompt's own turn. Every init must pass the checks; only the first one
+    // ends startup and resends a pending name.
     if (event.type === 'system' && event.subtype === 'init') {
       this.verifyInit(event);
-      this.initVerified = true;
-      clearTimeout(this.startupTimer);
-      // A name a previous turn could not confirm, now that this verified
-      // session (and its native transcript) exists.
-      if (this.request.nativeTitle?.state === 'pending') {
-        this.publishTitle(this.request.nativeTitle.title);
+      if (!this.initVerified) {
+        this.initVerified = true;
+        clearTimeout(this.startupTimer);
+        // A name a previous turn could not confirm, now that this verified
+        // session (and its native transcript) exists.
+        if (this.request.nativeTitle?.state === 'pending') {
+          this.publishTitle(this.request.nativeTitle.title);
+        }
       }
+    }
+
+    // A result that answers another input (for example a restored
+    // background-task notification, which Claude Code runs without a model
+    // call before this prompt) is not this turn's answer. It is routed away
+    // before the init check and before the transcript, so it can neither
+    // fail nor finish the turn, close its bubbles, nor stop the reading of
+    // the prompt's own output that follows it.
+    if (event.type === 'result' && !this.answersThisRequest(event)) {
+      this.receiveUnrelatedResult(event);
+      return;
     }
 
     // Fail closed: nothing counts before a fully verified init. A stream that
@@ -614,7 +655,10 @@ class ClaudeTurn {
       });
     }
 
-    this.send({ type: 'user', message: { role: 'user', content } });
+    // `uuid` is the request UUID that Claude Code echoes in the answering
+    // result. It is new for every turn, so no earlier turn's result (for
+    // example one replayed on resume) can match it.
+    this.send({ type: 'user', uuid: this.requestUuid, message: { role: 'user', content } });
   }
 
   /** The init event confirms the session identity and the permission mode actually in force. */
@@ -628,6 +672,8 @@ class ClaudeTurn {
     if (event.model !== this.settings.model) {
       throw Error(`Claude Code started ${String(event.model)}; expected ${this.settings.model}`);
     }
+
+    this.verifyVersion(event.claude_code_version);
 
     if (event.permissionMode !== 'bypassPermissions') {
       throw Error(
@@ -655,9 +701,84 @@ class ClaudeTurn {
   }
 
   /**
-   * The first `result` ends the turn. Claude Code can continue afterwards
-   * (for example when a background task finishes); that is not part of this
-   * answer, so stdin is closed and later events are ignored.
+   * Only a version that echoes the request UUID in its results can run a
+   * turn. Without the echo, the turn's own result would look unrelated and
+   * the turn would never finish.
+   */
+  private verifyVersion(version: unknown): void {
+    const parts = typeof version === 'string' ? /^(\d+)\.(\d+)\.(\d+)/.exec(version) : null;
+    const minimum = minimumCorrelatingVersion.join('.');
+
+    if (parts === null) {
+      throw Error(
+        `Claude Code did not report a usable version (${String(version)}); Companion needs ${minimum} or later`,
+      );
+    }
+
+    for (let index = 0; index < minimumCorrelatingVersion.length; index += 1) {
+      const actual = Number(parts[index + 1]);
+      const required = minimumCorrelatingVersion[index];
+      if (actual > required) {
+        return;
+      }
+      if (actual < required) {
+        throw Error(
+          `Claude Code ${String(version)} is too old; Companion needs ${minimum} or later, ` +
+            `which reports which request a result answers`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Whether a `result` answers this turn's prompt. Claude Code names the
+   * user messages a result answers in `user_message_uuid` and
+   * `user_message_uuids`; prompts it combined into one turn share a result.
+   * A result without these fields answers no prompt of Companion's (a
+   * notification, for example). Fields of the wrong type are a protocol
+   * error and fail the turn rather than being guessed at.
+   */
+  private answersThisRequest(event: Record<string, unknown>): boolean {
+    const primary = event.user_message_uuid;
+    const all = event.user_message_uuids;
+
+    if (primary !== undefined && typeof primary !== 'string') {
+      throw Error('Claude Code sent a result with a malformed user_message_uuid');
+    }
+    if (all !== undefined && !Array.isArray(all)) {
+      throw Error('Claude Code sent a result with malformed user_message_uuids');
+    }
+
+    if (primary === this.requestUuid) {
+      return true;
+    }
+
+    for (const uuid of all ?? []) {
+      if (typeof uuid !== 'string') {
+        throw Error('Claude Code sent a result with malformed user_message_uuids');
+      }
+      if (uuid === this.requestUuid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * A result for another input leaves this turn running: its prompt is
+   * still queued or being answered on the same process. Its error, if any,
+   * is kept to explain a later failure of this turn.
+   */
+  private receiveUnrelatedResult(event: Record<string, unknown>): void {
+    if (event.is_error === true) {
+      this.unrelatedFailure = this.redact(resultFailure(event));
+    }
+  }
+
+  /**
+   * This turn's own `result` ends the turn. Claude Code can continue
+   * afterwards (for example when a background task finishes); that is not
+   * part of this answer, so stdin is closed and later events are ignored.
    */
   private receiveResult(event: Record<string, unknown>): void {
     this.settled = true;
@@ -817,7 +938,23 @@ class ClaudeTurn {
     }
 
     const stderr = this.redact(this.stderrTail.trim());
-    this.finish(Error(`Claude Code exited before finishing (${code ?? exitSignal}). ${stderr}`));
+    this.finish(
+      Error(
+        this.withUnrelatedFailure(
+          `Claude Code exited before finishing (${code ?? exitSignal}). ${stderr}`,
+        ),
+      ),
+    );
+  }
+
+  /** Append the latest unrelated error result, which may explain this failure. */
+  private withUnrelatedFailure(message: string): string {
+    if (this.unrelatedFailure === undefined) {
+      return message;
+    }
+    const failure = message.trimEnd();
+    const separator = /[.!?]$/.test(failure) ? ' ' : '. ';
+    return `${failure}${separator}Claude Code also reported: ${this.unrelatedFailure}`;
   }
 
   /**
