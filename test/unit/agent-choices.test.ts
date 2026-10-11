@@ -265,12 +265,12 @@ test('choice availability follows global run capacity and rechecks it after infe
   await setup.select(first.id, true);
   await setup.desktop.runtime.connectRouter(setup.router);
   const waiting = [];
-  for (let index = 0; index < 3; index++) {
+  for (let index = 0; index < 9; index++) {
     waiting.push(await setup.start(`Other ${index}`));
   }
   assert.equal(agentChoiceStates(setup.input(''), [])[0].available, true);
   setup.detect(async () => {
-    waiting.push(await setup.start('Fourth concurrent run'));
+    waiting.push(await setup.start('Tenth concurrent run'));
     return 'CHOOSE_AGENT_OPTION_1';
   });
   await setup.router.route(setup.input('Please run the tests'), signal());
@@ -278,18 +278,18 @@ test('choice availability follows global run capacity and rechecks it after infe
   const unavailable = agentChoiceStates(setup.input(''), [])[0];
   assert.equal(unavailable.available, false);
   assert.equal(unavailable.voiceAvailable, false);
-  assert.match(unavailable.voiceReason, /Four questions/);
+  assert.match(unavailable.voiceReason, /10 questions/);
   await waitFor(() =>
     setup.desktop.messages.some(
       (message) => message.actions?.choices[0]?.voiceReason === unavailable.voiceReason,
     ),
   );
-  assert.equal(setup.runs.length, 5);
+  assert.equal(setup.runs.length, 11);
   await setup.sessions.stop(waiting[0].id);
   assert.equal(agentChoiceStates(setup.input(''), [])[0].available, true);
   await waitFor(() => setup.desktop.messages.at(-1)?.actions?.choices[0]?.available === true);
   await setup.router.route(setup.input('Tests'), signal());
-  await waitFor(() => setup.runs.length === 6);
+  await waitFor(() => setup.runs.length === 12);
   assert.equal(setup.runs.at(-1)!.request.id, first.id);
 });
 
