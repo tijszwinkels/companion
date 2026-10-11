@@ -742,26 +742,26 @@ class ClaudeTurn {
     const primary = event.user_message_uuid;
     const all = event.user_message_uuids;
 
+    // Validate both fields completely before matching, so a malformed
+    // record fails regardless of where this turn's UUID appears in it.
     if (primary !== undefined && typeof primary !== 'string') {
       throw Error('Claude Code sent a result with a malformed user_message_uuid');
     }
-    if (all !== undefined && !Array.isArray(all)) {
-      throw Error('Claude Code sent a result with malformed user_message_uuids');
+    if (all !== undefined) {
+      if (!Array.isArray(all)) {
+        throw Error('Claude Code sent a result with malformed user_message_uuids');
+      }
+      for (const uuid of all) {
+        if (typeof uuid !== 'string') {
+          throw Error('Claude Code sent a result with malformed user_message_uuids');
+        }
+      }
     }
 
     if (primary === this.requestUuid) {
       return true;
     }
-
-    for (const uuid of all ?? []) {
-      if (typeof uuid !== 'string') {
-        throw Error('Claude Code sent a result with malformed user_message_uuids');
-      }
-      if (uuid === this.requestUuid) {
-        return true;
-      }
-    }
-    return false;
+    return Array.isArray(all) && all.includes(this.requestUuid);
   }
 
   /**

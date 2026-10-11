@@ -182,7 +182,8 @@ The rule is now:
   reading the output that follows it, even in the same stdout chunk. The
   reason of an unrelated error result is added to a later exit or startup
   timeout message, because it may explain that failure.
-- Correlation fields of the wrong type fail the turn visibly.
+- Correlation fields of the wrong type fail the turn visibly, wherever this
+  turn's UUID appears in them: both fields are validated before matching.
 - While waiting after an unrelated result, the usual bounds apply: the
   startup deadlines until the first verified init, a visible failure when
   Claude Code exits, and Stop (which interrupts as usual). After this turn's
@@ -201,8 +202,11 @@ Not established live: the exact stdout sequence of a restored notification
 was not captured (it needs an orphaned background task from a previous
 process). The reconstruction above rests on Claude Code's transcript records,
 its embedded source and the no-cost correlation probes below. The fixture
-reproduces that sequence. Other output of an unrelated turn, if it had any,
-would still be shown in the current turn; only results carry the UUID.
+reproduces that sequence. This adapter correlates results only. It does not
+attribute or filter other output, so assistant or tool output of an unrelated
+turn, if it had any, would still be shown in the current turn. (Claude Code's
+embedded 2.1.289 schemas also put the correlation fields on some assistant
+and stream events; Companion does not use them.)
 
 Guards shared with Pi:
 

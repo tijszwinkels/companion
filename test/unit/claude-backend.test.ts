@@ -323,7 +323,10 @@ for (const [scenario, expected] of [
   ['control', /requested an interactive decision/],
   ['old-version', /Claude Code 2\.1\.269 is too old; Companion needs 2\.1\.270 or later/],
   ['no-version', /did not report a usable version \(undefined\)/],
-  ['malformed-correlation', /malformed user_message_uuid/],
+  ['correlation primary-number', /malformed user_message_uuid\b/],
+  ['correlation primary-match-bad-list', /malformed user_message_uuids/],
+  ['correlation list-match-then-bad', /malformed user_message_uuids/],
+  ['correlation list-not-array', /malformed user_message_uuids/],
   ['error', /fixture model failure/],
   ['exit', /exited before finishing \(3\)\. fixture crash/],
   ['malformed', /JSON/],
@@ -789,6 +792,21 @@ for (const variant of ['separate', 'chunk', 'error', 'mismatched', 'batched'] as
     assert.deepEqual(finalAnswer(updates), { text: '## Answer\n**42**', state: 'done' });
     const recorded = await captured(directory);
     assert.throws(() => process.kill(recorded.pid, 0), { code: 'ESRCH' });
+  });
+}
+
+for (const variant of ['primary-only', 'list-only'] as const) {
+  test(`a result naming the prompt in ${variant} ends the turn`, async (context) => {
+    const { directory, settings } = await fixture(context);
+    const updates: AgentMessage[] = [];
+
+    await new ClaudeCodeBackend().run(
+      request(directory, settings, `correlation ${variant}`),
+      signal(),
+      (message) => updates.push(message),
+    );
+
+    assert.deepEqual(finalAnswer(updates), { text: '## Answer\n**42**', state: 'done' });
   });
 }
 

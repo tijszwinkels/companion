@@ -413,15 +413,20 @@ async function answer(message) {
     return;
   }
 
-  if (scenario === 'malformed-correlation') {
+  // Correlation fields by variant: malformed ones must fail wherever this
+  // prompt's UUID appears; the valid single-field forms must succeed.
+  if (scenario === 'correlation') {
+    const fields = {
+      'primary-number': { user_message_uuid: 42 },
+      'primary-match-bad-list': { user_message_uuid: requestUuid, user_message_uuids: [42] },
+      'list-match-then-bad': { user_message_uuids: [requestUuid, 42] },
+      'list-not-array': { user_message_uuids: requestUuid },
+      'primary-only': { user_message_uuid: requestUuid },
+      'list-only': { user_message_uuids: [requestUuid] },
+    }[variant];
     init();
-    send({
-      type: 'result',
-      subtype: 'success',
-      is_error: false,
-      result: '',
-      user_message_uuid: 42,
-    });
+    streamText('msg_answer', ['## Answer\n**42**']);
+    success(undefined, fields);
     return;
   }
 
