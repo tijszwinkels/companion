@@ -52,25 +52,17 @@ to the provider you already use and check that the agent answers in a terminal
 inside your desktop session (on Omarchy: Super+Return). Coding agents run commands
 with your permissions, so read what it proposes before you approve it.
 
-Then give it this:
+Then give it this one line, with your model choice filled in:
 
 ```text
-Please install Companion on this computer. Clone
-https://github.com/tijszwinkels/companion.git to ~/Work/companion (if that folder
-already exists, inspect it instead of cloning over it). Read
-docs/installation.md completely, then follow it from step 1, including its notes
-for agents. Show me a short plan, then go ahead: you may run the guide's ordinary
-steps (clone, npm installs, builds, the downloads it names, files in my home
-directory, non-capturing checks) without asking. Only stop for my password, my
-choices (model, provider, keys, login startup), anything that listens, captures
-the screen or types, and anything destructive; then tell me exactly what to do.
-My model choice: <for understanding what I say: my GPU / my server at URL /
-hosted provider X / check this computer>; <for agent conversations: ...>.
+Install Companion from https://github.com/tijszwinkels/companion by following its docs/installation.md; my model choice: <yours>.
 ```
 
-Expect a short plan, then mostly progress reports. The agent checks your model
-choice against this computer and comes back only if it does not work, and asks
-you for keys, your password and whether Companion should start after login.
+For example: “my model choice: my server at http://192.168.1.20:8000/v1 for
+understanding what I say, my existing provider for agents”, or “check this
+computer and suggest”. Expect a short plan, then mostly progress reports. The
+agent comes back only if your choice does not work, and asks you for keys, your
+password and whether Companion should start after login.
 
 ## Before step 1: notes for the agent
 
@@ -121,11 +113,15 @@ Inspect the OS, versions, existing files and available resources first. Report a
 short package/config/provider plan, then proceed without asking again. Preserve
 existing settings; merge reviewed entries instead of replacing whole files. Use
 the same checkpoints as a human, and report them briefly as you pass them.
-The handoff prompt in step 0 grants the guide's ordinary **install** and
-**download** steps: run them without asking. Ask only for what that grant leaves
-out: privileged steps (the password dialog), destructive changes, credentials,
-model/provider choices, and **activate** or **live** steps that listen,
-capture the screen or type, unless the user already authorized them. The guide's
+A user who asks you to install Companion with this guide grants its ordinary
+**install** and **download** steps: cloning into `~/Work/companion` (inspect an
+existing folder instead of cloning over it), npm installs, builds, the downloads
+it names, files in their home directory and non-capturing checks. Show a short
+plan, then run them without asking. Ask only for what that grant leaves out:
+privileged steps (the password dialog), destructive changes, credentials,
+model/provider choices, and **activate** or **live** steps that listen, capture
+the screen or type, unless the user already authorized them; then tell them
+exactly what to do. The guide's
 own fixed downloads, such as the step 3 speech model, are part of that grant:
 mention their license in passing, do not ask for approval. Never print keys,
 copy another person's agent directory, grant blanket project trust, weaken access
@@ -401,7 +397,7 @@ Companion uses a model for two jobs, and they can come from different places:
   The provider the user already uses for their coding agent is usually a good
   choice; see the [optional cloud coding profile](#optional-cloud-coding-profile).
 
-**Start from the user's model choice in the step 0 prompt** and verify it: check
+**Start from the user's model choice from step 0** and verify it: check
 the GPU, reach their server, or check the provider's current models. If the choice
 is missing, unclear or does not work, **stop and ask properly**, even though you
 otherwise keep messages short: it decides where their screenshots and transcripts
