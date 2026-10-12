@@ -132,11 +132,24 @@ test('a listener that never confirms the role times out without exposing events'
 test('unknown and desktop-only events are withheld after role confirmation', async (context) => {
   const setup = await fixture(context, (socket) => {
     roleAccepted(socket);
-    for (const type of ['future-private-event', 'agent-draft', 'agent-select', 'agent-actions']) {
+    for (const type of [
+      'future-private-event',
+      'agent-draft',
+      'agent-select',
+      'agent-actions',
+      'recording-append',
+      'recording-finished',
+    ]) {
       socket.write(JSON.stringify({ type, text: 'private fixture' }) + '\n');
     }
     socket.write(
-      JSON.stringify({ type: 'state', history: ['private fixture'], sessions: [] }) + '\n',
+      JSON.stringify({
+        type: 'state',
+        history: ['private fixture'],
+        sessions: [],
+        recordingAvailable: true,
+        recording: { recordingId: 'r', sessionId: 's', state: 'recording' },
+      }) + '\n',
     );
   });
   const phone = await setup.phone();
@@ -144,6 +157,9 @@ test('unknown and desktop-only events are withheld after role confirmation', asy
   const events = phone.messages.filter((message) => message.type === 'engine');
   assert.equal(events.length, 1);
   assert.deepEqual(events[0].message.type === 'state' && events[0].message.history, []);
+  // Manual recording is a desktop microphone/composer feature.
+  assert.equal('recording' in events[0].message, false);
+  assert.equal('recordingAvailable' in events[0].message, false);
 });
 
 test('oversized WebSocket input only disconnects the offending client', async (context) => {

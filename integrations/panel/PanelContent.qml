@@ -36,6 +36,9 @@ Item {
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
   property bool textInputAvailable: false
+  // Manual recording into a conversation's text box (listener state).
+  property bool recordingAvailable: false
+  property var recording: null
   property var agentActions: ({})
   property var sessions: []
   property var sessionControls: null
@@ -217,6 +220,8 @@ Item {
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
+  signal recordRequested(string id, int draftLength)
+  signal stopRecordingRequested(string id)
   signal toolPageRequested(var request)
   function toolPageReceived(message) { chat.toolPageReceived(message) }
   signal choiceRequested(string id, string revision, int index)
@@ -232,6 +237,18 @@ Item {
     return chat.applyDraft(request)
   }
   function choiceSubmitted(id, revision, index, error) { chat.choiceSubmitted(id, revision, index, error) }
+  function recordingStarted(id, recordingId, error) { chat.recordingStarted(id, recordingId, error) }
+  function recordingStopAnswered(error) { chat.recordingStopAnswered(error) }
+  // Returns {outcome, length} or {outcome: "unavailable", reason}. A closed
+  // or unknown tab never receives recorded text.
+  function appendRecording(request) {
+    if (!root.sessions.some(entry => entry.id === request.id)) {
+      return {outcome: "unavailable", reason: "The conversation is not open in this panel."}
+    }
+    return chat.appendRecording(request)
+  }
+  function recordingFinished(message) { chat.recordingFinished(message) }
+  function recordingDisconnected() { chat.recordingDisconnected() }
   function focusComposer() {
     // The focus-input shortcut asks for the composer; the page stays loaded.
     root.browserOpen = false
@@ -1169,6 +1186,10 @@ Item {
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)
+      recordingAvailable: root.recordingAvailable
+      recording: root.recording
+      onRecordRequested: (id, draftLength) => root.recordRequested(id, draftLength)
+      onStopRecordingRequested: id => root.stopRecordingRequested(id)
       onToolPageRequested: request => root.toolPageRequested(request)
       onChoiceRequested: (id, revision, index) => root.choiceRequested(id, revision, index)
       onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)

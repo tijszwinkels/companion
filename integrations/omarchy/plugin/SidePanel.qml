@@ -26,6 +26,8 @@ PanelWindow {
   property bool activityHistoryAvailable: false
   property bool historyDeletionAvailable: false
   property bool textInputAvailable: false
+  property bool recordingAvailable: false
+  property var recording: null
   property var agentActions: ({})
   property var sessions: []
   property var sessionControls: null
@@ -54,6 +56,8 @@ PanelWindow {
   signal stopSessionRequested(string id)
   signal dismissSessionRequested(string id)
   signal sendSessionRequested(string id, string text)
+  signal recordRequested(string id, int draftLength)
+  signal stopRecordingRequested(string id)
   signal composerFocusRequested()
   signal composerFocusReleased()
   signal toolPageRequested(var request)
@@ -69,6 +73,11 @@ PanelWindow {
   function utteranceSubmitted(text, error) { content.utteranceSubmitted(text, error) }
   function submitted(id, text, error) { content.submitted(id, text, error) }
   function applyDraft(request) { return content.applyDraft(request) }
+  function recordingStarted(id, recordingId, error) { content.recordingStarted(id, recordingId, error) }
+  function recordingStopAnswered(error) { content.recordingStopAnswered(error) }
+  function appendRecording(request) { return content.appendRecording(request) }
+  function recordingFinished(message) { content.recordingFinished(message) }
+  function recordingDisconnected() { content.recordingDisconnected() }
   function choiceSubmitted(id, revision, index, error) { content.choiceSubmitted(id, revision, index, error) }
   function toggleComposerFocus(address) {
     root.screenshotSource = ""
@@ -177,6 +186,8 @@ PanelWindow {
         activityHistoryAvailable: root.activityHistoryAvailable
         historyDeletionAvailable: root.historyDeletionAvailable
         textInputAvailable: root.textInputAvailable
+        recordingAvailable: root.recordingAvailable
+        recording: root.recording
         onUtteranceRequested: text => root.utteranceRequested(text)
         agentActions: root.agentActions
         sessions: root.sessions
@@ -215,6 +226,8 @@ PanelWindow {
         onStopSessionRequested: id => root.stopSessionRequested(id)
         onDismissSessionRequested: id => root.dismissSessionRequested(id)
         onSendSessionRequested: (id, text) => root.sendSessionRequested(id, text)
+        onRecordRequested: (id, draftLength) => root.recordRequested(id, draftLength)
+        onStopRecordingRequested: id => root.stopRecordingRequested(id)
         onToolPageRequested: request => root.toolPageRequested(request)
         onChoiceRequested: (id, revision, index) => root.choiceRequested(id, revision, index)
         onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)

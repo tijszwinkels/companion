@@ -22,6 +22,12 @@ Item {
   // Null when the listener does not report capture storage: unavailable.
   property var captureStorage: null
   property var agentActions: ({})
+  // Manual recording: whether the listener offers it, and the current
+  // recording {recordingId, sessionId, state} or null.
+  property bool recordingAvailable: false
+  property var recording: null
+  // Conversation id of a Record request awaiting the listener's answer.
+  property string pendingRecording: ""
   property string error: ""
   property string errorAction: ""
   property var pendingInput: null
@@ -36,6 +42,13 @@ Item {
   signal inputFinished(string id, string text, string error)
   signal toolPageReceived(var message)
   signal choiceFinished(string id, string revision, int index, string error)
+  // Manual recording replies and events for the panel that started it. The
+  // host answers each append with answerRecordingAppend().
+  signal recordingStartFinished(string id, string recordingId, string error)
+  signal recordingStopFinished(string error)
+  signal recordingAppendRequested(var message)
+  signal recordingFinished(var message)
+  signal recordingLost()
   // An agent asked this panel to place unsent text in a composer. The host
   // applies it and must answer with answerDraft(); nothing is ever submitted.
   signal draftRequested(var message)
@@ -97,6 +110,36 @@ Item {
       outcome: result.outcome, reason: result.reason || ""})
   }
 
+  function startRecording(id, draftLength) {
+    if (root.pendingRecording !== "") {
+      root.recordingStartFinished(id, "", "Wait for the previous recording request to be confirmed.")
+      return
+    }
+    root.pendingRecording = id
+    // The listener records only into the conversation this panel reports.
+    root.reportPanel()
+    if (!root.send({action: "start-recording", id: id, draftLength: draftLength})) {
+      root.finishRecordingStart("", "Companion is disconnected.")
+    }
+  }
+
+  function finishRecordingStart(recordingId, error) {
+    const id = root.pendingRecording
+    root.pendingRecording = ""
+    if (id !== "") root.recordingStartFinished(id, recordingId, error)
+  }
+
+  function stopRecording(id) {
+    if (!root.send({action: "stop-recording", id: id})) root.recordingStopFinished("Companion is disconnected.")
+  }
+
+  function answerRecordingAppend(requestId, result) {
+    const answer = {action: "recording-append-result", requestId: requestId, outcome: result.outcome}
+    if (result.outcome === "appended") answer.length = result.length
+    else answer.reason = String(result.reason || "").slice(0, 300)
+    root.send(answer)
+  }
+
   function finishInput(error) {
     const pending = root.pendingInput
     root.pendingInput = null
@@ -156,6 +199,10 @@ Item {
     root.finishUtterance("Connection lost before confirmation. Check History before resending; your draft is retained.")
     root.finishInput("Connection lost before confirmation. Check the conversation before resending; your draft is retained.")
     root.finishChoice("Connection lost before confirmation. Check the conversation before choosing again.")
+    root.finishRecordingStart("", "Connection lost before the recording started.")
+    root.recordingLost()
+    root.recordingAvailable = false
+    root.recording = null
     root.speaking = false
     root.processing = 0
     root.history = []
@@ -177,6 +224,9 @@ Item {
       root.history = message.history || []
       root.historyDeletionAvailable = message.historyDeletionAvailable === true
       root.textInputAvailable = message.textInputAvailable === true
+      root.recordingAvailable = message.recordingAvailable === true
+      const recording = message.recording || null
+      if (JSON.stringify(recording) !== JSON.stringify(root.recording)) root.recording = recording
       const intents = message.intents || []
       if (JSON.stringify(intents) !== JSON.stringify(root.intents)) root.intents = intents
       const cleanup = message.transcriptionCleanup || null
@@ -199,6 +249,10 @@ Item {
       sessions.restore(message.session, message.reveal)
     } else if (message.type === "agent-draft") {
       root.draftRequested(message)
+    } else if (message.type === "recording-append") {
+      root.recordingAppendRequested(message)
+    } else if (message.type === "recording-finished") {
+      root.recordingFinished(message)
     } else if (message.type === "agent-browser-open") {
       root.browserOpenRequested(message)
     } else if (message.type === "agent-removed") {
@@ -216,6 +270,11 @@ Item {
       if (message.action === "send-agent") root.finishInput(failure)
       if (message.action === "submit-utterance") root.finishUtterance(failure)
       if (message.action === "choose-agent") root.finishChoice(failure)
+      if (message.action === "start-recording") {
+        const started = message.result && typeof message.result.recordingId === "string" ? message.result.recordingId : ""
+        root.finishRecordingStart(failure ? "" : started, failure || (started ? "" : "Recording did not start."))
+      }
+      if (message.action === "stop-recording") root.recordingStopFinished(failure)
       if (message.action === "activity-history") {
         if (failure) activity.loading = false
         else activity.page(message.result)

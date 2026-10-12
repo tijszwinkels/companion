@@ -508,6 +508,10 @@ export class Relay {
       // Snapshot controls are global desktop selection just like the
       // agent-actions event. The phone receives its own controls separately.
       delete message.agentActions;
+      // Manual recording uses the desktop microphone and composer; the phone
+      // can neither start it nor hold its draft.
+      delete message.recordingAvailable;
+      delete message.recording;
     }
 
     const sessions: unknown[] = [];

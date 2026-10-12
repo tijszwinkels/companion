@@ -188,6 +188,9 @@ export class AgentSessions implements InspectableModule {
   private draftHost?: AgentDraftHost;
   // The desktop runtime also owns the native panel's built-in browser.
   private browserHost?: AgentBrowserHost;
+  // Refuses to close a conversation that is being recorded into (manual
+  // recording, core/dictation). Returns the reason, or undefined to allow it.
+  private closeGuard?: (id: string) => string | undefined;
 
   /**
    * `directory` is the agents' working directory holding saved conversations
@@ -268,6 +271,15 @@ export class AgentSessions implements InspectableModule {
   /** Install (or clear) the UI connection that can hold composer drafts. */
   setDraftHost(host: AgentDraftHost | undefined): void {
     this.draftHost = host;
+  }
+
+  /**
+   * Install (or clear) a check that can refuse closing a conversation. It
+   * applies to every close path: the panel, `close session`, agent tools,
+   * the external API and an agent's deferred self-close.
+   */
+  setCloseGuard(guard: ((id: string) => string | undefined) | undefined): void {
+    this.closeGuard = guard;
   }
 
   /** Install (or clear) the route to the native panel's built-in browser. */
@@ -1832,6 +1844,10 @@ export class AgentSessions implements InspectableModule {
     if (session.closing) {
       throw Error('Question session is already closing');
     }
+    const refusal = this.closeGuard?.(id);
+    if (refusal) {
+      throw Error(refusal);
+    }
     session.closing = true;
     try {
       const cancelledTimers = await this.stop(id);
@@ -2158,6 +2174,12 @@ export class AgentSessions implements InspectableModule {
       throw new SessionToolError(
         'busy',
         'That conversation is running, closing or has queued messages, so it was left open.',
+      );
+    }
+    if (this.closeGuard?.(id)) {
+      throw new SessionToolError(
+        'busy',
+        'The user is recording into that conversation, so it was left open.',
       );
     }
     signal.throwIfAborted();

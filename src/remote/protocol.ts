@@ -219,6 +219,9 @@ export const desktopOnlyEvents: ReadonlySet<string> = new Set([
   'agent-draft',
   // Spoken "go to session N" navigation for the desktop panel.
   'agent-select',
+  // Manual recording appends to the desktop panel that started it.
+  'recording-append',
+  'recording-finished',
 ]);
 
 /** Explicit event boundary: new desktop events are private until reviewed. */

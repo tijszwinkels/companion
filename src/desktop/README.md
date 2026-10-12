@@ -933,6 +933,75 @@ review before sending** until it is cleared or sent. `focus: true` selects the
 tab and reveals the panel after a confirmed insertion; otherwise selection and
 keyboard focus do not change.
 
+### Manual recording into the text box
+
+A conversation's composer row has **Record**, beside Send. Recorded speech is
+transcribed in chunks and appended to that conversation's unsent draft in the
+panel that started it. It never reaches the router, intent inference, voice
+shortcuts, transcription cleanup, screenshots, Activity history, capture
+storage or an agent turn; Send stays a separate action. Source:
+`src/core/dictation/controller.ts` (ownership, queue, delivery),
+`src/sensors/audio/dictation-listener.ts` (capture) and the CLI's microphone
+loop. Chunking and the microphone handover are described in
+[speech timing](../../docs/speech-timing.md#manual-recording).
+
+The state snapshot carries `recordingAvailable` (true only in microphone mode
+with this protocol) and `recording`: `{recordingId, sessionId, state}` or null,
+where state is `starting` (waiting for the microphone), `recording` or
+`finishing`. It contains no text. Older listeners omit both; clients then hide
+Record. The phone relay removes both fields.
+
+```json
+{"action":"start-recording","id":"question-uuid","draftLength":120}
+{"action":"stop-recording","id":"question-uuid"}
+{"action":"recording-append-result","requestId":"append-uuid","outcome":"appended","length":168}
+{"action":"recording-append-result","requestId":"append-uuid","outcome":"unavailable","reason":"…"}
+```
+
+`start-recording` requires that this connection reports the conversation as
+its visible selection (`panel-state`), that no recording is running or
+finishing, and `draftLength` (the composer's current length in UTF-16 code
+units) below 8000. It returns `{outcome: "recording", recordingId, id}`.
+`stop-recording` is accepted only from the owning connection and returns
+`finishing`. All three actions are refused for remote panels and run as
+controls, never behind a slow paste.
+
+For each non-empty chunk, in speech order, only the owning connection receives
+`{"type":"recording-append","requestId","recordingId","id","sequence","text"}`.
+The panel appends the text synchronously to the end of that conversation's
+draft (a space separates it from text that does not already end in
+whitespace), even if another tab is now displayed, and answers once with the
+resulting `length`, or `unavailable` if that tab is not open or the
+recording is not the one it started. The next chunk is sent only after the
+answer. After 5 seconds, disconnection or shutdown the append is
+`unconfirmed`; it is never resent, and a later answer is refused as expired.
+
+When the recording ends, the owner receives `{"type":"recording-finished",
+"recordingId","id","reason","complete","message"}`. `complete: false` means
+recorded speech may be missing; `message` is shown below the text box
+(empty after an ordinary Stop). Reasons:
+
+| Reason                     | Capture stops when                                                                              | Words already captured                                   |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `stopped`                  | Stop recording                                                                                  | transcribed and appended, including the final words      |
+| `limit`                    | an append's resulting length is ≥ 8000                                                          | kept whole, even past 8000; Send then asks to shorten    |
+| `navigation`               | the owner's `panel-state` shows another conversation, a non-conversation page or a hidden panel | appended to the original conversation                    |
+| `paused`                   | listening becomes paused (manual or media)                                                      | appended                                                 |
+| `overload`                 | 3 chunks wait for ASR                                                                           | appended; the 4th slot is reserved for the final chunk   |
+| `microphone`               | capture or VAD fails                                                                            | audio before the failure is appended; `complete: false`  |
+| `transcription`            | a chunk's ASR fails                                                                             | earlier text kept; later chunks discarded, never retried |
+| `delivery`                 | an append is `unavailable`/`unconfirmed`/`offline`                                              | later chunks discarded, never resent                     |
+| `disconnected`, `shutdown` | the owner disconnects or the listener stops                                                     | nothing more is delivered                                |
+
+Record may start while ordinary listening is paused; the pause/media state is
+not changed, and ordinary listening resumes afterwards only if it is not
+paused. One recording exists at a time. While a conversation is recording or
+finishing, every close path refuses it: the panel, `close session`, agent
+tools, the external API and an agent's deferred self-close. An abandoned
+recording no longer blocks closing. Panels disable Send, Close session and a
+second Record meanwhile. Drafts remain UI process memory; there is no
+recording archive or crash recovery.
+
 ### Destination feedback
 
 `Activity.outcome` optionally carries `agent-session` or `new-agent-session` as

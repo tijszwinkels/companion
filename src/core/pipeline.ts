@@ -102,6 +102,12 @@ export class SensorPipeline implements InspectableModule {
   // idle() and shutdown wait for their capture and activity callbacks.
   private readonly retiring = new Set<Promise<void>>();
 
+  // The single ASR worker accepts one request at a time. This worker and
+  // manual recording (core/dictation) take turns through `transcribeInTurn`.
+  // The most recent turn, settling when it has finished (it never rejects);
+  // undefined while the ASR worker is free.
+  private asrTurn?: Promise<void>;
+
   /** Reported by the CLI as a nonzero exit status, without stopping later jobs. */
   failures = 0;
 
@@ -384,6 +390,55 @@ export class SensorPipeline implements InspectableModule {
     return true;
   }
 
+  /**
+   * Transcribe on the shared ASR worker, after every earlier turn has
+   * finished. The resident worker refuses concurrent requests, so the sensor
+   * worker below and manual recording queue here in FIFO order instead. Each
+   * caller has at most one request in flight, so at most one turn waits.
+   *
+   * A caller whose `signal` aborts while it waits leaves the queue without
+   * sending anything. Its own turn still ends only after the previous one,
+   * so a later caller can never overtake a request that is still running.
+   * The ASR timeout starts when the request is sent, not while it waits.
+   */
+  async transcribeInTurn(
+    samples: Float32Array,
+    signal: AbortSignal,
+    observe?: (diagnostic: TranscriptionDiagnostic) => void,
+  ): Promise<string> {
+    const previous = this.asrTurn;
+    let settle!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.asrTurn = turn;
+
+    const endTurn = () => {
+      if (this.asrTurn === turn) {
+        this.asrTurn = undefined;
+      }
+      settle();
+    };
+
+    let sent = false;
+    try {
+      // A free worker is used in the same tick, exactly as before turns
+      // existed, so ordinary listening keeps its timing and cancellation.
+      if (previous) {
+        await waitForTurn(previous, signal);
+      }
+      sent = true;
+      return await this.dependencies.transcriber.transcribe(samples, signal, observe);
+    } finally {
+      if (sent || !previous) {
+        endTurn();
+      } else {
+        // Cancelled while waiting: hand over only once the earlier turn ends.
+        void previous.then(endTurn);
+      }
+    }
+  }
+
   /** Used by file playback and shutdown to wait for accepted work to settle. */
   async idle(): Promise<void> {
     while (this.worker || this.retiring.size) {
@@ -500,7 +555,7 @@ export class SensorPipeline implements InspectableModule {
         // a new screenshot taken after transcription could show another app.
         const [transcript, capture] = await Promise.all([
           job.samples
-            ? this.dependencies.transcriber.transcribe(job.samples, job.signal, (diagnostic) => {
+            ? this.transcribeInTurn(job.samples, job.signal, (diagnostic) => {
                 transcription = diagnostic;
                 this.log('asr', JSON.stringify(diagnostic), job.id);
               })
@@ -702,6 +757,27 @@ export class SensorPipeline implements InspectableModule {
       }
     }
   }
+}
+
+/**
+ * Resolve once `previous` (a turn that never rejects) has settled, or reject
+ * with the abort reason if `signal` aborts first. Listeners are removed either way.
+ */
+function waitForTurn(previous: Promise<void>, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+
+  return new Promise<void>((resolve, reject) => {
+    const aborted = () => {
+      reject(signal.reason);
+    };
+
+    signal.addEventListener('abort', aborted, { once: true });
+
+    void previous.then(() => {
+      signal.removeEventListener('abort', aborted);
+      resolve();
+    });
+  });
 }
 
 /** Join the raw audio of a provisional attempt, the pause and its continuation. */

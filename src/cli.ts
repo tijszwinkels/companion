@@ -34,6 +34,7 @@ import type { VoiceActivityDetector } from './sensors/audio/vad.ts';
 import { listen } from './sensors/audio/listener.ts';
 import { SensorPipeline } from './core/pipeline.ts';
 import { PauseControl } from './core/pause-control.ts';
+import { DictationController } from './core/dictation/controller.ts';
 import { DeliveryControl } from './core/delivery-control.ts';
 import { failureOutcome } from './core/delivery-error.ts';
 import { createGraph } from './core/graph.ts';
@@ -220,6 +221,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
   let vad: VoiceActivityDetector | undefined;
   let transcriber: Transcriber | undefined;
   let pipeline: SensorPipeline | undefined;
+  let dictation: DictationController | undefined;
   let desktop: DesktopRuntime | undefined;
   let external: ExternalSessionServer | undefined;
   let phone: PhoneAccessHook | undefined;
@@ -404,6 +406,21 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     const { VoiceActivityDetector } = await import('./sensors/audio/vad.ts');
     vad = await VoiceActivityDetector.create(config.vadModel);
 
+    // Manual recording into a conversation's text box needs the live
+    // microphone and a desktop panel to hold the draft. It shares this VAD and
+    // takes turns with ordinary listening for the microphone (loop below) and
+    // with the sensor worker for the ASR worker (transcribeInTurn).
+    if (desktop && !values.wav) {
+      const sensorPipeline = pipeline;
+      dictation = new DictationController(
+        (samples, signal) => sensorPipeline.transcribeInTurn(samples, signal),
+        pause,
+        log,
+        controller.signal,
+      );
+      desktop.connectDictation(dictation);
+    }
+
     if (seconds !== undefined) {
       timer = setTimeout(stop, seconds * 1000);
     }
@@ -413,9 +430,26 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       values.wav ? `Audio file: ${values.wav}` : 'Desktop control ready · Ctrl+C to stop',
     );
 
+    // One listening period at a time owns the microphone: ordinary listening
+    // while not paused, or a manual recording, which may also run while
+    // ordinary listening is paused. Its accepted chunks keep transcribing
+    // after capture ends, while the microphone returns to ordinary listening.
     do {
-      await pause.waitUntilResumed(controller.signal);
+      if (dictation) {
+        await dictation.waitForMicrophone(controller.signal);
+      } else {
+        await pause.waitUntilResumed(controller.signal);
+      }
+
+      if (dictation?.waitingForMicrophone) {
+        await dictation.record(vad, { device: values.device });
+        continue;
+      }
+
       const listeningSignal = AbortSignal.any([controller.signal, pause.signal]);
+      // Aborted when a recording asks for the microphone. It ends this
+      // period without cancelling utterances that were already accepted.
+      const handoff = dictation?.handoff();
 
       try {
         await listen(
@@ -426,9 +460,13 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
           {
             file: values.wav,
             device: values.device,
+            handoff,
           },
           activity,
         );
+        if (handoff?.aborted) {
+          continue;
+        }
         break;
       } catch (error) {
         if (!listeningSignal.aborted || controller.signal.aborted) {
@@ -459,6 +497,9 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     // (see desktop-hook.ts); a failure is logged and shutdown continues.
     await phone?.stop();
 
+    // Shutdown abandons a recording; its last chunk settles promptly.
+    await dictation?.idle();
+    dictation?.close();
     await pipeline?.idle();
     await transcriber?.close();
     await external?.close();

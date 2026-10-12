@@ -25,6 +25,12 @@ import {
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
+import type {
+  DictationAppendRequest,
+  DictationAppendResult,
+  DictationController,
+  DictationSummary,
+} from '../core/dictation/controller.ts';
 import { IntentPreferences } from './intent-preferences.ts';
 import { CleanupPreference } from './cleanup-preference.ts';
 import type { TranscriptionCleanupSetting } from '../core/transcription-cleanup/setting.ts';
@@ -42,6 +48,9 @@ import {
 
 /** A connected panel must confirm a forwarded draft within this time. */
 const draftConfirmationMilliseconds = 5000;
+
+/** The recording panel must confirm each appended transcript chunk within this time. */
+const recordingAppendConfirmationMilliseconds = 5000;
 
 /**
  * A panel answers a browser-open request once the page loaded or failed, or
@@ -83,6 +92,10 @@ const desktopOnlyActions = new Set([
   'composer-focus',
   'agent-draft-result',
   'agent-browser-open-result',
+  // Manual recording uses the desktop microphone and a desktop composer.
+  'start-recording',
+  'stop-recording',
+  'recording-append-result',
 ]);
 
 /**
@@ -211,6 +224,13 @@ export class DesktopRuntime {
     string,
     { clientId: number; finish(outcome: AgentDraftOutcome): void }
   >();
+  // Manual recording into a conversation's text box; absent outside
+  // microphone mode. Appends still waiting for the owning panel's answer.
+  private dictation?: DictationController;
+  private readonly pendingRecordingAppends = new Map<
+    string,
+    { clientId: number; finish(result: DictationAppendResult): void }
+  >();
   // Panels with a built-in browser (the standalone native window), by client,
   // with the sequence of their latest panel report, like draft hosts.
   private readonly browserHosts = new Map<number, number>();
@@ -262,6 +282,12 @@ export class DesktopRuntime {
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
         this.browserHosts.delete(clientId);
         this.abandonBrowserOpens(clientId, 'The panel disconnected before confirming.');
+        // A recording belongs to the panel that started it. Its words can
+        // only go to that panel's draft, so stop and deliver nothing more.
+        this.abandonRecordingAppends(clientId, 'The panel disconnected before confirming.');
+        if (this.dictation?.ownedBy(clientId)) {
+          this.dictation.abandon('disconnected');
+        }
         const navigationRemoved = this.navigation?.clientId === clientId;
         if (navigationRemoved) {
           this.navigation = undefined;
@@ -648,6 +674,97 @@ export class DesktopRuntime {
     this.server.broadcast();
   };
 
+  /**
+   * Attach manual recording (microphone mode only). Its state is published to
+   * every panel; its final summary goes only to the panel that started it.
+   * The conversation being recorded into cannot be closed meanwhile.
+   */
+  connectDictation(dictation: DictationController): void {
+    this.dictation = dictation;
+    dictation.on('change', this.dictationChanged);
+    dictation.on('finished', this.dictationFinished);
+    this.options.agents?.setCloseGuard((id) => dictation.closeRefusal(id));
+    this.server.broadcast();
+  }
+
+  private readonly dictationChanged = () => {
+    this.server.broadcast();
+  };
+
+  private readonly dictationFinished = (summary: DictationSummary) => {
+    this.server.publishTo(summary.clientId, {
+      type: 'recording-finished',
+      recordingId: summary.recordingId,
+      id: summary.sessionId,
+      reason: summary.reason,
+      complete: summary.complete,
+      message: summary.message,
+    });
+  };
+
+  /**
+   * Send one transcript chunk to the panel that started the recording and
+   * wait for its answer, like an agent draft. Once sent, a timeout,
+   * disconnect or abandoned recording is `unconfirmed`: the panel may already
+   * have appended it, so the recording never resends it.
+   */
+  private requestRecordingAppend(
+    request: DictationAppendRequest,
+    signal: AbortSignal,
+  ): Promise<DictationAppendResult> {
+    if (signal.aborted) {
+      return Promise.resolve({ outcome: 'offline', reason: 'The recording has ended.' });
+    }
+
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const finish = (result: DictationAppendResult) => {
+        if (!this.pendingRecordingAppends.delete(requestId)) {
+          return;
+        }
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancelled);
+        resolve(result);
+      };
+      const timer = setTimeout(
+        () =>
+          finish({
+            outcome: 'unconfirmed',
+            reason: 'The panel did not confirm the transcript within 5 seconds.',
+          }),
+        recordingAppendConfirmationMilliseconds,
+      );
+      const cancelled = () =>
+        finish({
+          outcome: 'unconfirmed',
+          reason: 'The recording ended before the panel confirmed the transcript.',
+        });
+
+      this.pendingRecordingAppends.set(requestId, { clientId: request.clientId, finish });
+      signal.addEventListener('abort', cancelled, { once: true });
+
+      const sent = this.server.publishTo(request.clientId, {
+        type: 'recording-append',
+        requestId,
+        recordingId: request.recordingId,
+        id: request.sessionId,
+        sequence: request.sequence,
+        text: request.text,
+      });
+      if (!sent) {
+        finish({ outcome: 'offline', reason: 'The panel disconnected.' });
+      }
+    });
+  }
+
+  private abandonRecordingAppends(clientId: number | undefined, reason: string): void {
+    for (const pending of [...this.pendingRecordingAppends.values()]) {
+      if (clientId === undefined || pending.clientId === clientId) {
+        pending.finish({ outcome: 'unconfirmed', reason });
+      }
+    }
+  }
+
   /** Attach the live queue after CLI routing and sensors have been constructed. */
   connectPipeline(pipeline: Pick<SensorPipeline, 'submitText'>): void {
     this.pipeline = pipeline;
@@ -685,6 +802,10 @@ export class DesktopRuntime {
       activityHistoryCount: this.activityHistory.count,
       historyDeletionAvailable: !this.options.preview,
       textInputAvailable: Boolean(this.pipeline),
+      // Manual recording: whether this listener offers it, and the current
+      // recording ({recordingId, sessionId, state}) or null. No text.
+      recordingAvailable: Boolean(this.dictation),
+      recording: this.dictation?.status ?? null,
       ...conversations,
       sessionControlsAvailable: Boolean(agents),
       intents: this.router?.intentStates({ interaction: this.interactionContext() }) ?? [],
@@ -1470,6 +1591,67 @@ export class DesktopRuntime {
       return 'media-recorded';
     }
 
+    if (request.action === 'start-recording') {
+      if (
+        typeof request.id !== 'string' ||
+        !Number.isSafeInteger(request.draftLength) ||
+        (request.draftLength as number) < 0
+      ) {
+        throw Error('Expected a conversation id and the current draft length');
+      }
+      if (!this.dictation) {
+        throw Error('Recording is not available in this listener mode');
+      }
+      // Only the panel showing that conversation may record into it; the
+      // words go to that panel's draft, never to whichever tab is selected later.
+      if (!this.options.agents?.has(request.id) || !this.showsConversation(clientId, request.id)) {
+        throw Error('Open this conversation to record into its text box');
+      }
+      const status = this.dictation.start({
+        clientId,
+        sessionId: request.id,
+        draftLength: request.draftLength as number,
+        append: (append, signal) => this.requestRecordingAppend(append, signal),
+      });
+      return { outcome: 'recording', recordingId: status.recordingId, id: status.sessionId };
+    }
+
+    if (request.action === 'stop-recording') {
+      if (typeof request.id !== 'string') {
+        throw Error('Expected a conversation id');
+      }
+      const status = this.dictation?.status;
+      if (!status || status.sessionId !== request.id || !this.dictation!.ownedBy(clientId)) {
+        throw Error('This conversation is not recording in this panel');
+      }
+      this.dictation!.stop('stopped');
+      return 'finishing';
+    }
+
+    if (request.action === 'recording-append-result') {
+      if (
+        typeof request.requestId !== 'string' ||
+        (request.outcome !== 'appended' && request.outcome !== 'unavailable') ||
+        (request.outcome === 'appended' &&
+          (!Number.isSafeInteger(request.length) || (request.length as number) < 0)) ||
+        (request.reason !== undefined &&
+          (typeof request.reason !== 'string' || request.reason.length > 300))
+      ) {
+        throw Error('Expected a recording append request id and outcome');
+      }
+      // Only the panel that was asked can answer, once; a late answer is refused.
+      const pending = this.pendingRecordingAppends.get(request.requestId);
+      if (!pending || pending.clientId !== clientId) {
+        throw Error('This recording append request has expired');
+      }
+      pending.finish(
+        request.outcome === 'appended'
+          ? { outcome: 'appended', length: request.length as number }
+          : { outcome: 'unavailable', reason: (request.reason as string | undefined) ?? '' },
+      );
+      return 'recording-recorded';
+    }
+
     if (request.action === 'agent-draft-result') {
       const outcomes = ['inserted', 'appended', 'conflict', 'unavailable'];
       if (
@@ -1589,6 +1771,10 @@ export class DesktopRuntime {
         clientId,
       );
       const stateBroadcast = this.setPanelState(request.id, request.composerFocused, clientId);
+      // Leaving the conversation being recorded into (another tab, Activity,
+      // Previous sessions or a hidden panel) stops capture. The remaining
+      // words still go to the original conversation's draft.
+      this.dictation?.ownerViewChanged(clientId, request.id);
       if (previousNavigation?.clientId !== this.navigation?.clientId && !stateBroadcast) {
         // Only navigation presence/ownership affects intent availability. The
         // token is not in snapshots; updating it must not copy every transcript.
@@ -1930,6 +2116,11 @@ export class DesktopRuntime {
     this.abandonDrafts(undefined, 'Companion is shutting down.');
     this.options.agents?.setBrowserHost(undefined);
     this.abandonBrowserOpens(undefined, 'Companion is shutting down.');
+    this.dictation?.abandon('shutdown');
+    this.dictation?.off('change', this.dictationChanged);
+    this.dictation?.off('finished', this.dictationFinished);
+    this.options.agents?.setCloseGuard(undefined);
+    this.abandonRecordingAppends(undefined, 'Companion is shutting down.');
     this.ready = false;
     this.speaking = false;
     this.pause.off('change', this.pauseChanged);

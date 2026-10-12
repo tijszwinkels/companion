@@ -20,6 +20,11 @@ TestCase {
   SignalSpy { id: reveals; target: client; signalName: "revealRequested" }
   SignalSpy { id: drafts; target: client; signalName: "draftRequested" }
   SignalSpy { id: browserOpens; target: client; signalName: "browserOpenRequested" }
+  SignalSpy { id: recordingStarts; target: client; signalName: "recordingStartFinished" }
+  SignalSpy { id: recordingStops; target: client; signalName: "recordingStopFinished" }
+  SignalSpy { id: recordingAppends; target: client; signalName: "recordingAppendRequested" }
+  SignalSpy { id: recordingEnds; target: client; signalName: "recordingFinished" }
+  SignalSpy { id: recordingLosses; target: client; signalName: "recordingLost" }
 
   function session(id, turn) {
     return {id: id, title: id, status: "idle", completedTurnId: turn || "", messages: []}
@@ -44,6 +49,53 @@ TestCase {
     backend.connected = true
     backend.requests = []
     inputs.clear(); choices.clear(); reveals.clear(); utterances.clear()
+    recordingStarts.clear(); recordingStops.clear(); recordingAppends.clear()
+    recordingEnds.clear(); recordingLosses.clear()
+  }
+  function test_manual_recording_requests_replies_and_disconnect() {
+    backend.received({type: "state", protocol: 1, ready: true, sessions: [session("a")],
+      activitySessionId: "activity", activityHistoryCount: 0, recordingAvailable: true,
+      recording: {recordingId: "r1", sessionId: "a", state: "recording"}})
+    compare(client.recordingAvailable, true)
+    compare(client.recording.state, "recording")
+    client.panelVisible = true
+    wait(0)
+    backend.requests = []
+
+    // The visible conversation is reported first, in the same ordered stream.
+    client.startRecording("a", 12)
+    compare(backend.requests[0].action, "panel-state")
+    compare(backend.requests[1], {action: "start-recording", id: "a", draftLength: 12})
+    client.startRecording("a", 12)
+    compare(recordingStarts.count, 1, "One start request at a time")
+    compare(recordingStarts.signalArguments[0][2], "Wait for the previous recording request to be confirmed.")
+    backend.received({type: "result", action: "start-recording", result: {outcome: "recording", recordingId: "r1", id: "a"}})
+    compare(Array.from(recordingStarts.signalArguments[1]), ["a", "r1", ""])
+
+    backend.received({type: "recording-append", requestId: "q1", recordingId: "r1", id: "a", sequence: 1, text: "words"})
+    compare(recordingAppends.count, 1)
+    client.answerRecordingAppend("q1", {outcome: "appended", length: 5})
+    compare(backend.requests[backend.requests.length - 1], {action: "recording-append-result", requestId: "q1", outcome: "appended", length: 5})
+    client.answerRecordingAppend("q2", {outcome: "unavailable", reason: "closed"})
+    compare(backend.requests[backend.requests.length - 1], {action: "recording-append-result", requestId: "q2", outcome: "unavailable", reason: "closed"})
+
+    client.stopRecording("a")
+    compare(backend.requests[backend.requests.length - 1], {action: "stop-recording", id: "a"})
+    backend.received({type: "error", action: "stop-recording", message: "This conversation is not recording in this panel"})
+    compare(recordingStops.signalArguments[0][0], "This conversation is not recording in this panel")
+    backend.received({type: "recording-finished", recordingId: "r1", id: "a", reason: "stopped", complete: true, message: ""})
+    compare(recordingEnds.count, 1)
+
+    // A refused start and a lost connection both answer the pending request.
+    client.startRecording("a", 0)
+    backend.received({type: "error", action: "start-recording", message: "Another recording is already running"})
+    compare(Array.from(recordingStarts.signalArguments[2]), ["a", "", "Another recording is already running"])
+    client.startRecording("a", 0)
+    backend.disconnected()
+    compare(recordingStarts.signalArguments[3][2], "Connection lost before the recording started.")
+    verify(recordingLosses.count >= 1)
+    compare(client.recordingAvailable, false)
+    compare(client.recording, null)
   }
   function test_activity_text_orders_focus_before_submission_and_does_not_replay() {
     snapshot([])

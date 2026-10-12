@@ -263,6 +263,14 @@ a hidden agent composer. Outside Companion, Super+Alt+Tab retains Omarchy's grou
 Select message text and press **Ctrl+C** to copy the selection. Hover over a
 message for its **Copy** button, which copies the whole message (including the
 original Markdown for agent answers) without changing your selection or draft.
+**Record**, beside Send, dictates into the text box instead of typing: speech is
+transcribed in short chunks and added to the end of the draft, where you can
+edit it. Nothing is sent and no voice commands run until you press **Send**.
+**Stop recording** keeps your last words; Send and Close wait while it shows
+**Finishing transcription…**. Recording also stops when you leave the
+conversation, pause listening, or the draft reaches 8,000 characters; a note
+under the text box says why, and whether any speech may be missing. It works
+while listening is paused, without changing that setting.
 While Pi works, **Enter** or **Queue** accepts a follow-up for the next turn.
 Waiting messages show **queued**. Each conversation permits eight waiting messages;
 they run one at a time, without interrupting its answer or taking another agent slot.

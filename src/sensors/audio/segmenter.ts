@@ -85,7 +85,17 @@ export class Segmenter {
   private silenceMs = 0;
   private peakProbability = 0;
 
-  constructor(private readonly observe?: (diagnostic: SegmentDiagnostic) => void) {}
+  /**
+   * `endpointSilenceMs` is the silence that closes a candidate. Ordinary
+   * listening uses the provisional endpoint (VAD_SETTINGS.silenceMs, effective
+   * ENDPOINT_MS). Manual recording passes a longer endpoint so each chunk is a
+   * natural phrase that can be transcribed on its own (see
+   * sensors/audio/dictation-listener.ts). All other VAD settings are shared.
+   */
+  constructor(
+    private readonly observe?: (diagnostic: SegmentDiagnostic) => void,
+    private readonly endpointSilenceMs = VAD_SETTINGS.silenceMs,
+  ) {}
 
   /** The latest frame's speech state, used by the CLI for progress messages. */
   speaking = false;
@@ -145,7 +155,7 @@ export class Segmenter {
     if (this.frames.length * ms >= VAD_SETTINGS.maxMs) {
       return this.finish('limit');
     }
-    if (this.silenceMs >= VAD_SETTINGS.silenceMs) {
+    if (this.silenceMs >= this.endpointSilenceMs) {
       return this.finish('silence');
     }
   }

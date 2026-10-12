@@ -73,8 +73,33 @@ Item {
   readonly property bool hasMessageSelection: selectedMessage !== null && selectedMessage.visible && selectedMessage.selectedText !== ""
   readonly property bool running: session && (session.status === "starting" || session.status === "running")
   readonly property int messageCount: messages.count
+  // Manual recording into this text box (Record / Stop recording). The
+  // listener reports whether it offers recording and the current recording,
+  // {recordingId, sessionId, state}, or null. Recorded words are only ever
+  // appended to the draft; sending stays the separate Send action.
+  property bool recordingAvailable: false
+  property var recording: null
+  // The recording this panel started: {id, recordingId}. recordingId is ""
+  // until the listener confirms the start.
+  property var ownRecording: null
+  property bool stopRecordingPending: false
+  // Conversation id -> why its last recording stopped or what may be missing.
+  property var recordingNotices: ({})
+  readonly property bool recordingHere: ownRecording !== null && session !== null && ownRecording.id === session.id
+  // "", "starting", "recording" or "finishing", for this panel's own recording.
+  readonly property string recordingState: !recordingHere ? ""
+    : ownRecording.recordingId !== "" && recording !== null && recording.recordingId === ownRecording.recordingId
+      ? recording.state : "starting"
+  // While words may still arrive in this conversation's draft, it cannot be
+  // sent or closed, whichever panel started the recording.
+  readonly property bool recordingBusy: session !== null
+    && (recordingHere || (recording !== null && recording.sessionId === session.id))
+  readonly property bool canRecord: recordingAvailable && online && session !== null
+    && ownRecording === null && recording === null && pendingSubmission === null
+    && composer.text.length < maximumMessageLength
+  readonly property string displayedRecordingNotice: root.recordingNotices[root.displayedId] || ""
   readonly property bool canSend: online && session !== null && pendingSubmission === null
-    && pendingChoice === null
+    && pendingChoice === null && !recordingBusy
     && composer.text.trim().length > 0 && composer.text.length <= maximumMessageLength
   readonly property string composerFocusId: online && composerReachable && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
@@ -84,6 +109,8 @@ Item {
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
+  signal recordRequested(string id, int draftLength)
+  signal stopRecordingRequested(string id)
   signal choiceRequested(string id, string revision, int index)
   signal stopRunRequested(string id, string runId)
   signal screenshotRequested(url source, string title)
@@ -220,12 +247,91 @@ Item {
     root.pendingSubmission = null
     root.inputError = error || ""
     if (!error) {
+      root.setRecordingNotice(id, "")
       if (root.drafts[id] === text) {
         delete root.drafts[id]
         root.forgetDraftSource(id)
       }
       if (root.displayedId === id && composer.text === text) composer.text = ""
     }
+  }
+
+  function setRecordingNotice(id, text) {
+    if ((root.recordingNotices[id] || "") === text) return
+    const notices = Object.assign({}, root.recordingNotices)
+    if (text) notices[id] = text
+    else delete notices[id]
+    root.recordingNotices = notices
+  }
+
+  // Record starts a recording for the displayed conversation; while it runs,
+  // the same button stops it. Stopping keeps the final words: they are still
+  // transcribed and added while the button says "Finishing transcription…".
+  function toggleRecording() {
+    if (root.recordingHere) {
+      if (root.recordingState === "finishing" || root.stopRecordingPending || root.ownRecording.recordingId === "") return
+      root.stopRecordingPending = true
+      root.stopRecordingRequested(root.ownRecording.id)
+      return
+    }
+    if (!root.canRecord) return
+    root.inputError = ""
+    root.setRecordingNotice(root.session.id, "")
+    root.ownRecording = {id: root.session.id, recordingId: ""}
+    root.recordRequested(root.session.id, composer.text.length)
+  }
+
+  // The listener's answer to Record: a recording ID, or a refusal.
+  function recordingStarted(id, recordingId, error) {
+    if (!root.ownRecording || root.ownRecording.id !== id || root.ownRecording.recordingId !== "") return
+    if (error || !recordingId) {
+      root.ownRecording = null
+      if (root.displayedId === id) root.inputError = error || "Recording did not start."
+      return
+    }
+    root.ownRecording = {id: id, recordingId: recordingId}
+  }
+
+  function recordingStopAnswered(error) {
+    root.stopRecordingPending = false
+    if (error && root.ownRecording && root.displayedId === root.ownRecording.id) root.inputError = error
+  }
+
+  // A transcript chunk from this panel's recording. Appended at the end of
+  // that conversation's draft, after anything already there (including the
+  // user's edits), whether or not its tab is displayed. Runs synchronously,
+  // so no keystroke interleaves between reading and writing the draft.
+  // Returns the resulting length so the listener can stop at the Send limit;
+  // text is never cut here.
+  function appendRecording(request) {
+    const own = root.ownRecording
+    if (!own || own.id !== request.id || own.recordingId === "" || own.recordingId !== request.recordingId) {
+      return {outcome: "unavailable", reason: "This panel is not recording into that conversation."}
+    }
+    const displayed = root.displayedId === request.id
+    const current = displayed ? composer.text : (root.drafts[request.id] || "")
+    const separator = current === "" || /\s$/.test(current) ? "" : " "
+    const addition = separator + request.text
+    if (displayed) composer.insert(composer.length, addition)
+    else root.drafts[request.id] = current + addition
+    return {outcome: "appended", length: current.length + addition.length}
+  }
+
+  function recordingFinished(message) {
+    const own = root.ownRecording
+    if (!own || own.recordingId === "" || own.recordingId !== message.recordingId) return
+    root.ownRecording = null
+    root.stopRecordingPending = false
+    root.setRecordingNotice(own.id, message.message || "")
+  }
+
+  // The listener abandons a recording when its panel disconnects.
+  function recordingDisconnected() {
+    const own = root.ownRecording
+    root.stopRecordingPending = false
+    if (!own) return
+    root.ownRecording = null
+    root.setRecordingNotice(own.id, "Recording stopped because Companion disconnected. Some speech may be missing.")
   }
 
   function forgetDraftSource(id) {
@@ -917,6 +1023,18 @@ Item {
       font.pixelSize: 11 * root.unit
     }
 
+    Text {
+      objectName: "recordingNotice"
+      width: parent.width
+      visible: root.displayedRecordingNotice !== ""
+      text: root.displayedRecordingNotice
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      color: root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 11 * root.unit
+    }
+
     // Appears near the limit, so a long message never fails by surprise.
     Text {
       objectName: "sessionComposerCounter"
@@ -951,6 +1069,21 @@ Item {
         unit: root.unit
         onTriggered: root.submit()
       }
+      // Distinct from the agent's Stop: this only ends recording into the text box.
+      PanelAction {
+        objectName: "recordSession"
+        visible: root.recordingAvailable && root.session !== null
+        enabled: root.recordingHere
+          ? root.online && root.recordingState !== "finishing" && !root.stopRecordingPending && root.ownRecording.recordingId !== ""
+          : root.canRecord
+        text: root.recordingState === "finishing" ? "Finishing transcription…"
+          : root.recordingHere ? "Stop recording" : "Record"
+        foreground: root.foreground
+        selection: root.recordingHere ? Qt.rgba(0.94, 0.33, 0.31, 0.45) : root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        onTriggered: root.toggleRecording()
+      }
       PanelAction {
         objectName: "stopSession"
         visible: root.running && !(root.actionsCurrent && root.agentActions.stopRunId)
@@ -964,7 +1097,7 @@ Item {
       }
       PanelAction {
         objectName: "dismissSession"
-        enabled: root.online && root.session !== null
+        enabled: root.online && root.session !== null && !root.recordingBusy
         text: "Close session"
         foreground: root.foreground
         selection: root.selection

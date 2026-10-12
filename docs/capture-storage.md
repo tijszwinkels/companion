@@ -33,6 +33,12 @@ files when a continued utterance settles into its final record (this happens
 whether storage is on or off, and only to that in-flight attempt). Turning
 storage off does not delete anything that was already saved.
 
+Manual recording into a conversation's text box (**Record**) never writes any
+of these, whether storage is on or off: its audio exists only in memory until
+its chunk is transcribed, it creates no utterance row, screenshot or Activity
+entry, and its text lives only in the panel's unsent draft. Recording is not
+consent to archive audio.
+
 Not covered: the screenshot and text sent to the intent model and to agents
 (they need it), native agent transcripts and provider-side retention, files an
 agent or the user writes deliberately, the explicit eval export command, and

@@ -22,6 +22,12 @@ Item {
   property var history: []
   property bool historyDeletionAvailable: false
   property bool textInputAvailable: false
+  // Manual recording: whether the listener offers it, the current recording
+  // {recordingId, sessionId, state} or null, and a Record request awaiting
+  // its answer (conversation id).
+  property bool recordingAvailable: false
+  property var recording: null
+  property string pendingRecording: ""
   property string pendingUtterance: ""
   property var intents: []
   // {enabled: bool}, or null when the listener has no transcription cleanup.
@@ -167,6 +173,39 @@ Item {
       outcome: result.outcome, reason: result.reason || ""})
     const changed = result.outcome === "inserted" || result.outcome === "appended"
     if (changed && message.focus === true) agentSessions.reveal(message.id)
+  }
+
+  function startRecording(id, draftLength) {
+    if (!root.online || root.pendingRecording !== "") {
+      sidePanel.recordingStarted(id, "", root.online ? "Wait for the previous recording request to be confirmed." : "Companion is disconnected.")
+      return
+    }
+    root.pendingRecording = id
+    // The listener records only into the conversation this panel reports.
+    root.reportPanelState()
+    root.send({action: "start-recording", id: id, draftLength: draftLength})
+  }
+
+  function finishRecordingStart(recordingId, error) {
+    const id = root.pendingRecording
+    root.pendingRecording = ""
+    if (id !== "") sidePanel.recordingStarted(id, recordingId, error)
+  }
+
+  function stopRecording(id) {
+    if (!root.send({action: "stop-recording", id: id})) sidePanel.recordingStopAnswered("Companion is disconnected.")
+  }
+
+  // Only the panel that started a recording receives its transcript chunks.
+  // Append to that conversation's draft and always answer with the outcome.
+  function applyRecordingAppend(message) {
+    const result = native.ready
+      ? {outcome: "unavailable", reason: "Another Companion window holds this panel's drafts."}
+      : sidePanel.appendRecording(message)
+    const answer = {action: "recording-append-result", requestId: message.requestId, outcome: result.outcome}
+    if (result.outcome === "appended") answer.length = result.length
+    else answer.reason = String(result.reason || "").slice(0, 300)
+    root.send(answer)
   }
 
   function composerFocusChanged() {
@@ -354,6 +393,9 @@ Item {
         root.history = message.history
         root.historyDeletionAvailable = message.historyDeletionAvailable === true
         root.textInputAvailable = message.textInputAvailable === true
+        root.recordingAvailable = message.recordingAvailable === true
+        const recording = message.recording || null
+        if (JSON.stringify(root.recording) !== JSON.stringify(recording)) root.recording = recording
         // Speech/history snapshots must not rebuild chips underneath a held
         // mouse click or tooltip. Only changed routing state replaces the list.
         const intents = message.intents || []
@@ -384,6 +426,10 @@ Item {
         agentSessions.restore(message.session, message.reveal)
       } else if (message.type === "agent-draft") {
         root.applyAgentDraft(message)
+      } else if (message.type === "recording-append") {
+        root.applyRecordingAppend(message)
+      } else if (message.type === "recording-finished") {
+        sidePanel.recordingFinished(message)
       } else if (message.type === "agent-removed") {
         agentSessions.remove(message.id)
       } else if (message.type === "error") {
@@ -391,6 +437,8 @@ Item {
         if (message.action === "send-agent") root.finishAgentInput(message.message)
         if (message.action === "submit-utterance") root.finishUtterance(message.message)
         if (message.action === "choose-agent") root.finishAgentChoice(message.message)
+        if (message.action === "start-recording") root.finishRecordingStart("", message.message)
+        if (message.action === "stop-recording") sidePanel.recordingStopAnswered(message.message)
         root.lastError = message.message
         root.lastErrorAction = message.action || ""
       } else if (message.type === "result") {
@@ -398,6 +446,11 @@ Item {
         if (message.action === "send-agent") root.finishAgentInput("")
         if (message.action === "submit-utterance") root.finishUtterance("")
         if (message.action === "choose-agent") root.finishAgentChoice("")
+        if (message.action === "start-recording") {
+          const started = message.result && typeof message.result.recordingId === "string" ? message.result.recordingId : ""
+          root.finishRecordingStart(started, started ? "" : "Recording did not start.")
+        }
+        if (message.action === "stop-recording") sidePanel.recordingStopAnswered("")
         if (message.result === "skipped") {
           root.lastError = "Paste skipped: focus changed"
           root.lastErrorAction = "paste"
@@ -578,6 +631,10 @@ Item {
     root.finishUtterance("Connection lost before confirmation. Check History before resending; your draft is retained.")
     root.textInputAvailable = false
     root.finishAgentChoice("Connection lost before confirmation. Check the conversation before choosing again.")
+    root.finishRecordingStart("", "Connection lost before the recording started.")
+    sidePanel.recordingDisconnected()
+    root.recordingAvailable = false
+    root.recording = null
     root.online = false
     root.speaking = false
     root.processing = 0
@@ -671,6 +728,8 @@ Item {
     activityHistoryAvailable: activityHistory.available
     historyDeletionAvailable: root.historyDeletionAvailable
     textInputAvailable: root.textInputAvailable
+    recordingAvailable: root.recordingAvailable
+    recording: root.recording
     onUtteranceRequested: text => {
       root.pendingUtterance = text
       root.historyAction("submit-utterance", "", {text: text})
@@ -695,6 +754,8 @@ Item {
     onStopSessionRequested: id => root.send({action: "stop-agent", id: id})
     onDismissSessionRequested: id => root.send({action: "close-agent", id: id})
     onSendSessionRequested: (id, text) => root.sendAgentInput(id, text)
+    onRecordRequested: (id, draftLength) => root.startRecording(id, draftLength)
+    onStopRecordingRequested: id => root.stopRecording(id)
     onToolPageRequested: request => { root.reportPanelState(); root.send(request) }
     onChoiceRequested: (id, revision, index) => root.chooseAgent(id, revision, index)
     onStopRunRequested: (id, runId) => {

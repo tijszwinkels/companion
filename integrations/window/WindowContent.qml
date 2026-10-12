@@ -208,6 +208,11 @@ Item {
       const changed = result.outcome === "inserted" || result.outcome === "appended"
       if (changed && message.focus === true) client.sessions.reveal(message.id)
     }
+    onRecordingStartFinished: (id, recordingId, error) => panel.recordingStarted(id, recordingId, error)
+    onRecordingStopFinished: error => panel.recordingStopAnswered(error)
+    onRecordingAppendRequested: message => client.answerRecordingAppend(message.requestId, panel.appendRecording(message))
+    onRecordingFinished: message => panel.recordingFinished(message)
+    onRecordingLost: panel.recordingDisconnected()
     onOnlineChanged: root.publish()
   }
 
@@ -297,6 +302,8 @@ Item {
     activityHistoryAvailable: client.activity.available
     historyDeletionAvailable: client.historyDeletionAvailable
     textInputAvailable: client.textInputAvailable
+    recordingAvailable: client.recordingAvailable
+    recording: client.recording
     onUtteranceRequested: text => {
       client.pendingUtterance = text
       client.pendingUtteranceId = Date.now().toString() + "-" + (++root.utteranceSequence)
@@ -335,6 +342,8 @@ Item {
     onCancelWakeRequested: (id, timerId) => client.send({action: "cancel-agent-wake", id: id, timerId: timerId})
     onStopSessionRequested: id => client.send({action: "stop-agent", id: id})
     onSendSessionRequested: (id, text) => client.sendInput(id, text)
+    onRecordRequested: (id, draftLength) => client.startRecording(id, draftLength)
+    onStopRecordingRequested: id => client.stopRecording(id)
     onToolPageRequested: request => { client.reportPanel(); client.send(request) }
     onChoiceRequested: (id, revision, index) => client.choose(id, revision, index)
     onStopRunRequested: (id, runId) => {
