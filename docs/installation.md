@@ -383,6 +383,16 @@ the options below as an explicit choice. For the classifier, work down this list
    image-capable model, such as Groq. Check its current models and terms, and tell
    the user plainly that every screenshot and transcript then goes to that provider.
 
+**Be explicit whenever a model is not on the user's own hardware or network.**
+This applies to the classifier and to agent conversations alike, including a
+hosted provider the user already uses for their coding agent. Before they
+choose, name the provider and say in plain words what it receives: for the
+classifier, a screenshot of the active window and the transcript of what they
+said with **every utterance**; for agent conversations, the screenshot attached
+to each quick question or new session, the conversation and tool results. That
+data then falls under the provider's terms and retention. Ask for an explicit
+yes, and remind them that a local model or their own server keeps it at home.
+
 Whatever is chosen must meet the requirements below.
 
 The built-in defaults `qwen3.8-128k` and Pi's `pillar-vllm/qwen3.8-128k` are
