@@ -153,6 +153,49 @@ Item {
       compare(tab.caption, "")
     }
 
+    function test_wake_badge_has_its_own_row_data() {
+      const rows = []
+      for (const unit of [0.8, 1, 1.5]) {
+        for (const emoji of [true, false]) {
+          for (const count of [0, 1, 12]) {
+            rows.push({tag: unit + "-" + emoji + "-" + count, unit: unit, emoji: emoji, count: count})
+          }
+        }
+      }
+      return rows
+    }
+
+    function test_wake_badge_has_its_own_row(data) {
+      const host = createTemporaryObject(panelComponent, scene)
+      host.panel.unit = data.unit
+      const item = session("wake", "completed", "")
+      item.title = data.emoji ? "🌱 Garden ideas" : "Ordinary question"
+      item.wakes = Array.from({length: data.count}, (_, i) => ({id: "timer-" + i, state: "scheduled"}))
+      host.panel.sessions = [item]
+      const tab = findChild(host, "tab-wake")
+      tab.number = 16
+      const wake = findChild(tab, "sessionWakeCount")
+      const glyph = findChild(tab, "sessionGlyph")
+      const caption = findChild(tab, "sessionCaption")
+      verify(waitForRendering(host))
+      compare(wake.visible, data.count > 0)
+      compare(wake.text, "◷" + data.count)
+      compare(tab.width, 60 * data.unit)
+      if (data.count > 0) {
+        verify(wake.y >= glyph.parent.y + glyph.parent.height, "Timer row is below the badge/number area")
+        verify(wake.y + wake.height <= caption.y, "Timer row cannot overlap the title")
+        verify(wake.x >= 0 && wake.x + wake.width <= tab.width, "Timer count fits inside the tab")
+        verify(caption.height >= 2 * caption.font.pixelSize, "Keep space for the two-line title")
+        verify(tab.height > 62 * tab.tabUnit, "Reserve real room for the timer row")
+      } else {
+        compare(tab.height, 62 * tab.tabUnit, "No timers means unchanged compact geometry")
+        compare(caption.y, 33 * tab.tabUnit)
+      }
+      tab.wakeCount = 0
+      compare(wake.visible, false)
+      compare(tab.height, 62 * tab.tabUnit, "Cancelling the last timer removes the extra row")
+    }
+
     function test_hover_shows_full_plain_title_and_yields_to_close_tip() {
       const host = createTemporaryObject(panelComponent, scene)
       const item = session("one", "completed", "")

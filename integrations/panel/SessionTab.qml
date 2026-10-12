@@ -48,8 +48,10 @@ Rectangle {
   signal dragMoved(real sceneX, real sceneY)
   signal dragFinished()
   signal dragCancelled()
+  // Pending timers get a separate row below the badge, never over its number.
+  readonly property real wakeRowHeight: wakeCount > 0 ? wakeText.implicitHeight + 2 * tabUnit : 0
   width: 48 * tabUnit
-  height: 62 * tabUnit
+  height: 62 * tabUnit + wakeRowHeight
   radius: 5 * tabUnit
   color: unread ? Qt.rgba(unreadColor.r, unreadColor.g, unreadColor.b, 0.12)
     : selected ? selection : hovered ? Qt.rgba(foreground.r, foreground.g, foreground.b, 0.06) : "transparent"
@@ -57,12 +59,15 @@ Rectangle {
   border.color: Qt.rgba(unreadColor.r, unreadColor.g, unreadColor.b, 0.25)
 
   Text {
+    id: wakeText
     objectName: "sessionWakeCount"
-    anchors.left: parent.left
-    anchors.top: parent.top
+    anchors.horizontalCenter: parent.horizontalCenter
+    anchors.top: badge.bottom
+    anchors.topMargin: root.tabUnit
     visible: root.wakeCount > 0
     text: "◷" + root.wakeCount
     color: root.accent
+    font.family: root.fontFamily
     font.pixelSize: 10 * root.tabUnit
   }
 
@@ -183,7 +188,7 @@ Rectangle {
     objectName: "sessionCaption"
     anchors.fill: parent
     anchors.margins: 3 * root.tabUnit
-    anchors.topMargin: 33 * root.tabUnit
+    anchors.topMargin: 33 * root.tabUnit + root.wakeRowHeight
     text: root.caption
     textFormat: Text.PlainText
     maximumLineCount: 2
