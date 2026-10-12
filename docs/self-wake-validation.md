@@ -21,24 +21,24 @@ queued ones and reconstructs the store across listener lifetimes.
 
 ## Acceptance map
 
-| Accepted scenario | Synthetic coverage |
-| --- | --- |
-| 1. Pi/Claude parity, positive capability gating | `self-wakes`: shared schemas and leased adapter execution; `session-tools-compatibility` and `claude-bridge`: child process/config propagation and older listeners |
-| 2. Current lease, forged owner, cross-owner isolation | `self-wakes`: unknown owner arguments, expired lease, foreign cancellation; `session-tools`: lease revoked during body arrival |
-| 3. Process-independent persistence and durable cancellation | Separate scheduler/store reopen after schedule and cancel; session shutdown/restart test |
-| 4. Receipts, replacement and old IDs | Durable retry, atomic replacement rollback on injected disk failure, old-ID cancellation and running predecessor/successor |
-| 5. Review before due | Real leased cancellation; zero wake turns |
-| 6. Review while due and queued | Busy session plus ordinary FIFO; reply cancels before dispatch |
-| 7. Cancel/dispatch race | Controlled asynchronous preparation gate versus cancellation; post-claim returns dispatch-started |
-| 8. Capacity and expiry | Four agents, eight ordinary messages, 16 tabs, per-owner/global pending caps and visible grace expiry |
-| 9. Stop/close/hide/shutdown | Active lease revocation, late callback refusal, explicit close, restart preservation; QML draft/selection retention |
-| 10. Restart/crash boundaries | Scheduled, claimed and started store reopen; failed display admission; failed terminal save after simulated backend effects; no automatic replay |
-| 11. Suspend/clocks/offsets/long waits | Injected forward/backward jumps, clock reversal during preparation, explicit offsets, 30-day deadlines and grace |
-| 12. Missing owner/history/model/config/corrupt data | Owner instruction deletion, missing native transcript error, unavailable catalog, malformed configuration, corrupt-row quarantine and exclusive store ownership |
-| 13. Rearm/ancestry/limits | More than three successive occurrences, active same-key successor, preserved depth, self-wake attribution, pending limits and Stop revocation |
-| 14. Terminal backend failures | Scripted provider failure and missing resume; ordinary predecessor quota/policy/runtime/exception cases block pending work |
-| 15. No live side effects | Injected clocks, temporary directories, scripted backends; offscreen UI only; no screenshot in wake request |
-| 16. Ordinary restore remains dormant | Existing `session-store`, `agent-sessions` and lazy-tool restart tests; timer projection excluded from transcript persistence |
+| Accepted scenario                                           | Synthetic coverage                                                                                                                                                 |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1. Pi/Claude parity, positive capability gating             | `self-wakes`: shared schemas and leased adapter execution; `session-tools-compatibility` and `claude-bridge`: child process/config propagation and older listeners |
+| 2. Current lease, forged owner, cross-owner isolation       | `self-wakes`: unknown owner arguments, expired lease, foreign cancellation; `session-tools`: lease revoked during body arrival                                     |
+| 3. Process-independent persistence and durable cancellation | Separate scheduler/store reopen after schedule and cancel; session shutdown/restart test                                                                           |
+| 4. Receipts, replacement and old IDs                        | Durable retry, atomic replacement rollback on injected disk failure, old-ID cancellation and running predecessor/successor                                         |
+| 5. Review before due                                        | Real leased cancellation; zero wake turns                                                                                                                          |
+| 6. Review while due and queued                              | Busy session plus ordinary FIFO; reply cancels before dispatch                                                                                                     |
+| 7. Cancel/dispatch race                                     | Controlled asynchronous preparation gate versus cancellation; post-claim returns dispatch-started                                                                  |
+| 8. Capacity and expiry                                      | Ten agents, eight ordinary messages, 16 tabs, per-owner/global pending caps and visible grace expiry                                                               |
+| 9. Stop/close/hide/shutdown                                 | Active lease revocation, late callback refusal, explicit close, restart preservation; QML draft/selection retention                                                |
+| 10. Restart/crash boundaries                                | Scheduled, claimed and started store reopen; failed display admission; failed terminal save after simulated backend effects; no automatic replay                   |
+| 11. Suspend/clocks/offsets/long waits                       | Injected forward/backward jumps, clock reversal during preparation, explicit offsets, 30-day deadlines and grace                                                   |
+| 12. Missing owner/history/model/config/corrupt data         | Owner instruction deletion, missing native transcript error, unavailable catalog, malformed configuration, corrupt-row quarantine and exclusive store ownership    |
+| 13. Rearm/ancestry/limits                                   | More than three successive occurrences, active same-key successor, preserved depth, self-wake attribution, pending limits and Stop revocation                      |
+| 14. Terminal backend failures                               | Scripted provider failure and missing resume; ordinary predecessor quota/policy/runtime/exception cases block pending work                                         |
+| 15. No live side effects                                    | Injected clocks, temporary directories, scripted backends; offscreen UI only; no screenshot in wake request                                                        |
+| 16. Ordinary restore remains dormant                        | Existing `session-store`, `agent-sessions` and lazy-tool restart tests; timer projection excluded from transcript persistence                                      |
 
 The `self-wakes-races` suite preserves the independent R1 reproductions and adds
 multi-candidate cancellation/replacement/Stop/block/expiry across owners, failed

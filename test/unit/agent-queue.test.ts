@@ -24,7 +24,7 @@ interface Turn {
 async function fixture(context: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-agent-queue-'));
   // This fixture tests turn admission, not concurrent first-use config creation.
-  // Seed settings before the four-agent case starts its simultaneous readers.
+  // Seed settings before the ten-agent case starts its simultaneous readers.
   await writeFile(join(directory, 'companion-agent.json'), JSON.stringify(defaultAgentSettings));
   const turns: Turn[] = [];
   const active = new Set<string>();
@@ -158,10 +158,10 @@ test('queue admission is bounded, validates input, and leaves no rejected messag
   assert.equal(sessions.snapshot()[0].messages.length, 9);
 });
 
-test('a queued turn waits for persistence and retains its slot at the four-agent limit', async (context) => {
+test('a queued turn waits for persistence and retains its slot at the ten-agent limit', async (context) => {
   const { sessions, turns } = await fixture(context);
-  const ids = Array.from({ length: 4 }, () => sessions.start(frame, signal()));
-  await waitFor(() => turns.length === 4);
+  const ids = Array.from({ length: 10 }, () => sessions.start(frame, signal()));
+  await waitFor(() => turns.length === 10);
   const first = turns.find((turn) => turn.request.id === ids[0])!;
   const save = SessionStore.prototype.save;
   let releaseSave = () => {};
@@ -183,16 +183,45 @@ test('a queued turn waits for persistence and retains its slot at the four-agent
   first.finish();
   await waitFor(() => saving);
   sessions.followUp(ids[0], 'Accepted while saving', signal());
-  assert.equal(turns.length, 4);
-  assert.throws(() => sessions.start(frame, signal()), /Four questions/);
+  assert.equal(turns.length, 10);
+  assert.throws(() => sessions.start(frame, signal()), /10 questions/);
   releaseSave();
-  await waitFor(() => turns.length === 5);
-  assert.equal(turns[4].request.id, ids[0]);
-  assert.equal(turns[4].request.prompt.text, 'Accepted while saving');
+  await waitFor(() => turns.length === 11);
+  assert.equal(turns[10].request.id, ids[0]);
+  assert.equal(turns[10].request.prompt.text, 'Accepted while saving');
   for (const turn of turns) {
     turn.finish();
   }
   await sessions.idle();
+});
+
+test('ten runs are admitted; overflow and idle follow-ups reject, busy queues remain allowed', async (context) => {
+  const { sessions, turns } = await fixture(context);
+  const idle = sessions.start(frame, signal());
+  await waitFor(() => turns.length === 1);
+  turns[0].finish();
+  await sessions.idle();
+
+  const busy = Array.from({ length: 10 }, () => sessions.start(frame, signal()));
+  await waitFor(() => turns.length === 11);
+  assert.throws(() => sessions.start(frame, signal()), /10 questions/);
+  assert.throws(() => sessions.followUp(idle, 'Not admitted', signal()), /10 questions/);
+  assert.equal(sessions.interaction(idle).agentAcceptsFollowUp, false);
+  assert.equal(sessions.snapshot().find((view) => view.id === idle)!.messages.length, 2);
+
+  sessions.followUp(busy[0], 'Still allowed to queue', signal());
+  assert.equal(
+    sessions
+      .snapshot()
+      .find((view) => view.id === busy[0])!
+      .messages.at(-1)!.state,
+    'queued',
+  );
+  await sessions.stop(busy[9]);
+  assert.equal(sessions.interaction(idle).agentAcceptsFollowUp, true);
+  sessions.followUp(idle, 'Slot available again', signal());
+  await waitFor(() => turns.length === 12);
+  assert.equal(turns.at(-1)!.request.id, idle);
 });
 
 test('a final history-write failure cannot start the next queued turn', async (context) => {

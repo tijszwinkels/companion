@@ -18,7 +18,7 @@ import {
   loadClaudeCodeSettings,
 } from './settings.ts';
 import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
-import { MAX_OPEN_AGENT_SESSIONS } from './session-limit.ts';
+import { MAX_OPEN_AGENT_SESSIONS, MAX_RUNNING_AGENT_SESSIONS } from './session-limit.ts';
 import { SessionStore } from './session-store.ts';
 import { historyPage, type HistoryPage, type HistoryPageRequest } from './history-pages.ts';
 import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
@@ -133,6 +133,7 @@ interface PreparedTurn {
 }
 
 const maxPendingFollowUps = 8;
+const runningCapacityReason = `${MAX_RUNNING_AGENT_SESSIONS} questions are already running; stop one or wait for an answer`;
 
 /**
  * Owns independent question lifetimes. The sensor worker only hands off a frame;
@@ -399,7 +400,7 @@ export class AgentSessions implements InspectableModule {
       if (
         this.sessions.size + this.restoring.size >= MAX_OPEN_AGENT_SESSIONS ||
         this.restoring.has(record.owner) ||
-        this.activeRuns() >= 4
+        this.activeRuns() >= MAX_RUNNING_AGENT_SESSIONS
       ) {
         return 'waiting';
       }
@@ -415,7 +416,7 @@ export class AgentSessions implements InspectableModule {
       session.closing ||
       session.busy ||
       session.pending.length ||
-      this.activeRuns() >= 4 ||
+      this.activeRuns() >= MAX_RUNNING_AGENT_SESSIONS ||
       session.modelWrite ||
       this.modelChanges.has(record.owner)
     ) {
@@ -494,7 +495,7 @@ export class AgentSessions implements InspectableModule {
       session.closeAfterTurn ||
       session.modelWrite ||
       this.modelChanges.has(record.owner) ||
-      this.activeRuns() >= 4 ||
+      this.activeRuns() >= MAX_RUNNING_AGENT_SESSIONS ||
       (session.view.harness ?? 'pi') !== record.harness ||
       session.controller.signal.aborted ||
       session.view.status === 'error' ||
@@ -867,8 +868,8 @@ export class AgentSessions implements InspectableModule {
       unavailableReason = 'Question session is unavailable';
     } else if (session.busy) {
       unavailableReason = 'Available when the agent finishes';
-    } else if (this.activeRuns() >= 4) {
-      unavailableReason = 'Four questions are already running; stop one or wait for an answer';
+    } else if (this.activeRuns() >= MAX_RUNNING_AGENT_SESSIONS) {
+      unavailableReason = runningCapacityReason;
     }
     return {
       agentChoices: session?.view.choices,
@@ -996,11 +997,8 @@ export class AgentSessions implements InspectableModule {
         `Close a question tab before starting another (${MAX_OPEN_AGENT_SESSIONS} tabs maximum)`,
       );
     }
-    if (this.activeRuns() >= 4) {
-      throw new SessionToolError(
-        'rejected',
-        'Four questions are already running; stop one or wait for an answer',
-      );
+    if (this.activeRuns() >= MAX_RUNNING_AGENT_SESSIONS) {
+      throw new SessionToolError('rejected', runningCapacityReason);
     }
 
     // Quick questions use Pi's local model profile; only coding conversations
@@ -1101,11 +1099,8 @@ export class AgentSessions implements InspectableModule {
         `This conversation already has ${maxPendingFollowUps} queued messages`,
       );
     }
-    if (!session.busy && this.activeRuns() >= 4) {
-      throw new SessionToolError(
-        'rejected',
-        'Four questions are already running; stop one or wait for an answer',
-      );
+    if (!session.busy && this.activeRuns() >= MAX_RUNNING_AGENT_SESSIONS) {
+      throw new SessionToolError('rejected', runningCapacityReason);
     }
 
     const message = chatMessage(`user-${randomUUID()}`, 'user', text);

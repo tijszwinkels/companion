@@ -239,7 +239,7 @@ follow-up in the same Pi session. There is no hidden command or action payload.
 
 The tool returns immediately. Choices appear above the composer during the turn
 and become selectable when it has finished and the session can accept a follow-up.
-The four-concurrent-agent limit also controls availability. If another session
+The ten-concurrent-agent limit also controls availability. If another session
 takes the last slot during inference, the selection is skipped rather than
 starting an extra run or reporting a submission error.
 The model should offer the choices first and then write its complete answer as
@@ -385,7 +385,7 @@ Summaries contain `id`, `title`, `status`, `profile`, `harness` (`pi` or
 | `busy`                    | Close refused: another conversation is running, closing or has queued messages; nothing was stopped.      |
 | `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                 |
 | `expired`                 | The calling turn ended; its lease is gone.                                                                |
-| `rejected`                | An existing lifecycle limit: 16 tabs, 4 running agents, 8 queued messages, or a stopping/closing tab.     |
+| `rejected`                | An existing lifecycle limit: 16 tabs, 10 running agents, 8 queued messages, or a stopping/closing tab.    |
 | `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or 4000 chars. |
 | `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                          |
 | `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                 |
@@ -418,7 +418,7 @@ these links, are reachable by pointer and screen-reader press action, not Tab.
 **Ordering and busy targets.** Sends use the same FIFO as typed and spoken
 follow-ups: they never interrupt a running turn, never overtake earlier queued
 messages, and are cancelled with the rest of the queue by Stop or a failed turn.
-The existing limits of eight queued messages and four running agents apply.
+The existing limits of eight queued messages and ten running agents apply.
 Each queued turn gets a fresh lease and inherits its own message's depth.
 
 **Loops and duplicates.** Depth is 0 for a human-originated turn and origin
@@ -592,7 +592,7 @@ must call `wakes.deleteOwner` to erase timer instructions/receipts too; startup
 also removes timers whose owner no longer exists in open or saved history.
 
 Due timers remain removable scheduler entries outside the ordinary FIFO. Busy
-conversations, eight queued ordinary messages, four active agents and all 16
+conversations, eight queued ordinary messages, ten active agents and all 16
 tabs occupied defer delivery until capacity returns or grace expires. Already
 accepted ordinary messages always run first, preserving their own FIFO order.
 The final claim rechecks revision, expiry, conversation availability, settings

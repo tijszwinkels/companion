@@ -386,7 +386,7 @@ test('wake attributed, screenshot-free, same owner and terminal on provider erro
   assert.equal(f.sessions.wakes.list(owner).length, 0);
 });
 
-test('four active agents and full ordinary queue defer wake without losing it', async (t) => {
+test('ten active agents and full ordinary queue defer wake without losing it', async (t) => {
   const f = await integration(t);
   f.script(async (request) => {
     await invoke(request, 'companion_wake_schedule', input);
@@ -397,7 +397,7 @@ test('four active agents and full ordinary queue defer wake without losing it', 
   f.script(async () => {
     await gate.promise;
   });
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 10; i++) {
     f.sessions.startRemote('Busy ' + i, 'coding', signal());
   }
   f.advance();
