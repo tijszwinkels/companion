@@ -5,8 +5,9 @@ captures the active window, classifies intent with a vision model, and can type 
 start an agent conversation. This guide is the canonical installation path. Read
 it in order; each checkpoint tells you what should work before proceeding.
 
-**Agent first.** [Step 0](#0-get-a-coding-agent-working) is the only part for you,
-the human: get a coding agent working and hand it this guide. The agent works
+**Agent first.** [Step 0](#0-choose-your-models-then-get-a-coding-agent-working)
+is the only part for you, the human: choose where your models run, get a coding
+agent working and hand it this guide. The agent works
 through steps 1–8 with you and asks you to run anything that needs your password
 or your eyes on the desktop. You can also follow every step yourself.
 
@@ -14,9 +15,38 @@ or your eyes on the desktop. You can also follow every step yourself.
 recipe in step 4 is a candidate, not a promise of supported hardware or model
 quality, and how well intent classification works depends on the model you choose.
 
-## 0. Get a coding agent working
+## 0. Choose your models, then get a coding agent working
 
-This is the only part for you. Use any coding agent you like, for example
+This is the only part for you.
+
+### Choose where your models run
+
+Companion uses a model for two jobs, and this choice decides what leaves your
+computer. Speech recognition itself always runs on your computer.
+
+- **Understanding what you meant.** With every sentence you say, this model gets a
+  screenshot of the window you are looking at and the transcript. It has to answer
+  quickly.
+- **Agent conversations.** Quick questions and new sessions send the attached
+  screenshot, the conversation and tool results.
+
+For each job, pick one option:
+
+| Option                                                               | What leaves your computer                                                                     |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Your own GPU**, if it can run the vision model in step 4           | Nothing, apart from downloads                                                                 |
+| **Your own server** on your network                                  | Screenshots, transcripts and conversations go to that machine                                 |
+| **A hosted provider**, such as Groq, or the provider you already use | Screenshots, transcripts and conversations go to that provider, under its terms and retention |
+
+A model on your own hardware or network is recommended for the first job, because
+it sees your screen all day. For agent conversations, the provider you already use
+is often fine. If you are not sure whether your computer has a suitable GPU, say so
+and the agent will check. The coding agent you install next also sends your
+commands and files to its own provider while it works.
+
+### Get a coding agent working
+
+Use any coding agent you like, for example
 [Pi](https://pi.dev) (Omarchy already includes `pi`), Claude Code or Codex. Sign in
 to the provider you already use and check that the agent answers in a terminal
 inside your desktop session (on Omarchy: Super+Return). Coding agents run commands
@@ -34,11 +64,13 @@ steps (clone, npm installs, builds, the downloads it names, files in my home
 directory, non-capturing checks) without asking. Only stop for my password, my
 choices (model, provider, keys, login startup), anything that listens, captures
 the screen or types, and anything destructive; then tell me exactly what to do.
+My model choice: <for understanding what I say: my GPU / my server at URL /
+hosted provider X / check this computer>; <for agent conversations: ...>.
 ```
 
-Expect a short plan, then mostly progress reports. The agent asks you only for
-the choices it cannot make: where the model for Companion runs, which provider or
-key to use, and whether Companion should start after login.
+Expect a short plan, then mostly progress reports. The agent checks your model
+choice against this computer and comes back only if it does not work, and asks
+you for keys, your password and whether Companion should start after login.
 
 ## Before step 1: notes for the agent
 
@@ -369,10 +401,13 @@ Companion uses a model for two jobs, and they can come from different places:
   The provider the user already uses for their coding agent is usually a good
   choice; see the [optional cloud coding profile](#optional-cloud-coding-profile).
 
-**Always stop and ask the user about the models**, even though you otherwise keep
-messages short: it decides where their screenshots and transcripts go. Explain
-the two jobs above in plain words, say what you found on this machine, and offer
-the options below as an explicit choice. For the classifier, work down this list:
+**Start from the user's model choice in the step 0 prompt** and verify it: check
+the GPU, reach their server, or check the provider's current models. If the choice
+is missing, unclear or does not work, **stop and ask properly**, even though you
+otherwise keep messages short: it decides where their screenshots and transcripts
+go. Explain the two jobs above in plain words, say what you found on this machine,
+and offer the options below as an explicit choice. For the classifier, work down
+this list:
 
 1. Check for a local NVIDIA GPU (`nvidia-smi`) with enough memory for the
    [candidate recipe](#candidate-nvidialinux-recipe-on-device-or-on-the-trusted-server)
