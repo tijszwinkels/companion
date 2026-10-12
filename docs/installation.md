@@ -944,6 +944,9 @@ them through it interactively, one thing at a time, waiting for them to try each
    between conversations by saying “go to session” and the number. Teach the
    spoken command words, not only clicking; without a microphone, type them in the
    Activity box instead.
+4. What agents can do: ask one to show a widget (for example a checklist), and
+   ask one to start another session and report back, so they see how a manager
+   conversation can delegate work.
 
 Base it on [Using Companion](using-companion.md).
 

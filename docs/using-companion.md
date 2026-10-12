@@ -103,6 +103,16 @@ to see details) and any widgets it shows. In a conversation you can:
 
 Up to sixteen conversations can be open at once. Drag a tab to reorder it.
 
+### What agents can do in Companion
+
+- **Show widgets.** Agents can put interactive diagrams, comparisons, charts and
+  checklists in their conversation, or pin one above it. Ask for one, for example
+  “show this as a checklist”.
+- **Work as a team.** Agents can start other Companion conversations, send them
+  follow-ups and receive their replies. A handy way to work: keep one conversation
+  as your manager, ask it to delegate tasks to new sessions, and keep talking to
+  it while the others work. Up to four agents run at the same time.
+
 ## Keyboard shortcuts
 
 These need the Omarchy integration from the installation guide.
