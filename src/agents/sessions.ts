@@ -19,6 +19,14 @@ import {
 } from './settings.ts';
 import type { ToolPage, ToolPageRequest } from './tool-transcripts.ts';
 import { MAX_OPEN_AGENT_SESSIONS, MAX_RUNNING_AGENT_SESSIONS } from './session-limit.ts';
+import { MAX_DIRECT_USER_MESSAGE_LENGTH, MAX_RELAYED_MESSAGE_LENGTH } from './message-limits.ts';
+import {
+  codingDefaultsConflict,
+  readCodingDefaults,
+  saveCodingDefaults,
+  type CodingDefaults,
+  type CodingDefaultsChange,
+} from './coding-defaults.ts';
 import { SessionStore } from './session-store.ts';
 import { historyPage, type HistoryPage, type HistoryPageRequest } from './history-pages.ts';
 import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
@@ -113,6 +121,16 @@ interface RunningSession {
    * This is deliberate. Do not turn it into a silent fallback.
    */
   pendingHarness?: 'coding-default' | 'claude-code';
+  /**
+   * A new coding conversation without its own Pi model choice. If it turns
+   * out to be a Pi conversation, the first turn gives it the configured
+   * `codingDefaultPiModel` (when set) as its saved `modelOverride`, so a later
+   * change of that default never moves it to another model. Resolved,
+   * cleared and refused for model choices exactly like `pendingHarness`.
+   * Conversations created before this existed have no override and keep
+   * following the configured Pi coding model.
+   */
+  pendingPiModel?: boolean;
 }
 
 /**
@@ -157,6 +175,8 @@ export class AgentSessions implements InspectableModule {
   private readonly widgets: WidgetService;
   private orderRevision = randomUUID();
   private readonly modelChanges = new Set<string>();
+  /** A change of the defaults for new conversations is being validated or saved. */
+  private codingDefaultsSaving = false;
   readonly sessionTools: SessionToolService;
   readonly wakes: WakeScheduler;
   private wakeWarningText = '';
@@ -642,6 +662,57 @@ export class AgentSessions implements InspectableModule {
     return { models: claudeCodeModelCatalog(model), model };
   }
 
+  /** The harness and models that the next new coding conversation will use. */
+  async codingDefaults(): Promise<CodingDefaults> {
+    return readCodingDefaults(this.directory);
+  }
+
+  /**
+   * Change the defaults for new coding conversations only (see
+   * `coding-defaults.ts`). A model must be one the matching picker offers:
+   * Pi's discovered catalogue, or the Claude allowlist plus the configured
+   * Claude default. There is no fallback to another model. One change runs
+   * at a time; a second request is refused rather than queued, because it
+   * was made against defaults that are about to change.
+   */
+  async setCodingDefaults(
+    change: CodingDefaultsChange,
+    signal: AbortSignal,
+  ): Promise<CodingDefaults> {
+    if (this.codingDefaultsSaving) {
+      throw Error('The defaults for new sessions are already being saved');
+    }
+
+    this.codingDefaultsSaving = true;
+    try {
+      // Fail before a slow Pi discovery when the panel's view is already
+      // stale. Saving compares the revision again.
+      const current = await readCodingDefaults(this.directory);
+      if (current.revision !== change.revision) {
+        throw codingDefaultsConflict();
+      }
+
+      if (change.model !== undefined && change.harness === 'pi') {
+        const catalog = await this.models(signal);
+        if (!catalog.models.includes(change.model)) {
+          throw Error(`${change.model} is not an available Pi model`);
+        }
+      } else if (change.model !== undefined) {
+        const catalog = claudeCodeModelCatalog(current.claudeModel);
+        if (!catalog.includes(change.model)) {
+          throw Error(
+            `${change.model} is not an available Claude model. Choose one of: ${catalog.join(', ')}`,
+          );
+        }
+      }
+
+      signal.throwIfAborted();
+      return await saveCodingDefaults(this.directory, change);
+    } finally {
+      this.codingDefaultsSaving = false;
+    }
+  }
+
   /**
    * Choices affect only later turns of this conversation, including reopening.
    * A Pi conversation stores a Pi model override (empty clears it). A Claude
@@ -722,7 +793,7 @@ export class AgentSessions implements InspectableModule {
     }
     // Until the first turn has read the configuration, this conversation might
     // still become a Claude Code conversation, whose picker lists Claude models.
-    if (session.pendingHarness) {
+    if (session.pendingHarness || session.pendingPiModel) {
       throw Error('This conversation is still starting; choose its model/effort in a moment');
     }
     this.modelChanges.add(id);
@@ -955,8 +1026,11 @@ export class AgentSessions implements InspectableModule {
    * the remote client selects the returned ID itself.
    */
   startRemote(text: string, profile: AgentProfile, signal: AbortSignal): string {
-    if (!text.trim() || text.length > 4000) {
-      throw new SessionToolError('rejected', 'Enter between 1 and 4000 characters');
+    if (!text.trim() || text.length > MAX_RELAYED_MESSAGE_LENGTH) {
+      throw new SessionToolError(
+        'rejected',
+        `Enter between 1 and ${MAX_RELAYED_MESSAGE_LENGTH} characters`,
+      );
     }
 
     return this.create({ text, profile, openInBackground: true }, signal);
@@ -1055,6 +1129,13 @@ export class AgentSessions implements InspectableModule {
     } else if (harness === undefined) {
       session.pendingHarness = 'coding-default';
     }
+    if (
+      request.profile === 'coding' &&
+      harness !== 'claude-code' &&
+      request.modelOverride === undefined
+    ) {
+      session.pendingPiModel = true;
+    }
 
     this.sessions.set(id, session);
     this.flush(session);
@@ -1072,6 +1153,11 @@ export class AgentSessions implements InspectableModule {
    * Spoken and typed follow-ups share one FIFO, owned by their captured tab.
    * Agent messages join the same FIFO with their origin; they never interrupt
    * a running turn or overtake earlier queued messages.
+   *
+   * A message without `origin` comes from the person at this desktop and may
+   * be longer. Agent, external and wake messages always carry an origin and
+   * keep the relayed bound. Remote panels share this method without an
+   * origin, so the desktop runtime applies their bound before calling it.
    */
   followUp(
     id: string,
@@ -1090,8 +1176,12 @@ export class AgentSessions implements InspectableModule {
         'Wait for this question to stop before sending a follow-up',
       );
     }
-    if (!text.trim() || text.length > 4000) {
-      throw new SessionToolError('rejected', 'A follow-up requires 1–4000 characters');
+    let maximumLength = MAX_DIRECT_USER_MESSAGE_LENGTH;
+    if (origin) {
+      maximumLength = MAX_RELAYED_MESSAGE_LENGTH;
+    }
+    if (!text.trim() || text.length > maximumLength) {
+      throw new SessionToolError('rejected', `A follow-up requires 1–${maximumLength} characters`);
     }
     if (session.pending.length >= maxPendingFollowUps) {
       throw new SessionToolError(
@@ -1241,7 +1331,7 @@ export class AgentSessions implements InspectableModule {
       if (session.modelWrite) {
         await session.modelWrite.catch(() => {});
       }
-      const modelOverride = session.view.modelOverride;
+      let modelOverride = session.view.modelOverride;
       const thinkingOverride = session.view.thinkingOverride;
       // A Claude model choice is replaced as a whole object, so this keeps the
       // settings accepted before this turn began, like the Pi overrides above.
@@ -1268,6 +1358,7 @@ export class AgentSessions implements InspectableModule {
       // A conversation still resolving its harness refuses model choices, so
       // the freshly resolved settings are the ones this turn must use.
       claudeCode ??= session.view.claudeCode;
+      modelOverride ??= session.view.modelOverride;
       // Save the question before launching the agent. An interrupted turn can
       // still be found in history after a restart and is shown as stopped.
       session.view.updatedAt = Date.now();
@@ -1490,30 +1581,46 @@ export class AgentSessions implements InspectableModule {
   }
 
   /**
-   * Record a speech-started conversation's harness from the configuration,
-   * once. The configuration is read with initialization, as every turn does.
-   * A failure leaves the harness pending and fails this turn in its tab.
+   * Record a new conversation's harness and default model from the
+   * configuration, once (see `pendingHarness` and `pendingPiModel`). The
+   * configuration is read with initialization, as every turn does. A failure
+   * leaves both pending and fails this turn in its tab.
    */
   private async resolveHarness(session: RunningSession): Promise<void> {
     const pending = session.pendingHarness;
-    if (!pending) {
+    if (!pending && !session.pendingPiModel) {
       return;
     }
 
     const configuration = await loadAgentConfiguration(this.directory);
     session.controller.signal.throwIfAborted();
 
-    let harness: AgentHarness = 'claude-code';
+    let harness: AgentHarness = session.view.harness ?? 'pi';
     if (pending === 'coding-default') {
       harness = configuration.codingDefaultHarness;
+    } else if (pending === 'claude-code') {
+      harness = 'claude-code';
     }
-    if (harness === 'claude-code') {
+    if (pending && harness === 'claude-code') {
       adoptClaudeCode(session.view, {
         model: configuration.claudeCode.model,
         effort: configuration.claudeCode.effort,
       });
     }
+
+    // Pin the Pi default now. Without that setting the conversation keeps the
+    // older behavior of following the configured Pi coding model.
+    if (
+      session.pendingPiModel &&
+      harness === 'pi' &&
+      session.view.modelOverride === undefined &&
+      configuration.codingDefaultPiModel !== undefined
+    ) {
+      session.view.modelOverride = configuration.codingDefaultPiModel;
+    }
+
     session.pendingHarness = undefined;
+    session.pendingPiModel = undefined;
     this.flush(session);
   }
 

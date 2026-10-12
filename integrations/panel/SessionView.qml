@@ -62,6 +62,10 @@ Item {
     ? root.draftSources[root.displayedId] : ""
   property var pendingSubmission: null
   property string inputError: ""
+  // Same bound as the listener's MAX_DIRECT_USER_MESSAGE_LENGTH. Agents may
+  // draft at most 4000 characters at a time, but the combined text in this
+  // composer, which the user sends, may reach this length.
+  readonly property int maximumMessageLength: 8000
   property var selectedMessage: null
   property var hoveredWidget: null
   property bool widgetsRunning: true
@@ -71,7 +75,7 @@ Item {
   readonly property int messageCount: messages.count
   readonly property bool canSend: online && session !== null && pendingSubmission === null
     && pendingChoice === null
-    && composer.text.trim().length > 0 && composer.text.length <= 4000
+    && composer.text.trim().length > 0 && composer.text.length <= maximumMessageLength
   readonly property string composerFocusId: online && composerReachable && composer.activeFocus
     && root.Window.window && root.Window.window.active ? displayedId : ""
   signal toolPageRequested(var request)
@@ -251,8 +255,8 @@ Item {
       next = current + (current.endsWith("\n") ? "\n" : "\n\n") + request.text
       outcome = "appended"
     }
-    if (next.length > 4000) {
-      return {outcome: "conflict", reason: "The combined draft would exceed 4000 characters."}
+    if (next.length > root.maximumMessageLength) {
+      return {outcome: "conflict", reason: "The combined draft would exceed " + root.maximumMessageLength + " characters."}
     }
 
     const title = request.source && typeof request.source.title === "string" ? request.source.title : ""
@@ -913,10 +917,21 @@ Item {
       font.pixelSize: 11 * root.unit
     }
 
+    // Appears near the limit, so a long message never fails by surprise.
+    Text {
+      objectName: "sessionComposerCounter"
+      width: parent.width
+      visible: composer.text.length > root.maximumMessageLength - 1000
+      text: composer.text.length + " / " + root.maximumMessageLength + " characters"
+      color: composer.text.length > root.maximumMessageLength ? "#ef5350" : root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 11 * root.unit
+    }
+
     Text {
       width: parent.width
       visible: text !== ""
-      text: composer.text.length > 4000 ? "Keep messages under 4000 characters." : root.inputError
+      text: composer.text.length > root.maximumMessageLength ? "Keep messages within " + root.maximumMessageLength + " characters." : root.inputError
       textFormat: Text.PlainText
       wrapMode: Text.Wrap
       color: "#ef5350"

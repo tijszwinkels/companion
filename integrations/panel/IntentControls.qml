@@ -21,6 +21,9 @@ Item {
   // not report capture storage (an older listener, or disconnected). Null is
   // "unavailable", never "off".
   property var captureStorage: null
+  // AgentSessionState, for the defaults of new coding sessions shown in the
+  // "Start a coding session" card; null hides them.
+  property var sessionControls: null
   signal intentEnabledRequested(string name, bool enabled, string mode)
   signal transcriptionCleanupRequested(bool enabled)
   signal captureStorageRequested(bool enabled)
@@ -251,6 +254,25 @@ Item {
                     intent: card.intent
                     mode: modelData
                   }
+                }
+              }
+              // The backend applies to "new session" and inferred coding
+              // questions; each backend's model also applies to its own
+              // explicit shortcut ("new pi session", "new claude session").
+              Loader {
+                objectName: "codingDefaultsLoader"
+                width: parent.width
+                active: card.intent.name === "START_CODING_AGENT_SESSION" && root.sessionControls !== null
+                visible: active
+                sourceComponent: CodingDefaults {
+                  sessionControls: root.sessionControls
+                  online: root.online
+                  foreground: root.foreground
+                  muted: root.muted
+                  selection: root.selection
+                  fontFamily: root.fontFamily
+                  unit: root.unit
+                  textScale: root.textScale
                 }
               }
             }

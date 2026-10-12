@@ -51,6 +51,13 @@ export interface AgentConfiguration {
   quickQuestion: AgentSettings;
   /** Harness for newly created coding conversations only. */
   codingDefaultHarness: AgentHarness;
+  /**
+   * Pi model given to each newly created Pi coding conversation as its own
+   * model choice (`modelOverride`), so a later change affects only newer
+   * conversations. Absent: new conversations follow `coding.model` on every
+   * turn, as conversations created before this setting existed still do.
+   */
+  codingDefaultPiModel: string | undefined;
   claudeCode: ClaudeCodeSettings;
 }
 
@@ -60,6 +67,7 @@ const topLevelKeys = [
   'thinking',
   'quickQuestion',
   'codingDefaultHarness',
+  'codingDefaultPiModel',
   'claudeCode',
 ];
 
@@ -87,6 +95,19 @@ export async function loadClaudeCodeSettings(
 }
 
 /**
+ * The contents of a newly created `companion-agent.json`: every section's
+ * defaults. `codingDefaultPiModel` is deliberately absent (see its field).
+ */
+export function initialAgentConfigurationFile(): Record<string, unknown> {
+  return {
+    ...defaultAgentSettings,
+    quickQuestion: { ...defaultQuickQuestionSettings },
+    codingDefaultHarness: defaultCodingHarness,
+    claudeCode: { ...defaultClaudeCodeSettings },
+  };
+}
+
+/**
  * Load and validate the whole file. With `initialize`, a missing file is first
  * created with every section's defaults; an existing file is never rewritten.
  * Without `initialize`, a missing file yields the defaults and creates nothing.
@@ -100,13 +121,7 @@ export async function loadAgentConfiguration(
   if (initialize) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     try {
-      const defaults = {
-        ...defaultAgentSettings,
-        quickQuestion: defaultQuickQuestionSettings,
-        codingDefaultHarness: defaultCodingHarness,
-        claudeCode: defaultClaudeCodeSettings,
-      };
-      await writeFile(path, JSON.stringify(defaults, null, 2) + '\n', {
+      await writeFile(path, JSON.stringify(initialAgentConfigurationFile(), null, 2) + '\n', {
         flag: 'wx',
         mode: 0o600,
       });
@@ -126,6 +141,16 @@ export async function loadAgentConfiguration(
     }
     throw error;
   }
+
+  return parseAgentConfiguration(value, path);
+}
+
+/**
+ * Validate the parsed contents of `companion-agent.json`. `path` only labels
+ * errors. Shared by the loader and by the writer of new-session defaults, so
+ * both accept exactly the same files.
+ */
+export function parseAgentConfiguration(value: unknown, path: string): AgentConfiguration {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw Error(`${path}: expected an object`);
   }
@@ -133,7 +158,7 @@ export async function loadAgentConfiguration(
   const settings = value as Record<string, unknown>;
   if (Object.keys(settings).some((key) => !topLevelKeys.includes(key))) {
     throw Error(
-      `${path}: expected only executable, model, thinking, quickQuestion, codingDefaultHarness, and claudeCode`,
+      `${path}: expected only executable, model, thinking, quickQuestion, codingDefaultHarness, codingDefaultPiModel, and claudeCode`,
     );
   }
 
@@ -161,9 +186,10 @@ export async function loadAgentConfiguration(
   );
 
   const codingDefaultHarness = validateHarness(settings.codingDefaultHarness, path);
+  const codingDefaultPiModel = validateDefaultPiModel(settings.codingDefaultPiModel, path);
   const claudeCode = validateClaudeCodeSettings(settings.claudeCode, `${path}: claudeCode`);
 
-  return { coding, quickQuestion, codingDefaultHarness, claudeCode };
+  return { coding, quickQuestion, codingDefaultHarness, codingDefaultPiModel, claudeCode };
 }
 
 function defaultConfiguration(): AgentConfiguration {
@@ -171,6 +197,7 @@ function defaultConfiguration(): AgentConfiguration {
     coding: { ...defaultAgentSettings },
     quickQuestion: { ...defaultAgentSettings, ...defaultQuickQuestionSettings },
     codingDefaultHarness: defaultCodingHarness,
+    codingDefaultPiModel: undefined,
     claudeCode: { ...defaultClaudeCodeSettings },
   };
 }
@@ -207,6 +234,32 @@ function validateHarness(value: unknown, path: string): AgentHarness {
   }
 
   return value as AgentHarness;
+}
+
+/**
+ * The optional Pi model for new coding conversations. It becomes each new
+ * conversation's saved `modelOverride`, so it must also satisfy the session
+ * store's rules for that field (provider prefix, at most 300 characters);
+ * otherwise those conversations would fail to load after a restart.
+ */
+function validateDefaultPiModel(value: unknown, path: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'string' || !value.trim() || /\s/u.test(value)) {
+    throw Error(`${path}: codingDefaultPiModel must be a Pi model ID without spaces`);
+  }
+  if (!value.includes('/')) {
+    throw Error(
+      `${path}: codingDefaultPiModel must include its provider, for example openai-codex/gpt-6-astra`,
+    );
+  }
+  if (value.length > 300) {
+    throw Error(`${path}: codingDefaultPiModel must be at most 300 characters`);
+  }
+
+  return value;
 }
 
 /**

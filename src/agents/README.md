@@ -76,7 +76,7 @@ How a new conversation chooses its harness:
 | --------------------------------------------------------- | -------------------------------------------------------- |
 | “new session …” and inferred `START_CODING_AGENT_SESSION` | the configured `codingDefaultHarness` (default `pi`)     |
 | “new claude session …” (`START_CLAUDE_CODE_SESSION`)      | `claude-code`                                            |
-| “new pi session …” (`START_PI_SESSION`)                   | `pi` with the coding profile and its configured model    |
+| “new pi session …” (`START_PI_SESSION`)                   | `pi` with the coding profile and its default model       |
 | “quick question …”                                        | always `pi`                                              |
 | `companion_session_start`                                 | its `harness`, else as “new session”; quick questions Pi |
 
@@ -98,10 +98,39 @@ changes `claudeCode.model`, for the next turn. That read validates the whole fil
 Pi: a mistake in any section, including `claudeCode`, also blocks turns of
 existing Claude Code conversations until it is corrected.
 
+### Defaults for new coding sessions
+
+Activity's “Start a coding session” card shows the backend (`pi` or
+`claude-code`) and that backend's model for **new** coding conversations. The
+panel reads them with `coding-defaults` and changes them with
+`set-coding-defaults` (see the [desktop protocol](../desktop/README.md)). A
+change writes only `codingDefaultHarness`, `codingDefaultPiModel` or
+`claudeCode.model` in `companion-agent.json`; every other key is kept. Models
+must come from the same catalogues as the conversation footer: Pi's discovered
+models, or the Claude allowlist plus the configured Claude default. The write is
+atomic (temporary file and rename, keeping the file mode) and refused when the
+file changed since the panel read it, or when the file is invalid, a symbolic
+link or unwritable. Quick questions, executables and effort are not panel
+settings.
+
+Existing conversations never change backend or model:
+
+- The harness is recorded when a conversation's first turn starts (below).
+- A Claude Code conversation records its own model when it starts.
+- A Pi coding conversation created while `codingDefaultPiModel` is set
+  receives that model as its saved `modelOverride` at its first turn, exactly
+  like a footer choice, so later default changes do not move it. An explicit
+  model (from an agent tool or the footer) is kept instead.
+- A Pi conversation without an override, including every conversation created
+  before `codingDefaultPiModel` existed, still follows the top-level `model`
+  on each turn. The panel never edits that key, so these conversations stay on
+  their model; a hand edit of `model` still moves them, as before.
+
 A speech-started conversation resolves `codingDefaultHarness` and the Claude
 settings when its first turn begins, before its first save or backend call;
 until then the conversation refuses model/effort changes, and a configuration
-error fails that first turn in its own tab. The next turn in the still-open tab
+error fails that first turn in its own tab. A new Pi coding conversation
+resolves `codingDefaultPiModel` at the same moment. The next turn in the still-open tab
 retries the resolution. A tab closed (or a listener stopped) before any
 resolution succeeded is saved without a harness and reopens as a Pi
 conversation; its follow-up then fails visibly on Pi's missing transcript. The
@@ -373,22 +402,22 @@ Summaries contain `id`, `title`, `status`, `profile`, `harness` (`pi` or
 `claude-code`), `model`, optional `modelOverride` and `updatedAt`; open entries add `busy`, `queuedMessages` and
 `self`. A refusal is a failed tool result whose message ends with a stable code:
 
-| Code                      | Meaning                                                                                                   |
-| ------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `invalid`                 | Malformed ID, empty/oversized text, unsupported option, or a model of the wrong form for its harness.     |
-| `unknown-session`         | No open or saved conversation has that ID.                                                                |
-| `not-open`                | Saved but closed; reopen it first. Sends/drafts never reopen implicitly.                                  |
-| `self-target`             | `companion_session_send` to the calling conversation.                                                     |
-| `loop-limit`              | The turn is already three agent-to-agent hops from a human message.                                       |
-| `duplicate`               | Identical content to the same destination already delivered (or possibly delivered) in this turn.         |
-| `limit`                   | More than six start/reopen/close/send/draft actions, or 32 calls, in one turn.                            |
-| `busy`                    | Close refused: another conversation is running, closing or has queued messages; nothing was stopped.      |
-| `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                 |
-| `expired`                 | The calling turn ended; its lease is gone.                                                                |
-| `rejected`                | An existing lifecycle limit: 16 tabs, 10 running agents, 8 queued messages, or a stopping/closing tab.    |
-| `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or 4000 chars. |
-| `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                          |
-| `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                 |
+| Code                      | Meaning                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid`                 | Malformed ID, empty/oversized text, unsupported option, or a model of the wrong form for its harness.                                                   |
+| `unknown-session`         | No open or saved conversation has that ID.                                                                                                              |
+| `not-open`                | Saved but closed; reopen it first. Sends/drafts never reopen implicitly.                                                                                |
+| `self-target`             | `companion_session_send` to the calling conversation.                                                                                                   |
+| `loop-limit`              | The turn is already three agent-to-agent hops from a human message.                                                                                     |
+| `duplicate`               | Identical content to the same destination already delivered (or possibly delivered) in this turn.                                                       |
+| `limit`                   | More than six start/reopen/close/send/draft actions, or 32 calls, in one turn.                                                                          |
+| `busy`                    | Close refused: another conversation is running, closing or has queued messages; nothing was stopped.                                                    |
+| `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                                                               |
+| `expired`                 | The calling turn ended; its lease is gone.                                                                                                              |
+| `rejected`                | An existing lifecycle limit: 16 tabs, 10 running agents, 8 queued messages, or a stopping/closing tab.                                                  |
+| `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or the combined text would exceed the composer's 8000 chars. |
+| `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                                                                        |
+| `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                                                               |
 
 **Attribution.** A sent or starting message is stored as a `user`-kind bubble
 with `origin: {kind: "agent", sessionId, title, depth}`. The panel labels it
@@ -419,6 +448,10 @@ these links, are reachable by pointer and screen-reader press action, not Tab.
 follow-ups: they never interrupt a running turn, never overtake earlier queued
 messages, and are cancelled with the rest of the queue by Stop or a failed turn.
 The existing limits of eight queued messages and ten running agents apply.
+Agent, external and wake messages keep 1–4000 characters
+(`MAX_RELAYED_MESSAGE_LENGTH`). Only the person at the desktop composer or
+Activity text input may send up to 8000 (`MAX_DIRECT_USER_MESSAGE_LENGTH`, in
+`message-limits.ts`); `followUp` tells them apart by the message's origin.
 Each queued turn gets a fresh lease and inherits its own message's depth.
 
 **Loops and duplicates.** Depth is 0 for a human-originated turn and origin

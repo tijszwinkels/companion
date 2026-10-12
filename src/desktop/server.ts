@@ -355,9 +355,11 @@ export class DesktopServer {
     socket.on('data', (chunk: string) => {
       buffered += chunk;
 
-      // A 4000-character composer message may expand to six JSON characters
-      // per code unit. Keep framing bounded without rejecting escaped text.
-      if (buffered.length > 32768) {
+      // An 8000-character composer message (MAX_DIRECT_USER_MESSAGE_LENGTH)
+      // may expand to six JSON characters per code unit: 48,000 plus the
+      // request's other fields. Keep framing bounded without rejecting
+      // escaped text.
+      if (buffered.length > 65536) {
         socket.destroy();
         return;
       }
@@ -402,6 +404,8 @@ export class DesktopServer {
           action === 'agent-history-page' ||
           action === 'agent-models' ||
           action === 'claude-models' ||
+          action === 'coding-defaults' ||
+          action === 'set-coding-defaults' ||
           action === 'set-agent-model' ||
           action === 'set-agent-thinking' ||
           action === 'move-agent' ||

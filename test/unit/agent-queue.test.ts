@@ -148,8 +148,8 @@ for (const action of ['stop', 'remove', 'close', 'failure'] as const) {
 test('queue admission is bounded, validates input, and leaves no rejected message behind', async (context) => {
   const { sessions } = await fixture(context);
   const id = sessions.start(frame, signal());
-  assert.throws(() => sessions.followUp(id, ' ', signal()), /1–4000/);
-  assert.throws(() => sessions.followUp(id, 'x'.repeat(4001), signal()), /1–4000/);
+  assert.throws(() => sessions.followUp(id, ' ', signal()), /1–8000/);
+  assert.throws(() => sessions.followUp(id, 'x'.repeat(8001), signal()), /1–8000/);
   assert.throws(() => sessions.followUp(id, 'Cancelled input', AbortSignal.abort()), /abort/i);
   for (let index = 0; index < 8; index++) {
     sessions.followUp(id, `Waiting ${index}`, signal());

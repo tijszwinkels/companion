@@ -143,7 +143,7 @@ the cue. Failed or stopped turns emit no completion event.
 The state snapshot advertises `textInputAvailable` once the live pipeline is
 attached. Activity can submit `{"action":"submit-utterance","text":"new session explain this","target":"0x123"}`
 after releasing panel focus and restoring the compositor-confirmed application.
-Text must contain 1–4000 characters (whitespace-only is rejected); `target` must
+Text must contain 1–8000 characters (whitespace-only is rejected); `target` must
 match the captured screenshot. The action returns `queued` after bounded FIFO
 admission, not after processing. History reports the eventual result. Text and
 speech share IDs, ordering, shortcuts, inference, screenshots and persistence;
@@ -737,6 +737,27 @@ tab, with the same caching and retry rules as `agent-models`. An older listener
 rejects the action; the picker then offers only the conversation's current
 model.
 
+`{"action":"coding-defaults"}` returns the defaults for **new** coding
+conversations: `{harness, piModel, claudeModel, revision}`. `piModel` is
+`codingDefaultPiModel`, or the top-level Pi `model` when that key is absent;
+`revision` identifies the configuration file contents (`missing` before the
+file exists). It only reads the file and never creates it; an invalid file
+returns an error. Activity's “Start a coding session” card requests it whenever
+the card becomes visible, then the catalogue of the shown backend
+(`agent-models` or `claude-models`, cached as above).
+
+`{"action":"set-coding-defaults","harness":"pi","model":"provider/id","revision":"…"}`
+sets `codingDefaultHarness` and, when `model` is present, that harness's default
+model (`codingDefaultPiModel` or `claudeCode.model`); omitting `model` keeps it.
+The model must be in Pi's discovered catalogue or the Claude allowlist plus the
+configured Claude default. The listener refuses a stale `revision`, a change
+while another is being saved, an invalid or non-regular file and write failures,
+leaving the file unchanged; otherwise it replaces the file atomically, keeping
+every other key and the file mode, and returns the new defaults. The panel shows
+a refusal and reads the defaults again. Existing conversations keep their
+harness and model; see [agent contracts](../agents/README.md#defaults-for-new-coding-sessions).
+Preview returns `preview` without saving.
+
 `{"action":"set-agent-model","id":"...","model":"provider/id"}` validates the
 available identifier, saves `modelOverride`, and returns `model-selected`.
 `{"action":"set-agent-thinking","id":"...","thinking":"high"}` validates an
@@ -812,8 +833,9 @@ The question is saved before launching Pi and the transcript at turn completion,
 Stop, Close, and orderly shutdown. A hard crash can lose unsaved current output.
 No retention limit or legacy Pi-session import is applied.
 
-Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups are bounded
-to 4000 characters and queue while that session is answering, with at most eight
+Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups from a
+desktop panel are bounded to 8000 characters (4000 from a remote panel, as from
+agents) and queue while that session is answering, with at most eight
 pending messages. Submission starts or queues a new turn in the same Pi session,
 without another screenshot. Message IDs
 are unique across turns, so a later answer cannot overwrite an earlier bubble.
@@ -896,7 +918,7 @@ The client applies it synchronously and answers with `agent-draft-result`:
 `inserted` (the composer was empty or whitespace), `appended` (only with
 `ifDraftExists: "append"`, below existing text after a blank line), `conflict`
 (existing text kept unchanged, a send from that composer is awaiting its reply,
-or the result would exceed 4000 characters), or `unavailable` (no such open tab).
+or the result would exceed the composer's 8000 characters), or `unavailable` (no such open tab).
 An optional `reason` (≤300 characters) is passed to the agent. The listener
 accepts an answer only from the asked client, only once, and returns
 `draft-recorded`. After 5 seconds, disconnection or the end of the agent turn,
@@ -1116,7 +1138,9 @@ For a remote connection:
   selection; remote clients should ignore them.
 - `paste`, `submit-utterance`, `media-playback`, `composer-focus` and
   `agent-draft-result` are refused: they act on the desktop's focused window,
-  keyboard, media or composer drafts.
+  keyboard, media or composer drafts. So are `coding-defaults` and
+  `set-coding-defaults`, which only the desktop Activity page shows.
+- `send-agent` text keeps 1–4000 characters, matching the phone protocol.
 - `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
   starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
   the ordinary tab/concurrency limits, opens in the background on desktop panels,

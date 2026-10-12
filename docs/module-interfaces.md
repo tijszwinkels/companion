@@ -87,7 +87,7 @@ direct callers pass no commitment. The pipeline's optional sixth constructor
 argument is the monotonic `CommitClock` for these deadlines; tests pass a
 controlled clock. See [speech timing](speech-timing.md). Both capture the
 screen and interaction context on admission; only audio invokes transcription.
-Typed input accepts nonblank text up to 4000 UTF-16 code units. An optional target
+Typed input accepts nonblank text up to 8000 UTF-16 code units. An optional target
 address must match the captured window. Admission returns `false` for cancellation
 or a full queue; accepted work reports its later processing outcome separately.
 The desktop's `submit-utterance` action uses this path after restoring application

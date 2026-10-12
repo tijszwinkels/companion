@@ -1128,6 +1128,7 @@ Item {
       intents: root.intents
       transcriptionCleanup: root.transcriptionCleanup
       captureStorage: root.captureStorage
+      sessionControls: root.sessionControls
       activityHistoryModel: root.activityHistoryModel
       activityHistoryAvailable: root.activityHistoryAvailable
       historyDeletionAvailable: root.historyDeletionAvailable

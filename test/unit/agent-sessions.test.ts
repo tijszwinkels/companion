@@ -507,7 +507,7 @@ test('follow-ups reuse the conversation, omit a new screenshot, and preserve ear
     ['Answer 1', 'Answer 2'],
   );
   assert.notEqual(answers[0].id, answers[1].id);
-  assert.throws(() => sessions.followUp(id, 'x'.repeat(4001), signal()), /1–4000/);
+  assert.throws(() => sessions.followUp(id, 'x'.repeat(8001), signal()), /1–8000/);
   await sessions.close();
 });
 

@@ -18,6 +18,10 @@ import { saveEmptyAudioClip } from './empty-audio-clips.ts';
 import { DesktopServer, type SnapshotOptions } from './server.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
+import {
+  MAX_DIRECT_USER_MESSAGE_LENGTH,
+  MAX_RELAYED_MESSAGE_LENGTH,
+} from '../agents/message-limits.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
@@ -27,11 +31,13 @@ import type { TranscriptionCleanupSetting } from '../core/transcription-cleanup/
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
 import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
-import type {
-  AgentBrowserOpenOutcome,
-  AgentBrowserOpenRequest,
-  AgentDraftOutcome,
-  AgentDraftRequest,
+import {
+  agentHarnesses,
+  type AgentBrowserOpenOutcome,
+  type AgentBrowserOpenRequest,
+  type AgentDraftOutcome,
+  type AgentDraftRequest,
+  type AgentHarness,
 } from '../agents/types.ts';
 
 /** A connected panel must confirm a forwarded draft within this time. */
@@ -61,14 +67,17 @@ const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
 /**
  * Actions that act on the desktop itself: the compositor's focused window,
  * keyboard delivery, media playback reports, composer focus, composer
- * drafts and the capture-storage switch. A remote panel (such as the phone
- * gateway) cannot observe or own any of these, so the listener refuses them
- * for remote connections.
+ * drafts, the capture-storage switch and the defaults for new sessions. A
+ * remote panel (such as the phone gateway) cannot observe or own any of
+ * these, so the listener refuses them for remote connections.
  */
 const desktopOnlyActions = new Set([
   'paste',
   // Capture storage is a desktop privacy setting; v1 has no remote control.
   'set-capture-storage',
+  // Only the desktop Activity page shows the defaults for new sessions.
+  'coding-defaults',
+  'set-coding-defaults',
   'submit-utterance',
   'media-playback',
   'composer-focus',
@@ -1643,8 +1652,12 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'submit-utterance') {
-      if (typeof request.text !== 'string' || !request.text.trim() || request.text.length > 4000) {
-        throw Error('Enter between 1 and 4000 characters');
+      if (
+        typeof request.text !== 'string' ||
+        !request.text.trim() ||
+        request.text.length > MAX_DIRECT_USER_MESSAGE_LENGTH
+      ) {
+        throw Error(`Enter between 1 and ${MAX_DIRECT_USER_MESSAGE_LENGTH} characters`);
       }
       if (typeof request.target !== 'string' || !/^0x[0-9a-f]+$/i.test(request.target)) {
         throw Error('Select an application window before sending');
@@ -1671,6 +1684,11 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected an agent session id and follow-up text');
       }
+      // The desktop composer may send longer messages; remote panels keep
+      // their protocol's bound. `followUp` checks the desktop bound itself.
+      if (remote && (!request.text.trim() || request.text.length > MAX_RELAYED_MESSAGE_LENGTH)) {
+        throw Error(`A follow-up requires 1–${MAX_RELAYED_MESSAGE_LENGTH} characters`);
+      }
       this.options.agents.followUp(request.id, request.text, this.signal);
       return 'submitted';
     }
@@ -1695,6 +1713,40 @@ export class DesktopRuntime {
         throw Error('Agent sessions are unavailable');
       }
       return this.options.agents.claudeModels();
+    }
+
+    // Reads only the configuration file; no Pi discovery.
+    if (request.action === 'coding-defaults') {
+      if (!this.options.agents) {
+        throw Error('Agent sessions are unavailable');
+      }
+      return this.options.agents.codingDefaults();
+    }
+
+    if (request.action === 'set-coding-defaults') {
+      if (
+        !this.options.agents ||
+        !agentHarnesses.includes(request.harness as AgentHarness) ||
+        (request.model !== undefined &&
+          (typeof request.model !== 'string' ||
+            request.model === '' ||
+            request.model.length > 300)) ||
+        typeof request.revision !== 'string' ||
+        request.revision.length > 100
+      ) {
+        throw Error('Expected a harness, an optional model and the defaults revision');
+      }
+      if (this.options.preview) {
+        return 'preview';
+      }
+      return this.options.agents.setCodingDefaults(
+        {
+          harness: request.harness as AgentHarness,
+          ...(request.model !== undefined ? { model: request.model as string } : {}),
+          revision: request.revision,
+        },
+        this.signal,
+      );
     }
 
     if (request.action === 'set-agent-model') {

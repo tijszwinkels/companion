@@ -35,6 +35,12 @@ Item {
   function releaseInputFocus() { utterance.focus = false }
   property string pendingText: ""
   property string inputError: ""
+  // Same bound as the listener's MAX_DIRECT_USER_MESSAGE_LENGTH and the
+  // conversation composer. Longer text stays in the field, unsent.
+  readonly property int maximumTextLength: 8000
+  // Shared conversation controls (AgentSessionState), for the defaults of new
+  // coding sessions shown in the "Start a coding session" card. Optional.
+  property var sessionControls: null
   signal utteranceRequested(string text)
 
   function submitText() {
@@ -43,8 +49,8 @@ Item {
       root.inputError = !root.online ? "Companion is disconnected; your draft is retained." : "Restart the Companion listener to enable text input."
       return
     }
-    if (utterance.text.length > 4000) {
-      root.inputError = "Keep the message within 4000 characters."
+    if (utterance.text.length > root.maximumTextLength) {
+      root.inputError = "Keep the message within " + root.maximumTextLength + " characters."
       return
     }
     root.inputError = ""
@@ -151,6 +157,16 @@ Item {
         font.pixelSize: 10 * root.textScale
       }
     }
+    // Appears near the limit, so a long message never fails by surprise.
+    Text {
+      objectName: "activityTextCounter"
+      width: parent.width
+      visible: utterance.text.length > root.maximumTextLength - 1000
+      text: utterance.text.length + " / " + root.maximumTextLength + " characters"
+      color: utterance.text.length > root.maximumTextLength ? "#ef5350" : root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.textScale
+    }
     Text {
       width: parent.width
       visible: text !== ""
@@ -253,6 +269,7 @@ Item {
         textScale: root.textScale
         transcriptionCleanup: root.transcriptionCleanup
         captureStorage: root.captureStorage
+        sessionControls: root.sessionControls
         onIntentEnabledRequested: (name, enabled, mode) => root.intentEnabledRequested(name, enabled, mode)
         onTranscriptionCleanupRequested: enabled => root.transcriptionCleanupRequested(enabled)
         onCaptureStorageRequested: enabled => root.captureStorageRequested(enabled)

@@ -440,7 +440,7 @@ test('queued continuation expires choices without changing the current stop targ
   const revision = setup.sessions.interaction(first.id).agentChoices!.revision;
   const oldStop = setup.input('stop');
   assert.throws(() => setup.sessions.selectChoice(first.id, revision, 0, signal()), /finishes/);
-  assert.throws(() => setup.sessions.followUp(first.id, 'x'.repeat(4001), signal()), /1–4000/);
+  assert.throws(() => setup.sessions.followUp(first.id, 'x'.repeat(8001), signal()), /1–8000/);
   assert.equal(setup.sessions.interaction(first.id).agentChoices!.revision, revision);
 
   new ContinueOpenAgentConversation(

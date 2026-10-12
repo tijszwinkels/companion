@@ -99,7 +99,9 @@ on Pi it uses the coding model (Astra by default). It replaces the old
 Code with the configured Claude model, and **“new pi session …”** always
 starts Pi with the coding model. A Claude Code conversation keeps the effort
 it started with; its footer can switch the next turn to another Claude model in
-the same Claude history. **“quick question …”** is a separate, prefix-only
+the same Claude history. The "Start a coding session" card under Activity →
+Intentions chooses the backend and model for new sessions; existing sessions keep
+theirs. Messages you type in Companion may be up to 8000 characters. **“quick question …”** is a separate, prefix-only
 `QUICK_QUESTION` processor using local Qwen through the same Pi backend. All of
 them send the captured screenshot and utterance and open an ordinary
 conversation tab.

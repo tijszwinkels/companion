@@ -75,10 +75,30 @@ Item {
       compare(input.text, "ignore this")
       compare(page.inputError, "Queue is full")
       verify(send.enabled)
-      input.text = "x".repeat(4001)
+      // 8000 characters are sent; 8001 are refused locally, kept and unsent.
+      const counter = findChild(page, "activityTextCounter")
+      input.text = "x".repeat(6999)
+      verify(!counter.visible)
+      input.text = "x".repeat(8000)
+      verify(counter.visible)
+      compare(counter.text, "8000 / 8000 characters")
       page.submitText()
-      compare(submitted.count, 1)
-      verify(page.inputError.indexOf("4000") >= 0)
+      compare(submitted.count, 2)
+      compare(submitted.signalArguments[1][0].length, 8000)
+      page.utteranceSubmitted(input.text, "")
+      compare(input.text, "")
+      input.text = "y".repeat(8001)
+      page.submitText()
+      compare(submitted.count, 2, "An over-long message is never sent")
+      compare(page.pendingText, "")
+      compare(input.text, "y".repeat(8001), "The over-long draft is kept")
+      verify(page.inputError.indexOf("8000") >= 0)
+      compare(counter.text, "8001 / 8000 characters")
+      // Pressing Enter on it is refused the same way.
+      input.forceActiveFocus()
+      keyClick(Qt.Key_Return)
+      compare(submitted.count, 2)
+      compare(input.text.length, 8001)
     }
   }
 }

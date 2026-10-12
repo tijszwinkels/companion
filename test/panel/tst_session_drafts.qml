@@ -80,9 +80,56 @@ Item {
       compare(panel.applyDraft(draft("visible", "Agent words", "append")).outcome, "appended")
       compare(composer.text, "My own words\n\nAgent words")
 
-      const tooLong = panel.applyDraft(draft("visible", "x".repeat(4000), "append"))
+      // The composer holds up to 8000 characters, so a 4000-character agent
+      // draft may still be appended; the combined text may not exceed 8000.
+      const before = composer.text
+      compare(panel.applyDraft(draft("visible", "x".repeat(4000), "append")).outcome, "appended")
+      compare(composer.text, before + "\n\n" + "x".repeat(4000))
+      const full = composer.text
+      const tooLong = panel.applyDraft(draft("visible", "y".repeat(4000), "append"))
       compare(tooLong.outcome, "conflict")
-      compare(composer.text, "My own words\n\nAgent words")
+      verify(tooLong.reason.indexOf("8000") >= 0)
+      compare(composer.text, full)
+    }
+
+    function test_composer_sends_8000_characters_and_keeps_8001_unsent() {
+      const panel = openPanel()
+      const submissions = []
+      panel.sendSessionRequested.connect(function(id, text) { submissions.push({id: id, text: text}) })
+      panel.focusComposer()
+      const composer = findChild(panel, "sessionComposer")
+      const send = findChild(panel, "sendSession")
+      const counter = findChild(panel, "sessionComposerCounter")
+
+      composer.text = "x".repeat(6999)
+      verify(!counter.visible)
+      composer.text = "x".repeat(8000)
+      verify(counter.visible)
+      compare(counter.text, "8000 / 8000 characters")
+      verify(send.enabled)
+      keyClick(Qt.Key_Return)
+      compare(submissions.length, 1)
+      compare(submissions[0].text.length, 8000)
+      // A listener refusal keeps the text for another attempt.
+      panel.submitted("visible", submissions[0].text, "Request failed")
+      compare(composer.text.length, 8000)
+      keyClick(Qt.Key_Return)
+      compare(submissions.length, 2)
+      panel.submitted("visible", submissions[1].text, "")
+      compare(composer.text, "")
+
+      composer.text = "y".repeat(8001)
+      verify(!send.enabled)
+      compare(counter.text, "8001 / 8000 characters")
+      verify(waitForRendering(panel))
+      keyClick(Qt.Key_Return)
+      compare(submissions.length, 2, "An over-long message is never sent")
+      compare(composer.text, "y".repeat(8001))
+      // The over-long draft belongs to its tab like any other draft.
+      panel.selectedSessionId = "hidden"
+      compare(composer.text, "")
+      panel.selectedSessionId = "visible"
+      compare(composer.text.length, 8001)
     }
 
     function test_hidden_tab_draft_waits_without_changing_selection() {

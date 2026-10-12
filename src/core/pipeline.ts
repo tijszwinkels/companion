@@ -8,6 +8,7 @@ import type { ScreenSensor } from '../sensors/screen/sensor.ts';
 import type { SpeechTranscriber, TranscriptionDiagnostic } from '../sensors/audio/transcriber.ts';
 import { VAD_SETTINGS } from '../sensors/audio/segmenter.ts';
 import { MIN_SPEECH_WINDOW_RMS } from '../sensors/audio/levels.ts';
+import { MAX_DIRECT_USER_MESSAGE_LENGTH } from '../agents/message-limits.ts';
 import {
   MAX_UTTERANCE_SAMPLES,
   ProvisionalAttempt,
@@ -228,8 +229,8 @@ export class SensorPipeline implements InspectableModule {
 
   /** Typed observations share speech ordering, capture, history and routing. */
   submitText(text: string, signal = this.signal, target?: string): boolean {
-    if (!text.trim() || text.length > 4000) {
-      throw Error('Enter between 1 and 4000 characters');
+    if (!text.trim() || text.length > MAX_DIRECT_USER_MESSAGE_LENGTH) {
+      throw Error(`Enter between 1 and ${MAX_DIRECT_USER_MESSAGE_LENGTH} characters`);
     }
     const admitted = this.enqueue({ text }, signal, target);
 

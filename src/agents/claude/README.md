@@ -50,6 +50,12 @@ optional fields are added:
 - `codingDefaultHarness` (`"pi"` or `"claude-code"`, default `"pi"`) selects the
   harness for **newly created coding conversations** only. Quick questions are
   always Pi. Existing conversations keep their harness.
+- Optional `codingDefaultPiModel` (a Pi `provider/id`) is the model of newly
+  created Pi coding conversations, saved with each one so later changes do not
+  move it. Without it, Pi coding conversations follow `model` on every turn.
+  Activity's “Start a coding session” card edits this key,
+  `codingDefaultHarness` and `claudeCode.model`; see
+  [defaults for new coding sessions](../README.md#defaults-for-new-coding-sessions).
 - `claudeCode` may omit any field. The defaults are `claude`, `claude-opus-5-5`
   and `high`. `effort` is one of `low`, `medium`, `high`, `xhigh`, `max` (the
   values `claude --effort` accepts). `model` must be the exact Claude model ID:

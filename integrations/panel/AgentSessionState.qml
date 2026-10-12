@@ -27,6 +27,13 @@ QtObject {
   property bool claudeModelsRequested: false
   property bool claudeModelsLoading: false
   property string claudeModelsError: ""
+  // Defaults for new coding sessions (`coding-defaults`): {harness, piModel,
+  // claudeModel, revision}, or null until the listener answers. Shown as the
+  // listener reports them; a choice changes them only after it is saved.
+  property var codingDefaults: null
+  property bool codingDefaultsLoading: false
+  property bool codingDefaultsSaving: false
+  property string codingDefaultsError: ""
   // A request in flight must not select a tab after the user changes pages or
   // hides/reopens this UI. Each client instance has an independent token.
   property string navigationToken: Date.now().toString() + "-" + Math.random().toString()
@@ -60,6 +67,31 @@ QtObject {
     root.controlRequested({action: "claude-models"})
   }
 
+  // Reading is cheap (one file read); callers refresh whenever the defaults
+  // become visible, so hand edits and other panels' changes show up.
+  function refreshCodingDefaults() {
+    if (!root.controlsAvailable || root.codingDefaultsLoading || root.codingDefaultsSaving) return
+    root.codingDefaultsError = ""
+    root.requestCodingDefaults()
+  }
+
+  function requestCodingDefaults() {
+    root.codingDefaultsLoading = true
+    root.controlRequested({action: "coding-defaults"})
+  }
+
+  // `model` is the new default for `harness`; empty keeps that harness's
+  // current default. The revision lets the listener refuse a change made
+  // against defaults that were edited meanwhile.
+  function setCodingDefaults(harness, model) {
+    if (!root.controlsAvailable || !root.codingDefaults || root.codingDefaultsLoading || root.codingDefaultsSaving) return
+    const request = {action: "set-coding-defaults", harness: harness, revision: root.codingDefaults.revision}
+    if (model) request.model = model
+    root.codingDefaultsSaving = true
+    root.codingDefaultsError = ""
+    root.controlRequested(request)
+  }
+
   // The first state message after (re)connecting is authoritative for the
   // conversation fields, including an older listener that omits them. Later
   // state messages may omit them after this client declares
@@ -81,6 +113,8 @@ QtObject {
     root.modelsRequested = false
     root.claudeModelsLoading = false
     root.claudeModelsRequested = false
+    root.codingDefaultsLoading = false
+    root.codingDefaultsSaving = false
     root.invalidateNavigation()
   }
 
@@ -114,6 +148,20 @@ QtObject {
       if (!root.claudeModelsError) {
         root.claudeModelCatalog = message.result
         root.claudeModelsLoaded = true
+      }
+    } else if ((message.type === "result" || message.type === "error") && message.action === "coding-defaults") {
+      root.codingDefaultsLoading = false
+      // Keep a refused change's explanation visible while its refresh lands.
+      if (message.type === "error") root.codingDefaultsError = message.message
+      else root.codingDefaults = message.result
+    } else if ((message.type === "result" || message.type === "error") && message.action === "set-coding-defaults") {
+      root.codingDefaultsSaving = false
+      if (message.type === "error") {
+        root.codingDefaultsError = message.message
+        // The file may have changed (or never changed); show what is stored.
+        if (root.controlsAvailable) root.requestCodingDefaults()
+      } else if (message.result && message.result.revision !== undefined) {
+        root.codingDefaults = message.result
       }
     }
   }
