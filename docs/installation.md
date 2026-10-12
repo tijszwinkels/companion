@@ -940,8 +940,10 @@ them through it interactively, one thing at a time, waiting for them to try each
    Without a microphone, do not skip this: say so, focus an editor and have them
    type `insert hello world` in the Activity box, which types into the editor the
    same way spoken words would.
-3. A “quick question” about the screen, starting a “new session” and switching
-   between conversations.
+3. A “quick question” about the screen, starting a “new session”, and switching
+   between conversations by saying “go to session” and the number. Teach the
+   spoken command words, not only clicking; without a microphone, type them in the
+   Activity box instead.
 
 Base it on [Using Companion](using-companion.md).
 
