@@ -143,7 +143,12 @@ test('recorded chunks reach only the owning panel, in order, as literal draft te
   await f.show(f.id);
   const { recordingId, recording, sink } = await f.startRecording(12);
   await waitFor(() => (f.latestRecording() as { state?: string })?.state === 'recording');
-  assert.deepEqual(f.latestRecording(), { recordingId, sessionId: f.id, state: 'recording' });
+  assert.deepEqual(f.latestRecording(), {
+    recordingId,
+    sessionId: f.id,
+    state: 'recording',
+    capturing: true,
+  });
 
   sink.accept(chunk(1));
   sink.accept(chunk(2));
@@ -472,4 +477,37 @@ test('Record is refused for a conversation whose close is already saving', async
   await closing;
   assert.equal(f.sessions.has(f.id), false);
   assert.equal(f.sessions.isClosing(f.id), false);
+});
+
+test('the state shows microphone use until the recorder exits, then only finishing', async (context) => {
+  const f = await setup(context, { 1: 'words' });
+  f.desktop.send({ action: 'toggle-pause' });
+  assert.equal((await f.desktop.reply('toggle-pause')).result, 'paused');
+  await f.show(f.id);
+  const states = () =>
+    f.messages
+      .filter((message) => message.type === 'state')
+      .map((message) => message.recording as { state: string; capturing: boolean } | null);
+
+  const { recording, sink } = await f.startRecording();
+  await waitFor(() => states().at(-1)?.state === 'recording');
+  assert.equal(states().at(-1)?.capturing, true);
+  assert.ok(
+    states().some((state) => state?.state === 'starting' && state.capturing),
+    'Starting already shows the microphone in use',
+  );
+  const last = f.messages.filter((message) => message.type === 'state').at(-1)!;
+  assert.equal(last.paused, true, 'Listening stays paused while recording');
+
+  sink.accept(chunk(1));
+  const append = await f.next('recording-append');
+  f.desktop.send({ action: 'stop-recording', id: f.id });
+  await f.desktop.reply('stop-recording');
+  await recording;
+
+  // The recorder has exited; one chunk is still being delivered.
+  await waitFor(() => states().at(-1)?.capturing === false);
+  assert.equal(states().at(-1)?.state, 'finishing');
+  await f.answer(append, 'appended', 5);
+  await waitFor(() => states().at(-1) === null);
 });

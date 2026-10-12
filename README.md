@@ -270,7 +270,8 @@ edit it. Nothing is sent and no voice commands run until you press **Send**.
 **Finishing transcription…**. Recording also stops when you leave the
 conversation, pause listening, or the draft reaches 8,000 characters; a note
 under the text box says why, and whether any speech may be missing. It works
-while listening is paused, without changing that setting.
+while listening is paused, without changing that setting; the Companion bar
+icon and status then show **Recording into a text box** while the microphone is on.
 While Pi works, **Enter** or **Queue** accepts a follow-up for the next turn.
 Waiting messages show **queued**. Each conversation permits eight waiting messages;
 they run one at a time, without interrupting its answer or taking another agent slot.

@@ -658,3 +658,66 @@ for (const boundary of ['stopped', 'navigation', 'limit', 'paused'] as const) {
     });
   }
 }
+
+test('capturing stays true from Record until the recorder exits, on every path', async () => {
+  // Ordinary Stop: still capturing until the capture loop reports its end.
+  const f = setup({ texts: { 1: 'words' } });
+  f.start();
+  assert.equal(f.controller.status?.capturing, true, 'starting');
+  const recording = f.controller.record(vad);
+  const { sink } = await f.capture.started;
+  assert.equal(f.controller.status?.capturing, true, 'recording');
+
+  f.controller.stop('stopped');
+  assert.equal(f.controller.status?.state, 'finishing');
+  assert.equal(f.controller.status?.capturing, true, 'The recorder may still be open');
+  sink.accept(chunk(1));
+  await recording;
+  await waitFor(() => f.summaries.length === 1);
+  assert.equal(f.controller.status, undefined);
+
+  // Stop before the microphone was handed over: no capture, nothing left on.
+  const g = setup();
+  g.start();
+  g.controller.stop('navigation');
+  assert.equal(g.controller.status, undefined);
+
+  // Owner disconnect and microphone failure end capturing too.
+  for (const ending of ['disconnected', 'microphone'] as const) {
+    const h = setup();
+    h.start();
+    const run = h.controller.record(vad);
+    await h.capture.started;
+    if (ending === 'disconnected') {
+      h.controller.abandon('disconnected');
+    } else {
+      h.capture.script.failure = Error('pw-record exited 1');
+      h.capture.end();
+    }
+    await run;
+    await waitFor(() => h.summaries.length === 1);
+    assert.equal(h.controller.status, undefined, ending);
+  }
+});
+
+test('capturing is false while queued chunks are still being transcribed', async () => {
+  const release = deferred<void>();
+  const f = setup({
+    transcribe: async (samples) => {
+      await release.promise;
+      return `chunk ${samples[0]}`;
+    },
+  });
+  f.start();
+  const recording = f.controller.record(vad);
+  const { sink } = await f.capture.started;
+  sink.accept(chunk(1));
+  f.controller.stop('stopped');
+  await recording;
+  assert.deepEqual(
+    { state: f.controller.status?.state, capturing: f.controller.status?.capturing },
+    { state: 'finishing', capturing: false },
+  );
+  release.resolve();
+  await waitFor(() => f.summaries.length === 1);
+});

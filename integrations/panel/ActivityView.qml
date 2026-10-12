@@ -9,6 +9,7 @@ Item {
   required property bool paused
   property string pauseReason: ""
   required property bool speaking
+  property bool microphoneRecording: false
   required property int processing
   required property color foreground
   required property color muted
@@ -227,19 +228,21 @@ Item {
         Rectangle {
           width: parent.width
           // Leave a little extra room for the paused-state explanation.
-          height: (root.paused ? 200 : 180) * root.unit
+          height: (root.paused || root.microphoneRecording ? 200 : 180) * root.unit
           radius: 16 * root.unit
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.025)
           border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
           clip: true
 
           StatusView {
+            objectName: "listeningStatus"
             anchors.fill: parent
             anchors.margins: 12 * root.unit
             online: root.online
             paused: root.paused
             pauseReason: root.pauseReason
             speaking: root.speaking
+            microphoneRecording: root.microphoneRecording
             processing: root.processing
             history: root.history
             foreground: root.foreground

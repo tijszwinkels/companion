@@ -9,6 +9,12 @@ BarWidget {
   readonly property bool online: companion?.online ?? false
   readonly property bool paused: companion?.paused ?? false
   readonly property string pauseDescription: companion?.pauseReason === "media" ? "Paused for media" : "Paused"
+  // Manual recording ("Record" under a text box) is using the microphone,
+  // possibly while listening stays paused. Shown first: the microphone is
+  // live, so the icon must never look switched off. The pause is unchanged.
+  readonly property bool recording: root.online && companion?.recording?.capturing === true
+  readonly property string recordingDescription: "Recording into a text box"
+    + (root.paused ? " · Listening " + root.pauseDescription.toLowerCase() : "")
   property bool popupOpen: false
 
   function close() {
@@ -27,17 +33,19 @@ BarWidget {
   BarIconButton {
     id: button
     bar: root.bar
-    text: root.online && !root.paused ? "󰍬" : "󰍭"
+    text: root.recording || (root.online && !root.paused) ? "󰍬" : "󰍭"
     dimmed: !root.online
     active: root.paused || root.popupOpen
     // New speech takes precedence even while an earlier utterance is processing.
     // Opening the menu must not replace the status color with the bar accent.
     useActiveColor: false
-    foreground: !root.online || root.paused ? (root.bar ? root.bar.barForeground : Color.foreground)
+    foreground: root.recording ? "#ef5350"
+      : !root.online || root.paused ? (root.bar ? root.bar.barForeground : Color.foreground)
       : root.companion.speaking ? "#ef5350"
       : root.companion.processing > 0 ? "#66bb6a" : "#9e9e9e"
     pressable: root.online
     tooltipText: !root.online ? "Companion is not running"
+      : root.recording ? "Companion · Microphone on · " + root.recordingDescription + " · Click for controls"
       : root.companion.lastError ? root.companion.lastError
       : root.paused ? "Companion · " + root.pauseDescription + " · Click for controls"
       : root.companion.speaking ? "Companion hears speech · Click for controls"
@@ -69,7 +77,8 @@ BarWidget {
       Toggle {
         width: parent.width
         label: "Listening"
-        description: root.paused ? root.pauseDescription : "Microphone active"
+        description: root.recording ? root.recordingDescription
+          : root.paused ? root.pauseDescription : "Microphone active"
         checked: !root.paused
         enabled: root.online
         onClicked: root.companion.togglePause()

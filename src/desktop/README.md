@@ -946,9 +946,14 @@ loop. Chunking and the microphone handover are described in
 [speech timing](../../docs/speech-timing.md#manual-recording).
 
 The state snapshot carries `recordingAvailable` (true only in microphone mode
-with this protocol) and `recording`: `{recordingId, sessionId, state}` or null,
-where state is `starting` (waiting for the microphone), `recording` or
-`finishing`. It contains no text. Older listeners omit both; clients then hide
+with this protocol) and `recording`: `{recordingId, sessionId, state,
+capturing}` or null, where state is `starting` (waiting for the microphone),
+`recording` or `finishing`. `capturing` is true from Record until the
+recorder has exited (including `starting` and the moment after Stop), and false
+while only transcription is finishing. Global microphone indicators (the
+Omarchy bar and the panel's status microphone) show **Recording into a text
+box** while it is true, even when listening is paused; the pause state and its
+toggle are unchanged. It contains no text. Older listeners omit both; clients then hide
 Record. The phone relay removes both fields.
 
 ```json

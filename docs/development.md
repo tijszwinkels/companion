@@ -112,6 +112,8 @@ npm test
 npm run format:check
 git diff --check
 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input test/panel
+# Omarchy bar indicator state, with stub shell modules (not live Quickshell):
+QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -import test/omarchy/stubs -input test/omarchy
 ```
 
 For native-window changes, build with `npm run ui:build`, then run

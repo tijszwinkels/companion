@@ -10,6 +10,9 @@ Item {
   property string pauseReason: ""
   required property bool speaking
   required property int processing
+  // Manual recording ("Record" under a text box) is using the microphone.
+  // It may run while listening stays paused; the pause itself is unchanged.
+  property bool microphoneRecording: false
   required property color foreground
   required property color muted
   required property color accent
@@ -20,14 +23,24 @@ Item {
   property bool animationsEnabled: true
   property bool compact: false
   readonly property real iconUnit: unit * (compact ? 0.5 : 1)
+  Accessible.role: Accessible.Indicator
+  Accessible.name: root.title
+  Accessible.description: root.description
 
   // The microphone keeps the same status colors as the top bar. Processing is
   // described beside the phrase; the sensor continues listening concurrently.
-  readonly property color indicatorColor: !online || paused ? muted
+  // Manual recording takes precedence: the microphone is live even if
+  // listening is paused, so the indicator must never look switched off.
+  readonly property bool recordingShown: online && microphoneRecording
+  readonly property color indicatorColor: recordingShown ? "#ef5350"
+    : !online || paused ? muted
     : speaking ? "#ef5350" : processing > 0 ? "#66bb6a" : "#9e9e9e"
   readonly property string title: !online ? "Not running"
+    : recordingShown ? "Recording into a text box"
     : paused ? (pauseReason === "media" ? "Paused for media" : "Paused") : "Listening"
   readonly property string description: !online ? "Companion will reconnect when it starts."
+    : recordingShown && paused ? "The microphone is on for Record. Listening stays " + (pauseReason === "media" ? "paused for media." : "paused.")
+    : recordingShown ? "The microphone is on for Record. Voice commands resume when recording stops."
     : paused && pauseReason === "media" ? "Listening resumes when playback stops."
     : paused ? "Microphone capture is paused." : ""
 
@@ -54,7 +67,7 @@ Item {
       : Math.max(0, parent.height - height - statusCaption.height - 18 * root.unit)
     width: 36 * root.iconUnit
     height: 48 * root.iconUnit
-    opacity: root.online && !root.paused ? 1 : 0.45
+    opacity: root.recordingShown || (root.online && !root.paused) ? 1 : 0.45
 
     Rectangle {
       anchors.horizontalCenter: parent.horizontalCenter

@@ -70,6 +70,14 @@ export interface DictationStatus {
   recordingId: string;
   sessionId: string;
   state: DictationPhase;
+  /**
+   * Whether the microphone is (or may still be) in use for this recording:
+   * from Record until its recorder has exited. Includes `starting`, and the
+   * short moment after Stop before the recorder is gone, so a global
+   * indicator never claims the microphone is off too early. False while
+   * only transcription of already captured audio is finishing.
+   */
+  capturing: boolean;
 }
 
 /** One chunk's text for the owning panel, numbered from 1 in speech order. */
@@ -199,7 +207,12 @@ export class DictationController extends EventEmitter {
     if (!recording) {
       return undefined;
     }
-    return { recordingId: recording.id, sessionId: recording.sessionId, state: recording.phase };
+    return {
+      recordingId: recording.id,
+      sessionId: recording.sessionId,
+      state: recording.phase,
+      capturing: !recording.captureDone,
+    };
   }
 
   /** Whether `clientId` started the current recording. */
@@ -433,6 +446,11 @@ export class DictationController extends EventEmitter {
     }
 
     this.finishIfDone(recording);
+
+    // The recorder has exited: `capturing` is now false while the queue drains.
+    if (this.current === recording) {
+      this.changed();
+    }
   }
 
   // ---- Internals -------------------------------------------------------

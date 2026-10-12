@@ -8,6 +8,7 @@ Rectangle {
   required property bool paused
   property string pauseReason: ""
   required property bool speaking
+  property bool microphoneRecording: false
   required property int processing
   required property color foreground
   required property color muted
@@ -88,6 +89,7 @@ Rectangle {
     paused: root.paused
     pauseReason: root.pauseReason
     speaking: root.speaking
+    microphoneRecording: root.microphoneRecording
     processing: root.processing
     history: root.history
     foreground: root.foreground

@@ -39,6 +39,8 @@ Item {
   // Manual recording into a conversation's text box (listener state).
   property bool recordingAvailable: false
   property var recording: null
+  // The microphone is in use for manual recording (see StatusView).
+  readonly property bool microphoneRecording: recording !== null && recording !== undefined && recording.capturing === true
   property var agentActions: ({})
   property var sessions: []
   property var sessionControls: null
@@ -1012,6 +1014,7 @@ Item {
       paused: root.paused
       pauseReason: root.pauseReason
       speaking: root.speaking
+      microphoneRecording: root.microphoneRecording
       processing: root.processing
       history: root.history
       foreground: root.foreground
@@ -1133,6 +1136,7 @@ Item {
       paused: root.paused
       pauseReason: root.pauseReason
       speaking: root.speaking
+      microphoneRecording: root.microphoneRecording
       processing: root.processing
       foreground: root.foreground
       muted: root.muted

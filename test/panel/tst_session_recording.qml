@@ -259,5 +259,47 @@ Item {
       verify(notice.visible)
       verify(notice.text.indexOf("may be missing") >= 0)
     }
+
+    function test_global_status_shows_manual_recording_without_changing_the_pause() {
+      const panel = openPanel()
+      panel.paused = true
+      panel.pauseReason = "manual"
+
+      // The conversation's compact status strip.
+      const strip = findChild(panel, "compactActivityStatus")
+      compare(strip.title, "Paused")
+      panel.recording = {recordingId: "rec-10", sessionId: "visible", state: "starting", capturing: true}
+      compare(strip.title, "Recording into a text box")
+      compare(String(strip.indicatorColor), "#ef5350")
+      verify(strip.description.indexOf("Listening stays paused.") >= 0)
+      panel.recording = {recordingId: "rec-10", sessionId: "visible", state: "recording", capturing: true}
+      compare(strip.title, "Recording into a text box")
+      compare(panel.paused, true, "Recording never unpauses listening")
+
+      // Only transcription is left: back to the actual pause state.
+      panel.recording = {recordingId: "rec-10", sessionId: "visible", state: "finishing", capturing: false}
+      compare(strip.title, "Paused")
+      panel.recording = null
+      compare(strip.title, "Paused")
+
+      // The full Activity page uses the same indicator; listening on and media pause.
+      panel.selectedSessionId = ""
+      verify(waitForRendering(panel))
+      const full = findChild(panel, "listeningStatus")
+      panel.paused = false
+      panel.pauseReason = ""
+      panel.recording = {recordingId: "rec-11", sessionId: "visible", state: "recording", capturing: true}
+      compare(full.title, "Recording into a text box")
+      verify(full.description.indexOf("Voice commands resume") >= 0)
+      compare(full.Accessible.name, "Recording into a text box")
+      panel.paused = true
+      panel.pauseReason = "media"
+      verify(full.description.indexOf("paused for media") >= 0)
+      panel.online = false
+      compare(full.title, "Not running")
+      panel.online = true
+      panel.recording = null
+      compare(full.title, "Paused for media")
+    }
   }
 }
