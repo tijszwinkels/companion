@@ -978,7 +978,10 @@ Latest restores live following. Historical pages are labelled snapshots when the
 revision differs from the live window. Reading an evicted recent window freezes
 that bounded page instead of moving the reader. Responses are correlated with the
 request and tab lifetime; navigation/Latest supersedes pending pages. Loading
-older history never changes drafts, submits text or starts a model. Origin jumps
+older history never changes drafts, submits text or starts a model. In the shared
+QML panel, Load older scrolls with the transcript at the top of the loaded page;
+it is not a permanently visible toolbar action. Newer, Refresh and Latest remain
+available above the transcript while viewing a historical page. Origin jumps
 load and align the group without expanding tool output. Pins remain independent
 of the page. The phone sanitizes screenshot/widget URLs in page replies as in
 ordinary session events; widgets remain desktop-only placeholders there.
