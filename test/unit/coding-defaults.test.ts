@@ -200,6 +200,18 @@ test('write failures are reported and leave the file and directory unchanged', a
   assert.equal(await readFile(path, 'utf8'), valid);
   assert.deepEqual(await temporaryFiles(directory), []);
 
+  // Writable but unreadable: the temporary file and rename would succeed,
+  // but the directory cannot be opened for the final flush. That must fail
+  // before the replacement, not after it (review R1-1).
+  await chmod(directory, 0o300);
+  await assert.rejects(
+    saveCodingDefaults(directory, { harness: 'claude-code', revision }),
+    /EACCES/,
+  );
+  await chmod(directory, 0o700);
+  assert.equal(await readFile(path, 'utf8'), valid);
+  assert.deepEqual(await temporaryFiles(directory), []);
+
   // A symbolic link would be replaced by a plain file; refuse instead.
   const target = join(directory, 'real-agent.json');
   await writeFile(target, valid);

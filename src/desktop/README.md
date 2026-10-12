@@ -753,7 +753,9 @@ The model must be in Pi's discovered catalogue or the Claude allowlist plus the
 configured Claude default. The listener refuses a stale `revision`, a change
 while another is being saved, an invalid or non-regular file and write failures,
 leaving the file unchanged; otherwise it replaces the file atomically, keeping
-every other key and the file mode, and returns the new defaults. The panel shows
+every other key and the file mode, and returns the new defaults. Only if
+flushing the directory fails after the replacement does the error say that the
+defaults were saved but not confirmed on disk. The panel shows
 a refusal and reads the defaults again. Existing conversations keep their
 harness and model; see [agent contracts](../agents/README.md#defaults-for-new-coding-sessions).
 Preview returns `preview` without saving.

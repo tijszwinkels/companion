@@ -159,7 +159,13 @@ export async function saveCodingDefaults(
  * Atomically replace `path` (or create it when `previous` is undefined) with
  * `replacement`, keeping the existing file's permission bits. Fails without
  * touching `path` when its contents differ from `previous` just before the
- * replacement.
+ * replacement, or when any step before the replacement fails.
+ *
+ * Everything that can fail is done before the link/rename that commits the
+ * change. Only the final flush of the directory entry comes after it; if that
+ * fails the new file is already in use, so the error says it was saved rather
+ * than pretending nothing changed. Rolling back is not attempted: it could
+ * overwrite a hand edit made meanwhile.
  */
 async function replaceConfiguration(
   directory: string,
@@ -178,6 +184,10 @@ async function replaceConfiguration(
     }
     mode = status.mode & 0o777;
   }
+
+  // Opened now, because the new directory entry is flushed through it after
+  // the commit; failing to open it afterwards would be too late.
+  const folder = await open(directory, 'r');
 
   // The temporary file lives in the same directory, so the rename below
   // stays on one filesystem and is atomic. `wx` never reuses another file.
@@ -214,14 +224,18 @@ async function replaceConfiguration(
       await rename(temporary, path);
     }
 
-    // Make the new directory entry durable as well as the file contents.
-    const folder = await open(directory, 'r');
+    // The change is committed. Make the new directory entry durable as well
+    // as the file contents.
     try {
       await folder.sync();
-    } finally {
-      await folder.close();
+    } catch (error) {
+      throw Error(
+        `Saved the new defaults, but could not confirm they reached the disk: ${String(error)}`,
+      );
     }
   } finally {
+    // Closing a read-only directory handle changes nothing on disk.
+    await folder.close().catch(() => {});
     // After a rename the temporary name no longer exists; after a link or a
     // failure it does. Nothing else uses that unique name. A failed removal
     // only leaves a stray hidden file; it must not turn a completed
