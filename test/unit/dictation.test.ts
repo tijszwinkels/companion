@@ -605,3 +605,56 @@ test('manual chunks share the ASR worker with the pipeline and bypass routing en
   assert.equal(calls.filter((call) => call === 'processing').length, 1);
   assert.equal(calls.filter((call) => call === 'screenshot').length, 1);
 });
+
+for (const boundary of ['stopped', 'navigation', 'limit', 'paused'] as const) {
+  for (const failure of ['transcription', 'delivery'] as const) {
+    test(`a ${failure} failure while finishing after ${boundary} is reported as a failure`, async () => {
+      const release = deferred<void>();
+      const f = setup({
+        transcribe: async (samples) => {
+          if (samples[0] === 2) {
+            await release.promise;
+            if (failure === 'transcription') {
+              throw Error('ASR operation timed out');
+            }
+          }
+          return `chunk ${samples[0]}`;
+        },
+        append: async (request): Promise<DictationAppendResult> => {
+          f.appends.push(request);
+          if (failure === 'delivery' && request.sequence === 2) {
+            return { outcome: 'unconfirmed', reason: 'synthetic' };
+          }
+          // The limit boundary comes from the first append's resulting length.
+          return { outcome: 'appended', length: boundary === 'limit' ? 8000 : 10 };
+        },
+      });
+
+      f.start();
+      const recording = f.controller.record(vad);
+      const { sink, stop } = await f.capture.started;
+      sink.accept(chunk(1));
+      sink.accept(chunk(2));
+      f.capture.script.tail = chunk(3);
+      await waitFor(() => f.appends.length === 1);
+
+      if (boundary === 'stopped') {
+        f.controller.stop('stopped');
+      } else if (boundary === 'navigation') {
+        f.controller.ownerViewChanged(7, 'elsewhere');
+      } else if (boundary === 'paused') {
+        f.pause.toggle();
+      }
+      await waitFor(() => stop.aborted);
+      await recording;
+      release.resolve();
+      await waitFor(() => f.summaries.length === 1);
+
+      const summary = f.summaries[0];
+      assert.equal(summary.reason, failure);
+      assert.equal(summary.complete, false);
+      assert.match(summary.message, /incomplete|may be missing/);
+      assert.doesNotMatch(summary.message, /was added here|Everything recorded/);
+    });
+  }
+}

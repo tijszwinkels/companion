@@ -10,7 +10,7 @@ import {
 import { desktopFixture, waitFor, type DesktopMessage } from '../desktop-fixture.ts';
 import { chunk, scriptedCapture, vad } from '../dictation-fixture.ts';
 import { harnessFixture } from '../harness-fixture.ts';
-import { frame, signal } from '../helpers.ts';
+import { deferred, frame, signal } from '../helpers.ts';
 
 /**
  * The desktop protocol for manual recording: a real private socket and
@@ -417,4 +417,59 @@ test('listener shutdown abandons the recording without delivering more text', as
     f.messages.some((message) => message.type === 'recording-append'),
     false,
   );
+});
+
+test('a tab change racing Record ends the recording; the panel can record again', async (context) => {
+  const f = await setup(context);
+  await f.show(f.id);
+
+  // One socket write: Record, then leaving the conversation at once. The
+  // controls run concurrently, so the end may overtake the start reply.
+  f.desktop.client.write(
+    JSON.stringify({ action: 'start-recording', id: f.id, draftLength: 0 }) +
+      '\n' +
+      JSON.stringify({ action: 'panel-state', id: '', composerFocused: false, draftHost: true }) +
+      '\n',
+  );
+  const reply = (await f.desktop.reply('start-recording')) as Message;
+  assert.equal(reply.type, 'result');
+  const recordingId = (reply.result as unknown as { recordingId: string }).recordingId;
+  const finished = await f.next('recording-finished');
+  assert.equal(finished.recordingId, recordingId, 'Correlated by recording ID');
+  assert.equal(finished.reason, 'navigation');
+  assert.equal(f.dictation.status, undefined);
+  assert.equal(f.capture.script.calls, 0, 'No recorder was opened');
+
+  await f.show(f.id);
+  f.desktop.send({ action: 'start-recording', id: f.id, draftLength: 0 });
+  assert.equal((await f.desktop.reply('start-recording')).type, 'result');
+});
+
+test('Record is refused for a conversation whose close is already saving', async (context) => {
+  const f = await setup(context);
+  await f.show(f.id);
+
+  // Hold the close in progress: a running turn that only ends when released.
+  const release = deferred<void>();
+  const turnStarted = deferred<void>();
+  f.script(f.id, async () => {
+    turnStarted.resolve();
+    await release.promise;
+  });
+  f.sessions.followUp(f.id, 'Keep working', signal());
+  await turnStarted.promise;
+  const closing = f.sessions.remove(f.id);
+  assert.equal(f.sessions.isClosing(f.id), true);
+  assert.equal(f.sessions.has(f.id), true);
+
+  f.desktop.send({ action: 'start-recording', id: f.id, draftLength: 0 });
+  const refused = await f.desktop.reply('start-recording');
+  assert.equal(refused.type, 'error');
+  assert.match(String(refused.message), /closing/);
+  assert.equal(f.dictation.status, undefined);
+
+  release.resolve();
+  await closing;
+  assert.equal(f.sessions.has(f.id), false);
+  assert.equal(f.sessions.isClosing(f.id), false);
 });

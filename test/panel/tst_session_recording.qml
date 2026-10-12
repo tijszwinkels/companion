@@ -210,5 +210,54 @@ Item {
       panel.recordingAvailable = false
       verify(!record.visible)
     }
+
+    function test_an_early_finish_before_the_start_answer_does_not_strand_the_composer() {
+      const panel = openPanel()
+      const record = findChild(panel, "recordSession")
+      const send = findChild(panel, "sendSession")
+      const close = findChild(panel, "dismissSession")
+      findChild(panel, "sessionComposer").text = "Draft"
+
+      mouseClick(record)
+      // The listener ended the recording (a quick tab change) before its
+      // answer to Record arrived on the same connection.
+      panel.recordingFinished({recordingId: "rec-6", id: "visible", reason: "navigation", complete: true,
+        message: "Recording stopped because you left this conversation. The recorded text was added here."})
+      panel.recordingStarted("visible", "rec-6", "")
+      compare(record.text, "Record")
+      verify(record.enabled)
+      verify(send.enabled)
+      verify(close.enabled)
+      verify(findChild(panel, "recordingNotice").text.indexOf("left this conversation") >= 0)
+    }
+
+    function test_a_missed_end_is_recovered_by_the_stop_answer() {
+      const panel = openPanel()
+      const record = findChild(panel, "recordSession")
+      findChild(panel, "sessionComposer").text = "Draft"
+      startRecording(panel, "rec-7")
+      panel.recording = null
+      mouseClick(record)
+      panel.recordingStopAnswered("This conversation is not recording in this panel")
+      compare(record.text, "Record")
+      verify(findChild(panel, "sendSession").enabled)
+      verify(findChild(panel, "recordingNotice").text.indexOf("already ended") >= 0)
+
+      // While the listener still shows the recording, a Stop error is only shown.
+      startRecording(panel, "rec-8")
+      mouseClick(record)
+      panel.recordingStopAnswered("Companion is disconnected.")
+      compare(record.text, "Stop recording")
+    }
+
+    function test_incomplete_results_always_warn() {
+      const panel = openPanel()
+      startRecording(panel, "rec-9")
+      panel.recordingFinished({recordingId: "rec-9", id: "visible", reason: "stopped", complete: false, message: ""})
+      panel.recording = null
+      const notice = findChild(panel, "recordingNotice")
+      verify(notice.visible)
+      verify(notice.text.indexOf("may be missing") >= 0)
+    }
   }
 }

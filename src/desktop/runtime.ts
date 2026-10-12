@@ -1607,6 +1607,11 @@ export class DesktopRuntime {
       if (!this.options.agents?.has(request.id) || !this.showsConversation(clientId, request.id)) {
         throw Error('Open this conversation to record into its text box');
       }
+      // A close admitted earlier is still saving; its draft is about to go.
+      // Checked in the same tick as `start`, so no close can slip between.
+      if (this.options.agents.isClosing(request.id)) {
+        throw Error('This conversation is closing');
+      }
       const status = this.dictation.start({
         clientId,
         sessionId: request.id,

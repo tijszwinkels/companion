@@ -83,6 +83,10 @@ Item {
   // until the listener confirms the start.
   property var ownRecording: null
   property bool stopRecordingPending: false
+  // A recording-finished event for this panel's recording that overtook the
+  // answer to Record (the listener runs controls concurrently, so a quick
+  // tab change can end the recording first). Applied when the answer names it.
+  property var earlyRecordingFinish: null
   // Conversation id -> why its last recording stopped or what may be missing.
   property var recordingNotices: ({})
   readonly property bool recordingHere: ownRecording !== null && session !== null && ownRecording.id === session.id
@@ -284,17 +288,29 @@ Item {
   // The listener's answer to Record: a recording ID, or a refusal.
   function recordingStarted(id, recordingId, error) {
     if (!root.ownRecording || root.ownRecording.id !== id || root.ownRecording.recordingId !== "") return
+    const early = root.earlyRecordingFinish
+    root.earlyRecordingFinish = null
     if (error || !recordingId) {
       root.ownRecording = null
       if (root.displayedId === id) root.inputError = error || "Recording did not start."
       return
     }
     root.ownRecording = {id: id, recordingId: recordingId}
+    if (early && early.recordingId === recordingId) root.recordingFinished(early)
   }
 
   function recordingStopAnswered(error) {
     root.stopRecordingPending = false
-    if (error && root.ownRecording && root.displayedId === root.ownRecording.id) root.inputError = error
+    const own = root.ownRecording
+    if (!error || !own) return
+    // The listener no longer has this recording (its end was missed): stop
+    // showing it rather than leaving Send and Close disabled.
+    if (own.recordingId !== "" && !(root.recording && root.recording.recordingId === own.recordingId)) {
+      root.ownRecording = null
+      root.setRecordingNotice(own.id, "Recording had already ended. Check the text: some speech may be missing.")
+      return
+    }
+    if (root.displayedId === own.id) root.inputError = error
   }
 
   // A transcript chunk from this panel's recording. Appended at the end of
@@ -319,16 +335,24 @@ Item {
 
   function recordingFinished(message) {
     const own = root.ownRecording
+    if (own && own.recordingId === "" && own.id === message.id) {
+      root.earlyRecordingFinish = message
+      return
+    }
     if (!own || own.recordingId === "" || own.recordingId !== message.recordingId) return
     root.ownRecording = null
     root.stopRecordingPending = false
-    root.setRecordingNotice(own.id, message.message || "")
+    // Always warn when speech may be missing, whatever the reason says.
+    const notice = message.message || (message.complete === false
+      ? "Recording stopped. Some speech may be missing; check the text." : "")
+    root.setRecordingNotice(own.id, notice)
   }
 
   // The listener abandons a recording when its panel disconnects.
   function recordingDisconnected() {
     const own = root.ownRecording
     root.stopRecordingPending = false
+    root.earlyRecordingFinish = null
     if (!own) return
     root.ownRecording = null
     root.setRecordingNotice(own.id, "Recording stopped because Companion disconnected. Some speech may be missing.")

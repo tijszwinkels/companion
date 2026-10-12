@@ -142,8 +142,13 @@ class Recording implements DictationSink {
   sequence = 0;
   appendedChunks = 0;
 
-  // The first reason wins; later boundaries do not rewrite the explanation.
+  // Why capture ended. The first reason wins; later boundaries do not
+  // rewrite it.
   stopReason?: DictationStopReason;
+  // The first failure that lost (or may have lost) recorded speech. Kept
+  // apart from `stopReason`, because a failure while finishing after an
+  // ordinary Stop must still be reported as a failure.
+  failure?: DictationStopReason;
   // Set when recorded speech may be missing from the draft.
   incomplete = false;
 
@@ -280,6 +285,7 @@ export class DictationController extends EventEmitter {
     if (!recording.abandoned.signal.aborted) {
       if (recording.waiting.length > 0 || recording.worker || !recording.captureDone) {
         recording.incomplete = true;
+        recording.failure ??= reason;
       }
       this.discardWaiting(recording);
       recording.abandoned.abort();
@@ -392,6 +398,7 @@ export class DictationController extends EventEmitter {
     if (recording.waiting.length >= MAX_WAITING_CHUNKS) {
       samples.fill(0);
       recording.incomplete = true;
+      recording.failure ??= 'overload';
       this.log('dictation', 'Transcription backlog full; a chunk was not transcribed');
       this.endCapture(recording, 'overload');
       return;
@@ -418,6 +425,7 @@ export class DictationController extends EventEmitter {
       const message = error instanceof Error ? error.message : String(error);
       this.log('dictation', `Microphone capture failed: ${message}`);
       recording.incomplete = true;
+      recording.failure ??= 'microphone';
       this.endCapture(recording, 'microphone');
     } else {
       // A file can also end on its own; treat it as Stop.
@@ -558,6 +566,7 @@ export class DictationController extends EventEmitter {
   private failed(recording: Recording, reason: 'transcription' | 'delivery'): void {
     if (!recording.abandoned.signal.aborted) {
       recording.incomplete = true;
+      recording.failure ??= reason;
       this.discardWaiting(recording);
       recording.abandoned.abort();
     }
@@ -581,7 +590,9 @@ export class DictationController extends EventEmitter {
     }
 
     this.current = undefined;
-    const reason = recording.stopReason ?? 'stopped';
+    // A failure explains the result better than the boundary that came first
+    // (for example a transcription failure while finishing after Stop).
+    const reason = recording.failure ?? recording.stopReason ?? 'stopped';
     const summary: DictationSummary = {
       recordingId: recording.id,
       clientId: recording.clientId,
@@ -619,15 +630,33 @@ export class DictationController extends EventEmitter {
   }
 }
 
-/** The explanation shown below the text box when a recording ends. */
+/**
+ * The explanation shown below the text box when a recording ends. Whenever
+ * speech may be missing, the message says so.
+ */
 function summaryMessage(reason: DictationStopReason, incomplete: boolean): string {
+  const boundary = boundaryMessage(reason, incomplete);
+  if (!incomplete || reason === 'overload' || isFailure(reason)) {
+    return boundary;
+  }
+  // Not expected (failures take precedence), but never imply completeness.
+  return `${boundary} Some speech may be missing.`.trim();
+}
+
+function isFailure(reason: DictationStopReason): boolean {
+  return ['microphone', 'transcription', 'delivery', 'disconnected', 'shutdown'].includes(reason);
+}
+
+function boundaryMessage(reason: DictationStopReason, incomplete: boolean): string {
   switch (reason) {
     case 'stopped':
       return '';
     case 'limit':
       return `Recording stopped at ${DICTATION_CHARACTER_LIMIT} characters. Shorten the text before sending.`;
     case 'navigation':
-      return 'Recording stopped because you left this conversation. The recorded text was added here.';
+      return incomplete
+        ? 'Recording stopped because you left this conversation.'
+        : 'Recording stopped because you left this conversation. The recorded text was added here.';
     case 'paused':
       return 'Recording stopped because listening was paused.';
     case 'overload':

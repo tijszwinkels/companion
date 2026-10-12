@@ -929,6 +929,16 @@ export class AgentSessions implements InspectableModule {
     return this.sessions.has(id);
   }
 
+  /**
+   * Whether a close of this conversation has been admitted and is still
+   * saving. It stays in `has` until then, but must not gain new owners, such
+   * as a recording into its draft. Synchronous, so a caller can check and
+   * claim in the same tick (the close guard covers the reverse order).
+   */
+  isClosing(id: string): boolean {
+    return this.sessions.get(id)?.closing === true;
+  }
+
   /** Only the capture path needs transcript excerpts; UI updates stay small. */
   conversationContext(id: string): AgentConversationContext | undefined {
     const session = this.sessions.get(id);

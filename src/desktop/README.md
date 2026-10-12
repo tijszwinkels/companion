@@ -959,8 +959,8 @@ Record. The phone relay removes both fields.
 ```
 
 `start-recording` requires that this connection reports the conversation as
-its visible selection (`panel-state`), that no recording is running or
-finishing, and `draftLength` (the composer's current length in UTF-16 code
+its visible selection (`panel-state`), that the conversation is not already
+closing, that no recording is running or finishing, and `draftLength` (the composer's current length in UTF-16 code
 units) below 8000. It returns `{outcome: "recording", recordingId, id}`.
 `stop-recording` is accepted only from the owning connection and returns
 `finishing`. All three actions are refused for remote panels and run as
@@ -979,7 +979,13 @@ answer. After 5 seconds, disconnection or shutdown the append is
 When the recording ends, the owner receives `{"type":"recording-finished",
 "recordingId","id","reason","complete","message"}`. `complete: false` means
 recorded speech may be missing; `message` is shown below the text box
-(empty after an ordinary Stop). Reasons:
+(empty after an ordinary, complete Stop) and always says so when speech may be
+missing. A failure while finishing (for example ASR after Stop) is reported as
+that failure, not as the earlier boundary. Controls run concurrently, so this
+event can arrive before the `start-recording` result when the recording ends
+at once (for example a quick tab change); panels keep it and apply it when the
+result names the same `recordingId`. A `stop-recording` refusal for a
+recording the latest state no longer shows also clears it. Reasons:
 
 | Reason                     | Capture stops when                                                                              | Words already captured                                   |
 | -------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
