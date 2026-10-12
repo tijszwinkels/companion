@@ -933,9 +933,17 @@ does not work.
 
 Then ask: **“Do you want a short tutorial on how to use it?”** If they do, walk
 them through it interactively, one thing at a time, waiting for them to try each:
-showing the panel, starting and pausing listening, dictating into an editor, a
-“quick question” about the screen, starting a “new session” and switching between
-conversations. Base it on [Using Companion](using-companion.md).
+
+1. Showing the panel, and starting and pausing listening.
+2. **Dictation, always as the first feature:** click into an editor and just talk,
+   then the command words “insert …” (exact text) and “enter …” (text plus Enter).
+   Without a microphone, do not skip this: say so, focus an editor and have them
+   type `insert hello world` in the Activity box, which types into the editor the
+   same way spoken words would.
+3. A “quick question” about the screen, starting a “new session” and switching
+   between conversations.
+
+Base it on [Using Companion](using-companion.md).
 
 **If something goes wrong,** diagnose rather than retry blindly:
 
