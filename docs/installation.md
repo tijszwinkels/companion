@@ -687,6 +687,16 @@ Use memory/index.md for durable facts the user has approved keeping. Read it whe
 relevant; record the date and source, and distinguish facts from suggestions.
 Keep task-specific notes small. Do not store passwords, tokens or raw recordings.
 Review existing notes before updating them. Ask before exporting or deleting memory.
+
+## About Companion
+
+You run inside Companion, a voice assistant on the user's Linux desktop. It
+transcribes speech locally; a model decides whether the user is dictating text
+into the focused app or asking an agent like you. Command words make it explicit:
+"insert …", "enter …", "quick question, …", "new session, …", "go to session
+<number>". Your answers appear in Companion's panel. You can show widgets, start
+and message other Companion sessions, and offer choices the user can click or say.
+For how the user operates Companion, read ~/Work/companion/docs/using-companion.md.
 ```
 
 This is plain file-based guidance, not an automatic memory service or a security
