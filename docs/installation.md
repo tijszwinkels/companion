@@ -92,8 +92,10 @@ the same checkpoints as a human, and report them briefly as you pass them.
 The handoff prompt in step 0 grants the guide's ordinary **install** and
 **download** steps: run them without asking. Ask only for what that grant leaves
 out: privileged steps (the password dialog), destructive changes, credentials,
-model/provider/license choices, and **activate** or **live** steps that listen,
-capture the screen or type, unless the user already authorized them. Never print keys,
+model/provider choices, and **activate** or **live** steps that listen,
+capture the screen or type, unless the user already authorized them. The guide's
+own fixed downloads, such as the step 3 speech model, are part of that grant:
+mention their license in passing, do not ask for approval. Never print keys,
 copy another person's agent directory, grant blanket project trust, weaken access
 controls, or add broad permission-bypass flags to make a check pass. Stop on a
 failed checkpoint, diagnose it, and report untested steps honestly.
@@ -102,6 +104,8 @@ failed checkpoint, diagnose it, and report untested steps honestly.
 unless something on this machine calls for a change. Run every checkpoint you can
 check yourself (commands, exit codes, logs, the non-capturing checks) and report
 results in a line or two; do not walk the user through checks you can verify.
+Do not report routine tool noise, such as `npm audit` notices, unless it makes a
+step fail.
 Involve the user only for what needs a human: passwords, real choices, and trying
 Companion at the end of step 7.
 
@@ -302,7 +306,8 @@ worker can load this three-file int8 set:
 The [exporter's model repository](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx)
 identifies the [NVIDIA source model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 and **CC BY 4.0** license. Review the model card/license and attribution obligations
-before downloading or redistributing. The pinned revision below was checked
+before redistributing; downloading it is part of the default installation. The
+pinned revision below was checked
 against public repository metadata; its file hashes match Companion's
 [historically measured model](../native/asr-worker/README.md#benchmark-and-tests).
 
@@ -364,7 +369,10 @@ Companion uses a model for two jobs, and they can come from different places:
   The provider the user already uses for their coding agent is usually a good
   choice; see the [optional cloud coding profile](#optional-cloud-coding-profile).
 
-For the classifier, work down this list and explain the choice to the user:
+**Always stop and ask the user about the models**, even though you otherwise keep
+messages short: it decides where their screenshots and transcripts go. Explain
+the two jobs above in plain words, say what you found on this machine, and offer
+the options below as an explicit choice. For the classifier, work down this list:
 
 1. Check for a local NVIDIA GPU (`nvidia-smi`) with enough memory for the
    [candidate recipe](#candidate-nvidialinux-recipe-on-device-or-on-the-trusted-server)
@@ -881,6 +889,12 @@ or the bar button starts listening. Suggest trying ordinary dictation into an
 editor, “quick question, …” about something on screen, and “new session, …”. The
 Activity tab shows what Companion heard and decided. Ask them to tell you what
 does not work.
+
+Then ask: **“Do you want a short tutorial on how to use it?”** If they do, walk
+them through it interactively, one thing at a time, waiting for them to try each:
+showing the panel, starting and pausing listening, dictating into an editor, a
+“quick question” about the screen, starting a “new session” and switching between
+conversations. Base it on [Using Companion](using-companion.md).
 
 **If something goes wrong,** diagnose rather than retry blindly:
 
