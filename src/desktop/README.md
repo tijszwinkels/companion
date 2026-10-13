@@ -1290,6 +1290,9 @@ with label, state, local due time and zone, relative
 due/overdue time, reason, cancellation intent and Cancel; finished timers are
 collapsed. When the header is too narrow for both, the clock folds into the
 conversation menu: its button shows "!" (attention) or "◷" and lists Timers first.
+If the menu button and Browser still do not fit, Browser joins the menu with the
+same action. When the conversation area is too short for a usable list, the
+overlay may cover the header, composer and footer, but never leaves the panel.
 Viewing never acknowledges or clears an attention state. `scheduled-wake` message origins render as **Scheduled wake**,
 not **You**. Background restore uses the existing `reveal: false` contract.
 

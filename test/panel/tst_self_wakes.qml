@@ -26,6 +26,8 @@ Item {
     }
   }
 
+  Component { id: controlsComponent; Panel.AgentSessionState { controlsAvailable: true } }
+
   function timer(id, state, extra) {
     return Object.assign({id: id, label: "Timer " + id, state: state, dueAt: Date.now() + 18 * 60000,
       transitionedAt: Date.now() - 60000, reason: ""}, extra || {})
@@ -244,10 +246,12 @@ Item {
       verify(waitForRendering(panel))
     }
 
-    // Review round 2 (Rowan): sizes the native host supports, at theme scales
-    // 1–3, opened directly at that size and opened large then shrunk. Sizes
-    // where the panel has no conversation area beside its rail at all (narrow
-    // windows at scale 3) are outside what the header can offer and skipped.
+    // Review rounds 2–3 (Rowan): sizes the native host supports, at theme
+    // scales 1–3, opened directly at that size and opened large then shrunk,
+    // with the native host's Browser button and without it (portable panel).
+    // Sizes where the panel has no conversation area beside its rail at all
+    // (narrow windows at scale 3) are outside what the header can offer and
+    // skipped.
     function test_timer_overlay_fits_a_size_and_scale_matrix() {
       const wakes = [timer("p0", "scheduled", {label: "A deliberately long timer label that wraps over several lines " + "x".repeat(40)}),
         timer("p1", "waiting", {reason: "Waiting for capacity"}), timer("f", "failed", {reason: "Long reason ".repeat(12)})]
@@ -255,11 +259,17 @@ Item {
       const window = parent.Window.window
       const original = {width: window.width, height: window.height}
       const skipped = []
+      // Portable panel; native host with Browser; native host with Browser and
+      // the conversation model footer.
+      for (const host of [{browser: false, footer: false}, {browser: true, footer: false}, {browser: true, footer: true}]) {
+      const browser = host.browser
       for (const unit of [1, 1.5, 2, 3]) {
         for (const size of [[600, 900], [420, 520], [360, 420], [600, 420]]) {
           for (const path of ["direct", "resize"]) {
-            const label = size.join("×") + " @" + unit + " " + path
-            const panel = createTemporaryObject(panelComponent, parent, {width: 600, height: 900, unit: unit})
+            const label = size.join("×") + " @" + unit + " " + path + (browser ? " browser" : "") + (host.footer ? " footer" : "")
+            const properties = {width: 600, height: 900, unit: unit, browserAvailable: browser}
+            if (host.footer) properties.sessionControls = createTemporaryObject(controlsComponent, parent)
+            const panel = createTemporaryObject(panelComponent, parent, properties)
             resize(panel, path === "direct" ? size[0] : 600, path === "direct" ? size[1] : 900)
             const area = size[0] - findChild(panel, "tabRail").width - 40 * unit
             if (area < 60 * unit) {
@@ -268,6 +278,7 @@ Item {
               continue
             }
             open(panel, wakes)
+            compare(findChild(panel, "sessionModelFooter").visible, host.footer, label + ": footer configuration")
             openTimers(panel)
             if (path === "resize") resize(panel, size[0], size[1])
             verifyOverlayInside(panel, label)
@@ -279,13 +290,60 @@ Item {
             verifyOverlayInside(panel, label + " reopened")
             keyClick(Qt.Key_Escape)
             tryVerify(() => !overlay(panel).opened)
+            // Browser stays reachable: its own button, or the menu entry.
+            if (browser) {
+              const browserButton = findChild(panel, "panelBrowserButton")
+              if (browserButton.visible) {
+                verify(reachable(panel, browserButton), label + ": Browser button clickable")
+              } else {
+                const menuButton = findChild(panel, "conversationMenuButton")
+                verify(reachable(panel, menuButton), label + ": menu clickable")
+                mouseClick(menuButton)
+                tryVerify(() => findChild(panel, "conversationMenu").opened)
+                verify(waitForRendering(panel))
+                verify(find(panel, "conversationMenu-browser") !== null, label + ": Browser in the menu")
+                keyClick(Qt.Key_Escape)
+                tryVerify(() => !findChild(panel, "conversationMenu").opened)
+              }
+            }
             panel.destroy()
           }
         }
       }
+      }
       window.width = original.width
       window.height = original.height
-      compare(skipped.join(", "), "420×520 @3 direct, 420×520 @3 resize, 360×420 @3 direct, 360×420 @3 resize", "Only panels without a conversation area are skipped")
+      compare(skipped.join(", "), ["", " browser", " browser footer"].map(suffix => ["420×520 @3 direct", "420×520 @3 resize", "360×420 @3 direct", "360×420 @3 resize"]
+        .map(name => name + suffix).join(", ")).join(", "), "Only panels without a conversation area are skipped")
+    }
+
+    // Review round 3 (Rowan): the native host's Browser button folds into the
+    // menu with the timers when the header is narrow, keeping its action.
+    function test_native_header_folds_browser_and_keeps_every_control_clickable() {
+      const panel = createTemporaryObject(panelComponent, parent, {width: 420, height: 520, unit: 2, browserAvailable: true})
+      parent.Window.window.width = 420
+      parent.Window.window.height = 520
+      open(panel, [timer("a", "scheduled"), timer("f", "failed")])
+      verify(!control(panel).visible)
+      verify(!findChild(panel, "panelBrowserButton").visible, "Browser joins the menu")
+      const menuButton = findChild(panel, "conversationMenuButton")
+      verify(reachable(panel, menuButton))
+      openTimers(panel)
+      verifyOverlayInside(panel, "native 420×520 @2")
+      keyClick(Qt.Key_Escape)
+      tryVerify(() => !overlay(panel).opened)
+      mouseClick(menuButton)
+      tryVerify(() => findChild(panel, "conversationMenu").opened)
+      verify(waitForRendering(panel))
+      mouseClick(find(panel, "conversationMenu-browser"))
+      tryVerify(() => panel.browsing, 1000, "The folded entry opens the browser")
+      // Outside a conversation (Activity), the Browser button is unchanged.
+      panel.closeBrowser()
+      panel.selectedSessionId = ""
+      verify(waitForRendering(panel))
+      verify(findChild(panel, "panelBrowserButton").visible)
+      parent.Window.window.width = 600
+      parent.Window.window.height = 900
     }
 
     function test_folded_header_menu_keeps_history_and_attention() {
@@ -306,11 +364,10 @@ Item {
     // Review round 1 (Rowan): an already open overlay shrunk to a short,
     // enlarged panel keeps a usable list and stays inside the panel.
     function test_short_high_scale_overlay_keeps_cancel_reachable() {
-      const panel = createTemporaryObject(panelComponent, parent, {width: 600, height: 900, unit: 2})
+      for (const browser of [false, true]) {
+      const panel = createTemporaryObject(panelComponent, parent, {width: 600, height: 900, unit: 2, browserAvailable: browser})
       open(panel, [timer("a", "scheduled"), timer("b", "failed")])
-      mouseClick(control(panel))
-      tryVerify(() => overlay(panel).opened)
-      verify(waitForRendering(panel))
+      openTimers(panel)
       panel.width = 360
       panel.height = 420
       verify(waitForRendering(panel))
@@ -324,6 +381,8 @@ Item {
       for (const cancel of cancelButtons(panel)) {
         const y = cancel.mapToItem(list.contentItem, 0, 0).y
         verify(y >= 0 && y + cancel.height <= list.contentHeight, "Cancel can scroll into view")
+      }
+      panel.destroy()
       }
     }
 

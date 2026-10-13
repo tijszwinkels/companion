@@ -976,7 +976,9 @@ Item {
     PanelAction {
       id: browserButton
       objectName: "panelBrowserButton"
-      visible: root.browserAvailable && !root.browsing
+      // In a conversation too narrow for it, Browser moves into the
+      // conversation menu with the same action.
+      visible: root.browserAvailable && !root.browsing && !conversationControls.browserFolded
       anchors.top: parent.top
       anchors.topMargin: -4 * root.unit
       anchors.right: closeButton.left
@@ -1004,16 +1006,31 @@ Item {
       anchors.rightMargin: (folded ? 2 : 6) * root.unit
       spacing: 4 * root.unit
       // Room for these controls beside the title, the Browser button and close.
-      readonly property real room: body.width - 36 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
-      // When the timer button and menu do not both fit beside a short title,
-      // the timer folds into the menu: one button whose symbol shows the timer
-      // state, with the timers as its first entry.
-      readonly property bool folded: timerControl.shown
-        && room - 40 * root.unit < timerControl.buttonWidth + 4 * root.unit + 28 * root.unit
+      // Natural widths only, so folding never depends on its own result.
+      readonly property real besideClose: body.width - 36 * root.unit
+      readonly property real browserSpace: root.browserAvailable && !root.browsing ? browserButton.implicitWidth + 6 * root.unit : 0
+      readonly property real menuWidth: 28 * root.unit
+      readonly property bool menuWanted: timerControl.historyCount > 0 || chat.readingHistory
+      // Folding happens in two steps so every header control stays clickable
+      // beside the title, Browser and close:
+      // 1. When the timer button and menu do not both fit beside a short title,
+      //    the timer folds into the menu: one button whose symbol shows the
+      //    timer state, with the timers as its first entry.
+      // 2. When that button and Browser still do not fit, Browser joins the
+      //    menu too, with its usual action.
+      //    Folding Browser always folds the timer as well, so the header then
+      //    holds just the menu button and close.
+      readonly property bool timerFolds: active && timerControl.shown
+        && besideClose - browserSpace - 40 * root.unit < timerControl.buttonWidth + 4 * root.unit + menuWidth
+      readonly property real controlsWidth: timerFolds ? menuWidth
+        : (timerControl.shown ? timerControl.buttonWidth : 0) + (timerControl.shown && menuWanted ? 4 * root.unit : 0) + (menuWanted ? menuWidth : 0)
+      readonly property bool browserFolded: active && browserSpace > 0 && controlsWidth > 0
+        && besideClose - browserSpace < controlsWidth + 2 * root.unit
+      readonly property bool folded: timerFolds || (browserFolded && timerControl.shown)
       // Overlays stay inside the panel: below the header when there is room,
       // never above the panel's top edge, never below the conversation area.
       readonly property real overlayCeiling: 4 * root.unit - body.y - y
-      readonly property real overlayBottom: body.height - 8 * root.unit - y
+      readonly property real overlayFloor: root.height - 4 * root.unit - body.y - y
       TimerControl {
         id: timerControl
         session: conversationControls.active ? root.selectedSession : null
@@ -1023,6 +1040,7 @@ Item {
         // Below the header and any control error, within the conversation area.
         overlayTop: body.contentTop - conversationControls.y
         overlayCeiling: conversationControls.overlayCeiling
+        overlayFloor: conversationControls.overlayFloor
         overlayRightInset: body.width - conversationControls.x - x - width
         maximumWidth: body.width
         maximumHeight: Math.max(0, body.height - body.contentTop - 8 * root.unit)
@@ -1041,6 +1059,7 @@ Item {
           const entries = []
           if (!conversationControls.active) return entries
           if (conversationControls.folded) entries.push({id: "open-timers", text: "Timers · " + timerControl.summary})
+          if (conversationControls.browserFolded) entries.push({id: "browser", text: root.browserPinVisible ? "Browser · show the pinned page" : "Browser"})
           if (timerControl.historyCount > 0) entries.push({id: "timers", text: "Timer history · " + timerControl.historyCount})
           if (chat.readingHistory) entries.push({id: "refresh", text: "Refresh loaded messages"})
           return entries
@@ -1057,11 +1076,12 @@ Item {
           : conversationControls.folded ? root.accent : root.muted
         summary: conversationControls.folded ? "Timers: " + timerControl.summary : ""
         overlayCeiling: conversationControls.overlayCeiling
-        bottomLimit: conversationControls.overlayBottom
+        bottomLimit: conversationControls.overlayFloor
         overlayRightInset: body.width - conversationControls.x - x - width
         maximumWidth: body.width
         onTriggered: id => {
           if (id === "open-timers") timerControl.open()
+          else if (id === "browser") root.openBrowser()
           else if (id === "timers") timerControl.openHistory()
           else if (id === "refresh") chat.refreshHistory()
         }

@@ -33,6 +33,9 @@ Item {
   // `overlayRightInset` beyond this control's.
   property real overlayTop: height + 6 * unit
   property real overlayCeiling: -height
+  // The lowest it may reach when the preferred area is too short (the panel's
+  // bottom edge; it may then cover the composer and footer while open).
+  property real overlayFloor: overlayTop + maximumHeight
   property real overlayRightInset: 0
   property real maximumWidth: 360 * unit
   property real maximumHeight: 400 * unit
@@ -173,16 +176,18 @@ Item {
     closePolicy: Popup.CloseOnPressOutsideParent
     padding: 0
     width: Math.min(360 * root.unit, root.maximumWidth)
-    // Its content's height within the room below the header, but never less
-    // than the fixed header plus a usable strip of list: when the panel is too
-    // short for that below the header, the overlay moves up rather than out
-    // of the panel. It never exceeds the whole region the host allows.
-    readonly property real bottomLimit: root.overlayTop + Math.max(0, root.maximumHeight)
+    // Its content's height within the conversation area below the header.
+    // When that room is less than the fixed header plus a usable strip of
+    // list, it instead uses the whole region between the host's ceiling and
+    // floor (moving up over the header, down over the composer) rather than
+    // leaving the panel. It never exceeds that region.
     readonly property real usableHeight: header.height + 48 * root.unit
-    height: Math.min(Math.max(usableHeight, Math.min(header.height + list.contentHeight + 12 * root.unit, root.maximumHeight)),
-      Math.max(0, bottomLimit - root.overlayCeiling))
+    readonly property real wantedHeight: header.height + list.contentHeight + 12 * root.unit
+    readonly property bool fitsBelowHeader: wantedHeight <= root.maximumHeight || root.maximumHeight >= usableHeight
+    readonly property real region: Math.max(0, root.overlayFloor - root.overlayCeiling)
+    height: Math.min(region, fitsBelowHeader ? Math.min(wantedHeight, Math.max(0, root.maximumHeight)) : wantedHeight)
     x: root.width + root.overlayRightInset - width
-    y: Math.max(root.overlayCeiling, Math.min(root.overlayTop, bottomLimit - height))
+    y: Math.max(root.overlayCeiling, Math.min(root.overlayTop, root.overlayFloor - height))
     onAboutToShow: {
       ownerId = root.session ? root.session.id : ""
       now = Date.now()
