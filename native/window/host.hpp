@@ -68,6 +68,7 @@ private:
     void refitVisibleWindow();
     void updateSidebar();
     void remapSidebar();
+    QSize ordinaryBounds(const QScreen *screen) const;
     void fitOrdinary();
     void replaceSurface(const std::function<void()> &change);
     void accept();

@@ -191,14 +191,22 @@ TestCase {
     input.forceActiveFocus()
     tryVerify(function() { return input.activeFocus && body.inputFocused })
 
-    // A smaller monitor that still holds the Window leaves it alone.
-    const smaller = Object.assign({}, laptop, {width: 1600, height: 1040})
+    // A smaller monitor whose usable area (less the 64 px panel allowance)
+    // still holds the Window leaves it alone.
+    const smaller = Object.assign({}, laptop, {width: 1600, height: 1064})
     screens([smaller])
     wait(800)
     compare(surface().width, 717)
     compare(surface().height, 1000)
 
-    // One that no longer holds it shows the same Window again, fitted.
+    // The whole output still holds it, but its usable area does not: a top bar
+    // would push the bottom offscreen. Show the same Window again, fitted.
+    const barred = Object.assign({}, laptop, {width: 1600, height: 1000})
+    screens([barred])
+    tryVerify(function() { return surface().height <= barred.height - 64 }, 3000, describe())
+    compare(surface().width, 717)
+
+    // A much smaller monitor fits it again.
     const small = Object.assign({}, laptop, {width: 1280, height: 720})
     screens([small])
     tryVerify(function() { return surface().height <= small.height - 64 }, 3000, describe())

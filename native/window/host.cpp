@@ -170,10 +170,12 @@ void WindowHost::refitVisibleWindow() {
     // and a Qt resize of a mapped window would leave the outer window at the
     // old size. Showing it again lets the compositor place the fitted size.
     if (mode != "window" || !ordinary.isVisible()) return;
+    // The compositor sizes maximized and full-screen windows to the output.
+    if (ordinary.windowStates() & (Qt::WindowMaximized | Qt::WindowFullScreen)) return;
     const QScreen *screen = ordinary.screen();
     if (!screen) return;
-    const QSize available = screen->availableGeometry().size();
-    if (ordinary.width() <= available.width() && ordinary.height() <= available.height()) return;
+    const QSize bounds = ordinaryBounds(screen);
+    if (ordinary.width() <= bounds.width() && ordinary.height() <= bounds.height()) return;
     replaceSurface([] {});
 }
 
@@ -263,6 +265,15 @@ void WindowHost::remapSidebar() {
     });
 }
 
+QSize WindowHost::ordinaryBounds(const QScreen *screen) const {
+    // The largest Window that fits the screen's usable area, as far as Qt can
+    // tell. Used both before mapping and to decide whether a shown Window must
+    // be refitted, so the two never disagree.
+    const QSize available = screen->availableGeometry().size();
+    return QSize(available.width() - compositorPanelAllowance, available.height() - compositorPanelAllowance)
+        .expandedTo(ordinary.minimumSize());
+}
+
 void WindowHost::fitOrdinary() {
     // Hyprland centres a newly mapped floating window at the size it requests,
     // so a remembered size larger than the screen leaves the top and bottom
@@ -271,11 +282,7 @@ void WindowHost::fitOrdinary() {
     if (ordinary.isVisible()) return;
     QScreen *screen = ordinary.screen() ? ordinary.screen() : QGuiApplication::primaryScreen();
     if (!screen) return;
-    const QSize available = screen->availableGeometry().size();
-    const QSize bounds = QSize(available.width() - compositorPanelAllowance,
-                               available.height() - compositorPanelAllowance)
-                             .expandedTo(ordinary.minimumSize());
-    const QSize fitted = ordinary.size().boundedTo(bounds);
+    const QSize fitted = ordinary.size().boundedTo(ordinaryBounds(screen));
     if (fitted != ordinary.size()) ordinary.resize(fitted);
 }
 

@@ -23,8 +23,10 @@ whole output as available, so the host never resizes a configured surface to
 that height. Before Window is shown, a remembered size larger than its monitor
 (less 64 logical pixels for panels) is reduced, and the remembered value is
 kept. Hyprland centres a newly shown floating window at that size. Once it is
-mapped, Hyprland owns its geometry: a Window that no longer fits after a monitor
-change is shown again at a fitted size, half a second after the change settles.
+mapped, Hyprland owns its geometry: a Window that no longer fits within those
+same bounds after a monitor change is shown again at a fitted size, half a second
+after the change settles. This re-centres a floating Window, and may re-tile a
+tiled one; maximized and full-screen windows are left to the compositor.
 Sidebar and Dock request a new frame after a width change, because the layer
 size and reserved zone apply only with the next surface commit.
 
