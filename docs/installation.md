@@ -491,24 +491,42 @@ ls -la "$HOME/.pi/agent"
 
 **Connect Pi to your own server** (skip this if agent conversations use a hosted
 provider; see the [optional cloud coding profile](#optional-cloud-coding-profile)).
-With the step 4 values still set, create `~/.pi/agent/models.json` with a provider
-named `companion-local`. The script
-refuses to overwrite an existing file; if one exists, add the `companion-local`
-provider to it by hand.
+This creates `~/.pi/agent/models.json` with a provider named `companion-local`. By
+default it uses the classifier's server from step 4. If agent conversations use a
+**different** server (another private machine, or local agents with a hosted
+classifier), first set that server's values, so agent content goes only where the
+user chose, and give it its own key variable:
+
+```bash
+export COMPANION_AGENT_BASE_URL='http://127.0.0.1:18082/v1'  # the agent server's /v1 URL
+export COMPANION_AGENT_MODEL_ID='agent-model'                 # its served model ID
+export COMPANION_AGENT_CONTEXT=32768                          # its context length
+export COMPANION_AGENT_KEY=required                           # or: none
+export COMPANION_AGENT_KEY_VAR=COMPANION_AGENT_API_KEY        # key variable name
+```
+
+The script refuses to overwrite an existing file; if one exists, add the
+`companion-local` provider to it by hand.
 
 ```bash
 python3 - <<'PY'
 import json, os
 from pathlib import Path
-key = os.environ["COMPANION_MODEL_KEY"]
+env = os.environ
+# Agent server values; without COMPANION_AGENT_* the classifier's server is reused.
+base_url = env.get("COMPANION_AGENT_BASE_URL", env["COMPANION_MODEL_BASE_URL"])
+model_id = env.get("COMPANION_AGENT_MODEL_ID", env["COMPANION_MODEL_ID"])
+context = env.get("COMPANION_AGENT_CONTEXT", env["COMPANION_MODEL_CONTEXT"])
+key = env.get("COMPANION_AGENT_KEY", env["COMPANION_MODEL_KEY"])
+key_var = env.get("COMPANION_AGENT_KEY_VAR", "COMPANION_LLM_API_KEY")
 if key not in ("required", "none"):
-    raise SystemExit("COMPANION_MODEL_KEY must be required or none")
+    raise SystemExit("The key setting must be required or none")
 model = {
-    "id": os.environ["COMPANION_MODEL_ID"],
+    "id": model_id,
     "name": "Companion local vision",
     "reasoning": False,
     "input": ["text", "image"],
-    "contextWindow": int(os.environ["COMPANION_MODEL_CONTEXT"]),
+    "contextWindow": int(context),
     "maxTokens": 4096,
     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
     "compat": {
@@ -519,11 +537,11 @@ model = {
     },
 }
 provider = {
-    "baseUrl": os.environ["COMPANION_MODEL_BASE_URL"],
+    "baseUrl": base_url,
     "api": "openai-completions",
     # An environment reference, not a secret. A keyless server still needs a
     # non-empty placeholder for Pi to offer the model.
-    "apiKey": "${COMPANION_LLM_API_KEY}" if key == "required" else "local",
+    "apiKey": "${" + key_var + "}" if key == "required" else "local",
     "models": [model],
 }
 path = Path.home() / ".pi/agent/models.json"
@@ -534,7 +552,8 @@ print("Created", path)
 PY
 ```
 
-`${COMPANION_LLM_API_KEY}` is a reference to the variable from step 4, not a key.
+The `apiKey` entry is a reference to an environment variable, not a key:
+`COMPANION_LLM_API_KEY` from step 4, or the separate agent key variable.
 
 **Starter instructions.** Companion runs its Pi conversations in `~/companion/agents`.
 Create `~/companion/agents/AGENTS.md` with a starter like this (edit it to fit your
@@ -726,8 +745,9 @@ the first start (an agent asks them to run this; it never handles the key):
  printf 'COMPANION_LLM_API_KEY=%s\n' "$key" > "$HOME/.config/companion/login.env")
 ```
 
-Keyless servers need no file. Changing it later takes effect after
-`systemctl --user restart companion-listener.service`.
+If agent conversations use a separate server with its own key, add a second line,
+`COMPANION_AGENT_API_KEY=…`, the same way. Keyless servers need no file. Changes
+take effect after `systemctl --user restart companion-listener.service`.
 
 **Start Companion, paused.** The listener and UI keep running, so an agent's shell
 tool cannot host them. Start them as the [step 8](#8-start-companion-after-login-optional)
@@ -757,9 +777,10 @@ A manual start takes one screenshot of the active window as a startup check (not
 sent anywhere or saved); the services skip it. Microphone capture stays off until
 the user resumes listening.
 
-**Check it yourself.** `bin/companion-login status` shows both services running and
-the candidate `wtype`, and `~/.local/state/companion/listener.log` and `ui.log`
-show a paused start without errors. Together with the speech, vision and Pi
+**Check it yourself.** `bin/companion-login status` shows both services running,
+the configured paused start and the candidate `wtype`; the logs in
+`~/.local/state/companion/` show no errors. The live state is the **Paused**
+indicator in the panel, which the user sees at the hand-over. Together with the speech, vision and Pi
 checks from steps 3–5, this covers the pipeline without capturing the user's
 desktop. Do not ask the user to run test scripts.
 
