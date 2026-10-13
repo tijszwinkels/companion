@@ -220,6 +220,7 @@ Item {
 
   Row {
     id: modes
+    objectName: "presentationControls"
     anchors.top: parent.top
     anchors.right: parent.right
     anchors.margins: 6 * root.theme.unit

@@ -26,6 +26,7 @@ import test from 'node:test';
 
 import { WidgetService } from '../../src/widgets/service.ts';
 import type { WidgetAttachment } from '../../src/widgets/types.ts';
+import { offscreenPlatform } from './offscreen.ts';
 
 const execute = promisify(execFile);
 const build = resolve('native/window/build');
@@ -267,7 +268,7 @@ async function environment(directory: string) {
     XDG_CACHE_HOME: join(directory, 'cache'),
     XDG_DATA_HOME: join(directory, 'data'),
     XDG_RUNTIME_DIR: runtime,
-    QT_QPA_PLATFORM: 'offscreen',
+    QT_QPA_PLATFORM: await offscreenPlatform(directory),
     QT_QUICK_BACKEND: 'software',
     QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu',
     QML_IMPORT_PATH: join(build, 'qml'),
