@@ -7,6 +7,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <qpa/qplatformnativeinterface.h>
+#include <qpa/qwindowsysteminterface.h>
 #include <QtQuickTest/quicktest.h>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #include <memory>
@@ -23,6 +24,8 @@ public:
         auto configure = native ? reinterpret_cast<Configure>(native->nativeResourceForIntegration("setConfiguration")) : nullptr;
         if (!configure) return false;
         configure({{"screens", QJsonArray::fromVariantList(screens)}}, native);
+        // Deliver the queued screen events now, so each call is one completed change.
+        QWindowSystemInterface::flushWindowSystemEvents();
         return true;
     }
 };

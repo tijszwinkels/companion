@@ -181,4 +181,33 @@ TestCase {
     compare(TestHost.presentation, "window")
     verify(TestHost.opened)
   }
+
+  function test_visible_window_is_refitted_when_its_monitor_shrinks() {
+    surface().width = 717
+    surface().height = 1000
+    TestHost.show(true)
+    const input = composer()
+    input.text = "Draft in a shrinking Window"
+    input.forceActiveFocus()
+    tryVerify(function() { return input.activeFocus && body.inputFocused })
+
+    // A smaller monitor that still holds the Window leaves it alone.
+    const smaller = Object.assign({}, laptop, {width: 1600, height: 1040})
+    screens([smaller])
+    wait(800)
+    compare(surface().width, 717)
+    compare(surface().height, 1000)
+
+    // One that no longer holds it shows the same Window again, fitted.
+    const small = Object.assign({}, laptop, {width: 1280, height: 720})
+    screens([small])
+    tryVerify(function() { return surface().height <= small.height - 64 }, 3000, describe())
+    compare(surface().width, 717)
+    compare(TestHost.presentation, "window")
+    verify(TestHost.opened)
+    compare(composer(), input)
+    compare(input.text, "Draft in a shrinking Window")
+    tryVerify(function() { return input.activeFocus && body.inputFocused }, 2000, "composer focus is restored")
+    input.text = ""
+  }
 }

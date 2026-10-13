@@ -23,7 +23,10 @@ whole output as available, so the host never resizes a configured surface to
 that height. Before Window is shown, a remembered size larger than its monitor
 (less 64 logical pixels for panels) is reduced, and the remembered value is
 kept. Hyprland centres a newly shown floating window at that size. Once it is
-mapped, Hyprland owns its geometry.
+mapped, Hyprland owns its geometry: a Window that no longer fits after a monitor
+change is shown again at a fitted size, half a second after the change settles.
+Sidebar and Dock request a new frame after a width change, because the layer
+size and reserved zone apply only with the next surface commit.
 
 The shared panel also provides per-conversation next-turn model selection, tab
 dragging and Alt+Shift+Up/Down reordering, and a draggable rail divider. These

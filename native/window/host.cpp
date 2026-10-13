@@ -31,7 +31,7 @@ WindowHost::WindowHost(QObject *parent, bool testSurfaces) : QObject(parent), te
         surface->installEventFilter(this);
         connect(surface, &QWindow::activeChanged, this, &WindowHost::stateChanged);
         connect(surface, &QWindow::visibleChanged, this, &WindowHost::stateChanged);
-        connect(surface, &QWindow::screenChanged, this, [this] { updateSidebar(); });
+        connect(surface, &QWindow::screenChanged, this, &WindowHost::screensChanged);
     }
     connect(&ordinary, &QWindow::widthChanged, this, [this](int value) {
         if (ordinary.isVisible()) settings.setValue("window/width", value);
@@ -41,14 +41,19 @@ WindowHost::WindowHost(QObject *parent, bool testSurfaces) : QObject(parent), te
     });
     sidebarWidth = std::clamp(settings.value("sidebar/width", 600).toInt(), 360, 1600);
     connect(&server, &QLocalServer::newConnection, this, &WindowHost::accept);
-    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this] { updateSidebar(); });
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, &WindowHost::screensChanged);
     for (auto *screen : QGuiApplication::screens()) {
-        connect(screen, &QScreen::geometryChanged, this, [this] { updateSidebar(); });
+        connect(screen, &QScreen::geometryChanged, this, &WindowHost::screensChanged);
     }
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this](QScreen *screen) {
-        connect(screen, &QScreen::geometryChanged, this, [this] { updateSidebar(); });
-        updateSidebar();
+        connect(screen, &QScreen::geometryChanged, this, &WindowHost::screensChanged);
+        screensChanged();
     });
+    // A monitor change reaches Qt before the compositor has moved or re-tiled
+    // the Window. Check its fit once the changes have settled.
+    windowRefit.setSingleShot(true);
+    windowRefit.setInterval(500);
+    connect(&windowRefit, &QTimer::timeout, this, &WindowHost::refitVisibleWindow);
 }
 
 WindowHost::~WindowHost() {
@@ -155,6 +160,23 @@ void WindowHost::replaceSurface(const std::function<void()> &change) {
     emit stateChanged();
 }
 
+void WindowHost::screensChanged() {
+    updateSidebar();
+    if (mode == "window") windowRefit.start();
+}
+
+void WindowHost::refitVisibleWindow() {
+    // Hyprland keeps a floating window's size when a monitor change moves it,
+    // and a Qt resize of a mapped window would leave the outer window at the
+    // old size. Showing it again lets the compositor place the fitted size.
+    if (mode != "window" || !ordinary.isVisible()) return;
+    const QScreen *screen = ordinary.screen();
+    if (!screen) return;
+    const QSize available = screen->availableGeometry().size();
+    if (ordinary.width() <= available.width() && ordinary.height() <= available.height()) return;
+    replaceSurface([] {});
+}
+
 QString WindowHost::sidebarScreen() const {
     return mode != "window" && placedScreen ? placedScreen->name() : QString();
 }
@@ -224,6 +246,9 @@ void WindowHost::updateSidebar() {
     // other exclusive zones. Never resize a configured surface from Qt's screen
     // height: it includes those zones, so the panel would overflow its space.
     layer->setDesiredSize(QSize(width, 0));
+    // Layer state is double-buffered until the next surface commit. Request a
+    // frame so a changed width or reserved zone applies on an idle panel.
+    if (sidebar.isVisible()) sidebar.update();
 #endif
 }
 

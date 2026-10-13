@@ -577,6 +577,7 @@ test('native host keeps the chosen presentation on screen across monitor changes
         'test_dock_follows_monitor_changes_and_keeps_controls_onscreen',
         'test_sidebar_and_hidden_dock_use_the_current_monitor',
         'test_window_fits_its_monitor_and_stays_a_window',
+        'test_visible_window_is_refitted_when_its_monitor_shrinks',
       ]) {
         assert.match(
           result.stdout,

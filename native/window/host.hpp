@@ -8,6 +8,7 @@
 #include <QQuickWindow>
 #include <QScreen>
 #include <QSettings>
+#include <QTimer>
 #include <functional>
 #include "layer-focus.hpp"
 
@@ -63,6 +64,8 @@ protected:
 private:
     QQuickWindow *window() const;
     QScreen *preferredSidebarScreen() const;
+    void screensChanged();
+    void refitVisibleWindow();
     void updateSidebar();
     void remapSidebar();
     void fitOrdinary();
@@ -79,6 +82,7 @@ private:
     QPointer<QLocalSocket> bridge;
     QJsonObject status;
     QPointer<QScreen> placedScreen;
+    QTimer windowRefit;
     QSettings settings;
     QString mode = "window";
     QString failure;
