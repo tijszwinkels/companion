@@ -167,6 +167,40 @@ and known user feedback. Read it immediately before editing to preserve other
 agents' updates. Use source and Git to verify current status; a dated ledger
 entry is not permission to merge or deploy.
 
+## Classifier request profiles
+
+`llm.requestProfile` (`src/core/llm-request-profile.ts`) selects how the intent
+classifier, json-cleanup-v1 and explicit-shortcut cleanup switch reasoning off.
+All three share `localModel` in `src/core/intent-detector.ts`; the profile only
+changes the model's `compat`/`thinkingLevelMap`, so Pi's adapter serializes the
+field itself and the prepared-payload hook still records the exact request.
+
+| Profile                | Reasoning-off field (thinking off)                                        | Adapter setting                                                      |
+| ---------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `local-qwen` (default) | `chat_template_kwargs: {enable_thinking: false, preserve_thinking: true}` | `thinkingFormat: 'qwen-chat-template'` (unchanged)                   |
+| `groq`                 | `reasoning_effort: "none"`                                                | `thinkingFormat: 'openai'`, `supportsReasoningEffort`, `off: 'none'` |
+| `openrouter`           | `reasoning: {enabled: false}`                                             | `thinkingFormat: 'together'` (not the adapter's `openrouter` format) |
+
+The installed `@earendil-works/pi-ai` 0.85.1 `openrouter` format sends
+`reasoning: {effort: "none"}`, which is not the form earlier probes showed working;
+its documented `together` format sends exactly `reasoning: {enabled: false}`. An
+SDK upgrade must keep `test/unit/llm-request-profile.test.ts` green: it asserts
+the full serialized request of every path per profile, the absence of other
+reasoning fields and that recordings equal the wire body.
+`docs/examples/check-vision.py` mirrors the same fields, sends an explicit
+User-Agent (Groq's front end refused Python's default with 403) and is tested by
+`test/unit/check-vision.test.ts` against loopback servers.
+
+Evidence and limits (2026-10-12/13, synthetic red PNG, recorded in the shared
+project notes): Groq rejects `chat_template_kwargs` with HTTP 400 and answers with
+`reasoning_effort: "none"`; OpenRouter ignores `chat_template_kwargs` for
+`qwen/qwen3.8-27b`/`qwen3.8-flash` and answered only with `reasoning.enabled:
+false`. Those probes prove basic image requests, not intent-routing or cleanup
+quality, and do not cover other models. Tests use loopback servers and the dummy
+key `COMPANION_LLM_API_KEY=synthetic-test-key`; never point them at a provider.
+`npm run eval:*` replays recorded bodies with only `model` changed, so a
+recording keeps the reasoning field of the profile it was made with.
+
 ## External session API development
 
 `src/agents/external/` implements the optional private Linux Unix socket;

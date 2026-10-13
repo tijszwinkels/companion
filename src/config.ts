@@ -4,6 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 import type { AsrConfig } from './sensors/audio/transcriber.ts';
 import type { LlmConfig } from './core/intent-detector.ts';
+import {
+  DEFAULT_LLM_REQUEST_PROFILE,
+  isLlmRequestProfile,
+  LLM_REQUEST_PROFILES,
+} from './core/llm-request-profile.ts';
 
 export interface Config {
   llm: LlmConfig;
@@ -14,7 +19,12 @@ export interface Config {
 /** Read optional overrides and return a complete, validated configuration. */
 export async function loadConfig(path?: string): Promise<Config> {
   const defaults: Config = {
-    llm: { baseUrl: 'http://127.0.0.1:18081/v1', model: 'qwen3.8-128k', timeoutMs: 15000 },
+    llm: {
+      baseUrl: 'http://127.0.0.1:18081/v1',
+      model: 'qwen3.8-128k',
+      timeoutMs: 15000,
+      requestProfile: DEFAULT_LLM_REQUEST_PROFILE,
+    },
     asr: {
       workerBinary: fileURLToPath(
         new URL('../native/asr-worker/target/release/companion-asr-worker', import.meta.url),
@@ -85,6 +95,13 @@ export async function loadConfig(path?: string): Promise<Config> {
           value > 180000
         ) {
           throw Error(`Invalid ${group}.timeoutMs`);
+        }
+      } else if (key === 'requestProfile') {
+        // A closed list: an unknown profile must not fall back to a guess.
+        if (!isLlmRequestProfile(value)) {
+          throw Error(
+            `Invalid ${group}.requestProfile: expected one of ${LLM_REQUEST_PROFILES.join(', ')}`,
+          );
         }
       } else if (typeof value !== 'string' || !value.trim()) {
         throw Error(`Invalid ${group}.${key}`);

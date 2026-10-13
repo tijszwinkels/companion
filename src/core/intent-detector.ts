@@ -12,11 +12,21 @@ import {
   type CleanupPromptVariant,
 } from './transcription-cleanup/prompt.ts';
 import { interpretInferredResponse } from './transcription-cleanup/response.ts';
+import {
+  DEFAULT_LLM_REQUEST_PROFILE,
+  reasoningOffSettings,
+  type LlmRequestProfile,
+} from './llm-request-profile.ts';
 
 export interface LlmConfig {
   baseUrl: string;
   model: string;
   timeoutMs: number;
+  /**
+   * How requests switch reasoning off for this endpoint. Absent means
+   * `local-qwen`, the original local vLLM request (see llm-request-profile.ts).
+   */
+  requestProfile?: LlmRequestProfile;
 }
 
 // An intent name needs very little output; this bounds accidental long replies.
@@ -27,11 +37,14 @@ export const MAX_OUTPUT_TOKENS = 32;
 export const CLEANUP_OUTPUT_TOKENS = 512;
 
 /**
- * The local model description shared by the intent detector and the
+ * The classifier model description shared by the intent detector and the
  * explicit-shortcut cleanup call. `maxTokens` is the only difference between
- * the bare-name requests and the cleanup requests.
+ * the bare-name requests and the cleanup requests; the request profile decides
+ * which reasoning-off field the adapter sends.
  */
 export function localModel(config: LlmConfig, maxTokens: number): Model<'openai-completions'> {
+  const reasoningOff = reasoningOffSettings(config.requestProfile ?? DEFAULT_LLM_REQUEST_PROFILE);
+
   return {
     id: config.model,
     name: config.model,
@@ -44,14 +57,8 @@ export function localModel(config: LlmConfig, maxTokens: number): Model<'openai-
     contextWindow: 131072,
     maxTokens,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    compat: {
-      supportsStore: false,
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: false,
-      supportsUsageInStreaming: false,
-      maxTokensField: 'max_tokens',
-      thinkingFormat: 'qwen-chat-template',
-    },
+    compat: reasoningOff.compat,
+    thinkingLevelMap: reasoningOff.thinkingLevelMap,
   };
 }
 

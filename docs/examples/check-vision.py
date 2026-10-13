@@ -11,6 +11,18 @@ import urllib.request
 from urllib.parse import urlsplit
 import zlib
 
+# The same reasoning-off field Companion's classifier sends for each
+# llm.requestProfile (src/core/llm-request-profile.ts). Absent means local-qwen.
+REASONING_OFF = {
+    "local-qwen": {"chat_template_kwargs": {"enable_thinking": False, "preserve_thinking": True}},
+    "groq": {"reasoning_effort": "none"},
+    "openrouter": {"reasoning": {"enabled": False}},
+}
+
+# Some hosted endpoints (Groq's Cloudflare front) refuse Python's default
+# "Python-urllib" User-Agent with HTTP 403, so name this script instead.
+USER_AGENT = "companion-check-vision/1"
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--config", required=True, type=Path)
 args = parser.parse_args()
@@ -19,6 +31,9 @@ url = config["baseUrl"].rstrip("/")
 parsed = urlsplit(url)
 if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
     parser.error("Use an HTTP(S) endpoint without embedded credentials, query or fragment")
+profile = config.get("requestProfile", "local-qwen")
+if not isinstance(profile, str) or profile not in REASONING_OFF:
+    parser.error("llm.requestProfile must be one of: " + ", ".join(REASONING_OFF))
 
 
 def chunk(kind, data):
@@ -32,7 +47,7 @@ png += chunk(b"IDAT", zlib.compress((b"\0" + b"\xff\0\0" * 128) * 128))
 png += chunk(b"IEND", b"")
 payload = {
     "model": config["model"], "stream": False, "temperature": 0, "max_tokens": 32,
-    "chat_template_kwargs": {"enable_thinking": False},
+    **REASONING_OFF[profile],
     "messages": [{"role": "user", "content": [
         {"type": "text", "text": "Name the dominant color in this image. Answer with one color word only."},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}},
@@ -40,6 +55,7 @@ payload = {
 }
 request = urllib.request.Request(url + "/chat/completions", data=json.dumps(payload).encode(), headers={
     "Content-Type": "application/json",
+    "User-Agent": USER_AGENT,
     "Authorization": "Bearer " + os.environ.get("COMPANION_LLM_API_KEY", "local"),
 })
 
@@ -51,12 +67,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 # Do not forward the credential to redirects or environment-configured proxies.
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-print("Sending synthetic image to", url, "model", config["model"], flush=True)
+print("Sending synthetic image to", url, "model", config["model"], "profile", profile, flush=True)
 try:
     with opener.open(request, timeout=config.get("timeoutMs", 15000) / 1000) as response:
         reply = json.load(response)
 except urllib.error.HTTPError as error:
-    raise SystemExit(f"Endpoint returned HTTP {error.code}; check model, auth and server logs") from None
+    raise SystemExit(f"Endpoint returned HTTP {error.code}; check model, auth, profile and server logs") from None
 choice = reply["choices"][0]
 answer = choice["message"].get("content", "")
 assert choice["finish_reason"] == "stop", "Reply did not finish normally"

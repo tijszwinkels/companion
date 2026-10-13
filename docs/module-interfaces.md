@@ -12,6 +12,7 @@ The CLI registers additional agent, continuation, close, navigation and feedback
 the example is not the complete current intent list.
 
 ```ts
+// Both share one model description, including config.llm.requestProfile.
 const detector = new IntentDetector(config.llm);
 const cleaner = new FixedRouteCleaner(config.llm);
 const router = new UserSensorRouter({ detector, cleaner }, log, activity, 'router', cleanup);

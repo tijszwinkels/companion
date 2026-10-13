@@ -145,9 +145,10 @@ never had an intent request.
 ## Limitations
 
 - Cleanup quality is not measured or claimed.
-- Each shortcut to a text route makes one extra local model call (latency).
-- The live requests use the same adapter flags as the detector. For Qwen this
-  includes `preserve_thinking: true` next to `enable_thinking: false`, which
+- Each shortcut to a text route makes one extra classifier-model call (latency).
+- The live requests use the same adapter flags as the detector, including its
+  `llm.requestProfile` reasoning-off field. For the default `local-qwen` profile
+  this includes `preserve_thinking: true` next to `enable_thinking: false`, which
   the offline fixed-route experiment requests did not send.
 - SEND formatting line breaks are typed as spaces (see Safety).
 - Cleanup covers speech and typed Activity text routed through the pipeline;

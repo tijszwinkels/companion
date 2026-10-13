@@ -423,7 +423,7 @@ The defaults below describe existing source configuration, not a clean-machine i
 The bundled Silero VAD runs locally with ONNX Runtime. Transcription is local.
 For utterances without a matching prefix, the configured model endpoint receives
 the utterance, window identity, and PNG. Prefixes bypass classification; agent-start/quick-question prefixes still call
-their configured model, and optional transcription cleanup can call the local
+their configured model, and optional transcription cleanup can call the classifier
 model for text-delivery prefixes.
 With desktop history enabled, screenshots and speech audio for saved transcripts
 are retained under `~/companion/data`. Transcription itself uses private pipes and
@@ -434,15 +434,19 @@ agent conversation storage. See [retention and deletion](docs/installation.md#st
 
 Optionally copy `companion.config.example.json` to `companion.config.json`.
 Supported configuration is defined in [src/config.ts](src/config.ts):
-`llm: { baseUrl, model, timeoutMs }`, `asr: { workerBinary, modelDir, timeoutMs }`,
+`llm: { baseUrl, model, timeoutMs, requestProfile }`, `asr: { workerBinary, modelDir, timeoutMs }`,
 and `vadModel`. Omitted values use defaults. `asr.workerBinary` defaults to this
 checkout's `native/asr-worker/target/release/companion-asr-worker`. Remove any old
 `asr.binary` Voxtype override and run `npm run asr:build`; the old key is rejected
 with migration instructions. Keep `modelDir` unchanged. `timeoutMs` bounds startup
 and each transcription (including recovery startup), default 90 seconds.
 `--config path` selects another file;
-`COMPANION_LLM_API_KEY` supplies endpoint authentication. The adapter explicitly
-disables Qwen thinking using `chat_template_kwargs.enable_thinking = false`.
+`COMPANION_LLM_API_KEY` supplies endpoint authentication. Classifier requests
+always switch model reasoning off; `llm.requestProfile` says how the endpoint
+expects that: `local-qwen` (default, a local vLLM/Qwen server), `groq` or
+`openrouter`. A hosted profile sends every classified utterance's transcript,
+screenshot and window details to that provider; see
+[hosted classifier](docs/installation.md#hosted-classifier-optional).
 
 ## Inspect the module graph
 

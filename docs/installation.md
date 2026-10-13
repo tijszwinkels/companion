@@ -70,6 +70,7 @@ Choose where inference will happen before entering credentials or starting:
 | On-device              | ASR, intent vision server, Pi, local agent model, UI                             | Model/package downloads; agent tools and optional browser can still use the network. Local models alone do not enforce offline operation.                     |
 | Explicitly trusted LAN | ASR, Pi and UI; vision/model server on a machine you control                     | Transcript, window identity, screenshot and applicable conversation context go to that server. Agent requests include instructions, history and tool results. |
 | Optional cloud agent   | Local/LAN classifier and ASR; Pi or Claude Code calls a selected hosted provider | Agent prompts, screenshots, history and tool results go to that provider. Account terms, billing and retention are separate choices.                          |
+| Hosted classifier      | ASR, Pi and UI; the intent classifier calls Groq or OpenRouter                   | Every classified utterance's transcript, screenshot, window identity and applicable conversation context go to that provider. See step 4.                     |
 
 The classifier receives the utterance, PNG and window metadata, plus bounded
 excerpts from a visibly selected conversation when applicable. It has no tools.
@@ -529,9 +530,10 @@ public product. Override both the listener and Pi settings below.
 
 Companion's classifier expects an OpenAI-compatible **chat completions** endpoint,
 inline PNG `image_url` support and ordinary text replies. It sends streaming
-requests, `temperature: 0`, `max_tokens`, and chat-template options
-`enable_thinking: false` / `preserve_thinking: true`. Its ordinary output budget is
-32 tokens; optional transcription cleanup uses 512.
+requests, `temperature: 0`, `max_tokens`, and reasoning switched off: by default
+with chat-template options `enable_thinking: false` / `preserve_thinking: true`,
+or a hosted provider's own switch (see [hosted classifier](#hosted-classifier-optional)).
+Its ordinary output budget is 32 tokens; optional transcription cleanup uses 512.
 A text-only model is insufficient. Quick questions additionally need Pi-compatible
 streaming and tool calls. An HTTP 200 from `/v1/models` alone proves none of those.
 
@@ -639,6 +641,31 @@ instead needs an explicitly selected private interface, firewall policy, TLS and
 authentication; use its verified HTTPS `/v1` URL in both configurations. Do not
 solve certificate errors by disabling verification.
 
+### Hosted classifier (optional)
+
+Instead of a local server, the classifier can use Groq or OpenRouter. Choose this
+only if you accept that **every classified utterance leaves your network**: its
+transcript, a screenshot of the active window, window identity and applicable
+conversation excerpts (with transcription cleanup on, also the text to clean) go
+to that provider under its own terms, billing and retention.
+
+- Choose a model that accepts images; a text-only model does not work.
+- In `llm`, set `baseUrl` to the provider's OpenAI-compatible URL
+  (`https://api.groq.com/openai/v1` or `https://openrouter.ai/api/v1`), `model` to
+  its model ID and `requestProfile` to `groq` or `openrouter`. These providers
+  reject or ignore the local Qwen switch, so without the matching profile requests
+  fail or the model spends its short reply budget reasoning.
+- Load the provider key as `COMPANION_LLM_API_KEY` in the listener terminal with the
+  private prompt above. Never put it in `companion.config.json`.
+- This configures only the classifier and transcription cleanup. Pi and Claude
+  Code agents keep their own provider settings (step 5). Step 0's `companion-local`
+  Pi provider also reads `COMPANION_LLM_API_KEY` when its server needs a key; give
+  it a different variable so the classifier provider's key is not sent to your
+  agent endpoint.
+
+Whether a hosted model picks intents as well as the local recipe is not established;
+check routing (step 7) before relying on it.
+
 ### Configure and check the listener endpoint
 
 From the checkout, **create** `companion.config.json` with an expanded absolute ASR
@@ -669,8 +696,10 @@ npm run --silent start -- --config "$PWD/companion.config.json" --graph json
 If the server needs a key, the human loads `COMPANION_LLM_API_KEY` in the same
 terminal using the private prompt above (an agent asks for this; it never handles
 the key). A keyless server needs nothing: the classifier then sends a placeholder.
-**Network check:** the following sends only a generated red image and a color
-question to the chosen endpoint, without capturing your desktop or running tools:
+For a hosted classifier, add `"requestProfile": "groq"` or `"openrouter"` to its `llm`
+object. **Network check:** the following sends only a generated red image and a
+color question to the chosen endpoint, using the same `requestProfile`, without
+capturing your desktop or running tools:
 
 ```bash
 python3 docs/examples/check-vision.py --config "$PWD/companion.config.json"
