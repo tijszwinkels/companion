@@ -25,8 +25,9 @@ Companion uses a model for two jobs, and this choice decides what leaves your
 computer. Speech recognition itself always runs on your computer.
 
 - **Understanding what you meant.** With every sentence you say, this model gets a
-  screenshot of the window you are looking at and the transcript. It has to answer
-  quickly.
+  screenshot of the window you are looking at, the window's title and application,
+  the transcript and, when a Companion conversation is selected, short excerpts of
+  it. It has to answer quickly.
 - **Agent conversations.** Quick questions and new sessions send the attached
   screenshot, the conversation and tool results.
 
@@ -34,7 +35,7 @@ For each job, pick one option:
 
 | Option                                                               | What leaves your computer                                                                     |
 | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| **Your own GPU**, if it can run the vision model in step 4           | Nothing, apart from downloads                                                                 |
+| **Your own GPU**, if it can run the vision model in step 4           | Nothing goes to a model provider; agent tools can still use the network                       |
 | **Your own server** on your network                                  | Screenshots, transcripts and conversations go to that machine                                 |
 | **A hosted provider**, such as Groq, or the provider you already use | Screenshots, transcripts and conversations go to that provider, under its terms and retention |
 
@@ -323,8 +324,9 @@ this list:
 This applies to the classifier and to agent conversations alike, including a
 hosted provider the user already uses for their coding agent. Before they
 choose, name the provider and say in plain words what it receives: for the
-classifier, a screenshot of the active window and the transcript of what they
-said with **every utterance**; for agent conversations, the screenshot attached
+classifier, a screenshot of the active window, its title and application, the
+transcript and excerpts of a selected conversation with **every utterance**; for
+agent conversations, the screenshot attached
 to each quick question or new session, the conversation and tool results. That
 data then falls under the provider's terms and retention. Ask for an explicit
 yes, and remind them that a local model or their own server keeps it at home.
@@ -342,7 +344,7 @@ below override them.
 
 ### Candidate NVIDIA/Linux recipe (on-device or on the trusted server)
 
-An upstream-supported combination, not one tested end to end with Companion:
+A suggested combination:
 [Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct) (Apache
 2.0, pinned revision `0c351dd01ed87e9c1b53cbc748cba10e6187ff3b`, about 17.5 GB of
 weights) with vLLM **0.11.0**. It is a non-thinking model, so it does not spend the
@@ -366,7 +368,8 @@ uv pip install --python "$HOME/.local/share/companion/vllm-0.11.0/bin/python" \
 PyPI, and the Transformers pin keeps a Qwen3-VL-capable 4.57 release.
 
 **Start the model server** (loopback only; it occupies the GPU). Choose a private
-API key and enter it without echo; never put it in a file, chat or command argument:
+API key and enter it without echo; never put it in the checkout, a chat or a command
+argument (the only file that holds it is the private one in step 7):
 
 ```bash
 read -rsp 'Local model API key: ' COMPANION_LLM_API_KEY
@@ -486,8 +489,10 @@ chmod 700 "$HOME/.pi/agent"
 ls -la "$HOME/.pi/agent"
 ```
 
-**Connect Pi to the endpoint.** With the step 4 values still set, create
-`~/.pi/agent/models.json` with a provider named `companion-local`. The script
+**Connect Pi to your own server** (skip this if agent conversations use a hosted
+provider; see the [optional cloud coding profile](#optional-cloud-coding-profile)).
+With the step 4 values still set, create `~/.pi/agent/models.json` with a provider
+named `companion-local`. The script
 refuses to overwrite an existing file; if one exists, add the `companion-local`
 provider to it by hand.
 
@@ -567,10 +572,12 @@ security boundary. Do not copy another person's Pi directory, credentials, skill
 or memory.
 
 Save this as `~/companion/agents/companion-agent.json`, with the **absolute path
-printed by `command -v pi`** as `executable` and your model ID instead of
-`companion-vision`. Set it before the first launch; otherwise the built-in
-defaults point at someone else's providers. Merge into an existing file rather
-than overwriting it.
+printed by `command -v pi`** as `executable`. Both `model` fields are the agent
+choice from step 0 (quick questions are agent conversations too):
+`companion-local/<your model ID>` for your own server, or the hosted provider's
+exact `provider/model` ID from the cloud profile below. Set it before the first
+launch; otherwise the built-in defaults point at someone else's providers. Merge
+into an existing file rather than overwriting it.
 
 ```json
 {
@@ -582,9 +589,9 @@ than overwriting it.
 }
 ```
 
-This keeps both profiles on the chosen endpoint. For agent conversations on a
-hosted provider, see the [optional cloud coding profile](#optional-cloud-coding-profile).
 There is no automatic fallback, and one malformed section blocks every profile.
+In the checks below, use the same model ID as in `companion-agent.json`; for a
+hosted provider, the `--list-models` line shows that provider instead.
 
 **Offline discovery checkpoint:** from `~/companion/agents`, with the same PATH/key
 environment you will give the listener:
@@ -621,16 +628,16 @@ pi --no-session --model companion-local/companion-vision --thinking off --print 
 ```
 
 **Checkpoint:** the answer lists the starter rules. An answer without reading the
-file, or garbled tool text, means the server's tool-call support needs attention
-(step 4). Do not set `defaultProjectTrust` to `always` in Pi's settings.
+file, or garbled tool text, means the model's tool-call support needs attention
+(for your own server, its tool parser in step 4). Do not set `defaultProjectTrust` to `always` in Pi's settings.
 
 ### Optional cloud coding profile
 
 To run agent conversations on a hosted provider the user chose, start `pi` in
 `~/companion/agents`, use `/login`, let the user complete the provider's sign-in,
 and pick the exact `provider/model` ID with `/model`. Put that ID and a supported
-thinking level in the top-level fields of `companion-agent.json`; the quick-question
-profile can stay local. Pi keeps credentials in `~/.pi/agent/auth.json`; keep it
+thinking level in both the top-level and `quickQuestion` fields of
+`companion-agent.json`, and use it in the step 5 checks. Pi keeps credentials in `~/.pi/agent/auth.json`; keep it
 private. `/logout` does not revoke keys at the provider.
 
 ### Optional Claude Code harness
@@ -709,6 +716,19 @@ unchanged. The user's first dictation in step 7 confirms it in practice.
 
 ## 7. First launch, try it, and stopping
 
+**Credentials first.** If the classifier's server needs a key, the services cannot
+see a key exported in a terminal, so the user puts it in a private file before
+the first start (an agent asks them to run this; it never handles the key):
+
+```bash
+(umask 077; mkdir -p "$HOME/.config/companion"
+ read -rsp 'Model API key: ' key; printf '\n'
+ printf 'COMPANION_LLM_API_KEY=%s\n' "$key" > "$HOME/.config/companion/login.env")
+```
+
+Keyless servers need no file. Changing it later takes effect after
+`systemctl --user restart companion-listener.service`.
+
 **Start Companion, paused.** The listener and UI keep running, so an agent's shell
 tool cannot host them. Start them as the [step 8](#8-start-companion-after-login-optional)
 user services, which you can run yourself, with the patched writer first in their
@@ -720,7 +740,8 @@ bin/companion-login enable --now --wtype-dir "$HOME/.local/share/companion/wtype
 ```
 
 If the user declined login startup, open two visible desktop terminals with these
-commands typed in instead, and let them press Enter:
+commands typed in instead, and let them press Enter (the listener terminal needs
+`COMPANION_LLM_API_KEY` loaded as in step 4 if the server needs a key):
 
 ```bash
 cd "$HOME/Work/companion"
@@ -737,8 +758,8 @@ sent anywhere or saved); the services skip it. Microphone capture stays off unti
 the user resumes listening.
 
 **Check it yourself.** `bin/companion-login status` shows both services running and
-the candidate `wtype`; `~/.local/state/companion/listener.log` shows a paused start
-without errors, and `ui.log` a connected UI. Together with the speech, vision and Pi
+the candidate `wtype`, and `~/.local/state/companion/listener.log` and `ui.log`
+show a paused start without errors. Together with the speech, vision and Pi
 checks from steps 3–5, this covers the pipeline without capturing the user's
 desktop. Do not ask the user to run test scripts.
 
@@ -775,8 +796,8 @@ Base it on [Using Companion](using-companion.md).
   its terminal.
 - “Could not focus Companion” after Super+Alt+D (seen with the standalone window in
   virtual machines): clicking the Activity input works.
-- A wrong intent: check it in Activity. There is no quality certification for the
-  candidate model; misroutes need investigation, not a silent model swap.
+- A wrong intent: check it in Activity. How well intents are recognised depends on
+  the model; investigate misroutes rather than silently swapping models.
 - An agent answers but cannot use tools: the server's tool-call parser (step 4).
 
 **Pausing and stopping.** Pausing closes the microphone and drops partial speech;
@@ -813,16 +834,9 @@ shows which `wtype` they use. `--now` also starts them immediately. `--listening
 opens the microphone at every login; leave it out unless the user wants that. Run
 `enable` again to change options, then restart the services.
 
-**Credentials.** For a server that needs a key, put it in a private file that
-systemd reads at start; never in a unit file, a desktop entry or the checkout:
-
-```bash
-(umask 077; mkdir -p "$HOME/.config/companion"
- read -rsp 'Model API key: ' key; printf '\n'
- printf 'COMPANION_LLM_API_KEY=%s\n' "$key" > "$HOME/.config/companion/login.env")
-```
-
-`enable` refuses a file that other users can read. Keyless servers need none.
+**Credentials** come from the private `~/.config/companion/login.env` created in
+step 7, never from a unit file, a desktop entry or the checkout. `enable` refuses
+the file if other users can read it.
 
 **Check, logs and recovery:**
 
@@ -875,8 +889,9 @@ Monitor disk space and choose a retention process before prolonged use.
 | `~/.local/state/companion/{listener,ui}.log` (step 8 services only)              | Output of the last service run, including transcripts and window titles. Replaced at each start; delete them while the services are stopped.                                                                                  |
 | Terminal logs, backups, server/provider storage                                  | May retain transcripts, tool output or copied data independently. Local deletion cannot erase provider logs or external backups.                                                                                              |
 
-Audio never leaves the computer; the classifier gets text and screenshots. Agents
-can read files, use the network and run programs with the user's permissions.
+Companion never sends audio to a model; the classifier gets text, window details
+and screenshots. Agents can read files (including stored recordings), use the
+network and run programs with the user's permissions.
 Stop Companion before backing up or deleting; copy SQLite databases together with
 their WAL/SHM files. Do not run `rm -rf ~/companion` as an uninstall, and remember
 that deleting a file is not secure erasure. See the

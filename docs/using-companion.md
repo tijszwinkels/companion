@@ -14,7 +14,8 @@ and one for its panel:
 
 ```sh
 cd ~/Work/companion
-npm start -- --paused
+export PATH="$HOME/.local/share/companion/wtype-candidate:$PATH"
+./node_modules/.bin/tsx src/cli.ts --config "$PWD/companion.config.json" --paused
 ```
 
 ```sh
@@ -22,9 +23,11 @@ cd ~/Work/companion
 npm run ui
 ```
 
-Use the same options as in
-[step 7 of the installation guide](installation.md#7-first-launch-try-it-and-stopping)
-if your setup needs them.
+This is the same as
+[step 7 of the installation guide](installation.md#7-first-launch-try-it-and-stopping):
+the first line makes Companion use the patched text writer, and starting it this
+way (rather than `npm start`) lets Ctrl+C shut it down cleanly. If your model
+server needs a key, load `COMPANION_LLM_API_KEY` in that terminal first.
 
 `--paused` starts with the microphone off; without it Companion starts
 listening and typing straight away, so put the cursor somewhere harmless first.
