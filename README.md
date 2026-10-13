@@ -44,7 +44,7 @@ be explicit, start your sentence with a command word instead.
 - **Run a team of agents.** Keep one conversation as your manager and let it
   delegate: it can start other Companion sessions, send them follow-ups and get
   their reports back, so it stays free to talk with you while they work. Up to
-  four agents run at the same time.
+  ten agents run at the same time.
 - **Get visual answers.** Agents can show interactive widgets in the panel,
   such as diagrams, comparisons, charts and to-do lists.
 - **Recover recent transcriptions.** Companion keeps what it transcribed in a
@@ -85,9 +85,10 @@ configure, so where that model runs decides what leaves your computer. Agents
 have tools and act with your user's permissions, and a hosted agent provider
 receives your prompts, screenshots and tool results.
 
-Companion also keeps a local history: transcripts, screenshots, audio
-recordings and saved conversations, under `~/companion`. Nothing is deleted
-automatically. The installation guide's
+Companion also keeps a local history of transcripts and saved conversations,
+under `~/companion`; it keeps audio and screenshots too only if you turn on
+**Save captured audio and screenshots** in Activity (off by default). Nothing is
+deleted automatically. The installation guide's
 [storage, deletion and egress](docs/installation.md#storage-deletion-and-egress)
 section lists every store and what leaves the machine.
 

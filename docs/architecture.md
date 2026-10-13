@@ -91,8 +91,8 @@ PipeWire → Float32Array (512 samples at 16 kHz) → Silero → Segment
                                            matching processor.process(frame)
 ```
 
-| Module                                                         | Input                                 | Output                                |
-| -------------------------------------------------------------- | ------------------------------------- | ------------------------------------- |
+| Module                                                            | Input                                 | Output                                |
+| ----------------------------------------------------------------- | ------------------------------------- | ------------------------------------- |
 | [Audio capture](../src/sensors/audio/capture.ts)                  | PipeWire / FFmpeg PCM bytes           | `Float32Array` frames                 |
 | [Voice activity detection](../src/sensors/audio/vad.ts)           | One audio frame                       | Speech probability                    |
 | [Segmentation](../src/sensors/audio/segmenter.ts)                 | Probability + audio                   | `Segment` containing one utterance    |
@@ -366,7 +366,9 @@ on Pi it uses the coding model (Astra by default). It replaces the old
 Code with the configured Claude model, and **“new pi session …”** always
 starts Pi with the coding model. A Claude Code conversation keeps the effort
 it started with; its footer can switch the next turn to another Claude model in
-the same Claude history. **“quick question …”** is a separate, prefix-only
+the same Claude history. The "Start a coding session" card under Activity →
+Intentions chooses the backend and model for new sessions; existing sessions keep
+theirs. Messages you type in Companion may be up to 8000 characters. **“quick question …”** is a separate, prefix-only
 `QUICK_QUESTION` processor using local Qwen through the same Pi backend. All of
 them send the captured screenshot and utterance and open an ordinary
 conversation tab.
@@ -528,6 +530,15 @@ a hidden agent composer. Outside Companion, Super+Alt+Tab retains Omarchy's grou
 Select message text and press **Ctrl+C** to copy the selection. Hover over a
 message for its **Copy** button, which copies the whole message (including the
 original Markdown for agent answers) without changing your selection or draft.
+**Record**, beside Send, dictates into the text box instead of typing: speech is
+transcribed in short chunks and added to the end of the draft, where you can
+edit it. Nothing is sent and no voice commands run until you press **Send**.
+**Stop recording** keeps your last words; Send and Close wait while it shows
+**Finishing transcription…**. Recording also stops when you leave the
+conversation, pause listening, or the draft reaches 8,000 characters; a note
+under the text box says why, and whether any speech may be missing. It works
+while listening is paused, without changing that setting; the Companion bar
+icon and status then show **Recording into a text box** while the microphone is on.
 While Pi works, **Enter** or **Queue** accepts a follow-up for the next turn.
 Waiting messages show **queued**. Each conversation permits eight waiting messages;
 they run one at a time, without interrupting its answer or taking another agent slot.

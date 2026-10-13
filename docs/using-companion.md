@@ -96,6 +96,8 @@ to see details) and any widgets it shows. In a conversation you can:
 
 - type a follow-up and press **Enter** (**Shift+Enter** for a new line). While
   the agent is still working, follow-ups queue up (up to eight) and run in order;
+- press **Record** beside Send to dictate into the text box instead of typing;
+  nothing is sent until you press **Send**, and it works while listening is paused;
 - press **Stop** to interrupt, or **Close session** to stop it and move it to
   **Previous sessions** at the bottom of the tab rail, where you can reopen it later;
 - pick a different **Model** for the next turn at the bottom. Pi conversations
@@ -114,7 +116,7 @@ Up to sixteen conversations can be open at once. Drag a tab to reorder it.
 - **Work as a team.** Agents can start other Companion conversations, send them
   follow-ups and receive their replies. A handy way to work: keep one conversation
   as your manager, ask it to delegate tasks to new sessions, and keep talking to
-  it while the others work. Up to four agents run at the same time.
+  it while the others work. Up to ten agents run at the same time.
 
 ## Keyboard shortcuts
 
@@ -141,9 +143,11 @@ from the microphone menu in the top bar, or start with `--no-sounds`.
 
 ## History and privacy
 
-Companion keeps what you said, together with the screenshot and audio of each
-sentence, in `~/companion`; conversations are saved under
-`~/companion/agents`. Nothing is deleted automatically. You can delete
+Companion keeps what you said in `~/companion`, and conversations under
+`~/companion/agents`. It saves the screenshot and audio of each sentence only if
+you turn on **Save captured audio and screenshots** (Activity → Storage; off by
+default); see [capture storage](capture-storage.md). Nothing is deleted
+automatically. You can delete
 individual entries from Activity. The installation guide's
 [storage, deletion and egress](installation.md#storage-deletion-and-egress)
 section lists every store, how to remove it and what is sent where.
@@ -155,6 +159,8 @@ section lists every store, how to remove it and what is sent where.
 | Agent models and the default agent (Pi or Claude Code) | `~/companion/agents/companion-agent.json`, read again before every turn.                               |
 | Speech model and the model that interprets your intent | `companion.config.json` in the folder you start Companion from (copy `companion.config.example.json`). |
 | Which intents and command words are on                 | The Intentions switches in Activity.                                                                   |
+| Backend and model for new sessions                     | The “Start a coding session” card under Activity → Intentions.                                         |
+| Whether audio and screenshots are saved                | Activity → Storage (off by default).                                                                   |
 
 The [installation guide](installation.md) explains each of these files. The
 complete reference, including every field, lives in the
