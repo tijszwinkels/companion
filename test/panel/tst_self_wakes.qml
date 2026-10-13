@@ -230,6 +230,44 @@ Item {
       tryVerify(() => !popup.opened)
     }
 
+    // Review round 1 (Rowan): an already open overlay shrunk to a short,
+    // enlarged panel keeps a usable list and stays inside the panel.
+    function test_short_high_scale_overlay_keeps_cancel_reachable() {
+      const panel = createTemporaryObject(panelComponent, parent, {width: 600, height: 900, unit: 2})
+      open(panel, [timer("a", "scheduled"), timer("b", "failed")])
+      mouseClick(control(panel))
+      tryVerify(() => overlay(panel).opened)
+      verify(waitForRendering(panel))
+      panel.width = 360
+      panel.height = 420
+      verify(waitForRendering(panel))
+      const list = find(panel, "timerList")
+      verify(list.height >= 48 * 2 - 0.5, "Timer list keeps a usable height: " + list.height)
+      const box = overlay(panel).contentItem.mapToItem(panel, 0, 0, overlay(panel).width, overlay(panel).height)
+      verify(box.y + box.height <= panel.height, "Timer overlay fits the panel " + JSON.stringify(box))
+      const close = find(panel, "closeTimerOverlay")
+      const closeBox = close.mapToItem(panel, 0, 0, close.width, close.height)
+      verify(closeBox.y >= 0 && closeBox.y + closeBox.height <= panel.height)
+      for (const cancel of cancelButtons(panel)) {
+        const y = cancel.mapToItem(list.contentItem, 0, 0).y
+        verify(y >= 0 && y + cancel.height <= list.contentHeight, "Cancel can scroll into view")
+      }
+    }
+
+    function test_overlay_outside_press_keeps_draft_and_closes() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      open(panel, [timer("a", "scheduled")])
+      const composer = findChild(panel, "sessionComposer")
+      composer.text = "Keep my draft"
+      composer.forceActiveFocus()
+      mouseClick(control(panel))
+      tryVerify(() => overlay(panel).opened)
+      mouseClick(composer)
+      tryVerify(() => !overlay(panel).opened)
+      compare(composer.text, "Keep my draft")
+      verify(composer.activeFocus)
+    }
+
     function test_scheduled_wake_messages_keep_their_heading() {
       const panel = createTemporaryObject(panelComponent, parent)
       const session = conversation([timer("timer", "waiting")])

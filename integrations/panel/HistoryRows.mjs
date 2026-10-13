@@ -97,12 +97,12 @@ export function withinBudget(rows, reserved) {
 
 // The leading part of a row, ending at `offset` inside it. The listener
 // orders a message's units as input, then text; a fragment keeps that order.
-function leadingPart(row, offset) {
+// `total` is the message's full length when known.
+function leadingPart(row, offset, total) {
   const message = row.message;
   const keep = offset - row.start.offset;
   const input = message.input || '';
   const text = message.text || '';
-  const total = message.historyFragment ? message.historyFragment.total : units(message);
   const part = Object.assign({}, message, {
     input: input.slice(0, keep),
     text: text.slice(0, Math.max(0, keep - input.length)),
@@ -121,20 +121,40 @@ function leadingPart(row, offset) {
 // The rows strictly before `position`, for joining older rows to a live window
 // that starts there. A row spanning the position is shortened to its leading
 // part, so the join neither repeats nor drops text.
-export function rowsBefore(rows, position) {
+//
+// A row loaded earlier may since have grown (a streamed or rewritten message):
+// it then ends short of a position inside that row. Such a row is kept as an
+// explicit fragment ending where its loaded text really ends, and the result
+// is not `complete`: the caller must not join it to the live window, but can
+// load the missing text from that end. `total` is the row's current length
+// when known (from the live window), for its fragment label.
+export function rowsBefore(rows, position, total) {
   const kept = [];
 
   for (const row of rows) {
     if (comparePositions(row.end, position) <= 0) {
       kept.push(row);
-    } else if (comparePositions(row.start, position) < 0) {
-      kept.push(leadingPart(row, position.offset));
-    } else {
+      continue;
+    }
+    if (comparePositions(row.start, position) >= 0) {
       break;
     }
+
+    // The row spans `position`, which lies inside row `position.index`.
+    const loadedEnd = row.start.offset + units(row.message);
+    const known = row.message.historyFragment ? row.message.historyFragment.total : loadedEnd;
+    const length = total || Math.max(known, position.offset);
+    if (loadedEnd >= position.offset) {
+      kept.push(leadingPart(row, position.offset, length));
+      return { rows: kept, complete: true };
+    }
+    if (loadedEnd > row.start.offset) {
+      kept.push(leadingPart(row, loadedEnd, length));
+    }
+    return { rows: kept, complete: false };
   }
 
-  return kept;
+  return { rows: kept, complete: true };
 }
 
 // Remove rows from one side ("start" or "end") until they, plus `reserved`

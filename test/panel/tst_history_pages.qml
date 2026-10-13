@@ -440,6 +440,109 @@ Item {
       compare(requests.length, 1, "Layout changes never request pages")
     }
 
+    // Review round 1 (Rowan): live rows growing under an unchanged window
+    // start must not push joined rows past the bound.
+    function test_growth_with_same_live_start_stays_bounded() {
+      const rows = []
+      for (let i = 0; i < 50; i++) rows.push(row(i, "old ".repeat(750)))
+      for (let i = 50; i < 250; i++) rows.push(row(i, "new ".repeat(38)))
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = live(rows)
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      verify(waitForRendering(view))
+      for (let i = 0; i < 4 && view.hasOlder; i++) {
+        toTop(view)
+        view.toolPageReceived(answer(requests[requests.length - 1], rows))
+        verifyResident(view, "before growth")
+      }
+      verify(view.historyAttached)
+      const anchor = anchorOf(view)
+      const beforeStart = JSON.stringify(view.liveHistory.start)
+      rows[249] = row(249, "new ".repeat(7538))
+      view.session = live(rows, 2)
+      compare(JSON.stringify(view.liveHistory.start), beforeStart)
+      verifyResident(view, "same-start live growth")
+      verifyAnchor(view, anchor, "reader at the oldest rows")
+      // A reader at the live end simply drops the older rows.
+      view.latestHistory()
+      toTop(view)
+      view.toolPageReceived(answer(requests[requests.length - 1], rows))
+      transcriptOf(view).positionViewAtEnd()
+      view.followEnd = true
+      rows[249] = row(249, "new ".repeat(15000))
+      view.session = live(rows, 3)
+      verifyResident(view, "growth while following")
+    }
+
+    // Review round 1: an older page that arrives after the reader went back
+    // to the live end must not evict what the reader now sees.
+    function test_reverse_direction_while_older_page_pending_keeps_visible_rows() {
+      const rows = source(950)
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = live(rows)
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      verify(waitForRendering(view))
+      for (let i = 0; i < 2; i++) {
+        toTop(view)
+        view.toolPageReceived(answer(requests[requests.length - 1], rows))
+        verifyResident(view, "loaded older")
+      }
+      compare(view.messageCount, 600)
+      toTop(view)
+      const pending = requests[requests.length - 1]
+      toBottom(view)
+      verify(waitForRendering(view))
+      verify(view.followEnd)
+      view.toolPageReceived(answer(pending, rows))
+      verify(waitForRendering(view))
+      compare(view.shownRows[view.shownRows.length - 1].message.id, "row-949", "Late older page leaves the live end alone")
+      verifyResident(view, "after the late page")
+      // Not following but looking at the newest rows: the page is dropped
+      // rather than trimming visible rows.
+      toTop(view)
+      const second = requests[requests.length - 1]
+      transcriptOf(view).positionViewAtEnd()
+      wheel(view, 1)
+      verify(!view.followEnd)
+      const anchor = anchorOf(view)
+      view.toolPageReceived(answer(second, rows))
+      verifyAnchor(view, anchor, "late page while reading the newest rows")
+      verifyResident(view, "after the dropped page")
+    }
+
+    // Review round 1: a message that grew far beyond what was loaded must not
+    // be joined as if the loaded text reached the live window.
+    function test_large_same_row_update_loads_the_missing_text_before_joining() {
+      const rows = [row(0, "old ".repeat(1000))]
+      const view = createTemporaryObject(viewComponent, parent)
+      view.session = live(rows)
+      const requests = []
+      view.toolPageRequested.connect(request => requests.push(request))
+      verify(waitForRendering(view))
+      wheel(view, 2)
+      verify(!view.followEnd)
+      rows[0] = row(0, rows[0].text + "new ".repeat(24000))
+      view.session = live(rows, 2)
+      verify(view.liveHistory.start.offset > 4000)
+      verifyResident(view, "large update")
+      if (view.historyAttached) {
+        compare(view.shownRows.map(entry => entry.message.text).join("").length, rows[0].text.length, "Attached text cannot skip growth")
+      }
+      verify(view.historyDetached, "The old text stays a snapshot")
+      // Scrolling down loads the missing middle from where the loaded text ends.
+      toBottom(view)
+      const bridge = requests[requests.length - 1]
+      compare(bridge.direction, "after")
+      compare(bridge.index, 0)
+      compare(bridge.offset, 4000)
+      view.toolPageReceived(answer(bridge, rows, 2))
+      verifyResident(view, "after the bridge")
+      verify(view.historyAttached)
+      compare(view.shownRows.map(entry => entry.message.text).join(""), rows[0].text, "Every unit appears exactly once")
+    }
+
     function test_epoch_reset_discards_old_lifetime_data() {
       return [{tag: "reading recent", historical: false}, {tag: "reading history", historical: true}]
     }
@@ -450,6 +553,7 @@ Item {
       view.toolPageRequested.connect(request => requests.push(request))
       view.applyDraft({id: "fixture", text: "Draft survives reopening", source: {title: "Fixture"}})
       if (data.historical) {
+        view.followEnd = false
         view.loadHistory("before", view.shownHistory.start, "", false)
         view.toolPageReceived(answer(requests[0], source(210), 10))
         verify(view.readingHistory)

@@ -160,7 +160,8 @@ Item {
     root.failedHistoryRequest = null
     root.historyPending = "history-" + Date.now() + "-" + Math.random().toString(36).slice(2)
     root.historyRequest = {id: root.displayedId, epoch: root.session.toolEpoch, direction: direction,
-      position: {index: position.index, offset: position.offset}, anchor: anchor || "", refresh: refresh === true}
+      position: {index: position.index, offset: position.offset}, anchor: anchor || "", refresh: refresh === true,
+      following: root.followEnd}
     historyDeadline.restart()
     const request = {action: "agent-history-page", requestId: root.historyPending,
       id: root.displayedId, epoch: root.session.toolEpoch, direction: direction,
@@ -186,16 +187,18 @@ Item {
   }
 
   // Scrolling down a detached snapshot: continue into the live window once the
-  // rows reach it, otherwise load the next page.
+  // rows reach it, otherwise load the next page. Rows loaded before a message
+  // grew can stop short of the live start inside it; the rest then loads as
+  // an ordinary page from where the loaded text really ends.
   function loadNewer() {
     if (!root.historyDetached) return
-    const end = root.shownHistory.end
-    if (HistoryRows.comparePositions(end, root.liveWindow().start) >= 0) {
+    if (HistoryRows.comparePositions(root.shownHistory.end, root.liveWindow().start) >= 0) {
       root.joinLiveWindow(root.historyRows)
       root.synchronize()
-      return
+      if (!root.historyDetached) return
     }
-    if (root.historyStalledAt("after", end)) return
+    const end = root.shownHistory.end
+    if (HistoryRows.comparePositions(end, root.liveWindow().start) >= 0 || root.historyStalledAt("after", end)) return
     root.loadHistory("after", end, "", false)
   }
 
@@ -246,25 +249,46 @@ Item {
   // away from where rows were just added. Joined rows count together with the
   // live window. When the far end is the live window itself, it becomes a
   // detached copy so the oldest loaded rows the reader is looking at stay.
+  // If staying in bound would remove rows the reader can see (they moved
+  // while the page loaded), nothing changes and this returns false: the page
+  // is dropped rather than the reader's view.
   function applyHistory(rows, attached, side) {
     const visible = root.visibleKeys()
     let reserved = attached ? HistoryRows.sizeOf(root.liveRows()) : {rows: 0, units: 0}
     if (!HistoryRows.withinBudget(rows, reserved)) {
       if (attached && side === "end") {
-        rows = rows.concat(root.liveRows().map(row => Object.assign({}, row, {live: false})))
+        rows = rows.concat(root.frozenLiveRows())
         attached = false
         reserved = {rows: 0, units: 0}
       }
-      rows = HistoryRows.trimmed(rows, side, visible, reserved)
+      const kept = HistoryRows.trimmed(rows, side, visible, reserved)
+      const dropped = side === "start" ? rows.slice(0, rows.length - kept.length) : rows.slice(kept.length)
+      if (dropped.some(row => visible[row.key] === true)) return false
+      rows = kept
     }
     root.historyRows = rows
     root.historyAttached = attached && rows.length > 0
+    return true
+  }
+
+  // A copy of the live rows that no longer follows updates.
+  function frozenLiveRows() {
+    return root.liveRows().map(row => Object.assign({}, row, {live: false}))
+  }
+
+  // The current length of the row the live window starts inside, if any.
+  function liveStartTotal() {
+    const live = root.liveWindow()
+    const first = root.session.messages[0]
+    return live && live.start.offset > 0 && first && first.historyFragment ? first.historyFragment.total : 0
   }
 
   // Older rows that reach the live window's start continue into it: keep only
-  // the part before that start (shortening a spanning fragment).
+  // the part before that start (shortening a spanning fragment). Rows that
+  // stop short of it stay a detached snapshot ending at their loaded text.
   function joinLiveWindow(rows) {
-    root.applyHistory(HistoryRows.rowsBefore(rows, root.liveWindow().start), true, "start")
+    const cut = HistoryRows.rowsBefore(rows, root.liveWindow().start, root.liveStartTotal())
+    return root.applyHistory(cut.rows, cut.complete, "start") && cut.complete
   }
 
   function replaceHistory(rows) {
@@ -313,12 +337,16 @@ Item {
         root.historyStalled = Object.assign({}, root.historyStalled, {[stall]: true})
         return
       }
-      root.applyHistory(rows.concat(root.historyRows), root.readingHistory ? root.historyAttached : true, "end")
+      // A reader who scrolled up for it and has since returned to the live
+      // end no longer wants it. (Short content is always at the live end;
+      // its explicit Load still applies.)
+      if (!request.following && root.followEnd && !root.historyDetached) return
+      if (!root.applyHistory(rows.concat(root.historyRows), root.readingHistory ? root.historyAttached : true, "end")) return
     } else {
       if (!root.historyDetached || !HistoryRows.samePosition(page.history.start, boundary)
           || !HistoryRows.samePosition(root.shownHistory.end, boundary)) return
       if (rows.length === 0) root.historyStalled = Object.assign({}, root.historyStalled, {[stall]: true})
-      else root.applyHistory(root.historyRows.concat(rows), false, "start")
+      else if (!root.applyHistory(root.historyRows.concat(rows), false, "start")) return
       if (root.historyDetached && HistoryRows.comparePositions(root.shownHistory.end, root.liveHistory.start) >= 0) {
         root.joinLiveWindow(root.historyRows)
       }
@@ -774,8 +802,9 @@ Item {
     const previousRows = HistoryRows.rowsFrom(previous.messages, previous.history.start, previous.history.revision)
     // Joined older rows end where the previous window started.
     const joined = root.historyRows.concat(previousRows)
-    const kept = HistoryRows.rowsBefore(joined, current.start)
-    const contiguous = kept.length === 0
+    const cut = HistoryRows.rowsBefore(joined, current.start, root.liveStartTotal())
+    const kept = cut.rows
+    const contiguous = !cut.complete ? false : kept.length === 0
       ? HistoryRows.comparePositions(current.start, joined.length > 0 ? joined[0].start : current.start) <= 0
       : HistoryRows.samePosition(kept[kept.length - 1].end, current.start)
     const visible = root.visibleKeys()
@@ -789,6 +818,30 @@ Item {
       }
     }
     root.historyRows = HistoryRows.trimmed(joined, "end", visible, {rows: 0, units: 0})
+    root.historyAttached = false
+  }
+
+  // Live rows can also grow without the window moving (a long answer still
+  // streaming). Joined older rows then give way from the oldest end; if the
+  // reader is looking at those, the view becomes a detached snapshot instead.
+  function keepWithinBound() {
+    if (!root.historyAttached || root.historyRows.length === 0) return
+    const live = HistoryRows.sizeOf(root.liveRows())
+    if (HistoryRows.withinBudget(root.historyRows, live)) return
+    if (root.followEnd) {
+      root.historyRows = []
+      root.historyAttached = false
+      return
+    }
+    const visible = root.visibleKeys()
+    const kept = HistoryRows.trimmed(root.historyRows, "start", visible, live)
+    const dropped = root.historyRows.slice(0, root.historyRows.length - kept.length)
+    if (!dropped.some(row => visible[row.key] === true)) {
+      root.historyRows = kept
+      root.historyAttached = kept.length > 0
+      return
+    }
+    root.historyRows = HistoryRows.trimmed(root.historyRows.concat(root.frozenLiveRows()), "end", visible, {rows: 0, units: 0})
     root.historyAttached = false
   }
 
@@ -813,6 +866,7 @@ Item {
     }
     const anchor = root.followEnd ? null : root.topRow()
     root.keepEvictedRows()
+    root.keepWithinBound()
     root.previousLive = root.session
     const live = root.liveRows()
     const rows = !root.readingHistory ? live : root.historyAttached ? root.historyRows.concat(live) : root.historyRows

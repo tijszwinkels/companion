@@ -1012,7 +1012,7 @@ Item {
         overlayTop: body.contentTop - conversationControls.y
         overlayRightInset: body.width - conversationControls.x - x - width
         maximumWidth: body.width
-        maximumHeight: Math.max(120 * root.unit, body.height - body.contentTop - 8 * root.unit)
+        maximumHeight: Math.max(0, body.height - body.contentTop - 8 * root.unit)
         background: root.background
         foreground: root.foreground
         muted: root.muted

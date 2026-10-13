@@ -33,24 +33,43 @@ TestCase {
   function test_rows_before_shortens_a_spanning_fragment_without_losing_units() {
     // Units of a row are input first, then text: "INPUT" + "abcdefghij".
     const rows = HistoryRows.rowsFrom([message("x", "abcdefghij", "INPUT"), message("y", "next")], {index: 4, offset: 0}, 1)
-    const cut = HistoryRows.rowsBefore(rows, {index: 4, offset: 8})
+    const cut = HistoryRows.rowsBefore(rows, {index: 4, offset: 8}).rows
     compare(cut.length, 1)
     compare(cut[0].message.input, "INPUT")
     compare(cut[0].message.text, "abc")
     compare(JSON.stringify(cut[0].message.historyFragment), JSON.stringify({start: 0, end: 8, total: 15}))
     compare(JSON.stringify(cut[0].end), JSON.stringify({index: 4, offset: 8}))
     compare(cut[0].key, "x@0")
-    const insideInput = HistoryRows.rowsBefore(rows, {index: 4, offset: 3})
+    const insideInput = HistoryRows.rowsBefore(rows, {index: 4, offset: 3}).rows
     compare(insideInput[0].message.input, "INP")
     compare(insideInput[0].message.text, "")
     // Row boundaries keep whole rows and stop before the boundary.
-    compare(HistoryRows.rowsBefore(rows, {index: 5, offset: 0}).map(row => row.key).join(","), "x@0")
-    compare(HistoryRows.rowsBefore(rows, {index: 4, offset: 0}).length, 0)
+    compare(HistoryRows.rowsBefore(rows, {index: 5, offset: 0}).rows.map(row => row.key).join(","), "x@0")
+    compare(HistoryRows.rowsBefore(rows, {index: 4, offset: 0}).rows.length, 0)
     // A later fragment of an already-fragmented row keeps its own start.
     const later = HistoryRows.rowsFrom([message("z", "klmnop", "", {start: 10, end: 16, total: 30})], {index: 2, offset: 10}, 1)
-    const part = HistoryRows.rowsBefore(later, {index: 2, offset: 13})
+    const part = HistoryRows.rowsBefore(later, {index: 2, offset: 13}).rows
     compare(part[0].message.text, "klm")
     compare(JSON.stringify(part[0].message.historyFragment), JSON.stringify({start: 10, end: 13, total: 30}))
+  }
+
+  function test_rows_that_stop_short_of_the_position_are_not_complete() {
+    // Loaded at 4 units; the message has since grown and the position is
+    // at unit 9 of it. The loaded row is kept as an explicit 0–4 fragment.
+    const rows = HistoryRows.rowsFrom([message("g", "abcd")], {index: 3, offset: 0}, 1)
+    const cut = HistoryRows.rowsBefore(rows, {index: 3, offset: 9}, 20)
+    verify(!cut.complete)
+    compare(cut.rows.length, 1)
+    compare(cut.rows[0].message.text, "abcd")
+    compare(JSON.stringify(cut.rows[0].end), JSON.stringify({index: 3, offset: 4}))
+    compare(JSON.stringify(cut.rows[0].message.historyFragment), JSON.stringify({start: 0, end: 4, total: 20}))
+    verify(HistoryRows.rowsBefore(rows, {index: 3, offset: 4}, 20).complete, "Exactly reaching it is complete")
+    verify(HistoryRows.rowsBefore(rows, {index: 4, offset: 0}).complete)
+    // An empty loaded row contributes nothing and is incomplete.
+    const empty = HistoryRows.rowsFrom([message("e", "")], {index: 1, offset: 0}, 1)
+    const none = HistoryRows.rowsBefore(empty, {index: 1, offset: 5}, 9)
+    verify(!none.complete)
+    compare(none.rows.length, 0)
   }
 
   function test_trimming_spares_visible_rows_until_the_hard_bound() {

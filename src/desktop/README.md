@@ -1101,11 +1101,18 @@ with the same requests (`integrations/panel/HistoryRows.mjs`):
   (or when the bound below requires it) the view becomes a **detached** snapshot
   of resident rows; scrolling down loads newer pages and rejoins the live window
   once they reach it, cutting a fragment that spans the live start so its text is
-  neither lost nor repeated. Reaching the live end resumes following.
+  neither lost nor repeated. A loaded message that has since grown past the live
+  start is not joined as if complete: it becomes an explicit fragment ending at
+  its loaded text, and the rest loads as an ordinary page from there. Reaching
+  the live end resumes following.
 - Resident rows, including joined live rows, never exceed three pages: 600 rows and
-  196,608 text units. Rows are trimmed from the side away from the reader; rows on
-  screen are spared unless the bound cannot otherwise hold. The listener's page
-  and window limits are unchanged.
+  196,608 text units. This is rechecked on every live update, including growth
+  without the window moving. Rows are trimmed from the side away from the reader.
+  A page whose join would remove rows on screen is dropped instead, as is an
+  older page that arrives after the reader scrolled back to the live end. If live
+  growth alone leaves no other choice, the view becomes a detached snapshot; rows
+  on screen give way only when the bound cannot otherwise hold. The listener's
+  page and window limits are unchanged.
 - After every join, trim, refresh, resize or zoom, the row at the top of the
   viewport is put back at the same offset. Open tool groups stay open while their
   row is resident.
@@ -1276,8 +1283,9 @@ The conversation header shows a compact clock with the pending (scheduled/waitin
 count, "Running" when only dispatching/started timers remain, or Attention with
 the number of failed, blocked or delivery-uncertain timers in the projection. It
 is hidden otherwise; finished timers are listed under the conversation menu's
-Timer history. The control opens a bounded overlay (Escape or × closes it, focus
-and draft stay) with label, state, local due time and zone, relative
+Timer history. The control opens a bounded overlay (Escape, × or a press outside
+closes it; focus and draft stay; only its title and × are fixed, the rest scrolls)
+with label, state, local due time and zone, relative
 due/overdue time, reason, cancellation intent and Cancel; finished timers are
 collapsed. Viewing never acknowledges or clears an attention state. `scheduled-wake` message origins render as **Scheduled wake**,
 not **You**. Background restore uses the existing `reveal: false` contract.

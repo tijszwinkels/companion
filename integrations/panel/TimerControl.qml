@@ -161,7 +161,9 @@ Item {
     closePolicy: Popup.CloseOnPressOutsideParent
     padding: 0
     width: Math.min(360 * root.unit, root.maximumWidth)
-    height: Math.min(header.height + list.contentHeight + 12 * root.unit, root.maximumHeight)
+    // Never shorter than the fixed header plus a usable strip of list, even
+    // when the host offers less; the list scrolls within whatever remains.
+    height: Math.max(header.height + 48 * root.unit, Math.min(header.height + list.contentHeight + 12 * root.unit, root.maximumHeight))
     x: root.width + root.overlayRightInset - width
     y: root.overlayTop
     onAboutToShow: {
@@ -176,11 +178,12 @@ Item {
     }
 
     contentItem: Item {
-      // Title, summary and close stay fixed; the list scrolls beneath them.
+      // Only the title and close stay fixed, so the list below always keeps
+      // room; the summary scrolls with the timers.
       Item {
         id: header
         width: parent.width
-        height: Math.max(closeOverlay.height, title.implicitHeight) + summaryText.implicitHeight + 18 * root.unit
+        height: Math.max(closeOverlay.y + closeOverlay.height, title.y + title.implicitHeight) + 4 * root.unit
         Text {
           id: title
           x: 14 * root.unit
@@ -220,19 +223,6 @@ Item {
           Accessible.name: "Close timers"
           Accessible.onPressAction: overlay.close()
         }
-        Text {
-          id: summaryText
-          objectName: "timerSummary"
-          x: 14 * root.unit
-          y: Math.max(closeOverlay.y + closeOverlay.height, title.y + title.implicitHeight) + 2 * root.unit
-          width: parent.width - 28 * root.unit
-          text: root.summary + " · this conversation"
-          textFormat: Text.PlainText
-          wrapMode: Text.Wrap
-          color: root.muted
-          font.family: root.fontFamily
-          font.pixelSize: 11 * root.unit
-        }
       }
 
       Flickable {
@@ -254,6 +244,18 @@ Item {
           x: 14 * root.unit
           width: list.width - 28 * root.unit
           spacing: 10 * root.unit
+
+          Text {
+            id: summaryText
+            objectName: "timerSummary"
+            width: parent.width
+            text: root.summary + " · this conversation"
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: root.muted
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.unit
+          }
 
           Text {
             visible: root.pending.length + root.running.length + root.attention.length === 0
