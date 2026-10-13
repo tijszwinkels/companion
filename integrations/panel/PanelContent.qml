@@ -932,7 +932,8 @@ Item {
 
     Text {
       anchors.top: parent.top
-      width: parent.width - 38 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+      width: Math.max(0, parent.width - 38 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+        - (conversationControls.visible ? conversationControls.width + 6 * root.unit : 0))
       text: root.browsing ? "Browser" : root.showingPrevious ? "Previous sessions" : root.selectedSession ? root.selectedSession.title : "Companion"
       textFormat: Text.PlainText
       elide: Text.ElideRight
@@ -987,6 +988,61 @@ Item {
       unit: root.unit
       onTriggered: root.openBrowser()
       Accessible.name: root.browserPinVisible ? "Show the pinned page in the full panel" : "Open the panel browser"
+    }
+
+    // The conversation's own header controls: timers (only when something is
+    // pending, running or needs attention) and a menu for secondary actions.
+    // Both open bounded overlays that never move the transcript.
+    Row {
+      id: conversationControls
+      objectName: "conversationControls"
+      readonly property bool active: root.selectedSession !== null && !root.browsing && !root.showingPrevious
+      visible: active && (timerControl.shown || timerControl.opened || conversationMenu.items.length > 0)
+      anchors.top: parent.top
+      anchors.topMargin: -4 * root.unit
+      anchors.right: browserButton.visible ? browserButton.left : closeButton.left
+      anchors.rightMargin: 6 * root.unit
+      spacing: 4 * root.unit
+      TimerControl {
+        id: timerControl
+        session: conversationControls.active ? root.selectedSession : null
+        online: root.online
+        compact: body.width < 320 * root.unit
+        // Below the header and any control error, within the conversation area.
+        overlayTop: body.contentTop - conversationControls.y
+        overlayRightInset: body.width - conversationControls.x - x - width
+        maximumWidth: body.width
+        maximumHeight: Math.max(120 * root.unit, body.height - body.contentTop - 8 * root.unit)
+        background: root.background
+        foreground: root.foreground
+        muted: root.muted
+        accent: root.accent
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        onCancelRequested: (id, timerId) => root.cancelWakeRequested(id, timerId)
+      }
+      ConversationMenu {
+        id: conversationMenu
+        items: {
+          const entries = []
+          if (!conversationControls.active) return entries
+          if (timerControl.historyCount > 0) entries.push({id: "timers", text: "Timer history · " + timerControl.historyCount})
+          if (chat.readingHistory) entries.push({id: "refresh", text: "Refresh loaded messages"})
+          return entries
+        }
+        background: root.background
+        foreground: root.foreground
+        muted: root.muted
+        accent: root.accent
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        onTriggered: id => {
+          if (id === "timers") timerControl.openHistory()
+          else if (id === "refresh") chat.refreshHistory()
+        }
+      }
     }
 
     Text {
@@ -1173,6 +1229,7 @@ Item {
       anchors.topMargin: root.fullWidget ? body.contentTop : Math.min(body.height, activityStrip.visible ? activityStrip.y + activityStrip.height + 12 * root.unit
         : body.pinBottom)
       session: root.selectedSession
+      background: root.background
       agentActions: root.agentActions
       paused: root.paused
       online: root.online
@@ -1186,7 +1243,6 @@ Item {
       onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
       openableOrigins: root.openableOrigins
       onOriginRequested: (id, groupId) => root.openOrigin(id, groupId)
-      onCancelWakeRequested: (id, timerId) => root.cancelWakeRequested(id, timerId)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)

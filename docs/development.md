@@ -99,7 +99,8 @@ Do not edit literal user-approved prompts as part of an unrelated refactor.
 Conversation history is retained independently of the display. Recent and
 historical pages contain at most **200 bubbles / 65,536 UTF-16 text/input units**,
 defined in `src/agents/transcript-limits.ts`; these limits never reject a turn.
-The panel and phone offer Load older, Newer, Refresh and Latest. See
+The desktop panel loads older and newer pages as the reader scrolls, keeping at
+most three pages resident; the phone offers Load older, Newer, Refresh and Latest. See
 [paged conversation history](../src/desktop/README.md#paged-conversation-history)
 for window/delta semantics and compatibility. Consecutive tool calls share one
 collapsed bubble. Their inputs/results are stored separately and loaded only on

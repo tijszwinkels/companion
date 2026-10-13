@@ -39,6 +39,21 @@ long choices in a small panel. The synthetic image is
 `/tmp/companion-agent-choices-preview.png`. Backend, native-tool and lifecycle
 coverage is described in [conversation choices](../../src/agents/README.md).
 
+Continuous-history checks (`tst_history_pages.qml`, `tst_history_rows.qml`) join
+pages from a synthetic listener that follows `src/agents/history-pages.ts`. They
+walk 950 rows up and back down to the live end with real wheel events, verifying
+after every page that resident rows are contiguous and unique, the three-page
+bound holds (joined live rows included) and the row at the top of the viewport
+stays put. They also cover live appends and window eviction while reading, a burst
+that forces a detached snapshot, same-row revisions, oversized rows split into
+fragments (including a fragment cut at the live window's start), open tool groups,
+short content, errors/Retry, empty pages, disconnects, timeouts, tab switches,
+epochs, superseded replies, refresh, origin jumps, resize and zoom. Timer checks
+(`tst_self_wakes.qml`) cover hidden/pending/running/attention states and counts,
+history through the conversation menu, Cancel routing and offline refusal, Escape
+and × without moving focus or the draft, conversation switches and long lists in
+a narrow, enlarged panel. No timer is scheduled or cancelled outside the fixtures.
+
 Session-indicator checks cover running-ring animation gating, whole emoji tokens,
 the right-edge accent selection marker (sampled pixels; distinct from hover,
 running and unread, following selection, not blocking clicks or the close control;

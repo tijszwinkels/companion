@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
 import "Markdown.mjs" as Markdown
+import "HistoryRows.mjs" as HistoryRows
 
 // Chat rendering is independent of Pi and Omarchy. Stable ListModel rows keep
 // selection and expanded tool bubbles intact while text deltas update a row.
@@ -22,6 +23,9 @@ Item {
   }
   property bool online: true
   property bool paused: false
+  // Hosts supply their surface color; floating controls blend it opaque.
+  property color background: selection
+  readonly property color overlayColor: Qt.tint(Qt.rgba(background.r, background.g, background.b, 1), selection)
   property var agentActions: ({})
   property var pendingChoice: null
   readonly property bool actionsCurrent: session !== null && agentActions.sessionId === session.id
@@ -43,16 +47,45 @@ Item {
   property string displayedId: ""
   property bool followEnd: true
   property var drafts: ({})
-  // One historical page, separate from the continuously updated recent window.
-  // Never accumulate all pages or feed a page back into authoritative state.
-  property var historyPage: null
+  // Continuous scrolling (see HistoryRows.mjs). Older rows loaded while the
+  // reader scrolls are kept here, separate from the live recent window, and
+  // never fed back into authoritative state. When `historyAttached`, they end
+  // exactly where the live window starts and the transcript continues into
+  // live rows that keep updating. Otherwise they are a detached snapshot and
+  // newer rows load as the reader scrolls down. Bounded together with any
+  // attached live rows by HistoryRows' resident limit.
+  property var historyRows: []
+  property bool historyAttached: false
   property var previousLive: null
   property string historyPending: ""
   property string historyError: ""
   property var historyRequest: null
-  readonly property var shownHistory: historyPage ? historyPage.history : session ? session.history : null
-  readonly property bool hasOlder: shownHistory !== null && shownHistory !== undefined && (shownHistory.start.index > 0 || shownHistory.start.offset > 0)
-  readonly property bool historyChanged: historyPage !== null && session && session.history && historyPage.history.revision !== session.history.revision
+  // The request that failed, for Retry. Failures never retry by themselves.
+  property var failedHistoryRequest: null
+  // Boundaries ("before:index:offset") where a page brought nothing new. They
+  // are not requested again automatically, so an empty answer cannot loop.
+  property var historyStalled: ({})
+  // The row at the top of the viewport and its distance from the top edge,
+  // restored when rows are added or removed above it, or the layout changes.
+  property var readerAnchor: null
+  // Resident rows mirroring the ListModel, to skip unchanged rows.
+  property var shownRows: []
+  // Row key -> true for tool groups the reader opened in this conversation.
+  property var expandedRows: ({})
+  readonly property var liveHistory: session && session.history ? session.history : null
+  readonly property bool readingHistory: historyRows.length > 0
+  readonly property bool historyDetached: readingHistory && !historyAttached
+  readonly property var shownHistory: !liveHistory ? null
+    : readingHistory ? {start: historyRows[0].start, end: historyDetached ? historyRows[historyRows.length - 1].end : liveHistory.end}
+    : {start: liveHistory.start, end: liveHistory.end}
+  readonly property bool hasOlder: shownHistory !== null && (shownHistory.start.index > 0 || shownHistory.start.offset > 0)
+  // A detached snapshot whose conversation has changed since it was loaded.
+  // Joined rows are not flagged: the revision moves with every streamed word,
+  // and Refresh stays available from the conversation menu.
+  readonly property bool historyChanged: historyDetached && liveHistory !== null
+    && historyRows.some(row => row.revision !== liveHistory.revision)
+  // Following the live end; anything else shows the Jump to latest arrow.
+  readonly property bool atLatest: followEnd && !historyDetached
   // Conversation id -> title of the agent conversation that drafted its unsent
   // text. Cleared when that composer becomes empty or its message is sent.
   property var draftSources: ({})
@@ -109,7 +142,6 @@ Item {
     && root.Window.window && root.Window.window.active ? displayedId : ""
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
-  signal cancelWakeRequested(string id, string timerId)
   signal stopRequested(string id)
   signal dismissRequested(string id)
   signal sendRequested(string id, string text)
@@ -120,56 +152,189 @@ Item {
   signal screenshotRequested(url source, string title)
   signal originRequested(string sessionId, string groupId)
 
+  // One request at a time. Positions come from resident rows or the live
+  // window, never from typed input. Returns whether a request was sent.
   function loadHistory(direction, position, anchor, refresh) {
-    if (!root.online || !root.session || !root.session.history || root.historyPending) return
+    if (!root.online || !root.session || !root.liveWindow() || root.historyPending) return false
     root.historyError = ""
+    root.failedHistoryRequest = null
     root.historyPending = "history-" + Date.now() + "-" + Math.random().toString(36).slice(2)
-    root.historyRequest = {id: root.displayedId, epoch: root.session.toolEpoch,
-      direction: direction, anchor: anchor || "", refresh: refresh === true, y: transcript.contentY}
+    root.historyRequest = {id: root.displayedId, epoch: root.session.toolEpoch, direction: direction,
+      position: {index: position.index, offset: position.offset}, anchor: anchor || "", refresh: refresh === true}
     historyDeadline.restart()
     const request = {action: "agent-history-page", requestId: root.historyPending,
       id: root.displayedId, epoch: root.session.toolEpoch, direction: direction,
       index: position.index, offset: position.offset}
     if (anchor) request.anchor = anchor
     root.toolPageRequested(request)
+    return true
+  }
+
+  // Only the reader's explicit Retry repeats a failed request.
+  function retryHistory() {
+    const failed = root.failedHistoryRequest
+    if (failed) root.loadHistory(failed.direction, failed.position, failed.anchor, failed.refresh)
+  }
+
+  function historyStalledAt(direction, position) {
+    return root.historyStalled[direction + ":" + HistoryRows.positionKey(position)] === true
+  }
+
+  function loadOlder() {
+    if (!root.hasOlder || root.historyStalledAt("before", root.shownHistory.start)) return
+    root.loadHistory("before", root.shownHistory.start, "", false)
+  }
+
+  // Scrolling down a detached snapshot: continue into the live window once the
+  // rows reach it, otherwise load the next page.
+  function loadNewer() {
+    if (!root.historyDetached) return
+    const end = root.shownHistory.end
+    if (HistoryRows.comparePositions(end, root.liveWindow().start) >= 0) {
+      root.joinLiveWindow(root.historyRows)
+      root.synchronize()
+      return
+    }
+    if (root.historyStalledAt("after", end)) return
+    root.loadHistory("after", end, "", false)
+  }
+
+  // Reload older messages from the row at the top of the viewport, replacing
+  // the resident older rows with current content.
+  function refreshHistory() {
+    if (!root.readingHistory) return
+    const top = root.topRow()
+    const row = top ? root.shownRows.find(entry => entry.key === top.key) : null
+    root.loadHistory("after", row && row.start ? row.start : root.historyRows[0].start, "", true)
   }
 
   function latestHistory() {
     root.historyPending = ""
     root.historyRequest = null
     historyDeadline.stop()
-    root.historyPage = null
+    root.historyRows = []
+    root.historyAttached = false
     root.historyError = ""
+    root.failedHistoryRequest = null
+    root.historyStalled = ({})
+    root.readerAnchor = null
     root.followEnd = true
     root.synchronize()
+    transcript.positionViewAtEnd()
+  }
+
+  // The live window's position metadata. Functions read it from the session
+  // itself: within onSessionChanged, the liveHistory binding may still hold
+  // the previous window.
+  function liveWindow() {
+    return root.session && root.session.history ? root.session.history : null
+  }
+
+  // Live window rows with their positions. Listeners without paging omit
+  // `history`; their rows carry no positions and never load other pages.
+  function liveRows() {
+    if (!root.session) return []
+    if (!root.liveWindow()) {
+      return root.session.messages.map(message => ({key: HistoryRows.rowKey(message), message: message, start: null, end: null, revision: 0, live: true}))
+    }
+    const rows = HistoryRows.rowsFrom(root.session.messages, root.liveWindow().start, root.liveWindow().revision)
+    for (const row of rows) row.live = true
+    return rows
+  }
+
+  // Keep older rows within the resident bound, trimming from `side`: the end
+  // away from where rows were just added. Joined rows count together with the
+  // live window. When the far end is the live window itself, it becomes a
+  // detached copy so the oldest loaded rows the reader is looking at stay.
+  function applyHistory(rows, attached, side) {
+    const visible = root.visibleKeys()
+    let reserved = attached ? HistoryRows.sizeOf(root.liveRows()) : {rows: 0, units: 0}
+    if (!HistoryRows.withinBudget(rows, reserved)) {
+      if (attached && side === "end") {
+        rows = rows.concat(root.liveRows().map(row => Object.assign({}, row, {live: false})))
+        attached = false
+        reserved = {rows: 0, units: 0}
+      }
+      rows = HistoryRows.trimmed(rows, side, visible, reserved)
+    }
+    root.historyRows = rows
+    root.historyAttached = attached && rows.length > 0
+  }
+
+  // Older rows that reach the live window's start continue into it: keep only
+  // the part before that start (shortening a spanning fragment).
+  function joinLiveWindow(rows) {
+    root.applyHistory(HistoryRows.rowsBefore(rows, root.liveWindow().start), true, "start")
+  }
+
+  function replaceHistory(rows) {
+    const last = rows.length > 0 ? rows[rows.length - 1] : null
+    if (last && HistoryRows.comparePositions(last.end, root.liveWindow().start) >= 0) root.joinLiveWindow(rows)
+    else root.applyHistory(rows, false, "start")
   }
 
   onToolPageReceived: reply => {
     if (reply.action !== "agent-history-page" || !root.historyPending || reply.requestId !== root.historyPending) return
     const request = root.historyRequest
     root.historyPending = ""
+    root.historyRequest = null
     historyDeadline.stop()
-    if (!root.session || request.id !== root.displayedId || request.epoch !== root.session.toolEpoch) return
-    if (reply.type === "error") { root.historyError = reply.message || "History unavailable"; return }
+    if (!root.session || request.id !== root.displayedId || request.epoch !== root.session.toolEpoch || !root.liveHistory) return
+    if (reply.type === "error") {
+      root.historyError = reply.message || "History unavailable"
+      root.failedHistoryRequest = request
+      return
+    }
     const page = reply.result
-    if (!page || page.id !== request.id || page.epoch !== request.epoch) return
-    root.followEnd = false
-    root.historyPage = page
+    if (!page || page.id !== request.id || page.epoch !== request.epoch || !page.history) return
+    const rows = HistoryRows.rowsFrom(page.messages || [], page.history.start, page.history.revision)
+    const boundary = request.position
+    const stall = request.direction + ":" + HistoryRows.positionKey(boundary)
+
+    if (request.anchor || request.refresh) {
+      root.historyStalled = ({})
+      root.followEnd = false
+      root.replaceHistory(rows)
+      root.synchronize()
+      if (request.anchor) {
+        Qt.callLater(function() {
+          if (root.displayedId === request.id) root.jumpToToolGroup(request.anchor)
+        })
+      }
+      return
+    }
+
+    // Only join a page that ends (or starts) exactly where the transcript now
+    // starts (or ends). Anything else answers a superseded view: drop it.
+    if (request.direction === "before") {
+      if (!HistoryRows.samePosition(page.history.end, boundary) || !root.shownHistory
+          || !HistoryRows.samePosition(root.shownHistory.start, boundary)) return
+      if (rows.length === 0) {
+        root.historyStalled = Object.assign({}, root.historyStalled, {[stall]: true})
+        return
+      }
+      root.applyHistory(rows.concat(root.historyRows), root.readingHistory ? root.historyAttached : true, "end")
+    } else {
+      if (!root.historyDetached || !HistoryRows.samePosition(page.history.start, boundary)
+          || !HistoryRows.samePosition(root.shownHistory.end, boundary)) return
+      if (rows.length === 0) root.historyStalled = Object.assign({}, root.historyStalled, {[stall]: true})
+      else root.applyHistory(root.historyRows.concat(rows), false, "start")
+      if (root.historyDetached && HistoryRows.comparePositions(root.shownHistory.end, root.liveHistory.start) >= 0) {
+        root.joinLiveWindow(root.historyRows)
+      }
+    }
     root.synchronize()
-    Qt.callLater(function() {
-      if (root.historyPage !== page) return
-      transcript.forceLayout()
-      if (request.anchor) root.jumpToToolGroup(request.anchor)
-      else if (request.refresh) transcript.contentY = Math.max(transcript.originY, Math.min(request.y, transcript.originY + Math.max(0, transcript.contentHeight - transcript.height)))
-      else if (request.direction === "before") transcript.positionViewAtEnd()
-      else transcript.positionViewAtBeginning()
-    })
   }
 
   Timer {
     id: historyDeadline
     interval: 10000
-    onTriggered: { root.historyPending = ""; root.historyError = "History request timed out; try again." }
+    onTriggered: {
+      root.failedHistoryRequest = root.historyRequest
+      root.historyPending = ""
+      root.historyRequest = null
+      root.historyError = "History request timed out."
+    }
   }
 
   function zoomBy(amount) { root.zoomPercent = Math.max(80, Math.min(200, root.zoomPercent + amount)) }
@@ -433,13 +598,198 @@ Item {
       if (messages.get(index).messageId !== groupId) continue
       root.followEnd = false
       transcript.positionViewAtIndex(index, ListView.Beginning)
+      root.readerAnchor = root.topRow()
       // Delegate layout can change heights; settle the scroll position once more.
       Qt.callLater(function() {
-        if (root.displayedId === sessionId) transcript.positionViewAtIndex(index, ListView.Beginning)
+        if (root.displayedId !== sessionId) return
+        transcript.positionViewAtIndex(index, ListView.Beginning)
+        root.readerAnchor = root.topRow()
       })
       return
     }
     root.loadHistory("after", {index: 0, offset: 0}, groupId, false)
+  }
+
+  // The reader's own scrolling (wheel, drag, flick, scroll bar). Layout,
+  // resizing and live updates never call this, so short content, errors and
+  // empty pages cannot start a request loop. Loads begin within one viewport
+  // of an edge in the direction the reader is moving.
+  function readerScrolled(towardOlder) {
+    root.followEnd = transcript.atYEnd && !root.historyDetached
+    root.readerAnchor = root.followEnd ? null : root.topRow()
+    if (root.historyPending || root.historyError !== "" || !root.online || !root.liveWindow()) return
+    const reach = Math.max(transcript.height, 160 * root.unit)
+    const fromTop = transcript.contentY - transcript.originY
+    const fromBottom = transcript.originY + transcript.contentHeight - transcript.height - transcript.contentY
+    if (towardOlder && fromTop <= reach) root.loadOlder()
+    else if (!towardOlder && fromBottom <= reach) root.loadNewer()
+  }
+
+  // The row at the viewport's top edge and its offset from that edge. The
+  // second probe covers the gap between two bubbles.
+  function topRow() {
+    let index = transcript.indexAt(transcript.width / 2, transcript.contentY + 1)
+    if (index < 0) index = transcript.indexAt(transcript.width / 2, transcript.contentY + transcript.spacing + 1)
+    const item = index >= 0 && index < root.shownRows.length ? transcript.itemAtIndex(index) : null
+    return item ? {key: root.shownRows[index].key, offset: item.y - transcript.contentY} : null
+  }
+
+  // Keys of rows the reader can currently see; trimming spares them.
+  function visibleKeys() {
+    const keys = {}
+    const top = transcript.contentY
+    const bottom = top + transcript.height
+    for (let index = 0; index < root.shownRows.length; index++) {
+      const item = transcript.itemAtIndex(index)
+      if (item && item.y + item.height > top && item.y < bottom) keys[root.shownRows[index].key] = true
+    }
+    return keys
+  }
+
+  // Put the anchored row back at its offset from the viewport's top edge.
+  function restoreAnchor(anchor) {
+    if (!anchor || root.followEnd) return
+    const index = root.shownRows.findIndex(row => row.key === anchor.key)
+    if (index < 0) return
+    transcript.forceLayout()
+    let item = transcript.itemAtIndex(index)
+    if (!item) {
+      transcript.positionViewAtIndex(index, ListView.Beginning)
+      item = transcript.itemAtIndex(index)
+    }
+    if (!item) return
+    const beginning = transcript.originY
+    const end = beginning + Math.max(0, transcript.contentHeight - transcript.height)
+    const target = Math.max(beginning, Math.min(end, item.y - anchor.offset))
+    if (Math.abs(transcript.contentY - target) >= 0.5) transcript.contentY = target
+  }
+
+  function restoreReaderAnchor() {
+    if (!root.followEnd && root.readerAnchor) root.restoreAnchor(root.readerAnchor)
+  }
+
+  function setExpanded(key, expanded) {
+    const rows = Object.assign({}, root.expandedRows)
+    if (expanded) rows[key] = true
+    else delete rows[key]
+    root.expandedRows = rows
+  }
+
+  function rowData(row) {
+    const message = row.message
+    return {rowKey: row.key, messageId: message.id, kind: message.kind, body: message.text,
+      toolName: message.toolName, input: message.input, state: message.state,
+      toolCount: message.toolGroup ? message.toolGroup.count : 0,
+      toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
+      toolRevision: message.toolGroup ? message.toolGroup.revision : "",
+      screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
+      // False only when capture storage deliberately did not save it.
+      screenshotNotSaved: message.screenshotSaved === false,
+      fromWake: message.origin ? message.origin.kind === "scheduled-wake" : false,
+      fromExternal: message.origin ? message.origin.kind === "external" : false,
+      fromAgent: message.origin !== undefined && message.origin !== null,
+      originTitle: message.origin ? message.origin.title || "" : "",
+      // External origins carry unverified labels, never a linkable conversation.
+      originSessionId: message.origin && message.origin.kind === "agent" ? message.origin.sessionId || "" : "",
+      originGroupId: message.origin && message.origin.kind === "agent" ? message.origin.sourceGroupId || "" : "",
+      fragmentLabel: message.historyFragment ? " · text " + (message.historyFragment.start + 1) + "–" + message.historyFragment.end + " of " + message.historyFragment.total : "",
+      widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
+  }
+
+  // Bring the ListModel to `rows` in place: remove rows that left in runs,
+  // then insert, move or update in order. Unchanged rows keep their delegates
+  // (and expanded tool groups) and are not rewritten.
+  function reconcile(rows) {
+    const shown = root.shownRows.slice()
+    const wanted = {}
+    for (const row of rows) wanted[row.key] = true
+
+    let last = shown.length - 1
+    while (last >= 0) {
+      if (wanted[shown[last].key] === true) {
+        last--
+        continue
+      }
+      let first = last
+      while (first > 0 && wanted[shown[first - 1].key] !== true) first--
+      messages.remove(first, last - first + 1)
+      shown.splice(first, last - first + 1)
+      last = first - 1
+    }
+
+    // Every remaining shown row is wanted, so the loop below never meets a
+    // stale row; rows not yet shown are inserted.
+    const present = {}
+    for (const entry of shown) present[entry.key] = true
+    let index = 0
+    while (index < rows.length) {
+      const row = rows[index]
+      if (index < shown.length && shown[index].key === row.key) {
+        // Older rows are immutable page snapshots; live rows are rewritten
+        // because a listener update may reuse a changed message object.
+        if (row.live === true || shown[index].message !== row.message) messages.set(index, root.rowData(row))
+        shown[index] = row
+        index++
+        continue
+      }
+      if (present[row.key] === true) {
+        const existing = shown.findIndex((entry, position) => position > index && entry.key === row.key)
+        messages.move(existing, index, 1)
+        shown.splice(index, 0, shown.splice(existing, 1)[0])
+        continue
+      }
+      // Insert a run of new rows at once, e.g. a whole older page.
+      let end = index + 1
+      while (end < rows.length && present[rows[end].key] !== true) end++
+      messages.insert(index, rows.slice(index, end).map(root.rowData))
+      shown.splice(index, 0, ...rows.slice(index, end))
+      index = end
+    }
+    while (messages.count > rows.length) messages.remove(rows.length, messages.count - rows.length)
+    shown.length = rows.length
+    root.shownRows = shown
+    // Forget open groups that are no longer resident.
+    if (Object.keys(root.expandedRows).some(key => wanted[key] !== true)) {
+      const open = {}
+      for (const key of Object.keys(root.expandedRows)) if (wanted[key] === true) open[key] = true
+      root.expandedRows = open
+    }
+  }
+
+  // The recent window slides forward as rows arrive. While the reader is away
+  // from the live end, the rows it drops stay resident and joined, so nothing
+  // the reader sees moves. If that cannot stay contiguous and bounded without
+  // removing visible rows, the view becomes a detached snapshot instead.
+  function keepEvictedRows() {
+    const previous = root.previousLive
+    const current = root.liveWindow()
+    if (!previous || !previous.history || !current || previous.id !== root.session.id
+        || previous.toolEpoch !== root.session.toolEpoch) return
+    if (HistoryRows.samePosition(previous.history.start, current.start) || root.historyDetached) return
+    if (root.followEnd) {
+      root.historyRows = []
+      root.historyAttached = false
+      return
+    }
+    const previousRows = HistoryRows.rowsFrom(previous.messages, previous.history.start, previous.history.revision)
+    // Joined older rows end where the previous window started.
+    const joined = root.historyRows.concat(previousRows)
+    const kept = HistoryRows.rowsBefore(joined, current.start)
+    const contiguous = kept.length === 0
+      ? HistoryRows.comparePositions(current.start, joined.length > 0 ? joined[0].start : current.start) <= 0
+      : HistoryRows.samePosition(kept[kept.length - 1].end, current.start)
+    const visible = root.visibleKeys()
+    if (contiguous) {
+      const rows = HistoryRows.trimmed(kept, "start", visible, HistoryRows.sizeOf(root.liveRows()))
+      const dropped = kept.slice(0, kept.length - rows.length)
+      if (!dropped.some(row => visible[row.key] === true)) {
+        root.historyRows = rows
+        root.historyAttached = rows.length > 0
+        return
+      }
+    }
+    root.historyRows = HistoryRows.trimmed(joined, "end", visible, {rows: 0, units: 0})
+    root.historyAttached = false
   }
 
   function synchronize() {
@@ -448,187 +798,84 @@ Item {
       root.clearMessageSelection()
       if (root.displayedId) root.drafts[root.displayedId] = composer.text
       messages.clear()
-      root.historyPage = null
-      root.previousLive = null
-      root.historyPending = ""
-      root.historyError = ""
-      historyDeadline.stop()
+      root.shownRows = []
+      root.resetHistory()
       root.displayedId = id
-      root.followEnd = true
       composer.text = root.drafts[id] || ""
       root.inputError = ""
     }
 
     if (root.previousLive && root.session && root.previousLive.toolEpoch !== root.session.toolEpoch) {
       // A reconnect can reveal the same ID reopened by another client. Never
-      // freeze rows from the old lifetime under its successor's page token.
+      // keep rows from the old lifetime under its successor's page token.
       root.clearMessageSelection()
-      root.historyPage = null
-      root.previousLive = null
-      root.historyPending = ""
-      root.historyRequest = null
-      root.historyError = ""
-      root.followEnd = true
-      historyDeadline.stop()
+      root.resetHistory()
     }
-    // If a rolling recent window would evict rows while reading, freeze the
-    // old bounded page instead of jumping the reader to unrelated content.
-    if (!root.historyPage && !root.followEnd && root.previousLive && root.previousLive.history && root.session && root.session.history
-        && JSON.stringify(root.previousLive.history.start) !== JSON.stringify(root.session.history.start)) {
-      root.historyPage = {id: root.displayedId, epoch: root.session.toolEpoch,
-        history: root.previousLive.history, messages: root.previousLive.messages}
-    }
+    const anchor = root.followEnd ? null : root.topRow()
+    root.keepEvictedRows()
     root.previousLive = root.session
-    const incoming = root.historyPage ? root.historyPage.messages : root.session ? root.session.messages : []
-    for (let index = 0; index < incoming.length; index++) {
-      const message = incoming[index]
-      const row = {messageId: message.id, kind: message.kind, body: message.text,
-        toolName: message.toolName, input: message.input, state: message.state,
-        toolCount: message.toolGroup ? message.toolGroup.count : 0,
-        toolUnavailable: message.toolGroup ? message.toolGroup.unavailable === true : false,
-        toolRevision: message.toolGroup ? message.toolGroup.revision : "",
-        screenshot: message.screenshot, screenshotUrl: message.screenshotUrl || "",
-        // False only when capture storage deliberately did not save it.
-        screenshotNotSaved: message.screenshotSaved === false,
-        fromWake: message.origin ? message.origin.kind === "scheduled-wake" : false,
-        fromExternal: message.origin ? message.origin.kind === "external" : false,
-        fromAgent: message.origin !== undefined && message.origin !== null,
-        originTitle: message.origin ? message.origin.title || "" : "",
-        // External origins carry unverified labels, never a linkable conversation.
-        originSessionId: message.origin && message.origin.kind === "agent" ? message.origin.sessionId || "" : "",
-        originGroupId: message.origin && message.origin.kind === "agent" ? message.origin.sourceGroupId || "" : "",
-        fragmentLabel: message.historyFragment ? " · text " + (message.historyFragment.start + 1) + "–" + message.historyFragment.end + " of " + message.historyFragment.total : "",
-        widgetJson: message.widget ? JSON.stringify(message.widget) : ""}
-      if (index >= messages.count || messages.get(index).messageId !== message.id) {
-        let existing = -1
-        for (let candidate = index + 1; candidate < messages.count; candidate++) {
-          if (messages.get(candidate).messageId === message.id) { existing = candidate; break }
-        }
-        if (existing >= 0) messages.move(existing, index, 1)
-        else messages.insert(index, row)
-      }
-      messages.set(index, row)
-    }
-    while (messages.count > incoming.length) {
-      messages.remove(messages.count - 1)
+    const live = root.liveRows()
+    const rows = !root.readingHistory ? live : root.historyAttached ? root.historyRows.concat(live) : root.historyRows
+    root.reconcile(rows)
+    if (anchor) {
+      root.readerAnchor = anchor
+      root.restoreAnchor(anchor)
+      Qt.callLater(root.restoreReaderAnchor)
     }
     Qt.callLater(root.followLatestMessage)
+  }
+
+  function resetHistory() {
+    root.expandedRows = ({})
+    root.historyRows = []
+    root.historyAttached = false
+    root.previousLive = null
+    root.historyPending = ""
+    root.historyRequest = null
+    root.historyError = ""
+    root.failedHistoryRequest = null
+    root.historyStalled = ({})
+    root.readerAnchor = null
+    root.followEnd = true
+    historyDeadline.stop()
   }
 
   onSessionChanged: synchronize()
   onOnlineChanged: {
     if (!root.online) {
       root.historyPending = ""
+      root.historyRequest = null
       historyDeadline.stop()
     }
   }
   onVisibleChanged: Qt.callLater(root.followLatestMessage)
+  // Text zoom and width change every bubble's height: keep the reader's row.
+  onTextScaleChanged: Qt.callLater(root.restoreReaderAnchor)
+  onWidthChanged: Qt.callLater(root.restoreReaderAnchor)
   Component.onCompleted: synchronize()
   ListModel { id: messages }
-
-  Column {
-    id: historyControls
-    width: parent.width
-    spacing: 4 * root.unit
-    visible: root.historyPage !== null || root.historyError !== "" || root.historyPending !== ""
-    height: visible ? implicitHeight : 0
-    Flow {
-      width: parent.width
-      spacing: 6 * root.unit
-      Button { objectName: "newerHistory"; text: "Newer"; visible: root.historyPage !== null; enabled: !!(root.online && !root.historyPending && root.shownHistory && root.session && root.session.history && (root.shownHistory.end.index < root.session.history.total || root.shownHistory.end.offset > 0))
-        onClicked: root.loadHistory("after", root.shownHistory.end, "", false) }
-      Button { objectName: "refreshHistory"; text: "Refresh"; visible: root.historyPage !== null; enabled: root.online && !root.historyPending
-        onClicked: root.loadHistory("after", root.shownHistory.start, "", true) }
-      Button { objectName: "latestHistory"; text: "Latest"; visible: root.historyPage !== null; onClicked: root.latestHistory() }
-    }
-    Text {
-      width: parent.width; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 11 * root.unit
-      text: root.historyError || (root.historyPending ? "Loading history…" : root.historyChanged ? "History page · newer updates available" : root.historyPage ? "History page" : "Recent history")
-    }
-  }
-
-  Column {
-    id: wakePanel
-    y: historyControls.height + (historyControls.visible ? 8 * root.unit : 0)
-    width: parent.width
-    property bool expanded: false
-    property double now: Date.now()
-    readonly property var timers: root.session && root.session.wakes ? root.session.wakes : []
-    readonly property int pending: timers.filter(t => t.state === "scheduled" || t.state === "waiting").length
-    visible: timers.length > 0
-    height: visible ? implicitHeight : 0
-    Timer { interval: 1000; repeat: true; running: wakePanel.visible; onTriggered: wakePanel.now = Date.now() }
-    Button {
-      objectName: "wakeToggle"
-      text: "◷ " + wakePanel.pending + " pending timers" + (wakePanel.expanded ? " ▴" : " ▾")
-      onClicked: wakePanel.expanded = !wakePanel.expanded
-    }
-    ScrollView {
-      width: parent.width
-      height: visible ? Math.min(160 * root.unit, wakeRows.implicitHeight) : 0
-      visible: wakePanel.expanded
-      clip: true
-      Column {
-        id: wakeRows
-        width: wakePanel.width
-        Repeater {
-          model: wakePanel.timers
-          delegate: Row {
-            required property var modelData
-            width: wakeRows.width
-            Text {
-              width: parent.width - cancelTimer.width
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: 12 * root.unit
-              wrapMode: Text.Wrap
-              text: modelData.label + " · " + modelData.state
-                + "\n" + new Date(modelData.dueAt).toLocaleString() + " (" + Qt.formatDateTime(new Date(modelData.dueAt), "t") + ")"
-                + ((modelData.state === "scheduled" || modelData.state === "waiting")
-                  ? " · " + (modelData.dueAt >= wakePanel.now ? "in " : "overdue ") + Math.ceil(Math.abs(modelData.dueAt - wakePanel.now) / 60000) + " min" : "")
-                + "\nLast change: " + new Date(modelData.transitionedAt).toLocaleString()
-                + (modelData.reason ? " · " + modelData.reason : "")
-            }
-            Button {
-              id: cancelTimer
-              objectName: "cancelWakeButton"
-              text: "Cancel"
-              visible: modelData.state === "scheduled" || modelData.state === "waiting" || modelData.state === "dispatching" || modelData.state === "started"
-              enabled: root.online
-              onClicked: root.cancelWakeRequested(root.session.id, modelData.id)
-            }
-          }
-        }
-      }
-    }
-  }
 
   ListView {
     id: transcript
     objectName: "sessionTranscript"
     anchors.fill: parent
-    anchors.topMargin: historyControls.height + (historyControls.visible ? 8 * root.unit : 0) + wakePanel.height
     anchors.bottomMargin: inputSection.height + 12 * root.unit
     clip: true
     spacing: 12 * root.unit
     model: messages
     boundsBehavior: Flickable.StopAtBounds
-    // Inline, not sticky: older history is offered at the loaded page's top.
-    header: Item {
-      width: transcript.width
-      visible: root.hasOlder
-      height: visible ? olderHistory.implicitHeight + 12 * root.unit : 0
-      Button {
-        id: olderHistory
-        objectName: "olderHistory"
-        text: "Load older"
-        enabled: root.hasOlder && root.online && !root.historyPending
-        onClicked: root.loadHistory("before", root.shownHistory.start, "", false)
-      }
+    property real readerY: 0
+    onMovementEnded: root.followEnd = atYEnd && !root.historyDetached
+    // Dragging, flicking and the scroll bar; wheel input is handled below.
+    onContentYChanged: {
+      if (moving || transcriptBar.pressed) root.readerScrolled(contentY < readerY)
+      readerY = contentY
     }
-    onMovementEnded: root.followEnd = atYEnd && root.historyPage === null
     onContentHeightChanged: Qt.callLater(root.followLatestMessage)
-    onHeightChanged: Qt.callLater(root.followLatestMessage)
+    onHeightChanged: {
+      Qt.callLater(root.followLatestMessage)
+      Qt.callLater(root.restoreReaderAnchor)
+    }
 
     // Handle the transcript's wheel events before selectable message text.
     // Pixel deltas retain precise touchpad motion; wheel notches use the
@@ -650,14 +897,16 @@ Item {
         const beginning = transcript.originY
         const end = beginning + Math.max(0, transcript.contentHeight - transcript.height)
         transcript.contentY = Math.max(beginning, Math.min(end, transcript.contentY - pixels * root.scrollSpeed))
-        // Changing contentY directly does not emit movementEnded. Update this
-        // now, before a queued streaming update can jump back to the bottom.
-        root.followEnd = transcript.atYEnd && root.historyPage === null
+        // Changing contentY directly does not emit movementEnded. Update the
+        // live-following state now, before a queued streaming update can jump
+        // back to the bottom, and load further history near an edge.
+        root.readerScrolled(pixels > 0)
         event.accepted = true
       }
     }
 
     ScrollBar.vertical: ScrollBar {
+      id: transcriptBar
       visible: transcript.contentHeight > transcript.height
       contentItem: Rectangle { color: root.muted; radius: 2; implicitWidth: 4 }
     }
@@ -688,12 +937,11 @@ Item {
       readonly property bool originLinked: fromAgent && originSessionId !== ""
         && root.openableOrigins[originSessionId] === true
       readonly property var widget: widgetJson ? JSON.parse(widgetJson) : null
-      property bool expanded: false
-      property string ownerId: root.displayedId
-      property string toolEpoch: root.session ? root.session.toolEpoch || "" : ""
-      onMessageIdChanged: expanded = false
-      onOwnerIdChanged: expanded = false
-      onToolEpochChanged: expanded = false
+      required property string rowKey
+      // Kept by the view per resident row, so an open group stays open when
+      // its delegate is recreated (e.g. a page joins above it). Cleared with
+      // the conversation or its lifetime; never part of the transcript.
+      readonly property bool expanded: root.expandedRows[rowKey] === true
       objectName: "bubble-" + messageId
       width: transcript.width
       height: bubbleSurface.height
@@ -719,7 +967,7 @@ Item {
           if (anchor && anchor.y >= transcript.contentY + transcript.height) anchor = null
         }
         const anchorY = anchor ? anchor.y - transcript.contentY : 0
-        expanded = !expanded
+        root.setExpanded(rowKey, !expanded)
         if (anchor) {
           // Settle the Column before ListView computes the new content origin.
           contents.forceLayout()
@@ -956,6 +1204,110 @@ Item {
       font.family: root.fontFamily
       font.pixelSize: 12 * root.unit
     }
+  }
+
+  // Loading, failure and out-of-date notices float over the transcript edge
+  // they concern. They appear only when relevant and never reserve a row.
+  Rectangle {
+    id: historyStatus
+    objectName: "historyStatus"
+    readonly property var request: root.historyPending !== "" ? root.historyRequest : root.historyError !== "" ? root.failedHistoryRequest : null
+    readonly property bool newer: request !== null && request.direction === "after" && !request.refresh && request.anchor === ""
+    // Content too short to scroll cannot reach an edge by scrolling.
+    readonly property bool offerOlder: root.hasOlder && root.online && transcript.contentHeight <= transcript.height
+      && !root.historyStalledAt("before", root.shownHistory.start)
+    readonly property string message: root.historyPending !== "" && request !== null
+      ? (request.refresh ? "Refreshing messages…" : request.anchor !== "" ? "Loading messages…"
+        : newer ? "Loading newer messages…" : "Loading earlier messages…")
+      : root.historyError !== "" ? root.historyError
+      : root.historyChanged ? "Messages may have changed since they loaded"
+      : offerOlder ? "Earlier messages" : ""
+    readonly property string action: root.historyPending !== "" ? ""
+      : root.historyError !== "" ? (root.failedHistoryRequest !== null && root.online ? "Retry" : "")
+      : root.historyChanged ? (root.online ? "Refresh" : "")
+      : offerOlder ? "Load" : ""
+    function activate() {
+      if (action === "Retry") root.retryHistory()
+      else if (action === "Refresh") root.refreshHistory()
+      else if (action === "Load") root.loadOlder()
+    }
+    visible: message !== "" && root.session !== null
+    // Sized from the text's natural width (not its laid-out width, which
+    // depends on this size). Leaves room for the Jump to latest arrow.
+    readonly property real actionSpace: statusAction.visible ? statusAction.implicitWidth + 8 * root.unit : 0
+    width: Math.min(statusText.implicitWidth + actionSpace + 20 * root.unit,
+      Math.max(0, transcript.width - 2 * (latestArrow.width + 16 * root.unit)))
+    height: Math.max(statusText.implicitHeight, statusAction.visible ? statusAction.implicitHeight : 0) + 8 * root.unit
+    x: transcript.x + (transcript.width - width) / 2
+    y: newer ? transcript.y + transcript.height - height - 8 * root.unit : transcript.y + 6 * root.unit
+    radius: height / 2
+    color: root.overlayColor
+    border.color: root.historyError !== "" ? "#ef5350" : Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.4)
+    Text {
+      id: statusText
+      objectName: "historyStatusText"
+      x: 10 * root.unit
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.max(0, historyStatus.width - 20 * root.unit - historyStatus.actionSpace)
+      text: historyStatus.message
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: root.historyError !== "" ? "#ef5350" : root.muted
+      font.family: root.fontFamily
+      font.pixelSize: 11 * root.unit
+    }
+    PanelAction {
+      id: statusAction
+      objectName: "historyStatusAction"
+      anchors.right: parent.right
+      anchors.rightMargin: 6 * root.unit
+      anchors.verticalCenter: parent.verticalCenter
+      visible: historyStatus.action !== ""
+      text: historyStatus.action
+      implicitHeight: 22 * root.unit
+      foreground: root.foreground
+      selection: root.selection
+      fontFamily: root.fontFamily
+      unit: root.unit
+      onTriggered: historyStatus.activate()
+      Accessible.name: historyStatus.action === "Load" ? "Load earlier messages" : historyStatus.action + " history"
+    }
+  }
+
+  // A small shortcut back to the live end. It appears whenever the reader is
+  // away from it; scrolling down reaches the same place without it.
+  Rectangle {
+    id: latestArrow
+    objectName: "jumpToLatest"
+    visible: root.session !== null && !root.atLatest
+    width: 32 * root.unit
+    height: width
+    x: transcript.x + transcript.width - width - 12 * root.unit
+    y: transcript.y + transcript.height - height - 8 * root.unit
+    radius: 6 * root.unit
+    color: latestMouse.containsMouse ? Qt.lighter(root.overlayColor, 1.35) : root.overlayColor
+    border.color: latestMouse.containsMouse ? root.accent : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.6)
+    function activate() { root.latestHistory() }
+    Text {
+      anchors.centerIn: parent
+      text: "↓"
+      color: latestMouse.containsMouse ? root.accent : root.foreground
+      font.family: root.proseFontFamily
+      font.pixelSize: 16 * root.unit
+    }
+    MouseArea {
+      id: latestMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: latestArrow.activate()
+    }
+    ToolTip.visible: latestMouse.containsMouse
+    ToolTip.delay: 400
+    ToolTip.text: "Jump to latest"
+    Accessible.role: Accessible.Button
+    Accessible.name: "Jump to latest"
+    Accessible.onPressAction: activate()
   }
 
   Column {
