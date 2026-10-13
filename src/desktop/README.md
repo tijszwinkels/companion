@@ -1284,10 +1284,13 @@ count, "Running" when only dispatching/started timers remain, or Attention with
 the number of failed, blocked or delivery-uncertain timers in the projection. It
 is hidden otherwise; finished timers are listed under the conversation menu's
 Timer history. The control opens a bounded overlay (Escape, × or a press outside
-closes it; focus and draft stay; only its title and × are fixed, the rest scrolls)
+closes it; focus and draft stay; only its title and × are fixed, the rest scrolls;
+it stays inside the panel, moving up over the header when the panel is short)
 with label, state, local due time and zone, relative
 due/overdue time, reason, cancellation intent and Cancel; finished timers are
-collapsed. Viewing never acknowledges or clears an attention state. `scheduled-wake` message origins render as **Scheduled wake**,
+collapsed. When the header is too narrow for both, the clock folds into the
+conversation menu: its button shows "!" (attention) or "◷" and lists Timers first.
+Viewing never acknowledges or clears an attention state. `scheduled-wake` message origins render as **Scheduled wake**,
 not **You**. Background restore uses the existing `reveal: false` contract.
 
 The native command `{"action":"cancel-agent-wake","id":"conversation-uuid",

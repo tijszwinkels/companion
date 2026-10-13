@@ -8,6 +8,16 @@ import QtQuick.Controls
 Item {
   id: root
   property var items: []
+  // The button's symbol: "⋯", or a timer state when the header folds the
+  // timer control in here; `summary` then extends its accessible name.
+  property string glyph: "⋯"
+  property color glyphColor: muted
+  property string summary: ""
+  // Overlay geometry relative to this control, like TimerControl's.
+  property real overlayRightInset: 0
+  property real overlayCeiling: -height
+  property real bottomLimit: 1000 * unit
+  property real maximumWidth: 220 * unit
   required property color background
   required property color foreground
   required property color muted
@@ -39,8 +49,8 @@ Item {
     color: buttonMouse.containsMouse || menu.opened ? root.selection : "transparent"
     Text {
       anchors.centerIn: parent
-      text: "⋯"
-      color: buttonMouse.containsMouse ? root.accent : root.muted
+      text: root.glyph
+      color: buttonMouse.containsMouse ? root.accent : root.glyphColor
       font.family: root.fontFamily
       font.pixelSize: 16 * root.unit
     }
@@ -53,9 +63,9 @@ Item {
     }
     ToolTip.visible: buttonMouse.containsMouse && !menu.opened
     ToolTip.delay: 400
-    ToolTip.text: "Conversation menu"
+    ToolTip.text: "Conversation menu" + (root.summary ? " · " + root.summary : "")
     Accessible.role: Accessible.ButtonMenu
-    Accessible.name: "Conversation menu"
+    Accessible.name: "Conversation menu" + (root.summary ? " · " + root.summary : "")
     Accessible.onPressAction: root.toggle()
   }
 
@@ -73,9 +83,9 @@ Item {
     focus: false
     closePolicy: Popup.CloseOnPressOutsideParent
     padding: 4 * root.unit
-    x: root.width - width
-    y: root.height + 4 * root.unit
-    width: 220 * root.unit
+    x: root.width + root.overlayRightInset - width
+    y: Math.max(root.overlayCeiling, Math.min(root.height + 4 * root.unit, root.bottomLimit - height))
+    width: Math.min(220 * root.unit, root.maximumWidth)
     background: Rectangle {
       color: root.overlayColor
       radius: 6 * root.unit

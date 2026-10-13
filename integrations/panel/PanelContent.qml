@@ -1001,15 +1001,28 @@ Item {
       anchors.top: parent.top
       anchors.topMargin: -4 * root.unit
       anchors.right: browserButton.visible ? browserButton.left : closeButton.left
-      anchors.rightMargin: 6 * root.unit
+      anchors.rightMargin: (folded ? 2 : 6) * root.unit
       spacing: 4 * root.unit
+      // Room for these controls beside the title, the Browser button and close.
+      readonly property real room: body.width - 36 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+      // When the timer button and menu do not both fit beside a short title,
+      // the timer folds into the menu: one button whose symbol shows the timer
+      // state, with the timers as its first entry.
+      readonly property bool folded: timerControl.shown
+        && room - 40 * root.unit < timerControl.buttonWidth + 4 * root.unit + 28 * root.unit
+      // Overlays stay inside the panel: below the header when there is room,
+      // never above the panel's top edge, never below the conversation area.
+      readonly property real overlayCeiling: 4 * root.unit - body.y - y
+      readonly property real overlayBottom: body.height - 8 * root.unit - y
       TimerControl {
         id: timerControl
         session: conversationControls.active ? root.selectedSession : null
         online: root.online
         compact: body.width < 320 * root.unit
+        buttonVisible: !conversationControls.folded
         // Below the header and any control error, within the conversation area.
         overlayTop: body.contentTop - conversationControls.y
+        overlayCeiling: conversationControls.overlayCeiling
         overlayRightInset: body.width - conversationControls.x - x - width
         maximumWidth: body.width
         maximumHeight: Math.max(0, body.height - body.contentTop - 8 * root.unit)
@@ -1027,6 +1040,7 @@ Item {
         items: {
           const entries = []
           if (!conversationControls.active) return entries
+          if (conversationControls.folded) entries.push({id: "open-timers", text: "Timers · " + timerControl.summary})
           if (timerControl.historyCount > 0) entries.push({id: "timers", text: "Timer history · " + timerControl.historyCount})
           if (chat.readingHistory) entries.push({id: "refresh", text: "Refresh loaded messages"})
           return entries
@@ -1038,8 +1052,17 @@ Item {
         selection: root.selection
         fontFamily: root.fontFamily
         unit: root.unit
+        glyph: !conversationControls.folded ? "⋯" : timerControl.attention.length > 0 ? "!" : "◷"
+        glyphColor: conversationControls.folded && timerControl.attention.length > 0 ? timerControl.warning
+          : conversationControls.folded ? root.accent : root.muted
+        summary: conversationControls.folded ? "Timers: " + timerControl.summary : ""
+        overlayCeiling: conversationControls.overlayCeiling
+        bottomLimit: conversationControls.overlayBottom
+        overlayRightInset: body.width - conversationControls.x - x - width
+        maximumWidth: body.width
         onTriggered: id => {
-          if (id === "timers") timerControl.openHistory()
+          if (id === "open-timers") timerControl.open()
+          else if (id === "timers") timerControl.openHistory()
           else if (id === "refresh") chat.refreshHistory()
         }
       }

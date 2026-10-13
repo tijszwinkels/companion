@@ -26,13 +26,20 @@ Item {
   property real unit: 1
   // Narrow headers drop words from the button, never the counts.
   property bool compact: false
-  // Where the overlay starts, relative to this control, and how much room it
-  // has; the host keeps it inside the conversation area. Its right edge lines
-  // up with the area's, `overlayRightInset` beyond this control's.
+  // Overlay geometry, relative to this control, supplied by the host: it
+  // prefers to start at `overlayTop` with up to `maximumHeight`, and never
+  // extends above `overlayCeiling` (it may cover the header when the panel is
+  // too short below it). Its right edge lines up with the conversation area's,
+  // `overlayRightInset` beyond this control's.
   property real overlayTop: height + 6 * unit
+  property real overlayCeiling: -height
   property real overlayRightInset: 0
   property real maximumWidth: 360 * unit
   property real maximumHeight: 400 * unit
+  // A narrow header may fold this button into the conversation menu, which
+  // then opens the overlay (open()).
+  property bool buttonVisible: true
+  readonly property real buttonWidth: button.width
   signal cancelRequested(string id, string timerId)
 
   readonly property var timers: session && session.wakes ? session.wakes : []
@@ -55,7 +62,7 @@ Item {
   readonly property bool opened: overlay.opened
 
   visible: shown || overlay.opened
-  implicitWidth: shown ? button.width : 0
+  implicitWidth: shown && buttonVisible ? button.width : 0
   implicitHeight: button.height
 
   function active(state) {
@@ -94,6 +101,11 @@ Item {
     }
   }
 
+  function open() {
+    overlay.historyExpanded = false
+    overlay.open()
+  }
+
   function openHistory() {
     overlay.historyExpanded = true
     overlay.open()
@@ -107,7 +119,7 @@ Item {
   Rectangle {
     id: button
     objectName: "timerButton"
-    visible: root.shown
+    visible: root.shown && root.buttonVisible
     width: buttonLabel.implicitWidth + 16 * root.unit
     height: 28 * root.unit
     radius: 4 * root.unit
@@ -161,11 +173,16 @@ Item {
     closePolicy: Popup.CloseOnPressOutsideParent
     padding: 0
     width: Math.min(360 * root.unit, root.maximumWidth)
-    // Never shorter than the fixed header plus a usable strip of list, even
-    // when the host offers less; the list scrolls within whatever remains.
-    height: Math.max(header.height + 48 * root.unit, Math.min(header.height + list.contentHeight + 12 * root.unit, root.maximumHeight))
+    // Its content's height within the room below the header, but never less
+    // than the fixed header plus a usable strip of list: when the panel is too
+    // short for that below the header, the overlay moves up rather than out
+    // of the panel. It never exceeds the whole region the host allows.
+    readonly property real bottomLimit: root.overlayTop + Math.max(0, root.maximumHeight)
+    readonly property real usableHeight: header.height + 48 * root.unit
+    height: Math.min(Math.max(usableHeight, Math.min(header.height + list.contentHeight + 12 * root.unit, root.maximumHeight)),
+      Math.max(0, bottomLimit - root.overlayCeiling))
     x: root.width + root.overlayRightInset - width
-    y: root.overlayTop
+    y: Math.max(root.overlayCeiling, Math.min(root.overlayTop, bottomLimit - height))
     onAboutToShow: {
       ownerId = root.session ? root.session.id : ""
       now = Date.now()

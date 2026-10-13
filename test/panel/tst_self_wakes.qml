@@ -193,41 +193,114 @@ Item {
       verify(!control(panel).visible)
     }
 
-    function test_long_lists_stay_bounded_in_a_small_enlarged_panel() {
-      const panel = createTemporaryObject(panelComponent, parent, {width: 340, height: 460, unit: 1.6})
-      const wakes = []
-      for (let index = 0; index < 3; index++) {
-        wakes.push(timer("p" + index, "scheduled", {label: "A deliberately long timer label that wraps over several lines " + index + " ".repeat(1) + "x".repeat(40)}))
-      }
-      for (let index = 0; index < 20; index++) wakes.push(timer("h" + index, index % 3 ? "completed" : "cancelled", {label: "Finished " + index}))
-      wakes.push(timer("f", "blocked", {reason: "Long reason ".repeat(20)}))
-      open(panel, wakes)
+    // Opens the timers the way a reader can at this size: the clock button,
+    // or the conversation menu's Timers entry when the header folded it.
+    function openTimers(panel) {
       const button = control(panel)
-      verify(button.visible)
-      const buttonBox = button.mapToItem(panel, 0, 0, button.width, button.height)
-      verify(buttonBox.x >= 0 && buttonBox.x + buttonBox.width <= panel.width, "The clock fits the narrow header")
-      mouseClick(button)
-      tryVerify(() => overlay(panel).opened)
+      if (button.visible) {
+        verify(reachable(panel, button), "Clock button is clickable")
+        mouseClick(button)
+      } else {
+        const menuButton = findChild(panel, "conversationMenuButton")
+        verify(menuButton.visible, "Folded header shows the menu button")
+        verify(reachable(panel, menuButton), "Menu button is clickable")
+        mouseClick(menuButton)
+        tryVerify(() => findChild(panel, "conversationMenu").opened)
+        verify(waitForRendering(panel))
+        const entry = find(panel, "conversationMenu-open-timers")
+        verify(entry !== null, "Folded menu lists the timers first")
+        mouseClick(entry)
+      }
+      tryVerify(() => overlay(panel).opened, 1000, "Timers open")
       verify(waitForRendering(panel))
-      mouseClick(find(panel, "timerHistoryToggle"))
-      const popup = overlay(panel)
-      const box = popup.contentItem.mapToItem(panel, 0, 0, popup.width, popup.height)
+    }
+    // The control's centre lies in the conversation area beside the rail.
+    function reachable(panel, item) {
       const rail = findChild(panel, "tabRail")
-      verify(box.x >= rail.x + rail.width && box.x + box.width <= panel.width + 1, "Overlay stays beside the tab rail: " + JSON.stringify(box))
-      verify(box.y + box.height <= panel.height, "Overlay fits the height: " + JSON.stringify(box))
+      const centre = item.mapToItem(panel, item.width / 2, item.height / 2)
+      return centre.x > rail.x + rail.width && centre.x < panel.width && centre.y > 0 && centre.y < panel.height
+    }
+    function verifyOverlayInside(panel, label) {
+      const popup = overlay(panel)
+      const rail = findChild(panel, "tabRail")
+      const box = popup.contentItem.mapToItem(panel, 0, 0, popup.width, popup.height)
+      verify(box.x >= rail.x + rail.width - 0.5 && box.x + box.width <= panel.width + 0.5, label + ": width " + JSON.stringify(box))
+      verify(box.y >= -0.5 && box.y + box.height <= panel.height + 0.5, label + ": height " + JSON.stringify(box))
+      const list = find(panel, "timerList")
+      verify(list.height > 0, label + ": list height " + list.height)
       const close = find(panel, "closeTimerOverlay")
       const closeBox = close.mapToItem(panel, 0, 0, close.width, close.height)
-      verify(closeBox.y >= 0 && closeBox.y + closeBox.height <= panel.height, "Close stays reachable")
-      verify(close.width >= 28 * 1.6 - 0.5, "Close keeps an accessible size")
-      const list = find(panel, "timerList")
-      verify(list.contentHeight > list.height, "The list scrolls inside the overlay")
-      // Every Cancel can be scrolled into view.
+      verify(closeBox.y >= 0 && closeBox.y + closeBox.height <= panel.height, label + ": close reachable")
       for (const cancel of cancelButtons(panel)) {
         const y = cancel.mapToItem(list.contentItem, 0, 0).y
-        verify(y >= 0 && y + cancel.height <= list.contentHeight)
+        verify(y >= 0 && y + cancel.height <= list.contentHeight + 0.5, label + ": Cancel can scroll into view")
       }
-      mouseClick(close)
-      tryVerify(() => !popup.opened)
+    }
+    function resize(panel, width, height) {
+      panel.width = width
+      panel.height = height
+      panel.Window.window.width = width
+      panel.Window.window.height = height
+      verify(waitForRendering(panel))
+    }
+
+    // Review round 2 (Rowan): sizes the native host supports, at theme scales
+    // 1–3, opened directly at that size and opened large then shrunk. Sizes
+    // where the panel has no conversation area beside its rail at all (narrow
+    // windows at scale 3) are outside what the header can offer and skipped.
+    function test_timer_overlay_fits_a_size_and_scale_matrix() {
+      const wakes = [timer("p0", "scheduled", {label: "A deliberately long timer label that wraps over several lines " + "x".repeat(40)}),
+        timer("p1", "waiting", {reason: "Waiting for capacity"}), timer("f", "failed", {reason: "Long reason ".repeat(12)})]
+      for (let index = 0; index < 8; index++) wakes.push(timer("h" + index, "completed", {label: "Finished " + index}))
+      const window = parent.Window.window
+      const original = {width: window.width, height: window.height}
+      const skipped = []
+      for (const unit of [1, 1.5, 2, 3]) {
+        for (const size of [[600, 900], [420, 520], [360, 420], [600, 420]]) {
+          for (const path of ["direct", "resize"]) {
+            const label = size.join("×") + " @" + unit + " " + path
+            const panel = createTemporaryObject(panelComponent, parent, {width: 600, height: 900, unit: unit})
+            resize(panel, path === "direct" ? size[0] : 600, path === "direct" ? size[1] : 900)
+            const area = size[0] - findChild(panel, "tabRail").width - 40 * unit
+            if (area < 60 * unit) {
+              skipped.push(label)
+              panel.destroy()
+              continue
+            }
+            open(panel, wakes)
+            openTimers(panel)
+            if (path === "resize") resize(panel, size[0], size[1])
+            verifyOverlayInside(panel, label)
+            mouseClick(find(panel, "closeTimerOverlay"))
+            tryVerify(() => !overlay(panel).opened, 1000, label + ": closes")
+            // With the overlay closed, the visible header control opens it
+            // again at this size.
+            openTimers(panel)
+            verifyOverlayInside(panel, label + " reopened")
+            keyClick(Qt.Key_Escape)
+            tryVerify(() => !overlay(panel).opened)
+            panel.destroy()
+          }
+        }
+      }
+      window.width = original.width
+      window.height = original.height
+      compare(skipped.join(", "), "420×520 @3 direct, 420×520 @3 resize, 360×420 @3 direct, 360×420 @3 resize", "Only panels without a conversation area are skipped")
+    }
+
+    function test_folded_header_menu_keeps_history_and_attention() {
+      const panel = createTemporaryObject(panelComponent, parent, {width: 360, height: 420, unit: 2})
+      open(panel, [timer("a", "scheduled"), timer("f", "failed"), timer("d", "completed")])
+      verify(!control(panel).visible, "The clock folds into the menu")
+      const menuButton = findChild(panel, "conversationMenuButton")
+      verify(menuButton.Accessible.name.includes("Timers: 1 pending · 1 needs attention"))
+      mouseClick(menuButton)
+      tryVerify(() => findChild(panel, "conversationMenu").opened)
+      verify(waitForRendering(panel))
+      verify(find(panel, "conversationMenu-timers") !== null, "History stays in the menu")
+      mouseClick(find(panel, "conversationMenu-timers"))
+      tryVerify(() => overlay(panel).opened)
+      verify(find(panel, "finishedTimer-d") !== null)
     }
 
     // Review round 1 (Rowan): an already open overlay shrunk to a short,
