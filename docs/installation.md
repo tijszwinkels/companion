@@ -505,6 +505,15 @@ export COMPANION_AGENT_KEY=required                           # or: none
 export COMPANION_AGENT_KEY_VAR=COMPANION_AGENT_API_KEY        # key variable name
 ```
 
+If that agent server needs a key, the human also loads it into this terminal,
+without echo, before the checks below; `COMPANION_LLM_API_KEY` stays the
+classifier's key:
+
+```bash
+read -rsp 'Agent server API key: ' COMPANION_AGENT_API_KEY; printf '\n'
+export COMPANION_AGENT_API_KEY
+```
+
 The script refuses to overwrite an existing file; if one exists, add the
 `companion-local` provider to it by hand.
 
@@ -761,7 +770,8 @@ bin/companion-login enable --now --wtype-dir "$HOME/.local/share/companion/wtype
 
 If the user declined login startup, open two visible desktop terminals with these
 commands typed in instead, and let them press Enter (the listener terminal needs
-`COMPANION_LLM_API_KEY` loaded as in step 4 if the server needs a key):
+`COMPANION_LLM_API_KEY` loaded as in step 4 if the server needs a key, and
+`COMPANION_AGENT_API_KEY` as in step 5 if a separate agent server needs one):
 
 ```bash
 cd "$HOME/Work/companion"
