@@ -30,10 +30,10 @@ and origin.
 Companion runs its agent conversations in `~/companion/agents`, with Pi or,
 optionally, Claude Code. Skills are installed per agent program:
 
-| Agent       | Skills directory                                                                   | Instructions Companion's conversations read                                                                |
-| ----------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Pi          | `~/.pi/agent/skills/` (or `$PI_CODING_AGENT_DIR/skills/` if you set that variable) | `~/companion/agents/AGENTS.md`                                                                             |
-| Claude Code | `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills/` if you set that variable)     | `~/companion/agents/CLAUDE.md` if it exists, otherwise `AGENTS.md` (Claude Code 2.1.277 or newer reads it) |
+| Agent       | Skills directory                                                                   | Instructions Companion's conversations read                                      |
+| ----------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Pi          | `~/.pi/agent/skills/` (or `$PI_CODING_AGENT_DIR/skills/` if you set that variable) | `~/companion/agents/AGENTS.md`                                                   |
+| Claude Code | `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills/` if you set that variable)     | `~/companion/agents/AGENTS.md`, imported by a `CLAUDE.md` beside it (see step 3) |
 
 Install into the directory of each agent you use. Other skill locations may also
 be configured on your machine; an existing skill with the same name takes
@@ -100,11 +100,36 @@ Repeat with the other `dest` if you use both Pi and Claude Code.
 
 Show the user [`templates/agent-instructions.md`](templates/agent-instructions.md)
 and ask which sections they want. Then add those sections to the end of
-`~/companion/agents/AGENTS.md` (and to `CLAUDE.md` in that directory if one
-exists and doesn't already import `AGENTS.md`), keeping the `companion-starter-kit:begin`/`end` marker lines so the
-block is easy to find later. Leave out sections the user's file already covers,
-keep their wording where it differs, and show them the result. If the file does
-not exist yet, do step 5 of the installation guide first.
+`~/companion/agents/AGENTS.md`, keeping the `companion-starter-kit:begin`/`end`
+marker lines so the block is easy to find later. Leave out sections the user's
+file already covers, keep their wording where it differs, and show them the
+result. If the file does not exist yet, do step 5 of the installation guide
+first.
+
+**If you use Claude Code**, make sure it reads that `AGENTS.md`. Claude Code
+reads `AGENTS.md` only as a fallback: not when a `CLAUDE.md`, `.claude/CLAUDE.md`
+or `CLAUDE.local.md` exists in `~/companion/agents` or a folder above it (such as
+`~/companion` or the home folder), not when the fallback is turned off in its
+settings, and not before version 2.1.277. A `CLAUDE.md` beside `AGENTS.md` that
+imports it with the line `@AGENTS.md` works in all of these cases. Pi keeps
+reading `AGENTS.md` itself.
+
+- If `~/companion/agents/CLAUDE.md` does not exist, add one containing only that
+  import:
+
+  ```bash
+  claude_md="$HOME/companion/agents/CLAUDE.md"
+  if [ -e "$claude_md" ] || [ -L "$claude_md" ]; then
+    echo "exists, not changed: $claude_md"
+  else
+    cp "$kit/templates/claude-import.md" "$claude_md" && echo "added: $claude_md"
+  fi
+  ```
+
+- If it exists and does not already import `AGENTS.md` or contain the same
+  sections, show it to the user and, with their agreement, add the line
+  `@AGENTS.md` to it. Keep its other content, and don't remove or rename the
+  user's other instruction files.
 
 ### 4. Two optional choices
 
@@ -154,7 +179,9 @@ user's approval. It never runs on a schedule.
 - **Pi:** run `pi` in `~/companion/agents`. Its startup output lists loaded
   context files and skills; typing `/skill:` offers the installed skills.
 - **Claude Code:** run `claude` in `~/companion/agents` and use `/skills` to see
-  the installed skills, and `/context` to see which instruction files it loaded.
+  the installed skills, and `/context` to check that the loaded instruction
+  files include `~/companion/agents/AGENTS.md`. Installed skills alone don't
+  show that the instruction block is loaded.
 
 That the files load does not show that a model will use them well; try a real
 task, such as asking for a small widget. Pi and Claude Code read skills and
@@ -183,6 +210,8 @@ instruction blocks the same way: compare, then edit, never overwrite the file.
   the user no longer wants their edits, then remove only that directory, for
   example `rm -r -- "$dest/computer-use"`.
 - **Instructions:** delete the block between the `companion-starter-kit` marker
-  lines; leave the rest of the file as it is.
+  lines; leave the rest of the file as it is. A `CLAUDE.md` added in step 3
+  that still contains only `@AGENTS.md` can stay, or be removed if the user
+  prefers.
 - **Memory notes** are the user's data. Removing the kit never deletes them;
   delete them only if the user asks.

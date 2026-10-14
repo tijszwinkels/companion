@@ -116,13 +116,22 @@ function headingAnchors(markdown: string): Set<string> {
   return anchors;
 }
 
-/** Contents of fenced code blocks with the given info strings. */
+/**
+ * Contents of fenced code blocks with the given info strings, in document
+ * order. Blocks indented inside list items are returned without that indent.
+ */
 function codeBlocks(markdown: string, languages: string[]): string[] {
   const blocks: string[] = [];
 
-  for (const match of markdown.matchAll(/^```(\w*)\n([\s\S]*?)^```$/gm)) {
-    if (languages.includes(match[1])) {
-      blocks.push(match[2]);
+  for (const match of markdown.matchAll(/^( *)```(\w*)\n([\s\S]*?)^\1```$/gm)) {
+    const [, indent, language, body] = match;
+
+    if (languages.includes(language)) {
+      const unindented = body
+        .split('\n')
+        .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line))
+        .join('\n');
+      blocks.push(unindented);
     }
   }
 
@@ -299,7 +308,11 @@ test('adoption commands never remove, move, force or redirect over files', () =>
 function runAdoptionCommands(home: string, extraEnvironment: Record<string, string>): string {
   const readme = readText(join(kitRoot, 'README.md'));
   const blocks = codeBlocks(readme, ['bash']).filter((block) => !block.startsWith('diff '));
-  assert.equal(blocks.length, 5, 'expected setup, check, skills, memory and retrospective blocks');
+  assert.equal(
+    blocks.length,
+    6,
+    'expected setup, check, skills, CLAUDE.md import, memory and retrospective blocks',
+  );
 
   const setup = blocks[0].replace(
     'kit=/absolute/path/to/companion/starter-kit',
@@ -351,6 +364,11 @@ test('adoption adds only missing skills and templates, and repeating it changes 
     assert.equal(readText(customSkill), 'the user’s own computer-use skill\n');
     assert.equal(readText(instructions), '# My assistant\n');
 
+    // Claude Code reads AGENTS.md through this import even when other
+    // CLAUDE.md files above the agents directory would suppress its fallback.
+    const claudeImport = join(dirname(instructions), 'CLAUDE.md');
+    assert.equal(readText(claudeImport), '@AGENTS.md\n');
+
     for (const [name, source] of skillDirectories()) {
       if (name === 'computer-use') {
         continue;
@@ -369,6 +387,7 @@ test('adoption adds only missing skills and templates, and repeating it changes 
 
     assert.doesNotMatch(secondOutput, /added:/);
     assert.match(secondOutput, /exists: .*\/companion\/agents\/memory/);
+    assert.match(secondOutput, /exists, not changed: .*\/companion\/agents\/CLAUDE\.md/);
     assert.deepEqual(snapshot(home), before);
   } finally {
     rmSync(home, { recursive: true, force: true });
