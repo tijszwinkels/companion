@@ -1,0 +1,221 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+// Monitor changes for the real native host. TestScreens replaces the offscreen
+// platform's monitors; ordinary offscreen surfaces stand in for Sidebar/Dock
+// layers and keep the output chosen when they were created, as LayerShellQt
+// does. This does not exercise the Wayland protocol or the real compositor.
+// The runner starts with the laptop as the only, primary screen. It stays
+// connected: removing the offscreen primary screen stops test rendering.
+TestCase {
+  id: testCase
+  name: "MonitorChanges"
+  when: windowShown
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+  readonly property var laptop: ({name: "eDP-1", x: 0, y: 0, width: 1728, height: 1080})
+  // The incident layout: an external monitor above and right of the laptop.
+  readonly property var external: ({name: "HDMI-A-1", x: 864, y: -1620, width: 2880, height: 1620})
+
+  function screens(list) {
+    verify(TestScreens.configure(list), "offscreen monitor configuration is available")
+  }
+  function surface() { return body.Window.window }
+  function composer() { return findChild(body, "sessionComposer") }
+  // The text area scrolls inside a clipped viewport; that viewport is what shows.
+  function composerArea() {
+    let item = composer()
+    while (item && !item.clip) item = item.parent
+    return item
+  }
+  function within(item, bounds) {
+    const window = surface()
+    const point = item.mapToItem(null, 0, 0)
+    const left = window.x + point.x
+    const top = window.y + point.y
+    return left >= bounds.x && top >= bounds.y
+      && left + item.width <= bounds.x + bounds.width
+      && top + item.height <= bounds.y + bounds.height
+  }
+  function describe() {
+    const window = surface()
+    return TestHost.presentation + " on " + TestHost.sidebarScreen + " at "
+      + window.x + "," + window.y + " " + window.width + "x" + window.height
+  }
+  // The Sidebar/Dock surface fills the chosen output's right edge, and both the
+  // top presentation controls and the bottom composer are on that output.
+  function verifyDocked(bounds, width) {
+    tryCompare(TestHost, "sidebarScreen", bounds.name)
+    const window = surface()
+    tryVerify(function() {
+      return window.x === bounds.x + bounds.width - width && window.y === bounds.y
+        && window.width === width && window.height === bounds.height
+    }, 2000, describe())
+    tryVerify(function() { return body.width === width && body.height === bounds.height }, 2000, describe())
+    verify(within(findChild(body, "presentationControls"), bounds), describe())
+    verify(within(composerArea(), bounds), describe())
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [
+        {id: "one", title: "Monitor test", status: "idle", messages: []}
+      ]})
+    tryVerify(function() { return body.panel.selectedSession !== null })
+    body.client.sessions.select("one")
+    tryVerify(function() { return composer() !== null })
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function init() {
+    screens([laptop])
+    TestHost.setPresentation("window")
+    TestHost.hide()
+  }
+
+  function test_dock_follows_monitor_changes_and_keeps_controls_onscreen() {
+    TestHost.setPresentation("dock")
+    TestHost.show(true)
+    const input = composer()
+    input.text = "Unsent draft across monitors"
+    input.forceActiveFocus()
+    tryVerify(function() { return input.activeFocus && body.inputFocused })
+    verifyDocked(laptop, 600)
+
+    // Hotplug: the external monitor becomes the preferred output. Without a new
+    // surface the panel would stay on the laptop at the external height.
+    screens([laptop, external])
+    verifyDocked(external, 600)
+
+    // Scale/resolution change on the same output (133⅓% -> 125%).
+    const rescaled = Object.assign({}, external, {y: -1728, width: 3072, height: 1728})
+    screens([laptop, rescaled])
+    verifyDocked(rescaled, 600)
+
+    // Unplug: back to the laptop.
+    screens([laptop])
+    verifyDocked(laptop, 600)
+
+    // Negative coordinates: an external monitor left of and above the laptop
+    // is still preferred over the built-in panel.
+    const left = {name: "DP-2", x: -2560, y: -400, width: 2560, height: 1440}
+    screens([laptop, left])
+    verifyDocked(left, 600)
+
+    // A narrower monitor limits the width without forgetting the preference.
+    const narrow = {name: "DP-2", x: -500, y: -400, width: 500, height: 900}
+    screens([laptop, narrow])
+    verifyDocked(narrow, 500)
+    screens([laptop, left])
+    verifyDocked(left, 600)
+
+    // The choice, body, draft and keyboard focus survived every change.
+    compare(TestHost.presentation, "dock")
+    verify(TestHost.opened)
+    compare(composer(), input)
+    compare(input.text, "Unsent draft across monitors")
+    tryVerify(function() { return input.activeFocus && body.inputFocused }, 2000, "composer focus is restored")
+  }
+
+  function test_sidebar_and_hidden_dock_use_the_current_monitor() {
+    TestHost.setPresentation("sidebar")
+    TestHost.show(false)
+    verifyDocked(laptop, 600)
+    screens([laptop, external])
+    verifyDocked(external, 600)
+    compare(TestHost.presentation, "sidebar")
+
+    // A hidden Dock is placed on the monitor current when it is shown again.
+    TestHost.setPresentation("dock")
+    TestHost.hide()
+    screens([laptop])
+    screens([laptop, external])
+    screens([laptop])
+    verify(!TestHost.opened, "monitor changes do not show a hidden panel")
+    TestHost.show(false)
+    verifyDocked(laptop, 600)
+    compare(TestHost.presentation, "dock")
+  }
+
+  function test_window_fits_its_monitor_and_stays_a_window() {
+    // A remembered size taller than the monitor (the Oct 9 incident: 717x1704
+    // on a 1620-high output) is reduced before mapping, keeping its width.
+    surface().width = 717
+    surface().height = 1704
+    TestHost.show(false)
+    compare(TestHost.presentation, "window")
+    compare(TestHost.sidebarScreen, "")
+    compare(surface().width, 717)
+    verify(surface().height <= laptop.height - 64, describe())
+
+    // A size that already fits is left alone, including after monitor changes,
+    // which never switch the chosen Window to a Sidebar or Dock.
+    TestHost.hide()
+    surface().width = 620
+    surface().height = 780
+    screens([laptop, external])
+    TestHost.show(false)
+    compare(surface().width, 620)
+    compare(surface().height, 780)
+    screens([laptop])
+    compare(TestHost.presentation, "window")
+    verify(TestHost.opened)
+  }
+
+  function test_visible_window_is_refitted_when_its_monitor_shrinks() {
+    surface().width = 717
+    surface().height = 1000
+    TestHost.show(true)
+    const input = composer()
+    input.text = "Draft in a shrinking Window"
+    input.forceActiveFocus()
+    tryVerify(function() { return input.activeFocus && body.inputFocused })
+
+    // A smaller monitor whose usable area (less the 64 px panel allowance)
+    // still holds the Window leaves it alone.
+    const smaller = Object.assign({}, laptop, {width: 1600, height: 1064})
+    screens([smaller])
+    wait(800)
+    compare(surface().width, 717)
+    compare(surface().height, 1000)
+
+    // The whole output still holds it, but its usable area does not: a top bar
+    // would push the bottom offscreen. Show the same Window again, fitted.
+    const barred = Object.assign({}, laptop, {width: 1600, height: 1000})
+    screens([barred])
+    tryVerify(function() { return surface().height <= barred.height - 64 }, 3000, describe())
+    compare(surface().width, 717)
+
+    // A much smaller monitor fits it again.
+    const small = Object.assign({}, laptop, {width: 1280, height: 720})
+    screens([small])
+    tryVerify(function() { return surface().height <= small.height - 64 }, 3000, describe())
+    compare(surface().width, 717)
+    compare(TestHost.presentation, "window")
+    verify(TestHost.opened)
+    compare(composer(), input)
+    compare(input.text, "Draft in a shrinking Window")
+    tryVerify(function() { return input.activeFocus && body.inputFocused }, 2000, "composer focus is restored")
+    input.text = ""
+  }
+}

@@ -1,0 +1,179 @@
+# Using Companion
+
+A practical guide to Companion once it is installed: how to start it, what you
+can say, how the panel works and which settings you can change. For setup, see
+the [installation guide](installation.md); for a short overview, the
+[README](../README.md).
+
+## Start and stop
+
+If you set up [start Companion after login](installation.md#8-start-companion-after-login-optional),
+Companion is already running (paused) after you log in. To start it by hand
+instead, use two terminals on your Hyprland desktop, one for Companion itself
+and one for its panel:
+
+```sh
+cd ~/Work/companion
+export PATH="$HOME/.local/share/companion/wtype-candidate:$PATH"
+./node_modules/.bin/tsx src/cli.ts --config "$PWD/companion.config.json" --paused
+```
+
+```sh
+cd ~/Work/companion
+npm run ui
+```
+
+This is the same as
+[step 7 of the installation guide](installation.md#7-first-launch-try-it-and-stopping):
+the first line makes Companion use the patched text writer, and starting it this
+way (rather than `npm start`) lets Ctrl+C shut it down cleanly. If your model
+server needs a key, load `COMPANION_LLM_API_KEY` in that terminal first.
+
+`--paused` starts with the microphone off; without it Companion starts
+listening and typing straight away, so put the cursor somewhere harmless first.
+**Ctrl+C** in the first terminal stops Companion and any agent work it
+started. Closing the panel window only hides it.
+
+Useful options:
+
+- `--preview` shows what Companion would do without typing or starting agents.
+  It still listens, takes screenshots and keeps history.
+- `--no-sounds` starts with the sound cues muted.
+- `npm start -- --help` lists every option.
+
+**Super+Alt+P** (or the microphone icon in the top bar) pauses and resumes
+listening. With the Omarchy integration, Companion also pauses by itself while a music or video player is
+playing, and resumes when it stops, unless you paused it yourself. Agent
+conversations keep running while the microphone is paused.
+
+## Talking to Companion
+
+Just talk. When you stop speaking, Companion looks at what you said and at the
+window you are in, and decides whether you are dictating, asking the assistant
+something, continuing an open conversation, or not talking to it at all.
+
+To skip the guessing, start with a command word:
+
+| Say                                         | What happens                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| “insert …”                                  | Types the rest into the focused app.                                 |
+| “enter …”                                   | Types the rest and presses Enter.                                    |
+| “quick question …”                          | Asks the faster quick-question model; the answer opens in a new tab. |
+| “new session …”                             | Starts a full agent conversation (Pi by default).                    |
+| “new pi session …” / “new claude session …” | Starts the conversation on Pi or on Claude Code specifically.        |
+| “continue session …”                        | Sends a follow-up to the conversation that is open in the panel.     |
+| “close session”                             | Stops and closes the open conversation.                              |
+| “go to session three”                       | Switches to that conversation tab (one to sixteen).                  |
+| “stop”                                      | Stops the open conversation's agent while it is answering.           |
+| “label previous correct” / “… incorrect”    | Tells Companion whether it understood your last sentence right.      |
+
+Matching ignores capitals and a comma after the command word (“Insert, hello”).
+Every question or new session includes a screenshot of the window you were
+looking at. When an agent offers buttons such as **Yes** or **More detail**,
+you can also say the button's label.
+
+Before typing, Companion checks that the window you were in when you finished
+speaking is still active, and skips the text if it is not; you can paste it
+later from history. Keep the intended field focused until typing finishes: the
+check cannot tell fields or browser tabs apart.
+
+## The panel
+
+The panel holds the **Activity** tab and one tab per agent conversation
+(Q1, Q2, …). Use the **Window**, **Sidebar** and **Dock** buttons at the top to
+choose how it sits on your screen.
+
+**Activity** shows what Companion heard and what it did with it. Its
+**Intentions** section lets you switch each route on or off separately for
+automatic recognition (blue) and for its command word (amber). **Clean up
+transcriptions** (off by default) sends a tidied version of your speech instead
+of the raw transcript; see [transcription cleanup](transcription-cleanup.md).
+The text box at the bottom lets you type instead of speak; typed text is
+handled exactly like speech.
+
+**Conversation tabs** show the agent's answer, its tool use (click a tool bubble
+to see details) and any widgets it shows. In a conversation you can:
+
+- type a follow-up and press **Enter** (**Shift+Enter** for a new line). While
+  the agent is still working, follow-ups queue up (up to eight) and run in order;
+- press **Record** beside Send to dictate into the text box instead of typing;
+  nothing is sent until you press **Send**, and it works while listening is paused;
+- press **Stop** to interrupt, or **Close session** to stop it and move it to
+  **Previous sessions** at the bottom of the tab rail, where you can reopen it later;
+- pick a different **Model** for the next turn at the bottom. Pi conversations
+  can also change **Effort** when the model supports it; Claude Code keeps the
+  effort it started with;
+- click the attached screenshot to view it full size;
+- hover a message for its **Copy** button.
+
+Up to sixteen conversations can be open at once. Drag a tab to reorder it.
+
+### What agents can do in Companion
+
+- **Show widgets.** Agents can put interactive diagrams, comparisons, charts and
+  checklists in their conversation, or pin one above it. Ask for one, for example
+  “show this as a checklist”.
+- **Work as a team.** Agents can start other Companion conversations, send them
+  follow-ups and receive their replies. A handy way to work: keep one conversation
+  as your manager, ask it to delegate tasks to new sessions, and keep talking to
+  it while the others work. Up to ten agents run at the same time.
+
+## Keyboard shortcuts
+
+These need the Omarchy integration from the installation guide.
+
+| Shortcut                 | Action                                                                   |
+| ------------------------ | ------------------------------------------------------------------------ |
+| Super+Alt+C              | Show or hide the panel.                                                  |
+| Super+Alt+D              | Jump to the panel's text box, and back to your previous app.             |
+| Super+Alt+P              | Pause or resume listening.                                               |
+| Super+Alt+V              | Hold to pick a recent sentence, release to paste it; tap for the latest. |
+| Alt+1 … Alt+9            | Open conversation Q1–Q9 (while the panel has focus).                     |
+| Super+Alt+0 / Alt+0      | Open Activity (while the panel has focus).                               |
+| Super+Alt+Tab            | Cycle Activity and conversations (while the panel has focus).            |
+| Alt+Shift+Up/Down        | Move the selected conversation tab.                                      |
+| Ctrl++ / Ctrl+- / Ctrl+0 | Zoom a conversation in, out, or back to 100%.                            |
+
+## Sounds
+
+A short cue confirms that Companion heard you, and a different one tells you
+where it went: typed into an app, sent to an open conversation, or started a
+new one. A soft chime plays when an agent finishes answering. Mute the cues
+from the microphone menu in the top bar, or start with `--no-sounds`.
+
+## History and privacy
+
+Companion keeps what you said in `~/companion`, and conversations under
+`~/companion/agents`. It saves the screenshot and audio of each sentence only if
+you turn on **Save captured audio and screenshots** (Activity → Storage; off by
+default); see [capture storage](capture-storage.md). Nothing is deleted
+automatically. You can delete
+individual entries from Activity. The installation guide's
+[storage, deletion and egress](installation.md#storage-deletion-and-egress)
+section lists every store, how to remove it and what is sent where.
+
+## Settings
+
+| What                                                   | Where                                                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Agent models and the default agent (Pi or Claude Code) | `~/companion/agents/companion-agent.json`, read again before every turn.                               |
+| Speech model and the model that interprets your intent | `companion.config.json` in the folder you start Companion from (copy `companion.config.example.json`). |
+| Which intents and command words are on                 | The Intentions switches in Activity.                                                                   |
+| Backend and model for new sessions                     | The “Start a coding session” card under Activity → Intentions.                                         |
+| Whether audio and screenshots are saved                | Activity → Storage (off by default).                                                                   |
+
+The [installation guide](installation.md) explains each of these files. The
+complete reference, including every field, lives in the
+[development documentation](development.md).
+
+## Optional extras
+
+- **Phone panel** (experimental): follow and start conversations from your
+  phone over your own private network. See [phone access](mobile-startup.md).
+- **Local web apps**: open your own local web apps next to Companion. See
+  [local apps](local-apps.md).
+- **Built-in browser**: view a web page inside the panel with the **Browser**
+  button (standalone window only). See [panel browser](panel-browser.md).
+- **Other coding agents**: local tools can start and message Companion
+  conversations once you enable it. See the
+  [external session guide](../src/agents/external/README.md).

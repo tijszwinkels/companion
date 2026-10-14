@@ -8,6 +8,13 @@ For a new machine, follow the [installation guide](installation.md) first. It
 includes model acquisition, agent setup and explicit capture/activation checkpoints;
 this developer guide assumes those prerequisites.
 
+Material that used to live in the README is in two places:
+[using Companion](using-companion.md) is the short user guide, and
+[architecture and internals](architecture.md) holds the module graph, data flow
+and review order, text delivery, tests, code style and the detailed behavior and
+configuration reference (start modes, prefix rules, panel, history,
+prerequisites and `companion.config.json`).
+
 ## Find the right directory
 
 On Tijs's machine:
@@ -32,27 +39,27 @@ milestones. User instructions can waive review for a particular change.
 
 ## Source and documentation map
 
-| Responsibility                                                                         | Source                                                           | Guide                                                                                                           |
-| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| CLI assembly and config                                                                | `src/cli.ts`, `src/config.ts`                                    | [User guide](../README.md), [module contracts](module-interfaces.md)                                            |
-| Speech/typed observation queue, context and intent selection                           | `src/core/`, `src/processors/`                                   | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)                          |
-| Capture, VAD and persistent ASR                                                        | `src/sensors/`, `native/asr-worker/`                             | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md)                      |
-| Provisional endpoint, speech continuation and commitment                               | `src/core/utterance-continuation.ts`, `src/core/pipeline.ts`     | [Speech timing](speech-timing.md)                                                                               |
-| Manual recording into a conversation's text box (Record / Stop recording)              | `src/core/dictation/`, `src/sensors/audio/dictation-listener.ts` | [Desktop protocol](../src/desktop/README.md#manual-recording-into-the-text-box)                                 |
-| Pi/Claude Code sessions, harness selection, follow-up queue, choices, naming and tools | `src/agents/`                                                    | [Agent contracts](../src/agents/README.md)                                                                      |
-| History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                     | [Storage and protocol](../src/desktop/README.md)                                                                |
-| Shared Activity/conversation components                                                | `integrations/panel/`                                            | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                                     |
-| Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                         | [Native setup and validation](../native/window/README.md)                                                       |
-| In-panel web browser (native window only)                                              | `integrations/panel/PanelBrowser*.{qml,mjs}`                     | [Panel browser](panel-browser.md)                                                                               |
-| Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                          | [Adapter guide](../integrations/omarchy/README.md)                                                              |
-| Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/`  | [Widget authoring](../widget-library/README.md)                                                                 |
-| Native WebEngine profile/module                                                        | `native/widget-renderer/`                                        | [Native renderer](../native/widget-renderer/README.md)                                                          |
-| Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                 | [Patched writer and activation](../integrations/wtype/README.md)                                                |
-| Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                                | [Transcription cleanup](transcription-cleanup.md)                                                               |
-| Capture storage: archiving audio/screenshots (default off) and labeling gate           | `src/capture-storage/`                                           | [Capture storage](capture-storage.md)                                                                           |
-| Opt-in phone gateway, its supervised service and phone panel                           | `src/remote/`, `bin/companion-phone`, `integrations/mobile/`     | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md) |
-| Opt-in listener/UI start after desktop login (systemd user units)                      | `src/login-startup/`, `bin/companion-login`                      | [Installation step 8](installation.md#8-start-companion-after-login-optional)                                   |
-| Trusted local web apps: registry, lifecycle, app windows, phone app proxy              | `src/apps/`, `bin/companion-app`                                 | [Local apps](local-apps.md)                                                                                     |
+| Responsibility                                                                         | Source                                                           | Guide                                                                                                            |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| CLI assembly and config                                                                | `src/cli.ts`, `src/config.ts`                                    | [Using Companion](using-companion.md), [architecture](architecture.md), [module contracts](module-interfaces.md) |
+| Speech/typed observation queue, context and intent selection                           | `src/core/`, `src/processors/`                                   | [Module contracts](module-interfaces.md), [desktop protocol](../src/desktop/README.md)                           |
+| Capture, VAD and persistent ASR                                                        | `src/sensors/`, `native/asr-worker/`                             | [Short phrases](short-phrase-recognition.md), [ASR worker](../native/asr-worker/README.md)                       |
+| Provisional endpoint, speech continuation and commitment                               | `src/core/utterance-continuation.ts`, `src/core/pipeline.ts`     | [Speech timing](speech-timing.md)                                                                                |
+| Manual recording into a conversation's text box (Record / Stop recording)              | `src/core/dictation/`, `src/sensors/audio/dictation-listener.ts` | [Desktop protocol](../src/desktop/README.md#manual-recording-into-the-text-box)                                  |
+| Pi/Claude Code sessions, harness selection, follow-up queue, choices, naming and tools | `src/agents/`                                                    | [Agent contracts](../src/agents/README.md)                                                                       |
+| History, exact intent requests, feedback and deletion                                  | `src/desktop/`, `src/core/intent-request.ts`                     | [Storage and protocol](../src/desktop/README.md)                                                                 |
+| Shared Activity/conversation components                                                | `integrations/panel/`                                            | [Desktop protocol](../src/desktop/README.md), `test/panel/`                                                      |
+| Standalone Window/Sidebar/Dock client                                                  | `integrations/window/`, `native/window/`                         | [Native setup and validation](../native/window/README.md)                                                        |
+| In-panel web browser (native window only)                                              | `integrations/panel/PanelBrowser*.{qml,mjs}`                     | [Panel browser](panel-browser.md)                                                                                |
+| Omarchy shortcuts, theme, media and focus bridge                                       | `integrations/omarchy/`                                          | [Adapter guide](../integrations/omarchy/README.md)                                                               |
+| Widget tools, durable state and browser views                                          | `src/widgets/`, `src/agents/widget-tools.ts`, `widget-library/`  | [Widget authoring](../widget-library/README.md)                                                                  |
+| Native WebEngine profile/module                                                        | `native/widget-renderer/`                                        | [Native renderer](../native/widget-renderer/README.md)                                                           |
+| Application text delivery                                                              | `src/system/type-text.ts`, `integrations/wtype/`                 | [Patched writer and activation](../integrations/wtype/README.md)                                                 |
+| Automatic transcription cleanup (optional, default off)                                | `src/core/transcription-cleanup/`                                | [Transcription cleanup](transcription-cleanup.md)                                                                |
+| Capture storage: archiving audio/screenshots (default off) and labeling gate           | `src/capture-storage/`                                           | [Capture storage](capture-storage.md)                                                                            |
+| Opt-in phone gateway, its supervised service and phone panel                           | `src/remote/`, `bin/companion-phone`, `integrations/mobile/`     | [Gateway](../src/remote/README.md), [service](mobile-startup.md), [phone app](../integrations/mobile/README.md)  |
+| Opt-in listener/UI start after desktop login (systemd user units)                      | `src/login-startup/`, `bin/companion-login`                      | [Installation step 8](installation.md#8-start-companion-after-login-optional)                                    |
+| Trusted local web apps: registry, lifecycle, app windows, phone app proxy              | `src/apps/`, `bin/companion-app`                                 | [Local apps](local-apps.md)                                                                                      |
 
 The standalone Qt host is the current native UI path. The private Quickshell
 build documented under `native/widget-renderer/` is an experimental alternative;
@@ -92,7 +99,8 @@ Do not edit literal user-approved prompts as part of an unrelated refactor.
 Conversation history is retained independently of the display. Recent and
 historical pages contain at most **200 bubbles / 65,536 UTF-16 text/input units**,
 defined in `src/agents/transcript-limits.ts`; these limits never reject a turn.
-The panel and phone offer Load older, Newer, Refresh and Latest. See
+The desktop panel loads older and newer pages as the reader scrolls, keeping at
+most three pages resident; the phone offers Load older, Newer, Refresh and Latest. See
 [paged conversation history](../src/desktop/README.md#paged-conversation-history)
 for window/delta semantics and compatibility. Consecutive tool calls share one
 collapsed bubble. Their inputs/results are stored separately and loaded only on

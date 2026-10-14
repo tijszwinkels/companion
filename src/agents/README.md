@@ -6,10 +6,11 @@ Companion retains the complete conversation separately from the displayed page.
 The recent window and each requested older/newer page contain at most 200 rows
 and 65,536 JavaScript UTF-16 text/input units. These are display budgets, not
 admission limits or model context limits: crossing them does not fail a turn.
-Individual oversized messages span explicitly labelled fragments. Load older,
-Newer, Refresh and Latest navigate one bounded page at a time on desktop and phone.
-Historical pages are snapshots; updates offer explicit refresh without moving the
-reader. Consecutive tool calls share one collapsed row without crossing chat.
+Individual oversized messages span explicitly labelled fragments. The desktop
+panel joins bounded pages continuously as the reader scrolls (at most three pages
+resident); the phone navigates with Load older, Newer, Refresh and Latest.
+Loaded older rows are snapshots; updates offer explicit refresh without moving
+the reader. Consecutive tool calls share one collapsed row without crossing chat.
 Canonical pinned widgets remain available outside the current transcript page.
 
 Stored JSON history remains whole-file and is fully loaded when opening a tab;

@@ -29,9 +29,10 @@ set_target_properties(companionwidgets PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CM
 configure_file(../widget-renderer/qmldir "${CMAKE_BINARY_DIR}/qml/Companion/Widgets/qmldir" COPYONLY)
 
 if(BUILD_TESTING)
-    find_package(Qt6 REQUIRED COMPONENTS QuickTest)
+    find_package(Qt6 REQUIRED COMPONENTS QuickTest GuiPrivate)
     add_executable(companion-window-tests test-main.cpp)
-    target_link_libraries(companion-window-tests PRIVATE companionwindow Qt6::WebEngineQuick Qt6::QuickTest)
+    # GuiPrivate provides the offscreen platform's monitor configuration hook.
+    target_link_libraries(companion-window-tests PRIVATE companionwindow Qt6::WebEngineQuick Qt6::QuickTest Qt6::GuiPrivate)
 endif()
 
 install(TARGETS companion-ui RUNTIME DESTINATION bin)

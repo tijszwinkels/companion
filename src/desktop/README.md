@@ -1076,18 +1076,54 @@ previous page continues that row; concatenating its fragments recovers all origi
 units. Clients label fragments and copy only the displayed fragment. Tool groups
 still have empty bodies and use their own detail paging protocol below.
 
-Desktop/native, portable Omarchy and phone retain one historical page, replacing
-it on Older/Newer. Refresh reads current canonical content from the same start;
-Latest restores live following. Historical pages are labelled snapshots when their
-revision differs from the live window. Reading an evicted recent window freezes
-that bounded page instead of moving the reader. Responses are correlated with the
-request and tab lifetime; navigation/Latest supersedes pending pages. Loading
-older history never changes drafts, submits text or starts a model. In the shared
-QML panel, Load older scrolls with the transcript at the top of the loaded page;
-it is not a permanently visible toolbar action. Newer, Refresh and Latest remain
-available above the transcript while viewing a historical page. Origin jumps
-load and align the group without expanding tool output. Pins remain independent
-of the page. The phone sanitizes screenshot/widget URLs in page replies as in
+The phone retains one historical page, replacing it on Older/Newer. Refresh reads
+current canonical content from the same start; Latest restores live following.
+Historical pages are labelled snapshots when their revision differs from the live
+window. Responses are correlated with the request and tab lifetime;
+navigation/Latest supersedes pending pages. Loading older history never changes
+drafts, submits text or starts a model.
+
+The shared QML panel (desktop/native and portable Omarchy) scrolls continuously
+with the same requests (`integrations/panel/HistoryRows.mjs`):
+
+- Scrolling within one viewport of the top requests the page `before` the first
+  resident row; scrolling down a detached view requests the page `after` the last.
+  Only the reader's own wheel, drag, flick or scroll-bar movement starts a request,
+  never layout, resizing, zoom or live updates. One request is outstanding at a
+  time. A page is joined only if it ends (or starts) exactly at the current
+  boundary, so rows are never skipped or repeated; anything else is a superseded
+  answer and is dropped. Failures show the error with Retry and never retry by
+  themselves; an empty page marks that boundary and it is not requested again
+  automatically. Content too short to scroll offers an explicit Load instead.
+- Older rows that end where the live window starts stay **joined** to it: the
+  live rows below keep updating. When the window slides forward while the reader
+  is away from the end, the rows it drops stay resident and joined. Otherwise
+  (or when the bound below requires it) the view becomes a **detached** snapshot
+  of resident rows; scrolling down loads newer pages and rejoins the live window
+  once they reach it, cutting a fragment that spans the live start so its text is
+  neither lost nor repeated. A loaded message that has since grown past the live
+  start is not joined as if complete: it becomes an explicit fragment ending at
+  its loaded text, and the rest loads as an ordinary page from there. Reaching
+  the live end resumes following.
+- Resident rows, including joined live rows, never exceed three pages: 600 rows and
+  196,608 text units. This is rechecked on every live update, including growth
+  without the window moving. Rows are trimmed from the side away from the reader.
+  A page whose join would remove rows on screen is dropped instead, as is an
+  older page that arrives after the reader scrolled back to the live end. If live
+  growth alone leaves no other choice, the view becomes a detached snapshot; rows
+  on screen give way only when the bound cannot otherwise hold. The listener's
+  page and window limits are unchanged.
+- After every join, trim, refresh, resize or zoom, the row at the top of the
+  viewport is put back at the same offset. Open tool groups stay open while their
+  row is resident.
+- A small floating Jump to latest arrow appears whenever the reader is away from
+  the live end and discards resident older rows. There is no paging toolbar. A
+  status chip floats over the transcript edge only while loading, after a failure
+  (Retry) or for a detached view whose revision has changed (Refresh). The
+  conversation menu's Refresh loaded messages reloads from the row being read.
+
+Origin jumps load and align the group without expanding tool output. Pins remain
+independent of the page. The phone sanitizes screenshot/widget URLs in page replies as in
 ordinary session events; widgets remain desktop-only placeholders there.
 
 Upgrade listener and clients together for paging/eviction. Older clients can
@@ -1242,9 +1278,22 @@ authentication belong to the separate gateway process.
 Conversation snapshots/updates optionally carry `wakes`: bounded timer summaries
 with ID, label, due/expiry, state, last transition, cancellation intent and linked
 turn ID. These are projections from the dedicated timer store, never restored
-as executable transcript messages. The shared panel shows a clock/count on tabs
-and an expandable list with local due time and zone, relative due/overdue time,
-status and Cancel. `scheduled-wake` message origins render as **Scheduled wake**,
+as executable transcript messages. The shared panel shows a clock/count on tabs.
+The conversation header shows a compact clock with the pending (scheduled/waiting)
+count, "Running" when only dispatching/started timers remain, or Attention with
+the number of failed, blocked or delivery-uncertain timers in the projection. It
+is hidden otherwise; finished timers are listed under the conversation menu's
+Timer history. The control opens a bounded overlay (Escape, × or a press outside
+closes it; focus and draft stay; only its title and × are fixed, the rest scrolls;
+it stays inside the panel, moving up over the header when the panel is short)
+with label, state, local due time and zone, relative
+due/overdue time, reason, cancellation intent and Cancel; finished timers are
+collapsed. When the header is too narrow for both, the clock folds into the
+conversation menu: its button shows "!" (attention) or "◷" and lists Timers first.
+If the menu button and Browser still do not fit, Browser joins the menu with the
+same action. When the conversation area is too short for a usable list, the
+overlay may cover the header, composer and footer, but never leaves the panel.
+Viewing never acknowledges or clears an attention state. `scheduled-wake` message origins render as **Scheduled wake**,
 not **You**. Background restore uses the existing `reveal: false` contract.
 
 The native command `{"action":"cancel-agent-wake","id":"conversation-uuid",

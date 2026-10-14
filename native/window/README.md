@@ -13,6 +13,23 @@ Wayland and LayerShellQt. One persistent QML body moves between the two native
 surfaces, retaining drafts, selected tabs, zoom and browser documents. Closing
 the window hides it; the resident host can be summoned again.
 
+Monitor changes never change the chosen presentation. Sidebar and Dock use the
+preferred monitor: an external one, then the rightmost edge. When adding,
+removing or rearranging monitors changes that choice, the host replaces the
+layer surface without changing its body or focus, because LayerShellQt binds a
+surface to its output when the surface is created. The compositor sets their
+height, leaving room for panels such as the top bar. Qt on Wayland reports the
+whole output as available, so the host never resizes a configured surface to
+that height. Before Window is shown, a remembered size larger than its monitor
+(less 64 logical pixels for panels) is reduced, and the remembered value is
+kept. Hyprland centres a newly shown floating window at that size. Once it is
+mapped, Hyprland owns its geometry: a Window that no longer fits within those
+same bounds after a monitor change is shown again at a fitted size, half a second
+after the change settles. This re-centres a floating Window, and may re-tile a
+tiled one; maximized and full-screen windows are left to the compositor.
+Sidebar and Dock request a new frame after a width change, because the layer
+size and reserved zone apply only with the next surface commit.
+
 The shared panel also provides per-conversation next-turn model selection, tab
 dragging and Alt+Shift+Up/Down reordering, and a draggable rail divider. These
 controls remain in the same QML body across Window/Sidebar/Dock. Open-tab order
@@ -92,6 +109,15 @@ request, personal configuration or live conversation is used. The reparenting te
 injects ordinary offscreen surfaces for Sidebar/Dock; it does **not** prove the
 Wayland layer protocol, reserved workspace geometry, focus restoration, monitor
 hotplug or GPU/WebGL performance. These require a coordinated desktop check.
+
+The monitor regression adds, removes, rescales and narrows offscreen Qt monitors,
+including ones at negative coordinates, while the real host shows a QML body
+with an unsent draft and keyboard focus. Its offscreen Sidebar/Dock surfaces keep
+the output chosen at creation, like LayerShellQt 6.7. The test checks the
+chosen monitor, full-height geometry and reachable top/bottom controls, and that
+Window is fitted before mapping. It does not exercise the layer protocol,
+exclusive zones, Hyprland placement or a real hotplug. Window tests that are not
+about monitors use one 1600 × 1200 offscreen screen.
 
 The opt-in `test/window/layer-focus.ts` regression uses real native layer
 surfaces in an isolated Hyprland instance, a synthetic backend and disposable

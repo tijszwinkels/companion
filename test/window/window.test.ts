@@ -14,6 +14,7 @@ import { WidgetRegistry } from '../../src/widgets/registry.ts';
 import { WidgetService } from '../../src/widgets/service.ts';
 import { DesktopServer, type SnapshotOptions } from '../../src/desktop/server.ts';
 import type { WidgetAttachment } from '../../src/widgets/types.ts';
+import { offscreenPlatform } from './offscreen.ts';
 
 const execute = promisify(execFile);
 const build = resolve('native/window/build');
@@ -31,7 +32,7 @@ async function fixture() {
       XDG_CONFIG_HOME: join(directory, 'config'),
       XDG_CACHE_HOME: join(directory, 'cache'),
       XDG_RUNTIME_DIR: runtime,
-      QT_QPA_PLATFORM: 'offscreen',
+      QT_QPA_PLATFORM: await offscreenPlatform(directory),
       QT_QUICK_BACKEND: 'software',
       QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu',
       QML_IMPORT_PATH: join(build, 'qml'),
@@ -542,6 +543,52 @@ test('native UI preserves its QML body and Chromium view across presentation cha
     }
   } finally {
     await service.close();
+    await rm(setup.directory, { recursive: true, force: true });
+  }
+});
+
+test('native host keeps the chosen presentation on screen across monitor changes', async () => {
+  // Offscreen Qt monitors are added, removed and resized while the real host
+  // shows its QML body. See screens.qml.in for what this does not exercise.
+  const setup = await fixture();
+  try {
+    const template = await readFile(new URL('./screens.qml.in', import.meta.url), 'utf8');
+    const path = join(setup.directory, 'tst_screens.qml');
+    const screens = join(setup.directory, 'screens.json');
+    await writeFile(
+      screens,
+      JSON.stringify({ screens: [{ name: 'eDP-1', x: 0, y: 0, width: 1728, height: 1080 }] }),
+    );
+    await writeFile(
+      path,
+      template.replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href),
+    );
+    try {
+      const result = await execute(
+        join(build, 'companion-window-tests'),
+        ['-input', path, '-nocrashhandler'],
+        {
+          env: { ...setup.env, QT_QPA_PLATFORM: 'offscreen:configfile=' + screens },
+          timeout: 30000,
+          killSignal: 'SIGKILL',
+        },
+      );
+      for (const name of [
+        'test_dock_follows_monitor_changes_and_keeps_controls_onscreen',
+        'test_sidebar_and_hidden_dock_use_the_current_monitor',
+        'test_window_fits_its_monitor_and_stays_a_window',
+        'test_visible_window_is_refitted_when_its_monitor_shrinks',
+      ]) {
+        assert.match(
+          result.stdout,
+          new RegExp('PASS   : CompanionWindow::MonitorChanges::' + name),
+        );
+      }
+      assert.match(result.stdout, /Totals: \d+ passed, 0 failed/);
+    } catch (error) {
+      throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'));
+    }
+  } finally {
     await rm(setup.directory, { recursive: true, force: true });
   }
 });

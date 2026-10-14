@@ -932,7 +932,8 @@ Item {
 
     Text {
       anchors.top: parent.top
-      width: parent.width - 38 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+      width: Math.max(0, parent.width - 38 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+        - (conversationControls.visible ? conversationControls.width + 6 * root.unit : 0))
       text: root.browsing ? "Browser" : root.showingPrevious ? "Previous sessions" : root.selectedSession ? root.selectedSession.title : "Companion"
       textFormat: Text.PlainText
       elide: Text.ElideRight
@@ -975,7 +976,9 @@ Item {
     PanelAction {
       id: browserButton
       objectName: "panelBrowserButton"
-      visible: root.browserAvailable && !root.browsing
+      // In a conversation too narrow for it, Browser moves into the
+      // conversation menu with the same action.
+      visible: root.browserAvailable && !root.browsing && !conversationControls.browserFolded
       anchors.top: parent.top
       anchors.topMargin: -4 * root.unit
       anchors.right: closeButton.left
@@ -987,6 +990,102 @@ Item {
       unit: root.unit
       onTriggered: root.openBrowser()
       Accessible.name: root.browserPinVisible ? "Show the pinned page in the full panel" : "Open the panel browser"
+    }
+
+    // The conversation's own header controls: timers (only when something is
+    // pending, running or needs attention) and a menu for secondary actions.
+    // Both open bounded overlays that never move the transcript.
+    Row {
+      id: conversationControls
+      objectName: "conversationControls"
+      readonly property bool active: root.selectedSession !== null && !root.browsing && !root.showingPrevious
+      visible: active && (timerControl.shown || timerControl.opened || conversationMenu.items.length > 0)
+      anchors.top: parent.top
+      anchors.topMargin: -4 * root.unit
+      anchors.right: browserButton.visible ? browserButton.left : closeButton.left
+      anchors.rightMargin: (folded ? 2 : 6) * root.unit
+      spacing: 4 * root.unit
+      // Room for these controls beside the title, the Browser button and close.
+      // Natural widths only, so folding never depends on its own result.
+      readonly property real besideClose: body.width - 36 * root.unit
+      readonly property real browserSpace: root.browserAvailable && !root.browsing ? browserButton.implicitWidth + 6 * root.unit : 0
+      readonly property real menuWidth: 28 * root.unit
+      readonly property bool menuWanted: timerControl.historyCount > 0 || chat.readingHistory
+      // Folding happens in two steps so every header control stays clickable
+      // beside the title, Browser and close:
+      // 1. When the timer button and menu do not both fit beside a short title,
+      //    the timer folds into the menu: one button whose symbol shows the
+      //    timer state, with the timers as its first entry.
+      // 2. When that button and Browser still do not fit, Browser joins the
+      //    menu too, with its usual action.
+      //    Folding Browser always folds the timer as well, so the header then
+      //    holds just the menu button and close.
+      readonly property bool timerFolds: active && timerControl.shown
+        && besideClose - browserSpace - 40 * root.unit < timerControl.buttonWidth + 4 * root.unit + menuWidth
+      readonly property real controlsWidth: timerFolds ? menuWidth
+        : (timerControl.shown ? timerControl.buttonWidth : 0) + (timerControl.shown && menuWanted ? 4 * root.unit : 0) + (menuWanted ? menuWidth : 0)
+      readonly property bool browserFolded: active && browserSpace > 0 && controlsWidth > 0
+        && besideClose - browserSpace < controlsWidth + 2 * root.unit
+      readonly property bool folded: timerFolds || (browserFolded && timerControl.shown)
+      // Overlays stay inside the panel: below the header when there is room,
+      // never above the panel's top edge, never below the conversation area.
+      readonly property real overlayCeiling: 4 * root.unit - body.y - y
+      readonly property real overlayFloor: root.height - 4 * root.unit - body.y - y
+      TimerControl {
+        id: timerControl
+        session: conversationControls.active ? root.selectedSession : null
+        online: root.online
+        compact: body.width < 320 * root.unit
+        buttonVisible: !conversationControls.folded
+        // Below the header and any control error, within the conversation area.
+        overlayTop: body.contentTop - conversationControls.y
+        overlayCeiling: conversationControls.overlayCeiling
+        overlayFloor: conversationControls.overlayFloor
+        overlayRightInset: body.width - conversationControls.x - x - width
+        maximumWidth: body.width
+        maximumHeight: Math.max(0, body.height - body.contentTop - 8 * root.unit)
+        background: root.background
+        foreground: root.foreground
+        muted: root.muted
+        accent: root.accent
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        onCancelRequested: (id, timerId) => root.cancelWakeRequested(id, timerId)
+      }
+      ConversationMenu {
+        id: conversationMenu
+        items: {
+          const entries = []
+          if (!conversationControls.active) return entries
+          if (conversationControls.folded) entries.push({id: "open-timers", text: "Timers · " + timerControl.summary})
+          if (conversationControls.browserFolded) entries.push({id: "browser", text: root.browserPinVisible ? "Browser · show the pinned page" : "Browser"})
+          if (timerControl.historyCount > 0) entries.push({id: "timers", text: "Timer history · " + timerControl.historyCount})
+          if (chat.readingHistory) entries.push({id: "refresh", text: "Refresh loaded messages"})
+          return entries
+        }
+        background: root.background
+        foreground: root.foreground
+        muted: root.muted
+        accent: root.accent
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        glyph: !conversationControls.folded ? "⋯" : timerControl.attention.length > 0 ? "!" : "◷"
+        glyphColor: conversationControls.folded && timerControl.attention.length > 0 ? timerControl.warning
+          : conversationControls.folded ? root.accent : root.muted
+        summary: conversationControls.folded ? "Timers: " + timerControl.summary : ""
+        overlayCeiling: conversationControls.overlayCeiling
+        bottomLimit: conversationControls.overlayFloor
+        overlayRightInset: body.width - conversationControls.x - x - width
+        maximumWidth: body.width
+        onTriggered: id => {
+          if (id === "open-timers") timerControl.open()
+          else if (id === "browser") root.openBrowser()
+          else if (id === "timers") timerControl.openHistory()
+          else if (id === "refresh") chat.refreshHistory()
+        }
+      }
     }
 
     Text {
@@ -1173,6 +1272,7 @@ Item {
       anchors.topMargin: root.fullWidget ? body.contentTop : Math.min(body.height, activityStrip.visible ? activityStrip.y + activityStrip.height + 12 * root.unit
         : body.pinBottom)
       session: root.selectedSession
+      background: root.background
       agentActions: root.agentActions
       paused: root.paused
       online: root.online
@@ -1186,7 +1286,6 @@ Item {
       onScreenshotRequested: (source, title) => root.screenshotRequested(source, title)
       openableOrigins: root.openableOrigins
       onOriginRequested: (id, groupId) => root.openOrigin(id, groupId)
-      onCancelWakeRequested: (id, timerId) => root.cancelWakeRequested(id, timerId)
       onStopRequested: id => root.stopSessionRequested(id)
       onDismissRequested: id => root.dismissSessionRequested(id)
       onSendRequested: (id, text) => root.sendSessionRequested(id, text)

@@ -6,10 +6,18 @@
 #include <QRegularExpression>
 #include <QScreen>
 #include <QPlatformSurfaceEvent>
+#include <QTimer>
 #include <algorithm>
 #ifdef COMPANION_LAYER_SHELL
 #include <LayerShellQt/Window>
 #endif
+
+namespace {
+// Qt's Wayland backend reports a whole output as available: it cannot see the
+// exclusive zones of panels such as Omarchy's top bar, or the compositor's gaps.
+// A remembered Window size keeps this much room for them before mapping.
+constexpr int compositorPanelAllowance = 64;
+}
 
 WindowHost::WindowHost(QObject *parent, bool testSurfaces) : QObject(parent), testSurfaces(testSurfaces) {
     connect(&layerFocus, &LayerFocus::cleared, this, &WindowHost::focusCleared);
@@ -23,7 +31,7 @@ WindowHost::WindowHost(QObject *parent, bool testSurfaces) : QObject(parent), te
         surface->installEventFilter(this);
         connect(surface, &QWindow::activeChanged, this, &WindowHost::stateChanged);
         connect(surface, &QWindow::visibleChanged, this, &WindowHost::stateChanged);
-        connect(surface, &QWindow::screenChanged, this, [this] { updateSidebar(); });
+        connect(surface, &QWindow::screenChanged, this, &WindowHost::screensChanged);
     }
     connect(&ordinary, &QWindow::widthChanged, this, [this](int value) {
         if (ordinary.isVisible()) settings.setValue("window/width", value);
@@ -33,14 +41,19 @@ WindowHost::WindowHost(QObject *parent, bool testSurfaces) : QObject(parent), te
     });
     sidebarWidth = std::clamp(settings.value("sidebar/width", 600).toInt(), 360, 1600);
     connect(&server, &QLocalServer::newConnection, this, &WindowHost::accept);
-    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this] { updateSidebar(); });
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, &WindowHost::screensChanged);
     for (auto *screen : QGuiApplication::screens()) {
-        connect(screen, &QScreen::geometryChanged, this, [this] { updateSidebar(); });
+        connect(screen, &QScreen::geometryChanged, this, &WindowHost::screensChanged);
     }
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this](QScreen *screen) {
-        connect(screen, &QScreen::geometryChanged, this, [this] { updateSidebar(); });
-        updateSidebar();
+        connect(screen, &QScreen::geometryChanged, this, &WindowHost::screensChanged);
+        screensChanged();
     });
+    // A monitor change reaches Qt before the compositor has moved or re-tiled
+    // the Window. Check its fit once the changes have settled.
+    windowRefit.setSingleShot(true);
+    windowRefit.setInterval(500);
+    connect(&windowRefit, &QTimer::timeout, this, &WindowHost::refitVisibleWindow);
 }
 
 WindowHost::~WindowHost() {
@@ -84,7 +97,8 @@ void WindowHost::attach(QQuickItem *item) {
 }
 
 void WindowHost::show(bool focus) {
-    updateSidebar();
+    if (mode == "window") fitOrdinary();
+    else updateSidebar();
     window()->show();
     if (focus) activate();
 }
@@ -116,18 +130,28 @@ void WindowHost::setPresentation(const QString &value) {
         setError("");
         return;
     }
+    replaceSurface([&] {
+        mode = value;
+        settings.setValue("presentation", mode);
+        updateSidebar();
+        if (body) body->setParentItem(contentItem());
+        emit surfaceChanged();
+        emit placementChanged();
+        setError("");
+    });
+}
+
+void WindowHost::replaceSurface(const std::function<void()> &change) {
+    // Hide the current surface, apply the change, then show the resulting one
+    // with the previous visibility and keyboard focus. The QML body only changes
+    // parent, so drafts, tabs and browser documents stay in place.
     const bool visible = opened();
     const bool focused = active();
     QPointer<QQuickItem> focusItem = window()->activeFocusItem();
     changingSurface = true;
     releaseFocus();
     window()->hide();
-    mode = value;
-    settings.setValue("presentation", mode);
-    updateSidebar();
-    if (body) body->setParentItem(contentItem());
-    emit surfaceChanged();
-    setError("");
+    change();
     if (visible) {
         show(focused);
         if (focusItem) focusItem->forceActiveFocus(Qt::OtherFocusReason);
@@ -136,10 +160,30 @@ void WindowHost::setPresentation(const QString &value) {
     emit stateChanged();
 }
 
-void WindowHost::updateSidebar() {
-    if (mode == "window" || !sidebarAvailable()) return;
-    if (testSurfaces) { sidebar.resize(sidebarWidth, 780); return; }
-#ifdef COMPANION_LAYER_SHELL
+void WindowHost::screensChanged() {
+    updateSidebar();
+    if (mode == "window") windowRefit.start();
+}
+
+void WindowHost::refitVisibleWindow() {
+    // Hyprland keeps a floating window's size when a monitor change moves it,
+    // and a Qt resize of a mapped window would leave the outer window at the
+    // old size. Showing it again lets the compositor place the fitted size.
+    if (mode != "window" || !ordinary.isVisible()) return;
+    // The compositor sizes maximized and full-screen windows to the output.
+    if (ordinary.windowStates() & (Qt::WindowMaximized | Qt::WindowFullScreen)) return;
+    const QScreen *screen = ordinary.screen();
+    if (!screen) return;
+    const QSize bounds = ordinaryBounds(screen);
+    if (ordinary.width() <= bounds.width() && ordinary.height() <= bounds.height()) return;
+    replaceSurface([] {});
+}
+
+QString WindowHost::sidebarScreen() const {
+    return mode != "window" && placedScreen ? placedScreen->name() : QString();
+}
+
+QScreen *WindowHost::preferredSidebarScreen() const {
     // Match Companion's existing sidebar policy: prefer external screens, then
     // the rightmost logical edge, with a stable name tie-break for mirroring.
     const QRegularExpression builtIn("^(eDP|LVDS|DSI)(-|$)", QRegularExpression::CaseInsensitiveOption);
@@ -155,8 +199,41 @@ void WindowHost::updateSidebar() {
             screen = candidate;
         }
     }
+    return screen;
+}
+
+void WindowHost::updateSidebar() {
+    if (mode == "window" || !sidebarAvailable()) return;
+    QScreen *screen = preferredSidebarScreen();
     if (!screen) return;
+    if (sidebar.isVisible() && screen != placedScreen) {
+        // LayerShellQt chooses a layer surface's output only when the surface is
+        // created; later setScreen() calls are ignored. Losing that output also
+        // leaves no mapped surface. Only a new surface reaches the chosen screen.
+        // Wait until Qt has finished moving windows off a removed screen.
+        if (!remapPending) {
+            remapPending = true;
+            QTimer::singleShot(0, this, &WindowHost::remapSidebar);
+        }
+        return;
+    }
     const int width = std::min(sidebarWidth, screen->geometry().width());
+    if (!sidebar.isVisible()) {
+        if (placedScreen != screen) {
+            placedScreen = screen;
+            emit placementChanged();
+        }
+        // An initial size until the compositor configures the new surface.
+        sidebar.resize(width, screen->availableGeometry().height());
+    }
+    if (testSurfaces) {
+        // Ordinary offscreen surfaces stand in for the compositor's configure:
+        // the full height at the right edge of the output chosen at creation.
+        const QRect bounds = placedScreen->availableGeometry();
+        sidebar.setGeometry(bounds.x() + bounds.width() - width, bounds.y(), width, bounds.height());
+        return;
+    }
+#ifdef COMPANION_LAYER_SHELL
     auto *layer = LayerShellQt::Window::get(&sidebar);
     layer->setScreen(screen);
     layer->setScope("companion-panel");
@@ -167,9 +244,46 @@ void WindowHost::updateSidebar() {
     layer->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
     layer->setActivateOnShow(false);
     layer->setCloseOnDismissed(false);
+    // Height 0 lets the compositor fill the space between the anchors, minus
+    // other exclusive zones. Never resize a configured surface from Qt's screen
+    // height: it includes those zones, so the panel would overflow its space.
     layer->setDesiredSize(QSize(width, 0));
-    sidebar.resize(width, screen->availableGeometry().height());
+    // Layer state is double-buffered until the next surface commit. Request a
+    // frame so a changed width or reserved zone applies on an idle panel.
+    if (sidebar.isVisible()) sidebar.update();
 #endif
+}
+
+void WindowHost::remapSidebar() {
+    remapPending = false;
+    if (mode == "window" || !sidebar.isVisible()) return;
+    QScreen *screen = preferredSidebarScreen();
+    if (!screen || screen == placedScreen) return;
+    // The presentation choice is unchanged; only its native surface is replaced.
+    replaceSurface([this] {
+        updateSidebar();
+    });
+}
+
+QSize WindowHost::ordinaryBounds(const QScreen *screen) const {
+    // The largest Window that fits the screen's usable area, as far as Qt can
+    // tell. Used both before mapping and to decide whether a shown Window must
+    // be refitted, so the two never disagree.
+    const QSize available = screen->availableGeometry().size();
+    return QSize(available.width() - compositorPanelAllowance, available.height() - compositorPanelAllowance)
+        .expandedTo(ordinary.minimumSize());
+}
+
+void WindowHost::fitOrdinary() {
+    // Hyprland centres a newly mapped floating window at the size it requests,
+    // so a remembered size larger than the screen leaves the top and bottom
+    // controls offscreen. Fit it only before mapping: once mapped, the
+    // compositor owns the outer geometry and a Qt resize would mismatch it.
+    if (ordinary.isVisible()) return;
+    QScreen *screen = ordinary.screen() ? ordinary.screen() : QGuiApplication::primaryScreen();
+    if (!screen) return;
+    const QSize fitted = ordinary.size().boundedTo(ordinaryBounds(screen));
+    if (fitted != ordinary.size()) ordinary.resize(fitted);
 }
 
 void WindowHost::resizeBy(int delta) {
