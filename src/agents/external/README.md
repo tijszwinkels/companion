@@ -35,13 +35,13 @@ Run the checkout's executable by absolute path from any working directory, after
 `npm ci` in that checkout. Nothing needs installation in PATH or mm-bridge:
 
 ```sh
-/home/user/Work/companion/bin/companion-session info
-/home/user/Work/companion/bin/companion-session list --query review --limit 10
-/home/user/Work/companion/bin/companion-session start --label 'MM Rowan' --text 'Investigate the synthetic test failure'
-/home/user/Work/companion/bin/companion-session send --label 'MM Rowan' --id SESSION_UUID --text 'Please check the result'
-/home/user/Work/companion/bin/companion-session draft --label 'MM Rowan' --id SESSION_UUID --text 'Suggested response for your review'
-/home/user/Work/companion/bin/companion-session close --label 'MM Rowan' --id SESSION_UUID
-/home/user/Work/companion/bin/companion-session reopen --label 'MM Rowan' --id SESSION_UUID
+<checkout>/bin/companion-session info
+<checkout>/bin/companion-session list --query review --limit 10
+<checkout>/bin/companion-session start --label 'MM Rowan' --text 'Investigate the synthetic test failure'
+<checkout>/bin/companion-session send --label 'MM Rowan' --id SESSION_UUID --text 'Please check the result'
+<checkout>/bin/companion-session draft --label 'MM Rowan' --id SESSION_UUID --text 'Suggested response for your review'
+<checkout>/bin/companion-session close --label 'MM Rowan' --id SESSION_UUID
+<checkout>/bin/companion-session reopen --label 'MM Rowan' --id SESSION_UUID
 ```
 
 Use this feature branch's absolute executable path before merge, against an

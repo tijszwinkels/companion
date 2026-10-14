@@ -19,7 +19,7 @@
   },
   "medianSpeedup": 6.307863460753256,
   "transcript": "and says, How do I get to Dublin? And the answer that comes back is",
-  "modelDir": "/home/user/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8",
+  "modelDir": "$HOME/.local/share/voxtype/models/parakeet-tdt-0.6b-v3-int8",
   "modelFiles": {
     ".voxtype-manifest.json": "a7c13fd4daa098ff5d1cb8281327e441ba43bbbd8569ec66a279bf8de77da899",
     "config.json": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",

@@ -114,8 +114,8 @@ before changing an existing installation.
    listener: the socket, Funnel and login checks above apply to the gateway
    origin only.
 
-See [the supervised tailnet trial](../../docs/mobile-tailnet-trial.md) for the
-locally audited Serve setup, exact origin policy, validation and rollback gates.
+See [supervised phone access](../../docs/mobile-startup.md) for the Serve setup,
+origin, validation and rollback steps.
 The gateway never uses `Forwarded`, `X-Forwarded-*` or Tailscale identity headers
 as authentication. Over TCP it never uses them to replace the request's actual
 Host/Origin. The one exception is the Unix socket (`--listen unix:`): tailscaled

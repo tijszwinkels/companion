@@ -17,20 +17,21 @@ prerequisites and `companion.config.json`).
 
 ## Find the right directory
 
-On Tijs's machine:
+Maintainer example layout (paths relative to the maintainer's home directory;
+yours may differ):
 
-| Location                                                         | Purpose                                                              |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `/home/user/Work/companion`                                      | Source checkout; main branch is named `master`.                      |
-| `/home/user/companion/agents`                                    | Pi agents' working directory and shared memory; not the source repo. |
-| `/home/user/companion/agents/memory/software/projects/companion` | Project index, tech-lead instructions, feature/review ledger.        |
-| `/home/user/companion/utterances.sqlite`                         | Live utterance database; use temporary databases for tests.          |
-| `/home/user/companion/widget-library`                            | Live widget source (user library, unversioned scratch space).        |
-| `widget-library/` in a source checkout                           | Tracked example widgets, their tests and the widget guide.           |
+| Location                                                | Purpose                                                              |
+| ------------------------------------------------------- | -------------------------------------------------------------------- |
+| `~/Work/companion`                                      | Source checkout; main branch is named `master`.                      |
+| `~/companion/agents`                                    | Pi agents' working directory and shared memory; not the source repo. |
+| `~/companion/agents/memory/software/projects/companion` | Project index, tech-lead instructions, feature/review ledger.        |
+| `~/companion/utterances.sqlite`                         | Live utterance database; use temporary databases for tests.          |
+| `~/companion/widget-library`                            | Live widget source (user library, unversioned scratch space).        |
+| `widget-library/` in a source checkout                  | Tracked example widgets, their tests and the widget guide.           |
 
 Read the source checkout's `AGENTS.md` and the relevant shared project notes
-before editing. On this machine `AGENTS.md` is intentionally Git-ignored, so a
-worktree must read `/home/user/Work/companion/AGENTS.md` explicitly. Preserve
+before editing. In this layout `AGENTS.md` is intentionally Git-ignored, so a
+worktree must read the main checkout's `<checkout>/AGENTS.md` explicitly. Preserve
 uncommitted widget designs, tests and other agents' work. Author live widgets in
 the user library (`--widget-library`/`COMPANION_WIDGET_LIBRARY`, default
 `~/companion/widget-library`); it is not a Git repository. Create worktrees under

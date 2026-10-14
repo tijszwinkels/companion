@@ -33,10 +33,9 @@ revoke path. Those remain explicit trial limits.
 
 The switcher owns the running processes. A Git merge does not restart, redeploy,
 re-pair or change Tailscale. Keep worktrees used by live processes until a later
-coordinated shutdown; preserve the original dirty frontend worktree. The dated
-[localhost](../../docs/mobile-live-trial.md) and
-[tailnet](../../docs/mobile-tailnet-trial.md) plans retain their original setup
-and rollback context; do not replay their activation commands on the active trial.
+coordinated shutdown; preserve the original dirty frontend worktree. For setting
+up supervised phone access over a tailnet, follow
+[phone access](../../docs/mobile-startup.md).
 
 ## Build and author checks
 
@@ -60,9 +59,9 @@ for Tailscale/TLS options) with a listener built from this branch. Doing that wi
 the production listener, pairing a real phone or exposing it on the tailnet is a
 separate, explicitly approved step.
 
-The live-session trial is separate from this synthetic fixture. See the status
-above and [the trial record](../../docs/mobile-live-trial.md) for its activation,
-pairing, cleanup and validation limits.
+Use with live sessions is separate from this synthetic fixture. See
+[phone access](../../docs/mobile-startup.md) for its activation, pairing, cleanup
+and validation limits.
 
 ## Structure
 
@@ -139,9 +138,6 @@ An application heartbeat also detects silently dead OPEN sockets within about
 35 seconds while browser timers run, including a final five-second probe. New
 mutations are refused while that probe waits for a reply. Background timer suspension is recovered
 on foregrounding; this is not a promise of background connectivity on iOS.
-
-For the initial audit and review history, see
-[the finish audit](../../docs/mobile-panel-finish.md).
 
 ## Navigation and accessibility
 

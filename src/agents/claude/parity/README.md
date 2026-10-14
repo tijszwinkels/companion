@@ -23,9 +23,9 @@ Companion never creates or edits it.
 ```json
 {
   "desktop": {
-    "pointerHelper": "/home/user/.pi/agent/extensions/active-window/pointer-click"
+    "pointerHelper": "/home/<user>/.pi/agent/extensions/active-window/pointer-click"
   },
-  "openRig": { "directory": "/home/user/openrig-companion-demo" },
+  "openRig": { "directory": "/home/<user>/openrig-companion-demo" },
   "web": {}
 }
 ```
