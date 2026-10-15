@@ -493,9 +493,18 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
     // Typed input and direct callers pass no commitment and never wait.
     // Waiting before the eligible intents are collected below lets the request
     // reflect intent switches as they are when it is actually sent.
+    //
+    // Resuming after the await takes a microtask, in which a VAD onset (or a
+    // rejected burst that moves the deadline) can still arrive. The loop
+    // therefore re-checks synchronously, and from that check to the detector
+    // call below nothing is awaited: the request starts only while the attempt
+    // is still quiet. Keep it that way when editing the code in between.
     if (commitment && this.dependencies.detector.startsAfterSpeechQuiet) {
       const quietWaitStarted = performance.now();
-      await commitment.speechQuiet(signal);
+      do {
+        await commitment.speechQuiet(signal);
+      } while (!commitment.isSpeechQuiet());
+      signal.throwIfAborted();
 
       const waitedMs = Math.round(performance.now() - quietWaitStarted);
       this.log('quiet', `Classifier request waited ${waitedMs} ms for speech quiet`, frame.id);

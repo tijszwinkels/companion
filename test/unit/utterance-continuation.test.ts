@@ -1792,6 +1792,68 @@ test('Groq: a VAD onset in the same tick as the quiet deadline keeps the request
   assert.equal(setup.outcomes.get(1), 'superseded');
 });
 
+for (const cleanup of [false, true]) {
+  test(`Groq: an onset queued just behind the quiet deadline keeps the request unsent (cleanup ${cleanup ? 'on' : 'off'})`, async () => {
+    const setup = harness({ groq: true, cleanup });
+    const spoke = endpoint(setup, 0.1);
+    await settle();
+    setup.transcriptions[0].answer('Open the');
+    await settle();
+
+    // The quiet timer resolves the wait; the onset arrives in the microtask
+    // right behind it, before the router has resumed. The router re-checks
+    // the attempt synchronously and does not start the request.
+    setup.clock.advanceTo(spoke + 800);
+    queueMicrotask(() => {
+      setup.pipeline.speechResumed();
+    });
+    await settle();
+    assert.equal(setup.requests.length, 0, 'No request after the onset');
+
+    const resumedSpoke = endpoint(setup, 0.2);
+    await settle();
+    setup.transcriptions[1].answer('Open the browser');
+    await advanceTo(setup, resumedSpoke + 800);
+    setup.detections[0].answer(setup.send);
+    await finish(setup);
+
+    assert.deepEqual(
+      setup.requests.map((request) => request.utterance),
+      ['Open the browser'],
+    );
+    assert.equal(setup.dispatched.length, 1);
+    assert.equal(setup.dispatched[0].id, 2);
+    assert.equal(setup.outcomes.get(1), 'superseded');
+  });
+}
+
+test('Groq: a burst rejected just behind the quiet deadline delays the request to its new floor', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  // A zero-silence rejected tail in the microtask after the deadline: the
+  // floor now counts from +800, so the request starts at +1600.
+  setup.clock.advanceTo(spoke + 800);
+  queueMicrotask(() => {
+    setup.pipeline.speechResumed();
+    setup.pipeline.speechDiscarded(0);
+  });
+  await settle();
+  assert.equal(setup.requests.length, 0, 'Not sent against the old deadline');
+
+  await advanceTo(setup, spoke + 1599);
+  assert.equal(setup.requests.length, 0);
+  await advanceTo(setup, spoke + 1600);
+  assert.deepEqual(setup.requests, [{ startedAt: spoke + 1600, utterance: 'Open the browser' }]);
+
+  setup.detections[0].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+});
+
 test('Groq: a rejected burst near the boundary restarts the quiet period from the burst', async () => {
   const setup = harness({ groq: true });
   const spoke = endpoint(setup, 0.1);

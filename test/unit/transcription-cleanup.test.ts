@@ -592,6 +592,9 @@ test('switch on: a superseded provisional attempt gets no cleanup record and no 
     async speechQuiet() {
       throw new UtteranceSupersededError();
     },
+    isSpeechQuiet() {
+      return false;
+    },
   };
 
   const inferred = cleanupRouter(

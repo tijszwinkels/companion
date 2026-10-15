@@ -47,7 +47,8 @@ to 60 seconds for single and combined utterances.
    (the first frame at probability ≥ 0.65), `SensorPipeline.speechResumed()`
    _holds_ the newest job if it is an uncommitted speech attempt. A hold stops
    nothing: ASR and inference continue, but the attempt cannot pass its
-   commitment point.
+   commitment point. (With the `groq` profile, a classifier request that has
+   not started yet stays unsent while the hold is open.)
 3. **The candidate resolves.**
    - _Rejected_ (fewer than 128 ms voiced): `speechDiscarded()` releases the
      hold. The attempt continues with its own result; nothing is lost or
@@ -87,7 +88,9 @@ hosted, metered service and is often replaced when the user keeps talking.
 
 - **Same anchor and checks as commitment.** The router awaits
   `ProvisionalAttempt.speechQuiet` before it collects the intents for the
-  request. It uses the inference deadline (latest speech end, moved later by a
+  request, then re-checks `isSpeechQuiet()` synchronously (an onset can arrive
+  in the microtask before the router resumes) and calls the detector without
+  awaiting anything in between. It uses the inference deadline (latest speech end, moved later by a
   rejected burst; a continuation has its own) and waits while a hold is open.
   It commits nothing. A continuation that replaces the attempt during the wait
   rejects it, so a replaced attempt never sends a request. Pause and shutdown
