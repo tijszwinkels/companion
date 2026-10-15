@@ -15,6 +15,7 @@ import { interpretInferredResponse } from './transcription-cleanup/response.ts';
 import {
   DEFAULT_LLM_REQUEST_PROFILE,
   reasoningOffSettings,
+  waitsForSpeechQuiet,
   type LlmRequestProfile,
 } from './llm-request-profile.ts';
 
@@ -126,6 +127,9 @@ export class IntentDetector implements Detector {
   readonly label = 'Intent detector';
   readonly dependencies = {};
 
+  /** True for the Groq profile; see `waitsForSpeechQuiet` and the router. */
+  readonly startsAfterSpeechQuiet: boolean;
+
   /** Bare-name requests: unchanged when transcription cleanup is off. */
   private readonly model: Model<'openai-completions'>;
   /** json-cleanup-v1 requests: the same model with the larger output budget. */
@@ -140,6 +144,9 @@ export class IntentDetector implements Detector {
   ) {
     this.model = localModel(config, MAX_OUTPUT_TOKENS);
     this.cleanupModel = localModel(config, CLEANUP_OUTPUT_TOKENS);
+    this.startsAfterSpeechQuiet = waitsForSpeechQuiet(
+      config.requestProfile ?? DEFAULT_LLM_REQUEST_PROFILE,
+    );
 
     // An injected stream makes transport tests possible without a live model.
     // Production uses the configured endpoint and does not retry failed frames.

@@ -41,6 +41,14 @@ export interface Detector extends InspectableModule {
     intents: readonly Intent[],
     signal: AbortSignal,
   ): Promise<CleanupDetection>;
+
+  /**
+   * True when a provisional speech attempt must not start this detector's
+   * request (bare-name or inferred cleanup) until SPEECH_QUIET_MS have passed
+   * since the latest speech: the Groq request profile. Absent or false, the
+   * request starts as soon as the transcript is ready, as before.
+   */
+  readonly startsAfterSpeechQuiet?: boolean;
 }
 
 /** Result of cleaning an explicit shortcut's text. The route is never part of it. */
@@ -473,6 +481,24 @@ export class UserSensorRouter extends EventEmitter implements InspectableModule 
       this.activity.intentRecognized?.(frame.id, exact.name);
       await exact.process(frame, signal);
       return exact.name;
+    }
+
+    // Groq profile only: a provisional speech attempt sends its classifier
+    // request once the user has been quiet for 800 ms since the latest speech
+    // (the inference commitment floor), not at the 224 ms provisional
+    // endpoint. The transcript is already ready here, so the request starts at
+    // max(speech end + 800 ms, transcript ready); a slow ASR adds no extra wait.
+    // Resumed speech during the wait holds it, and a continuation rejects it
+    // with UtteranceSupersededError, so a replaced attempt never sends anything.
+    // Typed input and direct callers pass no commitment and never wait.
+    // Waiting before the eligible intents are collected below lets the request
+    // reflect intent switches as they are when it is actually sent.
+    if (commitment && this.dependencies.detector.startsAfterSpeechQuiet) {
+      const quietWaitStarted = performance.now();
+      await commitment.speechQuiet(signal);
+
+      const waitedMs = Math.round(performance.now() - quietWaitStarted);
+      this.log('quiet', `Classifier request waited ${waitedMs} ms for speech quiet`, frame.id);
     }
 
     // Keep the prompt's choices and the dispatch targets consistent, even if a

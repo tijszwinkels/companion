@@ -711,8 +711,10 @@ and each transcription (including recovery startup), default 90 seconds.
 `COMPANION_LLM_API_KEY` supplies endpoint authentication. Classifier requests
 always switch model reasoning off; `llm.requestProfile` says how the endpoint
 expects that: `local-qwen` (default, a local vLLM/Qwen server), `groq` or
-`openrouter`. A hosted profile sends every classified utterance's transcript,
-screenshot and window details to that provider; see
+`openrouter`. With `groq`, a spoken request is sent only after 800 ms of
+quiet, so short pauses send fewer requests that are then replaced; spoken
+actions can take up to about 0.6 s longer. A hosted profile sends every
+classified utterance's transcript, screenshot and window details to that provider; see
 [installation step 4](installation.md#4-set-up-an-image-capable-intent-and-agent-endpoint).
 
 ### Local external coding agents

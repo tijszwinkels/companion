@@ -30,6 +30,11 @@ export { LEGACY_ENDPOINT_MS };
  * Once `commit` returns, the attempt can no longer be held or superseded, so
  * later speech is a new request and no side effect is ever undone or replayed.
  *
+ * For the Groq request profile only, the router also waits for the inference
+ * floor before it starts the classifier request (`speechQuiet`), so a short
+ * pause does not send a hosted request that resumed speech would replace.
+ * That wait commits nothing; the attempt remains continuable during inference.
+ *
  * Timing: all deadlines use one monotonic clock (performance.now() in
  * production). The speech end is derived from the silence the segmenter
  * actually measured, never assumed: see `AttemptTiming.trailingSilenceMs`.
@@ -129,6 +134,16 @@ export interface DispatchCommitment {
    * decision without first awaiting anything else.
    */
   commit(route: CommitRoute, signal: AbortSignal): Promise<void>;
+
+  /**
+   * Resolve once an inference decision could commit (no hold is open and
+   * SPEECH_QUIET_MS have passed since the latest speech), without committing.
+   * Rejects like `commit`. The router awaits this before starting a classifier
+   * request that should not be sent during a short pause (the Groq profile;
+   * see `Detector.startsAfterSpeechQuiet`). The attempt stays continuable, so
+   * speech that resumes during the request still holds or replaces it.
+   */
+  speechQuiet(signal: AbortSignal): Promise<void>;
 }
 
 /** Abort reason for an attempt replaced by a combined, retranscribed utterance. */
@@ -265,7 +280,31 @@ export class ProvisionalAttempt implements DispatchCommitment {
     return true;
   }
 
-  async commit(route: CommitRoute, signal: AbortSignal): Promise<void> {
+  commit(route: CommitRoute, signal: AbortSignal): Promise<void> {
+    return this.waitUntilDue(route, signal, true);
+  }
+
+  /**
+   * The same wait as an inference commitment, using the same anchor: the
+   * latest VAD-detected speech end, moved later by a rejected burst. A
+   * continuation is a new attempt with its own anchor. Nothing is marked
+   * committed, so the later `commit('inference')` still re-examines hold and
+   * supersession; if no speech resumed meanwhile, it passes without waiting.
+   */
+  speechQuiet(signal: AbortSignal): Promise<void> {
+    return this.waitUntilDue('inference', signal, false);
+  }
+
+  /**
+   * Wait until `route` is due: not held, not superseded and past its deadline.
+   * With `commitWhenDue`, mark the attempt committed in the same synchronous
+   * step as the final checks.
+   */
+  private async waitUntilDue(
+    route: CommitRoute,
+    signal: AbortSignal,
+    commitWhenDue: boolean,
+  ): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
       this.supersession.signal.throwIfAborted();
@@ -286,7 +325,9 @@ export class ProvisionalAttempt implements DispatchCommitment {
       }
 
       // No await since the checks above: resumed speech cannot slip in between.
-      this.isCommitted = true;
+      if (commitWhenDue) {
+        this.isCommitted = true;
+      }
       return;
     }
   }

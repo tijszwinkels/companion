@@ -589,6 +589,9 @@ test('switch on: a superseded provisional attempt gets no cleanup record and no 
     async commit() {
       throw new UtteranceSupersededError();
     },
+    async speechQuiet() {
+      throw new UtteranceSupersededError();
+    },
   };
 
   const inferred = cleanupRouter(

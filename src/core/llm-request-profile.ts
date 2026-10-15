@@ -40,6 +40,27 @@ export function isLlmRequestProfile(value: unknown): value is LlmRequestProfile 
   return LLM_REQUEST_PROFILES.some((profile) => profile === value);
 }
 
+/**
+ * Whether a spoken utterance's classifier request (bare-name or inferred
+ * cleanup) waits until the user has been quiet for SPEECH_QUIET_MS (800 ms)
+ * since the latest detected speech before it is sent.
+ *
+ * Tijs (2026-10-15): Groq only. Every other profile starts the request as soon
+ * as the provisional transcript is ready, as before. A Groq request sent at the
+ * 224 ms provisional endpoint is often discarded when the user keeps talking,
+ * and each one goes to a hosted, metered service. Waiting until the same 800 ms
+ * floor that commitment already uses means a short pause no longer sends a
+ * request that will be replaced. ASR still starts at the provisional endpoint,
+ * and the wait overlaps it, so a slow transcript adds nothing on top.
+ *
+ * This is a property of where the requests go, not a tunable setting. Typed
+ * input, shortcuts and the explicit-shortcut cleanup call (which already runs
+ * after commitment) are not affected.
+ */
+export function waitsForSpeechQuiet(profile: LlmRequestProfile): boolean {
+  return profile === 'groq';
+}
+
 /** The parts of a Pi model description that differ between profiles. */
 export interface ReasoningOffSettings {
   compat: OpenAICompletionsCompat;
