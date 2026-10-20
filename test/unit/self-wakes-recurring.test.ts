@@ -311,6 +311,49 @@ test('repeated terminal transitions and stale snapshots never create a second su
   assert.equal(live(f, seriesId).length, 1);
 });
 
+test('a failed successor write rolls back the outcome; restart then creates exactly one successor', async (t) => {
+  const f = await fixture(t);
+  const seriesId = String(f.scheduler.schedule(f.caller, repeating).seriesId);
+  f.advance(minute);
+  await f.scheduler.tick();
+  const claim = f.dispatched[0];
+  f.scheduler.transitionAttempt(claim, 'started');
+
+  // The disk refuses the successor row inside the terminal transaction.
+  const put = f.store.put.bind(f.store);
+  f.store.put = (record) => {
+    if (record.recurrence?.occurrence === 2) {
+      throw Error('Synthetic disk failure');
+    }
+    put(record);
+  };
+  assert.throws(() => f.scheduler.transitionAttempt(claim, 'completed'), /disk failure/);
+  f.store.put = put;
+  assert.equal(f.store.get(claim.id)!.state, 'started', 'the completion rolled back with it');
+  assert.equal(series(f, seriesId).length, 1);
+
+  await f.restart();
+  assert.deepEqual(
+    series(f, seriesId).map((record) => record.state),
+    ['delivery-uncertain', 'scheduled'],
+  );
+});
+
+test('cancellation intent recorded during a run survives restart; no successor', async (t) => {
+  const f = await fixture(t);
+  const seriesId = String(f.scheduler.schedule(f.caller, repeating).seriesId);
+  f.advance(minute);
+  await f.scheduler.tick();
+  f.scheduler.transitionAttempt(f.dispatched[0], 'started');
+  assert.equal(f.scheduler.cancel(f.caller.owner, seriesId).outcome, 'dispatch-started');
+
+  await f.restart();
+  const history = series(f, seriesId);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].state, 'delivery-uncertain');
+  assert.match(history[0].reason, /series ended \(cancelled during this run\)/);
+});
+
 test('cancel by series ID, current occurrence, earlier occurrence and after dispatch', async (t) => {
   const f = await fixture(t);
 
@@ -731,6 +774,33 @@ test('session: a closed owner is never restored; after restart the series skips 
   await f.sessions.idle();
   assert.equal(f.runs.filter(isWake).length, 1);
   assert.equal(f.runs.filter(isWake)[0].id, owner);
+});
+
+test('session: reopening after two skipped slots shows the next occurrence last', async (t) => {
+  const f = await integration(t);
+  const { owner } = await startSeries(f);
+
+  // Restart, then leave the tab closed for two due slots.
+  await f.restart();
+  for (let skipped = 0; skipped < 2; skipped++) {
+    const due = f.sessions.wakes.list(owner)[0];
+    f.advance(due.dueAt - f.now());
+    await f.sessions.wakes.tick();
+  }
+  assert.equal(f.runs.filter(isWake).length, 0);
+
+  await f.sessions.reopen(owner);
+  const view = f.sessions.snapshot().find((session) => session.id === owner)!;
+  const notices = view.messages.filter((message) => message.id.startsWith('wake:'));
+  assert.deepEqual(
+    notices.map((notice) =>
+      notice.text
+        .match(/ · (\w+) · .* occurrence (\d)/)!
+        .slice(1)
+        .join(' '),
+    ),
+    ['expired 1', 'expired 2', 'scheduled 3'],
+  );
 });
 
 test('session: Stop, tab close and agent self-close end the series', async (t) => {

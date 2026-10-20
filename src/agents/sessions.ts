@@ -1965,7 +1965,11 @@ export class AgentSessions implements InspectableModule {
             );
       }
       const wakes = this.wakes.list(id, 20);
-      const notices = wakes.map((wake) => this.wakeNotice(wake));
+      // The list puts active timers first. Missing notices are appended oldest
+      // first instead, so a series' newest occurrence (its next due time) ends
+      // up last, as it would have while the tab was open.
+      const chronological = [...wakes].sort((first, second) => first.createdAt - second.createdAt);
+      const notices = chronological.map((wake) => this.wakeNotice(wake));
       if (this.wakeWarningText) {
         notices.push(chatMessage('wake-service-warning', 'notice', this.wakeWarningText));
       }
