@@ -134,3 +134,9 @@ Gateway and phone history fixtures schedule/cancel real leased synthetic timers
 while exercising old-page URL sanitization, canonical pins and draft retention;
 remote timer writes remain refused. These fixtures use no production transcripts,
 providers, capture devices or installed clients.
+
+The offscreen panel suite (`tst_self_wakes.qml`) checks repeating timers' interval,
+occurrence and next-run labels, the earliest successor while starting/running,
+skipped slots and the one-minute scheduling margin, cancellation intent, and
+unchanged one-shot labels. Running estimates may advance until the occurrence
+finishes; no successor is created by opening or viewing the overlay.

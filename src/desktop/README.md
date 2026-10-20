@@ -1278,8 +1278,12 @@ authentication belong to the separate gateway process.
 Conversation snapshots/updates optionally carry `wakes`: bounded timer summaries
 with ID, label, due/expiry, state, last transition, cancellation intent and linked
 turn ID. An occurrence of a repeating timer also carries `recurrence`
-(`seriesId`, `everySeconds`, `anchorAt`, `slot`, `occurrence`); the panel does
-not show it yet, but the transcript notice does. These are projections from the dedicated timer store, never restored
+(`seriesId`, `everySeconds`, `anchorAt`, `slot`, `occurrence`). The panel and
+transcript notice show its interval and occurrence. Pending repeating timers
+label their due time as the next run; running ones show the earliest next run
+if they finish before that slot (updated while the overlay is open), or that
+cancellation ends the series after this run. Finished entries retain the interval
+and occurrence without promising another run. These are projections from the dedicated timer store, never restored
 as executable transcript messages. The shared panel shows a clock/count on tabs.
 The conversation header shows a compact clock with the pending (scheduled/waiting)
 count, "Running" when only dispatching/started timers remain, or Attention with
