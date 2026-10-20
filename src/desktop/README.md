@@ -1277,7 +1277,9 @@ authentication belong to the separate gateway process.
 
 Conversation snapshots/updates optionally carry `wakes`: bounded timer summaries
 with ID, label, due/expiry, state, last transition, cancellation intent and linked
-turn ID. These are projections from the dedicated timer store, never restored
+turn ID. An occurrence of a repeating timer also carries `recurrence`
+(`seriesId`, `everySeconds`, `anchorAt`, `slot`, `occurrence`); the panel does
+not show it yet, but the transcript notice does. These are projections from the dedicated timer store, never restored
 as executable transcript messages. The shared panel shows a clock/count on tabs.
 The conversation header shows a compact clock with the pending (scheduled/waiting)
 count, "Running" when only dispatching/started timers remain, or Attention with

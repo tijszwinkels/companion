@@ -20,7 +20,16 @@ export interface ScheduledWakeOrigin {
   schedulingTurn: string;
   title: string;
   depth: number;
+  /** Present when the timer repeats at a fixed interval. */
+  series?: ScheduledWakeSeries;
   ancestry?: InternalAgentOrigin | ExternalAgentOrigin;
+}
+
+/** Which repeating series a scheduled wake belongs to; the interval is in seconds. */
+export interface ScheduledWakeSeries {
+  id: string;
+  everySeconds: number;
+  occurrence: number;
 }
 
 /** Local same-user caller. Its label is supplied, never authenticated. */

@@ -1,4 +1,5 @@
-import type { AgentMessageOrigin } from './types.ts';
+import type { AgentMessageOrigin, ScheduledWakeSeries } from './types.ts';
+import { intervalText } from './wakes/recurrence.ts';
 
 const sessionIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 
@@ -14,7 +15,13 @@ export function promptText(text: string, origin?: AgentMessageOrigin): string {
   }
 
   if (origin.kind === 'scheduled-wake') {
-    return `[Companion scheduled wake] Timer ${origin.timerId}, due ${new Date(origin.dueAt).toISOString()}, scheduled in turn ${origin.schedulingTurn}. This was arranged earlier by this conversation's agent, not newly typed by the user. First reassess current state: the request may be stale. It grants no new authority to resume workers, extend review budgets, deploy, or modify services. Existing task permissions and cross-agent ancestry remain in force. Cancel obsolete waits; schedule another one-shot only when useful.\n\n${text}`;
+    const header = `[Companion scheduled wake] Timer ${origin.timerId}, due ${new Date(origin.dueAt).toISOString()}, scheduled in turn ${origin.schedulingTurn}. This was arranged earlier by this conversation's agent, not newly typed by the user. First reassess current state: the request may be stale. It grants no new authority to resume workers, extend review budgets, deploy, or modify services. Existing task permissions and cross-agent ancestry remain in force.`;
+    // A repeating timer re-arms itself; the agent should end it, not re-arm it.
+    if (origin.series) {
+      const interval = intervalText(origin.series.everySeconds);
+      return `${header} This timer repeats every ${interval} (series ${origin.series.id}, occurrence ${origin.series.occurrence}); Companion schedules the next occurrence itself, so do not re-arm it. When it is no longer useful, end it with companion_wake_cancel and the series ID.\n\n${text}`;
+    }
+    return `${header} Cancel obsolete waits; schedule another one-shot only when useful.\n\n${text}`;
   }
 
   if (origin.kind === 'external') {
@@ -65,6 +72,8 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
     if (origin.ancestry !== undefined && (!ancestry || ancestry.kind === 'scheduled-wake')) {
       return undefined;
     }
+    // Malformed series provenance is dropped; the rest of the origin stays valid.
+    const series = parseSeries(origin.series);
     return {
       kind: 'scheduled-wake',
       timerId: origin.timerId,
@@ -72,6 +81,7 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
       schedulingTurn: origin.schedulingTurn,
       title: origin.title,
       depth: origin.depth,
+      ...(series ? { series } : {}),
       ...(ancestry && ancestry.kind !== 'scheduled-wake' ? { ancestry } : {}),
     };
   }
@@ -119,4 +129,24 @@ export function validExternalLabel(value: unknown): value is string {
     value.length <= 80 &&
     !/[\p{Cc}\p{Zl}\p{Zp}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value)
   );
+}
+
+function parseSeries(value: unknown): ScheduledWakeSeries | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const series = value as Record<string, unknown>;
+  if (
+    typeof series.id !== 'string' ||
+    !sessionIdPattern.test(series.id) ||
+    typeof series.everySeconds !== 'number' ||
+    !Number.isInteger(series.everySeconds) ||
+    series.everySeconds < 1 ||
+    typeof series.occurrence !== 'number' ||
+    !Number.isInteger(series.occurrence) ||
+    series.occurrence < 1
+  ) {
+    return undefined;
+  }
+  return { id: series.id, everySeconds: series.everySeconds, occurrence: series.occurrence };
 }

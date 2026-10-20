@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { WakeStore } from './wakes/store.ts';
 import { WakeScheduler } from './wakes/scheduler.ts';
 import { unstarted, type WakeRecord, type WakeSchedule, type WakeSummary } from './wakes/types.ts';
+import { describeRecurrence } from './wakes/recurrence.ts';
 
 import { WidgetService } from '../widgets/service.ts';
 import { bundledLibraryDirectory } from '../widgets/library-path.ts';
@@ -316,7 +317,7 @@ export class AgentSessions implements InspectableModule {
         if (deleted) {
           this.wakes.deleteOwner(owner);
         } else {
-          this.wakes.blockOwner(owner, 'Saved owner is malformed or unavailable');
+          this.wakes.blockUnavailableOwner(owner, 'Saved owner is malformed or unavailable');
         }
       }
     }
@@ -396,10 +397,13 @@ export class AgentSessions implements InspectableModule {
   }
 
   private wakeNotice(record: WakeSummary): AgentMessage {
+    // A repeating occurrence also shows its interval, occurrence and series.
+    // Each occurrence has its own notice, so the newest one shows the next due time.
+    const recurrence = record.recurrence ? ` · ${describeRecurrence(record.recurrence)}` : '';
     return chatMessage(
       `wake:${record.id}`,
       'notice',
-      `Timer ${record.label} · ${record.state} · ${new Date(record.dueAt).toISOString()} · ${record.id} · scheduled in ${record.schedulingTurn}${record.turnId ? ` · turn ${record.turnId}` : ''}${record.reason ? ` · ${record.reason}` : ''}`,
+      `Timer ${record.label} · ${record.state} · ${new Date(record.dueAt).toISOString()} · ${record.id}${recurrence} · scheduled in ${record.schedulingTurn}${record.turnId ? ` · turn ${record.turnId}` : ''}${record.reason ? ` · ${record.reason}` : ''}`,
     );
   }
 
@@ -425,6 +429,12 @@ export class AgentSessions implements InspectableModule {
       return 'waiting';
     }
     let session = this.sessions.get(record.owner);
+    // A repeating timer runs only in an open tab. It never restores a closed
+    // or archived conversation, so nothing runs in the background unseen;
+    // this occurrence is skipped and its series moves on to the next slot.
+    if (!session && record.recurrence) {
+      return 'not-open';
+    }
     if (!session) {
       if (!this.previous.has(record.owner)) {
         return 'Owner conversation is deleted or its archive is missing';
@@ -553,6 +563,15 @@ export class AgentSessions implements InspectableModule {
       schedulingTurn: record.schedulingTurn,
       title: record.label,
       depth: record.depth,
+      ...(record.recurrence
+        ? {
+            series: {
+              id: record.recurrence.seriesId,
+              everySeconds: record.recurrence.everySeconds,
+              occurrence: record.recurrence.occurrence,
+            },
+          }
+        : {}),
       ...(ancestry ? { ancestry } : {}),
     };
     const message = { ...chatMessage(`wake-turn:${record.id}`, 'user', record.message), origin };

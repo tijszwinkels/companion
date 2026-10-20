@@ -196,7 +196,8 @@ export function sessionTools(
       name: 'companion_wake_schedule',
       label: 'Schedule self wake',
       description:
-        'Durably schedule one future turn in this conversation. Exactly one of afterSeconds or at (RFC3339 with offset). Delay 60 seconds–30 days. Default overdue grace one hour, maximum 24 hours. key replaces only an unstarted occurrence. A scheduled receipt means accepted, not completed. Stop and explicit close cancel pending timers. No new authority or review budget; reassess stale context before acting. You may schedule successive one-shots without a rearm-count limit; cancel obsolete waits and avoid pointless checks.',
+        'Durably schedule one future turn in this conversation. Exactly one of afterSeconds or at (RFC3339 with offset). Delay 60 seconds–30 days. Default overdue grace one hour, maximum 24 hours. key replaces only an unstarted occurrence. A scheduled receipt means accepted, not completed. Stop and explicit close cancel pending timers. No new authority or review budget; reassess stale context before acting. You may schedule successive one-shots without a rearm-count limit; cancel obsolete waits and avoid pointless checks. ' +
+        'Optional everySeconds (whole seconds, 2700–2592000, i.e. 45 minutes–30 days) repeats the turn at that fixed interval from the first due time, with no end date: Companion schedules each next occurrence itself, so do not re-arm it. Missed slots are skipped, never caught up, and a failed or skipped occurrence is not retried; the series continues. A repeating timer runs only while this conversation is an open tab; closing the tab, Stop, cancelling its seriesId or a new timer with the same key ends it. Its grace must be shorter than the interval (default one hour or half the interval, whichever is shorter). The receipt adds seriesId.',
       parameters: Type.Object({
         afterSeconds: Type.Optional(Type.Number({ minimum: 60, maximum: 2592000 })),
         at: Type.Optional(Type.String()),
@@ -204,6 +205,7 @@ export function sessionTools(
         label: Type.String({ minLength: 1, maxLength: 120 }),
         key: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
         expiresAfterSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 86400 })),
+        everySeconds: Type.Optional(Type.Integer({ minimum: 2700, maximum: 2592000 })),
       }),
       method: 'wake-schedule',
       requires: 'self-wakes' as SessionToolCapability,
@@ -212,7 +214,8 @@ export function sessionTools(
       name: 'companion_wake_cancel',
       label: 'Cancel self wake',
       description:
-        'Cancel your own timer by stable ID, including while due and waiting. cancelled guarantees no subsequent dispatch for that occurrence. dispatch-started means cancellation came too late; it does not stop the current turn. Cancelling an old ID never cancels its replacement.',
+        'Cancel your own timer by stable ID, including while due and waiting. cancelled guarantees no subsequent dispatch for that occurrence. dispatch-started means cancellation came too late; it does not stop the current turn. Cancelling an old ID never cancels its replacement. ' +
+        'For a repeating timer, pass its seriesId (or its current occurrence ID) to end the whole series; seriesEnded in the reply confirms it. A running occurrence then finishes but nothing follows it. An earlier, finished occurrence ID does not end the series.',
       parameters: Type.Object({ timerId: sessionId }),
       method: 'wake-cancel',
       requires: 'self-wakes' as SessionToolCapability,
@@ -221,7 +224,7 @@ export function sessionTools(
       name: 'companion_wake_list',
       label: 'List self wakes',
       description:
-        'List only this conversation’s active timers, plus up to 50 recent terminal records when recent is supplied.',
+        'List only this conversation’s active timers, plus up to 50 recent terminal records when recent is supplied. A repeating timer’s entries include recurrence (seriesId, everySeconds, occurrence); its active entry’s dueAt is the next due time.',
       parameters: Type.Object({ recent: Type.Optional(Type.Integer({ minimum: 0, maximum: 50 })) }),
       method: 'wake-list',
       requires: 'self-wakes' as SessionToolCapability,

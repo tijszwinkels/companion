@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentHarness, AgentMessageOrigin } from '../types.ts';
+import { withReason } from './recurrence.ts';
 import { WakeStore } from './store.ts';
 import {
+  holdsPendingSlot,
   scheduleDeadline,
   unstarted,
   wakeSummary,
@@ -20,9 +22,19 @@ export interface WakeCaller {
   signal: AbortSignal;
 }
 
+/**
+ * What host preparation found for a due occurrence:
+ * - `ready`: admit it now (admission rechecks all live state);
+ * - `waiting`: try again on a later sweep, until its grace expires;
+ * - `not-open`: a repeating occurrence whose conversation is not an open tab.
+ *   It is skipped (expired) without reopening anything; its series moves on;
+ * - any other text: the reason the occurrence is blocked.
+ */
+export type WakeReadiness = 'ready' | 'waiting' | 'not-open' | string;
+
 /** Host preparation may await disk/model checks; admission must recheck all live state. */
 export interface WakeHost {
-  prepare(record: WakeRecord): Promise<'ready' | 'waiting' | string>;
+  prepare(record: WakeRecord): Promise<WakeReadiness>;
   admit(record: WakeRecord, claim: () => WakeRecord | undefined): boolean;
   changed(record: WakeRecord): void;
   warning(text: string): void;
@@ -95,7 +107,8 @@ export class WakeScheduler {
         return oldReceipt;
       }
       const deadline = scheduleDeadline(input, now);
-      const pending = this.store.all().filter(unstarted);
+      // A running series occurrence keeps its slot for its coming successor.
+      const pending = this.store.all().filter(holdsPendingSlot);
       const replaced =
         input.key === undefined
           ? undefined
@@ -106,17 +119,36 @@ export class WakeScheduler {
       ) {
         throw Error('Pending timer limit reached (3 per conversation, 64 per listener)');
       }
-      if (replaced) {
+      if (replaced && unstarted(replaced)) {
         const record = this.transitionValue(
           replaced,
           'superseded',
           'Replaced by a new occurrence for this purpose',
         );
+        this.store.finish(record, now, true);
+        changed.push(this.store.get(record.id)!);
+      } else if (replaced) {
+        // Only a running series occurrence holds a slot while started. It
+        // finishes its run, but the series ends instead of continuing.
+        const record = this.cancellationIntent(
+          replaced,
+          'Series replaced by a new timer for this purpose; it ends after this run',
+        );
         this.store.put(record);
         changed.push(record);
       }
+      const recurrence =
+        input.everySeconds === undefined
+          ? undefined
+          : {
+              seriesId: randomUUID(),
+              everySeconds: input.everySeconds,
+              anchorAt: deadline.dueAt,
+              slot: 0,
+              occurrence: 1,
+            };
       const record: WakeRecord = {
-        version: 1,
+        version: recurrence ? 2 : 1,
         id: randomUUID(),
         owner: caller.owner,
         receipt: receiptId,
@@ -133,16 +165,22 @@ export class WakeScheduler {
         revision: 1,
         transitionedAt: now,
         reason: '',
+        ...(recurrence ? { recurrence } : {}),
       };
       this.store.put(record);
       changed.push(record);
-      const receipt = {
+      const receipt: Record<string, unknown> = {
         outcome: 'scheduled',
         timerId: record.id,
         dueAt: record.dueAt,
         expiresAt: record.expiresAt,
         state: record.state,
       };
+      if (recurrence) {
+        receipt.seriesId = recurrence.seriesId;
+        receipt.everySeconds = recurrence.everySeconds;
+        receipt.occurrence = recurrence.occurrence;
+      }
       this.store.saveReceipt(receiptId, caller.owner, receipt);
       this.store.prune(caller.owner);
       return receipt;
@@ -154,32 +192,46 @@ export class WakeScheduler {
     return result;
   }
 
+  /**
+   * Cancel by occurrence ID or, for a repeating timer, by its series ID.
+   *
+   * Cancelling a series' current occurrence (or the series ID) ends the
+   * series: an unstarted occurrence is cancelled; a running one finishes its
+   * turn but gets no successor. An earlier, finished occurrence ID reports
+   * that occurrence's outcome and leaves the series running, just as an old
+   * one-shot ID never cancels its replacement.
+   */
   cancel(owner: string, id: string): Record<string, unknown> {
     try {
       this.open();
       const record = this.store.get(id);
-      if (!record || record.owner !== owner) {
+      if (record) {
+        if (record.owner !== owner) {
+          return { outcome: 'unknown-or-not-owned' };
+        }
+        return this.cancelOccurrence(record);
+      }
+
+      // Not an occurrence: try it as one of this owner's series IDs.
+      const series = this.store.series(owner, id);
+      if (!series.length) {
         return { outcome: 'unknown-or-not-owned' };
       }
-      if (unstarted(record)) {
-        this.transition(record, 'cancelled', 'Cancelled explicitly');
-        return { outcome: 'cancelled', timerId: id };
+      const live = series.find(
+        (occurrence) =>
+          unstarted(occurrence) ||
+          occurrence.state === 'dispatching' ||
+          occurrence.state === 'started',
+      );
+      if (live) {
+        return this.cancelOccurrence(live);
       }
-      if (record.state === 'dispatching' || record.state === 'started') {
-        const cancelled = {
-          ...record,
-          cancellationRequested: true,
-          revision: record.revision + 1,
-          transitionedAt: this.now(),
-          reason: 'Cancellation requested after dispatch began',
-        };
-        this.store.put(cancelled);
-        this.publish(cancelled);
-        return { outcome: 'dispatch-started', timerId: id };
-      }
+      const latest = series[series.length - 1];
       return {
-        outcome: record.state === 'cancelled' ? 'already-cancelled' : 'already-finished',
-        timerId: id,
+        outcome: latest.state === 'cancelled' ? 'already-cancelled' : 'already-finished',
+        timerId: latest.id,
+        seriesId: id,
+        seriesEnded: true,
       };
     } catch (error) {
       // These reads/writes are synchronous: latch the fault before a suspended
@@ -189,6 +241,49 @@ export class WakeScheduler {
     }
   }
 
+  private cancelOccurrence(record: WakeRecord): Record<string, unknown> {
+    // One-shot replies keep their original shape; a series adds its state.
+    const seriesFields = (seriesEnded: boolean) =>
+      record.recurrence ? { seriesId: record.recurrence.seriesId, seriesEnded } : {};
+
+    if (unstarted(record)) {
+      this.transition(record, 'cancelled', 'Cancelled explicitly');
+      return { outcome: 'cancelled', timerId: record.id, ...seriesFields(true) };
+    }
+
+    if (record.state === 'dispatching' || record.state === 'started') {
+      const reason = record.recurrence
+        ? 'Cancellation requested after dispatch began; the series ends after this run'
+        : 'Cancellation requested after dispatch began';
+      const cancelled = this.cancellationIntent(record, reason);
+      this.store.put(cancelled);
+      this.publish(cancelled);
+      return { outcome: 'dispatch-started', timerId: record.id, ...seriesFields(true) };
+    }
+
+    const seriesStillLive =
+      record.recurrence !== undefined &&
+      this.store
+        .series(record.owner, record.recurrence.seriesId)
+        .some((occurrence) => holdsPendingSlot(occurrence));
+    return {
+      outcome: record.state === 'cancelled' ? 'already-cancelled' : 'already-finished',
+      timerId: record.id,
+      ...seriesFields(!seriesStillLive),
+    };
+  }
+
+  /** A running occurrence cannot be undone; this records that nothing should follow it. */
+  private cancellationIntent(record: WakeRecord, reason: string): WakeRecord {
+    return {
+      ...record,
+      cancellationRequested: true,
+      revision: record.revision + 1,
+      transitionedAt: this.now(),
+      reason,
+    };
+  }
+
   /** Deleted archives cannot retain instructions in the timer store. */
   deleteOwner(owner: string): void {
     this.open();
@@ -196,36 +291,73 @@ export class WakeScheduler {
     this.host.warning('Deleted conversation timers and instruction text removed.');
   }
 
+  /**
+   * Human Stop, tab close or agent self-close: cancel every unstarted timer and
+   * end every series, including one whose occurrence is running right now.
+   * Returns the number of unstarted timers cancelled.
+   */
   cancelOwner(owner: string, reason: string): number {
-    return this.settleOwner(owner, 'cancelled', reason);
+    return this.settleOwner(owner, 'cancelled', reason, 'end');
   }
 
+  /**
+   * A failed or stopped ordinary turn blocks pending one-shot timers. Series
+   * keep their next occurrence: if the conversation is still in error when it
+   * comes due, that occurrence is blocked and the series moves on.
+   */
   blockOwner(owner: string, reason: string): void {
     if (this.opened) {
-      this.settleOwner(owner, 'blocked', reason);
+      this.settleOwner(owner, 'blocked', reason, 'keep');
     }
   }
 
-  private settleOwner(owner: string, state: 'cancelled' | 'blocked', reason: string): number {
+  /** The owner can never run again (malformed or unavailable): block all and end series. */
+  blockUnavailableOwner(owner: string, reason: string): void {
+    this.settleOwner(owner, 'blocked', reason, 'end');
+  }
+
+  private settleOwner(
+    owner: string,
+    state: 'cancelled' | 'blocked',
+    reason: string,
+    series: 'end' | 'keep',
+  ): number {
     // Revoke admission before persistence, including an already suspended sweep.
     // Failure leaves this listener halted; it cannot silently retry stale work.
     const wasFaulted = this.faulted;
     this.faulted = true;
     try {
       this.open();
+      const now = this.now();
+      let settled = 0;
       const changed = this.store.transaction(() => {
-        return this.store
-          .all()
-          .filter((record) => record.owner === owner && unstarted(record))
-          .map((record) => {
+        const updates: WakeRecord[] = [];
+        for (const record of this.store.all()) {
+          if (record.owner !== owner) {
+            continue;
+          }
+          const running = record.state === 'dispatching' || record.state === 'started';
+          if (unstarted(record) && (!record.recurrence || series === 'end')) {
             const next = this.transitionValue(record, state, reason);
-            this.store.put(next);
-            return next;
-          });
+            this.store.finish(next, now, true);
+            updates.push(this.store.get(next.id)!);
+            settled++;
+          } else if (running && record.recurrence && series === 'end') {
+            if (!record.cancellationRequested) {
+              const next = this.cancellationIntent(
+                record,
+                withReason(reason, 'the series ends after this run'),
+              );
+              this.store.put(next);
+              updates.push(next);
+            }
+          }
+        }
+        return updates;
       });
       this.faulted = wasFaulted;
       changed.forEach((record) => this.publish(record));
-      return changed.length;
+      return settled;
     } catch (error) {
       this.haltAfterFailure();
       throw error;
@@ -248,13 +380,21 @@ export class WakeScheduler {
       return;
     }
     const next = this.transitionValue(current, state, reason);
-    this.store.transaction(() => {
-      this.store.put(next);
-      if (!unstarted(next) && next.state !== 'dispatching' && next.state !== 'started') {
-        this.store.prune(next.owner);
+    const terminal = !unstarted(next) && next.state !== 'dispatching' && next.state !== 'started';
+    const [saved, successor] = this.store.transaction(() => {
+      if (!terminal) {
+        this.store.put(next);
+        return [next, undefined];
       }
+      // A finished series occurrence and its successor commit together.
+      const created = this.store.finish(next, this.now(), false);
+      this.store.prune(next.owner);
+      return [this.store.get(next.id) ?? next, created];
     });
-    this.publish(next);
+    this.publish(saved);
+    if (successor) {
+      this.publish(successor);
+    }
   }
 
   /** The claimed attempt may finish after a cancellation-intent revision. */
@@ -360,6 +500,12 @@ export class WakeScheduler {
       }
       if (this.now() > current.expiresAt) {
         this.transition(current, 'expired', 'Overdue grace elapsed during preparation');
+      } else if (readiness === 'not-open') {
+        this.transition(
+          current,
+          'expired',
+          'Conversation is not an open tab; skipped without reopening it',
+        );
       } else if (readiness !== 'waiting' && readiness !== 'ready') {
         this.transition(current, 'blocked', readiness);
       } else if (readiness === 'ready') {

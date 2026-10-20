@@ -638,8 +638,57 @@ Stop aborts the lease
 and cancels all unstarted timers; explicit close does likewise and reports the
 count. A self-close cancels them immediately and refuses further scheduling
 while the close is pending. Hide and tab selection do not cancel anything.
-Shutdown preserves undispatched timers. An unexpired timer may restore its
-saved owner quietly; it never creates a replacement conversation.
+Shutdown preserves undispatched timers. An unexpired one-shot timer may restore
+its saved owner quietly; it never creates a replacement conversation. A
+repeating timer never restores anything (see below).
+
+### Repeating timers
+
+`companion_wake_schedule` takes an optional `everySeconds`: a fixed interval in
+whole seconds from 2700 (45 minutes) to 2592000 (30 days). The first due time
+comes from `afterSeconds`/`at` as for a one-shot and anchors the series; slot
+`k` is due at anchor + k × interval. There are no calendar, timezone or DST
+rules, no occurrence limit and no end date. Without `everySeconds`, one-shot
+behavior, receipts and stored rows are unchanged. The receipt adds `seriesId`,
+`everySeconds` and `occurrence` (1).
+
+A series is a chain of occurrences that share a `seriesId`; each is stored as
+a version 2 row with `recurrence` (`seriesId`, `everySeconds`, `anchorAt`,
+`slot`, `occurrence`). Companion, not the agent, creates the next occurrence in
+the same SQLite transaction that records the previous one's terminal state:
+completed, failed, blocked, expired or delivery-uncertain, including the
+startup conversion of an interrupted claim. So a series has at most one
+unstarted occurrence, runs never overlap, and a crash can neither lose nor
+duplicate a successor. The successor takes the first slot after its
+predecessor's that is at least 60 seconds away; missed slots are skipped and
+never caught up in a burst. A failed, blocked, skipped or uncertain occurrence
+is recorded and never retried or replayed; the series continues. The successor
+inherits label, instruction, key, harness, ancestry, depth and grace, and
+grants no new authority.
+
+A repeating timer runs only while its conversation is an open tab. An
+occurrence that comes due while the conversation is not open (for example after
+a listener restart, which reopens no tabs) is expired as "not an open tab;
+skipped without reopening it", and the series moves on; it runs again once the
+user reopens the tab. A failed ordinary turn does not block a series ahead of
+time: an occurrence that comes due while the conversation is still in error is
+blocked and the series moves on. Grace must be shorter than the interval; the
+default is one hour or half the interval, whichever is shorter.
+
+A series counts as one pending timer for the three-per-conversation and
+64-per-listener limits for its whole life, including while an occurrence runs.
+These end a series: cancelling its `seriesId` or current occurrence ID, Stop,
+explicit tab close, agent self-close, owner deletion, a new timer with the same
+`key`, and an owner that startup finds malformed or unavailable. A running
+occurrence then finishes its turn but gets no successor; its cancellation intent
+is recorded. Cancel replies for series add `seriesId` and `seriesEnded`. An
+earlier, finished occurrence ID reports that occurrence and leaves the series
+running, just as an old one-shot ID never cancels its replacement. Lists and
+transcript notices show `repeats every <interval> · occurrence <n> · series
+<id>`; each occurrence has its own notice, so the newest notice's due time is
+the next run. The wake prompt for a series names the interval, series and
+occurrence and asks the agent to end the series, not re-arm it. Older listeners
+quarantine version 2 rows instead of running them as one-shots.
 
 Each wake retains task ancestry and cross-agent depth and carries a
 `scheduled-wake` origin. Its prompt identifies earlier agent intent, asks for
