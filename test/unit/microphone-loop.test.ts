@@ -158,7 +158,14 @@ async function settle(): Promise<void> {
   }
 }
 
-function setup(options: { dictation?: boolean; capture?: DictationCapture } = {}) {
+function setup(
+  options: {
+    dictation?: boolean;
+    capture?: DictationCapture;
+    /** Fake time that passes while cancelled pipeline work settles. */
+    idleDurationMs?: number;
+  } = {},
+) {
   const shutdown = new AbortController();
   const pause = new PauseControl();
   const microphone = new Microphone();
@@ -189,6 +196,7 @@ function setup(options: { dictation?: boolean; capture?: DictationCapture } = {}
     listen: microphone.listen,
     idle: async () => {
       idleCalls++;
+      clock.nowMs += options.idleDurationMs ?? 0;
     },
     log: (stage, detail) => logs.push(`${stage} ${detail}`),
     clock,
@@ -302,6 +310,48 @@ test('repeated losses wait longer each time up to the cap, and healthy capture r
   h.shutdown.abort(Error('shutdown'));
   assert.match(String(await h.outcome), /shutdown/);
 });
+
+for (const [capturedMs, drainMs] of [
+  [0, HEALTHY_CAPTURE_MS],
+  [HEALTHY_CAPTURE_MS - 1, 1],
+] as const) {
+  test(`time spent settling a pause is not healthy capture (${capturedMs} ms captured, ${drainMs} ms settling)`, async () => {
+    const h = setup({ idleDurationMs: drainMs });
+
+    // Grow the delay to its cap with recorders that die at once.
+    let delayMs = 0;
+    while (delayMs !== MAX_RETRY_DELAY_MS) {
+      const period = await h.microphone.nextPeriod();
+      const waiting = h.clock.nextSleep();
+      period.fail(lost());
+      const sleep = await waiting;
+      delayMs = sleep.durationMs;
+      sleep.elapse();
+    }
+
+    // A recorder runs just short of healthy, then a pause takes time to settle.
+    let period = await h.microphone.nextPeriod();
+    h.clock.nowMs += capturedMs;
+    h.pause.toggle();
+    await settle();
+    assert.equal(h.idleCalls(), 1);
+
+    const reopened = h.microphone.nextPeriod();
+    h.pause.toggle();
+    period = await reopened;
+
+    const waiting = h.clock.nextSleep();
+    period.fail(lost());
+    assert.equal(
+      (await waiting).durationMs,
+      MAX_RETRY_DELAY_MS,
+      'Neither recorder ran long enough to reset the delay',
+    );
+
+    h.shutdown.abort(Error('shutdown'));
+    assert.match(String(await h.outcome), /shutdown/);
+  });
+}
 
 test('the delay policy on its own: doubling, cap and reset', () => {
   const retry = new CaptureRetryDelay();

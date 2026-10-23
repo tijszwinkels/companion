@@ -210,8 +210,10 @@ new recorder in the same process after 0.5, 1, 2 and 4 seconds, then every 5
 seconds until capture works. A recorder that ran for 10 seconds resets the
 delay. Pause, Record and shutdown end a wait early, and only one recorder runs
 at a time. Flags, configuration, credentials and conversations are untouched.
-Only capture is retried: VAD, ASR and pipeline failures still stop the listener,
-and `--wav` input still ends at EOF with its own errors. A manual recording that
+Only lost capture is retried; any other error escaping the listening loop (for
+example from VAD) still stops the listener, and ASR and pipeline job failures
+keep their existing handling: logged and counted while listening continues.
+`--wav` input still ends at EOF with its own errors. A manual recording that
 loses capture ends with the `microphone` reason, keeps its draft and is not
 restarted. See `src/sensors/audio/microphone-loop.ts` and `capture-retry.ts`.
 

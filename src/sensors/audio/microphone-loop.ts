@@ -16,10 +16,13 @@ import type { VoiceActivityDetector } from './vad.ts';
  * Lost capture. When PipeWire or WirePlumber restarts, the running recorder
  * ends or fails on its own. Ordinary listening then logs the interruption,
  * waits (CaptureRetryDelay: growing, capped, reset after healthy capture) and
- * opens a new recorder in the same process. Only lost capture is retried:
- * VAD, pipeline and other errors still end the listener, as before. The lost
- * period's open speech candidate is resolved by `listen` exactly as for any
- * capture end; accepted utterances continue and are never submitted again.
+ * opens a new recorder in the same process. Only lost capture is retried;
+ * any other error that escapes `listen` (for example from VAD) still ends
+ * the listener, as before. Transcription and other pipeline job failures keep
+ * their existing handling inside SensorPipeline: they are logged and counted,
+ * and listening continues. The lost period's open speech candidate is
+ * resolved by `listen` exactly as for any capture end; accepted utterances
+ * continue and are never submitted again.
  *
  * A manual recording that loses capture ends with the `microphone` reason
  * (see dictation-listener.ts). It is never restarted here: the loop goes back
@@ -100,7 +103,14 @@ export async function listenToMicrophone(options: MicrophoneLoopOptions): Promis
     let lost: CaptureLostError;
 
     try {
-      await options.listen(listeningSignal, handoff);
+      try {
+        await options.listen(listeningSignal, handoff);
+      } finally {
+        // Only the time the recorder ran counts as capture. Measure it now:
+        // waiting below for cancelled work to settle proves nothing about
+        // the microphone and must not reset a grown delay.
+        retryDelay.captureLasted(clock.now() - started);
+      }
 
       if (handoff?.aborted) {
         continue;
@@ -127,8 +137,6 @@ export async function listenToMicrophone(options: MicrophoneLoopOptions): Promis
       }
 
       lost = error;
-    } finally {
-      retryDelay.captureLasted(clock.now() - started);
     }
 
     const delayMs = retryDelay.lost();
