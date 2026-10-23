@@ -204,6 +204,17 @@ input, empty model output, worker errors, and later capture/recording/routing
 failures. See [short-phrase evidence and diagnosis](short-phrase-recognition.md)
 and run `npm run asr:short-phrases` for a local, prerecorded regression.
 
+Lost microphone capture: when `pw-record` ends or fails on its own, for example
+while PipeWire or WirePlumber restarts, ordinary listening logs it and opens a
+new recorder in the same process after 0.5, 1, 2 and 4 seconds, then every 5
+seconds until capture works. A recorder that ran for 10 seconds resets the
+delay. Pause, Record and shutdown end a wait early, and only one recorder runs
+at a time. Flags, configuration, credentials and conversations are untouched.
+Only capture is retried: VAD, ASR and pipeline failures still stop the listener,
+and `--wav` input still ends at EOF with its own errors. A manual recording that
+loses capture ends with the `microphone` reason, keeps its draft and is not
+restarted. See `src/sensors/audio/microphone-loop.ts` and `capture-retry.ts`.
+
 ## Text delivery
 
 Both text processors use the same delivery helper to re-read the active window before invoking

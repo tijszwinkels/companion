@@ -999,7 +999,7 @@ recording the latest state no longer shows also clears it. Reasons:
 | `navigation`               | the owner's `panel-state` shows another conversation, a non-conversation page or a hidden panel | appended to the original conversation                    |
 | `paused`                   | listening becomes paused (manual or media)                                                      | appended                                                 |
 | `overload`                 | 3 chunks wait for ASR                                                                           | appended; the 4th slot is reserved for the final chunk   |
-| `microphone`               | capture or VAD fails                                                                            | audio before the failure is appended; `complete: false`  |
+| `microphone`               | capture or VAD fails, including lost capture (the recorder ended or exited on its own)          | audio before the failure is appended; `complete: false`  |
 | `transcription`            | a chunk's ASR fails                                                                             | earlier text kept; later chunks discarded, never retried |
 | `delivery`                 | an append is `unavailable`/`unconfirmed`/`offline`                                              | later chunks discarded, never resent                     |
 | `disconnected`, `shutdown` | the owner disconnects or the listener stops                                                     | nothing more is delivered                                |

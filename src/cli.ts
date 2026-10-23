@@ -32,6 +32,7 @@ import { ActiveWindowSensor } from './sensors/screen/sensor.ts';
 import { Transcriber } from './sensors/audio/transcriber.ts';
 import type { VoiceActivityDetector } from './sensors/audio/vad.ts';
 import { listen } from './sensors/audio/listener.ts';
+import { listenToMicrophone } from './sensors/audio/microphone-loop.ts';
 import { SensorPipeline } from './core/pipeline.ts';
 import { PauseControl } from './core/pause-control.ts';
 import { DictationController } from './core/dictation/controller.ts';
@@ -430,54 +431,47 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
       values.wav ? `Audio file: ${values.wav}` : 'Desktop control ready · Ctrl+C to stop',
     );
 
-    // One listening period at a time owns the microphone: ordinary listening
-    // while not paused, or a manual recording, which may also run while
-    // ordinary listening is paused. Its accepted chunks keep transcribing
-    // after capture ends, while the microphone returns to ordinary listening.
-    do {
-      if (dictation) {
-        await dictation.waitForMicrophone(controller.signal);
-      } else {
-        await pause.waitUntilResumed(controller.signal);
-      }
-
-      if (dictation?.waitingForMicrophone) {
-        await dictation.record(vad, { device: values.device });
-        continue;
-      }
-
+    if (values.wav) {
+      // A file is listened to once. It ends at EOF, and its failures are not
+      // retried. Pausing cancels the replay, and nothing more is read from it.
+      await pause.waitUntilResumed(controller.signal);
       const listeningSignal = AbortSignal.any([controller.signal, pause.signal]);
-      // Aborted when a recording asks for the microphone. It ends this
-      // period without cancelling utterances that were already accepted.
-      const handoff = dictation?.handoff();
 
       try {
-        await listen(
-          vad,
-          pipeline,
-          log,
-          listeningSignal,
-          {
-            file: values.wav,
-            device: values.device,
-            handoff,
-          },
-          activity,
-        );
-        if (handoff?.aborted) {
-          continue;
-        }
-        break;
+        await listen(vad, pipeline, log, listeningSignal, { file: values.wav }, activity);
       } catch (error) {
         if (!listeningSignal.aborted || controller.signal.aborted) {
           throw error;
         }
 
-        // Pause killed the recorder and pending work. Wait for cancellation to
-        // settle before a new period reuses VAD or accepts more microphone audio.
+        // Pause killed the decoder and pending work. Wait for cancellation to settle.
         await pipeline.idle();
       }
-    } while (!values.wav);
+    } else {
+      // The live microphone: ordinary listening and manual recordings take
+      // turns, and lost capture is recovered in this process. Ends only by
+      // throwing, on shutdown or a failure that is not lost capture.
+      const listeningVad = vad;
+      const sensorPipeline = pipeline;
+      await listenToMicrophone({
+        signal: controller.signal,
+        pause,
+        dictation,
+        vad: listeningVad,
+        device: values.device,
+        listen: (listeningSignal, handoff) =>
+          listen(
+            listeningVad,
+            sensorPipeline,
+            log,
+            listeningSignal,
+            { device: values.device, handoff },
+            activity,
+          ),
+        idle: () => sensorPipeline.idle(),
+        log,
+      });
+    }
 
     await pipeline.idle();
     await agents.idle();
