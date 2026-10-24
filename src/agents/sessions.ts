@@ -45,6 +45,11 @@ import {
   type SessionDirectory,
   type SessionToolSummary,
 } from './session-tools-service.ts';
+import type {
+  AgentPresentationHost,
+  AgentPresentOutcome,
+  AgentPresentRequest,
+} from './session-presentation.ts';
 import {
   chatMessage,
   agentThinkingLevels,
@@ -189,6 +194,8 @@ export class AgentSessions implements InspectableModule {
   private draftHost?: AgentDraftHost;
   // The desktop runtime also owns the native panel's built-in browser.
   private browserHost?: AgentBrowserHost;
+  // ... and the native panel's pop-out conversation windows.
+  private presentationHost?: AgentPresentationHost;
   // Refuses to close a conversation that is being recorded into (manual
   // recording, core/dictation). Returns the reason, or undefined to allow it.
   private closeGuard?: (id: string) => string | undefined;
@@ -266,6 +273,8 @@ export class AgentSessions implements InspectableModule {
       send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
       draft: (request, signal) => this.draftFromAgent(request, signal),
       browserOpen: (request, signal) => this.browserOpenFromAgent(request, signal),
+      presentationAvailable: () => this.presentationHost?.available() === true,
+      present: (request, signal) => this.presentFromAgent(request, signal),
     });
   }
 
@@ -286,6 +295,11 @@ export class AgentSessions implements InspectableModule {
   /** Install (or clear) the route to the native panel's built-in browser. */
   setBrowserHost(host: AgentBrowserHost | undefined): void {
     this.browserHost = host;
+  }
+
+  /** Install (or clear) the route to the native panel's pop-out windows. */
+  setPresentationHost(host: AgentPresentationHost | undefined): void {
+    this.presentationHost = host;
   }
 
   private validateWidgetChanges(records: WidgetRecord[]): () => void {
@@ -2294,6 +2308,30 @@ export class AgentSessions implements InspectableModule {
       return { outcome: 'offline', reason: '' };
     }
     return this.browserHost(request, signal);
+  }
+
+  /**
+   * Forward a conversation's own request to show it in its own window or
+   * return it to the sidebar. The service has already validated the request
+   * and the caller's live turn. This only changes where the conversation is
+   * displayed; its identity, history and queue stay exactly as they are.
+   */
+  private async presentFromAgent(
+    request: AgentPresentRequest,
+    signal: AbortSignal,
+  ): Promise<AgentPresentOutcome> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) {
+      throw this.notOpen(request.sessionId);
+    }
+    if (session.closing || this.closed) {
+      return { outcome: 'unavailable', reason: 'The conversation is closing.' };
+    }
+    signal.throwIfAborted();
+    if (!this.presentationHost) {
+      return { outcome: 'offline', reason: '' };
+    }
+    return this.presentationHost.present(request, signal);
   }
 
   async idle(): Promise<void> {

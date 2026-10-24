@@ -896,6 +896,115 @@ Agent controls remain usable while microphone
 capture is paused or a keyboard delivery is pending. Agent sessions belong to
 the application lifetime, independently of each bounded sensor job.
 
+### Pop-out windows
+
+A native UI can show a real open conversation in its own ordinary desktop
+window ("pop out") and return it to the sidebar. This is a view operation: the
+conversation's ID, agent, history and follow-up queue never change, and no
+conversation is created or cloned. The UI owns its windows; the listener only
+tracks what the UI reports, uses it for voice routing, and forwards agent
+requests. Only desktop connections can take part; remote panels are refused.
+
+A UI that offers windows adds three fields to **every** `panel-state` report,
+on the same single connection:
+
+```json
+{
+  "action": "panel-state",
+  "id": "",
+  "composerFocused": false,
+  "keyboardFocused": false,
+  "visible": true,
+  "draftHost": true,
+  "popoutHost": true,
+  "rail": "compact",
+  "popouts": [{ "id": "question-uuid", "active": true, "composerFocused": false }]
+}
+```
+
+- `popoutHost: true` declares the capability. A report without it (or with
+  `false`) and without `rail`/`popouts` keeps exactly the older single-view
+  semantics; `rail` or `popouts` without the capability is refused. A report
+  that drops the capability forgets that connection's windows.
+- `rail` is the main sidebar layout: `full`, or `compact` (only the session
+  rail is visible).
+- `popouts` lists the connection's **visible** windows, at most 8, each an open
+  conversation, each conversation at most once, with exactly the fields `id`,
+  `active` (it is the focused toplevel) and `composerFocused` (its composer has
+  keyboard focus; requires `active`). At most one window is active.
+- For such a UI, `id`, `composerFocused` and `keyboardFocused` describe only the
+  main sidebar view: `id` is empty while the main body shows no conversation
+  (hidden, Activity/Previous, browser, or the compact rail with a popped
+  selection). `visible` means any native Companion surface is visible.
+
+The whole report is validated before any state changes; a malformed report is
+refused and the previous state stays. Send it on every deliberate selection,
+main visibility, window open/close/activation or composer focus change, and
+after reconnecting; not because transcripts or titles stream.
+
+**Voice target.** At speech end the target conversation is, in order: the
+active window; else the conversation visible in the main sidebar body; else,
+when a connection shows the compact rail and exactly one window, that window
+as a weak candidate; else none. Several unfocused windows are never guessed
+between. Only the chosen view's own focused composer selects the strong
+"input field selected" instruction; an active window whose composer is not
+focused, and the weak candidate, use the ordinary unfocused instruction. The
+prompt text is unchanged. `InteractionContext.agentTargetSource`
+(`popout`/`panel`/`popout-only`) records the path for logs and tests; it is not
+sent to the model. Any semantic change of the report (rail, window membership,
+activation or composer focus) advances the interaction generation, so an
+utterance captured before it is refused even when the same conversation stays
+the target (for example while moving from the sidebar into its window).
+Repeated identical reports, a different window order and streamed updates do
+not. Closing a conversation, disconnecting, or withdrawing the capability
+removes its windows at once. Another connection cannot clear this connection's
+windows. An active window counts as Companion keyboard focus for the delivery
+guards (typed Activity text is refused, as with a focused panel), and
+activation moving between windows stops pending keyboard delivery.
+
+Controls that require the conversation to be shown (choices, stop, history and
+tool pages, manual recording) accept the main view's conversation or one of
+the same connection's visible windows. A recording continues while its
+conversation moves between the sidebar and its window. `agent-select` (spoken
+"go to session N") is unchanged; the UI focuses an existing window for a
+popped conversation.
+
+**Agent requests.** `companion_session_present` (see the
+[agent contract](../agents/README.md#session-lifecycle-tools)) reaches the UI
+as a one-time event, sent to one pop-out host (the visible navigation owner if
+it is one, else the most recent reporter):
+
+```json
+{
+  "type": "agent-present",
+  "requestId": "present-request-uuid",
+  "id": "question-uuid",
+  "presentation": "window",
+  "focus": false
+}
+```
+
+The UI answers once with
+`{"action":"agent-present-result","requestId":…,"outcome":…,"reason"?:…,"focused"?:…}`:
+
+| `outcome`     | Meaning                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| `shown`       | The conversation has its own window (an existing one is reused). Answers `window` only.          |
+| `returned`    | Its view is back in the sidebar. Answers `sidebar` only.                                         |
+| `unsupported` | This UI cannot open windows now.                                                                 |
+| `unavailable` | The conversation is not open in this UI.                                                         |
+| `conflict`    | A pending send, choice or recording cannot move between views; the view and its draft were kept. |
+
+`shown` and `returned` must include `focused`: whether the UI observed the view
+gaining focus (asking the compositor is not proof). Other outcomes must omit
+it. `reason` is optional (≤300 characters); unknown fields are refused. The
+listener accepts only the asked connection's first valid answer and returns
+`present-recorded`. Without a pop-out host nothing is sent: `unsupported` when
+another panel is connected, else `offline`. After sending, 15 seconds without
+an answer, disconnection, capability withdrawal or the end of the agent turn
+give `unconfirmed`: the UI may have acted, so it is never retried or sent to
+another UI. Reconnects never replay a request.
+
 ### Agent drafts
 
 Unsent composer text belongs to a UI instance, not the listener. A client that

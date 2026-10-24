@@ -16,6 +16,15 @@ import { typeText } from '../system/type-text.ts';
 import { UtteranceHistory, type HistoryEntry, type OriginalProblem } from './history.ts';
 import { saveEmptyAudioClip } from './empty-audio-clips.ts';
 import { DesktopServer, type SnapshotOptions } from './server.ts';
+import {
+  activePopout,
+  chooseVoiceTarget,
+  nativeFocusKey,
+  nativeViewKey,
+  parseNativeViewReport,
+  type NativeViewRecord,
+  type VoiceTarget,
+} from './native-views.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
 import {
@@ -45,6 +54,12 @@ import {
   type AgentDraftRequest,
   type AgentHarness,
 } from '../agents/types.ts';
+import {
+  presentPanelOutcomes,
+  type AgentPresentOutcome,
+  type AgentPresentRequest,
+  type PresentPanelOutcome,
+} from '../agents/session-presentation.ts';
 
 /** A connected panel must confirm a forwarded draft within this time. */
 const draftConfirmationMilliseconds = 5000;
@@ -59,6 +74,13 @@ const recordingAppendConfirmationMilliseconds = 5000;
  */
 const browserConfirmationMilliseconds = 15000;
 
+/**
+ * A native panel answers a pop-out/return request once its window exists (or
+ * is gone) and it has waited briefly for activation. This bound only covers
+ * a panel that never answers.
+ */
+const presentConfirmationMilliseconds = 15000;
+
 /** Outcomes a panel may report for a browser-open request. */
 const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
   'loaded',
@@ -72,6 +94,44 @@ const browserPanelOutcomes = new Set<AgentBrowserOpenOutcome['outcome']>([
   'panel-hidden',
   'unsupported',
 ]);
+
+/**
+ * Validate a native panel's `agent-present-result` and convert it to the
+ * caller's outcome. Only the panel's own outcomes are accepted: `offline` and
+ * `unconfirmed` are decided by the listener, never claimed by a panel.
+ */
+function presentResult(request: Record<string, unknown>): AgentPresentOutcome {
+  const keys = Object.keys(request);
+  const known = ['action', 'requestId', 'outcome', 'reason', 'focused'];
+  if (
+    keys.some((key) => !known.includes(key)) ||
+    typeof request.requestId !== 'string' ||
+    request.requestId.length > 128 ||
+    typeof request.outcome !== 'string' ||
+    !presentPanelOutcomes.includes(request.outcome as PresentPanelOutcome) ||
+    (request.reason !== undefined &&
+      (typeof request.reason !== 'string' || request.reason.length > 300))
+  ) {
+    throw Error('Expected a presentation request id and outcome');
+  }
+
+  const outcome = request.outcome as PresentPanelOutcome;
+  const reason = (request.reason as string | undefined) ?? '';
+
+  if (outcome === 'shown' || outcome === 'returned') {
+    // The panel must say whether it observed focus; requesting activation
+    // is not the same as the compositor granting it.
+    if (typeof request.focused !== 'boolean') {
+      throw Error('Expected focused: true or false with a shown/returned outcome');
+    }
+    return { outcome, focused: request.focused, reason };
+  }
+
+  if (request.focused !== undefined) {
+    throw Error('Only shown/returned outcomes report focus');
+  }
+  return { outcome, reason };
+}
 
 /**
  * Actions that act on the desktop itself: the compositor's focused window,
@@ -92,6 +152,8 @@ const desktopOnlyActions = new Set([
   'composer-focus',
   'agent-draft-result',
   'agent-browser-open-result',
+  // Pop-out windows are native desktop windows.
+  'agent-present-result',
   // Manual recording uses the desktop microphone and a desktop composer.
   'start-recording',
   'stop-recording',
@@ -238,6 +300,18 @@ export class DesktopRuntime {
     string,
     { clientId: number; finish(outcome: AgentBrowserOpenOutcome): void }
   >();
+  // Native panels that can pop conversations out into their own windows, by
+  // client, with their latest validated pop-out report (native-views.ts).
+  // Only desktop connections that declared `popoutHost` appear here.
+  private readonly nativeViews = new Map<number, NativeViewRecord>();
+  private readonly pendingPresents = new Map<
+    string,
+    {
+      clientId: number;
+      presentation: AgentPresentRequest['presentation'];
+      finish(outcome: AgentPresentOutcome): void;
+    }
+  >();
 
   constructor(
     private readonly pause: PauseControl,
@@ -282,6 +356,10 @@ export class DesktopRuntime {
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
         this.browserHosts.delete(clientId);
         this.abandonBrowserOpens(clientId, 'The panel disconnected before confirming.');
+        // Its pop-out windows went with it. A request already sent may have
+        // been carried out, so it is unconfirmed rather than offline.
+        this.abandonPresents(clientId, 'The panel disconnected before answering.');
+        const viewsRemoved = this.forgetNativeViews(clientId);
         // A recording belongs to the panel that started it. Its words can
         // only go to that panel's draft, so stop and deliver nothing more.
         this.abandonRecordingAppends(clientId, 'The panel disconnected before confirming.');
@@ -299,7 +377,7 @@ export class DesktopRuntime {
 
         let stateBroadcast = false;
         if (clientId === this.panelClient) {
-          stateBroadcast = this.setPanelState('', false, clientId);
+          stateBroadcast = this.setPanelState('', '', clientId, false);
         }
         if (clientId === this.composerClient) {
           this.setComposerFocus('', 0);
@@ -307,7 +385,7 @@ export class DesktopRuntime {
           stateBroadcast = true;
         }
 
-        if (navigationRemoved && !stateBroadcast) {
+        if ((navigationRemoved || viewsRemoved) && !stateBroadcast) {
           // Activity/Previous owns navigation without a selected conversation.
           // Otherwise the conversation cleanup already published this change.
           this.server.broadcast();
@@ -316,12 +394,21 @@ export class DesktopRuntime {
     );
     options.agents?.setDraftHost((request, signal) => this.requestDraft(request, signal));
     options.agents?.setBrowserHost((request, signal) => this.requestBrowserOpen(request, signal));
+    options.agents?.setPresentationHost({
+      available: () => this.nativeViews.size > 0,
+      present: (request, signal) => this.requestPresent(request, signal),
+    });
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
       }
       if (event.type === 'agent-removed' && event.id === this.panelSession) {
-        this.setPanelState('', false, this.panelClient);
+        this.setPanelState('', '', this.panelClient, false);
+      }
+      // A closed conversation no longer has a window, even before the panel
+      // reports so; an utterance captured for it must not stay current.
+      if (event.type === 'agent-removed') {
+        this.removeFromNativeViews(event.id);
       }
       // Clients upsert `agent-session` by ID, so a late flush for a closed
       // conversation (for example a rolled-back model choice) would add its
@@ -348,7 +435,7 @@ export class DesktopRuntime {
       },
       interactionCurrent: (context) =>
         context.revision === this.interactionRevision &&
-        context.agentSessionId === this.panelSession &&
+        context.agentSessionId === (this.voiceTarget()?.id ?? '') &&
         this.options.agents?.has(context.agentSessionId) === true,
       selectSession: (context, index) => this.selectSession(context, index),
       speechChanged: (speaking) => {
@@ -550,15 +637,23 @@ export class DesktopRuntime {
 
   /**
    * Choice, stop-run and tool-page requests must come from the panel that is
-   * showing that conversation. Desktop panels use the global selection;
-   * remote panels use their own connection's selection.
+   * showing that conversation. Desktop panels use the global selection or one
+   * of their own visible pop-out windows; remote panels use their own
+   * connection's selection.
    */
   private showsConversation(clientId: number, id: unknown): boolean {
     const remote = this.remoteClients.get(clientId);
     if (remote) {
       return typeof id === 'string' && id !== '' && remote.selection === id;
     }
-    return clientId === this.panelClient && id === this.panelSession;
+    if (clientId === this.panelClient && id === this.panelSession) {
+      return true;
+    }
+    if (typeof id !== 'string' || id === '') {
+      return false;
+    }
+    const views = this.nativeViews.get(clientId);
+    return views?.report.popouts.some((popout) => popout.id === id) === true;
   }
 
   private agentActions(): AgentActions {
@@ -838,9 +933,36 @@ export class DesktopRuntime {
     }
   }
 
+  /**
+   * The conversation a spoken follow-up addresses right now: an active pop-out
+   * window, else the visible sidebar conversation, else a single pop-out beside
+   * the compact rail (native-views.ts explains the order).
+   */
+  private voiceTarget(): VoiceTarget | undefined {
+    const agents = this.options.agents;
+    if (!agents) {
+      return undefined;
+    }
+    return chooseVoiceTarget({
+      panelSession: this.panelSession,
+      panelClient: this.panelClient,
+      views: this.nativeViews,
+      isOpen: (id) => agents.has(id),
+    });
+  }
+
   private interactionContext(): InteractionContext {
-    const id = this.options.agents?.has(this.panelSession) ? this.panelSession : '';
+    const target = this.voiceTarget();
+    const id = target?.id ?? '';
     const order = this.options.agents?.order();
+    // Only the chosen view's own focused composer earns the strong "focused
+    // composer" instruction. An active window alone, or a lone pop-out beside
+    // the compact rail, keeps the ordinary unfocused wording.
+    const composerFocused =
+      target !== undefined &&
+      target.source !== 'popout-only' &&
+      this.composerSession === id &&
+      this.composerClient === target.clientId;
     return {
       agentNavigation:
         this.navigation && order
@@ -851,9 +973,8 @@ export class DesktopRuntime {
             }
           : undefined,
       agentSessionId: id,
-      agentComposerFocused: Boolean(
-        id && this.composerSession === id && this.composerClient === this.panelClient,
-      ),
+      agentComposerFocused: composerFocused,
+      agentTargetSource: target?.source,
       revision: this.interactionRevision,
       ...this.options.agents?.interaction(id),
     };
@@ -885,27 +1006,117 @@ export class DesktopRuntime {
     });
   }
 
-  /** Bind tab/focus together; return whether the resulting snapshot was sent. */
-  private setPanelState(id: string, focused: boolean, clientId: number): boolean {
+  /**
+   * Bind tab/focus together; return whether the resulting snapshot was sent.
+   *
+   * `id` is the conversation visible in the client's main view (or empty) and
+   * `composer` the conversation whose composer has keyboard focus (or empty).
+   * For a legacy client the composer can only be the main conversation. A
+   * native pop-out host also reports the composer of its active window, and
+   * may clear its own composer focus while its main view is empty.
+   */
+  private setPanelState(
+    id: string,
+    composer: string,
+    clientId: number,
+    nativeHost: boolean,
+  ): boolean {
     // A stale/disconnecting observer must not clear another UI's selected tab.
-    if (!id && clientId !== this.panelClient) {
+    const reportsMain = id !== '' || clientId === this.panelClient;
+    if (!reportsMain && !nativeHost) {
       return false;
     }
     const previousRevision = this.interactionRevision;
-    const owner = id ? clientId : 0;
-    if (id !== this.panelSession || owner !== this.panelClient) {
-      this.panelSession = id;
-      this.panelClient = owner;
-      this.interactionRevision++;
+    if (reportsMain) {
+      const owner = id ? clientId : 0;
+      if (id !== this.panelSession || owner !== this.panelClient) {
+        this.panelSession = id;
+        this.panelClient = owner;
+        this.interactionRevision++;
+      }
     }
-    if (focused || clientId === this.composerClient) {
-      this.setComposerFocus(focused ? id : '', focused ? clientId : 0);
+    if (composer || clientId === this.composerClient) {
+      this.setComposerFocus(composer, composer ? clientId : 0);
     }
     if (this.interactionRevision !== previousRevision) {
       this.server.broadcast();
       return true;
     }
     return false;
+  }
+
+  /**
+   * Store one client's validated pop-out report (or its absence). Any semantic
+   * change invalidates utterances captured before it, even when the same
+   * conversation stays the target (for example moving from the sidebar into
+   * its own window). Returns whether anything changed.
+   */
+  private updateNativeViews(
+    clientId: number,
+    report: ReturnType<typeof parseNativeViewReport>,
+  ): boolean {
+    const previous = this.nativeViews.get(clientId);
+
+    if (!report) {
+      if (!previous) {
+        return false;
+      }
+      // The panel withdrew the capability: forget its windows, and answer
+      // requests already sent to it honestly instead of retargeting them.
+      this.abandonPresents(clientId, 'The panel no longer offers pop-out windows.');
+      return this.forgetNativeViews(clientId);
+    }
+
+    const key = nativeViewKey(report);
+    if (previous && previous.key === key) {
+      // Identical report: keep its place in the order, change nothing.
+      return false;
+    }
+
+    const focusChanged = nativeFocusKey(previous?.report) !== nativeFocusKey(report);
+    this.nativeViews.set(clientId, { report, key, sequence: ++this.draftReportSequence });
+    this.interactionRevision++;
+    if (focusChanged) {
+      // Keyboard focus moved between windows: pending keyboard delivery that
+      // was decided before the move must not type into the new focus.
+      this.composerRevision++;
+    }
+    return true;
+  }
+
+  /** Drop one client's pop-out windows; returns whether it had any state. */
+  private forgetNativeViews(clientId: number): boolean {
+    const previous = this.nativeViews.get(clientId);
+    if (!previous) {
+      return false;
+    }
+    this.nativeViews.delete(clientId);
+    this.interactionRevision++;
+    if (nativeFocusKey(previous.report) !== '') {
+      this.composerRevision++;
+    }
+    return true;
+  }
+
+  /** A conversation was closed: remove its windows from every report. */
+  private removeFromNativeViews(id: string): void {
+    let changed = false;
+    for (const [clientId, record] of this.nativeViews) {
+      if (!record.report.popouts.some((popout) => popout.id === id)) {
+        continue;
+      }
+      const report = {
+        rail: record.report.rail,
+        popouts: record.report.popouts.filter((popout) => popout.id !== id),
+      };
+      changed = this.updateNativeViews(clientId, report) || changed;
+      if (this.composerSession === id && this.composerClient === clientId) {
+        this.setComposerFocus('', 0);
+      }
+    }
+    if (changed) {
+      this.server.broadcast();
+    }
   }
 
   /**
@@ -1291,6 +1502,106 @@ export class DesktopRuntime {
 
   private abandonBrowserOpens(clientId: number | undefined, reason: string): void {
     for (const pending of [...this.pendingBrowserOpens.values()]) {
+      if (clientId === undefined || pending.clientId === clientId) {
+        pending.finish({ outcome: 'unconfirmed', reason });
+      }
+    }
+  }
+
+  /**
+   * The native panel that owns pop-out windows: the visible navigation owner
+   * if it offers them, otherwise the pop-out host that reported most recently.
+   * Remote panels can never become one.
+   */
+  private presentClient(): number | undefined {
+    const visible = this.navigation?.clientId;
+    if (visible !== undefined && this.nativeViews.has(visible)) {
+      return visible;
+    }
+    let newest: number | undefined;
+    let newestSequence = -1;
+    for (const [clientId, record] of this.nativeViews) {
+      if (record.sequence > newestSequence) {
+        newest = clientId;
+        newestSequence = record.sequence;
+      }
+    }
+    return newest;
+  }
+
+  /**
+   * Ask one native panel to pop a conversation out into its own window, or to
+   * return it to the sidebar, and wait for its explicit answer. The request
+   * is a one-time event, never part of snapshots, so reconnects cannot replay
+   * it. Before sending, no panel means `offline` (and a connected panel
+   * without pop-out windows `unsupported`). Once sent, timeout, disconnect,
+   * capability withdrawal or turn cancellation are `unconfirmed`: the panel
+   * may already have acted. Never retried or redirected to another panel.
+   */
+  private requestPresent(
+    request: AgentPresentRequest,
+    signal: AbortSignal,
+  ): Promise<AgentPresentOutcome> {
+    if (signal.aborted) {
+      return Promise.resolve({ outcome: 'offline', reason: 'The agent turn has ended.' });
+    }
+    const clientId = this.presentClient();
+    if (clientId === undefined) {
+      if (this.draftHosts.size > 0) {
+        return Promise.resolve({
+          outcome: 'unsupported',
+          reason: 'The connected Companion panel cannot open conversation windows.',
+        });
+      }
+      return Promise.resolve({ outcome: 'offline', reason: '' });
+    }
+
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const finish = (outcome: AgentPresentOutcome) => {
+        if (!this.pendingPresents.delete(requestId)) {
+          return;
+        }
+        clearTimeout(timer);
+        signal.removeEventListener('abort', cancelled);
+        resolve(outcome);
+      };
+      const timer = setTimeout(
+        () =>
+          finish({
+            outcome: 'unconfirmed',
+            reason: 'The panel did not answer within 15 seconds.',
+          }),
+        presentConfirmationMilliseconds,
+      );
+      const cancelled = () =>
+        finish({
+          outcome: 'unconfirmed',
+          reason: 'The agent turn ended before the panel answered.',
+        });
+
+      this.pendingPresents.set(requestId, {
+        clientId,
+        presentation: request.presentation,
+        finish,
+      });
+      signal.addEventListener('abort', cancelled, { once: true });
+
+      const sent = this.server.publishTo(clientId, {
+        type: 'agent-present',
+        requestId,
+        id: request.sessionId,
+        presentation: request.presentation,
+        focus: request.focus,
+      });
+      if (!sent) {
+        finish({ outcome: 'offline', reason: 'The panel disconnected.' });
+      }
+    });
+  }
+
+  private abandonPresents(clientId: number | undefined, reason: string): void {
+    for (const pending of [...this.pendingPresents.values()]) {
       if (clientId === undefined || pending.clientId === clientId) {
         pending.finish({ outcome: 'unconfirmed', reason });
       }
@@ -1709,6 +2020,25 @@ export class DesktopRuntime {
       return 'browser-recorded';
     }
 
+    if (request.action === 'agent-present-result') {
+      const outcome = presentResult(request);
+      // Only the panel that was asked can answer, once; a late answer is refused.
+      const pending = this.pendingPresents.get(request.requestId as string);
+      if (!pending || pending.clientId !== clientId) {
+        throw Error('This presentation request has expired');
+      }
+      // "shown" answers a window request and "returned" a sidebar request; a
+      // mismatch is refused and the request stays pending (then unconfirmed).
+      if (
+        (outcome.outcome === 'shown' && pending.presentation !== 'window') ||
+        (outcome.outcome === 'returned' && pending.presentation !== 'sidebar')
+      ) {
+        throw Error('This outcome does not answer the presentation request');
+      }
+      pending.finish(outcome);
+      return 'present-recorded';
+    }
+
     if (request.action === 'panel-state' && remote) {
       // Remote panels report only which conversation they show. Focus,
       // navigation and draft fields describe the desktop and are ignored.
@@ -1717,6 +2047,14 @@ export class DesktopRuntime {
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
         throw Error('Expected a visible agent session id (or empty id)');
+      }
+      // Pop-out windows are desktop windows; a remote panel cannot claim any.
+      if (
+        request.popoutHost !== undefined ||
+        request.rail !== undefined ||
+        request.popouts !== undefined
+      ) {
+        throw Error('Remote panels cannot report pop-out windows');
       }
       remote.selection = request.id;
       this.publishRemoteAgentActions(clientId);
@@ -1740,6 +2078,12 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected a visible agent session id (or empty id) and composerFocused');
       }
+      // A native UI with pop-out windows adds them to the same report. They
+      // are validated completely before any state below changes.
+      const nativeReport = parseNativeViewReport(
+        request,
+        (id) => this.options.agents?.has(id) === true,
+      );
       // Clients that apply agent-session/order/history/removed/restored events
       // to retained conversations say so once; routine state messages to them
       // then omit transcripts. Older adapters keep receiving full snapshots.
@@ -1771,19 +2115,49 @@ export class DesktopRuntime {
         this.browserHosts.delete(clientId);
         this.abandonBrowserOpens(clientId, 'The panel no longer offers its browser.');
       }
+      // For a pop-out host, `id`, `composerFocused` and `keyboardFocused`
+      // describe only the main sidebar view; its windows come in `popouts`.
+      const viewsChanged = this.updateNativeViews(clientId, nativeReport);
+      const active = activePopout(nativeReport);
+      // Keyboard delivery guards cover every native surface: the main panel,
+      // or an active pop-out window (which always holds keyboard focus).
       this.setPanelKeyboardFocus(
-        request.keyboardFocused === true || request.composerFocused,
+        request.keyboardFocused === true || request.composerFocused || active !== undefined,
         clientId,
       );
-      const stateBroadcast = this.setPanelState(request.id, request.composerFocused, clientId);
+      // Keyboard focus is in one place: an active window decides alone,
+      // otherwise the main view's composer does.
+      let composer = '';
+      if (active) {
+        composer = active.composerFocused ? active.id : '';
+      } else if (request.composerFocused) {
+        composer = request.id;
+      }
+      const stateBroadcast = this.setPanelState(
+        request.id,
+        composer,
+        clientId,
+        nativeReport !== undefined,
+      );
       // Leaving the conversation being recorded into (another tab, Activity,
       // Previous sessions or a hidden panel) stops capture. The remaining
-      // words still go to the original conversation's draft.
-      this.dictation?.ownerViewChanged(clientId, request.id);
-      if (previousNavigation?.clientId !== this.navigation?.clientId && !stateBroadcast) {
+      // words still go to the original conversation's draft. Moving that
+      // conversation into (or out of) its own window keeps it shown.
+      const recording = this.dictation?.status;
+      const recordingShown =
+        recording !== undefined &&
+        (recording.sessionId === request.id ||
+          nativeReport?.popouts.some((popout) => popout.id === recording.sessionId) === true);
+      this.dictation?.ownerViewChanged(
+        clientId,
+        recordingShown && recording ? recording.sessionId : request.id,
+      );
+      const navigationChanged = previousNavigation?.clientId !== this.navigation?.clientId;
+      if ((navigationChanged || viewsChanged) && !stateBroadcast) {
         // Only navigation presence/ownership affects intent availability. The
         // token is not in snapshots; updating it must not copy every transcript.
         // Selection/focus changes already broadcast the updated navigation.
+        // Pop-out changes can move the voice target, which snapshots show.
         this.server.broadcast();
       }
       return 'panel-recorded';
@@ -2121,6 +2495,8 @@ export class DesktopRuntime {
     this.abandonDrafts(undefined, 'Companion is shutting down.');
     this.options.agents?.setBrowserHost(undefined);
     this.abandonBrowserOpens(undefined, 'Companion is shutting down.');
+    this.options.agents?.setPresentationHost(undefined);
+    this.abandonPresents(undefined, 'Companion is shutting down.');
     this.dictation?.abandon('shutdown');
     this.dictation?.off('change', this.dictationChanged);
     this.dictation?.off('finished', this.dictationFinished);
