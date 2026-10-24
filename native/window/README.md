@@ -77,6 +77,51 @@ It needs Qt WebEngine 6.9+; with 6.8 the control shows a message instead. Only
 this standalone host enables it; the portable Quickshell panel never loads it. See [the panel browser guide](../../docs/panel-browser.md) for
 behaviour, storage, limits and tests.
 
+## Conversation windows (pop-out)
+
+**Pop out** in a conversation's header shows that same conversation in its own
+ordinary desktop window: same session, agent, history and follow-up queue, not
+a copy. Several conversations can be popped out (at most eight). The window is
+a view only. Closing it, or **Return to sidebar**, puts the conversation back
+in the panel; it never closes the conversation. An agent can do the same for
+its own conversation with `companion_session_present`, through the listener's
+`agent-present` request (see the [desktop contract](../../src/desktop/README.md)).
+
+One view owns a conversation's composer at a time. Moving it hands over the
+unsent text, its **Drafted by agent** provenance, the cursor and any recording
+notice, and clears the old view only once the new one holds the same text. A
+send, choice or recording started in a view must be confirmed first: until
+then Pop out, Return and the window's close button are refused with a short
+reason, and nothing is discarded. Agent drafts, Record-to-draft text,
+acknowledgements and history pages reach the view that owns the conversation.
+If a popped-out conversation is closed elsewhere, its unsent text stays in the
+panel with **Copy** and **Dismiss**.
+
+The panel keeps the conversation's tab with a ↗ marker; selecting it focuses
+the window. While the selected tab is popped out, Sidebar and Dock shrink to
+the session rail, with **Expand** and **Return** in the rail. Selecting another
+tab, Activity or Previous sessions restores the full width exactly; the
+remembered width is unchanged. A Window presentation keeps its size and shows
+**Focus window** and **Return to sidebar** instead. Pinned widgets and the
+panel browser stay in the panel; the pop-out window has the conversation,
+composer, choices, Record and screenshots, but not timers, pins, the browser or
+the model picker (use Expand or Return for those).
+
+Voice follows the views through the existing `panel-state` report, extended
+with `popoutHost`, `rail` and `popouts: [{id, active, composerFocused}]`. The
+existing fields keep describing the main surface; `visible` means any native
+Companion surface. The listener picks the target: an active window first, then
+the conversation visible in the panel, then a single window behind a compact
+rail. “Go to session N” focuses a popped-out conversation's window, or selects
+the tab in the panel. Window placement, size and tiling belong to the
+compositor; Companion only requests activation and reports whether it was
+granted within 1.5 seconds.
+
+This is a staged step on the existing Qt Quick conversation view, not the
+planned HTML session interface. `npm run test:window` covers it offscreen
+(`test/window/popout.test.ts`) against a synthetic transport; compositor focus,
+layer widths and real speech routing need a supervised desktop check.
+
 ## Build without activating
 
 Build dependencies: CMake, a C++17 compiler, Qt 6.8+ Quick, QuickControls2,

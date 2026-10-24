@@ -47,6 +47,9 @@ Item {
   property string displayedId: ""
   property bool followEnd: true
   property var drafts: ({})
+  // Conversation id -> cursor position of a draft received from another view
+  // while it was not displayed here; applied once when it is displayed.
+  property var draftCursors: ({})
   // Continuous scrolling (see HistoryRows.mjs). Older rows loaded while the
   // reader scrolls are kept here, separate from the live recent window, and
   // never fed back into authoritative state. When `historyAttached`, they end
@@ -593,6 +596,65 @@ Item {
     return {outcome: outcome, reason: ""}
   }
 
+  // Moving a conversation between this view and another one (the sidebar and
+  // a pop-out window). Exactly one view owns a conversation's composer at a
+  // time; the host calls these synchronously, so no keystroke can interleave.
+
+  // Why this view's composer for `id` cannot move right now, or "". Pending
+  // acknowledgements and the recording are correlated with this view, so
+  // they must settle before the composer leaves it.
+  function transferBlocker(id) {
+    if (root.pendingSubmission && root.pendingSubmission.id === id) {
+      return "A message from this conversation is still being sent. Try again once it is confirmed."
+    }
+    if (root.pendingChoice && root.pendingChoice.id === id) {
+      return "A choice in this conversation is still being confirmed. Try again once it is answered."
+    }
+    if (root.ownRecording && root.ownRecording.id === id) {
+      return "Recording into this conversation is still running. Stop it and wait for the text first."
+    }
+    return ""
+  }
+
+  // The unsent text owned here for `id`, with its agent provenance, the
+  // cursor (only meaningful while displayed) and any recording notice.
+  function exportDraft(id) {
+    const displayed = root.displayedId === id
+    return {
+      text: displayed ? composer.text : (root.drafts[id] || ""),
+      cursor: displayed ? composer.cursorPosition : -1,
+      source: root.draftSources[id],
+      notice: root.recordingNotices[id] || ""
+    }
+  }
+
+  // Take ownership of a draft exported by another view. Returns whether this
+  // view now holds exactly that text, so the caller clears the old owner only
+  // after a confirmed handover.
+  function importDraft(id, draft) {
+    if (!draft || typeof draft.text !== "string") return false
+    if (draft.source !== undefined) root.draftSources = Object.assign({}, root.draftSources, {[id]: draft.source})
+    else root.forgetDraftSource(id)
+    root.setRecordingNotice(id, draft.notice || "")
+    if (root.displayedId === id) {
+      composer.text = draft.text
+      composer.cursorPosition = draft.cursor >= 0 ? Math.min(draft.cursor, composer.length) : composer.length
+    } else {
+      root.drafts[id] = draft.text
+      if (draft.cursor >= 0) root.draftCursors[id] = draft.cursor
+    }
+    return root.exportDraft(id).text === draft.text
+  }
+
+  // Forget `id`'s draft here after another view confirmed it holds the text.
+  function clearDraft(id) {
+    delete root.drafts[id]
+    delete root.draftCursors[id]
+    root.forgetDraftSource(id)
+    root.setRecordingNotice(id, "")
+    if (root.displayedId === id) composer.text = ""
+  }
+
   function choiceSubmitted(id, revision, index, error) {
     if (!root.pendingChoice || root.pendingChoice.id !== id || root.pendingChoice.revision !== revision || root.pendingChoice.index !== index) return
     root.pendingChoice = null
@@ -855,6 +917,11 @@ Item {
       root.resetHistory()
       root.displayedId = id
       composer.text = root.drafts[id] || ""
+      // A draft handed over from another view keeps its cursor position.
+      if (root.draftCursors[id] !== undefined) {
+        composer.cursorPosition = Math.min(root.draftCursors[id], composer.length)
+        delete root.draftCursors[id]
+      }
       root.inputError = ""
     }
 

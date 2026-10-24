@@ -16,6 +16,7 @@ Item {
   property string screenshotSource: ""
   property alias client: client
   property alias panel: panel
+  property alias popouts: popoutViews
   readonly property bool inputFocused: host.opened && panel.inputFocused
   readonly property string composerId: host.opened ? panel.composerFocusId : ""
   readonly property bool keyboardFocused: host.opened && host.active
@@ -185,14 +186,46 @@ Item {
     composerFocusId: root.composerId
     onRevealRequested: root.host.show(false)
     onUtteranceFinished: (text, error) => { utteranceDeadline.stop(); panel.utteranceSubmitted(text, error) }
-    onInputFinished: (id, text, error) => panel.submitted(id, text, error)
-    onToolPageReceived: message => panel.toolPageReceived(message)
-    onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
+    // Acknowledgements and history pages go to every conversation view; each
+    // applies only replies that match a request it made itself.
+    onInputFinished: (id, text, error) => {
+      for (const view of popoutViews.allViews()) view.submitted(id, text, error)
+    }
+    onToolPageReceived: message => {
+      for (const view of popoutViews.allViews()) view.toolPageReceived(message)
+    }
+    onChoiceFinished: (id, revision, index, error) => {
+      for (const view of popoutViews.allViews()) view.choiceSubmitted(id, revision, index, error)
+    }
     browserHost: panel.browserAvailable
+    // The main surface and pop-out windows report together (panel-state).
+    popoutHost: true
+    mainViewId: sessions.viewedId !== "" && !panel.browsing && !popoutViews.isPopped(sessions.viewedId)
+      ? sessions.viewedId : ""
+    rail: panel.compactRail ? "compact" : "full"
+    popouts: popoutViews.report
+    anyViewVisible: root.host.opened || popoutViews.report.length > 0
+    onPresentRequested: message => popoutViews.present(message, function(result) {
+      client.answerPresent(message.requestId, result)
+    })
+    // "Go to session N": focus its window, or select it in the sidebar.
+    onNavigationRequested: id => {
+      if (popoutViews.isPopped(id)) {
+        popoutViews.focusWindow(id)
+        return
+      }
+      client.sessions.select(id)
+      if (!root.host.opened) root.host.show(false)
+    }
     // The panel answers once, when the page loaded or failed, or after a
     // bounded wait. A hidden window is never shown or activated for an agent,
     // and a page the user cannot see is not opened: it answers panel-hidden.
     onBrowserOpenRequested: message => {
+      if (popoutViews.isPopped(message.id)) {
+        client.answerBrowserOpen(message.requestId, {outcome: "not-selected",
+          reason: "The conversation is shown in its own window; the panel browser is in the sidebar."})
+        return
+      }
       if (!root.host.opened) {
         client.answerBrowserOpen(message.requestId, {outcome: "panel-hidden",
           reason: "The Companion panel is hidden."})
@@ -202,18 +235,57 @@ Item {
         client.answerBrowserOpen(message.requestId, result)
       })
     }
+    // An agent draft goes to the view that owns that conversation's composer.
     onDraftRequested: message => {
-      const result = panel.applyDraft(message)
+      const popped = popoutViews.isPopped(message.id)
+      const result = popped ? popoutViews.ownerView(message.id).applyDraft(message) : panel.applyDraft(message)
       client.answerDraft(message.requestId, result)
       const changed = result.outcome === "inserted" || result.outcome === "appended"
-      if (changed && message.focus === true) client.sessions.reveal(message.id)
+      if (changed && message.focus === true) {
+        if (popped) popoutViews.focusWindow(message.id)
+        else client.sessions.reveal(message.id)
+      }
     }
-    onRecordingStartFinished: (id, recordingId, error) => panel.recordingStarted(id, recordingId, error)
-    onRecordingStopFinished: error => panel.recordingStopAnswered(error)
-    onRecordingAppendRequested: message => client.answerRecordingAppend(message.requestId, panel.appendRecording(message))
-    onRecordingFinished: message => panel.recordingFinished(message)
-    onRecordingLost: panel.recordingDisconnected()
+    // A recording belongs to the view that started it. Moving a composer is
+    // refused while its recording runs, so the owner cannot change meanwhile.
+    onRecordingStartFinished: (id, recordingId, error) => popoutViews.ownerView(id).recordingStarted(id, recordingId, error)
+    onRecordingStopFinished: error => {
+      for (const view of popoutViews.allViews()) view.recordingStopAnswered(error)
+    }
+    onRecordingAppendRequested: message => client.answerRecordingAppend(message.requestId,
+      popoutViews.isPopped(message.id) ? popoutViews.ownerView(message.id).appendRecording(message) : panel.appendRecording(message))
+    onRecordingFinished: message => {
+      for (const view of popoutViews.allViews()) view.recordingFinished(message)
+    }
+    onRecordingLost: {
+      for (const view of popoutViews.allViews()) view.recordingDisconnected()
+    }
     onOnlineChanged: root.publish()
+  }
+
+  PopoutController {
+    id: popoutViews
+    // Through root: a bare `client` here would name this object's own property.
+    client: root.client
+    panel: root.panel
+    host: root.host
+    theme: root.theme
+    nativeWidgets: root.nativeWidgets
+  }
+
+  // Sidebar/Dock shrink to the rail while the selected conversation is in
+  // its own window. Only the layer surface's width changes; a Window keeps
+  // the size the compositor gave it.
+  Binding {
+    target: root.host
+    property: "compactWidth"
+    // The narrowest rail (80 units) plus the panel margins on both sides.
+    value: Math.ceil(84 * root.theme.unit)
+  }
+  Binding {
+    target: root.host
+    property: "compact"
+    value: panel.compactRail
   }
 
   Rectangle { anchors.fill: parent; color: root.theme.background }
@@ -221,6 +293,7 @@ Item {
   Row {
     id: modes
     objectName: "presentationControls"
+    visible: !panel.compactRail
     anchors.top: parent.top
     anchors.right: parent.right
     anchors.margins: 6 * root.theme.unit
@@ -243,7 +316,7 @@ Item {
   Row {
     id: renderingControls
     objectName: "widgetRenderingControls"
-    visible: root.renderDiagnostics && typeof CompanionWidgetRendering !== "undefined"
+    visible: root.renderDiagnostics && typeof CompanionWidgetRendering !== "undefined" && !panel.compactRail
     anchors.top: modes.bottom
     anchors.right: parent.right
     anchors.margins: 6 * root.theme.unit
@@ -270,7 +343,7 @@ Item {
     anchors.right: parent.right
     anchors.margins: 8 * root.theme.unit
     text: root.host.error
-    visible: text !== ""
+    visible: text !== "" && !panel.compactRail
     color: root.theme.foreground
     wrapMode: Text.Wrap
     font.pixelSize: 12 * root.theme.unit
@@ -279,7 +352,8 @@ Item {
   Panel.PanelContent {
     id: panel
     objectName: "nativePanel"
-    anchors.top: hostError.visible ? hostError.bottom : renderingControls.visible ? renderingControls.bottom : modes.bottom
+    anchors.top: panel.compactRail ? parent.top : hostError.visible ? hostError.bottom
+      : renderingControls.visible ? renderingControls.bottom : modes.bottom
     anchors.bottom: parent.bottom
     anchors.left: parent.left
     anchors.right: parent.right
@@ -336,7 +410,19 @@ Item {
     focusShortcut: "⌥⌘D"
     shortcutLabel: "Super + Alt + C · panel / D · input focus\nAlt + 1–9 · conversations / Ctrl + plus/minus · text size"
     onCloseRequested: root.host.hide()
-    onSessionSelected: id => client.sessions.select(id)
+    // Selecting a popped-out tab also asks for its window's focus.
+    onSessionSelected: id => {
+      client.sessions.select(id)
+      if (id !== "" && popoutViews.isPopped(id)) popoutViews.focusWindow(id)
+    }
+    popoutAvailable: true
+    poppedSessionIds: popoutViews.poppedIds
+    compactAllowed: root.host.presentation !== "window"
+    orphanDrafts: popoutViews.orphanDrafts
+    onPopoutRequested: id => popoutViews.popOut(id)
+    onPopoutFocusRequested: id => popoutViews.focusWindow(id)
+    onReturnRequested: id => popoutViews.returnToSidebar(id, {focus: true, source: "sidebar"})
+    onOrphanDraftDismissed: key => popoutViews.dismissOrphan(key)
     onPreviousRequested: client.sessions.showingPrevious = true
     onReopenSessionRequested: id => client.send({action: "reopen-agent", id: id})
     onDismissSessionRequested: id => client.send({action: "close-agent", id: id})

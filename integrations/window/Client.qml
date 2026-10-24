@@ -60,6 +60,33 @@ Item {
   signal browserOpenRequested(var message)
   onBrowserHostChanged: Qt.callLater(reportPanel)
 
+  // Pop-out windows (native host only). With popoutHost, panel-state also
+  // carries `popoutHost`, `rail` and `popouts`, and the existing fields keep
+  // describing the main surface: `id`/`composerFocused`/`keyboardFocused` the
+  // main panel only, `visible` any native Companion surface. Without it the
+  // report is exactly the legacy one.
+  property bool popoutHost: false
+  // Conversation visible in the main surface: empty while it is hidden,
+  // shows Activity/Previous/the browser, or its selection is popped out.
+  property string mainViewId: sessions.viewedId
+  // "full" or "compact" (main surface shrunk to its rail).
+  property string rail: "full"
+  // Visible pop-out windows: [{id, active, composerFocused}].
+  property var popouts: []
+  // Main surface or at least one pop-out window is on screen.
+  property bool anyViewVisible: panelVisible
+  // companion_session_present: show the caller's conversation in a window or
+  // in the sidebar. The host must answer exactly once with answerPresent().
+  signal presentRequested(var message)
+  // "Go to session N" (agent-select) for a pop-out host. The host focuses an
+  // existing window or selects the sidebar tab.
+  signal navigationRequested(string id)
+  onPopoutHostChanged: Qt.callLater(reportPanel)
+  onMainViewIdChanged: Qt.callLater(reportPanel)
+  onRailChanged: Qt.callLater(reportPanel)
+  onPopoutsChanged: Qt.callLater(reportPanel)
+  onAnyViewVisibleChanged: Qt.callLater(reportPanel)
+
   onPanelVisibleChanged: Qt.callLater(reportPanel)
   onKeyboardFocusedChanged: Qt.callLater(reportPanel)
   onComposerFocusIdChanged: Qt.callLater(reportPanel)
@@ -89,13 +116,30 @@ Item {
     return root.online && transport.send(request)
   }
 
+  // One atomic report of every native view. Repeated identical reports are
+  // harmless: the listener changes nothing for them.
   function reportPanel() {
-    const id = sessions.viewedId
-    root.send({action: "panel-state", id: id,
+    const id = root.popoutHost ? root.mainViewId : sessions.viewedId
+    const report = {action: "panel-state", id: id,
       composerFocused: id !== "" && root.composerFocusId === id,
       keyboardFocused: root.keyboardFocused,
-      visible: root.panelVisible, navigationToken: sessions.navigationToken,
-      draftHost: true, browserHost: root.browserHost, incrementalSessions: true})
+      visible: root.popoutHost ? root.anyViewVisible : root.panelVisible,
+      navigationToken: sessions.navigationToken,
+      draftHost: true, browserHost: root.browserHost, incrementalSessions: true}
+    if (root.popoutHost) {
+      report.popoutHost = true
+      report.rail = root.rail
+      report.popouts = root.popouts.map(entry => ({id: entry.id, active: entry.active,
+        composerFocused: entry.composerFocused}))
+    }
+    root.send(report)
+  }
+
+  function answerPresent(requestId, result) {
+    const answer = {action: "agent-present-result", requestId: requestId, outcome: result.outcome}
+    if (result.reason) answer.reason = String(result.reason).slice(0, 300)
+    if (result.outcome === "shown" || result.outcome === "returned") answer.focused = result.focused === true
+    root.send(answer)
   }
 
   function answerBrowserOpen(requestId, result) {
@@ -215,6 +259,16 @@ Item {
   }
 
   function receive(message) {
+    if (message.type === "agent-select" && root.popoutHost) {
+      // Same checks as the portable state (token, order, membership), but a
+      // visible pop-out counts as a visible Companion surface.
+      if (root.anyViewVisible && message.token === sessions.navigationToken
+        && message.orderRevision === sessions.orderRevision
+        && sessions.sessions.some(entry => entry.id === message.id)) {
+        root.navigationRequested(message.id)
+      }
+      return
+    }
     sessions.controlReceived(message)
     if (message.type === "state" && message.protocol === 1) {
       root.paused = message.paused === true
@@ -255,6 +309,10 @@ Item {
       root.recordingFinished(message)
     } else if (message.type === "agent-browser-open") {
       root.browserOpenRequested(message)
+    } else if (message.type === "agent-present") {
+      if (root.popoutHost) root.presentRequested(message)
+      else root.answerPresent(message.requestId, {outcome: "unsupported",
+        reason: "This Companion panel cannot show conversations in their own windows."})
     } else if (message.type === "agent-removed") {
       sessions.remove(message.id)
     } else if (message.type === "history-deleted") {

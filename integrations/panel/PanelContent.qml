@@ -61,7 +61,10 @@ Item {
   property var unreadSessionIds: ({})
   property var previousSessions: []
   property bool showingPrevious: false
-  onShowingPreviousChanged: if (showingPrevious) clearPendingOrigin()
+  onShowingPreviousChanged: {
+    if (showingPrevious) clearPendingOrigin()
+    root.expandRequested = false
+  }
   property string controlError: ""
   property string selectedSessionId: ""
   // An archived sender is selected by the normal restore event, not by tab
@@ -80,6 +83,7 @@ Item {
     return ids
   }
   onSelectedSessionIdChanged: {
+    root.expandRequested = false
     if (root.pendingOriginId && root.selectedSessionId !== root.pendingOriginId) clearPendingOrigin()
     Qt.callLater(ensureSelectedVisible)
   }
@@ -136,6 +140,35 @@ Item {
   // rest of the panel builds with 6.8. A failed load shows a message instead.
   property url browserSource: Qt.resolvedUrl("PanelBrowser.qml")
   readonly property bool browsing: browserOpen && browserAvailable
+
+  // Pop-out windows. Only the standalone native host sets popoutAvailable;
+  // other hosts keep the ordinary single-panel behavior. A popped-out
+  // conversation is shown, with its composer and draft, in its own native
+  // window; this panel keeps its tab (marked) and any pins, and never shows
+  // a second writable composer for it.
+  property bool popoutAvailable: false
+  // Conversation id -> true while it is shown in its own window.
+  property var poppedSessionIds: ({})
+  readonly property bool selectedPoppedOut: !showingPrevious && selectedSession !== null
+    && poppedSessionIds[selectedSession.id] === true
+  // The host may shrink this surface to the rail (Sidebar/Dock). A Window
+  // presentation keeps its size and shows a short notice instead.
+  property bool compactAllowed: false
+  // Expand keeps the full panel while the selected tab is popped out. Any
+  // other selection (another tab, Activity, Previous) clears it; see
+  // onSelectedSessionIdChanged and onShowingPreviousChanged.
+  property bool expandRequested: false
+  readonly property bool compactRail: compactAllowed && selectedPoppedOut && !expandRequested && !browsing
+  // Unsent text of popped-out conversations that were closed elsewhere:
+  // [{key, title, text}]. Kept until the user copies or dismisses it.
+  property var orphanDrafts: []
+  // The main conversation view, so the host can move a composer between it
+  // and a pop-out window (transferBlocker/exportDraft/importDraft/clearDraft).
+  readonly property alias conversationView: chat
+  signal popoutRequested(string id)
+  signal popoutFocusRequested(string id)
+  signal returnRequested(string id)
+  signal orphanDraftDismissed(string key)
   // The host's panel is on screen. Only a pinned page uses it: the full
   // browser keeps running in a hidden panel, as in a hidden browser window.
   property bool panelShown: true
@@ -766,7 +799,7 @@ Item {
         objectName: "sessionTabList"
         anchors.fill: parent
         anchors.topMargin: 100 * root.tabUnit
-        anchors.bottomMargin: 82 * root.tabUnit
+        anchors.bottomMargin: 82 * root.tabUnit + (compactControls.visible ? compactControls.height + 8 * root.tabUnit : 0)
         contentHeight: tabs.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -793,6 +826,7 @@ Item {
               online: root.online
               wakeCount: tabWakeCount
               running: tabRunning
+              poppedOut: root.poppedSessionIds[tabId] === true
               unread: root.unreadSessionIds[tabId] === true
               animationsEnabled: root.animationsEnabled
               foreground: root.foreground
@@ -828,6 +862,43 @@ Item {
           height: 3 * root.unit
           color: root.accent
           visible: root.dragDestinationValid && root.dragBeforeId === ""
+        }
+      }
+
+      // Compact rail: the selected conversation is in its own window. These
+      // always offer a way back, even if the compositor never focuses that
+      // window: Expand restores the full panel, Return moves the
+      // conversation back into it.
+      Column {
+        id: compactControls
+        objectName: "compactRailControls"
+        visible: root.compactRail
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 80 * root.tabUnit
+        x: 8 * root.tabUnit
+        width: rail.width - 16 * root.tabUnit
+        spacing: 6 * root.tabUnit
+        PanelAction {
+          objectName: "compactExpandButton"
+          width: parent.width
+          text: "Expand"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.tabUnit
+          onTriggered: root.expandRequested = true
+          Accessible.name: "Expand the Companion panel"
+        }
+        PanelAction {
+          objectName: "compactReturnButton"
+          width: parent.width
+          text: "Return"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.tabUnit
+          onTriggered: if (root.selectedSession) root.returnRequested(root.selectedSession.id)
+          Accessible.name: "Return the conversation to the sidebar"
         }
       }
 
@@ -886,6 +957,7 @@ Item {
     width: 10 * root.unit
     height: parent.height
     z: 5
+    visible: !root.compactRail
     hoverEnabled: true
     preventStealing: true
     cursorShape: Qt.SplitHCursor
@@ -907,7 +979,9 @@ Item {
 
   Item {
     id: body
+    visible: !root.compactRail
     readonly property real contentTop: 44 * root.unit + (actionError.visible ? actionError.height + 12 * root.unit : 0)
+      + (orphanNotice.visible ? orphanNotice.height + 12 * root.unit : 0)
     readonly property real contentHeight: Math.max(0, height - contentTop)
     // A pinned page shares this area with the Activity strip, the chat's
     // measured input and controls and a readable transcript (all of which grow
@@ -933,6 +1007,7 @@ Item {
     Text {
       anchors.top: parent.top
       width: Math.max(0, parent.width - 38 * root.unit - (browserButton.visible ? browserButton.width + 6 * root.unit : 0)
+        - (popoutButton.visible ? popoutButton.width + 6 * root.unit : 0)
         - (conversationControls.visible ? conversationControls.width + 6 * root.unit : 0))
       text: root.browsing ? "Browser" : root.showingPrevious ? "Previous sessions" : root.selectedSession ? root.selectedSession.title : "Companion"
       textFormat: Text.PlainText
@@ -973,6 +1048,25 @@ Item {
       Accessible.onPressAction: root.closeRequested()
     }
 
+    // Show the selected conversation in its own native window.
+    PanelAction {
+      id: popoutButton
+      objectName: "popoutButton"
+      visible: root.popoutAvailable && root.selectedSession !== null && !root.selectedPoppedOut
+        && !root.browsing && !root.showingPrevious
+      anchors.top: parent.top
+      anchors.topMargin: -4 * root.unit
+      anchors.right: closeButton.left
+      anchors.rightMargin: 6 * root.unit
+      text: "Pop out"
+      foreground: root.foreground
+      selection: root.selection
+      fontFamily: root.fontFamily
+      unit: root.unit
+      onTriggered: root.popoutRequested(root.selectedSession.id)
+      Accessible.name: "Show this conversation in its own window"
+    }
+
     PanelAction {
       id: browserButton
       objectName: "panelBrowserButton"
@@ -981,7 +1075,7 @@ Item {
       visible: root.browserAvailable && !root.browsing && !conversationControls.browserFolded
       anchors.top: parent.top
       anchors.topMargin: -4 * root.unit
-      anchors.right: closeButton.left
+      anchors.right: popoutButton.visible ? popoutButton.left : closeButton.left
       anchors.rightMargin: 6 * root.unit
       text: "Browser"
       foreground: root.foreground
@@ -1002,12 +1096,13 @@ Item {
       visible: active && (timerControl.shown || timerControl.opened || conversationMenu.items.length > 0)
       anchors.top: parent.top
       anchors.topMargin: -4 * root.unit
-      anchors.right: browserButton.visible ? browserButton.left : closeButton.left
+      anchors.right: browserButton.visible ? browserButton.left : popoutButton.visible ? popoutButton.left : closeButton.left
       anchors.rightMargin: (folded ? 2 : 6) * root.unit
       spacing: 4 * root.unit
       // Room for these controls beside the title, the Browser button and close.
       // Natural widths only, so folding never depends on its own result.
       readonly property real besideClose: body.width - 36 * root.unit
+        - (popoutButton.visible ? popoutButton.implicitWidth + 6 * root.unit : 0)
       readonly property real browserSpace: root.browserAvailable && !root.browsing ? browserButton.implicitWidth + 6 * root.unit : 0
       readonly property real menuWidth: 28 * root.unit
       readonly property bool menuWanted: timerControl.historyCount > 0 || chat.readingHistory
@@ -1100,6 +1195,56 @@ Item {
       wrapMode: Text.Wrap
       font.family: root.fontFamily
       font.pixelSize: 11 * root.unit
+    }
+
+    // Unsent text of a popped-out conversation that was closed meanwhile
+    // (by an agent, another client or while disconnected). Never dropped
+    // silently: it stays here until the user copies or dismisses it.
+    Column {
+      id: orphanNotice
+      objectName: "orphanDrafts"
+      y: 38 * root.unit + (actionError.visible ? actionError.height + 6 * root.unit : 0)
+      width: parent.width
+      spacing: 4 * root.unit
+      visible: root.orphanDrafts.length > 0
+      Repeater {
+        model: root.orphanDrafts
+        Row {
+          required property var modelData
+          width: orphanNotice.width
+          spacing: 6 * root.unit
+          Text {
+            width: Math.max(0, parent.width - orphanCopy.width - orphanDismiss.width - 12 * root.unit)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Unsent text from closed “" + modelData.title + "”: " + modelData.text
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: 11 * root.unit
+          }
+          PanelAction {
+            id: orphanCopy
+            objectName: "orphanCopy"
+            text: "Copy"
+            foreground: root.foreground
+            selection: root.selection
+            fontFamily: root.fontFamily
+            unit: root.unit
+            onTriggered: chat.copyMessage(modelData.text)
+          }
+          PanelAction {
+            id: orphanDismiss
+            objectName: "orphanDismiss"
+            text: "Dismiss"
+            foreground: root.foreground
+            selection: root.selection
+            fontFamily: root.fontFamily
+            unit: root.unit
+            onTriggered: root.orphanDraftDismissed(modelData.key)
+          }
+        }
+      }
     }
 
     ActivityStrip {
@@ -1264,14 +1409,15 @@ Item {
       id: chat
       nativeWidgets: root.nativeWidgets
       objectName: "sessionView"
-      visible: root.selectedSession !== null && !root.fullWidget && !root.browsing
+      visible: root.selectedSession !== null && !root.selectedPoppedOut && !root.fullWidget && !root.browsing
       widgetsRunning: root.online && root.animationsEnabled
       choiceHeightLimit: Math.max(48 * root.unit, Math.min(180 * root.unit,
         (root.pinnedMessage || root.browserPinned ? body.contentHeight : chat.height) * 0.3))
       anchors.fill: parent
       anchors.topMargin: root.fullWidget ? body.contentTop : Math.min(body.height, activityStrip.visible ? activityStrip.y + activityStrip.height + 12 * root.unit
         : body.pinBottom)
-      session: root.selectedSession
+      // A popped-out conversation's composer and draft live in its window.
+      session: root.selectedPoppedOut ? null : root.selectedSession
       background: root.background
       agentActions: root.agentActions
       paused: root.paused
@@ -1296,6 +1442,51 @@ Item {
       onToolPageRequested: request => root.toolPageRequested(request)
       onChoiceRequested: (id, revision, index) => root.choiceRequested(id, revision, index)
       onStopRunRequested: (id, runId) => root.stopRunRequested(id, runId)
+    }
+
+    // The full panel while the selected conversation is in its own window
+    // (Window presentation, or after Expand): say where it is and offer both
+    // ways back, without a second composer.
+    Column {
+      id: poppedOutNotice
+      objectName: "poppedOutNotice"
+      visible: root.selectedPoppedOut && !root.fullWidget && !root.browsing
+      anchors.left: parent.left
+      anchors.right: parent.right
+      y: chat.y + 24 * root.unit
+      spacing: 12 * root.unit
+      Text {
+        width: parent.width
+        text: root.selectedSession ? "“" + root.selectedSession.title + "” is open in its own window. Typing and voice go to it there." : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        horizontalAlignment: Text.AlignHCenter
+        color: root.muted
+        font.family: root.fontFamily
+        font.pixelSize: 12 * root.unit
+      }
+      Row {
+        anchors.horizontalCenter: parent.horizontalCenter
+        spacing: 8 * root.unit
+        PanelAction {
+          objectName: "focusPopoutButton"
+          text: "Focus window"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: if (root.selectedSession) root.popoutFocusRequested(root.selectedSession.id)
+        }
+        PanelAction {
+          objectName: "returnPopoutButton"
+          text: "Return to sidebar"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: if (root.selectedSession) root.returnRequested(root.selectedSession.id)
+        }
+      }
     }
 
     // Drag (or, when focused, Up/Down) to change the pin's height. It sits in
@@ -1387,7 +1578,7 @@ Item {
   ModelPicker {
     id: modelPicker
     objectName: "sessionModelFooter"
-    visible: !root.browsing && root.selectedSession !== null && root.sessionControls !== null && root.sessionControls.controlsAvailable
+    visible: !root.compactRail && !root.browsing && root.selectedSession !== null && root.sessionControls !== null && root.sessionControls.controlsAvailable
     anchors.left: rail.right
     anchors.right: parent.right
     anchors.bottom: parent.bottom

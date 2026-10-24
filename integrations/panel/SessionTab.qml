@@ -24,6 +24,9 @@ Rectangle {
   property bool running: false
   property bool unread: false
   property int wakeCount: 0
+  // The conversation is shown in its own native window. Selecting the tab
+  // then asks the host to focus that window instead of showing it here.
+  property bool poppedOut: false
   property bool animationsEnabled: true
   readonly property bool spinning: running && online && animationsEnabled && visible
   readonly property color unreadColor: "#91dbb5"
@@ -96,7 +99,7 @@ Rectangle {
     objectName: "sessionTitleTooltip"
     visible: root.hovered && !closeMouse.containsMouse
     delay: 400
-    text: root.title
+    text: root.poppedOut ? root.title + "\nIn its own window · click to focus it" : root.title
     padding: 8 * root.tabUnit
     width: Math.min(280 * root.tabUnit, titleText.implicitWidth + 2 * padding)
     background: Rectangle {
@@ -161,6 +164,18 @@ Rectangle {
       color: root.selected ? root.accent : root.foreground
       font.family: root.fontFamily
       font.pixelSize: (root.hasEmoji ? 15 : 10) * root.tabUnit
+    }
+    Text {
+      objectName: "sessionPoppedOutMarker"
+      visible: root.poppedOut
+      anchors.left: parent.left
+      anchors.bottom: parent.bottom
+      anchors.leftMargin: -4 * root.tabUnit
+      text: "↗"
+      textFormat: Text.PlainText
+      color: root.accent
+      font.family: root.fontFamily
+      font.pixelSize: 10 * root.tabUnit
     }
     Rectangle {
       objectName: "sessionUnreadDot"
@@ -303,6 +318,7 @@ Rectangle {
   }
   Accessible.role: Accessible.PageTab
   Accessible.name: title + (running ? ", running" : "") + (unread ? ", unread answer" : "")
+    + (poppedOut ? ", in its own window" : "")
   Accessible.selected: selected
   Accessible.onPressAction: root.selectedRequested()
 }
