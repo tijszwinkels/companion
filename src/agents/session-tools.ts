@@ -32,7 +32,7 @@ const focus = Type.Optional(
  * only when the listener positively announced it; absent or unknown values
  * mean an older listener, which keeps exactly its original tools.
  */
-export const sessionToolCapabilities = ['browser-open', 'self-wakes'] as const;
+export const sessionToolCapabilities = ['browser-open', 'self-wakes', 'session-present'] as const;
 export type SessionToolCapability = (typeof sessionToolCapabilities)[number];
 
 /** Parse the announced capabilities; anything unrecognised is ignored. */
@@ -257,6 +257,36 @@ export function sessionTools(
       }),
       method: 'browser-open',
       requires: 'browser-open' as SessionToolCapability,
+    },
+    {
+      name: 'companion_session_present',
+      label: 'Pop out or return this conversation',
+      promptSnippet:
+        'Show your own Companion conversation in its own desktop window, or return it to the sidebar.',
+      promptGuidelines: [
+        'Use companion_session_present only when the user asks to pop this conversation out into its own window, or to put it back in the sidebar. It always acts on your own conversation.',
+        'Do not retry after "unconfirmed"; ask the user to check instead.',
+      ],
+      description:
+        'Change only where your own conversation is shown: presentation "window" opens it in its own ' +
+        'ordinary desktop window (an existing window is reused), "sidebar" returns it to the Companion ' +
+        'sidebar. The conversation, its history, queue and unsent draft stay the same; nothing is sent. ' +
+        'focus true asks for the result to be activated (default false). Returns outcome "shown" or ' +
+        '"returned" and focused, which is true only when the panel saw the view actually gain focus. ' +
+        'Failures: unsupported (this panel has no conversation windows), unavailable (not open in the ' +
+        'panel), conflict (a pending send, choice or recording must finish first; nothing moved), ' +
+        'offline, or unconfirmed (do not retry; ask the user to check).',
+      parameters: Type.Object({
+        presentation: StringEnum(['window', 'sidebar'] as const),
+        focus: Type.Optional(
+          Type.Boolean({
+            description:
+              'Activate the resulting view. Default false: never interrupt the user unless they asked to see it.',
+          }),
+        ),
+      }),
+      method: 'present',
+      requires: 'session-present' as SessionToolCapability,
     },
   ];
 
