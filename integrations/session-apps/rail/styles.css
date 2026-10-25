@@ -1,0 +1,103 @@
+/*
+ * Trusted session rail. Colors, font and scale come from the native theme
+ * as CSS variables.
+ */
+
+html,
+body,
+#rail {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+}
+
+.rail {
+  --unit: 1;
+  display: flex;
+  flex-direction: column;
+  gap: calc(8px * var(--unit));
+  padding: 0 calc(8px * var(--unit));
+  color: var(--foreground);
+  font-family: var(--font, sans-serif);
+  font-size: calc(9px * var(--unit));
+}
+
+.session {
+  position: relative;
+  padding: calc(6px * var(--unit));
+  border-radius: calc(5px * var(--unit));
+  cursor: pointer;
+}
+
+.session:hover,
+.session.selected {
+  background: var(--selection);
+}
+
+.session.selected::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.number {
+  font-weight: bold;
+  color: var(--accent);
+}
+
+.running,
+.unread {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.unread {
+  background: var(--foreground);
+}
+
+.title {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: none;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.session:hover .actions,
+.session.selected .actions {
+  display: flex;
+}
+
+button {
+  font: inherit;
+  color: var(--foreground);
+  background: transparent;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+}

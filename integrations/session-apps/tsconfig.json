@@ -12,5 +12,11 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": ["chat", "../mobile/src/vendor.d.ts", "../mobile/src/markdown.ts"]
+  "include": [
+    "chat",
+    "rail",
+    "web-channel.ts",
+    "../mobile/src/vendor.d.ts",
+    "../mobile/src/markdown.ts"
+  ]
 }

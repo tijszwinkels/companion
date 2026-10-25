@@ -31,6 +31,7 @@ widgets, pins and the panel browser stay where they were). Start the host with
 | Trusted chat view and its bridge              | `TrustedChatView.qml`, `ChatState.mjs` |
 | Trusted chat page (Preact)                    | `chat/`, built into `dist/`            |
 | Restricted application view                   | `SessionAppView.qml`                   |
+| Trusted conversation list (rail)              | `TrustedRailView.qml`, `rail/`         |
 | Browser profiles                              | `../../native/widget-renderer/`        |
 
 `SessionView` stays the model in every presentation, so the existing draft
@@ -93,9 +94,20 @@ The view follows `session.application`:
 ## Not ported to HTML yet
 
 Tool details, inline widgets and pinned widgets, history-pane features such as
-message selection and screenshots thumbnails (screenshots open in the native
+message selection and screenshot thumbnails (screenshots open in the native
 viewer), the model picker, timers and the panel browser. Use Classic view or the
-sidebar for those. The trusted HTML rail/sidebar is a separate later step.
+sidebar for those.
+
+## Session rail
+
+With the HTML session surface the panel's list of conversations is also a
+trusted HTML page (`TrustedRailView.qml`, `rail/`), in the same `ShellProfile`
+shape: select, pop out, focus (selecting a popped-out conversation) and return,
+and close, each through the panel's existing signals. The Activity tab,
+Previous sessions, the compact rail's Expand/Return, the divider, Alt+number
+and Alt+Shift+Up/Down stay native, and the native tab list returns if the page
+fails. Drag reordering and tab tooltips are not ported; the rest of the sidebar
+(Activity, settings, Previous sessions) remains Qt Quick.
 
 ## Build and test
 

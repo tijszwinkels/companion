@@ -353,4 +353,69 @@ TestCase {
     tryVerify(function() { return body.popouts.windows["one"] === undefined })
     tryVerify(function() { return textarea(chatOf(mainView())) === "moving text" })
   }
+
+  // The trusted HTML rail lists the same conversations in the same order and
+  // drives selection, pop-out and return through the panel's own signals.
+  function test_h_html_rail_selects_pops_out_and_returns() {
+    snapshot([session("one", "First chat", null), session("two", "Second <b>chat</b>", null)])
+    tryVerify(function() { return body.panel.htmlRailActive }, 10000, "HTML rail active")
+    compare(findChild(body.panel, "sessionTabList").visible, false)
+    const rail = findChild(body.panel, "trustedRailBrowser")
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session').length") === 2 }, 15000)
+    // Titles are text, not markup.
+    compare(evaluate(rail, "document.querySelectorAll('.session .title')[1].textContent"), "Second <b>chat</b>")
+    compare(evaluate(rail, "document.querySelector('.session b') === null"), true)
+
+    evaluate(rail, "document.querySelectorAll('.session')[1].click()")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session')[1].classList.contains('selected')") === true })
+
+    evaluate(rail, "[...document.querySelectorAll('.session')[1].querySelectorAll('button')].find(b => b.textContent === 'Pop out').click()")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session')[1].textContent.includes('↗')") === true })
+    evaluate(rail, "[...document.querySelectorAll('.session')[1].querySelectorAll('button')].find(b => b.textContent === 'Return').click()")
+    tryVerify(function() { return body.popouts.windows["two"] === undefined })
+    // Activity stays native and reachable.
+    verify(findChild(body.panel, "activityTab").visible)
+  }
+
+  // Choices, run-scoped Stop, voice status and Record in the HTML chat use
+  // the conversation's own controls and the same pending rules.
+  function test_i_choices_stop_and_record_in_html_chat() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    const choice = {sessionId: "one", revision: "set-1", index: 0, label: "Ship it", description: "",
+      available: true, voiceAvailable: true, voiceReason: ""}
+    fakeBackend.received({type: "agent-view-actions", actions: [{sessionId: "one", stopRunId: "run-7", choices: [choice]}]})
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "one", stopRunId: "run-7", choices: [choice]}})
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.controls') !== null && document.querySelector('.controls').textContent.includes('[Ship it]')") === true }, 5000)
+    compare(evaluate(chat, "document.querySelector('.controls .voice').textContent"), "Voice: this conversation")
+
+    fakeBackend.sent = []
+    verify(clickButton(chat, "[Ship it]"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "choose-agent") })
+    const chosen = fakeBackend.sent.find(message => message.action === "choose-agent")
+    compare([chosen.id, chosen.revision, chosen.index], ["one", "set-1", 0])
+    verify(view.pendingChoice !== null)
+    // Pending: the choice cannot be sent twice.
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.choice')].find(b => b.textContent.includes('Ship it')).disabled") === true })
+    fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+    tryCompare(view, "pendingChoice", null)
+
+    fakeBackend.sent = []
+    verify(clickButton(chat, "[stop]"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "stop-agent-run" && message.runId === "run-7") })
+
+    // Pausing is shown truthfully.
+    snapshot([session("one", "First chat", null)])
+    fakeBackend.received({type: "state", protocol: 1, ready: true, paused: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [session("one", "First chat", null)]})
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.controls .voice') && document.querySelector('.controls .voice').textContent") === "Voice paused" }, 5000)
+
+    fakeBackend.received({type: "agent-view-actions", actions: []})
+    fakeBackend.received({type: "agent-actions", actions: {}})
+    fakeBackend.sent = []
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "start-recording" && message.id === "one") })
+  }
 }
