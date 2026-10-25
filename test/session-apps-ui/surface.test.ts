@@ -48,11 +48,35 @@ async function post(path, body) {
   const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return response.json();
 }
+// A failed state load (listener restart) rejects promptly and recovers.
+window.runStateProbe = async () => {
+  const settle = (request) => Promise.race([
+    request.then((response) => 'status:' + response.status, (error) => 'rejected:' + error.name),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 4000)),
+  ]);
+  window.stateProbe = await settle(fetch('state'));
+};
+window.runStateRecovery = async () => {
+  window.stateRecovery = (await (await fetch('state')).json()).revision;
+};
 window.runChecks = async () => {
   const checks = {};
   checks.state = await (await fetch('state')).json();
   checks.query = await post('query', { name: 'count_tasks', args: {}, version: ${version} });
   checks.action = await post('action', { action: 'complete', args: { id: 't1' }, version: ${version}, requestId: 'r1' });
+  // Refusals (409/400 from the service) must settle, never hang.
+  const settle = (request) => Promise.race([
+    request.then(async (response) => 'status:' + response.status + ':' + JSON.stringify(await response.json()),
+      (error) => 'rejected:' + error.name),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 4000)),
+  ]);
+  const refusal = (path, body) => settle(fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+  checks.refusedAction = await refusal('action', { action: 'complete', args: { id: 'missing' }, version: ${version}, requestId: 'r2' });
+  checks.refusedQuery = await refusal('query', { name: 'refused', args: {}, version: ${version} });
+  checks.oversized = await refusal('action', { action: 'complete', args: { pad: 'x'.repeat(200000) }, version: ${version}, requestId: 'r4' });
+  checks.wrongMethod = await settle(fetch('action'));
+  checks.revisionAfterRefusals = (await (await fetch('state')).json()).revision;
+  checks.afterRefusal = await post('action', { action: 'complete', args: { id: 't2' }, version: ${version}, requestId: 'r3' });
   try {
     await fetch('http://127.0.0.1:9/');
     checks.blocked = false;
@@ -71,6 +95,7 @@ async function startEndpoint(): Promise<ApplicationEndpoint> {
   const requests: { path: string; body: unknown }[] = [];
   let version = 1;
   let revision = 3;
+  let stateFailure = false;
 
   async function body(request: IncomingMessage): Promise<unknown> {
     let text = '';
@@ -90,7 +115,13 @@ async function startEndpoint(): Promise<ApplicationEndpoint> {
     const received = request.method === 'POST' ? await body(request) : null;
     requests.push({ path, body: received });
 
-    if (path.startsWith('/control/version/')) {
+    if (path.startsWith('/control/state-failure/')) {
+      stateFailure = path.endsWith('/1');
+      json(response, { stateFailure });
+    } else if (path === `/view/${capability}/state` && stateFailure) {
+      response.writeHead(503, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'Listener restarting' }));
+    } else if (path.startsWith('/control/version/')) {
       version = Number(path.slice('/control/version/'.length));
       json(response, { version });
     } else if (path === `/view/${capability}`) {
@@ -106,8 +137,14 @@ async function startEndpoint(): Promise<ApplicationEndpoint> {
         props: data,
         textScale: null,
       });
+    } else if (path === `/view/${capability}/query` && (received as any)?.name === 'refused') {
+      response.writeHead(400, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'Unknown query' }));
     } else if (path === `/view/${capability}/query`) {
       json(response, { result: { count: 3 }, revision });
+    } else if (path === `/view/${capability}/action` && (received as any)?.args?.id === 'missing') {
+      response.writeHead(409, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'Unknown task' }));
     } else if (path === `/view/${capability}/action`) {
       revision++;
       json(response, { result: { done: true }, id: 'app-1', revision });
@@ -134,14 +171,28 @@ test('HTML chat, session application and code replacement share one conversation
   try {
     const runtime = join(directory, 'runtime');
     await mkdir(runtime, { mode: 0o700 });
+    // A page bundle whose HTML loads but whose script is missing.
+    const broken = join(directory, 'broken-bundle');
+    await mkdir(broken);
+    for (const page of ['chat.html', 'rail.html', 'chat.css', 'rail.css']) {
+      await writeFile(
+        join(broken, page),
+        await readFile(new URL(`../../integrations/session-apps/dist/${page}`, import.meta.url)),
+      );
+    }
     const template = await readFile(new URL('./surface.qml.in', import.meta.url), 'utf8');
     const path = join(directory, 'tst_surface.qml');
     await writeFile(
       path,
       template
         .replace('@WINDOW@', new URL('../../integrations/window', import.meta.url).href)
-        .replace('@VIEW_URL@', endpoint.viewUrl)
-        .replace('@CONTROL_URL@', endpoint.controlUrl),
+        .replaceAll('@VIEW_URL@', endpoint.viewUrl)
+        .replaceAll('@CONTROL_URL@', endpoint.controlUrl)
+        .replaceAll(
+          '@SESSION_APPS@',
+          new URL('../../integrations/session-apps', import.meta.url).href,
+        )
+        .replaceAll('@BROKEN_BUNDLE@', broken),
     );
 
     try {

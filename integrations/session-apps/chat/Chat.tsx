@@ -373,8 +373,14 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  * The composer edits the host-owned draft. Each input is sent with the host
  * draft revision it is based on. A host-side change (agent draft, recorded
  * words, completed send, handover) advances the revision; an edit based on
- * an older revision is refused natively and the page shows the conflict with
- * the refused text, so nothing typed is silently lost.
+ * an older revision (or one that cannot be applied, e.g. too long) is
+ * refused natively. The host keeps the refused text for that conversation
+ * (`draft.refused`) until the person uses, copies or dismisses it, so
+ * nothing typed is lost on navigation or handover.
+ *
+ * Send names the exact text it means; the host refuses it unless that is the
+ * host draft. The cursor position follows the page's selection, so a
+ * handover or Classic view resumes where the person left off.
  */
 function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   const { status, bridge } = props;
@@ -384,12 +390,21 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   const base = useRef(draft.revision);
   const sessionId = useRef(status.sessionId);
   const inFlight = useRef(0);
-  const [conflict, setConflict] = useState('');
+  // Rendered copy of inFlight, so Send waits for the latest edit's answer.
+  const [editsInFlight, setEditsInFlight] = useState(0);
+  const lastCursor = useRef(-1);
   // The newest host draft, for answers that arrive after a status update.
   const hostDraft = useRef(draft);
   hostDraft.current = draft;
 
   const maximum = status.maximumMessageLength || 8000;
+  const refused = draft.refused || '';
+  const sendable =
+    status.canSend === true &&
+    editsInFlight === 0 &&
+    refused === '' &&
+    text.trim() !== '' &&
+    text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
   const readOnly = status.recording?.busy === true;
@@ -412,7 +427,8 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
     if (otherSession) {
       sessionId.current = status.sessionId;
       inFlight.current = 0;
-      setConflict('');
+      setEditsInFlight(0);
+      lastCursor.current = -1;
     }
     if (otherSession || (draft.revision !== base.current && inFlight.current === 0)) {
       adoptHostDraft();
@@ -422,16 +438,20 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   function edited(value: string, cursor: number) {
     setText(value);
     inFlight.current++;
+    setEditsInFlight(inFlight.current);
+    lastCursor.current = cursor;
     const editedSession = status.sessionId;
     bridge.editDraft(editedSession, base.current, value, cursor, (json) => {
-      inFlight.current = Math.max(0, inFlight.current - 1);
       if (editedSession !== sessionId.current) {
+        // The host kept a refused edit for that conversation already.
         return;
       }
+      inFlight.current = Math.max(0, inFlight.current - 1);
+      setEditsInFlight(inFlight.current);
       const answer = decode(json);
       if (!answer.accepted && answer.draft) {
-        // Refused: show what the host holds now and keep the refused text.
-        setConflict(value);
+        // Refused: the host kept this text as the conversation's refused
+        // text (shown below); show what the host draft holds now.
         base.current = answer.draft.revision;
         setText(answer.draft.text);
         return;
@@ -445,7 +465,10 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   }
 
   function send() {
-    bridge.send(status.sessionId, base.current);
+    if (!sendable) {
+      return;
+    }
+    bridge.send(status.sessionId, base.current, text);
   }
 
   function keyDown(event: KeyboardEvent) {
@@ -454,6 +477,25 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
       send();
     }
   }
+
+  // Cursor-only movement (arrow keys, clicks, selection) is reported too.
+  function cursorMoved() {
+    const element = area.current;
+    if (!element || document.activeElement !== element || inFlight.current > 0) {
+      return;
+    }
+    const cursor = element.selectionStart;
+    if (cursor === lastCursor.current || element.value !== text) {
+      return;
+    }
+    lastCursor.current = cursor;
+    bridge.moveCursor(status.sessionId, base.current, cursor);
+  }
+
+  useEffect(() => {
+    document.addEventListener('selectionchange', cursorMoved);
+    return () => document.removeEventListener('selectionchange', cursorMoved);
+  });
 
   const recording = status.recording;
   let recordLabel = 'Record';
@@ -483,22 +525,17 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
 
   return (
     <div class="composer">
-      {conflict && (
+      {refused && (
         <div class="conflict">
-          Your text changed elsewhere (an agent draft, recording or another view) while you typed.
-          <button
-            class="link"
-            onClick={() => {
-              edited(conflict, conflict.length);
-              setConflict('');
-            }}
-          >
+          Some of your text could not be added to the draft (it changed elsewhere, was too long or
+          words were being recorded). Your text is kept.
+          <button class="link" onClick={() => bridge.resolveRefused(status.sessionId, 'use')}>
             Use my text
           </button>
-          <button class="link" onClick={() => bridge.copyText(conflict)}>
+          <button class="link" onClick={() => bridge.resolveRefused(status.sessionId, 'copy')}>
             Copy my text
           </button>
-          <button class="link" onClick={() => setConflict('')}>
+          <button class="link" onClick={() => bridge.resolveRefused(status.sessionId, 'dismiss')}>
             Dismiss
           </button>
         </div>
@@ -514,6 +551,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
           edited(element.value, element.selectionStart);
         }}
         onKeyDown={keyDown}
+        onKeyUp={cursorMoved}
+        onMouseUp={cursorMoved}
+        onSelect={cursorMoved}
         onFocus={() => bridge.composerFocus(true)}
         onBlur={() => bridge.composerFocus(false)}
       />
@@ -534,7 +574,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
         </div>
       )}
       <div class="actions">
-        <button disabled={!status.canSend} onClick={send}>
+        <button disabled={!sendable} onClick={send}>
           {status.running ? 'Queue' : 'Send'}
         </button>
         {recording?.available && (

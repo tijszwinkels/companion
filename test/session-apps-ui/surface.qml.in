@@ -65,7 +65,7 @@ TestCase {
     let done = false
     let result = null
     browser.runJavaScript(script, function(value) { result = value; done = true })
-    tryVerify(function() { return done }, 5000)
+    tryVerify(function() { return done }, 10000, "script answered: " + script.slice(0, 60))
     return result
   }
   function waitForChat(view) {
@@ -108,6 +108,16 @@ TestCase {
     compare(request.status, 200)
   }
 
+  function setServerStateFailure(failing) {
+    let done = false
+    const request = new XMLHttpRequest()
+    request.onreadystatechange = function() { if (request.readyState === XMLHttpRequest.DONE) done = true }
+    request.open("GET", "@CONTROL_URL@/state-failure/" + (failing ? 1 : 0))
+    request.send()
+    tryVerify(function() { return done })
+    compare(request.status, 200)
+  }
+
   function initTestCase() {
     body = bodyComponent.createObject(null)
     verify(body !== null)
@@ -136,6 +146,7 @@ TestCase {
       body.popouts.returnToSidebar(id, {focus: false})
     }
     mainView().clearDraft("one")
+    mainView().refusedDrafts = ({})
     tryCompare(body.popouts, "report", [])
   }
 
@@ -201,12 +212,19 @@ TestCase {
     compare(answer.accepted, false)
     compare(answer.reason, "stale")
     compare(composerOf(view).text, "first")
+    // The host keeps the refused text and the page offers it back.
+    compare(view.refusedDrafts["one"], "stale text")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null") === true })
+    verify(clickButton(chat, "Dismiss"))
+    tryCompare(view, "displayedRefusedDraft", "")
     // Another conversation's ID is refused as well.
     evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('two', "
       + view.draftRevision + ", 'x', 1, answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
     compare(JSON.parse(evaluate(chat, "window.__answer")).reason, "other-session")
     compare(composerOf(view).text, "first")
+    compare(view.refusedDrafts["two"], "x")
+    verify(view.resolveRefusedDraft("two", "dismiss"))
   }
 
   // The trusted page reports composer focus for voice routing; focusing the
@@ -262,6 +280,28 @@ TestCase {
     compare(parsed.query.result.count, 3)
     compare(parsed.action.revision, 4)
     compare(parsed.blocked, true)
+    // Refused requests settle as failures in the page, promptly: a 409
+    // action, a 400 query, an oversized body and a wrong method. They change
+    // nothing, do not mark the view broken, and later valid actions work.
+    compare(parsed.refusedAction, "rejected:TypeError")
+    compare(parsed.refusedQuery, "rejected:TypeError")
+    compare(parsed.oversized, "rejected:TypeError")
+    compare(parsed.wrongMethod, "rejected:TypeError")
+    compare(parsed.revisionAfterRefusals, 4)
+    compare(parsed.afterRefusal.revision, 5)
+    compare(app.error, "")
+
+    // A failed state load rejects promptly and shows the view error; the
+    // next successful load clears it.
+    setServerStateFailure(true)
+    evaluate(app, "window.runStateProbe()")
+    tryVerify(function() { return evaluate(app, "window.stateProbe || ''") !== "" }, 10000)
+    compare(evaluate(app, "window.stateProbe"), "rejected:TypeError")
+    tryCompare(app, "error", "Could not load widget data")
+    setServerStateFailure(false)
+    evaluate(app, "window.runStateRecovery()")
+    tryVerify(function() { return evaluate(app, "window.stateRecovery || 0") === 5 }, 10000)
+    tryCompare(app, "error", "")
 
     // Back to chat: same conversation, same draft, same history rows.
     mouseClick(findChild(view, "surfaceChatButton"))
@@ -541,5 +581,142 @@ TestCase {
     body.client.sessions.select("plain")
     tryCompare(surface, "mode", "chat")
     tryVerify(function() { return textarea(chat) === "draft here" })
+  }
+
+  // S1: Enter right after an edit the host refuses (too long) sends nothing:
+  // the page waits for the edit's answer, and the host only sends the exact
+  // text the page shows.
+  function test_p_send_never_submits_older_text_after_a_refused_edit() {
+    const chat = freshChat("sendcheck")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "host old")
+    tryCompare(composerOf(view), "text", "host old")
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'y'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true}));"
+      + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); return true })()")
+    tryVerify(function() { return view.displayedRefusedDraft.length === 16001 }, 5000)
+    wait(300)
+    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
+    compare(composerOf(view).text, "host old")
+    // Send stays disabled while the refused text waits for a decision.
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
+    // A direct bridge send naming other text than the host draft is refused.
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.send('sendcheck', " + view.draftRevision
+      + ", 'something else', answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, false)
+    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
+    // Dismissed, the shown text is the host draft again and sends exactly.
+    verify(clickButton(chat, "Dismiss"))
+    tryVerify(function() { return textarea(chat) === "host old" })
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
+    compare(fakeBackend.sent.find(message => message.action === "send-agent").text, "host old")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+  }
+
+  // S2: refused text is host-owned: it survives switching conversations and
+  // reloading, blocks moving the conversation to a window until resolved,
+  // and can be used.
+  function test_q_refused_text_survives_navigation_and_gates_handover() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', -1, 'my words', 8); return true })()")
+    tryCompare(view, "displayedRefusedDraft", "my words")
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') === null") === true })
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null"
+      + " && document.querySelector('.conflict').textContent.includes('Use my text')") === true })
+    // Reloading the page keeps it too (it lives in the host).
+    chat.reload()
+    tryVerify(function() { return findChild(surfaceOf(view), "trustedChat").pageReady }, 15000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null") === true }, 5000)
+    // Pop-out waits until it is resolved, with a reason.
+    body.popouts.popOut("one")
+    compare(body.popouts.windows["one"], undefined)
+    verify(body.client.error.includes("could not be added"))
+    body.client.error = ""
+    verify(clickButton(chat, "Use my text"))
+    tryCompare(composerOf(view), "text", "my words")
+    compare(view.displayedRefusedDraft, "")
+    tryVerify(function() { return textarea(chat) === "my words" })
+    // The classic view offers the same recovery.
+    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', -1, 'second try', 10); return true })()")
+    tryCompare(view, "displayedRefusedDraft", "second try")
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    verify(findChild(view, "refusedDraft").visible)
+    const dismiss = findChild(view, "refusedDraftDismiss")
+    verify(waitForRendering(dismiss))
+    mouseClick(dismiss)
+    tryCompare(view, "displayedRefusedDraft", "")
+    view.classicView = false
+  }
+
+  // S3: moving the cursor without typing (keyboard or mouse) reaches the
+  // host draft, so Classic view and handover resume at that position.
+  function test_r_cursor_only_movement_is_synchronized() {
+    const chat = freshChat("cursor")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "abcdef")
+    tryCompare(composerOf(view), "text", "abcdef")
+    compare(view.exportDraft("cursor").cursor, 6)
+    // Real key events through the native view.
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    for (let index = 0; index < 4; index++) keyClick(Qt.Key_Left)
+    tryCompare(composerOf(view), "cursorPosition", 2, 5000)
+    compare(view.exportDraft("cursor").cursor, 2)
+    // A pointer placement (synthetic DOM selection plus mouseup).
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.setSelectionRange(5, 5);"
+      + " area.dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "cursorPosition", 5, 5000)
+    // Handover keeps it.
+    body.popouts.popOut("cursor")
+    tryVerify(function() { return body.popouts.windows["cursor"] !== undefined })
+    compare(body.popouts.windows["cursor"].view.exportDraft("cursor").cursor, 5)
+    body.popouts.returnToSidebar("cursor", {focus: false})
+    tryVerify(function() { return body.popouts.windows["cursor"] === undefined })
+  }
+
+  // S4: until the trusted page completed its handshake, the native view
+  // stays visible (a fresh pop-out starts in the classic presentation).
+  function test_s_native_view_stays_until_the_page_is_operational() {
+    const chat = freshChat("startup")
+    body.popouts.popOut("startup")
+    const window = body.popouts.windows["startup"]
+    verify(window !== undefined)
+    // Synchronously after creation the page cannot have called ready().
+    compare(window.view.htmlActive, false)
+    verify(findChild(window.view, "sessionComposer").visible)
+    tryCompare(window.view, "htmlActive", true, 15000)
+    body.popouts.returnToSidebar("startup", {focus: false})
+    tryVerify(function() { return body.popouts.windows["startup"] === undefined })
+  }
+
+  // S4: a trusted page that loads but never completes its handshake (here:
+  // its script is missing) fails within the bound instead of hiding the
+  // native presentation forever. Applies to chat and rail.
+  function test_t_page_without_handshake_fails_within_its_bound() {
+    for (const name of ["TrustedChatView.qml", "TrustedRailView.qml"]) {
+      const component = Qt.createComponent("@SESSION_APPS@/" + name)
+      verify(component.status === Component.Ready, component.errorString())
+      const view = component.createObject(testCase, {bundleDirectory: "@BROKEN_BUNDLE@",
+        readyTimeoutMilliseconds: 1500, width: 300, height: 300})
+      verify(view !== null)
+      compare(view.failed, false)
+      tryCompare(view, "failed", true, 8000)
+      compare(view.operational, false)
+      view.destroy()
+    }
   }
 }

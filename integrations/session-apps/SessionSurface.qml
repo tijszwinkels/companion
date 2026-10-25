@@ -27,6 +27,8 @@ Item {
   readonly property string sessionId: session ? session.id : ""
   readonly property var application: session && session.application ? session.application : null
   readonly property bool failed: chat.failed
+  // The chat page completed its start-up handshake (see TrustedChatView).
+  readonly property bool operational: chat.operational
   readonly property bool composerFocused: mode === "chat" && chat.composerFocused
 
   // Per conversation shown in this view: "chat" or "app". Set only by the

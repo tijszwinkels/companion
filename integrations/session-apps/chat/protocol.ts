@@ -52,6 +52,8 @@ export interface ChatStatus {
     revision: number;
     source: string;
     notice: string;
+    /** Text the host could not apply to this draft, kept until resolved. */
+    refused?: string;
   };
   maximumMessageLength?: number;
   canSend?: boolean;
@@ -126,7 +128,10 @@ export interface NativeBridge {
     cursor: number,
     callback?: (answer: string) => void,
   ): void;
-  send(sessionId: string, base: number, callback?: (answer: string) => void): void;
+  /** `text` is what the page shows; the host sends only if it is the draft. */
+  send(sessionId: string, base: number, text: string, callback?: (answer: string) => void): void;
+  moveCursor(sessionId: string, base: number, cursor: number): void;
+  resolveRefused(sessionId: string, how: 'use' | 'copy' | 'dismiss'): void;
   choose(
     sessionId: string,
     revision: string,

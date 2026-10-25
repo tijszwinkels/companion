@@ -30,7 +30,7 @@ Item {
   // and HTML conversation list. The native tab list returns if it fails.
   property bool htmlSessions: false
   readonly property bool htmlRailActive: htmlSessions && nativeWidgets && htmlRail.status === Loader.Ready
-    && htmlRail.item !== null && !htmlRail.item.failed
+    && htmlRail.item !== null && htmlRail.item.operational && !htmlRail.item.failed
   property string shortcutLabel: ""
   property string focusShortcut: ""
   property var history: []

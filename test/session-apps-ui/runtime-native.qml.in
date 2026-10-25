@@ -96,6 +96,19 @@ TestCase {
     mouseClick(findChild(view(), "surfaceAppButton"))
     tryCompare(surface, "mode", "app")
 
+    // A refused action (unknown task) and an unknown query settle as
+    // rejections in the authored page within the bound: no change, no
+    // event, the view is not marked broken, and the next valid edit works.
+    evaluate(app(), "(() => { window.refusalProbe = null; window.addEventListener('message', (event) => {"
+      + " if (event.data && event.data.refusalProbe) window.refusalProbe = event.data.refusalProbe; });"
+      + " document.querySelector('iframe').contentWindow.postMessage('refusal-probe', '*'); return true })()")
+    tryVerify(function() { return evaluate(app(), "window.refusalProbe !== null") === true }, 8000, "refusals settle")
+    compare(evaluate(app(), "JSON.stringify(window.refusalProbe)"), JSON.stringify({action: "rejected", query: "rejected"}))
+    compare(app().error, "")
+    let unchanged = fetchSession("/session")
+    compare(unchanged.application.revision, 1)
+    compare(unchanged.application.eventStatus ? unchanged.application.eventStatus.undelivered : 0, 0)
+
     inApp("document.querySelector('li input[type=checkbox]').click()")
     waitInApp("document.querySelector('.counter').textContent", "1 of 2 done")
     let current = fetchSession("/session")

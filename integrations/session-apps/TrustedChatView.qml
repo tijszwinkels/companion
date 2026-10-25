@@ -31,8 +31,22 @@ Item {
   // The page did not load or its renderer stopped: SessionView falls back to
   // the QML presentation, which stays fully functional.
   property bool loadFailed: false
-  readonly property bool failed: loadFailed || shellProfile.error !== ""
+  readonly property bool failed: loadFailed || readyTimedOut || shellProfile.error !== ""
   property bool pageReady: false
+  // Bounded start-up handshake. The page counts as operational only after
+  // its script connected and called ready(). A page that loads but never
+  // gets there (missing or broken script) is treated as failed after this
+  // long, so the native presentation stays (or becomes) the visible one.
+  property int readyTimeoutMilliseconds: 10000
+  property bool operational: false
+  property bool readyTimedOut: false
+  Timer {
+    id: readyDeadline
+    interval: root.readyTimeoutMilliseconds
+    running: !root.operational && !root.readyTimedOut && shellProfile.documentUrl.toString() !== ""
+    onTriggered: root.readyTimedOut = true
+  }
+
   // The page's own report that its composer has keyboard focus. Only counted
   // while this browser has Qt focus in an active window (see SessionView).
   property bool pageComposerFocused: false
@@ -111,7 +125,7 @@ Item {
       running: view.running === true,
       online: view.online,
       paused: view.paused,
-      draft: {text: draft.text, cursor: draft.cursor, revision: draft.revision,
+      draft: {text: draft.text, cursor: draft.cursor, revision: draft.revision, refused: draft.refused,
         source: view.displayedDraftSource, notice: view.displayedRecordingNotice},
       maximumMessageLength: view.maximumMessageLength,
       canSend: view.canSend,
@@ -173,6 +187,7 @@ Item {
   readonly property var rowsWatch: root.view ? [root.view.shownRows, root.view.session ? root.view.session.id : ""] : []
   onRowsWatchChanged: root.schedule(true)
   readonly property string statusWatch: root.view ? JSON.stringify([root.view.session ? root.view.session.status : "",
+    root.view.displayedRefusedDraft,
     root.view.session && root.view.session.application ? root.view.session.application.version : 0,
     root.view.draftRevision, root.view.canSend, root.view.pendingSubmission !== null, root.view.pendingChoice !== null,
     root.view.inputError, root.view.recordingAvailable, root.view.recordingState, root.view.recordingBusy,
@@ -198,7 +213,9 @@ Item {
 
     // The page loaded (or reloaded): send everything again.
     function ready() {
+      if (root.readyTimedOut) return false
       root.pageReady = true
+      root.operational = true
       root.sentRows = ({})
       root.lastStatus = ""
       root.fullRows = true
@@ -214,23 +231,50 @@ Item {
       if (!view) return JSON.stringify({accepted: false, reason: "unavailable"})
       // Recording appends to this draft; typing meanwhile is not accepted
       // (the page shows the composer read-only), so words never interleave.
-      if (view.recordingBusy) return JSON.stringify({accepted: false, reason: "recording", draft: view.pageDraft()})
+      // Every refusal keeps the person's text in the host (refusedDrafts).
+      function refuse(reason) {
+        if (typeof sessionId === "string" && typeof text === "string" && text.length <= 4 * view.maximumMessageLength
+            && !(sessionId === view.displayedId && text === view.pageDraft().text)) {
+          view.keepRefusedDraft(sessionId, text)
+        }
+        return JSON.stringify({accepted: false, reason: reason, draft: view.pageDraft()})
+      }
+      if (view.recordingBusy) return refuse("recording")
       // The listener's own limit is 8000; the page cannot send more than
       // twice that across the bridge, so oversize text is visibly refused.
       const check = ChatState.draftEditAllowed({sessionId: sessionId, base: base, text: text},
         view.displayedId, view.draftRevision, 2 * view.maximumMessageLength)
-      if (!check.allowed) return JSON.stringify({accepted: false, reason: check.reason, draft: view.pageDraft()})
+      if (!check.allowed) return refuse(check.reason)
       view.replaceDraftFromPage(text, typeof cursor === "number" ? cursor : text.length)
       return JSON.stringify({accepted: true})
     }
 
-    function send(sessionId, base) {
+    // `text` is what the page shows. Sending requires it to be exactly the
+    // host draft at the revision the page knows, so a refused or still
+    // unapplied edit can never result in older text being sent.
+    function send(sessionId, base, text) {
       const view = root.view
-      if (!sameSession(sessionId) || base !== view.draftRevision || !view.canSend) {
+      if (!sameSession(sessionId) || base !== view.draftRevision || !view.canSend
+          || typeof text !== "string" || text !== view.pageDraft().text || view.displayedRefusedDraft !== "") {
         return JSON.stringify({accepted: false})
       }
       view.submit()
       return JSON.stringify({accepted: view.pendingSubmission !== null})
+    }
+
+    function moveCursor(sessionId, base, cursor) {
+      const view = root.view
+      if (!sameSession(sessionId) || base !== view.draftRevision || typeof cursor !== "number"
+          || !Number.isInteger(cursor) || cursor < 0 || cursor > view.pageDraft().text.length) {
+        return false
+      }
+      view.setPageCursor(cursor)
+      return true
+    }
+
+    function resolveRefused(sessionId, how) {
+      if (!sameSession(sessionId)) return false
+      return root.view.resolveRefusedDraft(sessionId, how)
     }
 
     function choose(sessionId, revision, index) {
