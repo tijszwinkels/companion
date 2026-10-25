@@ -110,6 +110,8 @@ return value is validated against `returns` and its changes are discarded.
 ## Browser API (inside the restricted view)
 
 - `api.state.read()` → `Promise<{revision, data}>`, the current saved state.
+  Simultaneous reads share one request (at most eight waiting), so a read may
+  answer with state up to one round trip old.
 - `api.state.subscribe(callback)` → unsubscribe function. `callback({revision,
 data})` runs after each observed revision change. The view host polls
   `GET /state` every 400 ms while the page is visible (no polling while
@@ -124,6 +126,9 @@ history, the draft, chat sending, native window commands or other sessions.
 ## View HTTP protocol
 
 All requests go to the loopback widget service; Host and Origin must match it.
+The trusted host page bounds what authored code can ask of it, including
+messages posted directly: at most eight outstanding requests (actions, queries
+and one shared state read) and request IDs of at most 100 characters.
 
 | Request                 | Body / response                                                       |
 | ----------------------- | --------------------------------------------------------------------- |

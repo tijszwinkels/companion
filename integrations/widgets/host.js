@@ -136,24 +136,66 @@ window.addEventListener('message', (event) => {
     }
     const query = { name: message.name, args: message.args, version: application.version };
     send('/query', query, message.id, false);
-  } else if (message.type === 'state-read' && typeof message.id === 'string') {
-    if (!api) {
-      reply(message.id, { revision, data: currentProps });
+  } else if (message.type === 'state-read') {
+    if (typeof message.id !== 'string' || message.id.length > 100) {
       return;
     }
-    void fetch(api + '/state')
-      .then(async (response) => {
-        const value = await response.json();
-        if (!response.ok) {
-          throw Error(value.error);
-        }
-        reply(message.id, { revision: value.revision, data: value.props });
-      })
-      .catch((error) => reply(message.id, null, error.message));
-  } else if (typeof message.id === 'string') {
+    readState(message.id);
+  } else if (typeof message.id === 'string' && message.id.length <= 100) {
     reply(message.id, null, 'Unsupported widget request');
   }
 });
+
+// State reads arrive from authored code, which may post them directly rather
+// than through the frame API's own limit. They share one in-flight GET /state:
+// at most eight callers wait for it, and it counts once against the same
+// eight-request budget as actions and queries. A read that joins an in-flight
+// request receives that request's answer, which may be up to one round trip
+// old. Capacity is released when the request settles, successfully or not.
+const maximumStateReaders = 8;
+const stateReaders = [];
+let stateReadInFlight = false;
+
+function readState(id) {
+  if (!api) {
+    reply(id, { revision, data: currentProps });
+    return;
+  }
+  if (stateReaders.length >= maximumStateReaders) {
+    reply(id, null, 'Too many pending state reads');
+    return;
+  }
+  if (!stateReadInFlight && liveActions >= 8) {
+    reply(id, null, 'Too many widget requests');
+    return;
+  }
+  stateReaders.push(id);
+  if (stateReadInFlight) {
+    return;
+  }
+
+  stateReadInFlight = true;
+  liveActions++;
+  const settle = (value, error) => {
+    stateReadInFlight = false;
+    liveActions--;
+    for (const reader of stateReaders.splice(0)) {
+      reply(reader, value, error);
+    }
+  };
+  void fetch(api + '/state')
+    .then(async (response) => {
+      const value = await response.json();
+      if (!response.ok) {
+        throw Error(value.error);
+      }
+      return { revision: value.revision, data: value.props };
+    })
+    .then(
+      (value) => settle(value, ''),
+      (error) => settle(null, error.message),
+    );
+}
 
 // One bounded POST to the view's own capability URL. Mutations refresh the
 // displayed state before resolving, so the page sees its own committed change.
