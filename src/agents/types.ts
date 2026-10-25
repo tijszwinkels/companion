@@ -1,4 +1,5 @@
 import type { WidgetAttachment } from '../widgets/types.ts';
+import type { SessionApplicationDescriptor } from '../session-apps/types.ts';
 import type { Screenshot } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import type { AgentChoice, AgentChoiceSet } from './choices.ts';
@@ -186,6 +187,13 @@ export interface AgentSession {
    * add it to the rail without selecting it or revealing the panel.
    */
   openInBackground?: boolean;
+  /**
+   * Live-only: the session application that replaces this conversation's HTML
+   * chat, if any. Derived from the application service on every snapshot and
+   * patch; never saved in the conversation archive. Remote snapshots omit its
+   * `viewUrl`. See src/session-apps/README.md.
+   */
+  application?: SessionApplicationDescriptor;
 }
 
 export type PreviousSession = Omit<AgentSession, 'messages'>;
