@@ -30,6 +30,8 @@ Item {
   // long, so the native presentation stays (or becomes) the visible one.
   property int readyTimeoutMilliseconds: 10000
   property bool operational: false
+  // How often a page completed the handshake (each load calls ready()).
+  property int readyCount: 0
   property bool readyTimedOut: false
   Timer {
     id: readyDeadline
@@ -95,6 +97,7 @@ Item {
 
     function ready() {
       if (root.readyTimedOut) return false
+      root.readyCount++
       root.pageReady = true
       root.operational = true
       root.publish()
@@ -169,7 +172,10 @@ Item {
     onFullScreenRequested: request => request.reject()
     onContextMenuRequested: request => request.accepted = true
     onLoadingChanged: request => {
-      if (request.status === WebEngineView.LoadStartedStatus) root.pageReady = false
+      // A reload is not marked here: Chromium's load notification can
+      // arrive after the new page's ready(). Updates sent while a page
+      // reloads are lost with the old document; the new page's ready()
+      // resynchronizes everything.
       if (request.status === WebEngineView.LoadFailedStatus) root.loadFailed = true
     }
     onRenderProcessTerminated: (status, exitCode) => {

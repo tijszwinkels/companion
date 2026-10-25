@@ -35,7 +35,10 @@ export function chatRow(data) {
   }
 
   let origin = null;
-  if (data.fromAgent) {
+  if (data.fromApplication) {
+    // The person's own committed app edits, delivered by the host.
+    origin = { kind: 'application-event', title: '', sessionId: '', groupId: '' };
+  } else if (data.fromAgent) {
     let kind = 'agent';
     if (data.fromWake) {
       kind = 'scheduled-wake';

@@ -915,6 +915,9 @@ Item {
       screenshotNotSaved: message.screenshotSaved === false,
       fromWake: message.origin ? message.origin.kind === "scheduled-wake" : false,
       fromExternal: message.origin ? message.origin.kind === "external" : false,
+      // The person's own committed edits in this conversation's session
+      // application, delivered by the host as a turn; not another agent.
+      fromApplication: message.origin ? message.origin.kind === "application-event" : false,
       fromAgent: message.origin !== undefined && message.origin !== null,
       originTitle: message.origin ? message.origin.title || "" : "",
       // External origins carry unverified labels, never a linkable conversation.
@@ -1191,6 +1194,7 @@ Item {
       required property bool fromExternal
       required property bool fromAgent
       required property bool fromWake
+      required property bool fromApplication
       required property string originTitle
       required property string originSessionId
       required property string originGroupId
@@ -1267,7 +1271,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
+              : bubble.kind === "user" ? (bubble.fromApplication ? "Your edits in this conversation's app" : bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") + bubble.fragmentLabel : "Pi" + bubble.fragmentLabel
             textFormat: Text.PlainText

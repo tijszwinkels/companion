@@ -255,6 +255,8 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
       from = `From ${row.origin.title}`;
     } else if (row.origin?.kind === 'external') {
       from = `${row.origin.title} · external (unverified)`;
+    } else if (row.origin?.kind === 'application-event') {
+      from = "Your edits in this conversation's app";
     } else if (row.origin?.kind === 'scheduled-wake') {
       from = row.origin.title || 'Scheduled wake';
     }
