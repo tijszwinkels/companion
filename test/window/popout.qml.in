@@ -315,6 +315,67 @@ TestCase {
     tryVerify(function() { return popout("two").active })
   }
 
+  // Super+Alt+D focused a composer and remembers the application to return
+  // to; an agent then quietly opens another conversation's window.
+  function quietlyOpenTwo(requestId) {
+    fakeBackend.received({type: "agent-present", requestId: requestId, id: "two", presentation: "window", focus: false})
+    tryVerify(function() { return answers(requestId).length === 1 })
+    compare(answers(requestId)[0].focused, false)
+  }
+
+  function test_quiet_opening_keeps_the_main_shortcut_restore_target() {
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active })
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return mainView().composerFocusId === "one" })
+    compare(body.previousWindow, "0x123")
+
+    quietlyOpenTwo("quiet-main")
+    tryVerify(function() { return TestHost.active && mainView().composerFocusId === "one" })
+    compare(body.previousWindow, "0x123", "The quiet handoff is not the user leaving")
+    compare(body.inputFocused, true)
+
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    compare(body.previousWindow, "")
+  }
+
+  function test_quiet_opening_keeps_the_popped_shortcut_restore_target() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active && !window.active })
+    // Let queued offscreen activation requests from the setup drain first.
+    wait(200)
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return window.active && window.view.composerFocusId === "one" })
+    compare(body.previousWindow, "0x123")
+
+    quietlyOpenTwo("quiet-popped")
+    tryVerify(function() { return window.active && window.view.composerFocusId === "one" })
+    compare(body.previousWindow, "0x123")
+    compare(body.focusTarget, "one")
+
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    compare(body.previousWindow, "")
+  }
+
+  function test_leaving_after_a_quiet_opening_still_forgets_the_restore_target() {
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active })
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return mainView().composerFocusId === "one" })
+    quietlyOpenTwo("quiet-leave")
+    tryVerify(function() { return TestHost.active })
+    compare(body.previousWindow, "0x123")
+
+    // The user really moves to the new window: the old address is stale.
+    body.popouts.focusWindow("two")
+    tryVerify(function() { return popout("two").active })
+    tryCompare(body, "previousWindow", "")
+  }
+
   function test_at_most_eight_windows() {
     const entries = []
     for (let index = 0; index < 9; index++) entries.push(session("s" + index, "Chat " + index))

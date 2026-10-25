@@ -176,9 +176,26 @@ Item {
   }
   onKeyboardFocusedChanged: {
     root.acquireFocus()
-    // Only for a main-panel focus request; a pop-out keeps its own target.
-    if (!root.keyboardFocused && !root.focusPending && !host.switching && root.focusTarget === "") root.previousWindow = ""
+    root.forgetDepartedRestoreTarget()
     Qt.callLater(root.publish)
+  }
+
+  // After focus left the composer the shortcut focused, a later toggle must
+  // not restore an old application window: forget that address. A quiet
+  // window opening (agent request without focus) moves activation away and
+  // back on its own; that is not the user leaving, so the decision waits
+  // until the opening has settled and is then made on the final state.
+  function forgetDepartedRestoreTarget() {
+    if (popoutViews.quietOpenings > 0 || root.focusPending) return
+    if (root.focusTarget === "") {
+      if (!root.keyboardFocused && !host.switching) root.previousWindow = ""
+      return
+    }
+    const window = popoutViews.windows[root.focusTarget]
+    if (!(window && window.active)) {
+      root.focusTarget = ""
+      root.previousWindow = ""
+    }
   }
   onWidthChanged: Qt.callLater(root.publish)
   onHeightChanged: Qt.callLater(root.publish)
@@ -188,13 +205,10 @@ Item {
     target: popoutViews
     function onReportChanged() {
       root.acquireFocus()
-      // Like the main surface: once the focused window loses activation, a
-      // later toggle must not restore an old application window.
-      const window = popoutViews.windows[root.focusTarget]
-      if (root.focusTarget !== "" && !root.focusPending && !(window && window.active)) {
-        root.focusTarget = ""
-        root.previousWindow = ""
-      }
+      root.forgetDepartedRestoreTarget()
+    }
+    function onQuietOpeningsChanged() {
+      if (popoutViews.quietOpenings === 0) root.forgetDepartedRestoreTarget()
     }
   }
 
