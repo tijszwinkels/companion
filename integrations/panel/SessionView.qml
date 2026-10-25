@@ -26,9 +26,47 @@ Item {
   // Hosts supply their surface color; floating controls blend it opaque.
   property color background: selection
   readonly property color overlayColor: Qt.tint(Qt.rgba(background.r, background.g, background.b, 1), selection)
+  // Voice projection: controls of the conversation speech currently goes to
+  // (`sessionId` is empty when there is none). It decides voice hints only.
   property var agentActions: ({})
+  // This connection's per-conversation controls (session ID -> actions), or
+  // null when the host has no view projection from its listener yet.
+  property var viewAgentActions: null
   property var pendingChoice: null
-  readonly property bool actionsCurrent: session !== null && agentActions.sessionId === session.id
+  // Whether speech goes to this conversation right now.
+  readonly property bool voiceTarget: session !== null && agentActions.sessionId === session.id
+  // Choice and stop controls for this conversation, whichever view is the
+  // voice target. Without a view projection (older listener) only the voice
+  // target has controls, as before.
+  readonly property var ownActions: {
+    if (session === null) return null
+    if (viewAgentActions === null) return voiceTarget ? agentActions : null
+    return viewAgentActions[session.id] || null
+  }
+  readonly property string ownStopRunId: ownActions ? ownActions.stopRunId || "" : ""
+  // Own choices, each with its voice hint only when the voice projection has
+  // the same conversation, choice revision and index. A label is never shown
+  // as speakable from another conversation's or an older set's annotation.
+  readonly property var displayedChoices: {
+    const own = ownActions ? ownActions.choices || [] : []
+    const voiceChoices = voiceTarget ? agentActions.choices || [] : []
+    return own.map(choice => {
+      const voice = voiceChoices.find(entry => entry.sessionId === choice.sessionId
+        && entry.revision === choice.revision && entry.index === choice.index)
+      return Object.assign({}, choice, {
+        voiceAvailable: voice ? voice.voiceAvailable === true : false,
+        voiceReason: voice ? voice.voiceReason || "" : choice.voiceReason || ""
+      })
+    })
+  }
+  // Where speech goes, shown beside this conversation's controls. Empty while
+  // offline; the choices then say "Disconnected".
+  readonly property string voiceStatus: {
+    if (!online) return ""
+    if (voiceTarget) return paused ? "Voice paused" : "Voice: this conversation"
+    if (agentActions.sessionId) return "Voice: another conversation"
+    return "Voice: no conversation"
+  }
   // The desktop host supplies the shortcut; other hosts can leave it unset.
   property string focusShortcut: ""
   property real unit: 1
@@ -1441,9 +1479,11 @@ Item {
       objectName: "agentChoices"
       width: parent.width
       maximumHeight: root.choiceHeightLimit
-      choices: root.actionsCurrent ? root.agentActions.choices || [] : []
-      sessionId: root.actionsCurrent ? root.session.id : ""
-      stopRunId: root.actionsCurrent ? root.agentActions.stopRunId || "" : ""
+      choices: root.displayedChoices
+      sessionId: root.ownActions ? root.session.id : ""
+      stopRunId: root.ownStopRunId
+      voiceTarget: root.voiceTarget
+      voiceStatus: root.voiceStatus
       online: root.online
       listening: !root.paused
       pending: root.pendingChoice !== null || root.pendingSubmission !== null
@@ -1583,7 +1623,7 @@ Item {
       }
       PanelAction {
         objectName: "stopSession"
-        visible: root.running && !(root.actionsCurrent && root.agentActions.stopRunId)
+        visible: root.running && root.ownStopRunId === ""
         enabled: root.online
         text: "Stop"
         foreground: root.foreground

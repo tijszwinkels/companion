@@ -42,6 +42,8 @@ Item {
   // The microphone is in use for manual recording (see StatusView).
   readonly property bool microphoneRecording: recording !== null && recording !== undefined && recording.capturing === true
   property var agentActions: ({})
+  // Per-conversation controls from the host's listener, or null (see SessionView).
+  property var viewAgentActions: null
   property var sessions: []
   property var sessionControls: null
   // Retained with this shared body across reconnects and Window/Sidebar/Dock.
@@ -1420,6 +1422,7 @@ Item {
       session: root.selectedPoppedOut ? null : root.selectedSession
       background: root.background
       agentActions: root.agentActions
+      viewAgentActions: root.viewAgentActions
       paused: root.paused
       online: root.online
       focusShortcut: root.focusShortcut

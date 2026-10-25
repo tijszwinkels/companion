@@ -445,6 +445,7 @@ Item {
     transcriptionCleanup: client.transcriptionCleanup
     captureStorage: client.captureStorage
     agentActions: client.agentActions
+    viewAgentActions: client.viewAgentActions
     activityHistoryModel: client.activity.model
     activityHistoryAvailable: client.activity.available
     historyDeletionAvailable: client.historyDeletionAvailable

@@ -336,6 +336,38 @@ these controls only for the matching selected conversation. A nonempty `stopRunI
 enables the exact `stop` shortcut for that running turn. Choice sets and run IDs are
 also included in live session patches, but are never restored from disk.
 
+`agentActions` is the **voice** projection: it follows the voice target (see
+[pop-out windows](#pop-out-windows)), and its `sessionId` is empty when there is
+none. A view that should keep showing its own conversation's choices when it is
+not the voice target uses the per-connection view projection below.
+
+**View controls.** After a desktop connection's first `panel-state` report,
+the listener sends that connection, and only that connection,
+`{"type":"agent-view-actions","actions":[...]}` with one `agentActions`-shaped
+entry per conversation it shows: its main view's conversation while it owns
+the panel selection, and each of its own visible pop-out windows. That is
+exactly the set `choose-agent` and `stop-agent-run` accept from that
+connection, at most nine entries. `available` and `stopRunId` use the same
+rules as `agentActions`, including busy turns, closing conversations and the
+global running limit. No entry claims a label is speakable: `voiceAvailable` is
+always false, and `voiceReason` only says why an unavailable choice cannot be
+selected (empty for an available one). A view takes its voice hint only from
+`agentActions` when that has the same `sessionId` and an entry with the same
+choice `revision` and `index`. The event is resent only
+when that connection's entries change. That covers choices replaced or cleared,
+a run starting or ending, capacity changing elsewhere, a window opening or
+closing, and another connection taking the panel selection (which retracts the
+main-view entry). An empty array means the connection shows no conversation.
+
+Compatibility: an older listener never sends the event. A client that has not
+received one on the current connection keeps the older behavior of showing
+controls only for the `agentActions` conversation, and it forgets the
+projection when the connection drops. Remote connections never receive it;
+the phone gateway also refuses it as a desktop-only event. Clicks still send
+the stored session ID, revision and index, and the listener rechecks them, so
+an outdated projection can only produce a refused request, never another
+conversation's choice.
+
 `choose-agent` and `stop-agent-run` require the sending connection to own the
 selected conversation reported by `panel-state`. They return `submitted` or
 `stopped`, or an error when the supplied choice/run has expired. Send IDs and the
@@ -964,7 +996,9 @@ activation moving between windows stops pending keyboard delivery.
 
 Controls that require the conversation to be shown (choices, stop, history and
 tool pages, manual recording) accept the main view's conversation or one of
-the same connection's visible windows. A recording continues while its
+the same connection's visible windows. Each of those views keeps its own
+choices and stop control through `agent-view-actions` (see **View controls**
+above), whichever view is the voice target. A recording continues while its
 conversation moves between the sidebar and its window. `agent-select` (spoken
 "go to session N") is unchanged; the UI focuses an existing window for a
 popped conversation.

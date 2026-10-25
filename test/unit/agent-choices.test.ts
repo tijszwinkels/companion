@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { AgentChoiceIntents, agentChoiceStates } from '../../src/agents/choice-intents.ts';
+import {
+  AgentChoiceIntents,
+  agentChoiceStates,
+  type AgentActions,
+} from '../../src/agents/choice-intents.ts';
 import registerChoices, { choiceTool } from '../../src/agents/choice-tool.ts';
 import { parseChoices } from '../../src/agents/choices.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
@@ -12,7 +16,7 @@ import { chatMessage, type AgentBackend } from '../../src/agents/types.ts';
 import type { Detector } from '../../src/core/router.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
-import { desktopFixture, stopped, waitFor } from '../desktop-fixture.ts';
+import { desktopFixture, stopped, waitFor, type DesktopMessage } from '../desktop-fixture.ts';
 import { deferred, frame, processor, signal, testDetector } from '../helpers.ts';
 
 type Run = {
@@ -22,6 +26,14 @@ type Run = {
   emit: Parameters<AgentBackend['run']>[2];
   finish(): void;
 };
+
+/**
+ * The singular voice projection carried by an `agent-actions` event. Other
+ * events also have an `actions` field (`agent-view-actions` has an array).
+ */
+function voiceActions(message: DesktopMessage | undefined): AgentActions | undefined {
+  return message?.type === 'agent-actions' ? message.actions : undefined;
+}
 
 async function fixture(context: { after(callback: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-choices-'));
@@ -281,13 +293,17 @@ test('choice availability follows global run capacity and rechecks it after infe
   assert.match(unavailable.voiceReason, /10 questions/);
   await waitFor(() =>
     setup.desktop.messages.some(
-      (message) => message.actions?.choices[0]?.voiceReason === unavailable.voiceReason,
+      (message) => voiceActions(message)?.choices[0]?.voiceReason === unavailable.voiceReason,
     ),
   );
   assert.equal(setup.runs.length, 11);
   await setup.sessions.stop(waiting[0].id);
   assert.equal(agentChoiceStates(setup.input(''), [])[0].available, true);
-  await waitFor(() => setup.desktop.messages.at(-1)?.actions?.choices[0]?.available === true);
+  await waitFor(
+    () =>
+      voiceActions(setup.desktop.messages.findLast((message) => voiceActions(message)))?.choices[0]
+        ?.available === true,
+  );
   await setup.router.route(setup.input('Tests'), signal());
   await waitFor(() => setup.runs.length === 12);
   assert.equal(setup.runs.at(-1)!.request.id, first.id);
@@ -300,7 +316,9 @@ test('streamed text keeps choice actions stable, while a replacement publishes n
   first.run.publish(parseChoices(['Yes']));
   const revision = setup.sessions.interaction(first.id).agentChoices!.revision;
   await waitFor(() =>
-    setup.desktop.messages.some((message) => message.actions?.choices[0]?.revision === revision),
+    setup.desktop.messages.some(
+      (message) => voiceActions(message)?.choices[0]?.revision === revision,
+    ),
   );
   const before = setup.desktop.messages.filter(
     (message) => message.type === 'agent-actions',
@@ -322,7 +340,9 @@ test('streamed text keeps choice actions stable, while a replacement publishes n
   first.run.publish(parseChoices(['No']));
   const replacement = setup.sessions.interaction(first.id).agentChoices!.revision;
   await waitFor(() =>
-    setup.desktop.messages.some((message) => message.actions?.choices[0]?.revision === replacement),
+    setup.desktop.messages.some(
+      (message) => voiceActions(message)?.choices[0]?.revision === replacement,
+    ),
   );
 });
 

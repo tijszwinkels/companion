@@ -120,6 +120,7 @@ Window {
     widgetsRunning: root.client.online && root.visible
     background: root.theme.background
     agentActions: root.client.agentActions
+    viewAgentActions: root.client.viewAgentActions
     paused: root.client.paused
     online: root.client.online
     foreground: root.theme.foreground

@@ -21,7 +21,13 @@ Item {
   property var transcriptionCleanup: null
   // Null when the listener does not report capture storage: unavailable.
   property var captureStorage: null
+  // Voice projection: controls of the voice-target conversation only.
   property var agentActions: ({})
+  // Controls of each conversation this connection shows, keyed by session ID,
+  // from `agent-view-actions`. Null until the listener sends one on the
+  // current connection (older listeners never do): views then fall back to
+  // showing controls only for the `agentActions` conversation.
+  property var viewAgentActions: null
   // Manual recording: whether the listener offers it, and the current
   // recording {recordingId, sessionId, state} or null.
   property bool recordingAvailable: false
@@ -265,6 +271,8 @@ Item {
     root.transcriptionCleanup = null
     root.captureStorage = null
     root.agentActions = ({})
+    // The next connection's listener sends its own projection, if any.
+    root.viewAgentActions = null
     activity.disconnected()
   }
 
@@ -307,6 +315,16 @@ Item {
       sessions.update(message.session)
     } else if (message.type === "agent-actions") {
       root.agentActions = message.actions || {}
+    } else if (message.type === "agent-view-actions") {
+      // The whole projection is replaced: a conversation missing from it is
+      // no longer shown by this connection and must not keep old controls.
+      const byId = {}
+      for (const actions of message.actions || []) {
+        if (actions && typeof actions.sessionId === "string" && actions.sessionId !== "") {
+          byId[actions.sessionId] = actions
+        }
+      }
+      root.viewAgentActions = byId
     } else if (message.type === "agent-history") {
       sessions.previousSessions = message.sessions || []
     } else if (message.type === "agent-restored") {

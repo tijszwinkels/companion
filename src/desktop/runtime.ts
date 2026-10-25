@@ -282,6 +282,9 @@ export class DesktopRuntime {
   private draftReportSequence = 0;
   // Connections that declared the remote role, keyed by server client ID.
   private readonly remoteClients = new Map<number, RemoteClient>();
+  // Desktop connections that reported panel state, with the fingerprint of
+  // the `agent-view-actions` last sent to each (see publishViewAgentActions).
+  private readonly viewActionKeys = new Map<number, string>();
   private readonly pendingDrafts = new Map<
     string,
     { clientId: number; finish(outcome: AgentDraftOutcome): void }
@@ -352,6 +355,7 @@ export class DesktopRuntime {
         if (this.remoteClients.delete(clientId)) {
           return;
         }
+        this.viewActionKeys.delete(clientId);
         this.draftHosts.delete(clientId);
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
         this.browserHosts.delete(clientId);
@@ -419,6 +423,7 @@ export class DesktopRuntime {
       }
       this.server.publish(event);
       this.publishAgentActions();
+      this.publishViewAgentActions();
       this.publishRemoteAgentActions();
     });
 
@@ -591,15 +596,18 @@ export class DesktopRuntime {
   private readonly routingChanged = () => {
     this.routingRevision++;
     this.server.broadcast();
+    this.publishViewAgentActions();
     this.publishRemoteAgentActions();
   };
 
   /**
-   * Choice and stop controls for one remote client's own selection. Built from
-   * the same interaction data and voice-collision rules as the desktop panel,
-   * but never from the desktop's selected conversation.
+   * Choice and stop controls for one open conversation, independent of which
+   * conversation is the voice target. Built from the same interaction data
+   * (busy, closing, global running capacity, current run) and voice-collision
+   * rules as the voice projection in agentActions(). An unknown or empty id
+   * yields an empty set.
    */
-  private remoteAgentActions(selection: string): AgentActions {
+  private conversationAgentActions(selection: string): AgentActions {
     const id = this.options.agents?.has(selection) ? selection : '';
     const interaction: InteractionContext = {
       agentSessionId: id,
@@ -614,6 +622,108 @@ export class DesktopRuntime {
     };
   }
 
+  /**
+   * The open conversations one desktop connection shows: its main view's
+   * conversation while it owns the panel selection, then its own visible
+   * pop-out windows. This is exactly the set `showsConversation` accepts.
+   */
+  private viewConversationIds(clientId: number): string[] {
+    const ids: string[] = [];
+
+    if (clientId === this.panelClient && this.panelSession) {
+      ids.push(this.panelSession);
+    }
+
+    for (const popout of this.nativeViews.get(clientId)?.report.popouts ?? []) {
+      if (!ids.includes(popout.id)) {
+        ids.push(popout.id);
+      }
+    }
+
+    return ids.filter((id) => this.options.agents?.has(id) === true);
+  }
+
+  /**
+   * Everything the view controls of these conversations are derived from,
+   * without their potentially long descriptions. Choice sets are immutable
+   * and identified by their revision; collision reasons change only with the
+   * routing revision. Equal fingerprints therefore mean equal controls, so
+   * streamed tokens do not rebuild or serialize every choice set.
+   */
+  private viewActionFingerprint(ids: readonly string[]): string {
+    const conversations = ids.map((id) => {
+      const interaction = this.options.agents?.interaction(id);
+      return [
+        id,
+        interaction?.agentChoices?.revision ?? '',
+        interaction?.agentRunId ?? '',
+        interaction?.agentFollowUpUnavailableReason ?? '',
+      ];
+    });
+    return JSON.stringify([this.routingRevision, conversations]);
+  }
+
+  /**
+   * Controls for the conversations one desktop connection shows (from
+   * viewConversationIds), so a view never displays a choice whose click would
+   * be refused on visibility grounds. At most one main view plus
+   * `maximumPopouts` windows.
+   *
+   * No entry claims a label is speakable: that depends on the voice target,
+   * which only the singular `agent-actions` describes. `voiceReason` keeps
+   * only why an unavailable choice cannot be selected (busy, closing, the
+   * running limit), for the view's tooltip.
+   */
+  private viewAgentActions(ids: readonly string[]): AgentActions[] {
+    const actions: AgentActions[] = [];
+
+    for (const id of ids) {
+      const conversation = this.conversationAgentActions(id);
+      const unavailableReason =
+        this.options.agents?.interaction(id).agentFollowUpUnavailableReason ||
+        'Available when the agent finishes';
+
+      actions.push({
+        ...conversation,
+        choices: conversation.choices.map((choice) => ({
+          ...choice,
+          voiceAvailable: false,
+          voiceReason: choice.available ? '' : unavailableReason,
+        })),
+      });
+    }
+
+    return actions;
+  }
+
+  /**
+   * Send each desktop connection the controls of the conversations it shows,
+   * skipping unchanged ones. Connections join on their first desktop
+   * `panel-state` report, so they always receive one projection (possibly
+   * empty) and can tell it apart from an older listener that sends none.
+   * Remote connections are never included: they receive only their own
+   * `remote-agent-actions`, and the gateway also refuses this event.
+   */
+  private publishViewAgentActions(): void {
+    for (const [clientId, previousKey] of this.viewActionKeys) {
+      if (this.remoteClients.has(clientId)) {
+        continue;
+      }
+
+      const ids = this.viewConversationIds(clientId);
+      const key = this.viewActionFingerprint(ids);
+      if (key === previousKey) {
+        continue;
+      }
+
+      this.viewActionKeys.set(clientId, key);
+      this.server.publishTo(clientId, {
+        type: 'agent-view-actions',
+        actions: this.viewAgentActions(ids),
+      });
+    }
+  }
+
   /** Send each remote client its controls when they change; skip unchanged ones. */
   private publishRemoteAgentActions(onlyClientId?: number): void {
     for (const [clientId, remote] of this.remoteClients) {
@@ -621,7 +731,8 @@ export class DesktopRuntime {
         continue;
       }
 
-      const actions = this.remoteAgentActions(remote.selection);
+      // A remote client's controls follow its own selection, never the desktop's.
+      const actions = this.conversationAgentActions(remote.selection);
 
       // Choice sets are small and immutable; serializing them is the simplest
       // exact change check, and it runs once per remote client per event.
@@ -1656,6 +1767,8 @@ export class DesktopRuntime {
         throw Error('Declare the remote role before reporting desktop panel state');
       }
       this.remoteClients.set(clientId, { selection: '', lastActionsKey: '' });
+      // A remote panel only ever receives controls for its own selection.
+      this.viewActionKeys.delete(clientId);
       this.publishRemoteAgentActions(clientId);
       return 'role-recorded';
     }
@@ -2170,6 +2283,13 @@ export class DesktopRuntime {
         // Pop-out changes can move the voice target, which snapshots show.
         this.server.broadcast();
       }
+      // A report can add or retract this connection's views, and taking the
+      // panel selection retracts another connection's main view. The first
+      // report also subscribes this connection to its view controls.
+      if (!this.viewActionKeys.has(clientId)) {
+        this.viewActionKeys.set(clientId, '');
+      }
+      this.publishViewAgentActions();
       return 'panel-recorded';
     }
 

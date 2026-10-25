@@ -215,6 +215,8 @@ export interface ToolPage {
 export const desktopOnlyEvents: ReadonlySet<string> = new Set([
   // Controls for the desktop's selection, not the phone's.
   'agent-actions',
+  // Controls for the conversations one desktop connection shows.
+  'agent-view-actions',
   // Composer drafts belong to desktop panels, which must acknowledge them.
   'agent-draft',
   // Spoken "go to session N" navigation for the desktop panel.

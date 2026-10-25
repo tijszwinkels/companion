@@ -534,6 +534,54 @@ TestCase {
     window.view.pendingChoice = null
   }
 
+  function test_main_view_and_window_keep_their_own_choices() {
+    body.popouts.popOut("two")
+    const window = popout("two")
+    tryCompare(window, "visible", true)
+    function choice(id, revision, label) {
+      return {sessionId: id, revision: revision, index: 0, label: label, description: "",
+        available: true, voiceAvailable: false, voiceReason: ""}
+    }
+    fakeBackend.received({type: "agent-view-actions", actions: [
+      {sessionId: "one", stopRunId: "", choices: [choice("one", "set-one", "Sidebar choice")]},
+      {sessionId: "two", stopRunId: "", choices: [choice("two", "set-two", "Window choice")]}]})
+    // Speech goes to the window; the sidebar keeps its own clickable choice.
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "two", stopRunId: "", choices: [
+      Object.assign(choice("two", "set-two", "Window choice"), {voiceAvailable: true})]}})
+
+    const mainChoice = findChild(mainView(), "agentChoice-0")
+    const windowChoice = findChild(window.view, "agentChoice-0")
+    tryVerify(function() { return mainChoice !== null && windowChoice !== null })
+    compare(findChild(mainChoice, "choiceVoiceLabel").text, "[Sidebar choice]")
+    compare(findChild(windowChoice, "choiceVoiceLabel").text, "[Window choice]")
+    compare(mainChoice.selectable, true)
+    compare(mainChoice.voiceActive, false)
+    compare(windowChoice.voiceActive, true)
+    compare(findChild(mainView(), "voiceTargetStatus").text, "Voice: another conversation")
+    compare(findChild(window.view, "voiceTargetStatus").text, "Voice: this conversation")
+
+    // Speech moves to the sidebar (the window lost focus): neither view loses
+    // its choices; only the voice annotations and status move.
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "one", stopRunId: "", choices: [
+      Object.assign(choice("one", "set-one", "Sidebar choice"), {voiceAvailable: true})]}})
+    compare(findChild(window.view, "agentChoices").visible, true)
+    compare(findChild(window.view, "agentChoice-0").voiceActive, false)
+    compare(findChild(mainView(), "agentChoice-0").voiceActive, true)
+    compare(findChild(window.view, "voiceTargetStatus").text, "Voice: another conversation")
+
+    // A click in the non-target window sends that conversation's own identity.
+    fakeBackend.sent = []
+    // The window's new controls must be on screen before a real click.
+    verify(waitForRendering(window.contentItem))
+    mouseClick(findChild(window.view, "agentChoice-0"), 10, 10)
+    const sent = fakeBackend.sent.filter(message => message.action === "choose-agent")
+    compare(sent, [{action: "choose-agent", id: "two", revision: "set-two", index: 0}])
+    fakeBackend.received({type: "result", action: "choose-agent", result: "submitted"})
+    tryCompare(window.view, "pendingChoice", null)
+    fakeBackend.received({type: "agent-view-actions", actions: []})
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "", stopRunId: "", choices: []}})
+  }
+
   function test_newer_typing_survives_a_delayed_acknowledgement() {
     body.popouts.popOut("one")
     const window = popout("one")
