@@ -17,7 +17,12 @@ Item {
   property alias client: client
   property alias panel: panel
   property alias popouts: popoutViews
-  readonly property bool inputFocused: host.opened && panel.inputFocused
+  // Popped-out conversation the focus shortcut is acting on, or "" for the
+  // main panel. Set while focusing and kept while that composer has focus.
+  property string focusTarget: ""
+  // A pop-out window's composer has keyboard focus (its window is active).
+  readonly property bool popoutInputFocused: popoutViews.report.some(entry => entry.composerFocused)
+  readonly property bool inputFocused: (host.opened && panel.inputFocused) || popoutInputFocused
   readonly property string composerId: host.opened ? panel.composerFocusId : ""
   readonly property bool keyboardFocused: host.opened && host.active
   readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
@@ -40,7 +45,9 @@ Item {
     focusDeadline.stop()
     root.focusPending = false
     host.releaseFocus()
+    for (const view of popoutViews.allViews()) view.releaseComposerFocus()
     panel.releaseComposerFocus()
+    root.focusTarget = ""
     if (restore && root.previousWindow) {
       // The bridge validates this compositor-supplied address again. It owns
       // focus restoration and sends keyboard insertion only after that boundary.
@@ -64,18 +71,35 @@ Item {
     root.previousWindow = /^0x[0-9a-f]+$/i.test(address || "") ? address : ""
     root.focusPending = true
     focusDeadline.restart()
-    host.show(true)
+    // The selected conversation's composer lives in its window when popped
+    // out: focus that window rather than the (compact) panel.
+    const id = client.sessions.conversationId
+    if (id !== "" && popoutViews.isPopped(id)) {
+      root.focusTarget = id
+      popoutViews.focusWindow(id)
+    } else {
+      root.focusTarget = ""
+      host.show(true)
+    }
     root.acquireFocus()
   }
 
   function acquireFocus() {
     // Media is paused only after the requested window actually acquired focus.
-    if (root.focusPending && root.keyboardFocused) {
+    if (!root.focusPending) return
+    if (root.focusTarget !== "") {
+      const window = popoutViews.windows[root.focusTarget]
+      if (!window || !window.active) return
+      focusDeadline.stop()
+      root.focusPending = false
+      window.view.focusComposer()
+    } else {
+      if (!root.keyboardFocused) return
       focusDeadline.stop()
       root.focusPending = false
       panel.focusComposer()
-      if (root.inputFocused) host.notify({type: "pause-media"})
     }
+    if (root.inputFocused) host.notify({type: "pause-media"})
   }
 
   function command(message) {
@@ -140,6 +164,20 @@ Item {
   }
   onWidthChanged: Qt.callLater(root.publish)
   onHeightChanged: Qt.callLater(root.publish)
+
+  // A pop-out window gained or lost activation or composer focus.
+  Connections {
+    target: popoutViews
+    function onReportChanged() {
+      root.acquireFocus()
+      // Like the main surface: once the focused window loses activation, a
+      // later toggle must not restore an old application window.
+      if (root.focusTarget !== "" && !root.focusPending && !root.popoutInputFocused) {
+        root.focusTarget = ""
+        root.previousWindow = ""
+      }
+    }
+  }
 
   Connections {
     target: root.host

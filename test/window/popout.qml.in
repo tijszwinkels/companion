@@ -169,6 +169,26 @@ TestCase {
     compare(lastReport().popouts[0].composerFocused, false)
   }
 
+  function test_focus_shortcut_reaches_the_selected_popped_conversation() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active && !window.active })
+
+    // Super+Alt+D with the selected tab popped out focuses its window's
+    // composer, not the detached (compact) panel.
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return window.active && window.view.composerFocusId === "one" })
+    tryCompare(body, "inputFocused", true)
+    compare(body.client.error, "", "No focus failure is reported")
+    tryVerify(function() { return lastReport().popouts[0].composerFocused === true })
+
+    // The same shortcut toggles the focus off again.
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    compare(window.view.composerFocusId, "")
+  }
+
   function test_pending_send_blocks_return_and_native_close() {
     body.popouts.popOut("one")
     const window = popout("one")

@@ -113,7 +113,9 @@ existing fields keep describing the main surface; `visible` means any native
 Companion surface. The listener picks the target: an active window first, then
 the conversation visible in the panel, then a single window behind a compact
 rail. “Go to session N” focuses a popped-out conversation's window, or selects
-the tab in the panel. Window placement, size and tiling belong to the
+the tab in the panel. The focus shortcut (Super+Alt+D) on a selected
+popped-out conversation focuses its window's composer, with the usual media
+pause and toggle back. Window placement, size and tiling belong to the
 compositor; Companion only requests activation and reports whether it was
 granted within 1.5 seconds.
 
