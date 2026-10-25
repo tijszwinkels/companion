@@ -535,3 +535,42 @@ test('a failed write of a delivery outcome is shown, then saved by the next succ
   );
   assert.equal(fixture.view(id).application!.eventStatus!.failure, undefined);
 });
+
+test('a person’s message withdraws the older debounce, so a failed attachment is not retried automatically', async (context) => {
+  const { fixture, sessions, id, viewUrl } = await installed(context);
+  sessions.applicationEventDelayMilliseconds = 400;
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'a' })).status, 200);
+
+  await withUnwritableRecord(fixture, id, async () => {
+    sessions.followUp(id, 'Before the debounce', signal());
+    await sessions.idle();
+    assert.equal(fixture.turns.at(-1)!.text, 'Before the debounce');
+  });
+  const turns = fixture.turns.length;
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal(fixture.turns.length, turns, 'The old timer must not start an event turn');
+  const status = fixture.view(id).application!.eventStatus!;
+  assert.equal(status.state, 'pending');
+  assert.equal(status.undelivered, 1);
+
+  // A successful attachment also leaves nothing for the old timer to send.
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'b' })).status, 200);
+  sessions.followUp(id, 'Before the debounce again', signal());
+  await sessions.idle();
+  assert.match(
+    fixture.turns.at(-1)!.text,
+    /^Before the debounce again\n\n\[Companion application event\]/,
+  );
+  assert.equal(
+    eventData({ ...fixture.turns.at(-1)!, text: fixture.turns.at(-1)!.text.slice(27) }).count,
+    2,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal(eventTurns(fixture.turns).length, 0);
+
+  // An edit after the message arms its own debounce and is delivered.
+  assert.equal((await userAction(viewUrl, 'remove_task', { id: 'a' })).status, 200);
+  await eventually(() => eventTurns(fixture.turns).length === 1);
+  await sessions.idle();
+  assert.equal(eventData(eventTurns(fixture.turns)[0]).count, 1);
+});

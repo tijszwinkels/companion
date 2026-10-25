@@ -153,8 +153,9 @@ Apply requires `expectedVersion` (0 when there is no application). The first
 apply may pass `initialState` (default: the manifest example). A replacement
 keeps the existing state and refuses `initialState`. Before anything is
 written, the existing state must validate against the new state schema, every
-declared query/action must have a handler and the bundle must describe the
-state in the renderer. Any failure leaves the previous code and state intact.
+declared query/action must have a handler, and `mount()`, the first `update()`
+and `describe()` must succeed with that state in the renderer. A candidate that
+is not published (including when its save fails) is discarded. Any failure leaves the previous code and state intact.
 
 **Turn-boundary rule.** Each turn's lease freezes the application version and
 the exposed query/action names at the start of the turn. After the code is
@@ -202,8 +203,9 @@ Persistence failures are reported, never hidden:
 - If marking a batch `delivering` cannot be saved, its edits are not sent to
   the model. An immediate-mode placeholder turn does not run; its message says
   the edits could not be prepared and stays in error. A person's message still
-  runs, without them. The batch stays `pending` with a `failure` note and is
-  offered again only by a later edit or message.
+  runs, without them, and withdraws any pending immediate-mode debounce. The
+  batch stays `pending` with a `failure` note and is offered again only by a
+  later edit or message.
 - If a turn's outcome cannot be saved, the descriptor shows the outcome with a
   `failure` note; the next successful write saves it. A restart before then
   reports the batch as failed, possibly undelivered.
