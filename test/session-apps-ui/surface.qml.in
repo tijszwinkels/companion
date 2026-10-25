@@ -417,5 +417,129 @@ TestCase {
     fakeBackend.sent = []
     verify(clickButton(chat, "Record"))
     tryVerify(function() { return fakeBackend.sent.some(message => message.action === "start-recording" && message.id === "one") })
+    // The listener refuses it (no microphone in this test), so later cases
+    // can record again.
+    fakeBackend.received({type: "error", action: "start-recording", message: "Recording is unavailable in this test"})
+    tryCompare(mainView(), "ownRecording", null)
+  }
+
+  // A conversation that never had an application, shown alone in the panel.
+  function freshChat(id) {
+    snapshot([session(id, "Fresh " + id, null)])
+    body.client.sessions.select(id)
+    tryCompare(body.panel, "selectedSessionId", id)
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    return chat
+  }
+  // The agent's first application arrives while input is unsettled: the
+  // view stays in chat with the same draft, says the application is ready,
+  // and opens it only when the person chooses it.
+  function expectFirstApplicationWaits(id, blocker) {
+    const view = mainView()
+    fakeBackend.received({type: "agent-session", session: session(id, "Fresh " + id, application(1))})
+    const surface = surfaceOf(view)
+    tryVerify(function() { return surface.readyNotice.includes("is ready") && surface.readyNotice.includes(blocker) },
+      5000, "ready notice: " + surface.readyNotice)
+    compare(surface.mode, "chat")
+    wait(200)
+    compare(surface.mode, "chat")
+    compare(findChild(view, "surfaceStatus").text.includes("is ready"), true)
+    compare(findChild(view, "sessionApp").visible, false)
+    return surface
+  }
+
+  function test_j_first_application_waits_while_typing() {
+    const chat = freshChat("typing")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "still typing")
+    tryCompare(view, "composerFocusId", "typing", 5000)
+    const surface = expectFirstApplicationWaits("typing", "you are typing")
+    compare(composerOf(view).text, "still typing")
+    compare(textarea(chat), "still typing")
+    compare(view.composerFocusId, "typing")
+    // The person opens it; the draft stays in chat.
+    view.releaseComposerFocus()
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+    compare(surface.readyNotice, "")
+    compare(composerOf(view).text, "still typing")
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryVerify(function() { return textarea(chat) === "still typing" })
+  }
+
+  function test_k_first_application_waits_while_send_is_pending() {
+    const chat = freshChat("sending")
+    const view = mainView()
+    typeInto(chat, "on its way")
+    tryCompare(composerOf(view), "text", "on its way")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    expectFirstApplicationWaits("sending", "a message is still being sent")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+    compare(surfaceOf(view).mode, "chat")
+  }
+
+  function test_l_first_application_waits_while_choice_is_pending() {
+    const chat = freshChat("choosing")
+    const view = mainView()
+    view.releaseComposerFocus()
+    const choice = {sessionId: "choosing", revision: "c-1", index: 0, label: "Yes", description: "",
+      available: true, voiceAvailable: false, voiceReason: ""}
+    fakeBackend.received({type: "agent-view-actions", actions: [{sessionId: "choosing", stopRunId: "", choices: [choice]}]})
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.choice')].some(b => b.textContent.includes('Yes'))") === true }, 5000)
+    verify(clickButton(chat, "Yes"))
+    tryVerify(function() { return view.pendingChoice !== null })
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    expectFirstApplicationWaits("choosing", "a choice is still being confirmed")
+    fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+    tryCompare(view, "pendingChoice", null)
+    fakeBackend.received({type: "agent-view-actions", actions: []})
+  }
+
+  function test_m_first_application_waits_while_recording() {
+    const chat = freshChat("recording")
+    const view = mainView()
+    view.releaseComposerFocus()
+    typeInto(chat, "spoken so far")
+    tryCompare(composerOf(view), "text", "spoken so far")
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return view.recordingBusy })
+    expectFirstApplicationWaits("recording", "recording into the text box is still running")
+    compare(composerOf(view).text, "spoken so far")
+    // The listener refuses the recording; the draft stays.
+    fakeBackend.received({type: "error", action: "start-recording", message: "Recording is unavailable in this test"})
+    tryCompare(view, "ownRecording", null)
+    compare(composerOf(view).text, "spoken so far")
+    compare(surfaceOf(view).mode, "chat")
+  }
+
+  // Opening a conversation that already has an application (first sight in
+  // this view) shows the application: that is its surface, and nothing in
+  // this view was being typed or confirmed for it.
+  function test_n_other_conversation_with_application_opens_in_app() {
+    const chat = freshChat("plain")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "draft here")
+    tryCompare(view, "composerFocusId", "plain", 5000)
+    snapshot([session("plain", "Fresh plain", null), session("withapp", "Has app", application(1))])
+    body.client.sessions.select("withapp")
+    tryCompare(body.panel, "selectedSessionId", "withapp")
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    compare(surface.readyNotice, "")
+    // Back to the first conversation: chat with its draft, no application.
+    body.client.sessions.select("plain")
+    tryCompare(surface, "mode", "chat")
+    tryVerify(function() { return textarea(chat) === "draft here" })
   }
 }

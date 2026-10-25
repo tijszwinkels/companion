@@ -390,7 +390,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   hostDraft.current = draft;
 
   const maximum = status.maximumMessageLength || 8000;
-  const readOnly = !status.online || status.recording?.busy === true;
+  // Like the classic composer, a draft can still be written while offline;
+  // only words being recorded into it make it read-only.
+  const readOnly = status.recording?.busy === true;
 
   // Adopt the host draft when it changed on the host side (or the view now
   // shows another conversation). Never while the page's own edits are still
