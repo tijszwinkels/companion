@@ -103,6 +103,13 @@ interface Entry {
   capability?: string;
   /** Live overlay: an event turn for the pending batch is queued. */
   queued: boolean;
+  /**
+   * Live overlay: a delivery start or outcome could not be saved. Shown as
+   * the event status failure and cleared by the next successful write. Kept
+   * in memory because the write that would have saved it is the one that
+   * failed.
+   */
+  deliveryProblem?: string;
 }
 
 /** View request results; WidgetService writes the HTTP response. */
@@ -115,6 +122,47 @@ function exposed(operations: Record<string, WidgetAction> | undefined): string[]
   return Object.entries(operations ?? {})
     .filter(([, operation]) => operation.agent !== false)
     .map(([name]) => name);
+}
+
+/** Agent-facing declarations (description and schemas) of exposed operations. */
+function agentOperations(operations: Record<string, WidgetAction> | undefined): JsonObject {
+  const result: JsonObject = {};
+  for (const [name, operation] of Object.entries(operations ?? {})) {
+    if (operation.agent === false) {
+      continue;
+    }
+    result[name] = {
+      description: operation.description,
+      parameters: operation.parameters,
+      returns: operation.returns,
+    };
+  }
+  return result;
+}
+
+/** Entry points and declared handlers that the bundle's module does not export. */
+function missingHandlers(
+  manifest: WidgetBundle['manifest'],
+  exports: { mount: boolean; describe: boolean; actions: string[]; queries: string[] },
+): string[] {
+  const missing: string[] = [];
+  if (!exports.mount) {
+    missing.push('mount');
+  }
+  if (!exports.describe) {
+    missing.push('describe');
+  }
+  for (const name of Object.keys(manifest.actions)) {
+    if (!exports.actions.includes(name)) {
+      missing.push(name);
+    }
+  }
+  for (const name of Object.keys(manifest.queries ?? {})) {
+    if (!exports.queries.includes(name)) {
+      missing.push(name);
+    }
+  }
+  return missing;
 }
 
 function errorText(error: unknown): string {
@@ -269,8 +317,16 @@ export class SessionApplications {
       viewUrl: origin + '/view/' + entry.capability,
       text: record.text,
       eventMode: record.eventMode,
-      eventStatus: eventStatus(record, entry.queued),
+      eventStatus: this.eventStatus(entry, record),
     };
+  }
+
+  private eventStatus(entry: Entry, record: ApplicationRecord) {
+    const status = eventStatus(record, entry.queued);
+    if (entry.deliveryProblem) {
+      status.failure = entry.deliveryProblem;
+    }
+    return status;
   }
 
   /** The conversation that owns a view capability, if it is an application view. */
@@ -484,6 +540,8 @@ export class SessionApplications {
       entry.record = next;
       entry.bundle = bundle;
       delete entry.error;
+      // A successful write also saves any outcome a failed write left in memory.
+      delete entry.deliveryProblem;
     }
     await this.publish(owner);
   }
@@ -589,12 +647,7 @@ export class SessionApplications {
       const candidate = this.surface(next, data, version);
       try {
         const exports = await this.host.renderer.inspect(candidate, bundle);
-        const missing = [
-          ...(exports.mount ? [] : ['mount']),
-          ...(exports.describe ? [] : ['describe']),
-          ...Object.keys(manifest.actions).filter((name) => !exports.actions.includes(name)),
-          ...Object.keys(manifest.queries ?? {}).filter((name) => !exports.queries.includes(name)),
-        ];
+        const missing = missingHandlers(manifest, exports);
         if (missing.length) {
           throw Error(`widget.js does not implement: ${missing.join(', ')}`);
         }
@@ -753,19 +806,6 @@ export class SessionApplications {
     }
 
     const { record, bundle } = { record: entry.record, bundle: entry.bundle };
-    const pick = (operations: Record<string, WidgetAction> | undefined) =>
-      Object.fromEntries(
-        Object.entries(operations ?? {})
-          .filter(([, operation]) => operation.agent !== false)
-          .map(([name, operation]) => [
-            name,
-            {
-              description: operation.description,
-              parameters: operation.parameters,
-              returns: operation.returns,
-            },
-          ]),
-      );
     const callable = frozen?.id === record.id && frozen.version === record.version;
     return {
       application: {
@@ -777,8 +817,8 @@ export class SessionApplications {
         eventMode: record.eventMode,
         text: record.text,
         stateSchema: bundle.manifest.parameters,
-        queries: pick(bundle.manifest.queries),
-        actions: pick(bundle.manifest.actions),
+        queries: agentOperations(bundle.manifest.queries),
+        actions: agentOperations(bundle.manifest.actions),
         thisTurn: callable
           ? { callableVersion: record.version }
           : {
@@ -786,7 +826,7 @@ export class SessionApplications {
               note: 'The code changed or was installed during this turn; its queries and actions are callable from your next turn.',
             },
         events: {
-          status: eventStatus(record, entry.queued),
+          status: this.eventStatus(entry, record),
           failed: record.batches
             .filter((batch) => batch.state === 'failed')
             .map((batch) => batchSummary(batch)),
@@ -852,7 +892,17 @@ export class SessionApplications {
       entry.queued = false;
       const next = structuredClone(entry.record);
       const batch = beginDelivery(next, this.now())!;
-      await this.commit(owner, next, entry.bundle);
+      try {
+        await this.commit(owner, next, entry.bundle);
+      } catch (error) {
+        // Nothing was frozen: the edits stay pending and are not sent to the
+        // model. They are offered again only by a later edit or message.
+        entry.deliveryProblem =
+          `Could not record the start of delivery (${errorText(error)}). ` +
+          'These edits were not delivered and are kept.';
+        await this.publish(owner);
+        throw error;
+      }
       return { batchId: batch.id, ...eventPrompt(next, batch) };
     });
   }
@@ -870,7 +920,19 @@ export class SessionApplications {
       }
       const next = structuredClone(entry.record);
       finishDelivery(next, batchId, outcome, this.now());
-      await this.commit(owner, next, entry.bundle);
+      try {
+        await this.commit(owner, next, entry.bundle);
+      } catch (error) {
+        // The turn has ended either way. Show its outcome now; the next
+        // successful write saves it. Until then the saved record still says
+        // `delivering`, which a restart reports as possibly undelivered.
+        entry.record = next;
+        entry.deliveryProblem =
+          `Could not save the delivery outcome (${errorText(error)}). ` +
+          'After a restart these edits may be reported as possibly undelivered.';
+        await this.publish(owner);
+        throw error;
+      }
     });
   }
 

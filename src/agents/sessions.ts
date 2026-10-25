@@ -417,11 +417,15 @@ export class AgentSessions implements InspectableModule {
 
     const id = session.view.id;
     let delivery: Awaited<ReturnType<typeof this.widgets.applications.beginDelivery>>;
+    let preparationFailed = false;
     try {
       delivery = await this.widgets.applications.beginDelivery(id);
     } catch (error) {
+      // Without a durable `delivering` record the edits must not reach the
+      // model: they stay pending for the next edit or message.
       this.log('agent-application', `Could not record event delivery: ${String(error)}`);
       delivery = undefined;
+      preparationFailed = true;
     }
     if (!eventOnly) {
       if (!delivery) {
@@ -429,23 +433,17 @@ export class AgentSessions implements InspectableModule {
       }
       return {
         skip: false,
-        prompt: {
-          ...prompt,
-          text: `${prompt.text}
-
-${delivery.text}`,
-        },
+        prompt: { ...prompt, text: prompt.text + '\n\n' + delivery.text },
         batchId: delivery.batchId,
       };
     }
 
     if (!delivery) {
-      // Another turn (usually the person's own message) already carried them.
-      this.message(session, {
-        ...message,
-        text: 'Application edits were delivered with an earlier message.',
-        state: 'done',
-      });
+      // Usually another turn (the person's own message) already carried them.
+      const text = preparationFailed
+        ? 'Application edits could not be prepared for delivery; they are kept for the next edit or message.'
+        : 'Application edits were delivered with an earlier message.';
+      this.message(session, { ...message, text, state: preparationFailed ? 'error' : 'done' });
       return { skip: true };
     }
     this.message(session, { ...message, text: delivery.summary, state: 'done' });

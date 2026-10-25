@@ -5,7 +5,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -412,4 +412,126 @@ test('an unreadable saved application is reported, kept unchanged and not overwr
   sessions.followUp(id, 'Fix it', signal());
   await sessions.idle();
   assert.equal(await readFile(recordFile, 'utf8'), '{"format":1,"broken":');
+});
+
+/**
+ * Make the application's record unwritable (a directory in its place) while
+ * `body` runs, then restore it. Synthetic persistence fault; lead repro.
+ */
+async function withUnwritableRecord(
+  fixture: Awaited<ReturnType<typeof applicationFixture>>,
+  id: string,
+  body: () => Promise<void>,
+): Promise<void> {
+  const recordFile = join(fixture.directory, '.companion-widgets', 'applications', id + '.json');
+  const backup = recordFile + '.backup';
+  await rename(recordFile, backup);
+  await mkdir(recordFile);
+  try {
+    await body();
+  } finally {
+    await rm(recordFile, { recursive: true });
+    await rename(backup, recordFile);
+  }
+}
+
+test('immediate mode: a failed delivery write never claims delivery and keeps the edit pending', async (context) => {
+  const { fixture, sessions, id, viewUrl } = await installed(context);
+  sessions.applicationEventDelayMilliseconds = 200;
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'a' })).status, 200);
+
+  await withUnwritableRecord(fixture, id, async () => {
+    await eventually(() =>
+      fixture.view(id).messages.some((message) => message.origin?.kind === 'application-event'),
+    );
+    await sessions.idle();
+    const view = fixture.view(id);
+    const placeholder = view.messages.find(
+      (message) => message.origin?.kind === 'application-event',
+    )!;
+    assert.equal(eventTurns(fixture.turns).length, 0, 'No model turn without a durable record');
+    assert.doesNotMatch(placeholder.text, /were delivered/);
+    assert.match(placeholder.text, /could not be prepared for delivery/);
+    assert.equal(placeholder.state, 'error');
+    const status = view.application!.eventStatus!;
+    assert.equal(status.state, 'pending');
+    assert.equal(status.undelivered, 1);
+    assert.match(status.failure!, /were not delivered and are kept/);
+    // No silent retry while the fault persists.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(eventTurns(fixture.turns).length, 0);
+  });
+
+  // The kept edit was never admitted, so a later edit's batch carries it.
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'b' })).status, 200);
+  await eventually(() => eventTurns(fixture.turns).length === 1);
+  await sessions.idle();
+  assert.equal(eventData(eventTurns(fixture.turns)[0]).count, 2);
+  const status = fixture.view(id).application!.eventStatus!;
+  assert.deepEqual(status, { state: 'idle', undelivered: 0, failed: 0 });
+});
+
+test('next-input mode: a failed delivery write lets the message through without claiming its edits', async (context) => {
+  const { fixture, sessions, id, viewUrl } = await installed(context, 'next-input');
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'a' })).status, 200);
+
+  await withUnwritableRecord(fixture, id, async () => {
+    sessions.followUp(id, 'Status?', signal());
+    await sessions.idle();
+    // The person's own turn runs, without the edits it could not record.
+    assert.equal(fixture.turns.at(-1)!.text, 'Status?');
+    const status = fixture.view(id).application!.eventStatus!;
+    assert.equal(status.state, 'pending');
+    assert.equal(status.undelivered, 1);
+    assert.match(status.failure!, /were not delivered and are kept/);
+    assert.equal(
+      fixture.view(id).messages.some((message) => /were delivered/.test(message.text)),
+      false,
+    );
+  });
+
+  sessions.followUp(id, 'And now?', signal());
+  await sessions.idle();
+  const turn = fixture.turns.at(-1)!;
+  assert.ok(turn.text.startsWith('And now?\n\n[Companion application event]'));
+  assert.deepEqual(fixture.view(id).application!.eventStatus, {
+    state: 'idle',
+    undelivered: 0,
+    failed: 0,
+  });
+});
+
+test('a failed write of a delivery outcome is shown, then saved by the next successful write', async (context) => {
+  const { fixture, sessions, id, viewUrl } = await installed(context, 'next-input');
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'a' })).status, 200);
+  const recordFile = join(fixture.directory, '.companion-widgets', 'applications', id + '.json');
+
+  let restore = async () => {};
+  fixture.script(id, async (turn) => {
+    assert.match(turn.text, /\[Companion application event\]/);
+    // The delivery start is saved; the outcome write after this turn fails.
+    const backup = recordFile + '.backup';
+    await rename(recordFile, backup);
+    await mkdir(recordFile);
+    restore = async () => {
+      await rm(recordFile, { recursive: true });
+      await rename(backup, recordFile);
+    };
+  });
+  sessions.followUp(id, 'Status?', signal());
+  await sessions.idle();
+  const shown = fixture.view(id).application!.eventStatus!;
+  assert.equal(shown.state, 'idle');
+  assert.match(shown.failure!, /Could not save the delivery outcome/);
+
+  await restore();
+  const saved = JSON.parse(await readFile(recordFile, 'utf8'));
+  assert.equal(saved.batches[0].state, 'delivering', 'Disk still has the older state');
+  assert.equal((await userAction(viewUrl, 'complete_task', { id: 'b' })).status, 200);
+  const healed = JSON.parse(await readFile(recordFile, 'utf8'));
+  assert.deepEqual(
+    healed.batches.map((batch: { state: string }) => batch.state),
+    ['pending'],
+  );
+  assert.equal(fixture.view(id).application!.eventStatus!.failure, undefined);
 });

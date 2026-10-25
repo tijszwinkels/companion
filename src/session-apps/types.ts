@@ -83,6 +83,8 @@ export interface SessionApplicationDescriptor {
    * Present when the saved application could not be restored (missing or
    * corrupt bundle, invalid saved state). Its saved data is kept unchanged;
    * the UI keeps trusted chat/history available. Bounded to 500 characters.
+   * When the file itself is unreadable, `id`/`name` are empty strings and
+   * `version`/`revision` are 0.
    */
   error?: string;
 }

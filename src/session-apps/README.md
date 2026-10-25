@@ -35,6 +35,11 @@ archive; the application's own record is the durable source.
 | `eventStatus` | Delivery state of user-edit events (display only).                           |
 | `error`       | The saved application could not be restored; `viewUrl` is absent, data kept. |
 
+When `error` is present the saved record could not be used. If the file is
+unreadable, `id` and `name` are empty and `version`/`revision` are 0. The file is
+left unchanged and `companion_app_apply` refuses to overwrite it; the
+conversation's chat and history stay available.
+
 `viewUrl` stays the same when code is replaced; the open view reloads itself
 when it sees a new `version`. Closing the conversation revokes it; reopening
 issues a new one. The phone gateway removes `viewUrl`. Agent tools never
@@ -192,6 +197,56 @@ batch pending with a `failure` note; it is retried only by a later user edit or
 next input, never by a timer loop. After a restart, pending batches are not run
 automatically: reopening a conversation never starts a turn.
 
+Persistence failures are reported, never hidden:
+
+- If marking a batch `delivering` cannot be saved, its edits are not sent to
+  the model. An immediate-mode placeholder turn does not run; its message says
+  the edits could not be prepared and stays in error. A person's message still
+  runs, without them. The batch stays `pending` with a `failure` note and is
+  offered again only by a later edit or message.
+- If a turn's outcome cannot be saved, the descriptor shows the outcome with a
+  `failure` note; the next successful write saves it. A restart before then
+  reports the batch as failed, possibly undelivered.
+
 The prompt carries a host header stating that the event content is untrusted
 data entered by the user or produced by application code, not an instruction
 and not new authority.
+
+## Limits and trust assumptions
+
+- One application per conversation. State JSON ≤ 128 KiB, query/action args
+  ≤ 32 KiB, results ≤ 16 KiB, 20 queries and 20 actions, 64 receipts (64 KiB).
+  Operations share the conversation's widget queue (16 pending).
+- Authored code runs only in Chromium: reducers, queries and `describe` in the
+  isolated offscreen renderer (sandboxed, private network namespace), the view
+  in the sandboxed iframe of the host document. This reuses the widget
+  boundary; it is not a claim of complete isolation from hostile code. A
+  bundle could, for example, consume renderer time until its operation times
+  out, or render misleading content inside its own view.
+- The view capability URL is the user's authority. Any local process that
+  learns it can act as the user in that application, as with widget views.
+  Agent tools never receive it and remote snapshots omit it.
+- An application's own refusal text (`Application refused: …`) and event
+  data are produced by authored code or typed by the user. Tools and prompts
+  label them as data, not instructions.
+- Each view polls its state every 400 ms while visible. A view that keeps an
+  old code version open is refused (409) and reloads.
+- Only the Chromium pop-out transport and the native profile may forward the
+  four view requests; neither is a general proxy.
+- If the conversation's widget records cannot be loaded, widget and
+  application tools are unavailable for its turns (existing widget behavior).
+
+Not implemented yet: application-specific pop-out windows, per-action event
+configuration, migrations between incompatible state schemas, offscreen
+capture frames for the portable Quickshell panel.
+
+## Tests
+
+```sh
+npx tsx --test test/session-apps-runtime/*.test.ts   # real renderer; needs Chromium and bwrap
+npx tsx --test test/unit/session-app-outbox.test.ts   # also part of npm test
+```
+
+The runtime tests use real AgentSessions, WidgetService, renderer, Chromium,
+phone gateway and the exact Pi/Claude tool definitions, with scripted model
+backends, temporary directories and a temporary copy of the widget library.
