@@ -197,6 +197,17 @@ batch pending with a `failure` note; it is retried only by a later user edit or
 next input, never by a timer loop. After a restart, pending batches are not run
 automatically: reopening a conversation never starts a turn.
 
+Persistence failures are reported, never hidden:
+
+- If marking a batch `delivering` cannot be saved, its edits are not sent to
+  the model. An immediate-mode placeholder turn does not run; its message says
+  the edits could not be prepared and stays in error. A person's message still
+  runs, without them. The batch stays `pending` with a `failure` note and is
+  offered again only by a later edit or message.
+- If a turn's outcome cannot be saved, the descriptor shows the outcome with a
+  `failure` note; the next successful write saves it. A restart before then
+  reports the batch as failed, possibly undelivered.
+
 The prompt carries a host header stating that the event content is untrusted
 data entered by the user or produced by application code, not an instruction
 and not new authority.

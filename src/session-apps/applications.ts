@@ -103,6 +103,13 @@ interface Entry {
   capability?: string;
   /** Live overlay: an event turn for the pending batch is queued. */
   queued: boolean;
+  /**
+   * Live overlay: a delivery start or outcome could not be saved. Shown as
+   * the event status failure and cleared by the next successful write. Kept
+   * in memory because the write that would have saved it is the one that
+   * failed.
+   */
+  deliveryProblem?: string;
 }
 
 /** View request results; WidgetService writes the HTTP response. */
@@ -310,8 +317,16 @@ export class SessionApplications {
       viewUrl: origin + '/view/' + entry.capability,
       text: record.text,
       eventMode: record.eventMode,
-      eventStatus: eventStatus(record, entry.queued),
+      eventStatus: this.eventStatus(entry, record),
     };
+  }
+
+  private eventStatus(entry: Entry, record: ApplicationRecord) {
+    const status = eventStatus(record, entry.queued);
+    if (entry.deliveryProblem) {
+      status.failure = entry.deliveryProblem;
+    }
+    return status;
   }
 
   /** The conversation that owns a view capability, if it is an application view. */
@@ -525,6 +540,8 @@ export class SessionApplications {
       entry.record = next;
       entry.bundle = bundle;
       delete entry.error;
+      // A successful write also saves any outcome a failed write left in memory.
+      delete entry.deliveryProblem;
     }
     await this.publish(owner);
   }
@@ -809,7 +826,7 @@ export class SessionApplications {
               note: 'The code changed or was installed during this turn; its queries and actions are callable from your next turn.',
             },
         events: {
-          status: eventStatus(record, entry.queued),
+          status: this.eventStatus(entry, record),
           failed: record.batches
             .filter((batch) => batch.state === 'failed')
             .map((batch) => batchSummary(batch)),
@@ -875,7 +892,17 @@ export class SessionApplications {
       entry.queued = false;
       const next = structuredClone(entry.record);
       const batch = beginDelivery(next, this.now())!;
-      await this.commit(owner, next, entry.bundle);
+      try {
+        await this.commit(owner, next, entry.bundle);
+      } catch (error) {
+        // Nothing was frozen: the edits stay pending and are not sent to the
+        // model. They are offered again only by a later edit or message.
+        entry.deliveryProblem =
+          `Could not record the start of delivery (${errorText(error)}). ` +
+          'These edits were not delivered and are kept.';
+        await this.publish(owner);
+        throw error;
+      }
       return { batchId: batch.id, ...eventPrompt(next, batch) };
     });
   }
@@ -893,7 +920,19 @@ export class SessionApplications {
       }
       const next = structuredClone(entry.record);
       finishDelivery(next, batchId, outcome, this.now());
-      await this.commit(owner, next, entry.bundle);
+      try {
+        await this.commit(owner, next, entry.bundle);
+      } catch (error) {
+        // The turn has ended either way. Show its outcome now; the next
+        // successful write saves it. Until then the saved record still says
+        // `delivering`, which a restart reports as possibly undelivered.
+        entry.record = next;
+        entry.deliveryProblem =
+          `Could not save the delivery outcome (${errorText(error)}). ` +
+          'After a restart these edits may be reported as possibly undelivered.';
+        await this.publish(owner);
+        throw error;
+      }
     });
   }
 
