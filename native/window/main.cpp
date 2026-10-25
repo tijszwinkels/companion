@@ -54,6 +54,7 @@ int main(int argc, char **argv) {
     parser.addOption({"hidden", "Start hidden until summoned or a conversation arrives"});
     parser.addOption({"render-diagnostics", "Log window, theme and widget rendering metrics when they change"});
     parser.addOption({"widget-rendering", "Initial widget rendering: normal, supersampled or filtered", "mode", widgetRendering.mode()});
+    parser.addOption({"session-surface", "Conversation view: html (HTML chat and session applications) or classic", "mode", "html"});
     parser.process(app);
 
     const auto presentation = parser.value("presentation");
@@ -73,6 +74,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     widgetRendering.setMode(parser.value("widget-rendering"));
+    const auto sessionSurface = parser.value("session-surface");
+    if (sessionSurface != "html" && sessionSurface != "classic") {
+        fprintf(stderr, "Choose html or classic for --session-surface.\n");
+        return 1;
+    }
 
     const auto runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
     if (runtime.isEmpty()) {
@@ -141,6 +147,7 @@ int main(int argc, char **argv) {
     engine.rootContext()->setContextProperty("DesktopConnection", &connection);
     engine.rootContext()->setContextProperty("CompanionRenderDiagnostics", parser.isSet("render-diagnostics"));
     engine.rootContext()->setContextProperty("CompanionWidgetRendering", &widgetRendering);
+    engine.rootContext()->setContextProperty("CompanionSessionSurface", sessionSurface);
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/qml");
     engine.addImportPath(QCoreApplication::applicationDirPath() + "/../lib/companion/qml");
     const auto installed = QCoreApplication::applicationDirPath() + "/../share/companion/integrations/window/Main.qml";

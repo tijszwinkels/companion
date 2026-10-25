@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Companion's trusted HTML chat, served only by the native ShellProfile
+      from this bundle. No network, frames or inline scripts: transcript text
+      is untrusted content and must never become code.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <title>Companion chat</title>
+    <link rel="stylesheet" href="chat.css" />
+    <script src="qwebchannel.js"></script>
+    <script type="module" src="chat.js"></script>
+  </head>
+  <body>
+    <div id="chat"></div>
+  </body>
+</html>

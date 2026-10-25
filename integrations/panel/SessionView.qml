@@ -181,8 +181,29 @@ Item {
   readonly property bool canSend: online && session !== null && pendingSubmission === null
     && pendingChoice === null && !recordingBusy
     && composer.text.trim().length > 0 && composer.text.length <= maximumMessageLength
-  readonly property string composerFocusId: online && composerReachable && composer.activeFocus
+  readonly property string composerFocusId: online
+    && (htmlActive ? htmlComposerFocused : composerReachable && composer.activeFocus)
     && root.Window.window && root.Window.window.active ? displayedId : ""
+
+  // Trusted HTML session surface (integrations/session-apps/). A host with
+  // embedded Chromium sets `htmlSurface`; the conversation then shows the
+  // HTML chat, or the conversation's own session application, in place of
+  // the QML transcript and composer below. This item stays the model in both
+  // cases: the same rows, host-owned draft, pending send/choice, recording
+  // and the draft handover functions used by pop-out windows. The QML
+  // presentation remains the trusted recovery ("Classic view"), and is used
+  // automatically while the HTML surface is not loaded or has failed.
+  property bool htmlSurface: false
+  property bool classicView: false
+  readonly property bool htmlActive: htmlSurface && nativeWidgets && !classicView
+    && htmlLoader.status === Loader.Ready && htmlLoader.item !== null && !htmlLoader.item.failed
+  // Reported by the trusted HTML chat only (never by a session application).
+  readonly property bool htmlComposerFocused: htmlActive && htmlLoader.item.composerFocused
+  // Host-side draft changes (agent drafts, recording, a completed send,
+  // handover, tab switch) advance this. Edits typed into the HTML composer
+  // do not; see ChatState.draftEditAllowed().
+  property int draftRevision: 0
+  property bool applyingPageDraft: false
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
   signal stopRequested(string id)
@@ -470,10 +491,40 @@ Item {
   }
 
   function focusComposer() {
+    if (root.htmlActive) {
+      if (root.online && root.visible && root.session) htmlLoader.item.focusComposer()
+      return
+    }
     if (root.online && root.composerReachable && root.session) composer.forceActiveFocus(Qt.ShortcutFocusReason)
   }
 
-  function releaseComposerFocus() { composer.focus = false }
+  function releaseComposerFocus() {
+    if (root.htmlActive) htmlLoader.item.releaseComposerFocus()
+    composer.focus = false
+  }
+
+  // The displayed conversation's draft, for the HTML composer.
+  function pageDraft() {
+    return {sessionId: root.displayedId, text: composer.text, cursor: composer.cursorPosition,
+      revision: root.draftRevision}
+  }
+
+  // Replace the displayed draft with text typed in the HTML composer. The
+  // caller (ChatBridge.qml) has already checked the session and revision.
+  // Runs synchronously, so no host-side change interleaves.
+  function replaceDraftFromPage(text, cursor) {
+    root.applyingPageDraft = true
+    composer.text = text
+    composer.cursorPosition = Math.max(0, Math.min(cursor, composer.length))
+    root.applyingPageDraft = false
+  }
+
+  // A choice selected in the HTML chat: the same path as AgentChoices below.
+  function requestChoice(id, revision, index) {
+    root.inputError = ""
+    root.pendingChoice = {id: id, revision: revision, index: index}
+    root.choiceRequested(id, revision, index)
+  }
 
   function submit() {
     if (!root.canSend) return
@@ -1019,6 +1070,7 @@ Item {
   ListView {
     id: transcript
     objectName: "sessionTranscript"
+    visible: !root.htmlActive
     anchors.fill: parent
     anchors.bottomMargin: inputSection.height + 12 * root.unit
     clip: true
@@ -1392,7 +1444,7 @@ Item {
       else if (action === "Refresh") root.refreshHistory()
       else if (action === "Load") root.loadOlder()
     }
-    visible: message !== "" && root.session !== null
+    visible: message !== "" && root.session !== null && !root.htmlActive
     // Sized from the text's natural width (not its laid-out width, which
     // depends on this size). Leaves room for the Jump to latest arrow.
     readonly property real actionSpace: statusAction.visible ? statusAction.implicitWidth + 8 * root.unit : 0
@@ -1440,7 +1492,7 @@ Item {
   Rectangle {
     id: latestArrow
     objectName: "jumpToLatest"
-    visible: root.session !== null && !root.atLatest
+    visible: root.session !== null && !root.atLatest && !root.htmlActive
     width: 32 * root.unit
     height: width
     x: transcript.x + transcript.width - width - 12 * root.unit
@@ -1475,6 +1527,7 @@ Item {
     id: inputSection
     anchors.bottom: parent.bottom
     width: parent.width
+    visible: !root.htmlActive
     spacing: 8 * root.unit
 
     AgentChoices {
@@ -1495,11 +1548,7 @@ Item {
       selection: root.selection
       fontFamily: root.proseFontFamily
       unit: root.unit
-      onChoiceRequested: (id, revision, index) => {
-        root.inputError = ""
-        root.pendingChoice = {id: id, revision: revision, index: index}
-        root.choiceRequested(id, revision, index)
-      }
+      onChoiceRequested: (id, revision, index) => root.requestChoice(id, revision, index)
       onStopRequested: (id, runId) => root.stopRunRequested(id, runId)
     }
 
@@ -1512,7 +1561,7 @@ Item {
       TextArea {
         id: composer
         objectName: "sessionComposer"
-        enabled: root.composerReachable
+        enabled: root.composerReachable && !root.htmlActive
         width: composerScroll.availableWidth
         placeholderText: !root.composerFocusId && root.focusShortcut
           ? root.focusShortcut + " to focus"
@@ -1533,6 +1582,7 @@ Item {
           radius: 4 * root.unit
         }
         onTextChanged: {
+          if (!root.applyingPageDraft) root.draftRevision++
           if (root.displayedId) root.drafts[root.displayedId] = text
           if (text === "") root.forgetDraftSource(root.displayedId)
         }
@@ -1634,6 +1684,17 @@ Item {
         unit: root.unit
         onTriggered: root.stopRequested(root.session.id)
       }
+      // Back from the recovery view to the trusted HTML surface.
+      PanelAction {
+        objectName: "htmlViewSession"
+        visible: root.htmlSurface && root.nativeWidgets && root.classicView
+        text: "HTML view"
+        foreground: root.foreground
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        onTriggered: root.classicView = false
+      }
       PanelAction {
         objectName: "dismissSession"
         enabled: root.online && root.session !== null && !root.recordingBusy
@@ -1655,5 +1716,17 @@ Item {
         font.pixelSize: 10 * root.unit
       }
     }
+  }
+
+  // Loaded only when a host enables it; the portable Quickshell panel never
+  // resolves this path or the WebEngine modules it imports.
+  Loader {
+    id: htmlLoader
+    objectName: "htmlSurfaceLoader"
+    anchors.fill: parent
+    active: root.htmlSurface && root.nativeWidgets
+    visible: root.htmlActive
+    source: active ? Qt.resolvedUrl("../session-apps/SessionSurface.qml") : ""
+    onLoaded: item.view = root
   }
 }

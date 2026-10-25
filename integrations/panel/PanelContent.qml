@@ -26,6 +26,8 @@ Item {
   readonly property real tabUnit: 1.25 * unit
   property bool animationsEnabled: true
   property bool nativeWidgets: false
+  // The standalone host's trusted HTML session surface (see SessionView).
+  property bool htmlSessions: false
   property string shortcutLabel: ""
   property string focusShortcut: ""
   property var history: []
@@ -1410,6 +1412,7 @@ Item {
     SessionView {
       id: chat
       nativeWidgets: root.nativeWidgets
+      htmlSurface: root.htmlSessions
       objectName: "sessionView"
       visible: root.selectedSession !== null && !root.selectedPoppedOut && !root.fullWidget && !root.browsing
       widgetsRunning: root.online && root.animationsEnabled

@@ -121,8 +121,11 @@ granted within 1.5 seconds. An agent request without focus opens the window
 and, if it took focus from another Companion surface, gives that focus back;
 focus in another application is left to the compositor's policy.
 
-This is a staged step on the existing Qt Quick conversation view, not the
-planned HTML session interface. `npm run test:window` covers it offscreen
+Conversation views, in the panel and in pop-out windows, show the
+[HTML session surface](../../integrations/session-apps/README.md): HTML chat,
+or the conversation's own session application, with **Classic view** as the
+recovery to the Qt Quick view. `--session-surface classic` starts with the
+classic view everywhere. The pop-out mechanics above are unchanged. `npm run test:window` covers it offscreen
 (`test/window/popout.test.ts`) against a synthetic transport; compositor focus,
 layer widths and real speech routing need a supervised desktop check.
 

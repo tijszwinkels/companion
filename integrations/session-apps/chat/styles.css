@@ -1,0 +1,272 @@
+/*
+ * Trusted HTML chat. Colors, fonts and text scale come from the native
+ * theme as CSS variables (see Chat.tsx); sizes scale with --scale like the
+ * classic view's textScale.
+ */
+
+:root {
+  color-scheme: dark light;
+}
+
+html,
+body,
+#chat {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.chat {
+  --foreground: #e0e0e0;
+  --background: #1a1b26;
+  --accent: #7aa2f7;
+  --muted: #808080;
+  --selection: #33467c;
+  --scale: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--foreground);
+  font-family: var(--prose-font, sans-serif);
+  font-size: calc(16px * var(--scale));
+  box-sizing: border-box;
+}
+
+.empty {
+  padding: 16px;
+  color: #808080;
+  font-family: sans-serif;
+}
+
+button {
+  font: inherit;
+  font-family: var(--font, sans-serif);
+  font-size: calc(12px * var(--scale));
+  color: var(--foreground);
+  background: var(--selection);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+button.link {
+  background: transparent;
+  color: var(--accent);
+  padding: 0 4px;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 0 6px;
+  font-family: var(--font, sans-serif);
+  font-size: calc(11px * var(--scale));
+  color: var(--muted);
+}
+
+.header .title {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(12px * var(--scale));
+  padding-right: 4px;
+}
+
+.transcript > :first-child {
+  margin-top: auto;
+}
+
+.history-notice {
+  align-self: center;
+  color: var(--muted);
+  font-size: calc(12px * var(--scale));
+}
+
+.latest {
+  position: sticky;
+  bottom: 4px;
+  align-self: flex-end;
+}
+
+.message {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.message.user {
+  align-self: flex-end;
+  max-width: 85%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.message.user .bubble {
+  background: var(--selection);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.message.user.queued .bubble {
+  opacity: 0.7;
+}
+
+.from,
+.state-note,
+.note {
+  color: var(--muted);
+  font-size: calc(11px * var(--scale));
+}
+
+.note.error,
+.message.error {
+  color: #ef5350;
+}
+
+.message.assistant .bubble {
+  line-height: 1.45;
+}
+
+.markdown p {
+  margin: 0 0 0.6em;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  padding: 8px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.markdown code {
+  font-family: monospace;
+}
+
+.markdown a {
+  color: var(--accent);
+}
+
+.message-actions {
+  opacity: 0;
+}
+
+.message.assistant:hover .message-actions {
+  opacity: 1;
+}
+
+.message.tool,
+.message.notice,
+.widget-card {
+  color: var(--muted);
+  font-size: calc(12px * var(--scale));
+}
+
+.widget-card {
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+.controls .voice {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: calc(11px * var(--scale));
+}
+
+.controls .voice.active {
+  color: var(--accent);
+}
+
+.choice {
+  text-align: left;
+}
+
+.choice.speakable {
+  border-color: var(--accent);
+}
+
+.choice .description {
+  display: block;
+  color: var(--muted);
+  font-size: calc(11px * var(--scale));
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+.composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: calc(76px * var(--scale));
+  resize: none;
+  padding: 8px;
+  color: var(--foreground);
+  background: rgba(127, 127, 127, 0.06);
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.composer textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.composer textarea[readonly] {
+  opacity: 0.75;
+}
+
+.conflict {
+  color: #ef5350;
+  font-size: calc(12px * var(--scale));
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.actions .recording {
+  background: rgba(240, 84, 79, 0.45);
+}
+
+.actions .state {
+  color: var(--muted);
+  font-size: calc(10px * var(--scale));
+}
