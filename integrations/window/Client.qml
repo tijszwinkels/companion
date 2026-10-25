@@ -75,6 +75,11 @@ Item {
   property var popouts: []
   // Main surface or at least one pop-out window is on screen.
   property bool anyViewVisible: panelVisible
+  // While true, reports wait (briefly, while a quiet window opening settles)
+  // and the latest state is sent once when it becomes false.
+  property bool reportsHeld: false
+  property bool reportPending: false
+  onReportsHeldChanged: if (!reportsHeld && reportPending) reportPanel()
   // companion_session_present: show the caller's conversation in a window or
   // in the sidebar. The host must answer exactly once with answerPresent().
   signal presentRequested(var message)
@@ -119,6 +124,11 @@ Item {
   // One atomic report of every native view. Repeated identical reports are
   // harmless: the listener changes nothing for them.
   function reportPanel() {
+    if (root.reportsHeld) {
+      root.reportPending = true
+      return
+    }
+    root.reportPending = false
     const id = root.popoutHost ? root.mainViewId : sessions.viewedId
     const report = {action: "panel-state", id: id,
       composerFocused: id !== "" && root.composerFocusId === id,

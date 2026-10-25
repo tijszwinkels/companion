@@ -1457,7 +1457,7 @@ Item {
       spacing: 12 * root.unit
       Text {
         width: parent.width
-        text: root.selectedSession ? "“" + root.selectedSession.title + "” is open in its own window. Typing and voice go to it there." : ""
+        text: root.selectedSession ? "“" + root.selectedSession.title + "” is open in its own window. Focus that window to type or speak to it." : ""
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         horizontalAlignment: Text.AlignHCenter

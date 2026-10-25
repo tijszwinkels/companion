@@ -17,7 +17,12 @@ Item {
   property alias client: client
   property alias panel: panel
   property alias popouts: popoutViews
-  readonly property bool inputFocused: host.opened && panel.inputFocused
+  // Popped-out conversation the focus shortcut is acting on, or "" for the
+  // main panel. Set while focusing and kept while that composer has focus.
+  property string focusTarget: ""
+  // A pop-out window's composer has keyboard focus (its window is active).
+  readonly property bool popoutInputFocused: popoutViews.report.some(entry => entry.composerFocused)
+  readonly property bool inputFocused: (host.opened && panel.inputFocused) || popoutInputFocused
   readonly property string composerId: host.opened ? panel.composerFocusId : ""
   readonly property bool keyboardFocused: host.opened && host.active
   readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
@@ -37,15 +42,34 @@ Item {
   }
 
   function releaseFocus(restore) {
+    // Read the restore target first: releasing composer focus below emits
+    // focus and report changes whose handlers may clear it.
+    const previous = root.previousWindow
     focusDeadline.stop()
     root.focusPending = false
     host.releaseFocus()
+    for (const view of popoutViews.allViews()) view.releaseComposerFocus()
     panel.releaseComposerFocus()
-    if (restore && root.previousWindow) {
+    root.focusTarget = ""
+    if (restore && previous) {
       // The bridge validates this compositor-supplied address again. It owns
       // focus restoration and sends keyboard insertion only after that boundary.
-      host.notify({type: "restore-focus", address: root.previousWindow})
+      host.notify({type: "restore-focus", address: previous})
     }
+    root.previousWindow = ""
+  }
+
+  // The main surface was hidden or lost its layer focus grab. That ends a
+  // focus request for the main panel, but not one held by a pop-out window,
+  // whose composer and restore target stay as they are.
+  // A pop-out composer the user focused directly (not via the shortcut) is
+  // independent of the main surface too, so this never touches pop-outs.
+  function releaseMainFocus() {
+    host.releaseFocus()
+    panel.releaseComposerFocus()
+    if (root.focusTarget !== "") return
+    focusDeadline.stop()
+    root.focusPending = false
     root.previousWindow = ""
   }
 
@@ -64,18 +88,35 @@ Item {
     root.previousWindow = /^0x[0-9a-f]+$/i.test(address || "") ? address : ""
     root.focusPending = true
     focusDeadline.restart()
-    host.show(true)
+    // The selected conversation's composer lives in its window when popped
+    // out: focus that window rather than the (compact) panel.
+    const id = client.sessions.conversationId
+    if (id !== "" && popoutViews.isPopped(id)) {
+      root.focusTarget = id
+      popoutViews.focusWindow(id)
+    } else {
+      root.focusTarget = ""
+      host.show(true)
+    }
     root.acquireFocus()
   }
 
   function acquireFocus() {
     // Media is paused only after the requested window actually acquired focus.
-    if (root.focusPending && root.keyboardFocused) {
+    if (!root.focusPending) return
+    if (root.focusTarget !== "") {
+      const window = popoutViews.windows[root.focusTarget]
+      if (!window || !window.active) return
+      focusDeadline.stop()
+      root.focusPending = false
+      window.view.focusComposer()
+    } else {
+      if (!root.keyboardFocused) return
       focusDeadline.stop()
       root.focusPending = false
       panel.focusComposer()
-      if (root.inputFocused) host.notify({type: "pause-media"})
     }
+    if (root.inputFocused) host.notify({type: "pause-media"})
   }
 
   function command(message) {
@@ -135,25 +176,55 @@ Item {
   }
   onKeyboardFocusedChanged: {
     root.acquireFocus()
-    if (!root.keyboardFocused && !root.focusPending && !host.switching) root.previousWindow = ""
+    root.forgetDepartedRestoreTarget()
     Qt.callLater(root.publish)
+  }
+
+  // After focus left the composer the shortcut focused, a later toggle must
+  // not restore an old application window: forget that address. A quiet
+  // window opening (agent request without focus) moves activation away and
+  // back on its own; that is not the user leaving, so the decision waits
+  // until the opening has settled and is then made on the final state.
+  function forgetDepartedRestoreTarget() {
+    if (popoutViews.quietOpenings > 0 || root.focusPending) return
+    if (root.focusTarget === "") {
+      if (!root.keyboardFocused && !host.switching) root.previousWindow = ""
+      return
+    }
+    const window = popoutViews.windows[root.focusTarget]
+    if (!(window && window.active)) {
+      root.focusTarget = ""
+      root.previousWindow = ""
+    }
   }
   onWidthChanged: Qt.callLater(root.publish)
   onHeightChanged: Qt.callLater(root.publish)
+
+  // A pop-out window gained or lost activation or composer focus.
+  Connections {
+    target: popoutViews
+    function onReportChanged() {
+      root.acquireFocus()
+      root.forgetDepartedRestoreTarget()
+    }
+    function onQuietOpeningsChanged() {
+      if (popoutViews.quietOpenings === 0) root.forgetDepartedRestoreTarget()
+    }
+  }
 
   Connections {
     target: root.host
     function onCommand(message) { root.command(message) }
     function onStateChanged() {
       if (!root.host.opened && !root.host.switching) {
-        root.releaseFocus(false)
+        root.releaseMainFocus()
         root.screenshotSource = ""
       }
       Qt.callLater(root.publish)
     }
     function onBridgeChanged() { client.reportPanel(); root.publish() }
     function onSurfaceChanged() { Qt.callLater(root.publish) }
-    function onFocusCleared() { root.releaseFocus(false) }
+    function onFocusCleared() { root.releaseMainFocus() }
   }
 
   Timer {
@@ -205,6 +276,7 @@ Item {
     rail: panel.compactRail ? "compact" : "full"
     popouts: popoutViews.report
     anyViewVisible: root.host.opened || popoutViews.report.length > 0
+    reportsHeld: popoutViews.quietOpenings > 0
     onPresentRequested: message => popoutViews.present(message, function(result) {
       client.answerPresent(message.requestId, result)
     })

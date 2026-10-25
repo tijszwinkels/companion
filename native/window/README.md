@@ -113,9 +113,13 @@ existing fields keep describing the main surface; `visible` means any native
 Companion surface. The listener picks the target: an active window first, then
 the conversation visible in the panel, then a single window behind a compact
 rail. “Go to session N” focuses a popped-out conversation's window, or selects
-the tab in the panel. Window placement, size and tiling belong to the
+the tab in the panel. The focus shortcut (Super+Alt+D) on a selected
+popped-out conversation focuses its window's composer, with the usual media
+pause and toggle back. Window placement, size and tiling belong to the
 compositor; Companion only requests activation and reports whether it was
-granted within 1.5 seconds.
+granted within 1.5 seconds. An agent request without focus opens the window
+and, if it took focus from another Companion surface, gives that focus back;
+focus in another application is left to the compositor's policy.
 
 This is a staged step on the existing Qt Quick conversation view, not the
 planned HTML session interface. `npm run test:window` covers it offscreen

@@ -47,6 +47,10 @@ Item {
   // Unsent text of popped-out conversations closed elsewhere: [{key, title, text}].
   property var orphanDrafts: []
   property int orphanSequence: 0
+  // Quiet (focus:false) openings still settling. While above zero the host
+  // holds back panel-state reports, so a window that Qt or the compositor
+  // briefly activated never becomes a transient voice target.
+  property int quietOpenings: 0
   // Agent request ids already answered or in progress (bounded).
   property var presentRequests: ({})
 
@@ -116,10 +120,12 @@ Item {
 
   // Ask the compositor to activate `target`, then report what happened.
   // `done(focused)` is called once, after activation or the bounded wait.
-  function activate(target, done) {
+  // For the main surface, `id` names the conversation that must be the one
+  // actually shown there for the focus to count.
+  function activate(target, done, id) {
     if (target === root.host) {
       root.host.show(true)
-      activationWatch.createObject(root, {check: function() { return root.host.active },
+      activationWatch.createObject(root, {check: function() { return root.mainShows(id) },
         done: done, remaining: root.activationWaitMilliseconds})
       return
     }
@@ -128,6 +134,13 @@ Item {
     target.requestActivate()
     activationWatch.createObject(root, {check: function() { return target.visible && target.active },
       done: done, remaining: root.activationWaitMilliseconds})
+  }
+
+  // The main surface is active and shows conversation `id` (not Activity,
+  // Previous sessions or the browser). Without an id, only activation counts.
+  function mainShows(id) {
+    if (root.host.active !== true) return false
+    return id === undefined || root.client.mainViewId === id
   }
 
   function refreshReport() {
@@ -197,6 +210,47 @@ Item {
     return {outcome: "shown", reason: "", window: window}
   }
 
+  // The Companion surface that has keyboard focus now: the main surface, a
+  // pop-out window, or null (another application or nothing).
+  function focusedSurface() {
+    if (root.host.active === true) return root.host
+    for (const id of root.order) {
+      if (root.windows[id] && root.windows[id].active) return root.windows[id]
+    }
+    return null
+  }
+
+  // After an agent opened `window` with focus:false: Qt or the compositor may
+  // activate a newly shown window. If it took focus from another Companion
+  // surface, give that surface its focus back, so the user's typing and
+  // voice target do not move. Focus held by another application cannot be
+  // restored from here; the compositor's policy decides. `done(focused)`
+  // reports whether `window` ended up focused, after a short bounded wait.
+  // The caller has already counted this opening in quietOpenings; it is
+  // released here once the outcome is known, and then reported once.
+  function keepFocus(previous, window, done) {
+    let restored = false
+    const previousActive = function() {
+      return previous === root.host ? root.host.active === true : previous.active === true
+    }
+    activationWatch.createObject(root, {check: function() {
+      if (window.active) {
+        if (previous !== null && !restored) {
+          restored = true
+          if (previous === root.host) root.host.activate()
+          else previous.requestActivate()
+        }
+        // Nothing of ours to give focus back to: the window keeps it.
+        return previous === null
+      }
+      return restored && previousActive()
+    }, done: function() {
+      root.quietOpenings -= 1
+      root.refreshReport()
+      done(window.active === true)
+    }, remaining: 300})
+  }
+
   // Return `id` to the sidebar and close its window. Returns {outcome,
   // reason}; outcome is "returned" or "conflict".
   function closeWindow(id) {
@@ -261,8 +315,9 @@ Item {
       return result
     }
     if (options && options.focus) {
-      root.client.sessions.select(id)
-      root.activate(root.host, function() {})
+      // Like clicking its tab: this also leaves the panel browser.
+      root.panel.sessionSelected(id)
+      root.activate(root.host, function() {}, id)
     }
     return result
   }
@@ -302,13 +357,25 @@ Item {
     }
 
     if (presentation === "window") {
+      const existing = root.windows[id] !== undefined
+      const previous = root.focusedSurface()
+      // Hold reports before the window is mapped; see quietOpenings.
+      const quiet = !focus && !existing
+      if (quiet) root.quietOpenings += 1
       const result = root.openWindow(id)
       if (result.outcome !== "shown") {
+        if (quiet) root.quietOpenings -= 1
         answer({outcome: result.outcome, reason: result.reason})
         return
       }
-      if (!focus) {
+      if (!focus && existing) {
         answer({outcome: "shown", reason: "", focused: result.window.active === true})
+        return
+      }
+      if (!focus) {
+        root.keepFocus(previous, result.window, function(focused) {
+          answer({outcome: "shown", reason: "", focused: focused})
+        })
         return
       }
       root.activate(result.window, function(focused) {
@@ -324,15 +391,14 @@ Item {
       return
     }
     if (!focus) {
-      answer({outcome: "returned", reason: "", focused: root.host.active === true
-        && root.client.sessions.conversationId === id})
+      answer({outcome: "returned", reason: "", focused: root.mainShows(id)})
       return
     }
-    root.client.sessions.select(id)
+    root.panel.sessionSelected(id)
     root.activate(root.host, function(focused) {
       answer({outcome: "returned", focused: focused,
         reason: focused ? "" : "The conversation is back in the sidebar; the desktop did not give it keyboard focus."})
-    })
+    }, id)
   }
 
   // Conversations changed. A popped-out conversation that disappeared (closed
