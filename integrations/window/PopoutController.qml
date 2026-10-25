@@ -116,10 +116,12 @@ Item {
 
   // Ask the compositor to activate `target`, then report what happened.
   // `done(focused)` is called once, after activation or the bounded wait.
-  function activate(target, done) {
+  // For the main surface, `id` names the conversation that must be the one
+  // actually shown there for the focus to count.
+  function activate(target, done, id) {
     if (target === root.host) {
       root.host.show(true)
-      activationWatch.createObject(root, {check: function() { return root.host.active },
+      activationWatch.createObject(root, {check: function() { return root.mainShows(id) },
         done: done, remaining: root.activationWaitMilliseconds})
       return
     }
@@ -128,6 +130,13 @@ Item {
     target.requestActivate()
     activationWatch.createObject(root, {check: function() { return target.visible && target.active },
       done: done, remaining: root.activationWaitMilliseconds})
+  }
+
+  // The main surface is active and shows conversation `id` (not Activity,
+  // Previous sessions or the browser). Without an id, only activation counts.
+  function mainShows(id) {
+    if (root.host.active !== true) return false
+    return id === undefined || root.client.mainViewId === id
   }
 
   function refreshReport() {
@@ -261,8 +270,9 @@ Item {
       return result
     }
     if (options && options.focus) {
-      root.client.sessions.select(id)
-      root.activate(root.host, function() {})
+      // Like clicking its tab: this also leaves the panel browser.
+      root.panel.sessionSelected(id)
+      root.activate(root.host, function() {}, id)
     }
     return result
   }
@@ -324,15 +334,14 @@ Item {
       return
     }
     if (!focus) {
-      answer({outcome: "returned", reason: "", focused: root.host.active === true
-        && root.client.sessions.conversationId === id})
+      answer({outcome: "returned", reason: "", focused: root.mainShows(id)})
       return
     }
-    root.client.sessions.select(id)
+    root.panel.sessionSelected(id)
     root.activate(root.host, function(focused) {
       answer({outcome: "returned", focused: focused,
         reason: focused ? "" : "The conversation is back in the sidebar; the desktop did not give it keyboard focus."})
-    })
+    }, id)
   }
 
   // Conversations changed. A popped-out conversation that disappeared (closed

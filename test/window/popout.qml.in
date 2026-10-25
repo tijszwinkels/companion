@@ -453,6 +453,28 @@ TestCase {
     compare(body.panel.selectedSessionId, "one")
   }
 
+  function test_return_with_focus_leaves_the_panel_browser() {
+    body.popouts.popOut("two")
+    body.panel.openBrowser()
+    body.popouts.returnToSidebar("two", {focus: true})
+    tryVerify(function() { return popout("two") === null })
+    compare(body.panel.browserOpen, false)
+    compare(body.panel.selectedSessionId, "two")
+    tryCompare(composerOf(mainView()), "visible", true)
+    tryVerify(function() { return lastReport().id === "two" })
+
+    // The agent route: focus is confirmed only once the main surface really
+    // shows the returned conversation, not the browser above it.
+    body.popouts.popOut("two")
+    body.panel.openBrowser()
+    fakeBackend.received({type: "agent-present", requestId: "rb", id: "two", presentation: "sidebar", focus: true})
+    tryVerify(function() { return answers("rb").length === 1 })
+    compare(answers("rb")[0].outcome, "returned")
+    compare(body.panel.browserOpen, false)
+    compare(answers("rb")[0].focused, body.client.mainViewId === "two" && TestHost.active)
+    verify(answers("rb")[0].focused, "Offscreen activation succeeds, so focus is confirmed")
+  }
+
   function test_browser_request_for_a_popped_conversation_is_not_selected() {
     body.popouts.popOut("one")
     fakeBackend.sent = []
