@@ -31,6 +31,7 @@ widgets, pins and the panel browser stay where they were). Start the host with
 | Trusted chat view and its bridge              | `TrustedChatView.qml`, `ChatState.mjs` |
 | Trusted chat page (Preact)                    | `chat/`, built into `dist/`            |
 | Restricted application view                   | `SessionAppView.qml`                   |
+| Trusted conversation list (rail)              | `TrustedRailView.qml`, `rail/`         |
 | Browser profiles                              | `../../native/widget-renderer/`        |
 
 `SessionView` stays the model in every presentation, so the existing draft
@@ -79,9 +80,14 @@ read-only while recording appends to the draft.
 
 The view follows `session.application`:
 
-- A new application or a new code version seen while the view is open brings
-  the application forward, unless a send, choice or recording is unconfirmed or
-  the person is typing. Then the bar says it is ready and waits.
+- A first application or a new code version arriving while the view shows the
+  conversation brings the application forward, unless a send, choice or
+  recording is unconfirmed or the person is typing in the composer. Then the
+  view stays where it is (chat, for a first application), keeps the draft, and
+  the bar says the application is ready until the person opens it.
+- Opening a conversation that already has an application (selecting its tab or
+  a new pop-out) shows the application, unless the person chose Chat for it in
+  that view before.
 - The capability URL stays the same across code replacement; the view reloads
   it for each new code version.
 - `error` (an application that could not be restored) shows the error and the
@@ -93,9 +99,20 @@ The view follows `session.application`:
 ## Not ported to HTML yet
 
 Tool details, inline widgets and pinned widgets, history-pane features such as
-message selection and screenshots thumbnails (screenshots open in the native
+message selection and screenshot thumbnails (screenshots open in the native
 viewer), the model picker, timers and the panel browser. Use Classic view or the
-sidebar for those. The trusted HTML rail/sidebar is a separate later step.
+sidebar for those.
+
+## Session rail
+
+With the HTML session surface the panel's list of conversations is also a
+trusted HTML page (`TrustedRailView.qml`, `rail/`), in the same `ShellProfile`
+shape: select, pop out, focus (selecting a popped-out conversation) and return,
+and close, each through the panel's existing signals. The Activity tab,
+Previous sessions, the compact rail's Expand/Return, the divider, Alt+number
+and Alt+Shift+Up/Down stay native, and the native tab list returns if the page
+fails. Drag reordering and tab tooltips are not ported; the rest of the sidebar
+(Activity, settings, Previous sessions) remains Qt Quick.
 
 ## Build and test
 
@@ -106,6 +123,10 @@ npm run test:session-apps-ui
 ```
 
 `test/session-apps-ui/surface.test.ts` runs the real native host, QML body,
-trusted chat page and restricted application view offscreen against a scripted
-listener transport and a synthetic application endpoint. It does not exercise
-the listener's application service, a compositor or real speech.
+trusted chat page, rail and restricted application view offscreen against a
+scripted listener transport and a synthetic application endpoint.
+`runtime-native.test.ts` (skipped unless the session application runtime is in
+the tree) shows a real agent-applied `task-list` from AgentSessions and
+WidgetService in the native view, performs a user edit through the native
+broker and follows the agent's replacement with `task-board`, with a scripted
+model. Neither exercises a compositor or real speech.

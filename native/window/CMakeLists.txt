@@ -39,7 +39,7 @@ install(TARGETS companion-ui RUNTIME DESTINATION bin)
 install(TARGETS companionwidgets LIBRARY DESTINATION lib/companion/qml/Companion/Widgets)
 install(FILES ../widget-renderer/qmldir DESTINATION lib/companion/qml/Companion/Widgets)
 install(DIRECTORY ../../integrations/window ../../integrations/panel ../../integrations/session-apps DESTINATION share/companion/integrations
-    PATTERN "chat" EXCLUDE PATTERN "*.ts" EXCLUDE PATTERN "tsconfig.json" EXCLUDE)
+    PATTERN "chat" EXCLUDE PATTERN "rail" EXCLUDE PATTERN "*.ts" EXCLUDE PATTERN "tsconfig.json" EXCLUDE)
 install(FILES companion.desktop DESTINATION share/applications)
 install(FILES ../../LICENSE ../../LICENSING.md DESTINATION share/licenses/companion-ui)
 if(COMPANION_SIDEBAR)

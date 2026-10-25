@@ -26,8 +26,11 @@ Item {
   readonly property real tabUnit: 1.25 * unit
   property bool animationsEnabled: true
   property bool nativeWidgets: false
-  // The standalone host's trusted HTML session surface (see SessionView).
+  // The standalone host's trusted HTML session surface (see SessionView)
+  // and HTML conversation list. The native tab list returns if it fails.
   property bool htmlSessions: false
+  readonly property bool htmlRailActive: htmlSessions && nativeWidgets && htmlRail.status === Loader.Ready
+    && htmlRail.item !== null && !htmlRail.item.failed
   property string shortcutLabel: ""
   property string focusShortcut: ""
   property var history: []
@@ -801,6 +804,7 @@ Item {
       Flickable {
         id: sessionList
         objectName: "sessionTabList"
+        visible: !root.htmlRailActive
         anchors.fill: parent
         anchors.topMargin: 100 * root.tabUnit
         anchors.bottomMargin: 82 * root.tabUnit + (compactControls.visible ? compactControls.height + 8 * root.tabUnit : 0)
@@ -867,6 +871,19 @@ Item {
           color: root.accent
           visible: root.dragDestinationValid && root.dragBeforeId === ""
         }
+      }
+
+      // The trusted HTML list of conversations (integrations/session-apps/)
+      // in the same place as the native tabs, with the HTML session surface.
+      // Activity, Previous sessions and the compact controls stay native.
+      Loader {
+        id: htmlRail
+        objectName: "htmlRailLoader"
+        anchors.fill: sessionList
+        active: root.htmlSessions && root.nativeWidgets
+        visible: root.htmlRailActive
+        source: active ? Qt.resolvedUrl("../session-apps/TrustedRailView.qml") : ""
+        onLoaded: item.panel = root
       }
 
       // Compact rail: the selected conversation is in its own window. These

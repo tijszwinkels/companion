@@ -29,25 +29,32 @@ Item {
   readonly property bool failed: chat.failed
   readonly property bool composerFocused: mode === "chat" && chat.composerFocused
 
-  // Per conversation shown in this view: "chat" or "app", the user's latest
-  // choice. A conversation without a choice shows its application.
+  // Per conversation shown in this view: "chat" or "app". Set only by the
+  // person's choice or by observeApplication(), never implied by a new
+  // descriptor, so an application cannot take over the view before the
+  // input-safety check below has run.
   property var modes: ({})
   // Per conversation: "<application id>:<version>" last seen here, so a new
   // application or replaced code can be brought forward once.
   property var seen: ({})
   // A replacement that arrived while switching was unsafe (see below).
   property var readyNotices: ({})
-  readonly property string mode: application !== null && root.modes[root.sessionId] !== "chat" ? "app" : "chat"
+  readonly property string mode: application !== null && root.modes[root.sessionId] === "app" ? "app" : "chat"
   readonly property string readyNotice: root.readyNotices[root.sessionId] || ""
 
   function setMode(id, next) {
     if (!id) return
-    const modes = Object.assign({}, root.modes)
-    modes[id] = next
-    root.modes = modes
+    root.keepMode(id, next)
     const notices = Object.assign({}, root.readyNotices)
     delete notices[id]
     root.readyNotices = notices
+  }
+
+  // Record the shown mode without touching a ready notice.
+  function keepMode(id, next) {
+    const modes = Object.assign({}, root.modes)
+    modes[id] = next
+    root.modes = modes
   }
 
   // Leaving chat while a send, choice or recording started there is still
@@ -72,17 +79,32 @@ Item {
     seen[id] = key
     root.seen = seen
 
-    // First sight in this view (opening a tab or pop-out): keep the default
-    // or the user's earlier choice; never announce anything.
-    if (previous === undefined || key === "") return
+    // No application (any more): chat. A notice about it no longer applies.
+    if (key === "") {
+      if (root.readyNotices[id] !== undefined) root.setMode(id, "chat")
+      return
+    }
 
-    // The agent applied an application or replaced its code while this view
-    // was showing it. Bring it forward unless that would interrupt input.
+    // First sight in this view (selecting a tab, opening a pop-out or the
+    // first snapshot): the application is the conversation's surface, so it
+    // shows unless the person chose chat here earlier. Nothing is being
+    // replaced under their hands: this view did not show that conversation.
+    if (previous === undefined) {
+      if (root.modes[id] === undefined) root.keepMode(id, "app")
+      return
+    }
+
+    // The agent applied a first application, or replaced its code, while
+    // this view showed the conversation. Bring it forward unless that would
+    // interrupt input; otherwise keep what is shown now (chat for a first
+    // application) and say it is ready.
     const blocker = root.switchBlocker()
     if (blocker === "") {
       root.setMode(id, "app")
       return
     }
+    const shown = previous !== "" && root.modes[id] === "app" ? "app" : "chat"
+    root.keepMode(id, shown)
     const notices = Object.assign({}, root.readyNotices)
     notices[id] = "“" + root.application.name + "” is ready. It opens when you choose it; " + blocker + "."
     root.readyNotices = notices

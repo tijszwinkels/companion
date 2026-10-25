@@ -1,0 +1,121 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+// A real session snapshot (runtime fixture) shown in the real native host:
+// the agent-applied application, a user edit inside its restricted view,
+// replaced code from the agent's next turn, and the unchanged chat draft.
+TestCase {
+  id: testCase
+  name: "RuntimeNativeApplication"
+  when: windowShown
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+  property var session: @SESSION@
+
+  function evaluate(target, script) {
+    let done = false
+    let result = null
+    target.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 5000)
+    return result
+  }
+  function view() { return body.panel.conversationView }
+  function app() { return findChild(view(), "sessionAppBrowser") }
+  // The authored bundle runs in the host page's sandboxed iframe.
+  function inApp(script) {
+    const frames = app().mainFrame.children
+    if (frames.length === 0) return undefined
+    return evaluate(frames[0], script)
+  }
+  function waitInApp(script, expected) {
+    tryVerify(function() { return JSON.stringify(inApp(script)) === JSON.stringify(expected) }, 20000,
+      script + " -> " + JSON.stringify(expected))
+  }
+  function fetchSession(path) {
+    let reply = null
+    const request = new XMLHttpRequest()
+    request.onreadystatechange = function() {
+      if (request.readyState === XMLHttpRequest.DONE) reply = request.status === 200 ? JSON.parse(request.responseText) : {}
+    }
+    request.open("GET", "@CONTROL_URL@" + path)
+    request.send()
+    tryVerify(function() { return reply !== null }, 30000, "control " + path)
+    return reply
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [testCase.session]})
+    tryVerify(function() { return body.panel.selectedSession !== null })
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+
+  function test_real_application_in_native_view() {
+    const surface = findChild(view(), "htmlSurfaceLoader").item
+    tryVerify(function() { return surface !== null && surface.mode === "app" }, 10000)
+    tryVerify(function() { return app() !== null && app().rendered }, 20000, app() ? app().error : "no app view")
+
+    // Through the native broker: state read, summary query, then a user
+    // action (checkbox → move_task).
+    waitInApp("document.querySelectorAll('li').length", 2)
+    waitInApp("document.querySelector('h1').textContent", "Release")
+    waitInApp("document.querySelector('.counter').textContent", "0 of 2 done")
+
+    // An unsent draft typed in HTML chat before the edit.
+    mouseClick(findChild(view(), "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    const chat = findChild(view(), "trustedChatBrowser")
+    tryVerify(function() { return findChild(surface, "trustedChat").pageReady }, 15000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null") === true }, 10000)
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'keep this draft';"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryCompare(findChild(view(), "sessionComposer"), "text", "keep this draft")
+    mouseClick(findChild(view(), "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+
+    inApp("document.querySelector('li input[type=checkbox]').click()")
+    waitInApp("document.querySelector('.counter').textContent", "1 of 2 done")
+    let current = fetchSession("/session")
+    compare(current.application.revision, 2)
+    compare(current.application.eventStatus.undelivered, 1)
+    fakeBackend.received({type: "agent-session", session: current})
+
+    // The agent's next turn adds a task and replaces the code.
+    const replaced = fetchSession("/replace")
+    compare(replaced.application.version, 2)
+    compare(replaced.id, testCase.session.id)
+    fakeBackend.received({type: "agent-session", session: replaced})
+    compare(findChild(view(), "surfaceAppButton").text, "● task-board · v2")
+    waitInApp("document.querySelectorAll('.lane').length", 3)
+    waitInApp("[...document.querySelectorAll('.lane')].map((lane) => lane.querySelectorAll('li').length)", [1, 1, 1])
+
+    // Same conversation, same draft; one conversation only.
+    compare(body.client.sessions.sessions.length, 1)
+    compare(findChild(view(), "sessionComposer").text, "keep this draft")
+    mouseClick(findChild(view(), "surfaceChatButton"))
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').value") === "keep this draft" }, 10000)
+  }
+}
