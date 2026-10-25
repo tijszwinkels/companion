@@ -21,7 +21,7 @@ import type { InteractionContext } from '../../src/core/frame.ts';
 import { UserSensorRouter } from '../../src/core/router.ts';
 import { ContinueOpenAgentConversation } from '../../src/processors/continue-open-agent-conversation.ts';
 import { Ignore } from '../../src/processors/ignore.ts';
-import { desktopFixture, waitFor } from '../desktop-fixture.ts';
+import { desktopFixture, waitFor, windowReply } from '../desktop-fixture.ts';
 import { frame, signal, testDetector } from '../helpers.ts';
 
 /** The exact existing instructions; pop-outs must not add or change wording. */
@@ -523,4 +523,93 @@ test('withdrawing the capability forgets the windows', async (context) => {
   assert.equal((await f.desktop.reply('panel-state')).type, 'result');
   assert.equal(f.current().agentSessionId, '');
   assert.equal(f.activity.interactionCurrent!(captured), false);
+});
+
+test('a window on a full-layout panel makes a compact panel window ambiguous', async (context) => {
+  const f = await fixture(context);
+
+  // The first panel shrinks to its rail with one window of C.
+  await f.report({ rail: 'compact', popouts: [window(f.c)] });
+  assert.equal(f.current().agentSessionId, f.c);
+  assert.equal(f.current().agentTargetSource, 'popout-only');
+
+  // A second native panel keeps its full layout but shows a window of B.
+  const other = createConnection(f.desktop.socketPath);
+  context.after(async () => {
+    other.destroy();
+  });
+  const received: string[] = [];
+  other.setEncoding('utf8');
+  other.on('data', (chunk: string) => received.push(chunk));
+  await once(other, 'connect');
+  other.write(
+    JSON.stringify({
+      action: 'panel-state',
+      id: '',
+      composerFocused: false,
+      visible: true,
+      popoutHost: true,
+      rail: 'full',
+      popouts: [window(f.b)],
+    }) + '\n',
+  );
+  await waitFor(() => received.join('').includes('panel-recorded'));
+
+  // Two unfocused windows are visible: never guess between them.
+  assert.equal(f.current().agentSessionId, '');
+  assert.equal(f.current().agentTargetSource, undefined);
+});
+
+test('withdrawing the capability releases a window composer, so History paste works again', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-popout-paste-'));
+  const typed: string[][] = [];
+  const sessions = new AgentSessions(
+    {
+      pi: {
+        id: 'popout-paste-fixture',
+        label: 'Pop-out paste fixture',
+        dependencies: {},
+        async run() {},
+      },
+    },
+    () => {},
+    directory,
+  );
+  const desktop = await desktopFixture(async (binary, args) => {
+    if (binary === 'wtype') {
+      typed.push(args);
+    }
+    return binary === 'hyprctl' ? windowReply() : Buffer.alloc(0);
+  }, sessions);
+  context.after(async () => {
+    await desktop.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const id = sessions.start({ ...frame, utterance: 'Windowed conversation' }, signal());
+  await sessions.idle();
+
+  // A row to paste, admitted like an ordinary utterance.
+  const row = desktop.seed();
+  desktop.runtime.activity.outcome?.(frame.id, 'ignored');
+  desktop.runtime.activity.finished?.(frame.id);
+
+  // The window's composer has focus, then the panel drops the capability and
+  // reports only an empty main view with no keyboard focus.
+  desktop.send({
+    action: 'panel-state',
+    id: '',
+    composerFocused: false,
+    visible: true,
+    popoutHost: true,
+    rail: 'compact',
+    popouts: [{ id, active: true, composerFocused: true }],
+  });
+  assert.equal((await desktop.reply('panel-state')).type, 'result');
+  desktop.send({ action: 'panel-state', id: '', composerFocused: false, keyboardFocused: false });
+  assert.equal((await desktop.reply('panel-state')).type, 'result');
+
+  // A History paste into an ordinary application (no Companion composer).
+  desktop.send({ action: 'paste', id: row, target: frame.screenshot.window.address, composer: '' });
+  assert.equal((await desktop.reply('paste')).result, 'sent');
+  assert.equal(typed.length, 1);
 });

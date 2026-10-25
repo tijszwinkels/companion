@@ -1095,6 +1095,16 @@ export class DesktopRuntime {
     if (nativeFocusKey(previous.report) !== '') {
       this.composerRevision++;
     }
+    // A window composer's focus went with its window. Without this, a
+    // following legacy report (which only describes the main view) would
+    // leave that composer looking focused, and keyboard delivery that expects
+    // no Companion composer (History paste) would be refused.
+    const windowComposer =
+      this.composerClient === clientId &&
+      previous.report.popouts.some((popout) => popout.id === this.composerSession);
+    if (windowComposer) {
+      this.setComposerFocus('', 0);
+    }
     return true;
   }
 

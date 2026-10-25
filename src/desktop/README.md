@@ -944,8 +944,8 @@ after reconnecting; not because transcripts or titles stream.
 
 **Voice target.** At speech end the target conversation is, in order: the
 active window; else the conversation visible in the main sidebar body; else,
-when a connection shows the compact rail and exactly one window, that window
-as a weak candidate; else none. Several unfocused windows are never guessed
+when exactly one window is visible across all connections and its
+connection shows the compact rail, that window as a weak candidate; else none. Several unfocused windows are never guessed
 between. Only the chosen view's own focused composer selects the strong
 "input field selected" instruction; an active window whose composer is not
 focused, and the weak candidate, use the ordinary unfocused instruction. The
@@ -957,8 +957,8 @@ utterance captured before it is refused even when the same conversation stays
 the target (for example while moving from the sidebar into its window).
 Repeated identical reports, a different window order and streamed updates do
 not. Closing a conversation, disconnecting, or withdrawing the capability
-removes its windows at once. Another connection cannot clear this connection's
-windows. An active window counts as Companion keyboard focus for the delivery
+removes its windows at once, together with any window composer focus.
+Another connection cannot clear this connection's windows. An active window counts as Companion keyboard focus for the delivery
 guards (typed Activity text is refused, as with a focused panel), and
 activation moving between windows stops pending keyboard delivery.
 
