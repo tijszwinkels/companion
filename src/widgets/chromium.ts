@@ -365,7 +365,16 @@ export class BrowserPage {
       timeout,
     );
     if (reply.exceptionDetails) {
-      throw Error('Widget code failed to finish successfully');
+      // The generic message is what widget callers see. Session applications
+      // read the bounded first line of the page's own error from `cause`.
+      const details = object(reply.exceptionDetails);
+      const exception = details.exception as JsonObject | undefined;
+      const description = String(exception?.description ?? details.text ?? '');
+      const reason = description
+        .split('\n')[0]
+        .replace(/^Error: /, '')
+        .slice(0, 300);
+      throw Error('Widget code failed to finish successfully', { cause: reason });
     }
     return object(reply.result).value;
   }

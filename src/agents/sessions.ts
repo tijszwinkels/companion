@@ -410,6 +410,7 @@ export class AgentSessions implements InspectableModule {
     const eventOnly = message?.origin?.kind === 'application-event';
     if (eventOnly) {
       session.applicationEventQueued = false;
+      this.widgets.applications.setQueued(session.view.id, false);
     } else if (!message || message.origin || !session.application?.id) {
       return { skip: false, prompt };
     }

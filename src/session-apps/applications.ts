@@ -121,6 +121,23 @@ function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
+/**
+ * Run authored code in the renderer. A refusal thrown by the application's
+ * own handler (for example "Task was not found") is reported with its bounded
+ * message; it is the application's text, shown to the user or agent as such.
+ */
+async function authored<T>(task: Promise<T>): Promise<T> {
+  try {
+    return await task;
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined;
+    if (typeof cause === 'string' && cause) {
+      throw new SessionApplicationError(`Application refused: ${cause}`);
+    }
+    throw error;
+  }
+}
+
 export class SessionApplications {
   private readonly entries = new Map<string, Entry>();
   private readonly loading = new Map<string, Promise<Entry>>();
@@ -628,7 +645,9 @@ export class SessionApplications {
       boundedJson(args, sessionApplicationLimits.argsBytes);
 
       // The page receives a serialized copy; nothing it returns is saved.
-      const value = await this.host.renderer.query(this.surface(record), bundle, name, args);
+      const value = await authored(
+        this.host.renderer.query(this.surface(record), bundle, name, args),
+      );
       const result = this.host.registry.validate(definition.returns, value);
       boundedJson(result, sessionApplicationLimits.resultBytes);
       return { result, revision: record.revision, version: record.version };
@@ -667,12 +686,8 @@ export class SessionApplications {
       const definition = bundle.manifest.actions[action];
       const args = this.host.registry.validate(definition.parameters, command.args ?? {});
       boundedJson(args, sessionApplicationLimits.argsBytes);
-      const reduced = await this.host.renderer.reduce(
-        this.surface(record),
-        bundle,
-        action,
-        args,
-        requestId,
+      const reduced = await authored(
+        this.host.renderer.reduce(this.surface(record), bundle, action, args, requestId),
       );
       const data = this.host.registry.validate(bundle.manifest.parameters, reduced.props);
       let result = this.host.registry.validate(definition.returns, reduced.result);

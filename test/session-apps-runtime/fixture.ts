@@ -39,7 +39,7 @@ export interface ApplicationTurn {
   text: string;
   signal: AbortSignal;
   /** Call a tool through this turn's lease, exactly as the harness would. */
-  tool(name: string, parameters?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  tool(name: string, parameters?: Record<string, unknown>): Promise<Record<string, any>>;
   /** The tool names this turn's harness exposes to the model. */
   toolNames: string[];
 }
@@ -63,7 +63,7 @@ function turnTools(harness: AgentHarness, request: AgentRunRequest<unknown>, sig
         const tool = tools.find((entry) => entry.name === name);
         assert.ok(tool, `Pi has no tool ${name}`);
         const result = await tool.execute(`pi-call-${++calls}`, parameters, signal);
-        return JSON.parse(result.content[0].text) as Record<string, unknown>;
+        return JSON.parse(result.content[0].text) as Record<string, any>;
       },
     };
   }
@@ -77,7 +77,7 @@ function turnTools(harness: AgentHarness, request: AgentRunRequest<unknown>, sig
       assert.ok(tool, `Claude Code has no tool ${name}`);
       const result = await tool.execute(`toolu_${++calls}`, parameters, signal);
       const text = typeof result === 'string' ? result : JSON.stringify(result);
-      return JSON.parse(text) as Record<string, unknown>;
+      return JSON.parse(text) as Record<string, any>;
     },
   };
 }
