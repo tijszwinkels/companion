@@ -637,8 +637,10 @@ TestCase {
     tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null"
       + " && document.querySelector('.conflict').textContent.includes('Use my text')") === true })
     // Reloading the page keeps it too (it lives in the host).
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    const loads = trusted.readyCount
     chat.reload()
-    tryVerify(function() { return findChild(surfaceOf(view), "trustedChat").pageReady }, 15000)
+    tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
     tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null") === true }, 5000)
     // Pop-out waits until it is resolved, with a reason.
     body.popouts.popOut("one")
@@ -718,5 +720,43 @@ TestCase {
       compare(view.operational, false)
       view.destroy()
     }
+  }
+
+  // The person's own app edits delivered as a turn are labelled as theirs,
+  // never as another agent or conversation, in HTML chat and Classic view.
+  function test_u_application_event_turns_show_truthful_provenance() {
+    const entry = session("events", "With app events", application(1))
+    entry.messages.push({id: "events-edit", role: "user", kind: "user", text: "[Companion application event] moved a task",
+      toolName: "", input: "", state: "", screenshot: "",
+      origin: {kind: "application-event", applicationId: "11111111-1111-4111-8111-111111111111", depth: 0}})
+    snapshot([entry])
+    body.client.sessions.select("events")
+    tryCompare(body.panel, "selectedSessionId", "events")
+    const view = mainView()
+    const surface = surfaceOf(view)
+    waitForChat(view)
+    tryCompare(surface, "mode", "app")
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    const chat = chatOf(view)
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.message.user .from')].map(e => e.textContent).join('|')")
+      === "Your edits in this conversation's app" }, 5000)
+    compare(evaluate(chat, "document.body.textContent.includes('From ') || document.body.textContent.includes('another conversation')"), false)
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    const headings = findChildren(view, "messageHeading").map(item => item.text)
+    verify(headings.some(text => text.startsWith("Your edits in this conversation's app")), JSON.stringify(headings))
+    verify(!headings.some(text => text.includes("another conversation")), JSON.stringify(headings))
+    view.classicView = false
+  }
+
+  function findChildren(item, name) {
+    let found = []
+    if (!item) return found
+    if (item.objectName === name) found.push(item)
+    const children = item.children || []
+    for (let index = 0; index < children.length; index++) found = found.concat(findChildren(children[index], name))
+    if (item.contentItem && item.contentItem !== item) found = found.concat(findChildren(item.contentItem, name))
+    return found
   }
 }

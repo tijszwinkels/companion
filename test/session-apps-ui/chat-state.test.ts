@@ -25,6 +25,7 @@ function rowData(overrides: Record<string, unknown> = {}) {
     screenshotNotSaved: false,
     fromWake: false,
     fromExternal: false,
+    fromApplication: false,
     fromAgent: false,
     originTitle: '',
     originSessionId: '',
@@ -99,4 +100,14 @@ test('page draft edits need the displayed conversation and current host revision
     draftEditAllowed({ sessionId: 'one', base: 4, text: 3 }, 'one', 4, 100).reason,
     'invalid',
   );
+});
+
+test('application event turns keep their own provenance, not an agent origin', () => {
+  const row = chatRow(rowData({ kind: 'user', fromAgent: true, fromApplication: true }));
+  assert.deepEqual(row.origin, {
+    kind: 'application-event',
+    title: '',
+    sessionId: '',
+    groupId: '',
+  });
 });
