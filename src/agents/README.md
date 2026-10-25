@@ -543,6 +543,25 @@ for schemas, retained bundles, durable state and renderer limits. Widget fallbac
 text is paged like ordinary messages; display budgets never reject canonical
 widget transactions. Tool output retains its separate storage admission limits.
 
+### Session applications
+
+The same lease adds `companion_app`, `companion_app_apply`,
+`companion_app_query` and `companion_app_call`. A conversation's own agent can
+replace its HTML chat with an authored library bundle and use the bundle's typed
+queries and targeted actions; the user's view uses the same handlers. Each
+turn's lease freezes the application version and exposed names at turn start:
+after a code replacement, that turn's query/action calls fail and the next
+turn's lease uses the new code. Applying never starts a turn.
+
+Committed user edits in the view are delivered as data through this FIFO:
+immediate mode queues one coalesced placeholder turn (user-kind message with
+`origin: {kind: "application-event", applicationId, depth: 0}`; its prompt is
+built when it starts), next-input mode attaches pending edits to the person's
+next typed or spoken message. Agent, external and wake turns never carry them.
+Failed or stopped event turns are terminal and never replayed. Stop withdraws a
+not-yet-queued event turn; reopening never starts one. See
+[session applications](../session-apps/README.md).
+
 ### Try it in the desktop sidebar
 
 The listener, UI and installed Omarchy bridge must contain the intended feature.

@@ -727,6 +727,12 @@ revealing the panel. A user message may carry `origin: {kind: "agent",
 sessionId, title, depth}`; it was written by another conversation's agent and is
 labelled with that title instead of **You**. See [session lifecycle
 tools](../agents/README.md#session-lifecycle-tools).
+`origin: {kind: "application-event"}` marks host-recorded user edits from the
+conversation's session application. Live-only `application` (absent means
+HTML chat) describes that application: `id`, `name`, code `version`, state
+`revision`, desktop-only `viewUrl`, `text`, `eventMode`, optional `eventStatus`
+and `error`. Remote/phone snapshots omit `viewUrl`. See
+[session applications](../session-apps/README.md).
 
 ### Model selection, ordering and spoken navigation
 
