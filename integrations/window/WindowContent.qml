@@ -56,6 +56,18 @@ Item {
     root.previousWindow = ""
   }
 
+  // The main surface was hidden or lost its layer focus grab. That ends a
+  // focus request for the main panel, but not one held by a pop-out window,
+  // whose composer and restore target stay as they are.
+  function releaseMainFocus() {
+    if (root.focusTarget === "") {
+      root.releaseFocus(false)
+      return
+    }
+    host.releaseFocus()
+    panel.releaseComposerFocus()
+  }
+
   function focusComposer(address) {
     if (root.inputFocused || root.focusPending) {
       root.releaseFocus(true)
@@ -159,7 +171,8 @@ Item {
   }
   onKeyboardFocusedChanged: {
     root.acquireFocus()
-    if (!root.keyboardFocused && !root.focusPending && !host.switching) root.previousWindow = ""
+    // Only for a main-panel focus request; a pop-out keeps its own target.
+    if (!root.keyboardFocused && !root.focusPending && !host.switching && root.focusTarget === "") root.previousWindow = ""
     Qt.callLater(root.publish)
   }
   onWidthChanged: Qt.callLater(root.publish)
@@ -172,7 +185,8 @@ Item {
       root.acquireFocus()
       // Like the main surface: once the focused window loses activation, a
       // later toggle must not restore an old application window.
-      if (root.focusTarget !== "" && !root.focusPending && !root.popoutInputFocused) {
+      const window = popoutViews.windows[root.focusTarget]
+      if (root.focusTarget !== "" && !root.focusPending && !(window && window.active)) {
         root.focusTarget = ""
         root.previousWindow = ""
       }
@@ -184,14 +198,14 @@ Item {
     function onCommand(message) { root.command(message) }
     function onStateChanged() {
       if (!root.host.opened && !root.host.switching) {
-        root.releaseFocus(false)
+        root.releaseMainFocus()
         root.screenshotSource = ""
       }
       Qt.callLater(root.publish)
     }
     function onBridgeChanged() { client.reportPanel(); root.publish() }
     function onSurfaceChanged() { Qt.callLater(root.publish) }
-    function onFocusCleared() { root.releaseFocus(false) }
+    function onFocusCleared() { root.releaseMainFocus() }
   }
 
   Timer {

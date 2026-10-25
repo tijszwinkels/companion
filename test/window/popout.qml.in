@@ -183,10 +183,20 @@ TestCase {
     compare(body.client.error, "", "No focus failure is reported")
     tryVerify(function() { return lastReport().popouts[0].composerFocused === true })
 
-    // The same shortcut toggles the focus off again.
+    // Hiding the (inactive) main panel leaves the window's composer alone.
+    TestHost.hide()
+    wait(50)
+    compare(window.view.composerFocusId, "one")
+    compare(body.inputFocused, true)
+
+    // The application to restore is still known when toggling back (the
+    // toggle then sends restore-focus to the desktop bridge, if connected).
+    compare(body.previousWindow, "0x123")
     body.command({action: "focus", address: "0x123"})
     tryCompare(body, "inputFocused", false)
     compare(window.view.composerFocusId, "")
+    compare(body.previousWindow, "")
+    TestHost.show(true)
   }
 
   function test_pending_send_blocks_return_and_native_close() {
