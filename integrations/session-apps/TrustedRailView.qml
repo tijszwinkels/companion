@@ -23,7 +23,21 @@ Item {
   property var panel: null
   property bool pageReady: false
   property bool loadFailed: false
-  readonly property bool failed: loadFailed || shellProfile.error !== ""
+  readonly property bool failed: loadFailed || readyTimedOut || shellProfile.error !== ""
+  // Bounded start-up handshake. The page counts as operational only after
+  // its script connected and called ready(). A page that loads but never
+  // gets there (missing or broken script) is treated as failed after this
+  // long, so the native presentation stays (or becomes) the visible one.
+  property int readyTimeoutMilliseconds: 10000
+  property bool operational: false
+  property bool readyTimedOut: false
+  Timer {
+    id: readyDeadline
+    interval: root.readyTimeoutMilliseconds
+    running: !root.operational && !root.readyTimedOut && shellProfile.documentUrl.toString() !== ""
+    onTriggered: root.readyTimedOut = true
+  }
+
   property int sequence: 0
   property string bundleDirectory: {
     const url = Qt.resolvedUrl("dist").toString()
@@ -80,7 +94,9 @@ Item {
     }
 
     function ready() {
+      if (root.readyTimedOut) return false
       root.pageReady = true
+      root.operational = true
       root.publish()
       return true
     }

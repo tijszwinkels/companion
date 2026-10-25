@@ -48,6 +48,30 @@ test(
     const fixture = await applicationFixture(context);
     const { sessions } = fixture;
 
+    // Test hook in the temporary library copy only: on request, the authored
+    // page calls api.call/api.query with a refused argument and reports the
+    // settled outcome to its host page. Everything else is the shipped bundle.
+    const bundlePath = join(fixture.library, 'task-list', 'widget.js');
+    const bundle = await readFile(bundlePath, 'utf8');
+    const anchor = '  const unsubscribe = api.state.subscribe';
+    assert.ok(bundle.includes(anchor));
+    await writeFile(
+      bundlePath,
+      bundle.replace(
+        anchor,
+        `  window.addEventListener('message', async (event) => {
+    if (event.data !== 'refusal-probe') return;
+    const outcome = {};
+    try { await api.call('move_task', { id: 'missing', column: 'done' }); outcome.action = 'resolved'; }
+    catch (error) { outcome.action = 'rejected'; }
+    try { await api.query('no_such_query', {}); outcome.query = 'resolved'; }
+    catch (error) { outcome.query = 'rejected'; }
+    parent.postMessage({ refusalProbe: outcome }, '*');
+  });
+` + anchor,
+      ),
+    );
+
     const id = sessions.start(frame, signal());
     fixture.script(id, async (turn: any) => {
       await turn.tool('companion_app_apply', {
@@ -127,6 +151,9 @@ test(
       throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'));
     }
     assert.match(output, /Totals: \d+ passed, 0 failed/);
+
+    // The refused action and query changed nothing and created no event:
+    // revision 1 → 2 is the single checkbox edit (checked in QML).
 
     // The native click was a user edit through the view ingress: it was
     // committed and recorded as a pending event (next-input mode) before

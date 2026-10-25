@@ -72,9 +72,23 @@ The draft lives in `SessionView`. The page sends each edit with the draft
 revision it is based on. Host-side changes (agent draft, recorded words, a
 confirmed send, a handover, another tab) advance the revision; the page's own
 accepted edits do not, so edits in flight stay in order. An edit based on an
-older revision is refused, and the page keeps the refused text with **Use my
-text** and **Copy my text**, so nothing typed is silently lost. The composer is
-read-only while recording appends to the draft.
+older revision, or one that cannot be applied (too long, words being recorded),
+is refused. The host keeps the refused text for that conversation until the
+person chooses **Use my text**, **Copy my text** or **Dismiss** (in HTML chat or
+Classic view); switching conversations or reloading the page keeps it, and
+moving the conversation to another view waits until it is resolved. The
+composer is read-only while recording appends to the draft.
+
+Send names the exact text the page shows and is accepted only when that is the
+host draft at the page's revision, so a refused or unanswered edit never sends
+older text. The page also waits for its latest edit's answer before sending.
+Cursor movement without typing (keys, pointer, selection) is reported as well,
+so Classic view and pop-out handover resume at the same position.
+
+The trusted pages count as working only after their script connected and
+answered (a bounded handshake, 10 seconds). Until then, and if that fails or
+the renderer stops, the classic view and the native conversation list stay
+visible.
 
 ## Application changes
 
@@ -95,6 +109,16 @@ The view follows `session.application`:
 - `eventStatus` is shown in the bar: changes waiting for, queued for or being
   read by the agent, and failed deliveries.
 - Without `application` the view shows chat.
+
+## Refused application requests
+
+Through the native profile a refused action or query (for example a stale code
+version, invalid arguments or a busy outbox) settles in the application's page
+as a failed request: `api.call`/`api.query` reject, nothing changes, and later
+valid requests work. The page learns that it failed, not why, because Qt's
+scheme handler cannot pass a non-200 status or body; refusals are never turned
+into successful replies. Only a failed document or state load (or an expired
+view) marks the view as broken, and the next successful load clears that.
 
 ## Not ported to HTML yet
 

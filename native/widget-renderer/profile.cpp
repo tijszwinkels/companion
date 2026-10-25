@@ -40,6 +40,26 @@ public:
     }
 };
 
+// Where a refused data request is sent. The request interceptor blocks this
+// path, so the page's fetch() rejects with an ordinary network error.
+const QUrl refusedRequest("companion-widget://view/refused");
+
+// End a request the broker will not complete. Qt WebEngine 6.12 never
+// settles a page's fetch() whose scheme job calls fail(): the promise stays
+// pending forever (offscreen regression in test/session-apps-ui). The
+// document itself can fail normally. A data request (state, action, query)
+// is instead redirected to a URL the interceptor blocks, which rejects the
+// page's fetch() at once. The page learns that the request failed, not why:
+// scheme replies cannot carry a non-200 status or its body, and a refusal is
+// never turned into a successful reply.
+void refuse(QWebEngineUrlRequestJob *job, const QString &path, QWebEngineUrlRequestJob::Error error) {
+    if (path == "/") {
+        job->fail(error);
+        return;
+    }
+    job->redirect(refusedRequest);
+}
+
 class Endpoint : public QWebEngineUrlSchemeHandler {
 public:
     explicit Endpoint(WidgetProfile *profile)
@@ -68,7 +88,7 @@ public:
             || url.port() != -1 || url.hasQuery() || url.hasFragment()
             || !((method == "GET" && (path == "/" || path == "/state"))
                 || (method == "POST" && (path == "/action" || path == "/query")))) {
-            job->fail(QWebEngineUrlRequestJob::RequestDenied);
+            refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
             return;
         }
 
@@ -76,12 +96,12 @@ public:
         if (method == "POST") {
             auto *input = job->requestBody();
             if (!input || (!input->isOpen() && !input->open(QIODevice::ReadOnly))) {
-                job->fail(QWebEngineUrlRequestJob::RequestDenied);
+                refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
                 return;
             }
             body = input->read(maximumBody + 1);
             if (body.size() > maximumBody || !input->atEnd()) {
-                job->fail(QWebEngineUrlRequestJob::RequestDenied);
+                refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
                 return;
             }
         }
@@ -119,14 +139,22 @@ public:
             const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (generation != profile->generation() || reply->error() != QNetworkReply::NoError
                 || status != 200 || buffer->size() > maximumReply) {
-                // A refused read-only query is the app's own error to show;
-                // it does not mean the view or its data became unusable.
-                if (generation == profile->generation() && path != "/query") {
+                // Only a failed document/state load, or an expired view,
+                // makes the view unusable. A refused action or query (e.g.
+                // 409 stale code version, invalid arguments) is the page's
+                // own error to show; later valid requests still work.
+                const bool viewFailed = path == "/" || path == "/state" || status == 404;
+                if (generation == profile->generation() && viewFailed) {
                     profile->reportError(status == 404 ? "Widget view expired"
                                                       : "Could not load widget data");
                 }
-                job->fail(QWebEngineUrlRequestJob::RequestFailed);
+                refuse(job, path, QWebEngineUrlRequestJob::RequestFailed);
                 return;
+            }
+            // A view that loads its document or state again has recovered
+            // from an earlier failed load (e.g. a listener restart).
+            if (path == "/" || path == "/state") {
+                profile->reportError("");
             }
             buffer->seek(0);
             job->reply(path == "/" ? "text/html" : "application/json", buffer);

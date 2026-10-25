@@ -68,8 +68,12 @@ caching and rejected cookies, downloads and permissions. The browser uses
 `companion-widget://view/`; its scheme handler brokers only document/state GETs
 and action/read-only query POSTs (`/action`, `/query`) to the exact validated
 local view capability supplied by the panel. Session applications use the same
-profile and broker. A refused query is returned to the page as a failed request
-without marking the view as broken. Request bodies, replies and transfer time are bounded. Redirects
+profile and broker. Qt WebEngine never settles a page's `fetch()` whose scheme
+job fails, so the broker answers a refused data request (state, action, query)
+with a redirect to a fixed URL its interceptor blocks; the page's request then
+rejects at once as a network error. A refused action or query does not mark the
+view as broken; a failed document/state load does, until the next successful
+load. Request bodies, replies and transfer time are bounded. Redirects
 are rejected. A changed view aborts old requests and advances an identity
 generation; stale completions cannot publish errors into a replacement view.
 
