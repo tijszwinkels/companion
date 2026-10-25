@@ -433,12 +433,7 @@ export class AgentSessions implements InspectableModule {
       }
       return {
         skip: false,
-        prompt: {
-          ...prompt,
-          text: `${prompt.text}
-
-${delivery.text}`,
-        },
+        prompt: { ...prompt, text: prompt.text + '\n\n' + delivery.text },
         batchId: delivery.batchId,
       };
     }

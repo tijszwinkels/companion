@@ -117,6 +117,47 @@ function exposed(operations: Record<string, WidgetAction> | undefined): string[]
     .map(([name]) => name);
 }
 
+/** Agent-facing declarations (description and schemas) of exposed operations. */
+function agentOperations(operations: Record<string, WidgetAction> | undefined): JsonObject {
+  const result: JsonObject = {};
+  for (const [name, operation] of Object.entries(operations ?? {})) {
+    if (operation.agent === false) {
+      continue;
+    }
+    result[name] = {
+      description: operation.description,
+      parameters: operation.parameters,
+      returns: operation.returns,
+    };
+  }
+  return result;
+}
+
+/** Entry points and declared handlers that the bundle's module does not export. */
+function missingHandlers(
+  manifest: WidgetBundle['manifest'],
+  exports: { mount: boolean; describe: boolean; actions: string[]; queries: string[] },
+): string[] {
+  const missing: string[] = [];
+  if (!exports.mount) {
+    missing.push('mount');
+  }
+  if (!exports.describe) {
+    missing.push('describe');
+  }
+  for (const name of Object.keys(manifest.actions)) {
+    if (!exports.actions.includes(name)) {
+      missing.push(name);
+    }
+  }
+  for (const name of Object.keys(manifest.queries ?? {})) {
+    if (!exports.queries.includes(name)) {
+      missing.push(name);
+    }
+  }
+  return missing;
+}
+
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
@@ -589,12 +630,7 @@ export class SessionApplications {
       const candidate = this.surface(next, data, version);
       try {
         const exports = await this.host.renderer.inspect(candidate, bundle);
-        const missing = [
-          ...(exports.mount ? [] : ['mount']),
-          ...(exports.describe ? [] : ['describe']),
-          ...Object.keys(manifest.actions).filter((name) => !exports.actions.includes(name)),
-          ...Object.keys(manifest.queries ?? {}).filter((name) => !exports.queries.includes(name)),
-        ];
+        const missing = missingHandlers(manifest, exports);
         if (missing.length) {
           throw Error(`widget.js does not implement: ${missing.join(', ')}`);
         }
@@ -753,19 +789,6 @@ export class SessionApplications {
     }
 
     const { record, bundle } = { record: entry.record, bundle: entry.bundle };
-    const pick = (operations: Record<string, WidgetAction> | undefined) =>
-      Object.fromEntries(
-        Object.entries(operations ?? {})
-          .filter(([, operation]) => operation.agent !== false)
-          .map(([name, operation]) => [
-            name,
-            {
-              description: operation.description,
-              parameters: operation.parameters,
-              returns: operation.returns,
-            },
-          ]),
-      );
     const callable = frozen?.id === record.id && frozen.version === record.version;
     return {
       application: {
@@ -777,8 +800,8 @@ export class SessionApplications {
         eventMode: record.eventMode,
         text: record.text,
         stateSchema: bundle.manifest.parameters,
-        queries: pick(bundle.manifest.queries),
-        actions: pick(bundle.manifest.actions),
+        queries: agentOperations(bundle.manifest.queries),
+        actions: agentOperations(bundle.manifest.actions),
         thisTurn: callable
           ? { callableVersion: record.version }
           : {
