@@ -11,7 +11,19 @@ import type { HistoryWindow } from './history-pages.ts';
  * receives an explicit header. `depth` counts agent-to-agent hops since the last
  * human-originated turn and bounds feedback loops between conversations.
  */
-export type AgentMessageOrigin = InternalAgentOrigin | ExternalAgentOrigin | ScheduledWakeOrigin;
+export type AgentMessageOrigin =
+  InternalAgentOrigin | ExternalAgentOrigin | ScheduledWakeOrigin | ApplicationEventOrigin;
+
+/**
+ * Committed user edits in this conversation's session application, delivered
+ * as their own turn (src/session-apps/README.md). The host records them; the
+ * content is untrusted data, never a new instruction or agent hop.
+ */
+export interface ApplicationEventOrigin {
+  kind: 'application-event';
+  applicationId: string;
+  depth: 0;
+}
 
 /** Earlier self-scheduled work; never a new human instruction or agent hop. */
 export interface ScheduledWakeOrigin {

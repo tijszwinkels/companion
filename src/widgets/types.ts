@@ -5,6 +5,8 @@ export interface WidgetAction {
   description: string;
   parameters: JsonObject;
   returns: JsonObject;
+  /** Session applications only: false keeps the operation view-only (default true). */
+  agent?: boolean;
 }
 
 export interface WidgetManifest {
@@ -14,6 +16,10 @@ export interface WidgetManifest {
   parameters: JsonObject;
   actions: Record<string, WidgetAction>;
   example: JsonObject;
+  /** Session applications only: read-only queries (src/session-apps/README.md). */
+  queries?: Record<string, WidgetAction>;
+  /** Present on session application bundles; absent on ordinary widgets. */
+  application?: { eventMode?: 'immediate' | 'next-input' };
 }
 
 export interface WidgetBundle {

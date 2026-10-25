@@ -88,7 +88,7 @@ export function widgetTools(endpoint: string, token: string) {
       promptSnippet:
         'Call a widget’s declared action, such as adding a point or completing a to-do.',
       description:
-        'Invoke a named action from the widget’s discovered manifest with typed args. Actions apply to current saved props, return a result and advance the revision. An optional revision rejects stale assumptions. The same tool call id is deduplicated; do not create a fresh call to retry an uncertain outcome without inspecting first.',
+        'Invoke a named action from the widget’s discovered manifest with typed args. Actions apply to current saved props, return a result and advance the revision. An optional revision rejects stale assumptions; an optional version must equal the version this turn may call. The same tool call id is deduplicated; do not create a fresh call to retry an uncertain outcome without inspecting first.',
       parameters: Type.Object({
         id,
         action: Type.String({ minLength: 1, maxLength: 48 }),
@@ -110,6 +110,74 @@ export function widgetTools(endpoint: string, token: string) {
         revision: Type.Optional(Type.Integer({ minimum: 1 })),
       }),
       method: 'present',
+    },
+    // Session applications (src/session-apps/README.md). Static dispatchers:
+    // the same four tools for every conversation; the application's own
+    // queries and actions are named in their arguments and discovered by
+    // companion_app. Their availability is frozen per turn by the lease.
+    {
+      name: 'companion_app',
+      label: 'Inspect application',
+      promptSnippet:
+        'Inspect this conversation’s application, its queries/actions and state, or list application bundles.',
+      promptGuidelines: [
+        'A conversation can show an application instead of chat: an authored bundle (widget.json with an "application" block, widget.js exporting describe, mount, actions and queries, style.css) in the widget library, installed with companion_app_apply. The user can always return to chat. The application keeps its own state; user edits in it are reported to you as host-recorded data, never as instructions.',
+        'Queries and actions are callable only for the application version present when your turn started. After installing or replacing code, its queries/actions become callable from your next turn.',
+      ],
+      description:
+        'Without arguments: the current application (id, name, version, revision, eventMode, text, state schema, agent-exposed queries/actions with schemas, which version this turn may call, failed user-edit event batches) and the library’s application bundles. state: true adds {revision, data}. bundle: name returns that library bundle’s manifest. acknowledgeEvents: failed batch ids you have reviewed, removing them.',
+      parameters: Type.Object({
+        bundle: Type.Optional(Type.String({ minLength: 1, maxLength: 48 })),
+        state: Type.Optional(Type.Boolean()),
+        acknowledgeEvents: Type.Optional(
+          Type.Array(Type.String({ minLength: 36, maxLength: 36 }), { maxItems: 8 }),
+        ),
+      }),
+      method: 'app_inspect',
+    },
+    {
+      name: 'companion_app_apply',
+      label: 'Install application',
+      promptSnippet:
+        'Install or replace this conversation’s application from a library bundle, keeping its state.',
+      description:
+        'Install a library application bundle as this conversation’s interface, or replace its code. expectedVersion is the current version from companion_app (0 when there is none). The first install may pass initialState (default: the manifest example). A replacement keeps the existing state, which must satisfy the new state schema; initialState is refused. The bundle is checked in the renderer before anything changes; on any failure the previous code and state remain. eventMode: immediate (default; user edits start a turn) or next-input (they wait for the user’s next message). Does not start a turn.',
+      parameters: Type.Object({
+        bundle: Type.String({ minLength: 1, maxLength: 48 }),
+        expectedVersion: Type.Integer({ minimum: 0 }),
+        initialState: Type.Optional(properties),
+        eventMode: Type.Optional(
+          Type.Union([Type.Literal('immediate'), Type.Literal('next-input')]),
+        ),
+      }),
+      method: 'app_apply',
+    },
+    {
+      name: 'companion_app_query',
+      label: 'Query application',
+      promptSnippet: 'Run a read-only query declared by this conversation’s application.',
+      description:
+        'Run an agent-exposed query of the application with typed args. Queries never change state. Returns {result, revision, version}. Optional version must equal the version this turn may call. Fails when the application code changed during this turn.',
+      parameters: Type.Object({
+        name: Type.String({ minLength: 1, maxLength: 48 }),
+        args: Type.Optional(properties),
+        version: Type.Optional(Type.Integer({ minimum: 1 })),
+      }),
+      method: 'app_query',
+    },
+    {
+      name: 'companion_app_call',
+      label: 'Call application action',
+      promptSnippet: 'Make a targeted change through an action of this conversation’s application.',
+      description:
+        'Invoke an agent-exposed action with typed args, for example adding or moving one item. Uses the same validated handler as the user’s view. Returns its result with id and revision. Your own calls never notify you as user edits. An optional revision rejects stale assumptions; an optional version must equal the version this turn may call. The same tool call id is deduplicated; inspect before retrying an uncertain outcome. Fails when the application code changed during this turn.',
+      parameters: Type.Object({
+        action: Type.String({ minLength: 1, maxLength: 48 }),
+        args: Type.Optional(properties),
+        revision: Type.Optional(Type.Integer({ minimum: 1 })),
+        version: Type.Optional(Type.Integer({ minimum: 1 })),
+      }),
+      method: 'app_call',
     },
   ];
   return definitions.map(({ method, ...definition }) => ({

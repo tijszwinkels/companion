@@ -67,7 +67,7 @@ export class Chromium {
     flags.push(...(this.headed ? ['--app=about:blank'] : ['--headless=new', 'about:blank']));
     // Bubblewrap supplies a private network namespace (including loopback),
     // private /tmp and no home/runtime files. Chromium's own sandbox stays on.
-    // The trusted pop-out host's three local API requests are fulfilled over
+    // The trusted pop-out host's few local API requests are fulfilled over
     // the private CDP pipe; the browser process itself never gets networking.
     const isolation = [
       '--unshare-net',
@@ -282,9 +282,10 @@ export class Chromium {
     const url = String(request.url);
     const method = String(request.method);
     // This is a tiny capability-scoped transport, never a general HTTP proxy.
+    // `query` serves session application views (read-only queries).
     if (
       !allowed ||
-      !/^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}(?:\/(?:state|action))?$/.test(url) ||
+      !/^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}(?:\/(?:state|action|query))?$/.test(url) ||
       !['GET', 'POST'].includes(method) ||
       String(request.postData ?? '').length > 160 * 1024
     ) {
@@ -364,7 +365,16 @@ export class BrowserPage {
       timeout,
     );
     if (reply.exceptionDetails) {
-      throw Error('Widget code failed to finish successfully');
+      // The generic message is what widget callers see. Session applications
+      // read the bounded first line of the page's own error from `cause`.
+      const details = object(reply.exceptionDetails);
+      const exception = details.exception as JsonObject | undefined;
+      const description = String(exception?.description ?? details.text ?? '');
+      const reason = description
+        .split('\n')[0]
+        .replace(/^Error: /, '')
+        .slice(0, 300);
+      throw Error('Widget code failed to finish successfully', { cause: reason });
     }
     return object(reply.result).value;
   }

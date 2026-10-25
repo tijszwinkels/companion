@@ -144,7 +144,8 @@ export type GatewayMessage =
 /**
  * Listener events relayed to the phone. Screenshot file URLs are replaced by
  * `screenshotId`, which the phone fetches through the authenticated image
- * route; widget view URLs are removed because they only work on the desktop.
+ * route; widget and session application view URLs are removed because they
+ * only work on the desktop.
  */
 export type EngineEvent =
   | ({ type: 'state' } & EngineState)

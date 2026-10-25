@@ -11,18 +11,55 @@ function applyTheme(theme) {
   }
   document.documentElement.style.fontSize = `${16 * theme.scale}px`;
 }
+// Latest state pushed by the host, for subscriptions. Session applications use
+// `api.state`/`api.query`; ordinary widgets keep receiving props via update().
+let latestState = null;
+const stateSubscribers = new Set();
+
+// Every request to the host shares one bounded table of pending replies.
+function request(message) {
+  if (pendingActions.size >= 8) {
+    return Promise.reject(Error('Widget actions are busy'));
+  }
+  return new Promise((resolve, reject) => {
+    const id = `user-${++nextAction}`;
+    pendingActions.set(id, { resolve, reject });
+    parent.postMessage({ ...message, id }, '*');
+  });
+}
+
 const api = {
   call(action, args = {}) {
-    if (pendingActions.size >= 8) {
-      return Promise.reject(Error('Widget actions are busy'));
-    }
-    return new Promise((resolve, reject) => {
-      const id = `user-${++nextAction}`;
-      pendingActions.set(id, { resolve, reject });
-      parent.postMessage({ type: 'action', id, action, args }, '*');
-    });
+    return request({ type: 'action', action, args });
+  },
+  query(name, args = {}) {
+    return request({ type: 'query', name, args });
+  },
+  state: {
+    read() {
+      return request({ type: 'state-read' });
+    },
+    subscribe(callback) {
+      if (typeof callback !== 'function') {
+        throw Error('subscribe needs a callback');
+      }
+      stateSubscribers.add(callback);
+      return () => {
+        stateSubscribers.delete(callback);
+      };
+    },
   },
 };
+
+function notifySubscribers() {
+  for (const callback of stateSubscribers) {
+    try {
+      callback(structuredClone(latestState));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+}
 
 window.addEventListener('message', async (event) => {
   if (event.source !== parent || !event.data || typeof event.data !== 'object') {
@@ -48,6 +85,11 @@ window.addEventListener('message', async (event) => {
       applyTheme(message.theme);
       controller ??= implementation.mount(root, api);
       await controller.update(structuredClone(message.props));
+      const previousRevision = latestState?.revision;
+      latestState = { revision: message.revision, data: structuredClone(message.props) };
+      if (previousRevision !== message.revision) {
+        notifySubscribers();
+      }
       result = true;
     } else if (message.kind === 'theme') {
       // Theme-only updates preserve drafts, selection and the current props.
@@ -61,6 +103,26 @@ window.addEventListener('message', async (event) => {
       result = await action(structuredClone(message.props), structuredClone(message.args), {
         requestId: message.requestId,
       });
+    } else if (message.kind === 'query') {
+      // Application queries read a clone. Nothing they change is saved.
+      const query = implementation.queries?.[message.name];
+      if (typeof query !== 'function') {
+        throw Error('Application query is not implemented');
+      }
+      result = await query(structuredClone(message.props), structuredClone(message.args));
+    } else if (message.kind === 'inspect') {
+      // The host checks that a bundle implements what its manifest declares
+      // before an application is installed.
+      result = {
+        mount: typeof implementation.mount === 'function',
+        describe: typeof implementation.describe === 'function',
+        actions: Object.keys(implementation.actions ?? {}).filter(
+          (name) => typeof implementation.actions[name] === 'function',
+        ),
+        queries: Object.keys(implementation.queries ?? {}).filter(
+          (name) => typeof implementation.queries[name] === 'function',
+        ),
+      };
     } else if (message.kind === 'measure') {
       result = Math.ceil(root.getBoundingClientRect().height + 24);
     } else if (message.kind === 'selection') {

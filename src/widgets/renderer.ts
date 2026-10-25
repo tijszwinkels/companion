@@ -135,7 +135,49 @@ export class WidgetRenderer {
         ),
       );
       boundedJson(value);
-      return { props: object(value.props), result: object(value.result ?? {}) };
+      // Session application reducers may name their new state `state`.
+      return { props: object(value.props ?? value.state), result: object(value.result ?? {}) };
+    });
+  }
+
+  /**
+   * Run a session application's read-only query on a cloned snapshot inside
+   * the page. The caller validates the result; nothing here is saved.
+   */
+  async query(
+    record: WidgetRecord,
+    bundle: WidgetBundle,
+    name: string,
+    args: JsonObject,
+  ): Promise<JsonObject> {
+    return this.use(record, bundle, async (page) => {
+      const value = object(
+        await page.evaluate(
+          `window.widgetHost.command(${expressionValue({ kind: 'query', props: record.props, name, args })})`,
+        ),
+      );
+      boundedJson(value);
+      return value;
+    });
+  }
+
+  /** Which entry points and handlers the bundle's module actually exports. */
+  async inspect(
+    record: WidgetRecord,
+    bundle: WidgetBundle,
+  ): Promise<{ mount: boolean; describe: boolean; actions: string[]; queries: string[] }> {
+    return this.use(record, bundle, async (page) => {
+      const value = object(await page.evaluate('window.widgetHost.command({kind:"inspect"})'));
+      const names = (list: unknown) =>
+        Array.isArray(list)
+          ? list.filter((entry): entry is string => typeof entry === 'string')
+          : [];
+      return {
+        mount: value.mount === true,
+        describe: value.describe === true,
+        actions: names(value.actions),
+        queries: names(value.queries),
+      };
     });
   }
 
