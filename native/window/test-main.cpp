@@ -43,6 +43,9 @@ public slots:
         engine->rootContext()->setContextProperty("CompanionRenderDiagnostics", qEnvironmentVariableIsSet("COMPANION_TEST_RENDER_DIAGNOSTICS"));
         widgetRendering.setMode(qEnvironmentVariable("COMPANION_TEST_WIDGET_RENDERING", widgetRendering.mode()));
         engine->rootContext()->setContextProperty("CompanionWidgetRendering", &widgetRendering);
+        // Existing suites exercise the classic QML view; HTML surface tests opt in.
+        engine->rootContext()->setContextProperty("CompanionSessionSurface",
+            qEnvironmentVariable("COMPANION_TEST_SESSION_SURFACE", "classic"));
     }
 };
 

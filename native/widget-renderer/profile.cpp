@@ -28,7 +28,8 @@ public:
         const bool api = type == QWebEngineUrlRequestInfo::ResourceTypeXhr
             && url.scheme() == "companion-widget" && url.host() == "view"
             && url.userInfo().isEmpty() && url.port() == -1 && !url.hasQuery()
-            && !url.hasFragment() && (url.path() == "/state" || url.path() == "/action");
+            && !url.hasFragment()
+            && (url.path() == "/state" || url.path() == "/action" || url.path() == "/query");
         const bool inlineAsset = url.scheme() == "data"
             && (type == QWebEngineUrlRequestInfo::ResourceTypeScript
                 || type == QWebEngineUrlRequestInfo::ResourceTypeImage
@@ -66,7 +67,7 @@ public:
         if (source.isEmpty() || url.host() != "view" || !url.userInfo().isEmpty()
             || url.port() != -1 || url.hasQuery() || url.hasFragment()
             || !((method == "GET" && (path == "/" || path == "/state"))
-                || (method == "POST" && path == "/action"))) {
+                || (method == "POST" && (path == "/action" || path == "/query")))) {
             job->fail(QWebEngineUrlRequestJob::RequestDenied);
             return;
         }
@@ -118,7 +119,9 @@ public:
             const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (generation != profile->generation() || reply->error() != QNetworkReply::NoError
                 || status != 200 || buffer->size() > maximumReply) {
-                if (generation == profile->generation()) {
+                // A refused read-only query is the app's own error to show;
+                // it does not mean the view or its data became unusable.
+                if (generation == profile->generation() && path != "/query") {
                     profile->reportError(status == 404 ? "Widget view expired"
                                                       : "Could not load widget data");
                 }

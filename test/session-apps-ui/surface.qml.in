@@ -1,0 +1,356 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+// The trusted HTML session surface in the real native host and QML body,
+// offscreen, against a synthetic listener transport (the same Client,
+// AgentSessionState, PanelContent, SessionView and pop-out controller as the
+// product). The session application view loads from a synthetic loopback
+// server standing in for the listener's application endpoint; it is reached
+// only through the real restricted WidgetProfile broker.
+//
+// Not covered here: the listener's real application service (runtime
+// branch), compositor focus, and real speech routing.
+TestCase {
+  id: testCase
+  name: "SessionSurface"
+  when: windowShown
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+  readonly property string viewUrl: "@VIEW_URL@"
+
+  function session(id, title, application) {
+    const entry = {id: id, title: title, status: "idle", messages: [
+      {id: id + "-question", role: "user", kind: "user", text: "Plan the week",
+       toolName: "", input: "", state: "", screenshot: ""},
+      {id: id + "-answer", role: "assistant", kind: "text",
+       text: "Here is **the plan** for " + title + ". <img src=x onerror=alert(1)> stays text.",
+       toolName: "", input: "", state: "", screenshot: ""},
+      {id: id + "-tools", role: "tool", kind: "tool", text: "", toolName: "read",
+       input: "", state: "", screenshot: "", toolGroup: {count: 2, revision: "r1"}}
+    ]}
+    if (application) entry.application = application
+    return entry
+  }
+  function application(version, extra) {
+    return Object.assign({id: "app-1", name: version === 1 ? "task-list" : "task-board", version: version,
+      revision: 3, viewUrl: testCase.viewUrl, text: "Three tasks", eventMode: "immediate",
+      eventStatus: {state: "idle", undelivered: 0, failed: 0}}, extra || {})
+  }
+  function snapshot(entries) {
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: entries})
+  }
+  function mainView() { return body.panel.conversationView }
+  function surfaceOf(view) { return findChild(view, "htmlSurfaceLoader").item }
+  function chatOf(view) { return findChild(view, "trustedChatBrowser") }
+  function appOf(view) { return findChild(view, "sessionAppBrowser") }
+  function composerOf(view) { return findChild(view, "sessionComposer") }
+
+  function evaluate(browser, script) {
+    let done = false
+    let result = null
+    browser.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 5000)
+    return result
+  }
+  function waitForChat(view) {
+    tryVerify(function() { return view.htmlActive }, 10000, "HTML surface active")
+    const surface = surfaceOf(view)
+    tryVerify(function() { return findChild(surface, "trustedChat").pageReady }, 15000, "chat page ready")
+    return chatOf(view)
+  }
+  function messages(browser) {
+    return evaluate(browser, "document.querySelectorAll('.message').length")
+  }
+  // The page shows the host draft before the person types (a host change
+  // still on its way makes the page refuse the edit, by design).
+  function settled(view, browser) {
+    tryVerify(function() { return textarea(browser) === composerOf(view).text }, 5000, "page shows the host draft")
+  }
+  function typeInto(browser, text) {
+    evaluate(browser, "(() => { const area = document.querySelector('textarea'); area.focus();"
+      + " area.value = " + JSON.stringify(text) + "; area.setSelectionRange(area.value.length, area.value.length);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+  }
+  function clickButton(browser, label) {
+    return evaluate(browser, "(() => { const button = [...document.querySelectorAll('button')]"
+      + ".find(entry => entry.textContent.trim() === " + JSON.stringify(label) + ");"
+      + " if (!button || button.disabled) return false; button.click(); return true })()")
+  }
+  function textarea(browser) {
+    return evaluate(browser, "document.querySelector('textarea').value")
+  }
+
+  // The synthetic endpoint serves the code version the listener would have
+  // published; the descriptor update below announces it to the view.
+  function setServerVersion(version) {
+    let done = false
+    const request = new XMLHttpRequest()
+    request.onreadystatechange = function() { if (request.readyState === XMLHttpRequest.DONE) done = true }
+    request.open("GET", "@CONTROL_URL@/version/" + version)
+    request.send()
+    tryVerify(function() { return done })
+    compare(request.status, 200)
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    verify(body.htmlSessions, "the test host opted into the HTML surface")
+    TestHost.attach(body)
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    snapshot([session("one", "First chat", null)])
+    tryVerify(function() { return body.width > 0 && body.panel.selectedSession !== null })
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function init() {
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    snapshot([session("one", "First chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    mainView().classicView = false
+  }
+  function cleanup() {
+    for (const id of body.popouts.order.slice()) {
+      body.popouts.windows[id].view.clearDraft(id)
+      body.popouts.returnToSidebar(id, {focus: false})
+    }
+    mainView().clearDraft("one")
+    tryCompare(body.popouts, "report", [])
+  }
+
+  // Every conversation starts as trusted HTML chat backed by the same
+  // SessionView model: transcript rows, host-owned draft and Send.
+  function test_a_html_chat_shows_transcript_and_edits_the_host_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    tryVerify(function() { return messages(chat) === 3 })
+    compare(evaluate(chat, "document.querySelector('.message.assistant .markdown strong').textContent"), "the plan")
+    // Agent text is escaped: no element was created from its markup.
+    compare(evaluate(chat, "document.querySelector('.markdown img') === null"), true)
+    compare(evaluate(chat, "document.querySelector('.message.assistant').textContent.includes('<img src=x')"), true)
+    compare(evaluate(chat, "document.querySelector('.message.tool').textContent.includes('2 tool calls')"), true)
+    // The trusted page reaches nothing but its own fixed bundle: no loopback
+    // capability, no other bundle path, no file URL.
+    evaluate(chat, "(async () => { const probe = async url => { try { await fetch(url); return 'loaded' } catch (error) { return 'blocked' } };"
+      + " window.probes = [await probe(" + JSON.stringify(testCase.viewUrl + "/state") + "), await probe('companion-shell://chat/../package.json'),"
+      + " await probe('file:///etc/hostname'), await probe('companion-widget://view/state')]; })()")
+    tryVerify(function() { return evaluate(chat, "window.probes ? window.probes.join(',') : ''") !== "" })
+    compare(evaluate(chat, "window.probes.join(',')"), "blocked,blocked,blocked,blocked")
+    // The classic composer is hidden, not a second input.
+    compare(findChild(view, "sessionTranscript").visible, false)
+
+    typeInto(chat, "hello from html")
+    tryCompare(composerOf(view), "text", "hello from html")
+    compare(view.exportDraft("one").text, "hello from html")
+
+    // An agent draft appended by the listener reaches the HTML composer.
+    fakeBackend.received({type: "agent-draft", requestId: "d1", id: "one", text: "Agent addition",
+      ifDraftExists: "append", focus: false, source: {sessionId: "x", title: "Helper"}})
+    tryVerify(function() { return textarea(chat) === "hello from html\n\nAgent addition" })
+    compare(evaluate(chat, "document.querySelector('.composer').textContent.includes('Drafted by agent · Helper')"), true)
+
+    // Send from HTML goes through the same pending-send path.
+    fakeBackend.sent = []
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
+    const request = fakeBackend.sent.find(message => message.action === "send-agent")
+    compare(request.id, "one")
+    compare(request.text, "hello from html\n\nAgent addition")
+    verify(view.pendingSubmission !== null)
+    // Pending: Send is disabled in the page too.
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+    tryVerify(function() { return textarea(chat) === "" })
+  }
+
+  // An edit based on a host draft revision the page has not seen is refused,
+  // and the page keeps the refused text for the person to restore.
+  function test_b_stale_page_edit_is_refused_and_kept() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "first")
+    tryCompare(composerOf(view), "text", "first")
+    // Simulate a page whose host revision is old: replay an edit with base -1.
+    evaluate(chat, "(() => { window.__answer = null; const bridge = window.__companionBridge;"
+      + " bridge.editDraft('one', -1, 'stale text', 10, answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    const answer = JSON.parse(evaluate(chat, "window.__answer"))
+    compare(answer.accepted, false)
+    compare(answer.reason, "stale")
+    compare(composerOf(view).text, "first")
+    // Another conversation's ID is refused as well.
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('two', "
+      + view.draftRevision + ", 'x', 1, answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).reason, "other-session")
+    compare(composerOf(view).text, "first")
+  }
+
+  // The trusted page reports composer focus for voice routing; focusing the
+  // conversation (focus shortcut) reaches the HTML composer.
+  function test_c_composer_focus_is_reported_by_the_trusted_view() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    view.focusComposer()
+    tryCompare(view, "composerFocusId", "one", 5000)
+    compare(evaluate(chat, "document.activeElement === document.querySelector('textarea')"), true)
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+  }
+
+  // The agent applies an application: the same conversation shows it as its
+  // full content; the draft stays in the host model and returns with Chat.
+  function test_d_application_replaces_chat_and_keeps_draft_and_history() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "unsent words")
+    tryCompare(composerOf(view), "text", "unsent words")
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(1))})
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    compare(body.panel.selectedSessionId, "one")
+    compare(body.client.sessions.sessions.length, 1)
+    tryVerify(function() { return appOf(view) !== null })
+    const app = appOf(view)
+    tryVerify(function() { return app.rendered }, 15000, app.error)
+    tryVerify(function() { return evaluate(app, "document.body.dataset.layout") === "list" })
+    // The application has no bridge to the native host and cannot load the
+    // trusted chat bundle. (The synthetic page's own CSP allows these URLs, so
+    // the refusal comes from the restricted profile's request interceptor.)
+    compare(evaluate(app, "typeof qt === 'undefined' && typeof QWebChannel === 'undefined'"), true)
+    evaluate(app, "(async () => { try { await fetch('companion-shell://chat/chat.js'); window.shellProbe = 'loaded' } catch (error) { window.shellProbe = 'blocked' } })()")
+    tryVerify(function() { return evaluate(app, "window.shellProbe || ''") !== "" })
+    compare(evaluate(app, "window.shellProbe"), "blocked")
+    compare(view.composerFocusId, "")
+    compare(findChild(view, "surfaceStatus").text.includes("Your unsent message is kept in Chat."), true)
+
+    // Read-only query and targeted action through the fixed broker paths.
+    evaluate(app, "window.runChecks()")
+    tryVerify(function() { return evaluate(app, "window.checks && window.checks.done") === true }, 10000)
+    const checks = evaluate(app, "JSON.stringify(window.checks)")
+    const parsed = JSON.parse(checks)
+    compare(parsed.state.revision, 3)
+    compare(parsed.query.result.count, 3)
+    compare(parsed.action.revision, 4)
+    compare(parsed.blocked, true)
+
+    // Back to chat: same conversation, same draft, same history rows.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    tryVerify(function() { return textarea(chat) === "unsent words" })
+    compare(messages(chat), 3)
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+  }
+
+  // Replaced code keeps the same capability and conversation; the view shows
+  // the new layout. A replacement while input is unsettled waits visibly.
+  function test_e_code_replacement_and_safe_gating() {
+    const view = mainView()
+    waitForChat(view)
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(1))})
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    tryVerify(function() { return appOf(view) !== null && appOf(view).rendered }, 15000)
+
+    setServerVersion(2)
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(2))})
+    tryCompare(surface, "mode", "app")
+    // The native view reloads the same capability for the new code version.
+    const app = appOf(view)
+    tryVerify(function() { return evaluate(app, "document.body && document.body.dataset.layout") === "board" }, 15000)
+    compare(findChild(view, "surfaceAppButton").text, "● task-board · v2")
+
+    // In chat with a send still unconfirmed, a further replacement does not
+    // switch the view; it says why and waits.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    const chat = chatOf(view)
+    typeInto(chat, "pending one")
+    tryCompare(composerOf(view), "text", "pending one")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(3))})
+    tryVerify(function() { return findChild(view, "surfaceStatus").text.includes("is ready") })
+    compare(surface.mode, "chat")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+
+    // Delivery status and restore failure are shown truthfully.
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(3, {
+      eventStatus: {state: "failed", undelivered: 0, failed: 1, failure: "The turn was stopped"}}))})
+    tryVerify(function() { return findChild(view, "surfaceStatus").text.includes("may not have reached the agent") })
+    const broken = application(3, {error: "Bundle missing"})
+    delete broken.viewUrl
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", broken)})
+    tryVerify(function() { return findChild(view, "surfaceStatus").text.includes("Application unavailable: Bundle missing") })
+
+    // Removing the application returns to chat.
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", null)})
+    tryCompare(surface, "mode", "chat")
+  }
+
+  // Classic view is the trusted recovery: the same draft in the QML composer.
+  function test_f_classic_view_recovery_keeps_the_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "recover me")
+    tryCompare(composerOf(view), "text", "recover me")
+    verify(clickButton(chat, "Classic view"))
+    tryCompare(view, "htmlActive", false)
+    compare(findChild(view, "sessionTranscript").visible, true)
+    compare(composerOf(view).text, "recover me")
+    mouseClick(findChild(view, "htmlViewSession"))
+    tryCompare(view, "htmlActive", true)
+    tryVerify(function() { return textarea(chatOf(view)) === "recover me" })
+  }
+
+  // A pop-out window is a second view of the same conversation; its HTML
+  // surface takes over the draft through the existing handover.
+  function test_g_popout_moves_draft_into_its_html_chat() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "moving text")
+    tryCompare(composerOf(view), "text", "moving text")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    tryVerify(function() { return textarea(windowChat) === "moving text" })
+    compare(view.exportDraft("one").text, "")
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+    tryVerify(function() { return textarea(chatOf(mainView())) === "moving text" })
+  }
+}

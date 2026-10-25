@@ -7,6 +7,11 @@ Item {
   required property var host
   required property var transport
   property bool nativeWidgets: true
+  // Conversations show the trusted HTML session surface (HTML chat or the
+  // conversation's session application) unless the host chose the classic
+  // QML view (`--session-surface classic`; test hosts default to classic).
+  property bool htmlSessions: nativeWidgets && typeof CompanionSessionSurface !== "undefined"
+    && CompanionSessionSurface === "html"
   property var theme: ({background: "#1a1b26", foreground: "#a9b1d6", accent: "#7aa2f7",
     muted: "#737b9c", selection: "#292e42", tooltipBackground: "#1a1b26",
     tooltipForeground: "#a9b1d6", tooltipBorder: "#737b9c", fontFamily: "monospace", unit: 1})
@@ -343,6 +348,7 @@ Item {
     host: root.host
     theme: root.theme
     nativeWidgets: root.nativeWidgets
+    htmlSessions: root.htmlSessions
   }
 
   // Sidebar/Dock shrink to the rail while the selected conversation is in
@@ -431,6 +437,7 @@ Item {
     anchors.right: parent.right
     anchors.margins: 2 * root.theme.unit
     nativeWidgets: root.nativeWidgets
+    htmlSessions: root.htmlSessions
     browserAvailable: root.nativeWidgets
     // A Window/Sidebar/Dock move hides one surface and shows another; the
     // panel stays shown throughout, so a pinned page is not frozen by it.

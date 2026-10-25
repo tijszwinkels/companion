@@ -6,3 +6,4 @@ companion.config.json
 /native/widget-renderer/build/
 /native/window/build/
 integrations/mobile/dist/
+integrations/session-apps/dist/

@@ -117,6 +117,7 @@ Window {
     anchors.margins: 12 * root.theme.unit
     session: root.session
     nativeWidgets: root.controller.nativeWidgets
+    htmlSurface: root.controller.htmlSessions
     widgetsRunning: root.client.online && root.visible
     background: root.theme.background
     agentActions: root.client.agentActions

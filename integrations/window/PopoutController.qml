@@ -27,6 +27,8 @@ Item {
   required property var host
   required property var theme
   property bool nativeWidgets: true
+  // Show conversations in the trusted HTML session surface (see SessionView).
+  property bool htmlSessions: false
   readonly property int maximumWindows: 8
   // How long to observe whether the compositor activated a window we asked
   // to focus, before reporting that it did not.
