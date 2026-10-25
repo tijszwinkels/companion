@@ -47,6 +47,10 @@ Item {
   // Unsent text of popped-out conversations closed elsewhere: [{key, title, text}].
   property var orphanDrafts: []
   property int orphanSequence: 0
+  // Quiet (focus:false) openings still settling. While above zero the host
+  // holds back panel-state reports, so a window that Qt or the compositor
+  // briefly activated never becomes a transient voice target.
+  property int quietOpenings: 0
   // Agent request ids already answered or in progress (bounded).
   property var presentRequests: ({})
 
@@ -222,17 +226,29 @@ Item {
   // voice target do not move. Focus held by another application cannot be
   // restored from here; the compositor's policy decides. `done(focused)`
   // reports whether `window` ended up focused, after a short bounded wait.
+  // The caller has already counted this opening in quietOpenings; it is
+  // released here once the outcome is known, and then reported once.
   function keepFocus(previous, window, done) {
     let restored = false
+    const previousActive = function() {
+      return previous === root.host ? root.host.active === true : previous.active === true
+    }
     activationWatch.createObject(root, {check: function() {
-      if (!window.active) return false
-      if (previous !== null && !restored) {
-        restored = true
-        if (previous === root.host) root.host.activate()
-        else previous.requestActivate()
+      if (window.active) {
+        if (previous !== null && !restored) {
+          restored = true
+          if (previous === root.host) root.host.activate()
+          else previous.requestActivate()
+        }
+        // Nothing of ours to give focus back to: the window keeps it.
+        return previous === null
       }
-      return previous === null
-    }, done: function() { done(window.active === true) }, remaining: 300})
+      return restored && previousActive()
+    }, done: function() {
+      root.quietOpenings -= 1
+      root.refreshReport()
+      done(window.active === true)
+    }, remaining: 300})
   }
 
   // Return `id` to the sidebar and close its window. Returns {outcome,
@@ -343,8 +359,12 @@ Item {
     if (presentation === "window") {
       const existing = root.windows[id] !== undefined
       const previous = root.focusedSurface()
+      // Hold reports before the window is mapped; see quietOpenings.
+      const quiet = !focus && !existing
+      if (quiet) root.quietOpenings += 1
       const result = root.openWindow(id)
       if (result.outcome !== "shown") {
+        if (quiet) root.quietOpenings -= 1
         answer({outcome: result.outcome, reason: result.reason})
         return
       }

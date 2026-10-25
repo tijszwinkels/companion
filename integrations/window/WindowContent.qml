@@ -262,6 +262,7 @@ Item {
     rail: panel.compactRail ? "compact" : "full"
     popouts: popoutViews.report
     anyViewVisible: root.host.opened || popoutViews.report.length > 0
+    reportsHeld: popoutViews.quietOpenings > 0
     onPresentRequested: message => popoutViews.present(message, function(result) {
       client.answerPresent(message.requestId, result)
     })
