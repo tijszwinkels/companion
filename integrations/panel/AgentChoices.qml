@@ -79,9 +79,10 @@ Column {
           readonly property bool voiceActive: root.online && root.voiceTarget && root.listening && !root.pending && modelData.voiceAvailable
           // A label is called speakable only with a matching voice annotation.
           readonly property string hint: !root.online ? "Disconnected" : modelData.voiceReason
-            || (!root.voiceTarget ? "Click to select; voice goes elsewhere"
+            || (!root.listening ? "Click to select; voice listening is paused"
+              : !root.voiceTarget ? "Click to select; voice goes elsewhere"
               : !modelData.voiceAvailable ? "Click to select"
-              : !root.listening ? "Voice listening is paused" : "Say “" + modelData.label + "” to select")
+              : "Say “" + modelData.label + "” to select")
           width: options.width
           height: Math.max(label.implicitHeight, description.implicitHeight, 20 * root.unit) + 12 * root.unit
           radius: 4 * root.unit

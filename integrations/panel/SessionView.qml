@@ -60,10 +60,12 @@ Item {
     })
   }
   // Where speech goes, shown beside this conversation's controls. Empty while
-  // offline; the choices then say "Disconnected".
+  // offline; the choices then say "Disconnected". Pausing stops listening for
+  // every conversation, so it is shown whichever conversation is the target.
   readonly property string voiceStatus: {
     if (!online) return ""
-    if (voiceTarget) return paused ? "Voice paused" : "Voice: this conversation"
+    if (paused) return "Voice paused"
+    if (voiceTarget) return "Voice: this conversation"
     if (agentActions.sessionId) return "Voice: another conversation"
     return "Voice: no conversation"
   }

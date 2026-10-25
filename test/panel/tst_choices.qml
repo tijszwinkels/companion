@@ -155,10 +155,22 @@ Item {
       compare(selected, {id: "first", revision: "set-1", index: 0})
       panel.choiceSubmitted("first", "set-1", 0, "")
 
+      // Pausing stops listening everywhere: a non-target view says so too.
+      panel.paused = true
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice listening is paused")
+      compare(findChild(panel, "agentChoice-0").selectable, true)
+      panel.paused = false
+
       // No voice target at all (none or ambiguous): still clickable.
       panel.agentActions = ({})
       compare(findChild(panel, "voiceTargetStatus").text, "Voice: no conversation")
       compare(findChild(panel, "agentChoice-0").selectable, true)
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice goes elsewhere")
+      panel.paused = true
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice listening is paused")
+      panel.paused = false
 
       // An empty projection means this connection shows no conversation:
       // nothing is displayed, even if voice names this conversation.
@@ -192,6 +204,7 @@ Item {
       compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
       compare(findChild(panel, "agentChoice-0").voiceActive, false)
       compare(findChild(panel, "agentChoice-0").selectable, true)
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice listening is paused")
       panel.paused = false
 
       // Offline: no status line; the choices say so themselves.
@@ -211,6 +224,11 @@ Item {
       const later = findChild(panel, "agentChoice-0")
       compare(later.selectable, false)
       compare(later.hint, "Available when the agent finishes")
+      // An unavailable choice keeps its reason while paused.
+      panel.paused = true
+      compare(later.hint, "Available when the agent finishes")
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      panel.paused = false
       const stop = findChild(panel, "stopVoiceChoice")
       compare(stop.visible, true)
       // Not the voice target: the run-scoped stop is not highlighted as speakable.
