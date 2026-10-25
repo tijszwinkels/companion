@@ -31,6 +31,8 @@ export async function widgetDocument(
   record: Pick<WidgetRecord, 'props' | 'revision' | 'name'>,
   theme: WidgetViewport,
   api?: string,
+  // Session application views name their code version in every request.
+  application?: { version: number },
 ): Promise<string> {
   const [host, frame] = await scripts;
   const moduleUrl = dataScript(bundle.javascript);
@@ -46,6 +48,7 @@ export async function widgetDocument(
     revision: record.revision,
     theme,
     api,
+    ...(application ? { application } : {}),
   };
   const code = `window.widgetBootstrap=${expressionValue(bootstrap)};\n${host}`;
   // The srcdoc iframe inherits this policy in addition to its own. Permit

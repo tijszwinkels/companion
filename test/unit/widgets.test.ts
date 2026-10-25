@@ -295,6 +295,10 @@ test('tool transport uses schemas and refuses cross-conversation instance access
       'companion_widget_update',
       'companion_widget_call',
       'companion_widget_present',
+      'companion_app',
+      'companion_app_apply',
+      'companion_app_query',
+      'companion_app_call',
     ],
   );
   assert.ok(tools.every((tool) => tool.promptSnippet && tool.description && tool.parameters));

@@ -14,6 +14,12 @@ export function promptText(text: string, origin?: AgentMessageOrigin): string {
     return text;
   }
 
+  // AgentSessions replaces this text with the host-built event prompt when
+  // the turn starts (src/session-apps/outbox.ts, eventPrompt).
+  if (origin.kind === 'application-event') {
+    return text;
+  }
+
   if (origin.kind === 'scheduled-wake') {
     const header = `[Companion scheduled wake] Timer ${origin.timerId}, due ${new Date(origin.dueAt).toISOString()}, scheduled in turn ${origin.schedulingTurn}. This was arranged earlier by this conversation's agent, not newly typed by the user. First reassess current state: the request may be stale. It grants no new authority to resume workers, extend review budgets, deploy, or modify services. Existing task permissions and cross-agent ancestry remain in force.`;
     // A repeating timer re-arms itself; the agent should end it, not re-arm it.
@@ -82,8 +88,18 @@ export function parseOrigin(value: unknown): AgentMessageOrigin | undefined {
       title: origin.title,
       depth: origin.depth,
       ...(series ? { series } : {}),
-      ...(ancestry && ancestry.kind !== 'scheduled-wake' ? { ancestry } : {}),
+      ...(ancestry && (ancestry.kind === 'agent' || ancestry.kind === 'external')
+        ? { ancestry }
+        : {}),
     };
+  }
+  if (
+    origin.kind === 'application-event' &&
+    typeof origin.applicationId === 'string' &&
+    sessionIdPattern.test(origin.applicationId) &&
+    origin.depth === 0
+  ) {
+    return { kind: 'application-event', applicationId: origin.applicationId, depth: 0 };
   }
   if (
     origin.kind === 'external' &&

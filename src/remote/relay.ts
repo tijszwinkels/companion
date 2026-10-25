@@ -524,7 +524,18 @@ export class Relay {
     }
 
     for (const session of sessions) {
-      const value = session as { id?: unknown; messages?: unknown; pinnedMessage?: unknown };
+      const value = session as {
+        id?: unknown;
+        messages?: unknown;
+        pinnedMessage?: unknown;
+        application?: unknown;
+      };
+      // A session application's view capability is a desktop loopback URL,
+      // like a widget's. The phone keeps the descriptor's metadata only.
+      const application = value.application as Record<string, unknown> | undefined;
+      if (application && typeof application === 'object') {
+        delete application.viewUrl;
+      }
       this.rewriteSession(value);
       if (value.pinnedMessage) {
         this.rewriteSession({ id: value.id, messages: [value.pinnedMessage] });

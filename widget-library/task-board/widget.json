@@ -1,0 +1,291 @@
+{
+  "name": "task-board",
+  "version": 1,
+  "description": "A session application: tasks as cards in To do / Doing / Done columns with drag and drop.",
+  "application": {
+    "eventMode": "immediate"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120,
+        "default": "Tasks"
+      },
+      "tasks": {
+        "type": "array",
+        "maxItems": 200,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "column": {
+              "type": "string",
+              "enum": ["todo", "doing", "done"]
+            }
+          },
+          "required": ["id", "text", "column"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": ["title", "tasks"],
+    "additionalProperties": false
+  },
+  "actions": {
+    "add_task": {
+      "description": "Add a task. Returns its taskId.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "column": {
+            "type": "string",
+            "enum": ["todo", "doing", "done"]
+          }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string"
+          }
+        },
+        "required": ["taskId"],
+        "additionalProperties": false
+      }
+    },
+    "move_task": {
+      "description": "Move one task to a column, optionally before another task.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "column": {
+            "type": "string",
+            "enum": ["todo", "doing", "done"]
+          },
+          "before": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": ["id", "column"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "complete_task": {
+      "description": "Move one task to done.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "remove_task": {
+      "description": "Delete one task.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "rename_task": {
+      "description": "Change one task's text.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": ["id", "text"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  },
+  "queries": {
+    "list_tasks": {
+      "description": "Tasks in board order, optionally only one column.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string",
+            "enum": ["todo", "doing", "done"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "column": {
+                  "type": "string",
+                  "enum": ["todo", "doing", "done"]
+                }
+              },
+              "required": ["id", "text", "column"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["tasks"],
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "description": "Number of tasks per column.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "todo": {
+            "type": "integer"
+          },
+          "doing": {
+            "type": "integer"
+          },
+          "done": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": ["todo", "doing", "done", "total"],
+        "additionalProperties": false
+      }
+    },
+    "get_task": {
+      "description": "One task by id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "column": {
+                "type": "string",
+                "enum": ["todo", "doing", "done"]
+              }
+            },
+            "required": ["id", "text", "column"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["task"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "example": {
+    "title": "Tasks",
+    "tasks": []
+  }
+}

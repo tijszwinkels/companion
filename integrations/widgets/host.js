@@ -6,6 +6,11 @@ const bootstrap = window.widgetBootstrap;
 // viewer. Resolve its API against the actual document URL, never iframe input.
 const api = bootstrap.api ? location.href.replace(/\/$/, '') : null;
 let theme = bootstrap.theme;
+// Session application views (src/session-apps/README.md) carry the code version
+// they were loaded with. Requests name it, so replaced code is never executed
+// for this page; the page reloads itself when the service reports a new one.
+const application = bootstrap.application ?? null;
+let currentProps = bootstrap.props;
 // An embedding Companion host that calls setTheme owns the whole theme,
 // including text scale. Without one (the Chromium pop-out), refresh() follows
 // the text scale the service last received from the sidebar view.
@@ -53,8 +58,9 @@ function command(message) {
 }
 
 async function update(props, theme, nextRevision) {
-  await command({ kind: 'update', props, theme });
+  await command({ kind: 'update', props, theme, revision: nextRevision });
   revision = nextRevision;
+  currentProps = props;
 }
 
 function reply(id, result, error) {
@@ -96,35 +102,83 @@ window.addEventListener('message', (event) => {
       id: message.id,
       action: message.action,
       args: message.args,
-      revision,
       requestId: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
         byte.toString(16).padStart(2, '0'),
       ).join(''),
     };
+    if (application) {
+      // Application actions are targeted changes validated against current
+      // state, so they do not require the displayed revision.
+      request.version = application.version;
+    } else {
+      // Widgets reject a click on a stale displayed revision.
+      request.revision = revision;
+    }
     if (api) {
-      liveActions++;
-      void fetch(api + '/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
-      })
-        .then(async (response) => {
-          const value = await response.json();
-          if (!response.ok) {
-            throw Error(value.error);
-          }
-          await refresh();
-          reply(message.id, value);
-        })
-        .catch((error) => reply(message.id, null, error.message))
-        .finally(() => {
-          liveActions--;
-        });
+      send('/action', request, message.id, true);
     } else {
       requests.push(request);
     }
+  } else if (message.type === 'query' && application) {
+    if (
+      typeof message.id !== 'string' ||
+      message.id.length > 100 ||
+      typeof message.name !== 'string' ||
+      new TextEncoder().encode(JSON.stringify(message.args ?? {})).byteLength > 32768 ||
+      liveActions >= 8
+    ) {
+      reply(message.id, null, 'Too many application queries or oversized arguments');
+      return;
+    }
+    if (!api) {
+      reply(message.id, null, 'Application queries need a live view');
+      return;
+    }
+    const query = { name: message.name, args: message.args, version: application.version };
+    send('/query', query, message.id, false);
+  } else if (message.type === 'state-read' && typeof message.id === 'string') {
+    if (!api) {
+      reply(message.id, { revision, data: currentProps });
+      return;
+    }
+    void fetch(api + '/state')
+      .then(async (response) => {
+        const value = await response.json();
+        if (!response.ok) {
+          throw Error(value.error);
+        }
+        reply(message.id, { revision: value.revision, data: value.props });
+      })
+      .catch((error) => reply(message.id, null, error.message));
+  } else if (typeof message.id === 'string') {
+    reply(message.id, null, 'Unsupported widget request');
   }
 });
+
+// One bounded POST to the view's own capability URL. Mutations refresh the
+// displayed state before resolving, so the page sees its own committed change.
+function send(path, body, id, refreshAfter) {
+  liveActions++;
+  void fetch(api + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(async (response) => {
+      const value = await response.json();
+      if (!response.ok) {
+        throw Error(value.error);
+      }
+      if (refreshAfter) {
+        await refresh();
+      }
+      reply(id, value);
+    })
+    .catch((error) => reply(id, null, error.message))
+    .finally(() => {
+      liveActions--;
+    });
+}
 
 let refreshing = false;
 async function refresh() {
@@ -138,6 +192,12 @@ async function refresh() {
       throw Error('Widget is unavailable');
     }
     const snapshot = await response.json();
+    if (application && snapshot.version !== application.version) {
+      // The application's code was replaced. Load the new document; the
+      // capability URL stays the same and state lives in the service.
+      location.reload();
+      return;
+    }
     const sidebarScale = followedTextScale(snapshot.textScale);
     if (snapshot.revision !== revision) {
       if (sidebarScale !== null) {
