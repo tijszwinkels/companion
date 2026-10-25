@@ -167,8 +167,9 @@ export function nativeFocusKey(report: NativeViewReport | undefined): string {
  * 1. the active pop-out window (the newest report wins if several
  *    connections claim one);
  * 2. the conversation visible in the main sidebar body;
- * 3. when the main sidebar shows only the compact rail and exactly one
- *    pop-out window exists, that window as a weak (unfocused) candidate;
+ * 3. when exactly one pop-out window is visible across all connections and
+ *    its connection's main sidebar shows only the compact rail, that window
+ *    as a weak (unfocused) candidate;
  * 4. no target.
  *
  * Several unfocused pop-outs are never guessed between.
@@ -199,22 +200,21 @@ export function chooseVoiceTarget(input: {
     return { id: input.panelSession, clientId: input.panelClient, source: 'panel' };
   }
 
-  // 3. A single pop-out beside a compact rail.
-  const candidates: VoiceTarget[] = [];
+  // 3. The only visible pop-out anywhere, beside a compact rail. Windows of
+  // every connection count, whatever their rail: a second visible window
+  // elsewhere makes the utterance ambiguous, so there is no candidate at all.
+  const visible: VoiceTarget[] = [];
+  let compactOwner = false;
   for (const [clientId, record] of input.views) {
-    if (record.report.rail !== 'compact') {
-      continue;
-    }
-    const open = record.report.popouts.filter((popout) => input.isOpen(popout.id));
-    if (open.length === 1) {
-      candidates.push({ id: open[0].id, clientId, source: 'popout-only' });
-    } else if (open.length > 1) {
-      // This connection has several windows: ambiguous, so no candidate at all.
-      return undefined;
+    for (const popout of record.report.popouts) {
+      if (input.isOpen(popout.id)) {
+        visible.push({ id: popout.id, clientId, source: 'popout-only' });
+        compactOwner = record.report.rail === 'compact';
+      }
     }
   }
-  if (candidates.length === 1) {
-    return candidates[0];
+  if (visible.length === 1 && compactOwner) {
+    return visible[0];
   }
 
   return undefined;
