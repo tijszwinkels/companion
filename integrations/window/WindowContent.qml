@@ -42,16 +42,19 @@ Item {
   }
 
   function releaseFocus(restore) {
+    // Read the restore target first: releasing composer focus below emits
+    // focus and report changes whose handlers may clear it.
+    const previous = root.previousWindow
     focusDeadline.stop()
     root.focusPending = false
     host.releaseFocus()
     for (const view of popoutViews.allViews()) view.releaseComposerFocus()
     panel.releaseComposerFocus()
     root.focusTarget = ""
-    if (restore && root.previousWindow) {
+    if (restore && previous) {
       // The bridge validates this compositor-supplied address again. It owns
       // focus restoration and sends keyboard insertion only after that boundary.
-      host.notify({type: "restore-focus", address: root.previousWindow})
+      host.notify({type: "restore-focus", address: previous})
     }
     root.previousWindow = ""
   }
@@ -59,13 +62,15 @@ Item {
   // The main surface was hidden or lost its layer focus grab. That ends a
   // focus request for the main panel, but not one held by a pop-out window,
   // whose composer and restore target stay as they are.
+  // A pop-out composer the user focused directly (not via the shortcut) is
+  // independent of the main surface too, so this never touches pop-outs.
   function releaseMainFocus() {
-    if (root.focusTarget === "") {
-      root.releaseFocus(false)
-      return
-    }
     host.releaseFocus()
     panel.releaseComposerFocus()
+    if (root.focusTarget !== "") return
+    focusDeadline.stop()
+    root.focusPending = false
+    root.previousWindow = ""
   }
 
   function focusComposer(address) {
