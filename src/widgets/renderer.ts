@@ -161,6 +161,19 @@ export class WidgetRenderer {
     });
   }
 
+  /**
+   * Mount (if not yet mounted) and update the page with the record's state,
+   * awaiting the bundle's own mount()/update(). Throws if either throws, so a
+   * session application is never published with a view that cannot start.
+   */
+  async render(record: WidgetRecord, bundle: WidgetBundle): Promise<void> {
+    await this.use(record, bundle, async (page) => {
+      await page.evaluate(
+        `window.widgetHost.update(${expressionValue(record.props)},${expressionValue(defaultViewport)},${record.revision}).then(() => true)`,
+      );
+    });
+  }
+
   /** Which entry points and handlers the bundle's module actually exports. */
   async inspect(
     record: WidgetRecord,

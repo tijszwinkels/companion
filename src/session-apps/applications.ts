@@ -169,6 +169,15 @@ function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
+/** The page's own error line when authored code threw, else the error text. */
+function authoredReason(error: unknown): string {
+  const cause = error instanceof Error ? error.cause : undefined;
+  if (typeof cause === 'string' && cause) {
+    return cause;
+  }
+  return errorText(error);
+}
+
 /**
  * Run authored code in the renderer. A refusal thrown by the application's
  * own handler (for example "Task was not found") is reported with its bounded
@@ -431,9 +440,13 @@ export class SessionApplications {
 
   // ---- Operations ----------------------------------------------------------
 
-  /** Renderer surface key: one page per application code version. */
+  /**
+   * Renderer surface key: one page per application, code version and exact
+   * bundle. Including the bundle hash means a page proven for one candidate
+   * can never answer for different code that later gets the same version.
+   */
   private surfaceId(record: ApplicationRecord, version = record.version): string {
-    return `application:${record.id}:${version}`;
+    return `application:${record.id}:${version}:${record.bundle}`;
   }
 
   /** A widget-shaped view of the record for the shared renderer. */
@@ -651,11 +664,14 @@ export class SessionApplications {
         if (missing.length) {
           throw Error(`widget.js does not implement: ${missing.join(', ')}`);
         }
+        // mount() and the first update() must succeed with the real state,
+        // as they will in the user's view.
+        await this.host.renderer.render(candidate, bundle);
         next.text = await this.host.renderer.describe(candidate, bundle);
       } catch (error) {
         await this.host.renderer.discard([candidate.id]);
         throw new SessionApplicationError(
-          `The application bundle failed to load: ${errorText(error)}`,
+          `The application bundle failed to load: ${authoredReason(error)}`,
         );
       }
 
@@ -673,8 +689,15 @@ export class SessionApplications {
       };
       this.remember(next, requestId, result);
 
-      await this.host.registry.retain(bundle);
-      await this.commit(owner, next, bundle, signal);
+      try {
+        await this.host.registry.retain(bundle);
+        await this.commit(owner, next, bundle, signal);
+      } catch (error) {
+        // Not published: retire the proven candidate page so nothing can
+        // reuse it for a later, different apply.
+        await this.host.renderer.discard([candidate.id]);
+        throw error;
+      }
       if (current) {
         await this.host.renderer.discard([this.surfaceId(current)]);
       }

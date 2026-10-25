@@ -5,6 +5,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdir, readFile, rename, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { frame, signal } from '../helpers.ts';
@@ -254,4 +256,101 @@ test('incompatible, broken and non-application bundles are refused without chang
   assert.equal(application.revision, 1);
   const state = await (await fetch(application.viewUrl + '/state')).json();
   assert.deepEqual(state.data, initialState);
+});
+
+test('a replacement whose save fails leaves no proven page behind for different code', async (context) => {
+  const fixture = await applicationFixture(context);
+  const { sessions } = fixture;
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+
+  // Declares task-board's handlers but implements none of them.
+  const board = JSON.parse(
+    await readFile(join(fixture.library, 'task-board', 'widget.json'), 'utf8'),
+  );
+  // fixture.bundle() supplies the synthetic bundle's own name.
+  delete board.name;
+  await fixture.bundle(
+    'hollow-board',
+    board,
+    'export function describe(){return "hollow"} export function mount(){return {update(){}}}',
+  );
+
+  const recordFile = join(fixture.directory, '.companion-widgets', 'applications', id + '.json');
+  fixture.script(id, async (turn) => {
+    await turn.tool('companion_app_apply', {
+      bundle: 'task-list',
+      expectedVersion: 0,
+      initialState,
+    });
+
+    // task-board proves itself in the renderer, then its atomic save fails.
+    await rename(recordFile, recordFile + '.backup');
+    await mkdir(recordFile);
+    await assert.rejects(
+      turn.tool('companion_app_apply', { bundle: 'task-board', expectedVersion: 1 }),
+    );
+    await rm(recordFile, { recursive: true });
+    await rename(recordFile + '.backup', recordFile);
+
+    // The same version number with different code is checked afresh.
+    await assert.rejects(
+      turn.tool('companion_app_apply', { bundle: 'hollow-board', expectedVersion: 1 }),
+      /does not implement: add_task, move_task, complete_task, remove_task, rename_task, list_tasks, summary, get_task/,
+    );
+  });
+  sessions.followUp(id, 'Swap code', signal());
+  await sessions.idle();
+  const application = fixture.view(id).application!;
+  assert.equal(application.name, 'task-list');
+  assert.equal(application.version, 1);
+  const saved = JSON.parse(await readFile(recordFile, 'utf8'));
+  assert.equal(saved.name, 'task-list');
+});
+
+test('a bundle whose mount or first update throws is refused before publication', async (context) => {
+  const fixture = await applicationFixture(context);
+  const { sessions } = fixture;
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+  const list = JSON.parse(
+    await readFile(join(fixture.library, 'task-list', 'widget.json'), 'utf8'),
+  );
+  // fixture.bundle() supplies the synthetic bundle's own name.
+  delete list.name;
+  const handlers = `export const actions = { add_task(s){return {state:s}}, move_task(s){return {state:s}}, complete_task(s){return {state:s}}, remove_task(s){return {state:s}} };
+    export const queries = { list_tasks(s){return {tasks:s.tasks}}, summary(){return {todo:0,doing:0,done:0,total:0}} };
+    export function describe(){return "broken view"}`;
+  await fixture.bundle(
+    'mount-throws',
+    list,
+    handlers + '\nexport function mount(){ throw new Error("cannot mount here"); }',
+  );
+  await fixture.bundle(
+    'update-throws',
+    list,
+    handlers +
+      '\nexport function mount(){ return { update(){ throw new Error("cannot draw state"); } }; }',
+  );
+
+  fixture.script(id, async (turn) => {
+    await turn.tool('companion_app_apply', {
+      bundle: 'task-list',
+      expectedVersion: 0,
+      initialState,
+    });
+    await assert.rejects(
+      turn.tool('companion_app_apply', { bundle: 'mount-throws', expectedVersion: 1 }),
+      /failed to load: cannot mount here/,
+    );
+    await assert.rejects(
+      turn.tool('companion_app_apply', { bundle: 'update-throws', expectedVersion: 1 }),
+      /failed to load: cannot draw state/,
+    );
+  });
+  sessions.followUp(id, 'Try broken views', signal());
+  await sessions.idle();
+  const application = fixture.view(id).application!;
+  assert.equal(application.name, 'task-list');
+  assert.equal(application.version, 1);
 });

@@ -413,6 +413,13 @@ export class AgentSessions implements InspectableModule {
       this.widgets.applications.setQueued(session.view.id, false);
     } else if (!message || message.origin || !session.application?.id) {
       return { skip: false, prompt };
+    } else {
+      // The person's message takes the pending edits now, so an older
+      // immediate-mode debounce must not offer them again later, whether
+      // this attachment succeeds or fails. Edits made after this point arm
+      // a new debounce themselves.
+      clearTimeout(session.applicationTimer);
+      session.applicationTimer = undefined;
     }
 
     const id = session.view.id;

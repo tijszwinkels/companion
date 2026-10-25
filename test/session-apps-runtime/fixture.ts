@@ -91,6 +91,7 @@ export async function applicationFixture(context: {
   await cp(libraryDirectory, library, { recursive: true });
 
   const turns: ApplicationTurn[] = [];
+  const scriptFailures: Error[] = [];
   const scripts = new Map<string, ApplicationScript[]>();
 
   async function record(
@@ -111,7 +112,16 @@ export async function applicationFixture(context: {
     turns.push(turn);
     const script = scripts.get(request.id)?.shift();
     if (script) {
-      await script(turn);
+      try {
+        await script(turn);
+      } catch (error) {
+        // A failed assertion inside a turn would otherwise only fail that
+        // model turn. Keep it, so the test itself fails (see context.after).
+        if ((error as { code?: unknown }).code === 'ERR_ASSERTION') {
+          scriptFailures.push(error as Error);
+        }
+        throw error;
+      }
     }
     signal.throwIfAborted();
     emit(chatMessage(`answer-${turns.length}`, 'assistant', `${harness} answer ${turns.length}`));
@@ -149,6 +159,9 @@ export async function applicationFixture(context: {
       await instance.close();
     }
     await rm(directory, { recursive: true, force: true });
+    if (scriptFailures.length) {
+      throw scriptFailures[0];
+    }
   });
 
   return {
