@@ -206,6 +206,35 @@ Item {
     return {outcome: "shown", reason: "", window: window}
   }
 
+  // The Companion surface that has keyboard focus now: the main surface, a
+  // pop-out window, or null (another application or nothing).
+  function focusedSurface() {
+    if (root.host.active === true) return root.host
+    for (const id of root.order) {
+      if (root.windows[id] && root.windows[id].active) return root.windows[id]
+    }
+    return null
+  }
+
+  // After an agent opened `window` with focus:false: Qt or the compositor may
+  // activate a newly shown window. If it took focus from another Companion
+  // surface, give that surface its focus back, so the user's typing and
+  // voice target do not move. Focus held by another application cannot be
+  // restored from here; the compositor's policy decides. `done(focused)`
+  // reports whether `window` ended up focused, after a short bounded wait.
+  function keepFocus(previous, window, done) {
+    let restored = false
+    activationWatch.createObject(root, {check: function() {
+      if (!window.active) return false
+      if (previous !== null && !restored) {
+        restored = true
+        if (previous === root.host) root.host.activate()
+        else previous.requestActivate()
+      }
+      return previous === null
+    }, done: function() { done(window.active === true) }, remaining: 300})
+  }
+
   // Return `id` to the sidebar and close its window. Returns {outcome,
   // reason}; outcome is "returned" or "conflict".
   function closeWindow(id) {
@@ -312,13 +341,21 @@ Item {
     }
 
     if (presentation === "window") {
+      const existing = root.windows[id] !== undefined
+      const previous = root.focusedSurface()
       const result = root.openWindow(id)
       if (result.outcome !== "shown") {
         answer({outcome: result.outcome, reason: result.reason})
         return
       }
-      if (!focus) {
+      if (!focus && existing) {
         answer({outcome: "shown", reason: "", focused: result.window.active === true})
+        return
+      }
+      if (!focus) {
+        root.keepFocus(previous, result.window, function(focused) {
+          answer({outcome: "shown", reason: "", focused: focused})
+        })
         return
       }
       root.activate(result.window, function(focused) {

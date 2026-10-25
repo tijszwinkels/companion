@@ -268,6 +268,24 @@ TestCase {
     compare(answers("u2")[0].outcome, "unsupported")
   }
 
+  function test_agent_focus_false_does_not_move_focus() {
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active })
+    fakeBackend.received({type: "agent-present", requestId: "nofocus", id: "two", presentation: "window", focus: false})
+    tryVerify(function() { return answers("nofocus").length === 1 })
+    compare(answers("nofocus")[0].outcome, "shown")
+    compare(answers("nofocus")[0].focused, false)
+    wait(150)
+    verify(popout("two").visible)
+    verify(!popout("two").active, "focus:false must not activate the new window")
+    verify(TestHost.active, "The main surface keeps focus")
+    tryVerify(function() { return lastReport().popouts.length === 1 && lastReport().popouts[0].active === false })
+
+    // The window can still be focused afterwards.
+    body.popouts.focusWindow("two")
+    tryVerify(function() { return popout("two").active })
+  }
+
   function test_at_most_eight_windows() {
     const entries = []
     for (let index = 0; index < 9; index++) entries.push(session("s" + index, "Chat " + index))
