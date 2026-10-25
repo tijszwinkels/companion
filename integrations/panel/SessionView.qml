@@ -524,11 +524,20 @@ Item {
 
   // Keep text the HTML composer could not apply (see refusedDrafts). The
   // latest refusal replaces an older one for the same conversation: it is
-  // the person's newest version of the text.
+  // the person's newest version of the text. Bounded by
+  // `maximumRefusedDraftLength` characters each. Returns
+  // whether the text is kept; when not, the caller must leave it with the
+  // person (the HTML composer then keeps it on screen with Copy). The
+  // displayed conversation always gets its slot; other conversations share
+  // at most 32 (more than the 16 open tabs, for edits still in flight while
+  // the view switched).
+  readonly property int maximumRefusedDraftLength: 4 * maximumMessageLength
   function keepRefusedDraft(id, text) {
-    if (!id || typeof text !== "string" || text === "") return
-    if (root.refusedDrafts[id] === undefined && Object.keys(root.refusedDrafts).length >= 16) return
+    if (!id || typeof text !== "string" || text === "" || text.length > root.maximumRefusedDraftLength) return false
+    if (root.refusedDrafts[id] === undefined && id !== root.displayedId
+        && Object.keys(root.refusedDrafts).length >= 32) return false
     root.refusedDrafts = Object.assign({}, root.refusedDrafts, {[id]: text})
+    return true
   }
 
   // "use" replaces the draft with the kept text (an explicit choice, so it

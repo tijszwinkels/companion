@@ -214,7 +214,7 @@ TestCase {
     compare(composerOf(view).text, "first")
     // The host keeps the refused text and the page offers it back.
     compare(view.refusedDrafts["one"], "stale text")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null") === true })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true })
     verify(clickButton(chat, "Dismiss"))
     tryCompare(view, "displayedRefusedDraft", "")
     // Another conversation's ID is refused as well.
@@ -593,14 +593,22 @@ TestCase {
     typeInto(chat, "host old")
     tryCompare(composerOf(view), "text", "host old")
     fakeBackend.sent = []
+    // Over the edit limit, then Enter in the same moment: nothing is sent,
+    // the text stays on screen, the host draft is unchanged.
     evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'y'.repeat(16001);"
       + " area.dispatchEvent(new Event('input', {bubbles: true}));"
       + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); return true })()")
-    tryVerify(function() { return view.displayedRefusedDraft.length === 16001 }, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true }, 5000)
     wait(300)
     compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
     compare(composerOf(view).text, "host old")
-    // Send stays disabled while the refused text waits for a decision.
+    compare(textarea(chat).length, 16001)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
+    // A host refusal (stale edit) also blocks Send until resolved.
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "host old" })
+    evaluate(chat, "(() => { window.__companionBridge.editDraft('sendcheck', -1, 'refused words', 13); return true })()")
+    tryCompare(view, "displayedRefusedDraft", "refused words")
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
     // A direct bridge send naming other text than the host draft is refused.
     evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.send('sendcheck', " + view.draftRevision
@@ -610,7 +618,8 @@ TestCase {
     compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
     // Dismissed, the shown text is the host draft again and sends exactly.
     verify(clickButton(chat, "Dismiss"))
-    tryVerify(function() { return textarea(chat) === "host old" })
+    tryCompare(view, "displayedRefusedDraft", "")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === false })
     verify(clickButton(chat, "Send"))
     tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
     compare(fakeBackend.sent.find(message => message.action === "send-agent").text, "host old")
@@ -631,17 +640,17 @@ TestCase {
     tryCompare(view, "displayedRefusedDraft", "my words")
     body.client.sessions.select("two")
     tryCompare(body.panel, "selectedSessionId", "two")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') === null") === true })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') === null") === true })
     body.client.sessions.select("one")
     tryCompare(body.panel, "selectedSessionId", "one")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null"
-      + " && document.querySelector('.conflict').textContent.includes('Use my text')") === true })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null"
+      + " && document.querySelector('.refused').textContent.includes('Use my text')") === true })
     // Reloading the page keeps it too (it lives in the host).
     const trusted = findChild(surfaceOf(view), "trustedChat")
     const loads = trusted.readyCount
     chat.reload()
     tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.conflict') !== null") === true }, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true }, 5000)
     // Pop-out waits until it is resolved, with a reason.
     body.popouts.popOut("one")
     compare(body.popouts.windows["one"], undefined)
@@ -748,6 +757,80 @@ TestCase {
     verify(headings.some(text => text.startsWith("Your edits in this conversation's app")), JSON.stringify(headings))
     verify(!headings.some(text => text.includes("another conversation")), JSON.stringify(headings))
     view.classicView = false
+  }
+
+  // Lead regression: a paste far beyond what the host accepts is rejected
+  // before it replaces anything; the draft and editor keep their text.
+  function test_v_oversize_paste_is_rejected_before_replacing() {
+    const chat = freshChat("paste")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "old host text")
+    tryCompare(composerOf(view), "text", "old host text")
+    const prevented = evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.select();"
+      + " const data = new DataTransfer(); data.setData('text/plain', 'x'.repeat(40001));"
+      + " const event = new ClipboardEvent('paste', {clipboardData: data, bubbles: true, cancelable: true});"
+      + " return !area.dispatchEvent(event) })()")
+    compare(prevented, true)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Nothing was changed')") === true })
+    compare(textarea(chat), "old host text")
+    compare(composerOf(view).text, "old host text")
+  }
+
+  // Lead regression: oversize text that reached the editor some other way
+  // (here: replaced value plus input) stays on screen, is never replaced by
+  // the host draft, cannot be sent, and can be copied or discarded.
+  function test_w_oversize_text_in_the_editor_is_never_dropped() {
+    const chat = freshChat("large")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "old host text")
+    tryCompare(composerOf(view), "text", "old host text")
+    const pasted = "x".repeat(40001)
+    typeInto(chat, pasted)
+    wait(300)
+    compare(textarea(chat).length, 40001)
+    compare(composerOf(view).text, "old host text")
+    verify(evaluate(chat, "document.querySelector('.unkept') !== null"))
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
+    // A host-side change does not replace it either.
+    fakeBackend.received({type: "agent-draft", requestId: "d-large", id: "large", text: "Agent text",
+      ifDraftExists: "append", focus: false, source: {sessionId: "x", title: "Helper"}})
+    tryVerify(function() { return composerOf(view).text.includes("Agent text") })
+    wait(200)
+    compare(textarea(chat).length, 40001)
+    // Shortened below the limit, the person can use it.
+    typeInto(chat, "short version")
+    verify(clickButton(chat, "Use my text"))
+    tryCompare(composerOf(view), "text", "short version")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
+    // And Discard returns to the host draft.
+    typeInto(chat, pasted)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true })
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "short version" })
+  }
+
+  // Bounded recovery capacity: the displayed conversation always has a slot;
+  // when other conversations' slots are full the host says it did not keep
+  // the text (kept: false), so the page keeps it instead of dropping it.
+  function test_x_recovery_capacity_never_drops_silently() {
+    const chat = freshChat("capacity")
+    const view = mainView()
+    for (let index = 0; index < 32; index++) verify(view.keepRefusedDraft("other-" + index, "t" + index))
+    compare(view.keepRefusedDraft("other-overflow", "lost?"), false)
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', -1, 'mine', 4,"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    const shown = JSON.parse(evaluate(chat, "window.__answer"))
+    compare([shown.accepted, shown.kept], [false, true])
+    compare(view.displayedRefusedDraft, "mine")
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('elsewhere', -1, 'other text', 10,"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    const other = JSON.parse(evaluate(chat, "window.__answer"))
+    compare([other.accepted, other.kept], [false, false])
+    view.refusedDrafts = ({})
   }
 
   function findChildren(item, name) {
