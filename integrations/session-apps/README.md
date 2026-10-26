@@ -88,14 +88,18 @@ so Classic view and pop-out handover resume at the same position.
 Typing, pasting or dropping past twice the message limit is cancelled before
 it changes the editor. Over-limit text that still arrives (an input method
 cannot be cancelled) is refused and kept as the conversation's refused text.
-Only if that bounded recovery is full does the page keep the text itself; the
-host is told, and moving that conversation waits until it is resolved. A new
-editor (page load, pop-out) starts at the host cursor.
+Only if that bounded recovery is full does the page keep the text itself, per
+conversation and for the lifetime of the page document (it survives showing
+Activity or another conversation and a resynchronization); the host is told,
+and moving that conversation waits until it is resolved. A real page reload
+loses such text and says so. A new editor (page load, pop-out) starts at the
+host cursor.
 
 The trusted pages count as working only after their script connected and
-answered. The host also checks about every second that the current document is
-still connected, so a page that never gets there, or stops after a reload,
-fails within 10 seconds. Until a page works, and after it fails or its
+answered. The host also asks about every second whether the current document is
+still connected; after 10 seconds of missed or negative answers (a page that
+never gets there, or a reload into a failing script) the view counts as
+failed, and a later answer recovers it. Until a page works, and after it fails or its
 renderer stops, the classic view and the native conversation list stay
 visible.
 

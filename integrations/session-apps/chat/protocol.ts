@@ -124,7 +124,8 @@ export interface BridgeAnswer {
  */
 export interface NativeBridge {
   message: { connect(callback: (json: string) => void): void };
-  ready(callback?: () => void): void;
+  /** `documentId` is constant for one loaded page; a new id means a reload. */
+  ready(documentId: string, callback?: () => void): void;
   editDraft(
     sessionId: string,
     base: number,

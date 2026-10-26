@@ -4,6 +4,12 @@
  * The native view (TrustedChatView.qml) owns everything; this store only
  * applies its ordered messages. Rows arrive as an order plus changed rows;
  * a sequence gap or a session change asks for a full resynchronization.
+ *
+ * It also holds typed text the host could not keep (only when the host's
+ * bounded recovery is exhausted), per conversation, for the lifetime of this
+ * document. Components come and go (no conversation shown, Activity); this
+ * store does not, so that text survives them. The host is told which
+ * conversations have such text and does not move them to another view.
  */
 
 import type { ChatRow, ChatStatus, HostMessage, NativeBridge } from './protocol.ts';
@@ -22,6 +28,12 @@ export class ChatStore {
   private lastSequence = 0;
   private listeners = new Set<Listener>();
   private snapshot: ChatSnapshot = { rows: [], status: { sessionId: '' } };
+  private heldBySession: Record<string, string> = {};
+  // Identifies this document for the native view, so a resynchronization of
+  // the same page is not mistaken for a reload (which loses held text).
+  readonly documentId = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
 
   attach(bridge: NativeBridge): void {
     this.bridge = bridge;
@@ -37,6 +49,25 @@ export class ChatStore {
     return this.snapshot;
   }
 
+  /** Page-held text per conversation (see the class comment). */
+  held(): Record<string, string> {
+    return this.heldBySession;
+  }
+
+  hold(sessionId: string, text: string): void {
+    const next = { ...this.heldBySession };
+    if (text === '') {
+      delete next[sessionId];
+    } else {
+      next[sessionId] = text;
+    }
+    this.heldBySession = next;
+    this.bridge?.holdText(sessionId, text !== '');
+    // A new snapshot object, so subscribed components render again.
+    this.snapshot = { ...this.snapshot };
+    this.notify();
+  }
+
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => {
@@ -47,7 +78,7 @@ export class ChatStore {
   private resynchronize(): void {
     // The native side answers with a full rows message and the status.
     this.lastSequence = 0;
-    this.bridge?.ready();
+    this.bridge?.ready(this.documentId);
   }
 
   private receive(json: string): void {
