@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { deferred, frame, signal } from '../helpers.ts';
-import { applicationFixture, eventually, type ApplicationTurn } from './fixture.ts';
+import { applicationFixture, eventually, ModelFailure, type ApplicationTurn } from './fixture.ts';
 
 const initialState = {
   title: 'Release',
@@ -271,7 +271,7 @@ test('a failed event turn is terminal: not retried, not folded into new edits, a
   for (let attempt = 1; attempt <= 4; attempt++) {
     fixture.script(id, async (turn) => {
       assert.ok(turn.text.startsWith('[Companion application event]'));
-      throw Error(`model failure ${attempt}`);
+      throw new ModelFailure(`model failure ${attempt}`);
     });
     assert.equal((await userAction(viewUrl, 'add_task', { text: `t${attempt}` })).status, 200);
     await eventually(() => fixture.view(id).application!.eventStatus!.failed === attempt);

@@ -128,7 +128,10 @@ history, the draft, chat sending, native window commands or other sessions.
 All requests go to the loopback widget service; Host and Origin must match it.
 The trusted host page bounds what authored code can ask of it, including
 messages posted directly: at most eight outstanding requests (actions, queries
-and one shared state read) and request IDs of at most 100 characters.
+and one shared state read), request IDs of 1–100 characters (others are
+ignored, never echoed), operation names of at most 48 characters, and JSON
+arguments of at most 32 KiB. Non-JSON arguments (for example cyclic objects)
+are refused with an answer, so they never hold a request slot.
 
 | Request                 | Body / response                                                       |
 | ----------------------- | --------------------------------------------------------------------- |
@@ -159,7 +162,8 @@ apply may pass `initialState` (default: the manifest example). A replacement
 keeps the existing state and refuses `initialState`. Before anything is
 written, the existing state must validate against the new state schema, every
 declared query/action must have a handler, and `mount()`, the first `update()`
-and `describe()` must succeed with that state in the renderer. A candidate that
+and `describe()` must succeed with that state in the renderer; the page's
+own first update must succeed, a later retry does not count. A candidate that
 is not published (including when its save fails) is discarded. Any failure leaves the previous code and state intact.
 
 **Turn-boundary rule.** Each turn's lease freezes the application version and

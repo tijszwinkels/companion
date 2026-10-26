@@ -125,17 +125,20 @@ for (const harness of ['pi', 'claude-code'] as const) {
 
       // The lease froze version 1: old and new names fail, even when the
       // call names the successor version explicitly.
+      // Calls are made one at a time, so no rejection is ever left unhandled.
       for (const call of [
-        turn.tool('companion_app_query', { name: 'summary' }),
-        turn.tool('companion_app_query', { name: 'summary', version: 2 }),
-        turn.tool('companion_app_call', { action: 'rename_task', args: { id: 'b', text: 'x' } }),
-        turn.tool('companion_app_call', {
-          action: 'rename_task',
-          args: { id: 'b', text: 'x' },
-          version: 2,
-        }),
+        () => turn.tool('companion_app_query', { name: 'summary' }),
+        () => turn.tool('companion_app_query', { name: 'summary', version: 2 }),
+        () =>
+          turn.tool('companion_app_call', { action: 'rename_task', args: { id: 'b', text: 'x' } }),
+        () =>
+          turn.tool('companion_app_call', {
+            action: 'rename_task',
+            args: { id: 'b', text: 'x' },
+            version: 2,
+          }),
       ]) {
-        assert.match(await refusal(call), /changed during this turn \(version 1 → 2\)/);
+        assert.match(await refusal(call()), /changed during this turn \(version 1 → 2\)/);
       }
       // Management inspection still reports the new code, but not as callable.
       const inspection = (await turn.tool('companion_app')).application as Record<string, unknown>;
@@ -349,6 +352,43 @@ test('a bundle whose mount or first update throws is refused before publication'
     );
   });
   sessions.followUp(id, 'Try broken views', signal());
+  await sessions.idle();
+  const application = fixture.view(id).application!;
+  assert.equal(application.name, 'task-list');
+  assert.equal(application.version, 1);
+});
+
+test('publication requires the page’s own first update; a later successful retry does not count', async (context) => {
+  const fixture = await applicationFixture(context);
+  const { sessions } = fixture;
+  const id = sessions.start(frame, signal());
+  await sessions.idle();
+  const list = JSON.parse(
+    await readFile(join(fixture.library, 'task-list', 'widget.json'), 'utf8'),
+  );
+  delete list.name;
+  await fixture.bundle(
+    'first-update-throws',
+    list,
+    `export const actions = { add_task(s){return {state:s}}, move_task(s){return {state:s}}, complete_task(s){return {state:s}}, remove_task(s){return {state:s}} };
+     export const queries = { list_tasks(s){return {tasks:s.tasks}}, summary(){return {todo:0,doing:0,done:0,total:0}} };
+     export function describe(){ return "flaky view"; }
+     let updates = 0;
+     export function mount(){ return { update(){ if (++updates === 1) { throw new Error("first update failed"); } } }; }`,
+  );
+
+  fixture.script(id, async (turn) => {
+    await turn.tool('companion_app_apply', {
+      bundle: 'task-list',
+      expectedVersion: 0,
+      initialState,
+    });
+    await assert.rejects(
+      turn.tool('companion_app_apply', { bundle: 'first-update-throws', expectedVersion: 1 }),
+      /failed to load: first update failed/,
+    );
+  });
+  sessions.followUp(id, 'Try a flaky view', signal());
   await sessions.idle();
   const application = fixture.view(id).application!;
   assert.equal(application.name, 'task-list');
