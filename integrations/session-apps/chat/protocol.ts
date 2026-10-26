@@ -56,6 +56,8 @@ export interface ChatStatus {
     refused?: string;
   };
   maximumMessageLength?: number;
+  /** Longest draft text the host accepts from the page. */
+  editLimit?: number;
   canSend?: boolean;
   pendingSend?: boolean;
   pendingChoice?: boolean;
@@ -111,6 +113,8 @@ export type HostMessage =
 export interface BridgeAnswer {
   accepted: boolean;
   reason?: string;
+  /** For a refused edit: whether the host kept the text for recovery. */
+  kept?: boolean;
   draft?: { sessionId: string; text: string; cursor: number; revision: number };
 }
 

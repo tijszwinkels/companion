@@ -130,6 +130,8 @@ Item {
       draft: {text: draft.text, cursor: draft.cursor, revision: draft.revision, refused: draft.refused,
         source: view.displayedDraftSource, notice: view.displayedRecordingNotice},
       maximumMessageLength: view.maximumMessageLength,
+      // The longest draft the bridge accepts from the page (editDraft).
+      editLimit: 2 * view.maximumMessageLength,
       canSend: view.canSend,
       pendingSend: view.pendingSubmission !== null,
       pendingChoice: view.pendingChoice !== null,
@@ -235,12 +237,15 @@ Item {
       // Recording appends to this draft; typing meanwhile is not accepted
       // (the page shows the composer read-only), so words never interleave.
       // Every refusal keeps the person's text in the host (refusedDrafts).
+      // `kept` tells the page whether the host now holds the text. If not
+      // (beyond the bound, or no free slot), the page must keep it itself.
       function refuse(reason) {
-        if (typeof sessionId === "string" && typeof text === "string" && text.length <= 4 * view.maximumMessageLength
-            && !(sessionId === view.displayedId && text === view.pageDraft().text)) {
-          view.keepRefusedDraft(sessionId, text)
+        let kept = false
+        if (typeof sessionId === "string" && typeof text === "string") {
+          kept = sessionId === view.displayedId && text === view.pageDraft().text
+            || view.keepRefusedDraft(sessionId, text)
         }
-        return JSON.stringify({accepted: false, reason: reason, draft: view.pageDraft()})
+        return JSON.stringify({accepted: false, reason: reason, kept: kept, draft: view.pageDraft()})
       }
       if (view.recordingBusy) return refuse("recording")
       // The listener's own limit is 8000; the page cannot send more than
