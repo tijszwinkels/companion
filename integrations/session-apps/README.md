@@ -92,7 +92,9 @@ Only if that bounded recovery is full does the page keep the text itself, per
 conversation and for the lifetime of the page document (it survives showing
 Activity or another conversation and a resynchronization); the host is told,
 and moving that conversation waits until it is resolved. A real page reload
-loses such text and says so. A new editor (page load, pop-out) starts at the
+loses such text and says so. If a conversation is closed elsewhere while its
+window is open, its draft, refused text and page-held text all stay in the
+sidebar's closed-conversation notice with Copy and Dismiss. A new editor (page load, pop-out) starts at the
 host cursor.
 
 The trusted pages count as working only after their script connected and

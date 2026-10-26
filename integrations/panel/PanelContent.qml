@@ -1237,7 +1237,11 @@ Item {
           Text {
             width: Math.max(0, parent.width - orphanCopy.width - orphanDismiss.width - 12 * root.unit)
             anchors.verticalCenter: parent.verticalCenter
-            text: "Unsent text from closed “" + modelData.title + "”: " + modelData.text
+            text: modelData.kind === "lost"
+              ? "Typed text in closed “" + modelData.title + "” could not be recovered."
+              : (modelData.kind === "refused" || modelData.kind === "held"
+                ? "Text that could not be added to the draft of closed “" : "Unsent text from closed “")
+                + modelData.title + "”: " + modelData.text
             textFormat: Text.PlainText
             elide: Text.ElideRight
             color: root.foreground
@@ -1247,6 +1251,7 @@ Item {
           PanelAction {
             id: orphanCopy
             objectName: "orphanCopy"
+            visible: modelData.text !== ""
             text: "Copy"
             foreground: root.foreground
             selection: root.selection

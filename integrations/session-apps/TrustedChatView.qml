@@ -105,6 +105,30 @@ Item {
     if (root.pageReady) browser.runJavaScript("window.companionChat && window.companionChat.focusComposer()")
   }
 
+  // Read text only the page holds for a conversation (store.held()); the
+  // callback runs once, with "" when the page does not answer in time.
+  Component {
+    id: deadlineComponent
+    Timer {}
+  }
+  function collectPageHeldText(id, timeout, done) {
+    let finished = false
+    const deadline = deadlineComponent.createObject(root, {interval: timeout, running: true})
+    function finish(text) {
+      if (finished) return
+      finished = true
+      deadline.destroy()
+      done(typeof text === "string" ? text : "")
+    }
+    deadline.triggered.connect(function() { finish("") })
+    const lifetime = root.lifetime
+    browser.mainFrame.runJavaScript("window.companionChat && window.companionChat.heldText ? window.companionChat.heldText("
+      + JSON.stringify(id) + ") : ''", 0, function(text) {
+      if (!lifetime.active) return
+      finish(text)
+    })
+  }
+
   function releaseComposerFocus() {
     if (root.pageReady) browser.runJavaScript("window.companionChat && window.companionChat.blurComposer()")
     root.pageComposerFocused = false

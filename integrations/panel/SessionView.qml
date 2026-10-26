@@ -215,6 +215,16 @@ Item {
   // host could not keep (only when the bounded recovery above is full).
   // Moving that conversation to another view waits until it is resolved.
   property var pageHeldDrafts: ({})
+  // Text only the HTML page holds for `id`, read from the page; `done(text)`
+  // is called once, with "" if the page does not answer within `timeout` ms.
+  function collectPageHeldText(id, timeout, done) {
+    if (!root.htmlSurface || htmlLoader.item === null) {
+      done("")
+      return
+    }
+    htmlLoader.item.collectPageHeldText(id, timeout, done)
+  }
+
   function setPageHeldDraft(id, held) {
     if (typeof id !== "string" || id === "" || (root.pageHeldDrafts[id] === true) === held) return
     const next = Object.assign({}, root.pageHeldDrafts)

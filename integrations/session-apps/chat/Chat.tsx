@@ -449,12 +449,13 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     store.hold(sessionOfText, value);
   }
   const [inputNotice, setInputNotice] = useState('');
-  // The newest known host draft: from status updates, and from this page's
-  // own accepted edits (which do not produce a status update).
-  const hostDraft = useRef(draft);
-  useEffect(() => {
-    hostDraft.current = draft;
-  }, [draft.revision, draft.text, draft.cursor]);
+  // The newest known host draft, kept by the store in message order (see
+  // ChatStore.hostDraft), not from render state that may lag behind.
+  const hostDraft = {
+    get current() {
+      return store.hostDraft();
+    },
+  };
 
   const maximum = status.maximumMessageLength || 8000;
   const editLimit = status.editLimit || 2 * maximum;
@@ -554,7 +555,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         return;
       }
       if (answer.accepted) {
-        hostDraft.current = { ...hostDraft.current, text: value, cursor: cursor };
+        store.acceptedEdit(editedSession, value, cursor);
       }
       // The host changed while this edit travelled; its status update was
       // held back for the answer, so apply it now.

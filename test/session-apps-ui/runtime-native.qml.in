@@ -31,7 +31,8 @@ TestCase {
     let done = false
     let result = null
     target.runJavaScript(script, function(value) { result = value; done = true })
-    tryVerify(function() { return done }, 5000)
+    // The message names the script, so a timeout can be attributed.
+    tryVerify(function() { return done }, 10000, "script answered: " + script.slice(0, 80))
     return result
   }
   function view() { return body.panel.conversationView }

@@ -29,6 +29,17 @@ export class ChatStore {
   private listeners = new Set<Listener>();
   private snapshot: ChatSnapshot = { rows: [], status: { sessionId: '' } };
   private heldBySession: Record<string, string> = {};
+  // The newest known host draft of the shown conversation, updated in the
+  // order the host sent things: status updates and this page's accepted
+  // edits (which produce no status update). Kept here, synchronously,
+  // because component effects run later and could apply an older status
+  // after a newer accepted edit.
+  private latestHostDraft: { sessionId: string; text: string; cursor: number; revision: number } = {
+    sessionId: '',
+    text: '',
+    cursor: -1,
+    revision: 0,
+  };
   // Identifies this document for the native view, so a resynchronization of
   // the same page is not mistaken for a reload (which loses held text).
   readonly documentId = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) =>
@@ -47,6 +58,17 @@ export class ChatStore {
 
   current(): ChatSnapshot {
     return this.snapshot;
+  }
+
+  hostDraft(): { sessionId: string; text: string; cursor: number; revision: number } {
+    return this.latestHostDraft;
+  }
+
+  /** The host accepted this page's edit: its draft is now that text. */
+  acceptedEdit(sessionId: string, text: string, cursor: number): void {
+    if (this.latestHostDraft.sessionId === sessionId) {
+      this.latestHostDraft = { ...this.latestHostDraft, text: text, cursor: cursor };
+    }
   }
 
   /** Page-held text per conversation (see the class comment). */
@@ -104,6 +126,13 @@ export class ChatStore {
       this.applyRows(message);
     } else {
       this.snapshot = { rows: this.snapshot.rows, status: message.status };
+      const draft = message.status.draft;
+      this.latestHostDraft = {
+        sessionId: message.status.sessionId,
+        text: draft ? draft.text : '',
+        cursor: draft ? draft.cursor : -1,
+        revision: draft ? draft.revision : 0,
+      };
     }
     this.notify();
   }
