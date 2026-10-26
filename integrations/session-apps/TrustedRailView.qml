@@ -23,7 +23,7 @@ Item {
   property var panel: null
   property bool pageReady: false
   property bool loadFailed: false
-  readonly property bool failed: loadFailed || readyTimedOut || shellProfile.error !== ""
+  readonly property bool failed: loadFailed || unresponsive || shellProfile.error !== ""
   // Bounded handshake. The page counts as operational only after its script
   // connected and called ready(); see the liveness check below for how a
   // page that never gets there, or stops answering after a reload, fails.
@@ -31,28 +31,32 @@ Item {
   property bool operational: false
   // How often a page completed the handshake (each load calls ready()).
   property int readyCount: 0
-  property bool readyTimedOut: false
   // Liveness of the current document, checked by the host itself rather
   // than inferred from load notifications (whose order relative to ready()
-  // is not guaranteed): about every second the page must report that its
-  // bridge is connected. A document that does not for readyTimeoutMilliseconds
-  // - at start-up or after any reload, e.g. a script that fails - marks this
-  // view failed, so the native presentation becomes the visible one.
-  property double lastAlive: Date.now()
+  // is not guaranteed): about every second the page is asked whether its
+  // bridge is connected. Missed or negative answers are counted; at
+  // readyTimeoutMilliseconds worth of them - at start-up or after any
+  // reload, e.g. into a failing script - the view counts as failed and the
+  // native presentation becomes the visible one. A later positive answer
+  // recovers it. Counting probes rather than wall-clock time keeps a
+  // suspended machine or a dropped callback (navigation discards pending
+  // ones) from failing a working page.
+  readonly property int probeIntervalMilliseconds: 1000
+  property int missedProbes: 0
   property bool probing: false
   property var lifetime: ({active: true})
+  readonly property bool unresponsive: missedProbes * probeIntervalMilliseconds >= readyTimeoutMilliseconds
   Component.onDestruction: lifetime.active = false
   Timer {
     id: liveness
-    interval: 1000
+    interval: root.probeIntervalMilliseconds
     repeat: true
-    running: !root.readyTimedOut && shellProfile.documentUrl.toString() !== ""
+    running: shellProfile.documentUrl.toString() !== ""
     onTriggered: {
-      if (Date.now() - root.lastAlive > root.readyTimeoutMilliseconds) {
-        root.readyTimedOut = true
-        return
+      if (root.probing) {
+        // The previous question was never answered.
+        root.missedProbes++
       }
-      if (root.probing) return
       root.probing = true
       const lifetime = root.lifetime
       // The frame-level call guards against a QML context that disappears
@@ -60,10 +64,12 @@ Item {
       browser.mainFrame.runJavaScript("!!(window.companionRail && window.companionRail.connected === true)", 0, function(alive) {
         if (!lifetime.active) return
         root.probing = false
-        if (alive === true) root.lastAlive = Date.now()
+        if (alive === true) root.missedProbes = 0
+        else root.missedProbes++
       })
     }
   }
+
 
   property int sequence: 0
   readonly property alias browser: browser
@@ -122,7 +128,6 @@ Item {
     }
 
     function ready() {
-      if (root.readyTimedOut) return false
       root.readyCount++
       root.pageReady = true
       root.operational = true

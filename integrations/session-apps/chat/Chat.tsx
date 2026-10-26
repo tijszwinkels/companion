@@ -41,7 +41,13 @@ export function Chat(props: { store: ChatStore }) {
   const bridge = props.store.native;
 
   if (!bridge || !status.sessionId) {
-    return <div class="empty">No conversation</div>;
+    // Page-held text stays reachable while no conversation is shown.
+    return (
+      <div class="chat">
+        <HeldNotices store={props.store} status={status} />
+        <div class="empty">No conversation</div>
+      </div>
+    );
   }
 
   const theme = status.theme;
@@ -63,7 +69,7 @@ export function Chat(props: { store: ChatStore }) {
       <Header status={status} bridge={bridge} />
       <Transcript rows={rows} status={status} bridge={bridge} />
       <Controls status={status} bridge={bridge} />
-      <Composer status={status} bridge={bridge} />
+      <Composer status={status} bridge={bridge} store={props.store} />
     </div>
   );
 }
@@ -390,11 +396,42 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  * to store, or no free recovery slot) stays on screen as `unkept`, with
  * Copy, Use my text and Discard; it is never replaced by the host draft.
  */
-function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
-  const { status, bridge } = props;
+/**
+ * Text the host could not keep for conversations other than the shown one
+ * (or while none is shown): Copy or Discard. The shown conversation's held
+ * text is in its editor, with the composer's own controls.
+ */
+function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
+  const held = props.store.held();
+  const bridge = props.store.native;
+  const others = Object.entries(held).filter(([owner]) => owner !== props.status.sessionId);
+  if (!bridge || others.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {others.map(([owner, text]) => (
+        <div class="conflict unkept" key={owner}>
+          Text typed for another conversation ({text.length} characters) could not be added to its
+          draft and is only kept here.
+          <button class="link" onClick={() => bridge.copyText(text)}>
+            Copy my text
+          </button>
+          <button class="link" onClick={() => props.store.hold(owner, '')}>
+            Discard
+          </button>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: ChatStore }) {
+  const { status, bridge, store } = props;
   const draft = status.draft || { text: '', cursor: -1, revision: 0, source: '', notice: '' };
   const area = useRef<HTMLTextAreaElement>(null);
-  const [text, setText] = useState(draft.text);
+  const [text, setText] = useState(store.held()[status.sessionId] ?? draft.text);
   const base = useRef(draft.revision);
   const sessionId = useRef(status.sessionId);
   const inFlight = useRef(0);
@@ -402,30 +439,23 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   const [editsInFlight, setEditsInFlight] = useState(0);
   const lastCursor = useRef(draft.cursor);
   // Text the host refused and could not keep (only when its bounded
-  // recovery is exhausted), per conversation. The host is told, so moving
-  // that conversation to another view waits until it is resolved.
-  const [unkeptBySession, setUnkeptBySession] = useState<Record<string, string>>({});
+  // recovery is exhausted), per conversation, held by the store so it
+  // outlives this component. The host is told, so moving that conversation
+  // to another view waits until it is resolved.
+  const unkeptBySession = store.held();
   const unkept = unkeptBySession[status.sessionId] ?? null;
   const unkeptHere = unkept !== null;
   function setUnkept(sessionOfText: string, value: string) {
-    setUnkeptBySession((previous) => {
-      const next = { ...previous };
-      if (value === '') {
-        delete next[sessionOfText];
-      } else {
-        next[sessionOfText] = value;
-      }
-      return next;
-    });
-    bridge.holdText(sessionOfText, value !== '');
+    store.hold(sessionOfText, value);
   }
   const [inputNotice, setInputNotice] = useState('');
-  // The newest known host draft: from status updates, and from this page's
-  // own accepted edits (which do not produce a status update).
-  const hostDraft = useRef(draft);
-  useEffect(() => {
-    hostDraft.current = draft;
-  }, [draft.revision, draft.text, draft.cursor]);
+  // The newest known host draft, kept by the store in message order (see
+  // ChatStore.hostDraft), not from render state that may lag behind.
+  const hostDraft = {
+    get current() {
+      return store.hostDraft();
+    },
+  };
 
   const maximum = status.maximumMessageLength || 8000;
   const editLimit = status.editLimit || 2 * maximum;
@@ -434,7 +464,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
     status.canSend === true &&
     editsInFlight === 0 &&
     refused === '' &&
-    Object.keys(unkeptBySession).length === 0 &&
+    unkept === null &&
     text.trim() !== '' &&
     text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
@@ -474,6 +504,13 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
       setInputNotice('');
     } else if (unkeptHere) {
       // Never replace text only this page holds with the host draft.
+      return;
+    }
+    if (otherSession && unkeptHere) {
+      // The newly shown conversation has text only this page holds: show
+      // that, not the host draft, so it is never replaced.
+      base.current = draft.revision;
+      setText(unkept);
       return;
     }
     if (otherSession || (draft.revision !== base.current && inFlight.current === 0)) {
@@ -518,7 +555,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
         return;
       }
       if (answer.accepted) {
-        hostDraft.current = { ...hostDraft.current, text: value, cursor: cursor };
+        store.acceptedEdit(editedSession, value, cursor);
       }
       // The host changed while this edit travelled; its status update was
       // held back for the answer, so apply it now.
@@ -618,21 +655,22 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   return (
     <div class="composer">
       {inputNotice && <div class="conflict">{inputNotice}</div>}
-      {Object.entries(unkeptBySession).map(([owner, held]) => (
-        <div class="conflict unkept" key={owner}>
-          {owner === status.sessionId
-            ? `This text (${held.length} characters) could not be added to the draft and is only kept here.`
-            : `Text typed for another conversation (${held.length} characters) could not be added to its draft and is only kept here.`}
-          <button class="link" onClick={() => bridge.copyText(held)}>
+      <HeldNotices store={store} status={status} />
+      {unkept !== null && (
+        <div class="conflict unkept">
+          This text ({unkept.length} characters) could not be added to the draft and is only kept
+          here.
+          <button class="link" onClick={() => bridge.copyText(unkept)}>
             Copy my text
           </button>
-          {owner === status.sessionId && held.length <= editLimit && (
+          {unkept.length <= editLimit && (
             <button
               class="link"
               onClick={() => {
-                setUnkept(owner, '');
+                const value = unkept;
+                setUnkept(status.sessionId, '');
                 base.current = hostDraft.current.revision;
-                edited(held, held.length);
+                edited(value, value.length);
               }}
             >
               Use my text
@@ -641,16 +679,14 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
           <button
             class="link"
             onClick={() => {
-              setUnkept(owner, '');
-              if (owner === status.sessionId) {
-                adoptHostDraft();
-              }
+              setUnkept(status.sessionId, '');
+              adoptHostDraft();
             }}
           >
             Discard
           </button>
         </div>
-      ))}
+      )}
       {refused && (
         <div class="conflict refused">
           Some of your text could not be added to the draft (it changed elsewhere, was too long or

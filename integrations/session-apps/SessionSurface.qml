@@ -122,6 +122,8 @@ Item {
 
   function releaseComposerFocus() { chat.releaseComposerFocus() }
 
+  function collectPageHeldText(id, timeout, done) { chat.collectPageHeldText(id, timeout, done) }
+
   function eventStatusText(status) {
     if (!status || status.state === "idle") return ""
     let text = ""

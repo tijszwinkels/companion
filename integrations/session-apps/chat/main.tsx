@@ -16,7 +16,12 @@ import './styles.css';
 
 declare global {
   interface Window {
-    companionChat?: { focusComposer(): void; blurComposer(): void; connected: boolean };
+    companionChat?: {
+      focusComposer(): void;
+      blurComposer(): void;
+      connected: boolean;
+      heldText(sessionId: string): string;
+    };
   }
 }
 
@@ -24,7 +29,13 @@ const store = new ChatStore();
 const root = document.getElementById('chat')!;
 
 // `connected` is the native view's liveness signal (TrustedChatView.qml).
-window.companionChat = { focusComposer, blurComposer, connected: false };
+window.companionChat = {
+  focusComposer,
+  blurComposer,
+  connected: false,
+  // Read by the native view before a disappeared conversation's window goes.
+  heldText: (sessionId: string) => store.held()[sessionId] ?? '',
+};
 
 const connected = connectChannel<NativeBridge>((bridge) => {
   // Exposed for offscreen tests of the native checks. It grants nothing the

@@ -842,9 +842,16 @@ TestCase {
     typeInto(chat, "a".repeat(16000))
     tryCompare(composerOf(view), "text", "a".repeat(16000))
     tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    // Diagnostics for an intermittent R3 observation (editor length 1 after
+    // this key): the editor state before and after the key, with the host's.
+    const editorState = "JSON.stringify((() => { const area = document.querySelector('textarea');"
+      + " return {length: area.value.length, start: area.selectionStart, end: area.selectionEnd} })())"
+    const before = evaluate(chat, editorState)
     keyClick(Qt.Key_B)
     wait(300)
-    compare(textarea(chat).length, 16000)
+    const after = evaluate(chat, editorState)
+    compare(textarea(chat).length, 16000, "editor before " + before + " after " + after
+      + " host " + composerOf(view).text.length + " revision " + view.draftRevision)
     compare(composerOf(view).text.length, 16000)
     tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Nothing was changed')") === true })
     view.clearDraft("one")
@@ -934,6 +941,169 @@ TestCase {
     const other = JSON.parse(evaluate(chat, "window.__answer"))
     compare([other.accepted, other.kept], [false, false])
     view.refusedDrafts = ({})
+  }
+
+  // Sable R3: text only the page holds (beyond the host's bound) keeps its
+  // ownership through a same-document resynchronization, Activity and back,
+  // several conversations and transfers; only a real reload loses it, and
+  // that is disclosed and releases the transfer block.
+  // Discard in the shown conversation's own notice (not another's).
+  function discardShown(chat) {
+    return evaluate(chat, "(() => { const notice = [...document.querySelectorAll('.unkept')]"
+      + ".find(entry => entry.textContent.startsWith('This text')); if (!notice) return false;"
+      + " [...notice.querySelectorAll('button')].find(b => b.textContent === 'Discard').click(); return true })()")
+  }
+  function heldInput(chat, character) {
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = " + JSON.stringify(character)
+      + ".repeat(270000); area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+  }
+  function test_zza_page_held_text_survives_resync_and_blocks_transfer() {
+    snapshot([session("one", "First chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    heldInput(chat, "x")
+    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000, "host knows the page holds text")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true })
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    const loads = trusted.readyCount
+    // A sequence gap makes the page resynchronize (ready() again).
+    trusted.sequence += 1
+    trusted.post({type: "status", status: trusted.currentStatus()})
+    tryVerify(function() { return trusted.readyCount > loads }, 5000, "page resynchronized")
+    compare(view.pageHeldDrafts["one"], true)
+    compare(view.inputError, "")
+    compare(evaluate(chat, "document.querySelector('textarea').value.length"), 270000)
+    // The conversation does not move while only the page holds the text.
+    body.popouts.popOut("one")
+    compare(body.popouts.windows["one"], undefined)
+    verify(body.client.error.includes("could not be kept"))
+    body.client.error = ""
+    verify(discardShown(chat))
+    tryVerify(function() { return view.pageHeldDrafts["one"] === undefined })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
+  }
+
+  function test_zzb_page_held_text_survives_activity_and_several_conversations() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    heldInput(chat, "o")
+    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null"
+      + " && document.querySelector('textarea').value.length !== 270000") === true }, 5000)
+    // The other conversation's text is listed with Copy/Discard here.
+    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 1 }, 5000)
+    heldInput(chat, "t")
+    tryVerify(function() { return view.pageHeldDrafts["two"] === true }, 5000)
+    // Activity (no conversation): the composer goes away, the text stays.
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null") === true }, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 2 }, 5000)
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null"
+      + " && document.querySelector('textarea').value === 'o'.repeat(270000)") === true }, 5000)
+    compare(view.pageHeldDrafts["one"], true)
+    compare(view.pageHeldDrafts["two"], true)
+    // Resolving one leaves the other held; the resolved one can move.
+    verify(discardShown(chat))
+    tryVerify(function() { return view.pageHeldDrafts["one"] === undefined })
+    compare(view.pageHeldDrafts["two"], true)
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+    body.popouts.popOut("two")
+    compare(body.popouts.windows["two"], undefined)
+    body.client.error = ""
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').value === 't'.repeat(270000)") === true }, 5000)
+    verify(discardShown(chat))
+    tryVerify(function() { return view.pageHeldDrafts["two"] === undefined })
+  }
+
+  function test_zzc_real_reload_discloses_lost_page_held_text() {
+    snapshot([session("one", "First chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    heldInput(chat, "x")
+    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000)
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    const loads = trusted.readyCount
+    chat.reload()
+    tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
+    tryVerify(function() { return view.pageHeldDrafts["one"] === undefined })
+    verify(view.inputError.includes("lost when the chat page reloaded"))
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('lost when the chat page reloaded')") === true }, 5000)
+    view.inputError = ""
+  }
+
+  // Kestrel R3 S2: a conversation that disappears (closed elsewhere) while
+  // popped out keeps all its text recoverable in the sidebar: the draft,
+  // refused text and text only its page held. Nothing reopens it.
+  function test_zzd_disappearing_conversation_keeps_all_its_text() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const main = mainView()
+    const mainChat = waitForChat(main)
+    settled(main, mainChat)
+    main.focusComposer()
+    typeInto(mainChat, "host original")
+    tryCompare(composerOf(main), "text", "host original")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    tryVerify(function() { return textarea(windowChat) === "host original" })
+    evaluate(windowChat, "(() => { window.__companionBridge.editDraft('one', -1, 'KEEP-REFUSED-TEXT', 17); return true })()")
+    tryCompare(window.view, "displayedRefusedDraft", "KEEP-REFUSED-TEXT")
+    body.popouts.orphanDrafts = []
+    fakeBackend.sent = []
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    const orphans = body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text])
+    compare(JSON.stringify(orphans), JSON.stringify([["draft", "host original"], ["refused", "KEEP-REFUSED-TEXT"]]))
+    compare(fakeBackend.sent.filter(message => message.action === "restore-agent" || message.action === "send-agent").length, 0)
+    body.popouts.orphanDrafts = []
+
+    // Text only the window's page held is collected before the window goes.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const held = body.popouts.windows["one"]
+    const heldChat = waitForChat(held.view)
+    settled(held.view, heldChat)
+    heldInput(heldChat, "x")
+    tryVerify(function() { return held.view.pageHeldDrafts["one"] === true }, 5000)
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 8000)
+    const heldOrphan = body.popouts.orphanDrafts.find(entry => entry.kind === "held")
+    verify(heldOrphan !== undefined, JSON.stringify(body.popouts.orphanDrafts.map(entry => entry.kind)))
+    compare(heldOrphan.text.length, 270000)
+    body.popouts.orphanDrafts = []
+
+    // Refused text the sidebar kept for a conversation that disappears.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    settled(main, mainChat)
+    evaluate(mainChat, "(() => { window.__companionBridge.editDraft('two', -1, 'SIDEBAR-REFUSED', 15); return true })()")
+    tryCompare(main, "displayedRefusedDraft", "SIDEBAR-REFUSED")
+    body.client.sessions.select("one")
+    snapshot([session("one", "First chat", null)])
+    tryVerify(function() { return body.popouts.orphanDrafts.some(entry => entry.kind === "refused" && entry.text === "SIDEBAR-REFUSED") }, 5000)
+    compare(main.refusedDrafts["two"], undefined)
+    body.popouts.orphanDrafts = []
   }
 
   function findChildren(item, name) {
