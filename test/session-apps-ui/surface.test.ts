@@ -180,6 +180,21 @@ test('HTML chat, session application and code replacement share one conversation
         await readFile(new URL(`../../integrations/session-apps/dist/${page}`, import.meta.url)),
       );
     }
+    // A bundle that works on its first load and whose script fails on the
+    // next one (window.name survives a reload of the same view).
+    const secondLoadBroken = join(directory, 'second-load-broken');
+    await mkdir(secondLoadBroken);
+    const dist = new URL('../../integrations/session-apps/dist/', import.meta.url);
+    for (const page of ['chat.html', 'rail.html', 'chat.css', 'rail.css', 'chat.js', 'rail.js']) {
+      let content = await readFile(new URL(page, dist), 'utf8');
+      if (page.endsWith('.js')) {
+        content =
+          "if (window.name === 'companion-test-loaded') throw new Error('broken second load');\n" +
+          "window.name = 'companion-test-loaded';\n" +
+          content;
+      }
+      await writeFile(join(secondLoadBroken, page), content);
+    }
     const template = await readFile(new URL('./surface.qml.in', import.meta.url), 'utf8');
     const path = join(directory, 'tst_surface.qml');
     await writeFile(
@@ -192,7 +207,8 @@ test('HTML chat, session application and code replacement share one conversation
           '@SESSION_APPS@',
           new URL('../../integrations/session-apps', import.meta.url).href,
         )
-        .replaceAll('@BROKEN_BUNDLE@', broken),
+        .replaceAll('@BROKEN_BUNDLE@', broken)
+        .replaceAll('@SECOND_LOAD_BROKEN@', secondLoadBroken),
     );
 
     try {

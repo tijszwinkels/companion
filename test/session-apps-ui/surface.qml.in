@@ -593,22 +593,16 @@ TestCase {
     typeInto(chat, "host old")
     tryCompare(composerOf(view), "text", "host old")
     fakeBackend.sent = []
-    // Over the edit limit, then Enter in the same moment: nothing is sent,
-    // the text stays on screen, the host draft is unchanged.
+    // Over the edit limit through an input that cannot be cancelled, then
+    // Enter in the same moment: nothing is sent; the host refuses the text
+    // and keeps it as this conversation's refused text.
     evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'y'.repeat(16001);"
       + " area.dispatchEvent(new Event('input', {bubbles: true}));"
       + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); return true })()")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true }, 5000)
+    tryVerify(function() { return view.displayedRefusedDraft.length === 16001 }, 5000)
     wait(300)
     compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
     compare(composerOf(view).text, "host old")
-    compare(textarea(chat).length, 16001)
-    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
-    // A host refusal (stale edit) also blocks Send until resolved.
-    verify(clickButton(chat, "Discard"))
-    tryVerify(function() { return textarea(chat) === "host old" })
-    evaluate(chat, "(() => { window.__companionBridge.editDraft('sendcheck', -1, 'refused words', 13); return true })()")
-    tryCompare(view, "displayedRefusedDraft", "refused words")
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
     // A direct bridge send naming other text than the host draft is refused.
     evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.send('sendcheck', " + view.draftRevision
@@ -619,6 +613,7 @@ TestCase {
     // Dismissed, the shown text is the host draft again and sends exactly.
     verify(clickButton(chat, "Dismiss"))
     tryCompare(view, "displayedRefusedDraft", "")
+    tryVerify(function() { return textarea(chat) === "host old" })
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === false })
     verify(clickButton(chat, "Send"))
     tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
@@ -626,6 +621,7 @@ TestCase {
     fakeBackend.received({type: "result", action: "send-agent", result: {}})
     tryCompare(composerOf(view), "text", "")
   }
+
 
   // S2: refused text is host-owned: it survives switching conversations and
   // reloading, blocks moving the conversation to a window until resolved,
@@ -730,6 +726,34 @@ TestCase {
       view.destroy()
     }
   }
+  // Kestrel R2 S4: readiness is bounded for every document, not only the
+  // first: a working page reloaded into a script that fails stops counting
+  // as operational; a working page reloaded normally stays healthy.
+  function test_t2_reloads_are_bounded_too() {
+    const cases = [{name: "TrustedChatView.qml", bundle: "@SECOND_LOAD_BROKEN@"},
+      {name: "TrustedRailView.qml", bundle: "@SECOND_LOAD_BROKEN@"}]
+    for (const entry of cases) {
+      const component = Qt.createComponent("@SESSION_APPS@/" + entry.name)
+      verify(component.status === Component.Ready, component.errorString())
+      const view = component.createObject(testCase, {bundleDirectory: entry.bundle,
+        readyTimeoutMilliseconds: 2500, width: 300, height: 300})
+      tryCompare(view, "operational", true, 15000)
+      verify(!view.failed)
+      view.browser.reload()
+      tryCompare(view, "failed", true, 10000)
+      view.destroy()
+    }
+    const component = Qt.createComponent("@SESSION_APPS@/TrustedChatView.qml")
+    const healthy = component.createObject(testCase, {readyTimeoutMilliseconds: 2500, width: 300, height: 300})
+    tryCompare(healthy, "operational", true, 15000)
+    const loads = healthy.readyCount
+    healthy.browser.reload()
+    tryVerify(function() { return healthy.readyCount > loads }, 10000)
+    wait(4000)
+    compare(healthy.failed, false)
+    healthy.destroy()
+  }
+
 
   // The person's own app edits delivered as a turn are labelled as theirs,
   // never as another agent or conversation, in HTML chat and Classic view.
@@ -786,30 +810,109 @@ TestCase {
     view.focusComposer()
     typeInto(chat, "old host text")
     tryCompare(composerOf(view), "text", "old host text")
+    // The lead's scenario: the editor's value becomes 40001 characters (an
+    // input that cannot be cancelled). The host refuses and keeps it.
     const pasted = "x".repeat(40001)
     typeInto(chat, pasted)
-    wait(300)
-    compare(textarea(chat).length, 40001)
+    tryVerify(function() { return view.displayedRefusedDraft === pasted }, 5000)
     compare(composerOf(view).text, "old host text")
-    verify(evaluate(chat, "document.querySelector('.unkept') !== null"))
-    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
-    // A host-side change does not replace it either.
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true })
+    // It survives an agent draft, a conversation switch and a reload.
     fakeBackend.received({type: "agent-draft", requestId: "d-large", id: "large", text: "Agent text",
       ifDraftExists: "append", focus: false, source: {sessionId: "x", title: "Helper"}})
     tryVerify(function() { return composerOf(view).text.includes("Agent text") })
-    wait(200)
-    compare(textarea(chat).length, 40001)
-    // Shortened below the limit, the person can use it.
-    typeInto(chat, "short version")
-    verify(clickButton(chat, "Use my text"))
-    tryCompare(composerOf(view), "text", "short version")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
-    // And Discard returns to the host draft.
-    typeInto(chat, pasted)
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true })
-    verify(clickButton(chat, "Discard"))
-    tryVerify(function() { return textarea(chat) === "short version" })
+    compare(view.displayedRefusedDraft, pasted)
+    // Copy, then Dismiss returns to the host draft.
+    verify(clickButton(chat, "Copy my text"))
+    verify(clickButton(chat, "Dismiss"))
+    tryCompare(view, "displayedRefusedDraft", "")
+    tryVerify(function() { return textarea(chat) === composerOf(view).text })
   }
+
+  // Kestrel R2 S2: typing past the limit with real key events changes
+  // nothing; refused text of two conversations is kept for each; a pop-out
+  // holding refused text cannot be returned until it is resolved.
+  function test_y_limits_keep_every_conversations_text() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    view.focusComposer()
+    typeInto(chat, "a".repeat(16000))
+    tryCompare(composerOf(view), "text", "a".repeat(16000))
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    keyClick(Qt.Key_B)
+    wait(300)
+    compare(textarea(chat).length, 16000)
+    compare(composerOf(view).text.length, 16000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Nothing was changed')") === true })
+    view.clearDraft("one")
+    tryVerify(function() { return textarea(chat) === "" })
+
+    // Refused text for each conversation is kept separately by the host.
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'o'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return view.refusedDrafts["one"] !== undefined && view.refusedDrafts["one"].length === 16001 })
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    settled(view, chat)
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 't'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return view.refusedDrafts["two"] !== undefined && view.refusedDrafts["two"].length === 16001 })
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    compare(view.refusedDrafts["one"], "o".repeat(16001))
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true })
+    view.refusedDrafts = ({})
+
+    // In a pop-out, refused text blocks Return (and the window close).
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    evaluate(windowChat, "(() => { const area = document.querySelector('textarea'); area.value = 'p'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return window.view.displayedRefusedDraft.length === 16001 })
+    body.popouts.returnToSidebar("one", {focus: false, source: "button"})
+    verify(body.popouts.windows["one"] !== undefined)
+    verify(window.notice.includes("could not be added"))
+    // Text only the page holds (host recovery full) blocks it the same way.
+    window.view.resolveRefusedDraft("one", "dismiss")
+    window.view.setPageHeldDraft("one", true)
+    body.popouts.returnToSidebar("one", {focus: false, source: "button"})
+    verify(body.popouts.windows["one"] !== undefined)
+    verify(window.notice.includes("could not be kept"))
+    window.view.setPageHeldDraft("one", false)
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+  }
+
+  // Kestrel R2 S3: a new HTML editor (pop-out) starts at the host cursor.
+  function test_z_new_editor_restores_the_caret() {
+    const chat = freshChat("caret")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "abcdef")
+    tryCompare(composerOf(view), "text", "abcdef")
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    for (let index = 0; index < 4; index++) keyClick(Qt.Key_Left)
+    tryCompare(composerOf(view), "cursorPosition", 2, 5000)
+    body.popouts.popOut("caret")
+    tryVerify(function() { return body.popouts.windows["caret"] !== undefined })
+    const window = body.popouts.windows["caret"]
+    const windowChat = waitForChat(window.view)
+    tryVerify(function() { return textarea(windowChat) === "abcdef" })
+    tryVerify(function() { return evaluate(windowChat, "document.querySelector('textarea').selectionStart") === 2 }, 5000)
+    window.view.focusComposer()
+    tryVerify(function() { return evaluate(windowChat, "document.activeElement === document.querySelector('textarea')"
+      + " && document.querySelector('textarea').selectionStart === 2") === true }, 5000)
+    body.popouts.returnToSidebar("caret", {focus: false})
+    tryVerify(function() { return body.popouts.windows["caret"] === undefined })
+    tryVerify(function() { return evaluate(chatOf(mainView()), "document.querySelector('textarea').selectionStart") === 2 }, 5000)
+  }
+
 
   // Bounded recovery capacity: the displayed conversation always has a slot;
   // when other conversations' slots are full the host says it did not keep

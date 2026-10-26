@@ -136,6 +136,8 @@ export interface NativeBridge {
   send(sessionId: string, base: number, text: string, callback?: (answer: string) => void): void;
   moveCursor(sessionId: string, base: number, cursor: number): void;
   resolveRefused(sessionId: string, how: 'use' | 'copy' | 'dismiss'): void;
+  /** The page holds text for that conversation that the host could not keep. */
+  holdText(sessionId: string, held: boolean): void;
   choose(
     sessionId: string,
     revision: string,

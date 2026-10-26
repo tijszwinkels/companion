@@ -211,6 +211,17 @@ Item {
   // copies or dismisses it, so tab switches and reloads cannot lose it.
   // Moving the conversation to another view waits until it is resolved.
   property var refusedDrafts: ({})
+  // Conversation id -> true while the HTML composer holds typed text the
+  // host could not keep (only when the bounded recovery above is full).
+  // Moving that conversation to another view waits until it is resolved.
+  property var pageHeldDrafts: ({})
+  function setPageHeldDraft(id, held) {
+    if (typeof id !== "string" || id === "" || (root.pageHeldDrafts[id] === true) === held) return
+    const next = Object.assign({}, root.pageHeldDrafts)
+    if (held) next[id] = true
+    else delete next[id]
+    root.pageHeldDrafts = next
+  }
   readonly property string displayedRefusedDraft: root.refusedDrafts[root.displayedId] || ""
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
@@ -531,7 +542,9 @@ Item {
   // displayed conversation always gets its slot; other conversations share
   // at most 32 (more than the 16 open tabs, for edits still in flight while
   // the view switched).
-  readonly property int maximumRefusedDraftLength: 4 * maximumMessageLength
+  // Larger than anything the HTML composer can send (it cancels insertions
+  // past twice the message limit), so its refused text is always kept.
+  readonly property int maximumRefusedDraftLength: 262144
   function keepRefusedDraft(id, text) {
     if (!id || typeof text !== "string" || text === "" || text.length > root.maximumRefusedDraftLength) return false
     if (root.refusedDrafts[id] === undefined && id !== root.displayedId
@@ -756,6 +769,9 @@ Item {
     }
     if (root.ownRecording && root.ownRecording.id === id) {
       return "Recording into this conversation is still running. Stop it and wait for the text first."
+    }
+    if (root.pageHeldDrafts[id] === true) {
+      return "Typed text that could not be kept is still shown in this conversation's chat. Copy, use or discard it first."
     }
     if (root.refusedDrafts[id] !== undefined) {
       return "Some typed text could not be added to this conversation's draft. Use, copy or dismiss it first."

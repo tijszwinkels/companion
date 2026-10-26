@@ -150,6 +150,10 @@ const connected = connectChannel<RailBridge>((bridge) => {
     root,
   );
   bridge.ready();
+  // The native view's liveness signal (TrustedRailView.qml).
+  (window as unknown as { companionRail: { connected: boolean } }).companionRail = {
+    connected: true,
+  };
 });
 
 if (!connected) {
