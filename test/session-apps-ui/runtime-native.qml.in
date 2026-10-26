@@ -37,11 +37,19 @@ TestCase {
   }
   function view() { return body.panel.conversationView }
   function app() { return findChild(view(), "sessionAppBrowser") }
-  // The authored bundle runs in the host page's sandboxed iframe.
+  // The authored bundle runs in the host page's sandboxed iframe. While the
+  // view reloads (code replacement) the frame being asked can go away with
+  // its document, and its callback then never runs: answer undefined after
+  // a short wait, so waitInApp asks the new frame instead of failing.
   function inApp(script) {
     const frames = app().mainFrame.children
     if (frames.length === 0) return undefined
-    return evaluate(frames[0], script)
+    let done = false
+    let result = undefined
+    frames[0].runJavaScript(script, function(value) { result = value; done = true })
+    const deadline = Date.now() + 2000
+    while (!done && Date.now() < deadline) wait(25)
+    return result
   }
   function waitInApp(script, expected) {
     tryVerify(function() { return JSON.stringify(inApp(script)) === JSON.stringify(expected) }, 20000,
