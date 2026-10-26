@@ -24,7 +24,13 @@ function request(message) {
   return new Promise((resolve, reject) => {
     const id = `user-${++nextAction}`;
     pendingActions.set(id, { resolve, reject });
-    parent.postMessage({ ...message, id }, '*');
+    try {
+      parent.postMessage({ ...message, id }, '*');
+    } catch (error) {
+      // Values that cannot be cloned never reach the host; release the slot.
+      pendingActions.delete(id);
+      reject(error);
+    }
   });
 }
 

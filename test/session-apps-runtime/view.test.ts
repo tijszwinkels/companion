@@ -135,3 +135,62 @@ test('the authored view reads, subscribes, queries and acts; agent edits appear;
   assert.equal(state.version, 2);
   assert.equal(state.data.tasks.length, 3);
 });
+
+test('values the host cannot accept never leave the authored view’s request table busy', async (context) => {
+  const fixture = await applicationFixture(context);
+  const { sessions } = fixture;
+  const browser = new Chromium();
+  context.after(() => browser.close());
+  await fixture.bundle(
+    'request-probe',
+    {
+      version: 1,
+      description: 'Exposes its api to the test',
+      application: {},
+      parameters: { type: 'object', properties: { count: { type: 'integer' } } },
+      actions: {
+        bump: {
+          description: 'Add one',
+          parameters: { type: 'object' },
+          returns: { type: 'object' },
+        },
+      },
+      queries: {},
+      example: { count: 0 },
+    },
+    `export function describe(s){ return "count " + s.count; }
+     export const actions = { bump(s){ s.count++; return { state: s }; } };
+     export const queries = {};
+     export function mount(root, api){ window.probeApi = api; return { update(){} }; }`,
+  );
+  const id = sessions.start(frame, signal());
+  fixture.script(id, async (turn) => {
+    await turn.tool('companion_app_apply', { bundle: 'request-probe', expectedVersion: 0 });
+  });
+  await sessions.idle();
+  const viewUrl = fixture.view(id).application!.viewUrl!;
+  await open(browser, viewUrl);
+  await waitInApp(browser, 'typeof window.probeApi', 'object');
+
+  // Nine cyclic (cloneable, non-JSON) calls and one uncloneable call.
+  const outcome = await inApp(
+    browser,
+    `(async () => {
+      const cyclic = {}; cyclic.self = cyclic;
+      const refused = [];
+      for (let index = 0; index < 9; index++) {
+        refused.push(await window.probeApi.call('bump', cyclic).then(() => 'ok', (error) => error.message));
+      }
+      refused.push(await window.probeApi.call('bump', { f() {} }).then(() => 'ok', () => 'uncloneable'));
+      const valid = await window.probeApi.call('bump', {});
+      const read = await window.probeApi.state.read();
+      return { refused, revision: valid.revision, count: read.data.count };
+    })()`,
+  );
+  const result = outcome as { refused: string[]; revision: number; count: number };
+  assert.equal(result.refused.length, 10);
+  assert.ok(result.refused.slice(0, 9).every((message) => /Invalid widget action/.test(message)));
+  assert.equal(result.refused[9], 'uncloneable');
+  assert.equal(result.revision, 2);
+  assert.equal(result.count, 1);
+});

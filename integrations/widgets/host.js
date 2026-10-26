@@ -87,14 +87,14 @@ window.addEventListener('message', (event) => {
         : pending.resolve(message.result);
     }
   } else if (message.type === 'action') {
-    if (
-      typeof message.id !== 'string' ||
-      message.id.length > 100 ||
-      typeof message.action !== 'string' ||
-      new TextEncoder().encode(JSON.stringify(message.args ?? {})).byteLength > 32768 ||
-      requests.length >= 8 ||
-      liveActions >= 8
-    ) {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    if (!validOperationName(message.action) || !validArguments(message.args)) {
+      reply(message.id, null, 'Invalid widget action name or arguments');
+      return;
+    }
+    if (requests.length >= 8 || liveActions >= 8) {
       reply(message.id, null, 'Too many widget actions or oversized arguments');
       return;
     }
@@ -120,13 +120,14 @@ window.addEventListener('message', (event) => {
       requests.push(request);
     }
   } else if (message.type === 'query' && application) {
-    if (
-      typeof message.id !== 'string' ||
-      message.id.length > 100 ||
-      typeof message.name !== 'string' ||
-      new TextEncoder().encode(JSON.stringify(message.args ?? {})).byteLength > 32768 ||
-      liveActions >= 8
-    ) {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    if (!validOperationName(message.name) || !validArguments(message.args)) {
+      reply(message.id, null, 'Invalid application query name or arguments');
+      return;
+    }
+    if (liveActions >= 8) {
       reply(message.id, null, 'Too many application queries or oversized arguments');
       return;
     }
@@ -137,14 +138,39 @@ window.addEventListener('message', (event) => {
     const query = { name: message.name, args: message.args, version: application.version };
     send('/query', query, message.id, false);
   } else if (message.type === 'state-read') {
-    if (typeof message.id !== 'string' || message.id.length > 100) {
+    if (!validRequestId(message.id)) {
       return;
     }
     readState(message.id);
-  } else if (typeof message.id === 'string' && message.id.length <= 100) {
+  } else if (validRequestId(message.id)) {
     reply(message.id, null, 'Unsupported widget request');
   }
 });
+
+// Ingress checks for requests from authored code, which may post anything
+// structured-cloneable directly. An invalid request ID cannot be answered
+// safely, so such messages are ignored; every other refusal is answered, so
+// the frame's pending request is always released.
+function validRequestId(id) {
+  return typeof id === 'string' && id.length > 0 && id.length <= 100;
+}
+
+// Manifest operation names are at most 48 characters (src/widgets/registry.ts).
+function validOperationName(name) {
+  return typeof name === 'string' && name.length > 0 && name.length <= 48;
+}
+
+// Arguments must be JSON (cyclic or otherwise non-JSON values are refused,
+// never thrown out of this listener) and at most 32 KiB once serialized.
+function validArguments(args) {
+  let json;
+  try {
+    json = JSON.stringify(args ?? {});
+  } catch {
+    return false;
+  }
+  return typeof json === 'string' && new TextEncoder().encode(json).byteLength <= 32768;
+}
 
 // State reads arrive from authored code, which may post them directly rather
 // than through the frame API's own limit. They share one in-flight GET /state:
@@ -279,8 +305,19 @@ function setTheme(value) {
   applyTheme(value);
 }
 
-window.widgetHost = { command, update, reply, setTheme, takeRequests: () => requests.splice(0) };
-void update(bootstrap.props, bootstrap.theme, revision)
+// The first mount/update with the bootstrap state. Its own outcome is kept:
+// a session application is published only if this very attempt succeeded
+// (src/widgets/renderer.ts render()); a later retry proves nothing about it.
+const initialUpdate = update(bootstrap.props, bootstrap.theme, revision);
+window.widgetHost = {
+  command,
+  update,
+  reply,
+  setTheme,
+  takeRequests: () => requests.splice(0),
+  initial: () => initialUpdate.then(() => true),
+};
+void initialUpdate
   .then(() => {
     window.widgetReady = true;
   })

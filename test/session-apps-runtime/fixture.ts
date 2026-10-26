@@ -46,6 +46,9 @@ export interface ApplicationTurn {
 
 export type ApplicationScript = (turn: ApplicationTurn) => Promise<void>;
 
+/** Thrown by a script to simulate a failing model turn on purpose. */
+export class ModelFailure extends Error {}
+
 let calls = 0;
 
 function turnTools(harness: AgentHarness, request: AgentRunRequest<unknown>, signal: AbortSignal) {
@@ -115,9 +118,11 @@ export async function applicationFixture(context: {
       try {
         await script(turn);
       } catch (error) {
-        // A failed assertion inside a turn would otherwise only fail that
-        // model turn. Keep it, so the test itself fails (see context.after).
-        if ((error as { code?: unknown }).code === 'ERR_ASSERTION') {
+        // Any error inside a script would otherwise only fail that model
+        // turn, silently skipping the rest of its assertions. Keep it, so the
+        // test itself fails (see context.after), unless the script meant to
+        // fail the turn (modelFailure) or the turn was stopped.
+        if (!signal.aborted && !(error instanceof ModelFailure)) {
           scriptFailures.push(error as Error);
         }
         throw error;

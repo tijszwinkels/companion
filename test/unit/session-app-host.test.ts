@@ -184,3 +184,39 @@ test('ordinary widgets keep the generic state read and reject application querie
     ],
   );
 });
+
+test('non-JSON arguments are refused with an answer, never thrown, and leave capacity intact', () => {
+  const view = host();
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  for (let index = 0; index < 9; index++) {
+    view.post({ type: 'action', id: `cyclic-${index}`, action: 'add_task', args: cyclic });
+  }
+  view.post({ type: 'query', id: 'cyclic-query', name: 'summary', args: cyclic });
+  assert.equal(view.fetches.length, 0);
+  assert.equal(view.replies.length, 10);
+  assert.ok(view.replies.every((reply) => /Invalid .* arguments/.test(reply.error)));
+
+  // Valid requests still get all eight slots.
+  for (let index = 0; index < 8; index++) {
+    view.post({ type: 'action', id: `valid-${index}`, action: 'add_task', args: { text: 'x' } });
+  }
+  assert.equal(view.fetches.length, 8);
+});
+
+test('action and query ingress ignore invalid IDs and refuse oversized names before transport', () => {
+  const view = host();
+  view.post({ type: 'action', id: 'x'.repeat(5000), action: 'add_task', args: {} });
+  view.post({ type: 'query', id: 'y'.repeat(5000), name: 'summary', args: {} });
+  view.post({ type: 'action', id: 42, action: 'add_task', args: {} });
+  assert.equal(view.replies.length, 0);
+
+  view.post({ type: 'action', id: 'long-action', action: 'a'.repeat(200_000), args: {} });
+  view.post({ type: 'query', id: 'long-query', name: 'q'.repeat(200_000), args: {} });
+  assert.equal(view.fetches.length, 0);
+  assert.deepEqual(
+    view.replies.map((reply) => reply.id),
+    ['long-action', 'long-query'],
+  );
+  assert.ok(view.replies.every((reply) => reply.error.length < 100));
+});
