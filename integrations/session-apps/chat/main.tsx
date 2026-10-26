@@ -16,20 +16,22 @@ import './styles.css';
 
 declare global {
   interface Window {
-    companionChat?: { focusComposer(): void; blurComposer(): void };
+    companionChat?: { focusComposer(): void; blurComposer(): void; connected: boolean };
   }
 }
 
 const store = new ChatStore();
 const root = document.getElementById('chat')!;
 
-window.companionChat = { focusComposer, blurComposer };
+// `connected` is the native view's liveness signal (TrustedChatView.qml).
+window.companionChat = { focusComposer, blurComposer, connected: false };
 
 const connected = connectChannel<NativeBridge>((bridge) => {
   // Exposed for offscreen tests of the native checks. It grants nothing the
   // page does not already have; transcript content cannot run scripts.
   (window as unknown as { __companionBridge: NativeBridge }).__companionBridge = bridge;
   store.attach(bridge);
+  window.companionChat!.connected = true;
   render(<Chat store={store} />, root);
 });
 

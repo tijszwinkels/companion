@@ -24,23 +24,49 @@ Item {
   property bool pageReady: false
   property bool loadFailed: false
   readonly property bool failed: loadFailed || readyTimedOut || shellProfile.error !== ""
-  // Bounded start-up handshake. The page counts as operational only after
-  // its script connected and called ready(). A page that loads but never
-  // gets there (missing or broken script) is treated as failed after this
-  // long, so the native presentation stays (or becomes) the visible one.
+  // Bounded handshake. The page counts as operational only after its script
+  // connected and called ready(); see the liveness check below for how a
+  // page that never gets there, or stops answering after a reload, fails.
   property int readyTimeoutMilliseconds: 10000
   property bool operational: false
   // How often a page completed the handshake (each load calls ready()).
   property int readyCount: 0
   property bool readyTimedOut: false
+  // Liveness of the current document, checked by the host itself rather
+  // than inferred from load notifications (whose order relative to ready()
+  // is not guaranteed): about every second the page must report that its
+  // bridge is connected. A document that does not for readyTimeoutMilliseconds
+  // - at start-up or after any reload, e.g. a script that fails - marks this
+  // view failed, so the native presentation becomes the visible one.
+  property double lastAlive: Date.now()
+  property bool probing: false
+  property var lifetime: ({active: true})
+  Component.onDestruction: lifetime.active = false
   Timer {
-    id: readyDeadline
-    interval: root.readyTimeoutMilliseconds
-    running: !root.operational && !root.readyTimedOut && shellProfile.documentUrl.toString() !== ""
-    onTriggered: root.readyTimedOut = true
+    id: liveness
+    interval: 1000
+    repeat: true
+    running: !root.readyTimedOut && shellProfile.documentUrl.toString() !== ""
+    onTriggered: {
+      if (Date.now() - root.lastAlive > root.readyTimeoutMilliseconds) {
+        root.readyTimedOut = true
+        return
+      }
+      if (root.probing) return
+      root.probing = true
+      const lifetime = root.lifetime
+      // The frame-level call guards against a QML context that disappears
+      // while Chromium answers (see NativeWidgetView.qml).
+      browser.mainFrame.runJavaScript("!!(window.companionRail && window.companionRail.connected === true)", 0, function(alive) {
+        if (!lifetime.active) return
+        root.probing = false
+        if (alive === true) root.lastAlive = Date.now()
+      })
+    }
   }
 
   property int sequence: 0
+  readonly property alias browser: browser
   property string bundleDirectory: {
     const url = Qt.resolvedUrl("dist").toString()
     return url.startsWith("file://") ? decodeURIComponent(url.slice(7)) : ""

@@ -400,13 +400,24 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   const inFlight = useRef(0);
   // Rendered copy of inFlight, so Send waits for the latest edit's answer.
   const [editsInFlight, setEditsInFlight] = useState(0);
-  const lastCursor = useRef(-1);
-  // Text the host refused and could not keep; only this page holds it, so
-  // it stays in a notice (with Copy) even after switching conversations.
-  const [unkept, setUnkeptState] = useState<{ sessionId: string; text: string } | null>(null);
-  const unkeptHere = unkept !== null && unkept.sessionId === status.sessionId;
+  const lastCursor = useRef(draft.cursor);
+  // Text the host refused and could not keep (only when its bounded
+  // recovery is exhausted), per conversation. The host is told, so moving
+  // that conversation to another view waits until it is resolved.
+  const [unkeptBySession, setUnkeptBySession] = useState<Record<string, string>>({});
+  const unkept = unkeptBySession[status.sessionId] ?? null;
+  const unkeptHere = unkept !== null;
   function setUnkept(sessionOfText: string, value: string) {
-    setUnkeptState(value === '' ? null : { sessionId: sessionOfText, text: value });
+    setUnkeptBySession((previous) => {
+      const next = { ...previous };
+      if (value === '') {
+        delete next[sessionOfText];
+      } else {
+        next[sessionOfText] = value;
+      }
+      return next;
+    });
+    bridge.holdText(sessionOfText, value !== '');
   }
   const [inputNotice, setInputNotice] = useState('');
   // The newest known host draft: from status updates, and from this page's
@@ -423,7 +434,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
     status.canSend === true &&
     editsInFlight === 0 &&
     refused === '' &&
-    unkept === null &&
+    Object.keys(unkeptBySession).length === 0 &&
     text.trim() !== '' &&
     text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
@@ -443,6 +454,15 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
     }
   }
 
+  // A new editor (page load, pop-out window) starts at the host cursor.
+  useEffect(() => {
+    const element = area.current;
+    if (element && draft.cursor >= 0) {
+      const cursor = Math.min(draft.cursor, element.value.length);
+      element.setSelectionRange(cursor, cursor);
+    }
+  }, []);
+
   useEffect(() => {
     const otherSession = status.sessionId !== sessionId.current;
     if (otherSession) {
@@ -461,15 +481,12 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
     }
   }, [status.sessionId, draft.revision]);
 
+  // Over-limit text that still arrives (an input that cannot be cancelled,
+  // e.g. an input method) is sent anyway: the host refuses it and keeps it
+  // as this conversation's refused text, which handover and navigation
+  // preserve.
   function edited(value: string, cursor: number) {
     setInputNotice('');
-    if (value.length > editLimit) {
-      // Inserted some other way than paste/drop (e.g. input method): keep
-      // it here, visibly, rather than sending what the host must refuse.
-      setText(value);
-      setUnkept(status.sessionId, value);
-      return;
-    }
     setText(value);
     inFlight.current++;
     setEditsInFlight(inFlight.current);
@@ -601,22 +618,21 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
   return (
     <div class="composer">
       {inputNotice && <div class="conflict">{inputNotice}</div>}
-      {unkept && (
-        <div class="conflict unkept">
-          {unkeptHere
-            ? `This text (${unkept.text.length} characters) could not be added to the draft and is only kept here.`
-            : `Text typed for another conversation (${unkept.text.length} characters) could not be added to its draft and is only kept here.`}
-          <button class="link" onClick={() => bridge.copyText(unkept.text)}>
+      {Object.entries(unkeptBySession).map(([owner, held]) => (
+        <div class="conflict unkept" key={owner}>
+          {owner === status.sessionId
+            ? `This text (${held.length} characters) could not be added to the draft and is only kept here.`
+            : `Text typed for another conversation (${held.length} characters) could not be added to its draft and is only kept here.`}
+          <button class="link" onClick={() => bridge.copyText(held)}>
             Copy my text
           </button>
-          {unkeptHere && unkept.text.length <= editLimit && (
+          {owner === status.sessionId && held.length <= editLimit && (
             <button
               class="link"
               onClick={() => {
-                const value = unkept.text;
-                setUnkeptState(null);
+                setUnkept(owner, '');
                 base.current = hostDraft.current.revision;
-                edited(value, value.length);
+                edited(held, held.length);
               }}
             >
               Use my text
@@ -625,9 +641,8 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
           <button
             class="link"
             onClick={() => {
-              const here = unkeptHere;
-              setUnkeptState(null);
-              if (here) {
+              setUnkept(owner, '');
+              if (owner === status.sessionId) {
                 adoptHostDraft();
               }
             }}
@@ -635,7 +650,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
             Discard
           </button>
         </div>
-      )}
+      ))}
       {refused && (
         <div class="conflict refused">
           Some of your text could not be added to the draft (it changed elsewhere, was too long or
@@ -666,6 +681,17 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge }) {
             return;
           }
           edited(element.value, element.selectionStart);
+        }}
+        onBeforeInput={(event) => {
+          // Typing, line breaks, replacement and drops that would go past
+          // the limit change nothing (input methods cannot be cancelled).
+          const input = event as unknown as InputEvent;
+          const inserted = input.data ?? input.dataTransfer?.getData('text/plain') ?? '';
+          const inserting = input.inputType.startsWith('insert');
+          const addition = input.inputType === 'insertLineBreak' ? '\n' : inserted;
+          if (inserting && input.cancelable && insertionTooLong(addition)) {
+            event.preventDefault();
+          }
         }}
         onPaste={(event) => {
           if (insertionTooLong(event.clipboardData?.getData('text/plain') ?? '')) {
