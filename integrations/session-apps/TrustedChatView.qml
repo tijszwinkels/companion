@@ -40,6 +40,11 @@ Item {
   property bool operational: false
   // How often a page completed the handshake (each load calls ready()).
   property int readyCount: 0
+  // The most characters one Copy hands to the clipboard. Text the host keeps
+  // for recovery is at most SessionView.maximumRefusedDraftLength (262144),
+  // so it always copies in one piece. Longer text only the page holds is
+  // copied in numbered parts of at most this size; nothing is cut off.
+  property int copyLimit: 1048576
   // The page document that last completed the handshake (see ready()).
   property string loadedDocumentId: ""
   // Liveness of the current document, checked by the host itself rather
@@ -171,7 +176,7 @@ Item {
   function currentStatus() {
     const view = root.view
     const session = view ? view.session : null
-    if (!session) return {sessionId: ""}
+    if (!session) return {sessionId: "", copyLimit: root.copyLimit}
     const draft = view.pageDraft()
     const history = {hasOlder: view.hasOlder, pending: view.historyPending !== "", error: view.historyError,
       canRetry: view.historyError !== "" && view.failedHistoryRequest !== null,
@@ -189,6 +194,7 @@ Item {
       maximumMessageLength: view.maximumMessageLength,
       // The longest draft the bridge accepts from the page (editDraft).
       editLimit: 2 * view.maximumMessageLength,
+      copyLimit: root.copyLimit,
       canSend: view.canSend,
       pendingSend: view.pendingSubmission !== null,
       pendingChoice: view.pendingChoice !== null,
@@ -248,7 +254,7 @@ Item {
   readonly property var rowsWatch: root.view ? [root.view.shownRows, root.view.session ? root.view.session.id : ""] : []
   onRowsWatchChanged: root.schedule(true)
   readonly property string statusWatch: root.view ? JSON.stringify([root.view.session ? root.view.session.status : "",
-    root.view.displayedRefusedDraft,
+    root.view.displayedRefusedDraft, root.copyLimit,
     root.view.session && root.view.session.application ? root.view.session.application.version : 0,
     root.view.draftRevision, root.view.canSend, root.view.pendingSubmission !== null, root.view.pendingChoice !== null,
     root.view.inputError, root.view.recordingAvailable, root.view.recordingState, root.view.recordingBusy,
@@ -427,10 +433,19 @@ Item {
       return true
     }
 
+    // Copies at most `copyLimit` characters per call (the page splits
+    // longer retained text into numbered parts, see Chat.tsx CopyActions).
+    // The answer says what happened, so the page can show it.
     function copyText(text) {
-      if (typeof text !== "string" || text.length > 262144) return false
+      if (typeof text !== "string" || text === "") {
+        return JSON.stringify({accepted: false, length: 0, reason: "Nothing to copy."})
+      }
+      if (text.length > root.copyLimit) {
+        return JSON.stringify({accepted: false, length: text.length,
+          reason: "At most " + root.copyLimit + " characters can be copied at once."})
+      }
       root.view.copyMessage(text)
-      return true
+      return JSON.stringify({accepted: true, length: text.length, reason: ""})
     }
 
     function openLink(url) {

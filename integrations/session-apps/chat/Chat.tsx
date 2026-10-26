@@ -397,6 +397,52 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  * Copy, Use my text and Discard; it is never replaced by the host draft.
  */
 /**
+ * Copy for retained text. One Copy hands at most `copyLimit` characters to
+ * the host's clipboard; longer text is offered as numbered parts in order,
+ * each within the limit, so nothing is cut off and the text stays here until
+ * it is discarded. The host's answer is shown: copied (with the length) or
+ * refused (with its reason), never a silent no-op.
+ */
+function CopyActions(props: { text: string; bridge: NativeBridge; copyLimit: number }) {
+  const { text, bridge } = props;
+  const limit = Math.max(1, props.copyLimit);
+  const [feedback, setFeedback] = useState('');
+  const parts = Math.max(1, Math.ceil(text.length / limit));
+
+  // A different text (or limit) starts without old feedback.
+  useEffect(() => {
+    setFeedback('');
+  }, [text, limit]);
+
+  function copy(index: number) {
+    const part = text.slice(index * limit, (index + 1) * limit);
+    const label = parts === 1 ? 'Copied' : `Copied part ${index + 1} of ${parts}`;
+    setFeedback('Copying…');
+    bridge.copyText(part, (json) => {
+      const answer = decode(json) as BridgeAnswer & { length?: number };
+      if (answer.accepted) {
+        setFeedback(`${label} (${answer.length ?? part.length} characters).`);
+      } else {
+        setFeedback(
+          `Copy refused: ${answer.reason || 'the text was not copied.'} Your text is still kept here.`,
+        );
+      }
+    });
+  }
+
+  return (
+    <>
+      {Array.from({ length: parts }, (_, index) => (
+        <button class="link" key={index} onClick={() => copy(index)}>
+          {parts === 1 ? 'Copy my text' : `Copy part ${index + 1} of ${parts}`}
+        </button>
+      ))}
+      {feedback && <span class="copy-feedback">{feedback}</span>}
+    </>
+  );
+}
+
+/**
  * Text the host could not keep for conversations other than the shown one
  * (or while none is shown): Copy or Discard. The shown conversation's held
  * text is in its editor, with the composer's own controls.
@@ -415,9 +461,7 @@ function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
         <div class="conflict unkept" key={owner}>
           Text typed for another conversation ({text.length} characters) could not be added to its
           draft and is only kept here.
-          <button class="link" onClick={() => bridge.copyText(text)}>
-            Copy my text
-          </button>
+          <CopyActions text={text} bridge={bridge} copyLimit={props.status.copyLimit || 1048576} />
           <button class="link" onClick={() => props.store.hold(owner, '')}>
             Discard
           </button>
@@ -660,9 +704,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         <div class="conflict unkept">
           This text ({unkept.length} characters) could not be added to the draft and is only kept
           here.
-          <button class="link" onClick={() => bridge.copyText(unkept)}>
-            Copy my text
-          </button>
+          <CopyActions text={unkept} bridge={bridge} copyLimit={status.copyLimit || 1048576} />
           {unkept.length <= editLimit && (
             <button
               class="link"

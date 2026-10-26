@@ -270,3 +270,8 @@ button.link {
   color: var(--muted);
   font-size: calc(10px * var(--scale));
 }
+
+.copy-feedback {
+  margin-left: 4px;
+  color: var(--muted);
+}

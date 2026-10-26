@@ -32,6 +32,14 @@ TestCase {
   }
   property var body: null
   readonly property string viewUrl: "@VIEW_URL@"
+  // Reads the test process's own clipboard. Offscreen Qt keeps it in this
+  // process only; the desktop clipboard is never touched.
+  TextEdit { id: clipboardProbe; visible: false; textFormat: TextEdit.PlainText }
+  function clipboardText() {
+    clipboardProbe.text = ""
+    clipboardProbe.paste()
+    return clipboardProbe.text
+  }
 
   function session(id, title, application) {
     const entry = {id: id, title: title, status: "idle", messages: [
@@ -797,7 +805,9 @@ TestCase {
       + " return !area.dispatchEvent(event) })()")
     compare(prevented, true)
     tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Nothing was changed')") === true })
-    compare(textarea(chat), "old host text")
+    // Diagnostics for one unexplained run where the editor was empty here.
+    compare(textarea(chat), "old host text", "editor " + JSON.stringify(textarea(chat).length) + " host "
+      + composerOf(view).text.length + " revision " + view.draftRevision + " displayed " + view.displayedId)
     compare(composerOf(view).text, "old host text")
   }
 
@@ -1104,6 +1114,82 @@ TestCase {
     tryVerify(function() { return body.popouts.orphanDrafts.some(entry => entry.kind === "refused" && entry.text === "SIDEBAR-REFUSED") }, 5000)
     compare(main.refusedDrafts["two"], undefined)
     body.popouts.orphanDrafts = []
+  }
+
+  // Kestrel R4 S2-COPY: Copy on text only the page holds (here 270000
+  // characters, beyond the host's 262144 bound) actually copies it, shows
+  // that it did, splits text beyond the copy limit into numbered parts,
+  // and shows a refusal instead of failing silently. The text stays.
+  function copyFeedback(chat) {
+    return evaluate(chat, "(() => { const entry = document.querySelector('.unkept .copy-feedback'); return entry ? entry.textContent : '' })()")
+  }
+  function clickInHeld(chat, label) {
+    return evaluate(chat, "(() => { const button = [...document.querySelectorAll('.unkept button')]"
+      + ".find(b => b.textContent === " + JSON.stringify(label) + "); if (!button) return false; button.click(); return true })()")
+  }
+  function test_zze_recovery_copy_copies_what_it_offers() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    // 270000 characters with a marker at each end, so order and exactness show.
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'BEGIN' + 'x'.repeat(269990) + 'END!!';"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000)
+    const expected = "BEGIN" + "x".repeat(269990) + "END!!"
+    // The conversation is closed elsewhere and Activity is shown.
+    snapshot([session("two", "Second chat", null)])
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null"
+      + " && document.querySelectorAll('.unkept').length === 1") === true }, 5000)
+
+    // One Copy, accepted, exact clipboard contents, visible confirmation.
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(chat, "Copy my text"))
+    tryVerify(function() { return copyFeedback(chat).startsWith("Copied") }, 5000, copyFeedback(chat))
+    compare(copyFeedback(chat), "Copied (270000 characters).")
+    const copied = clipboardText()
+    compare(copied.length, 270000)
+    verify(copied === expected, "clipboard holds exactly the retained text")
+
+    // Beyond the copy limit: numbered parts, each copied exactly, in order.
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    trusted.copyLimit = 100000
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')")
+      === "Copy part 1 of 3|Copy part 2 of 3|Copy part 3 of 3|Discard" }, 5000)
+    for (let index = 0; index < 3; index++) {
+      verify(clickInHeld(chat, "Copy part " + (index + 1) + " of 3"))
+      const part = expected.slice(index * 100000, (index + 1) * 100000)
+      tryVerify(function() { return copyFeedback(chat) === "Copied part " + (index + 1) + " of 3 (" + part.length + " characters)." }, 5000, copyFeedback(chat))
+      verify(clipboardText() === part, "part " + (index + 1) + " copied exactly")
+    }
+
+    // The host refuses more than its limit in one call, with a reason.
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.copyText('y'.repeat(100001),"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    const refusal = JSON.parse(evaluate(chat, "window.__answer"))
+    compare(refusal.accepted, false)
+    verify(refusal.reason.includes("100000"))
+    // A refusal reaching the page is shown, and the text stays (host answer
+    // simulated in the page for this step).
+    evaluate(chat, "(() => { window.__companionBridge.copyText = (text, callback) => callback(JSON.stringify("
+      + "{accepted: false, length: text.length, reason: 'Simulated refusal.'})); return true })()")
+    verify(clickInHeld(chat, "Copy part 1 of 3"))
+    tryVerify(function() { return copyFeedback(chat) === "Copy refused: Simulated refusal. Your text is still kept here." }, 5000, copyFeedback(chat))
+    compare(evaluate(chat, "document.querySelectorAll('.unkept').length"), 1)
+    compare(evaluate(chat, "window.companionChat.heldText('one').length"), 270000)
+    trusted.copyLimit = 1048576
+    // The page's bridge override is gone with a reload; discard instead.
+    verify(clickInHeld(chat, "Discard"))
+    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 0 }, 5000)
+    const loads = trusted.readyCount
+    chat.reload()
+    tryVerify(function() { return trusted.readyCount > loads }, 15000, "page reloaded without the override")
   }
 
   function findChildren(item, name) {
