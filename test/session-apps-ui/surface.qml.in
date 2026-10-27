@@ -1363,6 +1363,90 @@ TestCase {
     tryCompare(composerOf(setup.view), "text", "NEW-Ax", 5000)
   }
 
+  // Kestrel R5 S2-COPY-U: numbered Copy parts never split a character, so
+  // the native plain-text export (what another application receives) holds
+  // exactly the retained text. Checked on the export bytes, not QString.
+  function test_zzj_copy_parts_keep_every_character_in_the_native_export() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    // The reviewer's case: an emoji across the production 1048576 boundary.
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'a'.repeat(1048575) + '\u{1F600}' + 'END';"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 15000)
+    const original = "a".repeat(1048575) + "\u{1F600}" + "END"
+    compare(original.length, 1048580)
+    snapshot([session("two", "Second chat", null)])
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null"
+      + " && document.querySelectorAll('.unkept').length === 1") === true }, 10000)
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    compare(trusted.copyLimit, 1048576)
+
+    function copyAll(labels) {
+      tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')")
+        === labels.concat(["Discard"]).join("|") }, 5000)
+      let exported = ""
+      const sizes = []
+      for (let index = 0; index < labels.length; index++) {
+        verify(clickInHeld(chat, labels[index]), "button " + labels[index])
+        // Each part's own confirmation, so an earlier part's answer is not
+        // mistaken for this one.
+        const expected = labels.length === 1 ? "Copied (" : "Copied part " + (index + 1) + " of " + labels.length + " ("
+        tryVerify(function() { return copyFeedback(chat).startsWith(expected) }, 5000, copyFeedback(chat))
+        sizes.push(TestClipboard.plainTextBytes())
+        exported += TestClipboard.plainTextDecoded()
+      }
+      return {exported: exported, sizes: sizes}
+    }
+
+    // Production limit: the boundary moves back one unit to keep the emoji
+    // whole; part 2 is the emoji and the rest, all bytes exported.
+    let result = copyAll(["Copy part 1 of 2", "Copy part 2 of 2"])
+    compare(JSON.stringify(result.sizes), JSON.stringify([1048575, 7]))
+    verify(result.exported === original, "export reassembles the exact text")
+    verify(TestClipboard.plainTextEquals("\u{1F600}END"), "last part exported as UTF-8 exactly")
+
+    // Whole-value control: with a limit above the length, one Copy, exact.
+    trusted.copyLimit = 2 * 1048576
+    result = copyAll(["Copy my text"])
+    compare(JSON.stringify(result.sizes), JSON.stringify([1048582]))
+    verify(TestClipboard.plainTextEquals(original), "whole export exact")
+
+    // A lower limit whose boundary also falls inside the emoji.
+    trusted.copyLimit = 524288
+    result = copyAll(["Copy part 1 of 3", "Copy part 2 of 3", "Copy part 3 of 3"])
+    compare(JSON.stringify(result.sizes), JSON.stringify([524288, 524287, 7]))
+    verify(result.exported === original, "three-part export reassembles the exact text")
+
+    // A limit that cannot hold the emoji at all: no Copy, an explicit
+    // notice, the text still kept.
+    trusted.copyLimit = 1
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept').textContent.includes('Copy is not possible')") === true }, 10000)
+    compare(evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')"), "Discard")
+    compare(evaluate(chat, "window.companionChat.heldText('one').length"), 1048580)
+
+    // A refused copy says so and keeps the text (host answer simulated).
+    trusted.copyLimit = 1048576
+    evaluate(chat, "(() => { window.__companionBridge.copyText = (text, callback) => callback(JSON.stringify("
+      + "{accepted: false, length: text.length, reason: 'Simulated refusal.'})); return true })()")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.unkept button')].some(b => b.textContent === 'Copy part 1 of 2')") === true }, 5000)
+    const buttonsBefore = evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')")
+    verify(clickInHeld(chat, "Copy part 1 of 2"), "refusal click; buttons " + buttonsBefore)
+    tryVerify(function() { return copyFeedback(chat) === "Copy refused: Simulated refusal. Your text is still kept here." }, 5000,
+      "feedback " + evaluate(chat, "JSON.stringify([...document.querySelectorAll('.unkept')].map(n => n.textContent.slice(0, 160)))"))
+    compare(evaluate(chat, "window.companionChat.heldText('one') === 'a'.repeat(1048575) + '\u{1F600}' + 'END'"), true)
+
+    verify(clickInHeld(chat, "Discard"))
+    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 0 }, 5000)
+    const loads = trusted.readyCount
+    chat.reload()
+    tryVerify(function() { return trusted.readyCount > loads }, 15000, "page reloaded without the override")
+  }
+
   function findChildren(item, name) {
     let found = []
     if (!item) return found
