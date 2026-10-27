@@ -69,7 +69,12 @@ export function Chat(props: { store: ChatStore }) {
       <Header status={status} bridge={bridge} />
       <Transcript rows={rows} status={status} bridge={bridge} />
       <Controls status={status} bridge={bridge} />
-      <Composer status={status} bridge={bridge} store={props.store} />
+      {/* One Composer instance per conversation: switching conversations
+          creates fresh editor state from that conversation's own host draft
+          in the same render, instead of reusing the previous conversation's
+          state until a later effect resets it (an input in between could
+          otherwise be erased and the draft then overwritten). */}
+      <Composer key={status.sessionId} status={status} bridge={bridge} store={props.store} />
     </div>
   );
 }
@@ -471,6 +476,10 @@ function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
   );
 }
 
+// Keyboard focus moving from a replaced editor to its successor (see the
+// layout effect in Composer).
+const editorFocus = { transfer: false };
+
 function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: ChatStore }) {
   const { status, bridge, store } = props;
   const draft = status.draft || { text: '', cursor: -1, revision: 0, source: '', notice: '' };
@@ -528,13 +537,32 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
   }
 
-  // A new editor (page load, pop-out window) starts at the host cursor.
-  useEffect(() => {
+  // Whether this instance still shows its conversation. Answers to its edits
+  // can arrive after a switch replaced it; they must not touch the editor
+  // that now shows another (or a newer instance of the same) conversation.
+  const alive = useRef(true);
+
+  // A new editor (page load, pop-out window, conversation switch) starts at
+  // the host cursor, and keeps keyboard focus if the previous editor had it.
+  useLayoutEffect(() => {
     const element = area.current;
     if (element && draft.cursor >= 0) {
       const cursor = Math.min(draft.cursor, element.value.length);
       element.setSelectionRange(cursor, cursor);
     }
+    if (element && editorFocus.transfer) {
+      editorFocus.transfer = false;
+      element.focus();
+    }
+    return () => {
+      alive.current = false;
+      // Only a successor created in this same render takes focus over (a
+      // conversation switch); none is waiting after Activity is shown.
+      editorFocus.transfer = element !== null && document.activeElement === element;
+      setTimeout(() => {
+        editorFocus.transfer = false;
+      });
+    };
   }, []);
 
   useEffect(() => {
@@ -574,6 +602,14 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     lastCursor.current = cursor;
     const editedSession = status.sessionId;
     bridge.editDraft(editedSession, base.current, value, cursor, (json) => {
+      if (!alive.current) {
+        // A replaced instance only makes sure nothing is lost: text the host
+        // could not keep goes to its own conversation's page-held recovery.
+        if (decode(json).kept === false) {
+          setUnkept(editedSession, value);
+        }
+        return;
+      }
       if (editedSession !== sessionId.current) {
         // The view moved on. The host normally kept this refused edit for
         // that conversation; if it could not, the notice keeps it here.

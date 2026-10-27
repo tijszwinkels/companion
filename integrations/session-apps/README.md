@@ -85,6 +85,12 @@ older text. The page also waits for its latest edit's answer before sending.
 Cursor movement without typing (keys, pointer, selection) is reported as well,
 so Classic view and pop-out handover resume at the same position.
 
+Each conversation gets its own composer instance, created from that
+conversation's host draft in the same render that switches to it, so typing
+right after a switch goes to the right draft and is never erased. Answers that
+arrive later for a previous instance's edits do not touch the editor now shown;
+text the host could not keep still reaches that conversation's recovery.
+
 Typing, pasting or dropping past twice the message limit is cancelled before
 it changes the editor. Over-limit text that still arrives (an input method
 cannot be cancelled) is refused and kept as the conversation's refused text.

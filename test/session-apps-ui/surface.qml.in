@@ -1192,6 +1192,177 @@ TestCase {
     tryVerify(function() { return trusted.readyCount > loads }, 15000, "page reloaded without the override")
   }
 
+  // ---- Conversation switch vs editor state (draft repair) ---------------
+  // Arms the page to type `text` in the very render that shows `title`,
+  // before any post-paint effect (or after `delay` ms, as a control).
+  function armTypeOnSwitch(chat, title, text, delay) {
+    evaluate(chat, "(() => { window.__typed = null; window.__typedInto = null; const header = document.querySelector('.header .title');"
+      + " const type = () => { const area = document.querySelector('textarea'); window.__typedInto = area.value;"
+      + "  area.value = " + JSON.stringify(text) + "; area.dispatchEvent(new Event('input', {bubbles: true})); window.__typed = true };"
+      + " const observer = new MutationObserver(() => { if (header.textContent === " + JSON.stringify(title) + ") { observer.disconnect();"
+      + "  if (" + delay + " === 0) type(); else setTimeout(type, " + delay + ") } });"
+      + " observer.observe(header, {childList: true, characterData: true, subtree: true}); return true })()")
+  }
+  function twoConversations(draftA, draftB) {
+    snapshot([session("A", "Conversation A", null), session("B", "Conversation B", null)])
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    const view = mainView()
+    const chat = waitForChat(view)
+    view.clearDraft("A")
+    view.clearDraft("B")
+    view.drafts["B"] = draftB
+    settled(view, chat)
+    if (draftA !== "") typeInto(chat, draftA)
+    tryCompare(composerOf(view), "text", draftA)
+    settled(view, chat)
+    view.focusComposer()
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    return {view: view, chat: chat}
+  }
+
+  // D1 regression: an input in the render that switched to B is kept, in
+  // the editor and the host, and the next real key appends to it.
+  function test_zzf_input_right_after_a_switch_is_kept() {
+    const setup = twoConversations("", "")
+    armTypeOnSwitch(setup.chat, "Conversation B", "TYPED-IN-WINDOW", 0)
+    body.client.sessions.select("B")
+    tryVerify(function() { return evaluate(setup.chat, "window.__typed === true") }, 5000)
+    tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOW", 5000)
+    wait(500)
+    compare(textarea(setup.chat), "TYPED-IN-WINDOW")
+    compare(composerOf(setup.view).text, "TYPED-IN-WINDOW")
+    compare(setup.view.displayedRefusedDraft, "")
+    // Focus moved with the conversation to the new editor.
+    compare(evaluate(setup.chat, "document.activeElement === document.querySelector('textarea')"), true)
+    tryCompare(setup.view, "composerFocusId", "B", 5000)
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOWx", 5000)
+    compare(textarea(setup.chat), "TYPED-IN-WINDOWx")
+  }
+
+  // D2 control: typing after the switch has settled behaves the same.
+  function test_zzg_input_after_a_switch_control() {
+    const setup = twoConversations("", "")
+    armTypeOnSwitch(setup.chat, "Conversation B", "TYPED-AFTER-EFFECT", 300)
+    body.client.sessions.select("B")
+    tryVerify(function() { return evaluate(setup.chat, "window.__typed === true") }, 5000)
+    tryCompare(composerOf(setup.view), "text", "TYPED-AFTER-EFFECT", 5000)
+    wait(300)
+    compare(textarea(setup.chat), "TYPED-AFTER-EFFECT")
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "TYPED-AFTER-EFFECTx", 5000)
+  }
+
+  // D3: with different drafts, the switching render already shows B's own
+  // text, the input goes to B at B's revision, nothing is refused and A
+  // keeps its draft.
+  function test_zzh_switch_with_different_drafts_shows_the_right_text() {
+    const setup = twoConversations("alpha", "")
+    armTypeOnSwitch(setup.chat, "Conversation B", "TYPED-IN-WINDOW", 0)
+    body.client.sessions.select("B")
+    tryVerify(function() { return evaluate(setup.chat, "window.__typed === true") }, 5000)
+    compare(evaluate(setup.chat, "window.__typedInto"), "")
+    tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOW", 5000)
+    wait(300)
+    compare(textarea(setup.chat), "TYPED-IN-WINDOW")
+    compare(setup.view.displayedRefusedDraft, "")
+    compare(setup.view.refusedDrafts["B"], undefined)
+    compare(setup.view.exportDraft("A").text, "alpha")
+  }
+
+  // Answers to a replaced editor's edits (held back here to arrive after
+  // the switch) never change the editor now shown, and anything the host
+  // could not keep still reaches its own conversation's recovery.
+  function holdNextAnswer(chat) {
+    evaluate(chat, "(() => { const b = window.__companionBridge; window.__held = [];"
+      + " if (!window.__holdInstalled) { window.__holdInstalled = true; const edit = b.editDraft;"
+      + "  b.editDraft = function(sessionId, base, text, cursor, callback) {"
+      + "   if (window.__holdOne) { window.__holdOne = false; return edit.call(this, sessionId, base, text, cursor,"
+      + "    answer => window.__held.push(() => callback && callback(answer))) }"
+      + "   return edit.call(this, sessionId, base, text, cursor, callback) } }"
+      + " window.__holdOne = true; return true })()")
+  }
+  function releaseHeld(chat) {
+    evaluate(chat, "(() => { const held = window.__held; window.__held = []; held.forEach(release => release()); return held.length })()")
+  }
+  function test_zzi_late_answers_from_a_replaced_editor() {
+    // Accepted edit for A, answered after the switch to B.
+    let setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "A-ACCEPTED")
+    tryCompare(composerOf(setup.view), "text", "A-ACCEPTED", 5000)
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    typeInto(setup.chat, "B-TEXT")
+    tryCompare(composerOf(setup.view), "text", "B-TEXT", 5000)
+    const revisionB = setup.view.draftRevision
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(textarea(setup.chat), "B-TEXT")
+    compare(composerOf(setup.view).text, "B-TEXT")
+    compare(setup.view.draftRevision, revisionB)
+    compare(evaluate(setup.chat, "document.activeElement === document.querySelector('textarea')"), true)
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "B-TEXTx", 5000)
+    compare(setup.view.exportDraft("A").text, "A-ACCEPTED")
+
+    // A refused edit for A (kept by the host), answered after the switch.
+    setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    evaluate(setup.chat, "(() => { window.__companionBridge.editDraft('A', -1, 'A-REFUSED', 9); return true })()")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(setup.view.refusedDrafts["A"], "A-REFUSED")
+    compare(setup.view.displayedRefusedDraft, "")
+    compare(textarea(setup.chat), "")
+    setup.view.refusedDrafts = ({})
+
+    // A refused edit the host could not keep (beyond its bound): after the
+    // switch it reaches A's page-held recovery, B's editor is unchanged.
+    setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    heldInput(setup.chat, "a")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').value.length === 0") === true }, 5000)
+    releaseHeld(setup.chat)
+    tryVerify(function() { return setup.view.pageHeldDrafts["A"] === true }, 5000)
+    compare(evaluate(setup.chat, "window.companionChat.heldText('A').length"), 270000)
+    compare(evaluate(setup.chat, "document.querySelectorAll('.unkept').length"), 1)
+    compare(textarea(setup.chat), "")
+    verify(clickInHeld(setup.chat, "Discard"))
+    tryVerify(function() { return setup.view.pageHeldDrafts["A"] === undefined }, 5000)
+
+    // Away and back: the old A editor's late answer cannot change the new A
+    // editor's text or base.
+    setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "OLD-A")
+    tryCompare(composerOf(setup.view), "text", "OLD-A", 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    settled(setup.view, setup.chat)
+    typeInto(setup.chat, "NEW-A")
+    tryCompare(composerOf(setup.view), "text", "NEW-A", 5000)
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(textarea(setup.chat), "NEW-A")
+    setup.view.focusComposer()
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "NEW-Ax", 5000)
+  }
+
   function findChildren(item, name) {
     let found = []
     if (!item) return found
