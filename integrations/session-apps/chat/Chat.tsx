@@ -69,7 +69,12 @@ export function Chat(props: { store: ChatStore }) {
       <Header status={status} bridge={bridge} />
       <Transcript rows={rows} status={status} bridge={bridge} />
       <Controls status={status} bridge={bridge} />
-      <Composer status={status} bridge={bridge} store={props.store} />
+      {/* One Composer instance per conversation: switching conversations
+          creates fresh editor state from that conversation's own host draft
+          in the same render, instead of reusing the previous conversation's
+          state until a later effect resets it (an input in between could
+          otherwise be erased and the draft then overwritten). */}
+      <Composer key={status.sessionId} status={status} bridge={bridge} store={props.store} />
     </div>
   );
 }
@@ -397,6 +402,52 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  * Copy, Use my text and Discard; it is never replaced by the host draft.
  */
 /**
+ * Copy for retained text. One Copy hands at most `copyLimit` characters to
+ * the host's clipboard; longer text is offered as numbered parts in order,
+ * each within the limit, so nothing is cut off and the text stays here until
+ * it is discarded. The host's answer is shown: copied (with the length) or
+ * refused (with its reason), never a silent no-op.
+ */
+function CopyActions(props: { text: string; bridge: NativeBridge; copyLimit: number }) {
+  const { text, bridge } = props;
+  const limit = Math.max(1, props.copyLimit);
+  const [feedback, setFeedback] = useState('');
+  const parts = Math.max(1, Math.ceil(text.length / limit));
+
+  // A different text (or limit) starts without old feedback.
+  useEffect(() => {
+    setFeedback('');
+  }, [text, limit]);
+
+  function copy(index: number) {
+    const part = text.slice(index * limit, (index + 1) * limit);
+    const label = parts === 1 ? 'Copied' : `Copied part ${index + 1} of ${parts}`;
+    setFeedback('Copying…');
+    bridge.copyText(part, (json) => {
+      const answer = decode(json) as BridgeAnswer & { length?: number };
+      if (answer.accepted) {
+        setFeedback(`${label} (${answer.length ?? part.length} characters).`);
+      } else {
+        setFeedback(
+          `Copy refused: ${answer.reason || 'the text was not copied.'} Your text is still kept here.`,
+        );
+      }
+    });
+  }
+
+  return (
+    <>
+      {Array.from({ length: parts }, (_, index) => (
+        <button class="link" key={index} onClick={() => copy(index)}>
+          {parts === 1 ? 'Copy my text' : `Copy part ${index + 1} of ${parts}`}
+        </button>
+      ))}
+      {feedback && <span class="copy-feedback">{feedback}</span>}
+    </>
+  );
+}
+
+/**
  * Text the host could not keep for conversations other than the shown one
  * (or while none is shown): Copy or Discard. The shown conversation's held
  * text is in its editor, with the composer's own controls.
@@ -415,9 +466,7 @@ function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
         <div class="conflict unkept" key={owner}>
           Text typed for another conversation ({text.length} characters) could not be added to its
           draft and is only kept here.
-          <button class="link" onClick={() => bridge.copyText(text)}>
-            Copy my text
-          </button>
+          <CopyActions text={text} bridge={bridge} copyLimit={props.status.copyLimit || 1048576} />
           <button class="link" onClick={() => props.store.hold(owner, '')}>
             Discard
           </button>
@@ -426,6 +475,10 @@ function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
     </>
   );
 }
+
+// Keyboard focus moving from a replaced editor to its successor (see the
+// layout effect in Composer).
+const editorFocus = { transfer: false };
 
 function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: ChatStore }) {
   const { status, bridge, store } = props;
@@ -484,13 +537,32 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
   }
 
-  // A new editor (page load, pop-out window) starts at the host cursor.
-  useEffect(() => {
+  // Whether this instance still shows its conversation. Answers to its edits
+  // can arrive after a switch replaced it; they must not touch the editor
+  // that now shows another (or a newer instance of the same) conversation.
+  const alive = useRef(true);
+
+  // A new editor (page load, pop-out window, conversation switch) starts at
+  // the host cursor, and keeps keyboard focus if the previous editor had it.
+  useLayoutEffect(() => {
     const element = area.current;
     if (element && draft.cursor >= 0) {
       const cursor = Math.min(draft.cursor, element.value.length);
       element.setSelectionRange(cursor, cursor);
     }
+    if (element && editorFocus.transfer) {
+      editorFocus.transfer = false;
+      element.focus();
+    }
+    return () => {
+      alive.current = false;
+      // Only a successor created in this same render takes focus over (a
+      // conversation switch); none is waiting after Activity is shown.
+      editorFocus.transfer = element !== null && document.activeElement === element;
+      setTimeout(() => {
+        editorFocus.transfer = false;
+      });
+    };
   }, []);
 
   useEffect(() => {
@@ -530,6 +602,14 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     lastCursor.current = cursor;
     const editedSession = status.sessionId;
     bridge.editDraft(editedSession, base.current, value, cursor, (json) => {
+      if (!alive.current) {
+        // A replaced instance only makes sure nothing is lost: text the host
+        // could not keep goes to its own conversation's page-held recovery.
+        if (decode(json).kept === false) {
+          setUnkept(editedSession, value);
+        }
+        return;
+      }
       if (editedSession !== sessionId.current) {
         // The view moved on. The host normally kept this refused edit for
         // that conversation; if it could not, the notice keeps it here.
@@ -660,9 +740,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         <div class="conflict unkept">
           This text ({unkept.length} characters) could not be added to the draft and is only kept
           here.
-          <button class="link" onClick={() => bridge.copyText(unkept)}>
-            Copy my text
-          </button>
+          <CopyActions text={unkept} bridge={bridge} copyLimit={status.copyLimit || 1048576} />
           {unkept.length <= editLimit && (
             <button
               class="link"

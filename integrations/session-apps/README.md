@@ -85,6 +85,12 @@ older text. The page also waits for its latest edit's answer before sending.
 Cursor movement without typing (keys, pointer, selection) is reported as well,
 so Classic view and pop-out handover resume at the same position.
 
+Each conversation gets its own composer instance, created from that
+conversation's host draft in the same render that switches to it, so typing
+right after a switch goes to the right draft and is never erased. Answers that
+arrive later for a previous instance's edits do not touch the editor now shown;
+text the host could not keep still reaches that conversation's recovery.
+
 Typing, pasting or dropping past twice the message limit is cancelled before
 it changes the editor. Over-limit text that still arrives (an input method
 cannot be cancelled) is refused and kept as the conversation's refused text.
@@ -94,7 +100,14 @@ Activity or another conversation and a resynchronization); the host is told,
 and moving that conversation waits until it is resolved. A real page reload
 loses such text and says so. If a conversation is closed elsewhere while its
 window is open, its draft, refused text and page-held text all stay in the
-sidebar's closed-conversation notice with Copy and Dismiss. A new editor (page load, pop-out) starts at the
+sidebar's closed-conversation notice with Copy and Dismiss.
+
+Copy in these recovery notices copies at most 1,048,576 characters at once.
+Text the host keeps is at most 262,144 characters, so it always copies in one
+piece; longer text only the page holds is offered as **Copy part 1 of N** and
+so on, in order, each within that limit. Nothing is cut off, the text stays
+until Discard, and each Copy says whether it worked (with the number of
+characters) or why it was refused. A new editor (page load, pop-out) starts at the
 host cursor.
 
 The trusted pages count as working only after their script connected and

@@ -58,6 +58,8 @@ export interface ChatStatus {
   maximumMessageLength?: number;
   /** Longest draft text the host accepts from the page. */
   editLimit?: number;
+  /** Most characters one copyText call accepts. */
+  copyLimit?: number;
   canSend?: boolean;
   pendingSend?: boolean;
   pendingChoice?: boolean;
@@ -152,7 +154,8 @@ export interface NativeBridge {
   history(sessionId: string, request: 'older' | 'newer' | 'latest' | 'retry' | 'refresh'): void;
   following(sessionId: string, atEnd: boolean): void;
   composerFocus(focused: boolean): void;
-  copyText(text: string): void;
+  /** Answers `{accepted, length, reason}` as JSON. */
+  copyText(text: string, callback?: (answer: string) => void): void;
   openLink(url: string): void;
   openScreenshot(sessionId: string, key: string): void;
   openOrigin(sessionId: string, key: string): void;
