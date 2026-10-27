@@ -9,7 +9,7 @@
  */
 
 import { memo } from 'preact/compat';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
 import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
@@ -402,6 +402,46 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  * Copy, Use my text and Discard; it is never replaced by the host draft.
  */
 /**
+ * Splits `text` into consecutive parts of at most `limit` UTF-16 units each,
+ * never between the two halves of a surrogate pair (a character outside the
+ * Basic Multilingual Plane, such as most emoji). Concatenated, the parts are
+ * exactly `text`, and each is well-formed wherever `text` is, so the native
+ * plain-text clipboard export keeps every character. Returns null when the
+ * limit cannot hold one character (a pair needs two units): nothing is
+ * copied then, and the caller says so.
+ */
+export function copyParts(text: string, limit: number): string[] | null {
+  const parts: string[] = [];
+  let start = 0;
+
+  while (start < text.length) {
+    let end = Math.min(start + limit, text.length);
+    const splitsPair =
+      end < text.length &&
+      isHighSurrogate(text.charCodeAt(end - 1)) &&
+      isLowSurrogate(text.charCodeAt(end));
+    if (splitsPair) {
+      end -= 1;
+    }
+    if (end <= start) {
+      return null;
+    }
+    parts.push(text.slice(start, end));
+    start = end;
+  }
+
+  return parts.length > 0 ? parts : [''];
+}
+
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+
+function isLowSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
+
+/**
  * Copy for retained text. One Copy hands at most `copyLimit` characters to
  * the host's clipboard; longer text is offered as numbered parts in order,
  * each within the limit, so nothing is cut off and the text stays here until
@@ -410,17 +450,29 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  */
 function CopyActions(props: { text: string; bridge: NativeBridge; copyLimit: number }) {
   const { text, bridge } = props;
-  const limit = Math.max(1, props.copyLimit);
-  const [feedback, setFeedback] = useState('');
-  const parts = Math.max(1, Math.ceil(text.length / limit));
-
-  // A different text (or limit) starts without old feedback.
-  useEffect(() => {
-    setFeedback('');
-  }, [text, limit]);
+  const limit = Math.max(1, Math.floor(props.copyLimit));
+  // Feedback belongs to the text and limit it was given for; a different
+  // text or limit shows none. (Not reset in an effect: that runs after the
+  // next paint and could erase the answer to a click made just before.)
+  const [feedbackFor, setFeedbackFor] = useState<{ text: string; limit: number; message: string }>({
+    text: '',
+    limit: 0,
+    message: '',
+  });
+  const feedback =
+    feedbackFor.text === text && feedbackFor.limit === limit ? feedbackFor.message : '';
+  function setFeedback(message: string) {
+    setFeedbackFor({ text: text, limit: limit, message: message });
+  }
+  // Part boundaries, counts and labels all come from the actual parts.
+  const chunks = useMemo(() => copyParts(text, limit), [text, limit]);
+  const parts = chunks ? chunks.length : 0;
 
   function copy(index: number) {
-    const part = text.slice(index * limit, (index + 1) * limit);
+    if (!chunks) {
+      return;
+    }
+    const part = chunks[index];
     const label = parts === 1 ? 'Copied' : `Copied part ${index + 1} of ${parts}`;
     setFeedback('Copying…');
     bridge.copyText(part, (json) => {
@@ -433,6 +485,16 @@ function CopyActions(props: { text: string; bridge: NativeBridge; copyLimit: num
         );
       }
     });
+  }
+
+  if (!chunks) {
+    // Only a misconfigured limit gets here; the text stays kept.
+    return (
+      <span class="copy-feedback">
+        Copy is not possible: the copy limit ({limit}) is smaller than one character. Your text is
+        still kept here.
+      </span>
+    );
   }
 
   return (

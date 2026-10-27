@@ -105,7 +105,9 @@ sidebar's closed-conversation notice with Copy and Dismiss.
 Copy in these recovery notices copies at most 1,048,576 characters at once.
 Text the host keeps is at most 262,144 characters, so it always copies in one
 piece; longer text only the page holds is offered as **Copy part 1 of N** and
-so on, in order, each within that limit. Nothing is cut off, the text stays
+so on, in order, each within that limit and never cut inside a character (an
+emoji at a boundary moves to the next part), so the plain-text clipboard keeps
+every character. Nothing is cut off, the text stays
 until Discard, and each Copy says whether it worked (with the number of
 characters) or why it was refused. A new editor (page load, pop-out) starts at the
 host cursor.
