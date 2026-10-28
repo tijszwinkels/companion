@@ -23,17 +23,18 @@ trusted HTML chat. Patches replace the whole session object, so a patch without
 it means there is none. It is live-only and never saved in the conversation
 archive; the application's own record is the durable source.
 
-| Field         | Meaning                                                                      |
-| ------------- | ---------------------------------------------------------------------------- |
-| `id`          | Stable UUID, kept across code replacement.                                   |
-| `name`        | Library bundle name of the current code.                                     |
-| `version`     | Code version: 1 on first apply, +1 per replacement. Host-assigned.           |
-| `revision`    | State revision: +1 per committed state change.                               |
-| `viewUrl`     | Desktop-only view capability, `http://127.0.0.1:<port>/view/<64 hex>`.       |
-| `text`        | The bundle's readable text description (1–4000 characters).                  |
-| `eventMode`   | `immediate` (default) or `next-input`; see [Events](#user-edit-events).      |
-| `eventStatus` | Delivery state of user-edit events (display only).                           |
-| `error`       | The saved application could not be restored; `viewUrl` is absent, data kept. |
+| Field         | Meaning                                                                       |
+| ------------- | ----------------------------------------------------------------------------- |
+| `id`          | Stable UUID, kept across code replacement.                                    |
+| `name`        | Library bundle name of the current code.                                      |
+| `version`     | Code version: 1 on first apply, +1 per replacement. Host-assigned.            |
+| `revision`    | State revision: +1 per committed state change.                                |
+| `viewUrl`     | Desktop-only view capability, `http://127.0.0.1:<port>/view/<64 hex>`.        |
+| `text`        | The bundle's readable text description (1–4000 characters).                   |
+| `eventMode`   | `immediate` (default) or `next-input`; see [Events](#user-edit-events).       |
+| `eventStatus` | Delivery state of user-edit events (display only).                            |
+| `chatAccess`  | Desktop-only requested chat capabilities, read grant and permission revision. |
+| `error`       | The saved application could not be restored; `viewUrl` is absent, data kept.  |
 
 When `error` is present the saved record could not be used. If the file is
 unreadable, `id` and `name` are empty and `version`/`revision` are 0. The file is
@@ -42,8 +43,8 @@ conversation's chat and history stay available.
 
 `viewUrl` stays the same when code is replaced; the open view reloads itself
 when it sees a new `version`. Closing the conversation revokes it; reopening
-issues a new one. The phone gateway removes `viewUrl`. Agent tools never
-receive it.
+issues a new one. The phone gateway removes `viewUrl` and `chatAccess`. Agent
+tools never receive the view capability or the trusted permission-control revision.
 
 ## Bundles
 
@@ -82,7 +83,10 @@ manifest also contains an `application` object:
 it. Both use the bounded widget schema subset for arguments and results and are
 limited to 20 each. `agent` (default `true`) exposes a query/action to the
 agent; `false` keeps it view-only. `application.eventMode` is the default event
-mode for a first apply.
+mode for a first apply. `application.capabilities` may request `chat.read` and
+`chat.send` (no duplicates, at most two). A declaration is **not** consent.
+This backend checkpoint implements reading only; sending is reserved and has
+no callable endpoint or grant yet. See [optional chat](#optional-chat-backend-checkpoint).
 
 `widget.js` exports:
 
@@ -121,7 +125,9 @@ data})` runs after each observed revision change. The view host polls
 
 The view keeps the widget iframe sandbox and CSP: no network, storage, nested
 frames, workers, microphone or other browser permissions. It has no access to
-history, the draft, chat sending, native window commands or other sessions.
+the draft, chat sending, native window commands or other sessions. The current
+iframe API still does not expose history; the host-enforced optional read endpoint
+below is the backend foundation for that API.
 
 ## View HTTP protocol
 
@@ -133,17 +139,90 @@ ignored, never echoed), operation names of at most 48 characters, and JSON
 arguments of at most 32 KiB. Non-JSON arguments (for example cyclic objects)
 are refused with an answer, so they never hold a request slot.
 
-| Request                 | Body / response                                                       |
-| ----------------------- | --------------------------------------------------------------------- |
-| `GET <viewUrl>`         | Trusted host document with the bundle inside a sandboxed iframe.      |
-| `GET <viewUrl>/state`   | `SessionApplicationStateResponse`.                                    |
-| `POST <viewUrl>/action` | `SessionApplicationActionRequest` → action result + `id`, `revision`. |
-| `POST <viewUrl>/query`  | `SessionApplicationQueryRequest` → `{result, revision}`.              |
+| Request                    | Body / response                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET <viewUrl>`            | Trusted host document with the bundle inside a sandboxed iframe.                           |
+| `GET <viewUrl>/state`      | `SessionApplicationStateResponse`.                                                         |
+| `POST <viewUrl>/action`    | `SessionApplicationActionRequest` → action result + `id`, `revision`.                      |
+| `POST <viewUrl>/query`     | `SessionApplicationQueryRequest` → `{result, revision}`.                                   |
+| `POST <viewUrl>/chat-read` | `{version, after?}` → bounded changed snapshot or unchanged revision; read grant required. |
 
-The native profile maps `companion-widget://view/` onto `viewUrl` and must allow
-exactly these four requests. `version` mismatches are refused (`409`), so a view
-running replaced code cannot execute successor actions. A request from this
+The native profile maps `companion-widget://view/` onto `viewUrl`. It currently
+forwards only the original document/state/action/query operations; adding the
+optional chat bridge/native allowlist is still pending in this backend checkpoint.
+`version` mismatches are refused (`409`), so a view running replaced code cannot
+execute successor actions. A request from this
 view ingress is a **user** edit; origin is never read from the body.
+
+## Optional chat (backend checkpoint)
+
+The gated read service and trusted desktop command exist; the grant UI, iframe
+chat API, native forwarding and app-origin sending are not yet implemented.
+The application remains able to show app-only content. Canonical trusted chat,
+its escape bar and the trusted draft remain separate from authored content.
+
+### Consent and lifetime
+
+`chatAccess` contains `{requested, read, revision}`. A trusted desktop client
+uses `set-application-chat-read` with `{id, applicationId, version, revision,
+allowed}`. The conversation must still be shown by that non-remote desktop
+connection when the command is admitted **and** when its queued mutation runs.
+The application ID, code version and permission revision must still match.
+The new permission revision is returned. Agents' tool dispatch and application
+view dispatch have no grant operation. Declaring `chat.read` is required before
+it can be allowed; grants never start a model turn or change application state.
+
+Grants are memory-only, tied to this open conversation and exact application
+ID/version/bundle. Closing/reopening the conversation, restarting the listener,
+or successfully replacing code resets them, even for identical code or capability
+names. Failed code replacement does not reset the current grant. State edits
+and hiding/showing the view preserve it. Permission revisions change on each
+permission change and reset, rejecting old consent confirmations.
+
+The grant's disclosure must say that it includes **recent earlier conversation
+text**, not just messages after installation. The app can copy that text into
+its own persisted state, actions or agent-visible events. Network restrictions
+do not prevent this onward disclosure. Revoking stops future reads; it cannot
+recall copies or responses already delivered. Read and send are separate grants;
+reading does not authenticate an application composer as a person.
+
+This is a trusted-UI / authored-code / agent-tool boundary, not an OS security
+boundary against same-user native processes that can control Companion's local
+IPC. The existing local-process trust assumptions still apply.
+
+### Read requests and bounds
+
+`POST <viewUrl>/chat-read` accepts only `version` and an optional `after` digest
+(64 lowercase hexadecimal characters). It never accepts a conversation ID,
+permission flag, arbitrary limit or historical-page cursor. The owning view
+capability scopes the request. After reading its body and entering the shared
+operation queue, the service rechecks the open owner, capability, version and
+read grant; delayed old requests cannot cross revocation or close/reopen.
+
+The result is either `{changed:false, revision}` or a full replacement snapshot
+`{changed:true, revision, status, truncated, messages}`. Each message has `id`,
+`role`, `source`, `text`, `state` and `truncated`. IDs identify streaming row
+replacements. `status` is the canonical conversation status, including running,
+completed, cancelled and error. No per-row timestamps are invented: the existing
+canonical records do not retain them.
+
+- At most 24 user/assistant text rows from the last 256 canonical rows.
+- At most 8192 UTF-16 units per row, keeping the newest suffix on truncation.
+- At most 48 KiB of JSON-encoded rows and 64 KiB for the response. Escaping and
+  metadata count; Unicode surrogate pairs are not split at truncation boundaries.
+- Tools, notices, widgets, attachment URLs/bytes and input fields are excluded.
+  Non-human user-kind rows carry non-human source labels; unknown retained origins
+  are labelled `unknown`, not `human`.
+- One successful source read per 250 ms per open application, enforced by the
+  backend even for raw requests. Too-frequent requests return 429. Revoked reads
+  return 403, stale versions 409, missing views 404, malformed requests 400.
+- `revision` digests the bounded projection. Unchanged polls omit history.
+  Changed responses replace the entire prior window, including removals; they
+  are not append-only token deltas.
+
+`GET /state` reports `chatReadAllowed` so the future host bridge can expose or
+withdraw the optional API. That flag is informational, never authorization.
+The read service never implicitly writes its projection into app state.
 
 ## Agent tools
 
@@ -242,8 +321,9 @@ and not new authority.
   label them as data, not instructions.
 - Each view polls its state every 400 ms while visible. A view that keeps an
   old code version open is refused (409) and reloads.
-- Only the Chromium pop-out transport and the native profile may forward the
-  four view requests; neither is a general proxy.
+- Only the Chromium pop-out transport and the native profile may forward
+  allowlisted view requests; neither is a general proxy. Native chat forwarding
+  is pending; the backend read endpoint does not broaden that allowlist.
 - If the conversation's widget records cannot be loaded, widget and
   application tools are unavailable for its turns (existing widget behavior).
 

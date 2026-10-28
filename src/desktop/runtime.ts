@@ -144,6 +144,8 @@ const desktopOnlyActions = new Set([
   'paste',
   // Capture storage is a desktop privacy setting; v1 has no remote control.
   'set-capture-storage',
+  // Application conversation access is granted only in trusted desktop UI.
+  'set-application-chat-read',
   // Only the desktop Activity page shows the defaults for new sessions.
   'coding-defaults',
   'set-coding-defaults',
@@ -1814,6 +1816,32 @@ export class DesktopRuntime {
       });
       this.server.broadcast();
       return 'deleted';
+    }
+
+    if (request.action === 'set-application-chat-read') {
+      if (!this.options.agents || typeof request.id !== 'string') {
+        throw Error('Expected a conversation');
+      }
+      const id = request.id;
+      const validateDesktop = () => {
+        if (!this.showsConversation(clientId, id) || this.remoteClients.has(clientId)) {
+          throw Error('This conversation is no longer selected on the desktop');
+        }
+      };
+      validateDesktop();
+      if (this.options.preview) {
+        return 'preview';
+      }
+      return this.options.agents.setApplicationChatRead(
+        id,
+        {
+          applicationId: request.applicationId,
+          version: request.version,
+          revision: request.revision,
+          allowed: request.allowed,
+        },
+        validateDesktop,
+      );
     }
 
     if (request.action === 'agent-history-page') {

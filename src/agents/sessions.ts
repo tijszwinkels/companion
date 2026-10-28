@@ -9,12 +9,13 @@ import { describeRecurrence } from './wakes/recurrence.ts';
 
 import { WidgetService } from '../widgets/service.ts';
 import { bundledLibraryDirectory } from '../widgets/library-path.ts';
-import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
+import type { JsonObject, WidgetLease, WidgetRecord } from '../widgets/types.ts';
 import {
   sessionApplicationLimits,
   type SessionApplicationDescriptor,
   type SessionApplicationEventMode,
 } from '../session-apps/types.ts';
+import { applicationChatSnapshot } from '../session-apps/chat.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import {
@@ -264,6 +265,15 @@ export class AgentSessions implements InspectableModule {
       {
         changed: (owner, descriptor) => this.applicationChanged(owner, descriptor),
         userEdit: (owner, eventMode) => this.applicationEdited(owner, eventMode),
+        readChat: (owner, after) => {
+          const session = this.sessions.get(owner);
+          if (!session) {
+            throw Error('Conversation is closed');
+          }
+          // The application service checked version, grant and read rate first.
+          // Use canonical rows, never a possibly historical UI page or draft.
+          return applicationChatSnapshot(session.view, after);
+        },
       },
     );
     this.wakes = new WakeScheduler(
@@ -318,6 +328,11 @@ export class AgentSessions implements InspectableModule {
   }
 
   // ---- Session applications (src/session-apps/README.md) -------------------
+
+  /** Trusted desktop route only; never exposed through agent or application tools. */
+  setApplicationChatRead(id: string, command: JsonObject, validateDesktop?: () => void) {
+    return this.widgets.applications.setChatRead(id, command, validateDesktop);
+  }
 
   /**
    * Debounce for immediate-mode application events, in milliseconds. Edits

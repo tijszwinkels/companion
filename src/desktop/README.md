@@ -731,8 +731,18 @@ tools](../agents/README.md#session-lifecycle-tools).
 conversation's session application. Live-only `application` (absent means
 HTML chat) describes that application: `id`, `name`, code `version`, state
 `revision`, desktop-only `viewUrl`, `text`, `eventMode`, optional `eventStatus`
-and `error`. Remote/phone snapshots omit `viewUrl`. See
+and `error`. `chatAccess` holds desktop-only requested capabilities, read permission
+and its revision. Remote/phone snapshots omit `viewUrl` and `chatAccess`. See
 [session applications](../session-apps/README.md).
+
+The backend-only `set-application-chat-read` command takes `{id, applicationId,
+version, revision, allowed}`. It requires a conversation still shown by the
+calling non-remote desktop client, including after a queue wait. App identity,
+code version and permission revision must match. The returned permission status
+is ephemeral; close/reopen, listener restart and successful code replacement
+reset it. No agent tool or app-view route can grant it. Trusted consent UI and
+native chat forwarding are not yet connected at this checkpoint; see the
+[read contract and required disclosure](../session-apps/README.md#optional-chat-backend-checkpoint).
 
 ### Model selection, ordering and spoken navigation
 

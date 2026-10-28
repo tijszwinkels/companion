@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { Ajv, type ValidateFunction } from 'ajv';
 
 import { bundledLibraryDirectory } from './library-path.ts';
+import { sessionApplicationChatCapabilities } from '../session-apps/types.ts';
 import {
   boundedJson,
   object,
@@ -161,9 +162,15 @@ export class WidgetRegistry {
     if (input.application !== undefined) {
       const application = object(input.application);
       const eventMode = application.eventMode;
+      const capabilities = application.capabilities;
       if (
-        Object.keys(application).some((key) => key !== 'eventMode') ||
-        (eventMode !== undefined && eventMode !== 'immediate' && eventMode !== 'next-input')
+        Object.keys(application).some((key) => key !== 'eventMode' && key !== 'capabilities') ||
+        (eventMode !== undefined && eventMode !== 'immediate' && eventMode !== 'next-input') ||
+        (capabilities !== undefined &&
+          (!Array.isArray(capabilities) ||
+            capabilities.length > sessionApplicationChatCapabilities.length ||
+            new Set(capabilities).size !== capabilities.length ||
+            capabilities.some((value) => !sessionApplicationChatCapabilities.includes(value))))
       ) {
         throw Error('Invalid application manifest block');
       }

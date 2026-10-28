@@ -27,6 +27,18 @@ export const sessionApplicationEventModes: readonly SessionApplicationEventMode[
   'next-input',
 ];
 
+/** Bundle declarations are requests, never grants. */
+export const sessionApplicationChatCapabilities = ['chat.read', 'chat.send'] as const;
+export type SessionApplicationChatCapability = (typeof sessionApplicationChatCapabilities)[number];
+
+/** Desktop-only, ephemeral permission status. Never saved in the app record. */
+export interface SessionApplicationChatAccess {
+  requested: SessionApplicationChatCapability[];
+  read: boolean;
+  /** Fresh on replacement/reopen and every permission change; rejects stale consent. */
+  revision: string;
+}
+
 /**
  * Delivery state of the application's user-edit events, for display only.
  *
@@ -79,6 +91,8 @@ export interface SessionApplicationDescriptor {
   text: string;
   eventMode: SessionApplicationEventMode;
   eventStatus?: SessionApplicationEventStatus;
+  /** Trusted desktop permission controls; omitted from remote snapshots. */
+  chatAccess?: SessionApplicationChatAccess;
   /**
    * Present when the saved application could not be restored (missing or
    * corrupt bundle, invalid saved state). Its saved data is kept unchanged;
@@ -98,6 +112,8 @@ export interface SessionApplicationStateResponse {
   data: Record<string, unknown>;
   props: Record<string, unknown>;
   textScale: number | null;
+  /** Grants are enforced at each chat request, not by this display-only flag. */
+  chatReadAllowed: boolean;
 }
 
 /** `POST <viewUrl>/action` request body from the trusted view host. */

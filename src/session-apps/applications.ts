@@ -51,10 +51,12 @@ import {
   recoverInterruptedDelivery,
 } from './outbox.ts';
 import { SessionApplicationError } from './errors.ts';
+import { applicationChatLimits, type ApplicationChatResponse } from './chat.ts';
 import {
   sessionApplicationEventModes,
   sessionApplicationLimits,
   type SessionApplicationDescriptor,
+  type SessionApplicationChatAccess,
   type SessionApplicationEventMode,
   type SessionApplicationStateResponse,
 } from './types.ts';
@@ -77,6 +79,8 @@ export interface ApplicationHooks {
   changed(owner: string, descriptor: SessionApplicationDescriptor | undefined): void;
   /** A user edit was committed with an event; the session may schedule delivery. */
   userEdit(owner: string, eventMode: SessionApplicationEventMode): void;
+  /** Synchronous bounded projection, invoked only after a current read grant check. */
+  readChat?(owner: string, after?: string): ApplicationChatResponse;
 }
 
 /**
@@ -110,6 +114,15 @@ interface Entry {
    * failed.
    */
   deliveryProblem?: string;
+  /** Ephemeral, bound to exact code and this open entry, never serialized. */
+  chat?: {
+    applicationId: string;
+    bundle: string;
+    version: number;
+    revision: string;
+    read: boolean;
+    lastReadAt?: number;
+  };
 }
 
 /** View request results; WidgetService writes the HTTP response. */
@@ -327,6 +340,7 @@ export class SessionApplications {
       text: record.text,
       eventMode: record.eventMode,
       eventStatus: this.eventStatus(entry, record),
+      chatAccess: this.chatAccess(entry, record),
     };
   }
 
@@ -345,6 +359,95 @@ export class SessionApplications {
 
   private async publish(owner: string): Promise<void> {
     this.hooks.changed(owner, await this.descriptor(owner));
+  }
+
+  // ---- Trusted desktop permission controls --------------------------------
+
+  /**
+   * A successful replacement creates a fresh, denied permission identity even
+   * when the replacement declares exactly the same capability names. State-only
+   * commits keep the identity. Reopen creates a new Entry, so old confirmations
+   * cannot grant access after close/reopen or listener restart.
+   */
+  private chatGrant(entry: Entry, record: ApplicationRecord): NonNullable<Entry['chat']> {
+    if (
+      !entry.chat ||
+      entry.chat.applicationId !== record.id ||
+      entry.chat.bundle !== record.bundle ||
+      entry.chat.version !== record.version
+    ) {
+      entry.chat = {
+        applicationId: record.id,
+        bundle: record.bundle,
+        version: record.version,
+        revision: randomUUID(),
+        read: false,
+      };
+    }
+    return entry.chat;
+  }
+
+  private chatAccess(entry: Entry, record: ApplicationRecord): SessionApplicationChatAccess {
+    const grant = this.chatGrant(entry, record);
+    return {
+      requested: [...(entry.bundle?.manifest.application?.capabilities ?? [])],
+      read: grant.read,
+      revision: grant.revision,
+    };
+  }
+
+  /**
+   * Trusted desktop ingress ONLY. Deliberately not dispatched by agent() or
+   * view(), and not an application action. The desktop transport must require
+   * a currently shown conversation and reject remote-role callers.
+   */
+  async setChatRead(
+    owner: string,
+    command: JsonObject,
+    validateDesktop?: () => void,
+  ): Promise<SessionApplicationChatAccess> {
+    if (
+      Object.keys(command).some(
+        (key) => !['applicationId', 'version', 'revision', 'allowed'].includes(key),
+      ) ||
+      typeof command.applicationId !== 'string' ||
+      typeof command.revision !== 'string' ||
+      !Number.isSafeInteger(command.version) ||
+      typeof command.allowed !== 'boolean'
+    ) {
+      throw new SessionApplicationError(
+        'Expected an application, version, permission revision and allowed flag',
+      );
+    }
+
+    return this.host.serialized(owner, async () => {
+      this.host.check(owner);
+      const { record, bundle } = this.current(owner);
+      const entry = this.entries.get(owner)!;
+      const grant = this.chatGrant(entry, record);
+      // A queue wait must not outlive the trusted view that confirmed consent.
+      validateDesktop?.();
+      if (
+        command.applicationId !== record.id ||
+        command.version !== record.version ||
+        command.revision !== grant.revision
+      ) {
+        throw new SessionApplicationError(
+          'Application or permissions changed; review the current permission controls.',
+          409,
+        );
+      }
+      if (command.allowed && !bundle.manifest.application?.capabilities?.includes('chat.read')) {
+        throw new SessionApplicationError('This application does not request chat.read', 403);
+      }
+      if (grant.read !== command.allowed) {
+        grant.read = command.allowed === true;
+        grant.revision = randomUUID();
+        delete grant.lastReadAt;
+        await this.publish(owner);
+      }
+      return this.chatAccess(entry, record);
+    });
   }
 
   // ---- Agent lease ---------------------------------------------------------
@@ -426,6 +529,7 @@ export class SessionApplications {
         data: record.data,
         props: record.data,
         textScale: null,
+        chatReadAllowed: this.chatGrant(entry, record).read,
       };
       return { kind: 'json', value: state };
     }
@@ -435,7 +539,61 @@ export class SessionApplications {
     if (method === 'POST' && operation === 'query') {
       return { kind: 'json', value: await this.query(owner, { kind: 'user' }, await body()) };
     }
+    if (method === 'POST' && operation === 'chat-read') {
+      return { kind: 'json', value: await this.readChat(owner, capability, await body()) };
+    }
     throw new SessionApplicationError('Unknown application view operation', 404);
+  }
+
+  private async readChat(
+    owner: string,
+    capability: string,
+    command: JsonObject,
+  ): Promise<ApplicationChatResponse> {
+    if (
+      Object.keys(command).some((key) => key !== 'version' && key !== 'after') ||
+      !Number.isSafeInteger(command.version) ||
+      (command.after !== undefined &&
+        (typeof command.after !== 'string' || !/^[0-9a-f]{64}$/.test(command.after)))
+    ) {
+      throw new SessionApplicationError('Expected a code version and optional chat revision');
+    }
+
+    // Serialize with apply and trusted revocation. Check AGAIN after reading
+    // the body and entering the queue: both may have awaited replacement,
+    // revocation or close/reopen. Never retain a source transcript across await.
+    return this.host.serialized(owner, async () => {
+      this.host.check(owner);
+      const { record, bundle } = this.current(owner);
+      const entry = this.entries.get(owner)!;
+      if (entry.capability !== capability || this.ownerOf(capability) !== owner) {
+        throw new SessionApplicationError('Application view expired', 403);
+      }
+      if (command.version !== record.version) {
+        throw new SessionApplicationError('Application code changed; reload the view.', 409);
+      }
+      const grant = this.chatGrant(entry, record);
+      if (!grant.read || !bundle.manifest.application?.capabilities?.includes('chat.read')) {
+        throw new SessionApplicationError(
+          'Chat reading is not allowed. Use the trusted application permissions.',
+          403,
+        );
+      }
+      if (!this.hooks.readChat) {
+        throw new SessionApplicationError('Conversation text is unavailable', 503);
+      }
+      const now = this.now();
+      if (
+        grant.lastReadAt !== undefined &&
+        now - grant.lastReadAt < applicationChatLimits.readIntervalMilliseconds
+      ) {
+        throw new SessionApplicationError('Chat reads are too frequent', 429);
+      }
+      grant.lastReadAt = now;
+      const result = this.hooks.readChat(owner, command.after as string | undefined);
+      boundedJson(result, applicationChatLimits.responseBytes);
+      return result;
+    });
   }
 
   // ---- Operations ----------------------------------------------------------

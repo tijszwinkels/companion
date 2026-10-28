@@ -23,6 +23,8 @@ export const applicationChatLimits = {
   encodedMessagesBytes: 48 * 1024,
   /** The complete response must stay below this bound. */
   responseBytes: 64 * 1024,
+  /** Host-enforced per-application rate, including requests that bypass the view JS. */
+  readIntervalMilliseconds: 250,
 } as const;
 
 export interface ApplicationChatMessage {

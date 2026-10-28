@@ -643,7 +643,7 @@ export class WidgetService {
       return;
     }
     const match =
-      /^\/view\/([0-9a-f]{64})(?:\/(state|action|query|frame|layout|input|present|popout|viewport))?$/.exec(
+      /^\/view\/([0-9a-f]{64})(?:\/(state|action|query|chat-read|frame|layout|input|present|popout|viewport))?$/.exec(
         url.pathname,
       );
     const applicationOwner = match ? this.applications.ownerOf(match[1]) : undefined;

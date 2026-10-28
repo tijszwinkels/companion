@@ -535,6 +535,7 @@ export class Relay {
       const application = value.application as Record<string, unknown> | undefined;
       if (application && typeof application === 'object') {
         delete application.viewUrl;
+        delete application.chatAccess;
       }
       this.rewriteSession(value);
       if (value.pinnedMessage) {
