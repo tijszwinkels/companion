@@ -66,12 +66,14 @@ upgrade path; it must be rebuilt/revalidated when Qt or Quickshell changes.
 Each view has a separate off-the-record WebEngine profile with memory-only
 caching and rejected cookies, downloads and permissions. The browser uses
 `companion-widget://view/`; its scheme handler brokers only document/state GETs
-and action/read-only query POSTs (`/action`, `/query`) to the exact validated
-local view capability supplied by the panel. Session applications use the same
-profile and broker. Qt WebEngine never settles a page's `fetch()` whose scheme
-job fails, so the broker answers a refused data request (state, action, query)
+and action/query/chat-read POSTs (`/action`, `/query`, `/chat-read`) to the exact
+validated local view capability supplied by the panel. Session applications use
+the same profile and broker. Chat reads have a 1 KiB request / 64 KiB reply cap
+and still require backend consent for the exact application code/open lifetime.
+No grant or chat-send endpoint is forwarded. Qt WebEngine never settles a page's `fetch()` whose scheme
+job fails, so the broker answers a refused data request (state, action, query, chat-read)
 with a redirect to a fixed URL its interceptor blocks; the page's request then
-rejects at once as a network error. A refused action or query does not mark the
+rejects at once as a network error. A refused action, query or chat read does not mark the
 view as broken; a failed document/state load does, until the next successful
 load. Request bodies, replies and transfer time are bounded. Redirects
 are rejected. A changed view aborts old requests and advances an identity

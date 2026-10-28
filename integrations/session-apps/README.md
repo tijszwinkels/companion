@@ -26,7 +26,7 @@ widgets, pins and the panel browser stay where they were). Start the host with
 
 | Part                                          | Source                                 |
 | --------------------------------------------- | -------------------------------------- |
-| Conversation model: rows, draft, pending send | `../panel/SessionView.qml` (unchanged) |
+| Conversation model: rows, draft, pending send | `../panel/SessionView.qml`             |
 | Chat/application switch and native bar        | `SessionSurface.qml`                   |
 | Trusted chat view and its bridge              | `TrustedChatView.qml`, `ChatState.mjs` |
 | Trusted chat page (Preact)                    | `chat/`, built into `dist/`            |
@@ -58,9 +58,15 @@ Markdown with raw HTML disabled.
 **Session application.** Agent-authored code, loaded only in the existing
 restricted widget renderer (`../panel/NativeWidgetView.qml`, `WidgetProfile`):
 off-the-record profile, no QWebChannel, no permissions, and a broker that maps
-exactly `GET /`, `GET /state`, `POST /action` and `POST /query` onto that
-application's capability URL. It cannot read history or the draft, send chat,
-move focus, call window commands or reach other conversations. It is never a
+exactly `GET /`, `GET /state`, `POST /action`, `POST /query` and bounded
+`POST /chat-read` onto that application's capability URL. History requires
+explicit native read consent and excludes drafts, tools and attachments. The
+native permission control lives below the escape bar, outside both browsers;
+only the dedicated native Client command can grant or revoke access. Authored
+`api.chat.read()` and `api.chat.subscribe()` receive the bounded text projection,
+never the trusted Chat bridge. See the [read contract](../../src/session-apps/README.md#optional-chat-read-checkpoint).
+The app cannot read the draft, send chat, move focus, call window commands or
+reach other conversations. It is never a
 composer: only the trusted chat page reports composer focus for voice routing.
 
 This is a constrained contract, not a claim that arbitrary hostile code is
@@ -143,9 +149,9 @@ The view follows `session.application`:
 
 ## Refused application requests
 
-Through the native profile a refused action or query (for example a stale code
+Through the native profile a refused action, query or chat read (for example a stale code
 version, invalid arguments or a busy outbox) settles in the application's page
-as a failed request: `api.call`/`api.query` reject, nothing changes, and later
+as a failed request: `api.call`/`api.query`/`api.chat.read` reject, nothing changes, and later
 valid requests work. The page learns that it failed, not why, because Qt's
 scheme handler cannot pass a non-200 status or body; refusals are never turned
 into successful replies. Only a failed document or state load (or an expired

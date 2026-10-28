@@ -340,6 +340,27 @@ Item {
     onOnlineChanged: root.publish()
   }
 
+  // Trusted native consent has its own command/reply route, never a page
+  // bridge. Report the shown view before admission; the listener rechecks it.
+  Binding {
+    target: panel.conversationView
+    property: "appChatPermissionTransportReady"
+    value: root.htmlSessions
+  }
+  Connections {
+    target: panel.conversationView
+    function onAppChatPermissionRequested(request) {
+      client.reportPanel()
+      client.send(request)
+    }
+  }
+  Connections {
+    target: client
+    function onAppChatPermissionReceived(message) {
+      for (const view of popoutViews.allViews()) view.receiveAppChatPermissionResult(message)
+    }
+  }
+
   PopoutController {
     id: popoutViews
     // Through root: a bare `client` here would name this object's own property.

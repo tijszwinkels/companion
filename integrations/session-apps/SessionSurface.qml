@@ -203,10 +203,23 @@ Item {
     }
   }
 
+  // Consent stays native and above authored content, below the permanent
+  // Chat/App/Classic escape bar. No application can draw over its controls.
+  Loader {
+    id: permission
+    objectName: "appChatPermissionMount"
+    anchors.top: bar.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    active: root.view !== null && root.application !== null && root.mode === "app"
+    sourceComponent: root.view ? root.view.appChatPermissionControl : null
+    height: active && item ? item.implicitHeight : 0
+  }
+
   TrustedChatView {
     id: chat
     objectName: "trustedChat"
-    anchors.top: bar.bottom
+    anchors.top: permission.bottom
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: parent.bottom
@@ -220,7 +233,7 @@ Item {
   SessionAppView {
     id: appView
     objectName: "sessionApp"
-    anchors.top: bar.bottom
+    anchors.top: permission.bottom
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: parent.bottom

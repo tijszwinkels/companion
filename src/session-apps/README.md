@@ -122,19 +122,33 @@ data})` runs after each observed revision change. The view host polls
   hidden), so a change may take up to about half a second to appear.
 - `api.query(name, args)` → validated query result.
 - `api.call(name, args)` → validated action result, after persistence.
+- `api.chat.read()` → the complete bounded text snapshot described below. It
+  accepts no arguments and rejects without observed read consent, while hidden,
+  or on refusal. Up to eight callers share one request and the action/query/state
+  request budget. Calls within 400 ms may receive that recent cached snapshot.
+- `api.chat.subscribe(callback)` → unsubscribe function. Immediately reports
+  `{available:false, snapshot:null, error:""}` before access is observed, then
+  reports `{available, snapshot, error}` on permission/content changes. `snapshot`
+  is null until the first read or after withdrawal; otherwise it is a complete
+  window, never a token delta. At most 32 callbacks share one host subscription.
+  The host polls every 400 ms while visible and subscribed, supplying the code
+  version and digest itself. No caller may pick another conversation or cursor.
+  Observed revocation, hidden pages, failed reads and code changes clear the host
+  cache and invalidate in-flight delivery. Permission/state refresh is required
+  before reading resumes. Already delivered copies cannot be erased.
 
 The view keeps the widget iframe sandbox and CSP: no network, storage, nested
 frames, workers, microphone or other browser permissions. It has no access to
-the draft, chat sending, native window commands or other sessions. The current
-iframe API still does not expose history; the host-enforced optional read endpoint
-below is the backend foundation for that API.
+the draft, chat sending, native window commands or other sessions. History is
+available only through the separately consented, bounded read API. These methods
+do not themselves grant permission or persist text into application state.
 
 ## View HTTP protocol
 
 All requests go to the loopback widget service; Host and Origin must match it.
 The trusted host page bounds what authored code can ask of it, including
 messages posted directly: at most eight outstanding requests (actions, queries
-and one shared state read), request IDs of 1–100 characters (others are
+and shared state/chat reads), request IDs of 1–100 characters (others are
 ignored, never echoed), operation names of at most 48 characters, and JSON
 arguments of at most 32 KiB. Non-JSON arguments (for example cyclic objects)
 are refused with an answer, so they never hold a request slot.
@@ -157,11 +171,11 @@ successful empty history. A refused chat read does not disable the whole view.
 execute successor actions. An action request from this view ingress is a
 **user** edit; origin is never read from the body. Chat reads are non-mutating.
 
-## Optional chat (backend checkpoint)
+## Optional chat (read checkpoint)
 
-The gated read service, trusted desktop command, native broker and standalone
-trusted consent control exist. The control is not yet mounted/wired by the shared
-HTML surface; the iframe chat API and app-origin sending are not yet implemented.
+Read consent is shown in native controls below the app's trusted escape bar in
+both sidebar and pop-out HTML surfaces. It enables the gated iframe read API,
+not chat sending. App-origin sending is not yet implemented.
 The application remains able to show app-only content. Canonical trusted chat,
 its escape bar and the trusted draft remain separate from authored content.
 
@@ -195,9 +209,11 @@ This is a trusted-UI / authored-code / agent-tool boundary, not an OS security
 boundary against same-user native processes that can control Companion's local
 IPC. The existing local-process trust assumptions still apply.
 
-`SessionView.appChatPermissionControl` is the native consent component. Its
-transport is disabled until the owning surface adapter explicitly wires
-`appChatPermissionRequested` and `receiveAppChatPermissionResult`. It offers
+`SessionView.appChatPermissionControl` is the native consent component, mounted
+by `SessionSurface`. Its transport defaults off; `WindowContent` and
+`PopoutWindow` explicitly wire `appChatPermissionRequested` through the native
+Client and `receiveAppChatPermissionResult` back to the owning view. No page
+QWebChannel or iframe grant operation is added. It offers
 review → allow and direct revoke, wraps/scrolls at narrow widths, and supports
 keyboard activation. Pending requests are single-flight, never replayed after a
 timeout. Descriptor identity changes discard old confirmations/replies, and
@@ -234,8 +250,8 @@ canonical records do not retain them.
   Changed responses replace the entire prior window, including removals; they
   are not append-only token deltas.
 
-`GET /state` reports `chatReadAllowed` so the future host bridge can expose or
-withdraw the optional API. That flag is informational, never authorization.
+`GET /state` reports `chatReadAllowed` so the host bridge can expose or
+withdraw optional read delivery. That flag is informational, never authorization.
 The read service never implicitly writes its projection into app state.
 
 ## Agent tools

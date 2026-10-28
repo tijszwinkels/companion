@@ -735,15 +735,15 @@ and `error`. `chatAccess` holds desktop-only requested capabilities, read permis
 and its revision. Remote/phone snapshots omit `viewUrl` and `chatAccess`. See
 [session applications](../session-apps/README.md).
 
-The backend-only `set-application-chat-read` command takes `{id, applicationId,
+The trusted native `set-application-chat-read` command takes `{id, applicationId,
 version, revision, allowed}`. It requires a conversation still shown by the
 calling non-remote desktop client, including after a queue wait. App identity,
 code version and permission revision must match. The returned permission status
 is ephemeral; close/reopen, listener restart and successful code replacement
-reset it. No agent tool or app-view route can grant it. The native broker and
-standalone consent component exist, but the shared surface has not yet mounted
-or wired that control; see the
-[read contract and required disclosure](../session-apps/README.md#optional-chat-backend-checkpoint).
+reset it. No agent tool or app-view route can grant it. Sidebar and pop-out
+HTML surfaces mount the native consent component below the trusted escape bar;
+its dedicated native Client route never becomes an authored-page bridge. See the
+[read contract and required disclosure](../session-apps/README.md#optional-chat-read-checkpoint).
 
 ### Model selection, ordering and spoken navigation
 

@@ -15,6 +15,10 @@ function applyTheme(theme) {
 // `api.state`/`api.query`; ordinary widgets keep receiving props via update().
 let latestState = null;
 const stateSubscribers = new Set();
+// This is a transient view, never merged into the application's saved state.
+// Copies made by authored code cannot be recalled; the native consent UI says so.
+const chatSubscribers = new Set();
+let latestChat = { available: false, snapshot: null, error: '' };
 
 // Every request to the host shares one bounded table of pending replies.
 function request(message) {
@@ -40,6 +44,33 @@ const api = {
   },
   query(name, args = {}) {
     return request({ type: 'query', name, args });
+  },
+  chat: {
+    read() {
+      return request({ type: 'chat-read' });
+    },
+    subscribe(callback) {
+      if (typeof callback !== 'function' || chatSubscribers.size >= 32) {
+        throw Error('Chat subscribe needs a callback and has a 32-subscriber limit');
+      }
+      const first = chatSubscribers.size === 0;
+      chatSubscribers.add(callback);
+      if (first) {
+        parent.postMessage({ type: 'chat-watch', watching: true }, '*');
+      }
+      try {
+        callback(structuredClone(latestChat));
+      } catch (error) {
+        console.error(error);
+      }
+      return () => {
+        chatSubscribers.delete(callback);
+        if (chatSubscribers.size === 0) {
+          latestChat = { available: false, snapshot: null, error: '' };
+          parent.postMessage({ type: 'chat-watch', watching: false }, '*');
+        }
+      };
+    },
   },
   state: {
     read() {
@@ -72,6 +103,21 @@ window.addEventListener('message', async (event) => {
     return;
   }
   const message = event.data;
+  if (message.type === 'chat-update') {
+    latestChat = {
+      available: message.available === true,
+      snapshot: message.available === true ? message.snapshot : null,
+      error: typeof message.error === 'string' ? message.error : '',
+    };
+    for (const callback of chatSubscribers) {
+      try {
+        callback(structuredClone(latestChat));
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    return;
+  }
   if (message.type === 'action-result') {
     const pending = pendingActions.get(message.id);
     pendingActions.delete(message.id);
@@ -159,6 +205,9 @@ const sizeObserver = new ResizeObserver(() => {
 });
 sizeObserver.observe(root);
 window.addEventListener('pagehide', () => {
+  chatSubscribers.clear();
+  latestChat = { available: false, snapshot: null, error: '' };
+  parent.postMessage({ type: 'chat-watch', watching: false }, '*');
   sizeObserver.disconnect();
   controller?.dispose?.();
 });

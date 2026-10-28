@@ -51,7 +51,12 @@ function host(options: { application?: boolean } = {}) {
       },
     },
     location: { href: 'http://127.0.0.1:1234/view/' + 'a'.repeat(64), reload() {} },
-    document: { createElement: element, body: { append() {} }, hidden: false },
+    document: {
+      createElement: element,
+      body: { append() {} },
+      hidden: false,
+      addEventListener() {},
+    },
     fetch(url: string, init?: { method?: string }) {
       return new Promise((resolve, reject) => {
         fetches.push({

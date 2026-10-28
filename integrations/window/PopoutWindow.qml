@@ -183,6 +183,8 @@ Window {
     session: root.session
     nativeWidgets: root.controller.nativeWidgets
     htmlSurface: root.controller.htmlSessions
+    appChatPermissionTransportReady: root.controller.htmlSessions
+    onAppChatPermissionRequested: request => { root.client.reportPanel(); root.client.send(request) }
     widgetsRunning: root.client.online && root.visible
     background: root.theme.background
     agentActions: root.client.agentActions

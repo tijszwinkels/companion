@@ -63,9 +63,13 @@ async function update(props, theme, nextRevision) {
   currentProps = props;
 }
 
-function reply(id, result, error) {
+function reply(id, result, error, showStatus = true) {
   frame.contentWindow.postMessage({ type: 'action-result', id, result, error }, '*');
-  status.textContent = error || '';
+  // Chat permission/refusal is part of the authored subscription/read UI. It
+  // must not leave a stale global error over a later successful subscription.
+  if (showStatus) {
+    status.textContent = error || '';
+  }
 }
 
 window.addEventListener('message', (event) => {
@@ -137,6 +141,26 @@ window.addEventListener('message', (event) => {
     }
     const query = { name: message.name, args: message.args, version: application.version };
     send('/query', query, message.id, false);
+  } else if (message.type === 'chat-watch' && application) {
+    // One subscription flag, not an unbounded table controlled by the frame.
+    if (typeof message.watching === 'boolean') {
+      if (message.watching && !chatWatching) {
+        chatNeedsSnapshot = true;
+      }
+      chatWatching = message.watching;
+      if (chatWatching) {
+        publishChat(false);
+      }
+    }
+  } else if (message.type === 'chat-read') {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    if (Object.keys(message).some((key) => key !== 'type' && key !== 'id')) {
+      reply(message.id, null, 'Chat reads accept no arguments', false);
+      return;
+    }
+    readChat(message.id);
   } else if (message.type === 'state-read') {
     if (!validRequestId(message.id)) {
       return;
@@ -171,6 +195,168 @@ function validArguments(args) {
   }
   return typeof json === 'string' && new TextEncoder().encode(json).byteLength <= 32768;
 }
+
+// Optional, text-only chat reads. Neither the frame nor its state/actions may
+// grant access, select a conversation/version, or choose the polling cursor.
+// The service authorizes every request; this observed flag only avoids useless
+// requests and withdraws local cached/in-flight delivery after a known revoke.
+let chatAllowed = false;
+let chatEpoch = 0;
+let chatWatching = false;
+let chatNeedsSnapshot = false;
+let chatSnapshot = null;
+let chatFlight = null;
+let lastChatRead = -Infinity;
+
+function publishChat(includeSnapshot = true, error = '') {
+  if (chatWatching) {
+    frame.contentWindow.postMessage(
+      {
+        type: 'chat-update',
+        available: chatAllowed,
+        snapshot: includeSnapshot && chatAllowed ? chatSnapshot : null,
+        error,
+      },
+      '*',
+    );
+  }
+}
+
+function withdrawChat(error = 'Chat reading is not currently permitted') {
+  chatEpoch++;
+  chatAllowed = false;
+  chatSnapshot = null;
+  if (chatFlight) {
+    for (const id of chatFlight.readers.splice(0)) {
+      reply(id, null, error, false);
+    }
+    chatFlight.abort.abort();
+  }
+  publishChat(false, error);
+}
+
+function observeChatAccess(snapshot) {
+  if (!application) {
+    return;
+  }
+  const allowed = snapshot.version === application.version && snapshot.chatReadAllowed === true;
+  if (!allowed && chatAllowed) {
+    withdrawChat();
+  } else if (allowed && !chatAllowed && !document.hidden) {
+    chatEpoch++;
+    chatAllowed = true;
+    publishChat(false);
+  }
+}
+
+function readChat(id) {
+  const refuse = (error) => {
+    if (id !== null) {
+      reply(id, null, error, false);
+    }
+  };
+  if (!application || !api || !chatAllowed || document.hidden) {
+    refuse('Chat reading is not currently permitted');
+    return;
+  }
+  if (chatFlight) {
+    if (chatFlight.epoch !== chatEpoch || chatFlight.readers.length >= 8) {
+      refuse('Too many pending chat reads');
+    } else if (id !== null) {
+      chatFlight.readers.push(id);
+    }
+    return;
+  }
+  // Direct raw-frame calls cannot accelerate subscription polling. A recent
+  // complete window may satisfy them; an idle window is refreshed, not replayed.
+  if (performance.now() - lastChatRead < 400) {
+    if (id !== null && chatSnapshot) {
+      reply(id, chatSnapshot, '', false);
+    } else {
+      refuse('Chat reads are busy; wait before reading again');
+    }
+    return;
+  }
+  if (liveActions >= 8) {
+    refuse('Too many widget requests');
+    return;
+  }
+
+  const flight = {
+    epoch: chatEpoch,
+    readers: id === null ? [] : [id],
+    abort: new AbortController(),
+  };
+  chatFlight = flight;
+  lastChatRead = performance.now();
+  liveActions++;
+  const timer = setTimeout(() => flight.abort.abort(), 10000);
+  const body = { version: application.version };
+  if (chatSnapshot) {
+    body.after = chatSnapshot.revision;
+  }
+  void fetch(api + '/chat-read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: flight.abort.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw Error('Chat reading is unavailable; check the trusted permission control');
+      }
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > 65536) {
+        throw Error('Chat response exceeds the text limit');
+      }
+      const value = JSON.parse(text);
+      if (document.hidden && flight.epoch === chatEpoch) {
+        withdrawChat('Chat reading is paused while the application is hidden');
+      }
+      if (flight.epoch !== chatEpoch || !chatAllowed) {
+        return;
+      }
+      if (value.changed === true && Array.isArray(value.messages)) {
+        chatSnapshot = value;
+      } else if (
+        value.changed !== false ||
+        !chatSnapshot ||
+        value.revision !== chatSnapshot.revision
+      ) {
+        throw Error('Invalid chat snapshot');
+      }
+      // Changed results replace the full window, including removed rows. An
+      // unchanged result keeps the same window; subscribers need no duplicate.
+      if (value.changed || chatNeedsSnapshot) {
+        publishChat();
+        chatNeedsSnapshot = false;
+      }
+      for (const reader of flight.readers.splice(0)) {
+        reply(reader, chatSnapshot, '', false);
+      }
+    })
+    .catch((error) => {
+      if (flight.epoch === chatEpoch) {
+        withdrawChat(String(error.message || error).slice(0, 200));
+      }
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      liveActions--;
+      if (chatFlight === flight) {
+        chatFlight = null;
+      }
+    });
+}
+
+// Hiding freezes delivery too, not merely the poll timer. Permission is
+// re-observed on the next visible state refresh before any subsequent read.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    withdrawChat('Chat reading is paused while the application is hidden');
+  }
+});
+window.addEventListener('pagehide', () => withdrawChat('Application view closed'));
 
 // State reads arrive from authored code, which may post them directly rather
 // than through the frame API's own limit. They share one in-flight GET /state:
@@ -215,6 +401,7 @@ function readState(id) {
       if (!response.ok) {
         throw Error(value.error);
       }
+      observeChatAccess(value);
       return { revision: value.revision, data: value.props };
     })
     .then(
@@ -260,6 +447,7 @@ async function refresh() {
       throw Error('Widget is unavailable');
     }
     const snapshot = await response.json();
+    observeChatAccess(snapshot);
     if (application && snapshot.version !== application.version) {
       // The application's code was replaced. Load the new document; the
       // capability URL stays the same and state lives in the service.
@@ -329,8 +517,17 @@ if (api) {
     if (document.hidden) {
       return;
     }
-    void refresh().catch((error) => {
-      status.textContent = error.message;
-    });
+    void refresh()
+      .then(() => {
+        if (chatWatching && chatAllowed && !document.hidden) {
+          readChat(null);
+        }
+      })
+      .catch((error) => {
+        if (application) {
+          withdrawChat('Application connection is unavailable');
+        }
+        status.textContent = error.message;
+      });
   }, 400);
 }

@@ -47,6 +47,7 @@ Item {
   signal revealRequested()
   signal inputFinished(string id, string text, string error)
   signal toolPageReceived(var message)
+  signal appChatPermissionReceived(var message)
   signal choiceFinished(string id, string revision, int index, string error)
   // Manual recording replies and events for the panel that started it. The
   // host answers each append with answerRecordingAppend().
@@ -351,6 +352,7 @@ Item {
     } else if (message.type === "activity-entry") {
       activity.update(message.sessionId, message.entry)
     } else if (message.type === "result" || message.type === "error") {
+      if (message.action === "set-application-chat-read") { root.appChatPermissionReceived(message); return }
       if (message.action === "agent-tool-page" || message.action === "agent-history-page") { root.toolPageReceived(message); return }
       const failure = message.type === "error" ? message.message : ""
       if (message.action === "send-agent") root.finishInput(failure)
