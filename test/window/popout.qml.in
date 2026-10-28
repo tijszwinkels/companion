@@ -376,6 +376,162 @@ TestCase {
     tryCompare(body, "previousWindow", "")
   }
 
+  function numberOf(id) {
+    const label = findChild(popout(id), "popoutSessionNumber")
+    return label.visible ? label.text : ""
+  }
+  function sidebarNumberOf(id) {
+    const tab = findChild(body.panel, "tab-" + id)
+    return tab ? String(tab.number) : ""
+  }
+
+  // Each window's header shows the conversation's current sidebar number,
+  // the one voice session navigation uses. It follows the listener's order
+  // when conversations are reordered, closed and restored, and after a
+  // reconnect with a different order; it never moves focus or selection.
+  function test_header_shows_the_current_session_number() {
+    snapshot([session("one", "First chat"), session("two", "Second chat"), session("three", "Third chat")])
+    tryCompare(body.client.sessions.sessions, "length", 3)
+    body.popouts.popOut("three")
+    body.popouts.popOut("one")
+    tryVerify(function() { return popout("three") !== null && popout("one") !== null })
+    compare(numberOf("three"), "3")
+    compare(numberOf("one"), "1")
+    compare(sidebarNumberOf("three"), "3")
+    compare(findChild(popout("three"), "popoutTitle").text, "Third chat")
+    verify(findChild(popout("three"), "popoutSessionNumber").x < findChild(popout("three"), "popoutTitle").x,
+      "the number is before the title")
+    const selected = body.panel.selectedSessionId
+    fakeBackend.sent = []
+
+    // Reordered by the listener (drag, or another client). Delivered to the
+    // client's receive() directly, as the native connection does with its
+    // parsed JSON: through this fake transport's `var` signal, Qt 6.12 hands
+    // arrays over as sequence wrappers that fail Array.isArray, so the
+    // order event would be ignored (the same cause as the existing
+    // tst_client/host order checks failing on this Qt).
+    body.client.receive({type: "agent-order", ids: ["three", "two", "one"], revision: "order-2"})
+    tryCompare(findChild(popout("three"), "popoutSessionNumber"), "text", "1")
+    compare(numberOf("one"), "3")
+    compare(sidebarNumberOf("three"), "1")
+    compare(sidebarNumberOf("one"), "3")
+
+    // Another conversation closes: later numbers move up.
+    fakeBackend.received({type: "agent-removed", id: "two"})
+    tryCompare(findChild(popout("one"), "popoutSessionNumber"), "text", "2")
+    compare(numberOf("three"), "1")
+    compare(sidebarNumberOf("one"), "2")
+
+    // A saved conversation is restored without focus: it is added at the end.
+    fakeBackend.received({type: "agent-restored", session: session("two", "Second chat"), reveal: false})
+    tryCompare(body.client.sessions.sessions, "length", 3)
+    compare(numberOf("three"), "1")
+    compare(numberOf("one"), "2")
+    compare(sidebarNumberOf("two"), "3")
+
+    // Reconnecting with a different order renumbers from the new snapshot.
+    fakeBackend.disconnected()
+    snapshot([session("two", "Second chat"), session("one", "First chat"), session("three", "Third chat")])
+    tryCompare(findChild(popout("three"), "popoutSessionNumber"), "text", "3")
+    compare(numberOf("one"), "2")
+    compare(sidebarNumberOf("three"), "3")
+
+    // Display only: no navigation, selection or focus request was made.
+    compare(body.panel.selectedSessionId, selected)
+    verify(!fakeBackend.sent.some(message => message.action === "select-agent" || message.action === "move-agent"))
+  }
+
+  // At every supported theme scale (unit 0.5 to 3) the number, the title
+  // and Return to sidebar fit in the header and never overlap: Return moves
+  // to its own row when they do not fit side by side. The window asks for a
+  // minimum width (320 px up to unit 2) at which the title keeps a readable
+  // width and Return its full label. A compositor may still make the window
+  // narrower (and Qt does not clamp a resize to the hint), so narrower
+  // windows are checked too: then the title takes all the room there is
+  // and Return shortens to "Return".
+  function test_header_layout_at_narrow_widths_and_large_scales() {
+    const entries = []
+    for (let index = 1; index <= 12; index++) {
+      entries.push(session("s" + index, "Conversation " + index + " with a long title that has to elide in the header"))
+    }
+    snapshot(entries)
+    tryCompare(body.client.sessions.sessions, "length", 12)
+    const originalTheme = body.theme
+    try {
+      for (const id of ["s3", "s12"]) {
+        body.popouts.popOut(id)
+        tryVerify(function() { return popout(id) !== null })
+        const window = popout(id)
+        const header = findChild(window, "popoutHeader")
+        const number = findChild(window, "popoutSessionNumber")
+        const title = findChild(window, "popoutTitle")
+        const back = findChild(window, "popoutReturnButton")
+        const view = findChild(window, "popoutSessionView")
+
+        for (const unit of [0.5, 1, 1.5, 2, 2.5, 3]) {
+          body.theme = Object.assign({}, originalTheme, {unit: unit})
+          const margins = 24 * unit
+          if (unit <= 2) {
+            compare(window.minimumWidth, 320, id + " keeps the 320 px minimum at unit " + unit)
+          }
+          verify(window.minimumWidth >= margins + header.numberSpace + header.minimumTitleWidth,
+            id + ": the minimum width holds the number and a readable title at unit " + unit)
+          verify(window.minimumWidth >= margins + header.fullReturnWidth,
+            id + ": the minimum width holds the full Return label at unit " + unit)
+
+          for (const width of [320, 560, window.minimumWidth]) {
+            window.width = width
+            const label = id + " at unit " + unit + " and width " + width
+            tryVerify(function() { return header.width === width - margins }, 2000, label)
+            compare(number.text, id.slice(1), label)
+            verify(number.visible && number.x >= 0, label)
+            verify(number.x + number.width <= title.x, label + ": the number comes before the title")
+            verify(title.x + title.width <= header.width, label + ": the title stays in the header")
+            const sideBySide = title.x + title.width <= back.x
+            const below = back.y >= title.y + title.height
+            verify(sideBySide || below, label + ": the title and Return do not overlap")
+            verify(back.x >= 0 && back.x + back.width <= header.width, label + ": Return stays in the header")
+            verify(back.y + back.height <= header.height, label + ": the header makes room for Return")
+            verify(view.y >= header.y + header.height, label + ": the conversation starts below the header")
+            if (width >= window.minimumWidth) {
+              verify(title.width >= header.minimumTitleWidth, label + ": readable title width " + title.width)
+              compare(back.text, "Return to sidebar", label)
+            } else {
+              // Narrower than the hint: the title gets the whole row.
+              verify(header.stacked, label)
+              compare(title.width, header.width - header.numberSpace, label)
+              verify(title.width > 0, label)
+            }
+          }
+        }
+
+        // Return still works on its own row, with the short label.
+        window.width = 320
+        tryVerify(function() { return header.stacked && back.text === "Return" })
+        mouseClick(back)
+        tryVerify(function() { return popout(id) === null })
+      }
+    } finally {
+      body.theme = originalTheme
+    }
+  }
+
+  // A window whose conversation left the list shows no number, not a stale
+  // one. (The window itself closes once the listener removes it.)
+  function test_header_number_is_hidden_without_membership() {
+    body.popouts.popOut("two")
+    tryVerify(function() { return popout("two") !== null })
+    compare(numberOf("two"), "2")
+    const window = popout("two")
+    body.client.sessions.sessions = body.client.sessions.sessions.filter(entry => entry.id !== "two")
+    compare(window.sessionNumber, 0)
+    compare(findChild(window, "popoutSessionNumber").visible, false)
+    compare(findChild(window, "popoutTitle").text, "Conversation closed")
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(window, "sessionNumber", 2)
+    compare(findChild(window, "popoutSessionNumber").visible, true)
+  }
+
   function test_at_most_eight_windows() {
     const entries = []
     for (let index = 0; index < 9; index++) entries.push(session("s" + index, "Chat " + index))

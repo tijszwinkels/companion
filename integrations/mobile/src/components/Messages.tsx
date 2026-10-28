@@ -13,7 +13,7 @@ import { gatewayUrl } from '../connection.ts';
 import { copyText } from '../format.ts';
 import { useStore } from '../hooks.ts';
 import { renderMarkdown } from '../markdown.ts';
-import { ChevronIcon, CloseIcon, ToolIcon } from './icons.tsx';
+import { ChevronIcon, CloseIcon, ToolIcon } from '../../../chat-ui/icons.tsx';
 import { Modal } from './Modal.tsx';
 
 /**

@@ -16,7 +16,7 @@ import type { ActivityEntry, EngineState, IntentState } from '../../../../src/re
 import { clockTime, copyText, intentLabel } from '../format.ts';
 import { useAppState, useStore } from '../hooks.ts';
 import type { AppState } from '../store.ts';
-import { MicIcon, MicOffIcon } from './icons.tsx';
+import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import { Sheet } from './Sheet.tsx';
 
 /** Listening title/description with the desktop StatusView's wording. */

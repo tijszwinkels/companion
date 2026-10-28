@@ -1,4 +1,8 @@
-/** Inline stroke icons (no icon font or remote assets). */
+/**
+ * Inline stroke icons (no icon font or remote assets), shared by the phone
+ * app and the desktop's trusted HTML chat. Pure Preact SVG: no state, no
+ * network and no host access.
+ */
 
 import type { JSX } from 'preact';
 

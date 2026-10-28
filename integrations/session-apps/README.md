@@ -30,6 +30,7 @@ widgets, pins and the panel browser stay where they were). Start the host with
 | Chat/application switch and native bar        | `SessionSurface.qml`                   |
 | Trusted chat view and its bridge              | `TrustedChatView.qml`, `ChatState.mjs` |
 | Trusted chat page (Preact)                    | `chat/`, built into `dist/`            |
+| Message, Markdown and action styles; icons    | `../chat-ui/`, shared with the phone   |
 | Restricted application view                   | `SessionAppView.qml`                   |
 | Trusted conversation list (rail)              | `TrustedRailView.qml`, `rail/`         |
 | Browser profiles                              | `../../native/widget-renderer/`        |

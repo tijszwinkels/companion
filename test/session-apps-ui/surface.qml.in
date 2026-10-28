@@ -1039,6 +1039,94 @@ TestCase {
     tryVerify(function() { return view.pageHeldDrafts["two"] === undefined })
   }
 
+  // A pop-out window's native header shows the conversation's current
+  // number beside its title, the same number the HTML rail shows and voice
+  // navigation uses, also while the window shows the conversation's
+  // application. It follows reordering, code replacement, closing and
+  // restoring other conversations.
+  function test_zzb_popout_header_numbers_follow_the_rail_in_app_mode() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", application(1))])
+    tryVerify(function() { return body.panel.htmlRailActive }, 10000, "HTML rail active")
+    const rail = findChild(body.panel, "trustedRailBrowser")
+    function railNumber(index) {
+      return evaluate(rail, "(() => { const row = document.querySelectorAll('.session')[" + index + "];"
+        + " return row ? row.querySelector('.number').textContent : '' })()")
+    }
+    function headerNumber(window) {
+      const label = findChild(window, "popoutSessionNumber")
+      return label.visible ? label.text : ""
+    }
+
+    body.popouts.popOut("two")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    const window = body.popouts.windows["two"]
+    tryVerify(function() { return surfaceOf(window.view) !== null && surfaceOf(window.view).mode === "app" }, 10000,
+      "the pop-out shows the application")
+    compare(headerNumber(window), "2")
+    compare(findChild(window, "popoutTitle").text, "Second chat")
+    tryVerify(function() { return railNumber(1) === "2" }, 10000)
+
+    // The application keeps the header's narrow, large-scale layout: the
+    // number, title and Return do not overlap, stay in the header, and the
+    // application starts below it. At the window's minimum width the title
+    // keeps a readable width and Return its full label.
+    const originalTheme = body.theme
+    try {
+      const header = findChild(window, "popoutHeader")
+      const number = findChild(window, "popoutSessionNumber")
+      const title = findChild(window, "popoutTitle")
+      const back = findChild(window, "popoutReturnButton")
+      for (const unit of [2, 3]) {
+        body.theme = Object.assign({}, originalTheme, {unit: unit})
+        for (const width of [320, window.minimumWidth]) {
+          window.width = width
+          const label = "unit " + unit + " width " + width
+          tryVerify(function() { return header.width === width - 24 * unit }, 2000, label)
+          verify(header.stacked, label + ": Return moves below the title")
+          verify(number.x + number.width <= title.x, label)
+          verify(title.x + title.width <= header.width, label)
+          verify(back.y >= title.y + title.height, label)
+          verify(back.x >= 0 && back.x + back.width <= header.width, label)
+          verify(window.view.y >= header.y + header.height, label)
+          if (width >= window.minimumWidth) {
+            verify(title.width >= header.minimumTitleWidth, label)
+            compare(back.text, "Return to sidebar", label)
+          }
+          compare(surfaceOf(window.view).mode, "app")
+        }
+      }
+    } finally {
+      body.theme = originalTheme
+      window.width = 560
+    }
+
+    // Reordered by the listener. Delivered to receive() as the native
+    // connection does (see popout.qml.in for the fake transport's arrays).
+    body.client.receive({type: "agent-order", ids: ["two", "one"], revision: "order-2"})
+    tryCompare(findChild(window, "popoutSessionNumber"), "text", "1")
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session')[0].textContent.includes('Second chat')") === true })
+    compare(railNumber(0), "1")
+
+    // The agent replaces the application's code: same conversation, same number.
+    fakeBackend.received({type: "agent-session", session: session("two", "Second chat", application(2))})
+    tryCompare(surfaceOf(window.view), "mode", "app")
+    compare(headerNumber(window), "1")
+
+    // Closing the other conversation and restoring it at the end.
+    fakeBackend.received({type: "agent-removed", id: "one"})
+    tryVerify(function() { return body.client.sessions.sessions.length === 1 })
+    compare(headerNumber(window), "1")
+    fakeBackend.received({type: "agent-restored", session: session("one", "First chat", null), reveal: false})
+    tryVerify(function() { return body.client.sessions.sessions.length === 2 })
+    compare(headerNumber(window), "1")
+    tryVerify(function() { return railNumber(1) === "2" }, 10000)
+
+    // Back to chat: the header keeps the number; the chat page is unchanged.
+    surfaceOf(window.view).setMode("two", "chat")
+    tryCompare(surfaceOf(window.view), "mode", "chat")
+    compare(headerNumber(window), "1")
+  }
+
   function test_zzc_real_reload_discloses_lost_page_held_text() {
     snapshot([session("one", "First chat", null)])
     body.client.sessions.select("one")

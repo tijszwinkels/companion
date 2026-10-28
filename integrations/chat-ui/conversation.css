@@ -1,0 +1,332 @@
+/*
+ * Shared conversation presentation: messages, Markdown, actions, choices and
+ * the composer's controls row. Both the phone app (integrations/mobile) and
+ * the desktop's trusted HTML chat (integrations/session-apps/chat) import
+ * this file, so the two show conversations in the same visual vocabulary.
+ * These rules came unchanged from the phone stylesheet, which still renders
+ * exactly as before.
+ *
+ * Inputs: each page defines the colors and fonts below as CSS custom
+ * properties on an ancestor. The phone app sets them on :root (its Tokyo
+ * Night defaults); the desktop chat maps the native theme onto them on
+ * `.chat`.
+ *
+ *   --fg, --strong, --muted, --accent, --danger, --shortcut  text colors
+ *   --selection, --border, --code-bg, --user-bubble          surfaces
+ *   --mono, --prose                                          font families
+ *   --tap                                                    minimum control height
+ *
+ * Optional, with the phone's values as fallbacks:
+ *
+ *   --chat-px     one CSS pixel at the page's text scale. The phone leaves
+ *                 it unset (1px); the desktop sets it from the host's text
+ *                 scale, so sizes grow with Companion's text size there.
+ *   --choice-bg   background of a suggested reply
+ *   --tool-bg     background of a collapsed tool-call row
+ *
+ * Scope: only class selectors, no element resets or page layout. The phone's
+ * global shell, safe-area and touch-target rules stay in its own stylesheet.
+ * Session applications never load this file: they run in a separate,
+ * restricted web view with their own documents.
+ *
+ * Browser support: the phone's Safari 15 target. Keep to features it has.
+ */
+
+/* ---- Actions ----------------------------------------------------------- */
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6 * var(--chat-px, 1px));
+  min-height: var(--tap);
+  padding: 0 calc(12 * var(--chat-px, 1px));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: calc(13 * var(--chat-px, 1px));
+}
+
+.action:active {
+  background: var(--selection);
+}
+
+.action.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.action.danger {
+  color: var(--danger);
+}
+
+.action[disabled] {
+  opacity: 0.4;
+}
+
+.action.small {
+  min-height: var(--tap);
+  padding: 0 calc(10 * var(--chat-px, 1px));
+  font-size: calc(12 * var(--chat-px, 1px));
+}
+
+/* ---- Conversation -------------------------------------------------------- */
+
+.messages {
+  padding: calc(4 * var(--chat-px, 1px)) 0 calc(16 * var(--chat-px, 1px));
+  display: flex;
+  flex-direction: column;
+  gap: calc(10 * var(--chat-px, 1px));
+  font-family: var(--prose);
+  font-size: calc(15 * var(--chat-px, 1px));
+  line-height: 1.45;
+  color: var(--strong);
+}
+
+.message.user {
+  align-self: flex-end;
+  max-width: 90%;
+}
+
+.bubble {
+  overflow-wrap: anywhere;
+}
+
+.message.user .bubble {
+  padding: calc(8 * var(--chat-px, 1px)) calc(12 * var(--chat-px, 1px));
+  border-radius: 8px;
+  background: var(--user-bubble);
+  white-space: pre-wrap;
+}
+
+.message.user.queued .bubble {
+  opacity: 0.6;
+  border: 1px dashed var(--muted);
+}
+
+.message .from {
+  margin: 0 calc(4 * var(--chat-px, 1px)) calc(3 * var(--chat-px, 1px));
+  font-family: var(--mono);
+  font-size: calc(11 * var(--chat-px, 1px));
+  color: var(--muted);
+  text-align: right;
+}
+
+.message .from.external {
+  color: var(--shortcut);
+}
+
+.message .state-note {
+  margin: calc(3 * var(--chat-px, 1px)) calc(4 * var(--chat-px, 1px)) 0;
+  font-family: var(--mono);
+  font-size: calc(11 * var(--chat-px, 1px));
+  color: var(--muted);
+  text-align: right;
+}
+
+.message.assistant .bubble {
+  padding: calc(2 * var(--chat-px, 1px)) 0;
+}
+
+.message.assistant.error .bubble {
+  border-left: 2px solid var(--danger);
+  padding-left: calc(10 * var(--chat-px, 1px));
+}
+
+.message.notice {
+  align-self: center;
+  max-width: 92%;
+  font-family: var(--mono);
+  font-size: calc(12 * var(--chat-px, 1px));
+  color: var(--muted);
+  text-align: center;
+}
+
+.message.notice.error {
+  color: var(--danger);
+}
+
+.message-actions {
+  display: flex;
+  gap: calc(4 * var(--chat-px, 1px));
+  font-family: var(--mono);
+}
+
+.message-actions button {
+  min-height: var(--tap);
+  padding: 0 calc(8 * var(--chat-px, 1px));
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(11 * var(--chat-px, 1px));
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p {
+  margin: 0.35em 0 0.7em;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 1em 0 0.5em;
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+.markdown h1 {
+  font-size: 1.35em;
+}
+
+.markdown h2 {
+  font-size: 1.2em;
+}
+
+.markdown h3,
+.markdown h4 {
+  font-size: 1.08em;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.3em;
+  margin: 0.4em 0 0.7em;
+}
+
+.markdown code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.markdown pre {
+  background: var(--code-bg);
+  padding: calc(10 * var(--chat-px, 1px)) calc(12 * var(--chat-px, 1px));
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: calc(12 * var(--chat-px, 1px));
+  line-height: 1.4;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.markdown blockquote {
+  margin: 0.5em 0;
+  padding-left: calc(10 * var(--chat-px, 1px));
+  border-left: 2px solid var(--border);
+  color: var(--fg);
+}
+
+.markdown table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.markdown th,
+.markdown td {
+  padding: calc(4 * var(--chat-px, 1px)) calc(8 * var(--chat-px, 1px));
+  border: 1px solid var(--border);
+}
+
+.markdown th {
+  background: var(--code-bg);
+}
+
+.markdown a {
+  color: var(--accent);
+}
+
+/* ---- Tool calls, widgets, choices and controls -------------------------- */
+
+.tool-group {
+  align-self: stretch;
+  border-radius: 6px;
+  background: var(--tool-bg, rgba(169, 177, 214, 0.04));
+  font-family: var(--mono);
+}
+
+.tool-group > button {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--chat-px, 1px));
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 calc(10 * var(--chat-px, 1px));
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: calc(12 * var(--chat-px, 1px));
+  color: var(--muted);
+}
+
+.widget-card {
+  padding: calc(10 * var(--chat-px, 1px)) calc(12 * var(--chat-px, 1px));
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(12 * var(--chat-px, 1px));
+}
+
+.widget-card strong {
+  color: var(--strong);
+  font-weight: 400;
+}
+
+.choice {
+  flex: none;
+  max-width: 75vw;
+  min-height: var(--tap);
+  padding: calc(6 * var(--chat-px, 1px)) calc(10 * var(--chat-px, 1px));
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--choice-bg, rgba(122, 162, 247, 0.08));
+  color: var(--accent);
+  text-align: left;
+  font-size: calc(12 * var(--chat-px, 1px));
+}
+
+.choice small {
+  display: block;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.choice[disabled] {
+  opacity: 0.4;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(6 * var(--chat-px, 1px));
+  margin-top: calc(8 * var(--chat-px, 1px));
+}
+
+.controls-row .status-text {
+  flex: 1;
+  min-width: 80px;
+  text-align: right;
+  font-size: calc(11 * var(--chat-px, 1px));
+  color: var(--muted);
+}

@@ -23,6 +23,12 @@ Window {
   readonly property var client: controller.client
   readonly property var theme: controller.theme
   readonly property var session: client.sessions.sessions.find(entry => entry.id === root.sessionId) || null
+  // The conversation's current number: its position in the same list the
+  // sidebar numbers and voice session navigation ("go to session 3") uses,
+  // the listener's conversation order. It follows reordering, closing and
+  // restoring other conversations. 0 (no number shown) while the
+  // conversation is not in that list, never a remembered old position.
+  readonly property int sessionNumber: client.sessions.sessions.findIndex(entry => entry.id === root.sessionId) + 1
   // The last known title, kept for an orphaned draft after the conversation
   // was closed elsewhere.
   property string lastTitle: "conversation"
@@ -39,7 +45,12 @@ Window {
   title: (session ? session.title : "Conversation") + " — Companion"
   width: 560
   height: 720
-  minimumWidth: 320
+  // Asks the compositor for at least the width the header needs at this
+  // theme scale: the number with a readable part of the title, and the full
+  // "Return to sidebar", each on a row of their own if necessary (see the
+  // header). That is 320 px up to about theme unit 2; larger scales ask for
+  // more. This is only a size hint: the header also fits a narrower window.
+  minimumWidth: Math.max(320, Math.ceil(2 * header.anchors.margins + header.minimumContentWidth))
   minimumHeight: 360
   color: theme.background
 
@@ -60,13 +71,56 @@ Window {
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.margins: 12 * root.theme.unit
-    height: Math.max(returnButton.height, title.implicitHeight) + (noticeText.visible ? noticeText.height + 6 * root.theme.unit : 0)
+
+    // The number and a readable part of the title come first. When the
+    // window is too narrow for them beside "Return to sidebar" (a small
+    // window or a large theme scale), the button moves to its own row
+    // below instead of covering them. If even that row is too narrow for
+    // the full label (the compositor did not keep the minimum width), the
+    // button says just "Return"; its accessible name stays complete.
+    readonly property real gap: 8 * root.theme.unit
+    readonly property real rowGap: 6 * root.theme.unit
+    readonly property real numberSpace: sessionNumberText.visible ? sessionNumberText.width + gap : 0
+    readonly property real minimumTitleWidth: 96 * root.theme.unit
+    // The button's width with its full label, measured with the button's own
+    // font. Measured separately so that the layout does not depend on the
+    // label it chooses.
+    readonly property real fullReturnWidth: fullReturnLabel.implicitWidth + 20 * root.theme.unit
+    readonly property bool stacked: width < numberSpace + minimumTitleWidth + gap + fullReturnWidth
+    // The narrowest header where both stacked rows fit with the full label;
+    // the window's minimum width follows it.
+    readonly property real minimumContentWidth: Math.max(numberSpace + minimumTitleWidth, fullReturnWidth)
+
+    height: (stacked ? title.implicitHeight + rowGap + returnButton.height : Math.max(returnButton.height, title.implicitHeight))
+      + (noticeText.visible ? noticeText.height + 6 * root.theme.unit : 0)
+
+    // Always visible beside the title (no hover), so the person can read the
+    // number to say. Display only: it changes no focus, routing or voice
+    // target.
+    Text {
+      id: sessionNumberText
+      objectName: "popoutSessionNumber"
+      anchors.left: parent.left
+      anchors.baseline: title.baseline
+      visible: root.sessionNumber > 0
+      width: visible ? implicitWidth : 0
+      text: String(root.sessionNumber)
+      textFormat: Text.PlainText
+      color: root.theme.accent
+      font.family: root.theme.fontFamily
+      font.pixelSize: 16 * root.theme.unit
+      font.bold: true
+      Accessible.role: Accessible.StaticText
+      Accessible.name: "Session " + root.sessionNumber
+    }
 
     Text {
       id: title
+      objectName: "popoutTitle"
       anchors.left: parent.left
-      anchors.right: returnButton.left
-      anchors.rightMargin: 8 * root.theme.unit
+      anchors.leftMargin: header.numberSpace
+      anchors.right: header.stacked ? parent.right : returnButton.left
+      anchors.rightMargin: header.stacked ? 0 : header.gap
       anchors.top: parent.top
       text: root.session ? root.session.title : "Conversation closed"
       textFormat: Text.PlainText
@@ -81,14 +135,25 @@ Window {
       objectName: "popoutReturnButton"
       anchors.right: parent.right
       anchors.top: parent.top
-      anchors.topMargin: -4 * root.theme.unit
-      text: "Return to sidebar"
+      anchors.topMargin: header.stacked ? title.implicitHeight + header.rowGap : -4 * root.theme.unit
+      text: header.width >= header.fullReturnWidth ? fullReturnLabel.text : "Return"
       foreground: root.theme.foreground
       selection: root.theme.selection
       fontFamily: root.theme.fontFamily
       unit: root.theme.unit
       onTriggered: root.controller.returnToSidebar(root.sessionId, {focus: true, source: "button"})
       Accessible.name: "Return this conversation to the Companion sidebar"
+    }
+
+    // Measures the full Return label in the PanelAction's font (11 px per
+    // unit); never shown.
+    Text {
+      id: fullReturnLabel
+      visible: false
+      text: "Return to sidebar"
+      textFormat: Text.PlainText
+      font.family: root.theme.fontFamily
+      font.pixelSize: 11 * root.theme.unit
     }
 
     Text {

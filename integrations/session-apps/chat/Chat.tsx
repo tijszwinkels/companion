@@ -11,6 +11,7 @@
 import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
+import { ArrowDownIcon, ToolIcon } from '../../chat-ui/icons.tsx';
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
 import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
 import type { ChatStore } from './store.ts';
@@ -171,20 +172,20 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
   }
 
   return (
-    <div class="transcript" ref={scroller} onScroll={scrolled} onClick={clicked}>
+    <div class="transcript messages" ref={scroller} onScroll={scrolled} onClick={clicked}>
       <HistoryNotice status={status} bridge={bridge} />
       {rows.map((row) => (
         <Row key={row.key} row={row} sessionId={status.sessionId} bridge={bridge} />
       ))}
       {history && !history.atLatest && (
         <button
-          class="latest"
+          class="action small latest"
           onClick={() => {
             following.current = true;
             bridge.history(status.sessionId, 'latest');
           }}
         >
-          Jump to latest
+          <ArrowDownIcon size={14} /> Jump to latest
         </button>
       )}
     </div>
@@ -242,19 +243,18 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
     return <div class={`message notice ${row.state === 'error' ? 'error' : ''}`}>{row.text}</div>;
   }
 
+  // Collapsed like the phone's tool row; the whole row opens the classic
+  // view, which has the tool details.
   if (row.kind === 'tool') {
     return (
-      <div class="message tool">
-        <span>
-          {row.toolCount > 1 ? `${row.toolCount} tool calls` : row.toolName || 'Tool call'}
-          {row.toolUnavailable ? ' · details unavailable' : ''}
-        </span>
-        <button
-          class="link"
-          onClick={() => bridge.classicView()}
-          title="Tool details are in the classic view"
-        >
-          Details
+      <div class="message tool tool-group">
+        <button onClick={() => bridge.classicView()} title="Tool details are in the classic view">
+          <ToolIcon size={16} />
+          <span>
+            {row.toolCount > 1 ? `${row.toolCount} tool calls` : row.toolName || 'Tool call'}
+            {row.toolUnavailable ? ' · details unavailable' : ''}
+          </span>
+          <span class="details">Details</span>
         </button>
       </div>
     );
@@ -324,9 +324,7 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
       />
       {row.text && row.state !== 'running' && (
         <div class="message-actions">
-          <button class="link" onClick={() => bridge.copyText(row.text)}>
-            Copy
-          </button>
+          <button onClick={() => bridge.copyText(row.text)}>Copy</button>
         </div>
       )}
     </div>
@@ -354,7 +352,7 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
       )}
       {status.stopRunId && (
         <button
-          class="choice"
+          class="action small"
           disabled={!status.online}
           onClick={() => bridge.stopRun(status.sessionId, status.stopRunId || '')}
         >
@@ -372,7 +370,7 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
             onClick={() => bridge.choose(choice.sessionId, choice.revision, choice.index)}
           >
             {speakable ? `[${choice.label}]` : choice.label}
-            {choice.description && <span class="description">{choice.description}</span>}
+            {choice.description && <small>{choice.description}</small>}
           </button>
         );
       })}
@@ -902,13 +900,15 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
             : status.inputError}
         </div>
       )}
-      <div class="actions">
-        <button disabled={!sendable} onClick={send}>
+      {/* The phone's footer hierarchy: primary Send/Queue, then secondary
+          actions, and the conversation state at the end. */}
+      <div class="actions controls-row">
+        <button class="action primary" disabled={!sendable} onClick={send}>
           {status.running ? 'Queue' : 'Send'}
         </button>
         {recording?.available && (
           <button
-            class={recording.here ? 'recording' : ''}
+            class={recording.here ? 'action recording' : 'action'}
             disabled={recording.here ? !recording.canStop : !recording.canRecord}
             onClick={() => bridge.toggleRecording(status.sessionId)}
           >
@@ -916,17 +916,22 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           </button>
         )}
         {status.running && !status.stopRunId && (
-          <button disabled={!status.online} onClick={() => bridge.stop(status.sessionId)}>
+          <button
+            class="action"
+            disabled={!status.online}
+            onClick={() => bridge.stop(status.sessionId)}
+          >
             Stop
           </button>
         )}
         <button
+          class="action"
           disabled={!status.online || recording?.busy === true}
           onClick={() => bridge.closeSession(status.sessionId)}
         >
           Close session
         </button>
-        <span class="state">{stateLabel}</span>
+        <span class="state status-text">{stateLabel}</span>
       </div>
     </div>
   );

@@ -2,7 +2,15 @@
  * Trusted HTML chat. Colors, fonts and text scale come from the native
  * theme as CSS variables (see Chat.tsx); sizes scale with --scale like the
  * classic view's textScale.
+ *
+ * Messages, Markdown, actions, choices and the controls row use the phone
+ * app's shared conversation stylesheet, so desktop and phone conversations
+ * look alike. `.chat` below maps the native theme onto the custom properties
+ * that stylesheet reads; the rules after it are desktop-only (transcript
+ * scrolling, header, composer, recovery notices and voice annotations).
  */
+
+@import '../../chat-ui/conversation.css';
 
 :root {
   color-scheme: dark light;
@@ -18,12 +26,33 @@ body,
 }
 
 .chat {
+  /* Defaults until the first status message carries the native theme. */
   --foreground: #e0e0e0;
   --background: #1a1b26;
   --accent: #7aa2f7;
   --muted: #808080;
   --selection: #33467c;
   --scale: 1;
+
+  /* The shared conversation stylesheet's inputs, from the native theme.
+     The phone's palette has a brighter message color (--strong) than its
+     chrome (--fg); the native theme has one foreground, used for both. */
+  --fg: var(--foreground);
+  --strong: var(--foreground);
+  --border: color-mix(in srgb, var(--muted) 40%, transparent);
+  --code-bg: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --user-bubble: color-mix(in srgb, var(--accent) 14%, transparent);
+  --choice-bg: color-mix(in srgb, var(--accent) 8%, transparent);
+  --tool-bg: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --danger: #ef5350;
+  --shortcut: #e0af68;
+  --mono: var(--font, monospace);
+  --prose: var(--prose-font, sans-serif);
+  --chat-px: calc(1px * var(--scale));
+  /* Desktop density: pointer-sized controls, not the phone's 44px touch
+     targets. */
+  --tap: calc(28px * var(--scale));
+
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -56,9 +85,11 @@ button:disabled {
   cursor: default;
 }
 
+/* An outline, not the border: actions already use their border to show
+   their role (the primary action's accent), so focus must look different. */
 button:focus-visible {
-  border-color: var(--accent);
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 button.link {
@@ -84,22 +115,20 @@ button.link {
   text-overflow: ellipsis;
 }
 
+/* ---- Transcript ------------------------------------------------------------ */
+
+/* The transcript is also the shared `.messages` list (font, gap, colors).
+   Like the phone, a short conversation starts at the top. */
 .transcript {
   flex: 1;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: calc(12px * var(--scale));
   padding-right: 4px;
-}
-
-.transcript > :first-child {
-  margin-top: auto;
 }
 
 .history-notice {
   align-self: center;
   color: var(--muted);
+  font-family: var(--mono);
   font-size: calc(12px * var(--scale));
 }
 
@@ -107,6 +136,7 @@ button.link {
   position: sticky;
   bottom: 4px;
   align-self: flex-end;
+  background: var(--selection);
 }
 
 .message {
@@ -114,92 +144,55 @@ button.link {
   overflow-wrap: anywhere;
 }
 
+/* Provenance can be a link button: keep it, the bubble and its notes on the
+   right like the phone's right-aligned text. */
 .message.user {
-  align-self: flex-end;
-  max-width: 85%;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
 }
 
-.message.user .bubble {
-  background: var(--selection);
-  border-radius: 8px;
-  padding: 8px 10px;
-  white-space: pre-wrap;
-}
-
-.message.user.queued .bubble {
-  opacity: 0.7;
-}
-
-.from,
-.state-note,
-.note {
-  color: var(--muted);
-  font-size: calc(11px * var(--scale));
-}
-
-.note.error,
-.message.error {
-  color: #ef5350;
-}
-
-.message.assistant .bubble {
-  line-height: 1.45;
-}
-
-.markdown p {
-  margin: 0 0 0.6em;
-}
-
-.markdown pre {
-  overflow-x: auto;
-  padding: 8px;
-  border-radius: 4px;
-  background: rgba(127, 127, 127, 0.12);
-}
-
-.markdown code {
-  font-family: monospace;
-}
-
-.markdown a {
+/* A provenance that opens its source conversation keeps the link color. */
+.message.user .from.link {
+  padding: 0;
+  font-family: var(--mono);
   color: var(--accent);
 }
 
-.message-actions {
-  opacity: 0;
+/* Icons follow the text scale like the text beside them. */
+.tool-group svg,
+.latest svg {
+  width: calc(16px * var(--scale));
+  height: calc(16px * var(--scale));
+  flex: none;
 }
 
-.message.assistant:hover .message-actions {
-  opacity: 1;
+.message.tool .details {
+  margin-left: auto;
+  color: var(--accent);
 }
 
-.message.tool,
-.message.notice,
-.widget-card {
+.message.tool .unavailable {
   color: var(--muted);
-  font-size: calc(12px * var(--scale));
 }
 
-.widget-card {
-  border: 1px solid var(--muted);
-  border-radius: 6px;
-  padding: 8px;
+.widget-card button.link {
+  font-size: inherit;
 }
+
+/* ---- Choices, Stop and voice status ------------------------------------------ */
 
 .controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding-top: 8px;
+  gap: calc(6px * var(--scale));
+  padding-top: calc(8px * var(--scale));
 }
 
 .controls .voice {
   flex-basis: 100%;
   color: var(--muted);
+  font-family: var(--mono);
   font-size: calc(11px * var(--scale));
 }
 
@@ -207,25 +200,30 @@ button.link {
   color: var(--accent);
 }
 
-.choice {
-  text-align: left;
+/* Desktop choices wrap instead of the phone's sideways strip, so a long
+   label or description is never cut off. */
+.controls .choice {
+  max-width: 100%;
 }
 
+.controls .choice small {
+  white-space: normal;
+}
+
+/* The choice the voice target can say: stronger fill and border, beside the
+   [label] brackets the text already shows. */
 .choice.speakable {
-  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.choice .description {
-  display: block;
-  color: var(--muted);
-  font-size: calc(11px * var(--scale));
-}
+/* ---- Composer -------------------------------------------------------------- */
 
 .composer {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-top: 8px;
+  padding-top: calc(8px * var(--scale));
 }
 
 .composer textarea {
@@ -233,12 +231,14 @@ button.link {
   width: 100%;
   height: calc(76px * var(--scale));
   resize: none;
-  padding: 8px;
-  color: var(--foreground);
-  background: rgba(127, 127, 127, 0.06);
-  border: 1px solid var(--muted);
-  border-radius: 4px;
+  padding: calc(10px * var(--scale)) calc(12px * var(--scale));
+  color: var(--strong);
+  background: var(--tool-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   font: inherit;
+  font-family: var(--prose);
+  line-height: 1.35;
 }
 
 .composer textarea:focus {
@@ -250,25 +250,36 @@ button.link {
   opacity: 0.75;
 }
 
+.from,
+.state-note,
+.note {
+  color: var(--muted);
+  font-size: calc(11px * var(--scale));
+}
+
+.note {
+  font-family: var(--mono);
+}
+
+.note.error {
+  color: var(--danger);
+}
+
 .conflict {
-  color: #ef5350;
+  color: var(--danger);
   font-size: calc(12px * var(--scale));
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+/* The footer is the shared controls row: primary Send/Queue first, then the
+   secondary actions, and the conversation state at the end. */
+.actions.controls-row {
+  margin-top: calc(2px * var(--scale));
 }
 
 .actions .recording {
-  background: rgba(240, 84, 79, 0.45);
-}
-
-.actions .state {
-  color: var(--muted);
-  font-size: calc(10px * var(--scale));
+  border-color: var(--danger);
+  background: rgba(240, 84, 79, 0.25);
+  color: var(--strong);
 }
 
 .copy-feedback {

@@ -87,6 +87,16 @@ in the panel; it never closes the conversation. An agent can do the same for
 its own conversation with `companion_session_present`, through the listener's
 `agent-present` request (see the [desktop contract](../../src/desktop/README.md)).
 
+The window's header shows the conversation's current session number before
+its title, whether the window shows chat, classic view or the conversation's
+application. It is the number the sidebar shows and voice session navigation
+uses ("go to session 3"): the conversation's position in the listener's order,
+so it changes when conversations are reordered, closed or restored. It is a
+label only; it does not change focus or routing. When the window is too
+narrow for the number, title and **Return to sidebar** on one line, Return
+moves below the title. At large theme scales the window asks for a wider
+minimum width.
+
 One view owns a conversation's composer at a time. Moving it hands over the
 unsent text, its **Drafted by agent** provenance, the cursor and any recording
 notice, and clears the old view only once the new one holds the same text. A

@@ -17,6 +17,7 @@
     "rail",
     "web-channel.ts",
     "../mobile/src/vendor.d.ts",
-    "../mobile/src/markdown.ts"
+    "../mobile/src/markdown.ts",
+    "../chat-ui"
   ]
 }
