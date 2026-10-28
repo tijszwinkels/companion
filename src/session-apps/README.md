@@ -147,17 +147,21 @@ are refused with an answer, so they never hold a request slot.
 | `POST <viewUrl>/query`     | `SessionApplicationQueryRequest` → `{result, revision}`.                                   |
 | `POST <viewUrl>/chat-read` | `{version, after?}` → bounded changed snapshot or unchanged revision; read grant required. |
 
-The native profile maps `companion-widget://view/` onto `viewUrl`. It currently
-forwards only the original document/state/action/query operations; adding the
-optional chat bridge/native allowlist is still pending in this backend checkpoint.
+The native profile maps `companion-widget://view/` onto `viewUrl`. It forwards
+only document/state GETs and action/query/chat-read POSTs to that exact capability.
+It never forwards permission-grant or chat-send operations. Chat-read request
+bodies are capped at 1 KiB and replies at 64 KiB; other operation bounds stay
+unchanged. Non-200 backend replies become generic fetch failures in Qt, never
+successful empty history. A refused chat read does not disable the whole view.
 `version` mismatches are refused (`409`), so a view running replaced code cannot
-execute successor actions. A request from this
-view ingress is a **user** edit; origin is never read from the body.
+execute successor actions. An action request from this view ingress is a
+**user** edit; origin is never read from the body. Chat reads are non-mutating.
 
 ## Optional chat (backend checkpoint)
 
-The gated read service and trusted desktop command exist; the grant UI, iframe
-chat API, native forwarding and app-origin sending are not yet implemented.
+The gated read service, trusted desktop command, native broker and standalone
+trusted consent control exist. The control is not yet mounted/wired by the shared
+HTML surface; the iframe chat API and app-origin sending are not yet implemented.
 The application remains able to show app-only content. Canonical trusted chat,
 its escape bar and the trusted draft remain separate from authored content.
 
@@ -183,12 +187,22 @@ The grant's disclosure must say that it includes **recent earlier conversation
 text**, not just messages after installation. The app can copy that text into
 its own persisted state, actions or agent-visible events. Network restrictions
 do not prevent this onward disclosure. Revoking stops future reads; it cannot
-recall copies or responses already delivered. Read and send are separate grants;
-reading does not authenticate an application composer as a person.
+recall copies. A read already admitted before revocation may still finish.
+Read and send are separate grants; reading does not authenticate an application
+composer as a person.
 
 This is a trusted-UI / authored-code / agent-tool boundary, not an OS security
 boundary against same-user native processes that can control Companion's local
 IPC. The existing local-process trust assumptions still apply.
+
+`SessionView.appChatPermissionControl` is the native consent component. Its
+transport is disabled until the owning surface adapter explicitly wires
+`appChatPermissionRequested` and `receiveAppChatPermissionResult`. It offers
+review → allow and direct revoke, wraps/scrolls at narrow widths, and supports
+keyboard activation. Pending requests are single-flight, never replayed after a
+timeout. Descriptor identity changes discard old confirmations/replies, and
+only canonical descriptors change the displayed permission. The component does
+not access the draft or become a bridge exposed to authored code.
 
 ### Read requests and bounds
 
@@ -322,8 +336,8 @@ and not new authority.
 - Each view polls its state every 400 ms while visible. A view that keeps an
   old code version open is refused (409) and reloads.
 - Only the Chromium pop-out transport and the native profile may forward
-  allowlisted view requests; neither is a general proxy. Native chat forwarding
-  is pending; the backend read endpoint does not broaden that allowlist.
+  allowlisted view requests; neither is a general proxy. Native chat-read
+  forwarding adds no grant operation or general-purpose HTTP access.
 - If the conversation's widget records cannot be loaded, widget and
   application tools are unavailable for its turns (existing widget behavior).
 

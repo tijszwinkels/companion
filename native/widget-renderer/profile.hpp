@@ -7,8 +7,9 @@ class QWebEngineUrlSchemeHandler;
 
 // A profile belongs to exactly one widget or session-application view.
 // Browser requests never select a network destination: the scheme handler maps
-// four fixed paths (document and state GET, action and read-only query POST)
-// to this trusted, capability-scoped Companion endpoint.
+// fixed paths (document/state GET and action/query/chat-read POST) to this
+// trusted, capability-scoped Companion endpoint. Chat reading still requires
+// backend consent; this broker never forwards permission-grant operations.
 class WidgetProfile : public QQuickWebEngineProfile {
     Q_OBJECT
     Q_PROPERTY(QUrl viewUrl READ viewUrl WRITE setViewUrl NOTIFY viewUrlChanged)

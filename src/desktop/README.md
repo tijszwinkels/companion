@@ -740,8 +740,9 @@ version, revision, allowed}`. It requires a conversation still shown by the
 calling non-remote desktop client, including after a queue wait. App identity,
 code version and permission revision must match. The returned permission status
 is ephemeral; close/reopen, listener restart and successful code replacement
-reset it. No agent tool or app-view route can grant it. Trusted consent UI and
-native chat forwarding are not yet connected at this checkpoint; see the
+reset it. No agent tool or app-view route can grant it. The native broker and
+standalone consent component exist, but the shared surface has not yet mounted
+or wired that control; see the
 [read contract and required disclosure](../session-apps/README.md#optional-chat-backend-checkpoint).
 
 ### Model selection, ordering and spoken navigation

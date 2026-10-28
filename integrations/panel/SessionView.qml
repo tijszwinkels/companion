@@ -1853,6 +1853,224 @@ Item {
     }
   }
 
+  // ---- Optional app-chat consent (trusted native UI only) -----------------
+  // This component is mounted and its command/reply signal wired by the HTML
+  // surface adapter. Until then it is inert; no app code or generic HTML
+  // composer bridge receives these methods. It never reads or changes a draft.
+  property bool appChatPermissionTransportReady: false
+  readonly property var appChatApplication: session && session.application ? session.application : null
+  readonly property var appChatAccess: appChatApplication && appChatApplication.chatAccess ? appChatApplication.chatAccess : null
+  readonly property bool appChatReadRequested: appChatAccess !== null && Array.isArray(appChatAccess.requested)
+    && appChatAccess.requested.indexOf("chat.read") >= 0
+  readonly property string appChatIdentity: session && appChatApplication && appChatAccess
+    ? session.id + ":" + appChatApplication.id + ":" + appChatApplication.version + ":" + appChatAccess.revision : ""
+  property string appChatDisclosureIdentity: ""
+  readonly property bool appChatDisclosureOpen: appChatIdentity !== "" && appChatDisclosureIdentity === appChatIdentity
+  property var appChatPermissionPending: null
+  property string appChatPermissionError: ""
+  property int appChatPermissionTimeoutMilliseconds: 10000
+  readonly property bool appChatCanChange: root.visible && root.online && root.appChatPermissionTransportReady
+    && root.appChatReadRequested && root.appChatIdentity !== "" && root.appChatPermissionPending === null
+  signal appChatPermissionRequested(var request)
+
+  // A different conversation, replacement, reopen or permission update cannot
+  // inherit an open confirmation or be changed by an earlier request's reply.
+  onAppChatIdentityChanged: {
+    root.appChatDisclosureIdentity = ""
+    root.appChatPermissionPending = null
+    root.appChatPermissionError = ""
+    appChatPermissionDeadline.stop()
+  }
+
+  function reviewAppChatAccess() {
+    if (!root.appChatCanChange) return false
+    root.appChatDisclosureIdentity = root.appChatIdentity
+    root.appChatPermissionError = ""
+    return true
+  }
+
+  function requestAppChatRead(allowed) {
+    if (typeof allowed !== "boolean" || !root.appChatCanChange) return false
+    // Enabling requires this exact code/version/grant's disclosure to have
+    // been opened. Revoking remains available without an extra confirmation.
+    if (allowed && !root.appChatDisclosureOpen) return false
+    const request = {
+      action: "set-application-chat-read",
+      requestId: "app-chat-read-" + Date.now() + "-" + Math.random().toString(36).slice(2),
+      id: root.session.id,
+      applicationId: root.appChatApplication.id,
+      version: root.appChatApplication.version,
+      revision: root.appChatAccess.revision,
+      allowed: allowed
+    }
+    root.appChatPermissionPending = {requestId: request.requestId, identity: root.appChatIdentity}
+    root.appChatPermissionError = ""
+    appChatPermissionDeadline.restart()
+    root.appChatPermissionRequested(request)
+    return true
+  }
+
+  function receiveAppChatPermissionResult(message) {
+    const pending = root.appChatPermissionPending
+    if (!pending || !message || message.action !== "set-application-chat-read"
+      || message.requestId !== pending.requestId || pending.identity !== root.appChatIdentity
+      || (message.type !== "result" && message.type !== "error")) return false
+    appChatPermissionDeadline.stop()
+    root.appChatPermissionPending = null
+    // Never optimistically change the descriptor. Its next snapshot/patch is
+    // the authority, including when it arrives before this acknowledgement.
+    root.appChatDisclosureIdentity = ""
+    root.appChatPermissionError = message.type === "error"
+      ? String(message.message || "Permission was not changed.").slice(0, 500) : ""
+    return true
+  }
+
+  Timer {
+    id: appChatPermissionDeadline
+    interval: root.appChatPermissionTimeoutMilliseconds
+    onTriggered: {
+      if (!root.appChatPermissionPending) return
+      root.appChatPermissionPending = null
+      root.appChatDisclosureIdentity = ""
+      root.appChatPermissionError = "No confirmation received. Permission may have changed; check its current status before trying again."
+    }
+  }
+
+  component AppChatPermissionButton: Button {
+    id: permissionButton
+    property var scrollHost: null
+    onActiveFocusChanged: if (activeFocus && scrollHost) scrollHost.reveal(permissionButton)
+    width: parent ? Math.min(implicitWidth, parent.width) : implicitWidth
+    padding: 8 * root.unit
+    focusPolicy: Qt.StrongFocus
+    font.family: root.fontFamily
+    font.pixelSize: 12 * root.textScale
+    contentItem: Text {
+      text: permissionButton.text
+      font: permissionButton.font
+      color: root.foreground
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+    }
+    background: Rectangle {
+      implicitWidth: 80 * root.unit
+      implicitHeight: 32 * root.unit
+      color: root.selection
+      opacity: permissionButton.enabled ? 1 : 0.45
+      border.color: permissionButton.activeFocus ? root.accent : "transparent"
+      border.width: permissionButton.activeFocus ? 2 : 0
+      radius: 3 * root.unit
+    }
+  }
+
+  readonly property Component appChatPermissionControl: Component {
+    Rectangle {
+      objectName: "appChatPermissionControl"
+      color: root.overlayColor
+      visible: root.appChatReadRequested
+      // The disclosure scrolls instead of covering the trusted Chat/app bar
+      // or taking the whole available conversation height at large text scale.
+      implicitHeight: visible ? Math.min(appChatPermissionContent.implicitHeight + 16 * root.unit,
+        Math.max(0, root.height * 0.55)) : 0
+      clip: true
+      Flickable {
+        id: appChatPermissionScroll
+        objectName: "appChatPermissionScroll"
+        anchors.fill: parent
+        anchors.margins: 8 * root.unit
+        contentWidth: width
+        contentHeight: appChatPermissionContent.implicitHeight
+        function reveal(item) {
+          const point = item.mapToItem(contentItem, 0, 0)
+          const next = point.y < contentY ? point.y
+            : point.y + item.height > contentY + height ? point.y + item.height - height : contentY
+          contentY = Math.max(0, Math.min(next, contentHeight - height))
+        }
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar {}
+        Column {
+          id: appChatPermissionContent
+          width: parent.width
+          spacing: 6 * root.unit
+          Text {
+            objectName: "appChatPermissionStatus"
+            width: parent.width
+            text: (root.appChatApplication ? root.appChatApplication.name + " · v" + root.appChatApplication.version : "")
+              + " — Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "allowed" : "off")
+              + (!root.online ? " · Disconnected" : "")
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.fontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Text {
+            objectName: "appChatPermissionDisclosure"
+            width: parent.width
+            visible: root.appChatDisclosureOpen
+            text: "Allow this app to read recent text from this conversation, including earlier messages and live replies? Drafts, tools and attachments are excluded.\n\n"
+              + "The app can copy text into its saved state or agent-visible actions. Revoking stops future reads but cannot erase copies. In-flight reads may finish. Access ends when app code changes, the conversation is reopened, or Companion restarts. Sending requires separate permission."
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.proseFontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Flow {
+            width: parent.width
+            spacing: 8 * root.unit
+            AppChatPermissionButton {
+              objectName: "appChatReviewRead"
+              scrollHost: appChatPermissionScroll
+              visible: !root.appChatDisclosureOpen && !(root.appChatAccess && root.appChatAccess.read)
+              enabled: root.appChatCanChange
+              text: "Review chat access"
+              onClicked: root.reviewAppChatAccess()
+            }
+            AppChatPermissionButton {
+              objectName: "appChatAllowRead"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatDisclosureOpen && !(root.appChatAccess && root.appChatAccess.read)
+              enabled: root.appChatCanChange
+              text: "Allow reading"
+              onClicked: root.requestAppChatRead(true)
+            }
+            AppChatPermissionButton {
+              objectName: "appChatDeclineRead"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatDisclosureOpen
+              enabled: root.appChatPermissionPending === null
+              text: "Not now"
+              onClicked: root.appChatDisclosureIdentity = ""
+            }
+            AppChatPermissionButton {
+              objectName: "appChatRevokeRead"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatAccess !== null && root.appChatAccess.read === true
+              enabled: root.appChatCanChange
+              text: "Revoke reading"
+              onClicked: root.requestAppChatRead(false)
+            }
+          }
+          Text {
+            objectName: "appChatPermissionFeedback"
+            width: parent.width
+            visible: text !== ""
+            text: root.appChatPermissionPending ? "Waiting for permission confirmation…" : root.appChatPermissionError
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.proseFontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.muted
+          }
+        }
+      }
+    }
+  }
+  // ---- End app-chat consent ------------------------------------------------
+
   // Loaded only when a host enables it; the portable Quickshell panel never
   // resolves this path or the WebEngine modules it imports.
   Loader {
