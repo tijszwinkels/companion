@@ -39,7 +39,8 @@ import { historyPage, type HistoryPage, type HistoryPageRequest } from './histor
 import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
-import { promptText } from './agent-origin.ts';
+import { canonicalText, promptText } from './agent-origin.ts';
+import { applicationMessageAncestry } from './application-message-origin.ts';
 import type { SessionLiveState } from './harness-live-state.ts';
 import { CaptureStoragePolicy, type CaptureAdmission } from '../capture-storage/policy.ts';
 import { claudeCodeModelCatalog } from './claude/models.ts';
@@ -571,7 +572,9 @@ export class AgentSessions implements InspectableModule {
         ? session.currentOrigin.ancestry
         : session.currentOrigin?.kind === 'application-event'
           ? undefined
-          : session.currentOrigin;
+          : session.currentOrigin?.kind === 'application-message'
+            ? applicationMessageAncestry(session.currentOrigin)
+            : session.currentOrigin;
     return this.wakes.schedule(
       {
         owner,
@@ -1339,7 +1342,7 @@ export class AgentSessions implements InspectableModule {
     }
 
     const id = randomUUID();
-    const question = chatMessage('user', 'user', request.text);
+    const question = chatMessage('user', 'user', canonicalText(request.text, request.origin));
     question.screenshot = request.screenshot !== undefined;
     if (request.origin) {
       question.origin = request.origin;
@@ -1460,7 +1463,7 @@ export class AgentSessions implements InspectableModule {
       throw new SessionToolError('rejected', runningCapacityReason);
     }
 
-    const message = chatMessage(`user-${randomUUID()}`, 'user', text);
+    const message = chatMessage(`user-${randomUUID()}`, 'user', canonicalText(text, origin));
     message.state = session.busy ? 'queued' : 'done';
     if (origin) {
       message.origin = origin;

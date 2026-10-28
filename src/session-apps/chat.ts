@@ -64,6 +64,7 @@ function sourceOf(message: AgentMessage): ApplicationChatMessage['source'] {
     case 'scheduled-wake':
       return 'scheduled';
     case 'application-event':
+    case 'application-message':
       return 'application';
     default:
       // Fail closed if a newer origin reaches an older projection.

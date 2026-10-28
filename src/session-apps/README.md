@@ -254,6 +254,32 @@ canonical records do not retain them.
 withdraw optional read delivery. That flag is informational, never authorization.
 The read service never implicitly writes its projection into app state.
 
+## Sending policy foundation (not yet connected)
+
+`sending.ts` defines the ephemeral admission policy; no public send endpoint,
+trusted sending control or authored `api.chat.send` is connected yet. A native
+explicit grant permits at most five attempts, one reserved/queued/running at a
+time, with at least two seconds between admissions. An uncertain handoff keeps
+its quota charge and returns an unknown receipt; it is never refunded/replayed
+automatically. Exact retries deduplicate before quota/rate checks, but reuse of
+an ID with different text is refused.
+
+Each grant has a fresh ID. At most 64 receipts are retained; eviction never
+removes the current grant's records or an active send. Old grant IDs cannot admit
+again after eviction. Revoke, Stop, close and code replacement withdraw unstarted
+work. Already-running work remains busy across grant/code changes until its
+terminal outcome. Queue integration must reserve, admit and attach synchronously,
+recheck `begin` after all pre-model waits, cancel withdrawn queue entries, and
+record terminal outcomes. Those integrations are still pending.
+
+The host origin `application-message` carries app ID/name/version/bundle and
+receipt ID with non-human depth 1. Both harness prompts and canonical text retain
+an explicit app-origin header; queued prompts do not double it. This text is also
+a downgrade fallback when an older reader cannot interpret the structured origin.
+Malformed stored app provenance becomes an explicitly unverified non-human marker,
+not human input. App-origin turns do not consume pending `next-input` edit batches.
+Wake ancestry preserves a non-human app label within the existing ancestry schema.
+
 ## Agent tools
 
 Static dispatcher tools join the existing widget tools for both Pi and Claude

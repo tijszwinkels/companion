@@ -6,13 +6,30 @@ import type { AgentChoice, AgentChoiceSet } from './choices.ts';
 import type { HistoryWindow } from './history-pages.ts';
 
 /**
- * Provenance of a message written by another Companion conversation's agent
- * through the session tools. The user did not type it; the UI labels it and Pi
- * receives an explicit header. `depth` counts agent-to-agent hops since the last
+ * Provenance of non-human input, including agents, scheduled work and authored
+ * applications. The trusted composer did not supply it; the UI labels it and
+ * both harnesses receive an explicit header. `depth` counts agent-to-agent hops since the last
  * human-originated turn and bounds feedback loops between conversations.
  */
 export type AgentMessageOrigin =
-  InternalAgentOrigin | ExternalAgentOrigin | ScheduledWakeOrigin | ApplicationEventOrigin;
+  | InternalAgentOrigin
+  | ExternalAgentOrigin
+  | ScheduledWakeOrigin
+  | ApplicationEventOrigin
+  | ApplicationMessageOrigin;
+
+/** Authored code used a separate finite send grant; not a trusted human composer. */
+export interface ApplicationMessageOrigin {
+  kind: 'application-message';
+  applicationId: string;
+  name: string;
+  version: number;
+  bundle: string;
+  receiptId: string;
+  /** Host-derived short label; not a link to another conversation. */
+  title: string;
+  depth: 1;
+}
 
 /**
  * Committed user edits in this conversation's session application, delivered
