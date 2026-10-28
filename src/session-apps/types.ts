@@ -31,10 +31,20 @@ export const sessionApplicationEventModes: readonly SessionApplicationEventMode[
 export const sessionApplicationChatCapabilities = ['chat.read', 'chat.send'] as const;
 export type SessionApplicationChatCapability = (typeof sessionApplicationChatCapabilities)[number];
 
+/** Informational only: the backend checks the exact grant again for every send. */
+export interface ApplicationSendAccess {
+  grantId: string;
+  allowed: boolean;
+  remaining: number;
+  busy: boolean;
+}
+
 /** Desktop-only, ephemeral permission status. Never saved in the app record. */
 export interface SessionApplicationChatAccess {
   requested: SessionApplicationChatCapability[];
   read: boolean;
+  /** Absent on older hosts; never interpret absence as a sending grant. */
+  send?: ApplicationSendAccess;
   /** Fresh on replacement/reopen and every permission change; rejects stale consent. */
   revision: string;
 }
@@ -114,6 +124,7 @@ export interface SessionApplicationStateResponse {
   textScale: number | null;
   /** Grants are enforced at each chat request, not by this display-only flag. */
   chatReadAllowed: boolean;
+  chatSend?: ApplicationSendAccess;
 }
 
 /** `POST <viewUrl>/action` request body from the trusted view host. */

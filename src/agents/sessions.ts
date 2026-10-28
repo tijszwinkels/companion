@@ -16,6 +16,7 @@ import {
   type SessionApplicationEventMode,
 } from '../session-apps/types.ts';
 import { applicationChatSnapshot } from '../session-apps/chat.ts';
+import type { ApplicationSendReceipt } from '../session-apps/sending.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import {
@@ -266,6 +267,9 @@ export class AgentSessions implements InspectableModule {
       {
         changed: (owner, descriptor) => this.applicationChanged(owner, descriptor),
         userEdit: (owner, eventMode) => this.applicationEdited(owner, eventMode),
+        sendChat: (owner, text, origin) =>
+          this.acceptFollowUp(owner, text, new AbortController().signal, origin),
+        withdrawChat: (owner, receipts) => this.withdrawApplicationChat(owner, receipts),
         readChat: (owner, after) => {
           const session = this.sessions.get(owner);
           if (!session) {
@@ -333,6 +337,25 @@ export class AgentSessions implements InspectableModule {
   /** Trusted desktop route only; never exposed through agent or application tools. */
   setApplicationChatRead(id: string, command: JsonObject, validateDesktop?: () => void) {
     return this.widgets.applications.setChatRead(id, command, validateDesktop);
+  }
+
+  setApplicationChatSend(id: string, command: JsonObject, validateDesktop?: () => void) {
+    return this.widgets.applications.setChatSend(id, command, validateDesktop);
+  }
+
+  private withdrawApplicationChat(owner: string, receipts: ApplicationSendReceipt[]): void {
+    const session = this.sessions.get(owner);
+    if (!session || !receipts.length) return;
+    const ids = new Set(receipts.map((receipt) => receipt.receiptId));
+    const withdrawn = (message: AgentMessage) =>
+      message.origin?.kind === 'application-message' && ids.has(message.origin.receiptId);
+    session.pending = session.pending.filter((message) => !withdrawn(message));
+    for (const message of session.view.messages.filter(withdrawn)) {
+      this.message(session, { ...message, state: 'error' });
+    }
+    // A current pre-model wait is deliberately not aborted: its late gate will
+    // skip it, then continue unrelated human input already in the FIFO.
+    this.flush(session);
   }
 
   /**
@@ -1511,6 +1534,9 @@ export class AgentSessions implements InspectableModule {
   private cancelPending(session: RunningSession): void {
     for (const message of session.pending.splice(0)) {
       this.message(session, { ...message, state: 'error' });
+      if (message.origin?.kind === 'application-message') {
+        this.widgets.applications.cancelChatSend(session.view.id, message.origin.receiptId);
+      }
       if (message.origin?.kind === 'application-event') {
         // Never admitted to a model turn: the edits stay pending and are
         // carried by the next edit's turn or the person's next message.
@@ -1544,7 +1570,7 @@ export class AgentSessions implements InspectableModule {
           session.view.status = 'completed';
           delete session.view.runId;
         } else {
-          await this.run(session, delivery.prompt, resume, frameId);
+          await this.run(session, delivery.prompt, resume, frameId, messageId);
           await this.finishApplicationDelivery(session, delivery.batchId);
         }
         if (
@@ -1617,7 +1643,13 @@ export class AgentSessions implements InspectableModule {
     prompt: Parameters<AgentBackend['run']>[0]['prompt'],
     resume: boolean,
     frameId?: number,
+    messageId?: string,
   ): Promise<void> {
+    const appSend =
+      session.currentOrigin?.kind === 'application-message'
+        ? this.widgets.applications.chatSendTurn(session.view.id, session.currentOrigin.receiptId)
+        : undefined;
+    let appSendSkipped = false;
     const wake = session.wake;
     session.wake = undefined;
     const turnId = wake?.turnId ?? randomUUID();
@@ -1695,6 +1727,13 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-session-tools', `Session tools unavailable: ${String(error)}`, frameId);
       }
       session.controller.signal.throwIfAborted();
+      if (appSend && !appSend.begin()) {
+        appSendSkipped = true;
+        const message = session.view.messages.find((row) => row.id === messageId);
+        if (message) this.message(session, { ...message, state: 'error' });
+        session.view.status = 'completed';
+        return;
+      }
       if (wake) {
         this.wakes.transitionAttempt(wake, 'started');
       }
@@ -1840,7 +1879,23 @@ export class AgentSessions implements InspectableModule {
         session.view.error = `Could not save session history: ${String(error)}`;
         this.log('agent-history', session.view.error, frameId);
       }
-      const completed = session.view.status === 'completed' && !session.controller.signal.aborted;
+      const completed =
+        session.view.status === 'completed' &&
+        !session.controller.signal.aborted &&
+        !appSendSkipped;
+      if (appSend) {
+        try {
+          await appSend.finish(
+            completed ? 'completed' : session.controller.signal.aborted ? 'cancelled' : 'failed',
+          );
+        } catch (error) {
+          this.log(
+            'agent-application',
+            `Could not publish sending outcome: ${String(error)}`,
+            frameId,
+          );
+        }
+      }
       if (wake) {
         try {
           this.wakes.transitionAttempt(
@@ -1854,7 +1909,7 @@ export class AgentSessions implements InspectableModule {
           );
         }
       }
-      if (!completed && !this.closed) {
+      if (!completed && !appSendSkipped && !this.closed) {
         try {
           this.wakes.blockOwner(session.view.id, 'Preceding turn failed or stopped');
         } catch {
@@ -2110,6 +2165,7 @@ export class AgentSessions implements InspectableModule {
     if (!session) {
       throw Error('Question session not found');
     }
+    this.widgets.applications.revokeChatSend(id);
     session.controller.abort();
     session.closeAfterTurn = false;
     // Stop also withdraws a not-yet-queued application event turn. The edits
@@ -2602,6 +2658,7 @@ export class AgentSessions implements InspectableModule {
   async close(): Promise<void> {
     this.closed = true;
     for (const session of this.sessions.values()) {
+      this.widgets.applications.revokeChatSend(session.view.id, 'closed');
       session.controller.abort();
       clearTimeout(session.applicationTimer);
       session.applicationTimer = undefined;

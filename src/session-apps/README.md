@@ -85,8 +85,9 @@ limited to 20 each. `agent` (default `true`) exposes a query/action to the
 agent; `false` keeps it view-only. `application.eventMode` is the default event
 mode for a first apply. `application.capabilities` may request `chat.read` and
 `chat.send` (no duplicates, at most two). A declaration is **not** consent.
-This backend checkpoint implements reading only; sending is reserved and has
-no callable endpoint or grant yet. See [optional chat](#optional-chat-backend-checkpoint).
+Reading is integrated end-to-end. Sending has backend grants, capability ingress
+and FIFO enforcement; its native controls and authored API are still pending.
+See [optional chat](#optional-chat-read-checkpoint) and [sending](#sending-backend).
 
 `widget.js` exports:
 
@@ -175,13 +176,15 @@ execute successor actions. An action request from this view ingress is a
 
 Read consent is shown in native controls below the app's trusted escape bar in
 both sidebar and pop-out HTML surfaces. It enables the gated iframe read API,
-not chat sending. App-origin sending is not yet implemented.
+not chat sending. The sending backend exists, but native send controls and the
+authored sender API are not integrated yet.
 The application remains able to show app-only content. Canonical trusted chat,
 its escape bar and the trusted draft remain separate from authored content.
 
 ### Consent and lifetime
 
-`chatAccess` contains `{requested, read, revision}`. A trusted desktop client
+`chatAccess` contains `{requested, read, send, revision}` (`send` is absent on older
+hosts and otherwise contains `{grantId, allowed, remaining, busy}`). A trusted desktop client
 uses `set-application-chat-read` with `{id, applicationId, version, revision,
 allowed}`. The conversation must still be shown by that non-remote desktop
 connection when the command is admitted **and** when its queued mutation runs.
@@ -254,12 +257,17 @@ canonical records do not retain them.
 withdraw optional read delivery. That flag is informational, never authorization.
 The read service never implicitly writes its projection into app state.
 
-## Sending policy foundation (not yet connected)
+## Sending backend
 
-`sending.ts` defines the ephemeral admission policy; no public send endpoint,
-trusted sending control or authored `api.chat.send` is connected yet. A native
-explicit grant permits at most five attempts, one reserved/queued/running at a
-time, with at least two seconds between admissions. An uncertain handoff keeps
+**Native send controls, the native broker's sender routes and authored
+`api.chat.send` are not integrated yet.** The backend below is exercised by
+isolated synthetic HTTP/native-command tests, not a complete application UI.
+
+The separate trusted `set-application-chat-send` command takes the same identity,
+permission revision and allowed flag as reading, with the same shown/non-remote
+connection recheck. An explicit grant or renewal permits at most five attempts,
+one reserved/queued/running/uncertain send at a time, with at least two seconds
+between admissions (also across renewals). Read and send consent are independent. An uncertain handoff keeps
 its quota charge and returns an unknown receipt; it is never refunded/replayed
 automatically. Exact retries deduplicate before quota/rate checks, but reuse of
 an ID with different text is refused.
@@ -268,9 +276,37 @@ Each grant has a fresh ID. At most 64 receipts are retained; eviction never
 removes the current grant's records or an active send. Old grant IDs cannot admit
 again after eviction. Revoke, Stop, close and code replacement withdraw unstarted
 work. Already-running work remains busy across grant/code changes until its
-terminal outcome. Queue integration must reserve, admit and attach synchronously,
-recheck `begin` after all pre-model waits, cancel withdrawn queue entries, and
-record terminal outcomes. Those integrations are still pending.
+terminal outcome. Admission reserves, enqueues through the ordinary FIFO and
+attaches the canonical message ID synchronously. The final pre-model gate runs
+after configuration/history/lease waits, immediately before the harness call.
+A revoked unstarted send is skipped without aborting unrelated queued inputs,
+announcing a successful turn or blocking wakes for a turn that never ran. Stop
+revokes permission immediately, before waiting on the turn or application queue.
+Terminal receipts account for model failure, Stop and final history-save failure.
+A finishing old-open-entry callback cannot change a reopened successor.
+
+### Capability protocol
+
+- `GET /state` adds informational `chatSend: {grantId, allowed, remaining, busy}`.
+  `allowed` with zero remaining is exhausted, not permission for another send.
+- `POST /chat-send`: exactly `{version, grantId, requestId, text}`. The backend
+  rechecks owning view/code after body and queue waits. Request IDs are 16–128
+  ASCII alphanumeric/underscore/hyphen; nonempty text is at most 4000 UTF-16
+  units. HTTP body limit: 32 KiB; receipt response limit: 4 KiB.
+- Response: `{receipt}` containing host app ID/name/version/bundle, `receiptId`,
+  `grantId`, `requestId`, `state`, optional canonical `messageId` and reason.
+  States: `reserved`, `queued`, `running`, `completed`, `failed`, `cancelled`,
+  `unknown`. A failed or cancelled started turn can already have had effects.
+- `POST /chat-receipt`: `{version, grantId, requestId}`, at most 1 KiB. This is a
+  read-only status probe, never retry/admission. It returns `{receipt}` or
+  `{receipt:null}`; missing/evicted/restarted status is uncertainty, **not** proof
+  that a message never ran. Both paths are scoped to this owning app/code/view.
+- Neither operation accepts app-supplied origin metadata. Neither needs read
+  permission or returns transcript text/drafts. No HTTP or agent grant route.
+- Exact retries retain the original grant/request handle and return its receipt,
+  even after revocation. Reusing an ID with changed text is refused. Never retry
+  with a fresh handle after an ambiguous transport outcome. Grants, fingerprints
+  and receipt ledgers remain memory-only; canonical message provenance is saved.
 
 The host origin `application-message` carries app ID/name/version/bundle and
 receipt ID with non-human depth 1. Both harness prompts and canonical text retain

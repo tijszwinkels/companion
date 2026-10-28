@@ -15,7 +15,8 @@
  * - delivery bookkeeping that AgentSessions drives when event turns start
  *   and finish.
  *
- * Inputs: view requests (user origin) and agent lease commands (agent origin).
+ * Inputs: view actions (user-edit origin), explicitly granted chat sends
+ * (application-message origin), and agent lease commands (agent origin).
  * Outputs: committed records, descriptor changes and user-edit notifications
  * through `ApplicationHooks`. It never starts a model turn itself.
  */
@@ -53,6 +54,14 @@ import {
 import { SessionApplicationError } from './errors.ts';
 import { applicationChatLimits, type ApplicationChatResponse } from './chat.ts';
 import {
+  ApplicationSending,
+  applicationSendLimits,
+  type ApplicationSendReceipt,
+  type ApplicationSendWithdrawal,
+} from './sending.ts';
+import { applicationMessageOrigin } from '../agents/application-message-origin.ts';
+import type { ApplicationMessageOrigin } from '../agents/types.ts';
+import {
   sessionApplicationEventModes,
   sessionApplicationLimits,
   type SessionApplicationDescriptor,
@@ -81,6 +90,10 @@ export interface ApplicationHooks {
   userEdit(owner: string, eventMode: SessionApplicationEventMode): void;
   /** Synchronous bounded projection, invoked only after a current read grant check. */
   readChat?(owner: string, after?: string): ApplicationChatResponse;
+  /** Synchronous normal FIFO admission; may throw with an uncertain outcome. */
+  sendChat?(owner: string, text: string, origin: ApplicationMessageOrigin): { messageId: string };
+  /** Remove only never-started app messages bearing these host receipt identities. */
+  withdrawChat?(owner: string, receipts: ApplicationSendReceipt[]): void;
 }
 
 /**
@@ -114,6 +127,8 @@ interface Entry {
    * failed.
    */
   deliveryProblem?: string;
+  /** Retained across code replacement so an old running send still occupies its slot. */
+  sending?: ApplicationSending;
   /** Ephemeral, bound to exact code and this open entry, never serialized. */
   chat?: {
     applicationId: string;
@@ -292,6 +307,8 @@ export class SessionApplications {
     if (!entry) {
       return;
     }
+    const withdrawn = entry.sending?.revoke('closed') ?? [];
+    this.hooks.withdrawChat?.(owner, withdrawn);
     if (entry.capability) {
       this.capabilities.delete(entry.capability);
     }
@@ -301,6 +318,10 @@ export class SessionApplications {
   }
 
   close(): void {
+    for (const [owner, entry] of this.entries) {
+      const withdrawn = entry.sending?.revoke('closed') ?? [];
+      this.hooks.withdrawChat?.(owner, withdrawn);
+    }
     this.capabilities.clear();
     this.entries.clear();
   }
@@ -376,6 +397,18 @@ export class SessionApplications {
       entry.chat.bundle !== record.bundle ||
       entry.chat.version !== record.version
     ) {
+      const identity = {
+        applicationId: record.id,
+        name: record.name,
+        version: record.version,
+        bundle: record.bundle,
+      };
+      if (entry.sending) {
+        const withdrawn = entry.sending.replace(identity);
+        this.hooks.withdrawChat?.(record.owner, withdrawn);
+      } else {
+        entry.sending = new ApplicationSending(identity);
+      }
       entry.chat = {
         applicationId: record.id,
         bundle: record.bundle,
@@ -392,6 +425,7 @@ export class SessionApplications {
     return {
       requested: [...(entry.bundle?.manifest.application?.capabilities ?? [])],
       read: grant.read,
+      send: entry.sending!.access(),
       revision: grant.revision,
     };
   }
@@ -401,9 +435,18 @@ export class SessionApplications {
    * view(), and not an application action. The desktop transport must require
    * a currently shown conversation and reject remote-role callers.
    */
-  async setChatRead(
+  setChatRead(owner: string, command: JsonObject, validateDesktop?: () => void) {
+    return this.setChatPermission(owner, command, 'chat.read', validateDesktop);
+  }
+
+  setChatSend(owner: string, command: JsonObject, validateDesktop?: () => void) {
+    return this.setChatPermission(owner, command, 'chat.send', validateDesktop);
+  }
+
+  private async setChatPermission(
     owner: string,
     command: JsonObject,
+    capability: 'chat.read' | 'chat.send',
     validateDesktop?: () => void,
   ): Promise<SessionApplicationChatAccess> {
     if (
@@ -437,16 +480,76 @@ export class SessionApplications {
           409,
         );
       }
-      if (command.allowed && !bundle.manifest.application?.capabilities?.includes('chat.read')) {
-        throw new SessionApplicationError('This application does not request chat.read', 403);
+      if (command.allowed && !bundle.manifest.application?.capabilities?.includes(capability)) {
+        throw new SessionApplicationError(`This application does not request ${capability}`, 403);
       }
-      if (grant.read !== command.allowed) {
+      if (capability === 'chat.send') {
+        if (command.allowed && !this.hooks.sendChat) {
+          throw new SessionApplicationError('Application sending is unavailable', 503);
+        }
+        const withdrawn = command.allowed
+          ? entry.sending!.permit()
+          : entry.sending!.revoke('revoked');
+        grant.revision = randomUUID();
+        this.hooks.withdrawChat?.(owner, withdrawn);
+        await this.publish(owner);
+      } else if (grant.read !== command.allowed) {
         grant.read = command.allowed === true;
         grant.revision = randomUUID();
         delete grant.lastReadAt;
         await this.publish(owner);
       }
       return this.chatAccess(entry, record);
+    });
+  }
+
+  /** Synchronous withdrawal before Stop can wait on a turn or the application queue. */
+  revokeChatSend(owner: string, reason: ApplicationSendWithdrawal = 'stopped'): void {
+    const entry = this.entries.get(owner);
+    if (!entry?.sending) return;
+    const withdrawn = entry.sending.revoke(reason);
+    if (entry.chat) entry.chat.revision = randomUUID();
+    this.hooks.withdrawChat?.(owner, withdrawn);
+    void this.publishSending(owner, entry).catch(() => {});
+  }
+
+  /** A turn captures this open entry/policy, never a later reopened successor. */
+  chatSendTurn(owner: string, receiptId: string) {
+    const entry = this.entries.get(owner);
+    const sending = entry?.sending;
+    let began = false;
+    return {
+      begin: () => {
+        if (!entry || this.entries.get(owner) !== entry || !sending) return false;
+        const admitted = sending.begin(receiptId);
+        if (admitted) {
+          began = true;
+          void this.publishSending(owner, entry).catch(() => {});
+        }
+        return admitted;
+      },
+      finish: async (state: 'completed' | 'failed' | 'cancelled') => {
+        if (!entry || !sending) return;
+        const changed = began
+          ? sending.finish(receiptId, state)
+          : sending.cancelUnstarted(receiptId);
+        if (changed) await this.publishSending(owner, entry);
+      },
+    };
+  }
+
+  cancelChatSend(owner: string, receiptId: string): void {
+    const entry = this.entries.get(owner);
+    if (entry?.sending?.cancelUnstarted(receiptId)) {
+      void this.publishSending(owner, entry).catch(() => {});
+    }
+  }
+
+  private publishSending(owner: string, entry: Entry): Promise<void> {
+    return this.host.serialized(owner, async () => {
+      if (this.entries.get(owner) !== entry) return;
+      this.host.check(owner);
+      await this.publish(owner);
     });
   }
 
@@ -490,7 +593,7 @@ export class SessionApplications {
     }
   }
 
-  // ---- View ingress (user origin) -------------------------------------------
+  // ---- View ingress (user edits or explicitly granted app-origin chat) ------
 
   /**
    * Requests to an application view capability. The service already checked
@@ -530,6 +633,7 @@ export class SessionApplications {
         props: record.data,
         textScale: null,
         chatReadAllowed: this.chatGrant(entry, record).read,
+        chatSend: entry.sending!.access(),
       };
       return { kind: 'json', value: state };
     }
@@ -541,6 +645,12 @@ export class SessionApplications {
     }
     if (method === 'POST' && operation === 'chat-read') {
       return { kind: 'json', value: await this.readChat(owner, capability, await body()) };
+    }
+    if (method === 'POST' && (operation === 'chat-send' || operation === 'chat-receipt')) {
+      return {
+        kind: 'json',
+        value: await this.sendChat(owner, capability, await body(), operation === 'chat-receipt'),
+      };
     }
     throw new SessionApplicationError('Unknown application view operation', 404);
   }
@@ -592,6 +702,73 @@ export class SessionApplications {
       grant.lastReadAt = now;
       const result = this.hooks.readChat(owner, command.after as string | undefined);
       boundedJson(result, applicationChatLimits.responseBytes);
+      return result;
+    });
+  }
+
+  private async sendChat(
+    owner: string,
+    capability: string,
+    command: JsonObject,
+    lookup: boolean,
+  ): Promise<unknown> {
+    boundedJson(
+      command,
+      lookup ? applicationSendLimits.receiptRequestBytes : applicationSendLimits.requestBytes,
+    );
+    if (!Number.isSafeInteger(command.version)) {
+      throw new SessionApplicationError('Expected a code version');
+    }
+    return this.host.serialized(owner, async () => {
+      this.host.check(owner);
+      const { record, bundle } = this.current(owner);
+      const entry = this.entries.get(owner)!;
+      if (entry.capability !== capability || this.ownerOf(capability) !== owner) {
+        throw new SessionApplicationError('Application view expired', 403);
+      }
+      if (command.version !== record.version) {
+        throw new SessionApplicationError('Application code changed; reload the view.', 409);
+      }
+      this.chatGrant(entry, record);
+      if (!bundle.manifest.application?.capabilities?.includes('chat.send')) {
+        throw new SessionApplicationError('This application does not request chat.send', 403);
+      }
+      const sending = entry.sending!;
+      if (lookup) {
+        if (
+          Object.keys(command).some((key) => !['version', 'grantId', 'requestId'].includes(key)) ||
+          typeof command.grantId !== 'string' ||
+          !uuid.test(command.grantId) ||
+          typeof command.requestId !== 'string' ||
+          !/^[a-zA-Z0-9_-]{16,128}$/.test(command.requestId)
+        ) {
+          throw new SessionApplicationError('Expected current code, grant and request ID');
+        }
+        // Unknown is not proof that a request did not execute before restart/eviction.
+        const result = { receipt: sending.receipt(command.grantId, command.requestId) ?? null };
+        boundedJson(result, applicationSendLimits.responseBytes);
+        return result;
+      }
+      if (!this.hooks.sendChat)
+        throw new SessionApplicationError('Application sending is unavailable', 503);
+      const reservation = sending.reserve(command);
+      if (!reservation.duplicate) {
+        try {
+          const accepted = this.hooks.sendChat(
+            owner,
+            command.text as string,
+            applicationMessageOrigin(reservation.receipt, reservation.receipt.receiptId),
+          );
+          sending.attach(reservation.receipt.receiptId, accepted.messageId);
+        } catch {
+          sending.unconfirmed(reservation.receipt.receiptId);
+        }
+        await this.publish(owner);
+      }
+      const result = {
+        receipt: sending.receipt(command.grantId as string, command.requestId as string)!,
+      };
+      boundedJson(result, applicationSendLimits.responseBytes);
       return result;
     });
   }
@@ -710,6 +887,8 @@ export class SessionApplications {
     if (entry) {
       entry.record = next;
       entry.bundle = bundle;
+      // Successful replacement withdraws unstarted sends BEFORE any further await.
+      this.chatGrant(entry, next);
       delete entry.error;
       // A successful write also saves any outcome a failed write left in memory.
       delete entry.deliveryProblem;

@@ -16,12 +16,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import { MAX_RELAYED_MESSAGE_LENGTH } from '../agents/message-limits.ts';
 import type { JsonObject } from '../widgets/types.ts';
 import { SessionApplicationError } from './errors.ts';
+import type { ApplicationSendAccess } from './types.ts';
+export type { ApplicationSendAccess } from './types.ts';
 
 export const applicationSendLimits = {
   messagesPerGrant: 5,
   intervalMilliseconds: 2000,
   textLength: MAX_RELAYED_MESSAGE_LENGTH,
   retainedReceipts: 64,
+  requestBytes: 32 * 1024,
+  receiptRequestBytes: 1024,
+  responseBytes: 4096,
 } as const;
 
 export interface ApplicationSendIdentity {
@@ -44,13 +49,6 @@ export interface ApplicationSendReceipt extends ApplicationSendIdentity {
   state: ApplicationSendState;
   messageId?: string;
   reason?: ApplicationSendWithdrawal | 'admission-unconfirmed' | 'queue-cancelled';
-}
-
-export interface ApplicationSendAccess {
-  grantId: string;
-  allowed: boolean;
-  remaining: number;
-  busy: boolean;
 }
 
 interface RetainedReceipt {

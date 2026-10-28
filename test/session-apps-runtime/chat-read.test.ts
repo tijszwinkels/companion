@@ -17,7 +17,7 @@ import { applicationFixture } from './fixture.ts';
 const manifest = {
   version: 1,
   description: 'Synthetic chat permission fixture',
-  application: { capabilities: ['chat.read'], eventMode: 'next-input' },
+  application: { capabilities: ['chat.read', 'chat.send'], eventMode: 'next-input' },
   parameters: {
     type: 'object',
     properties: { count: { type: 'integer' } },
@@ -154,6 +154,7 @@ test('successful replacement resets consent even for identical code; failed appl
   const fixture = await setup(context);
   const { sessions, id, application } = fixture;
   await sessions.setApplicationChatRead(id, permission(application(), true));
+  await sessions.setApplicationChatSend(id, permission(application(), true));
   const original = application();
   await fixture.bundle(
     'broken-chat',
@@ -183,6 +184,7 @@ test('successful replacement resets consent even for identical code; failed appl
   sessions.followUp(id, 'Replace with the same bundle', signal());
   await sessions.idle();
   assert.equal(application().version, 2);
+  assert.equal(application().chatAccess!.send!.allowed, false);
   assert.equal(application().chatAccess!.read, false);
   assert.notEqual(application().chatAccess!.revision, original.chatAccess!.revision);
   assert.equal((await read(original)).status, 409);
@@ -197,10 +199,12 @@ test('close/reopen and listener recreation reset grants and reject old consent a
   const fixture = await setup(context);
   const { sessions, id, application } = fixture;
   await sessions.setApplicationChatRead(id, permission(application(), true));
+  await sessions.setApplicationChatSend(id, permission(application(), true));
   const original = application();
   await sessions.remove(id);
   assert.equal((await read(original)).status, 404);
   await sessions.reopen(id);
+  assert.equal(application().chatAccess!.send!.allowed, false);
   assert.equal(application().chatAccess!.read, false);
   assert.notEqual(application().viewUrl, original.viewUrl);
   await assert.rejects(
@@ -244,6 +248,10 @@ test('undeclared read access and malformed read requests are refused', async (co
     sessions.setApplicationChatRead(other, permission(noAccess, true)),
     /does not request/,
   );
+  await assert.rejects(
+    sessions.setApplicationChatSend(other, permission(noAccess, true)),
+    /does not request/,
+  );
 
   await sessions.setApplicationChatRead(id, permission(application(), true));
   for (const body of [
@@ -261,49 +269,53 @@ test('undeclared read access and malformed read requests are refused', async (co
   }
 });
 
-test('real desktop permission command requires a shown conversation and rejects remote role', async (context) => {
-  const fixture = await setup(context);
-  const { sessions, id, application } = fixture;
-  const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);
-  context.after(() => desktop.close());
-  const action = 'set-application-chat-read';
-  desktop.send({ action, id, ...permission(application(), true) });
-  assert.match((await desktop.reply(action)).message!, /no longer selected/);
-  desktop.send({ action: 'panel-state', id, composerFocused: false, visible: true });
-  assert.equal((await desktop.reply('panel-state')).type, 'result');
-  desktop.send({ action, id, ...permission(application(), true) });
-  assert.equal((await desktop.reply(action)).type, 'result');
-  assert.equal(application().chatAccess!.read, true);
-  desktop.send({ action, id, ...permission(application(), false) });
-  assert.equal((await desktop.reply(action)).type, 'result');
+for (const mode of ['read', 'send'] as const) {
+  test(`real desktop ${mode} permission requires a shown conversation and rejects remote role`, async (context) => {
+    const fixture = await setup(context);
+    const { sessions, id, application } = fixture;
+    const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions);
+    context.after(() => desktop.close());
+    const action = 'set-application-chat-' + mode;
+    const allowed = () =>
+      mode === 'read' ? application().chatAccess!.read : application().chatAccess!.send!.allowed;
+    desktop.send({ action, id, ...permission(application(), true) });
+    assert.match((await desktop.reply(action)).message!, /no longer selected/);
+    desktop.send({ action: 'panel-state', id, composerFocused: false, visible: true });
+    assert.equal((await desktop.reply('panel-state')).type, 'result');
+    desktop.send({ action, id, ...permission(application(), true) });
+    assert.equal((await desktop.reply(action)).type, 'result');
+    assert.equal(allowed(), true);
+    desktop.send({ action, id, ...permission(application(), false) });
+    assert.equal((await desktop.reply(action)).type, 'result');
 
-  // A fresh connection may declare remote; it cannot use desktop-only consent.
-  const remote = createConnection(desktop.socketPath);
-  context.after(() => remote.destroy());
-  const replies: { action?: string; type: string; message?: string }[] = [];
-  let buffer = '';
-  remote.setEncoding('utf8');
-  remote.on('data', (chunk: string) => {
-    buffer += chunk;
-    let boundary: number;
-    while ((boundary = buffer.indexOf('\n')) >= 0) {
-      replies.push(JSON.parse(buffer.slice(0, boundary)));
-      buffer = buffer.slice(boundary + 1);
+    // A fresh connection may declare remote; it cannot use desktop-only consent.
+    const remote = createConnection(desktop.socketPath);
+    context.after(() => remote.destroy());
+    const replies: { action?: string; type: string; message?: string }[] = [];
+    let buffer = '';
+    remote.setEncoding('utf8');
+    remote.on('data', (chunk: string) => {
+      buffer += chunk;
+      let boundary: number;
+      while ((boundary = buffer.indexOf('\n')) >= 0) {
+        replies.push(JSON.parse(buffer.slice(0, boundary)));
+        buffer = buffer.slice(boundary + 1);
+      }
+    });
+    await once(remote, 'connect');
+    async function send(request: Record<string, unknown>) {
+      remote.write(JSON.stringify(request) + '\n');
+      const match = (reply: (typeof replies)[number]) =>
+        reply.action === request.action && ['result', 'error'].includes(reply.type);
+      await waitFor(() => replies.some(match));
+      return replies.splice(replies.findIndex(match), 1)[0];
     }
+    assert.equal((await send({ action: 'client-role', role: 'remote' })).type, 'result');
+    assert.equal((await send({ action: 'panel-state', id })).type, 'result');
+    assert.match(
+      (await send({ action, id, ...permission(application(), true) })).message!,
+      /only available on the desktop/,
+    );
+    assert.equal(allowed(), false);
   });
-  await once(remote, 'connect');
-  async function send(request: Record<string, unknown>) {
-    remote.write(JSON.stringify(request) + '\n');
-    const match = (reply: (typeof replies)[number]) =>
-      reply.action === request.action && ['result', 'error'].includes(reply.type);
-    await waitFor(() => replies.some(match));
-    return replies.splice(replies.findIndex(match), 1)[0];
-  }
-  assert.equal((await send({ action: 'client-role', role: 'remote' })).type, 'result');
-  assert.equal((await send({ action: 'panel-state', id })).type, 'result');
-  assert.match(
-    (await send({ action, id, ...permission(application(), true) })).message!,
-    /only available on the desktop/,
-  );
-  assert.equal(application().chatAccess!.read, false);
-});
+}

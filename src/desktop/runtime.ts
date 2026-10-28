@@ -146,6 +146,7 @@ const desktopOnlyActions = new Set([
   'set-capture-storage',
   // Application conversation access is granted only in trusted desktop UI.
   'set-application-chat-read',
+  'set-application-chat-send',
   // Only the desktop Activity page shows the defaults for new sessions.
   'coding-defaults',
   'set-coding-defaults',
@@ -1818,7 +1819,10 @@ export class DesktopRuntime {
       return 'deleted';
     }
 
-    if (request.action === 'set-application-chat-read') {
+    if (
+      request.action === 'set-application-chat-read' ||
+      request.action === 'set-application-chat-send'
+    ) {
       if (!this.options.agents || typeof request.id !== 'string') {
         throw Error('Expected a conversation');
       }
@@ -1832,7 +1836,11 @@ export class DesktopRuntime {
       if (this.options.preview) {
         return 'preview';
       }
-      return this.options.agents.setApplicationChatRead(
+      const setPermission =
+        request.action === 'set-application-chat-read'
+          ? this.options.agents.setApplicationChatRead.bind(this.options.agents)
+          : this.options.agents.setApplicationChatSend.bind(this.options.agents);
+      return setPermission(
         id,
         {
           applicationId: request.applicationId,

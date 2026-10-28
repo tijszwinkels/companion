@@ -731,19 +731,25 @@ tools](../agents/README.md#session-lifecycle-tools).
 conversation's session application. Live-only `application` (absent means
 HTML chat) describes that application: `id`, `name`, code `version`, state
 `revision`, desktop-only `viewUrl`, `text`, `eventMode`, optional `eventStatus`
-and `error`. `chatAccess` holds desktop-only requested capabilities, read permission
-and its revision. Remote/phone snapshots omit `viewUrl` and `chatAccess`. See
+and `error`. `chatAccess` holds desktop-only requested capabilities, read permission,
+sending status `{grantId, allowed, remaining, busy}` and a permission revision. Remote/phone snapshots omit `viewUrl` and `chatAccess`. See
 [session applications](../session-apps/README.md).
 
-The trusted native `set-application-chat-read` command takes `{id, applicationId,
+The separate trusted native `set-application-chat-read` and
+`set-application-chat-send` commands take `{id, applicationId,
 version, revision, allowed}`. It requires a conversation still shown by the
 calling non-remote desktop client, including after a queue wait. App identity,
 code version and permission revision must match. The returned permission status
 is ephemeral; close/reopen, listener restart and successful code replacement
 reset it. No agent tool or app-view route can grant it. Sidebar and pop-out
 HTML surfaces mount the native consent component below the trusted escape bar;
-its dedicated native Client route never becomes an authored-page bridge. See the
-[read contract and required disclosure](../session-apps/README.md#optional-chat-read-checkpoint).
+its dedicated native Client route never becomes an authored-page bridge. These
+mounted controls currently grant **reading only**. Sending controls and authored
+API integration remain pending; the sender backend enforces five attempts per
+explicit grant, one active slot, two-second spacing and late pre-model checks.
+Stop revokes sending before awaiting the queue. See the
+[read contract and required disclosure](../session-apps/README.md#optional-chat-read-checkpoint)
+and [sender backend contract](../session-apps/README.md#sending-backend).
 
 ### Model selection, ordering and spoken navigation
 

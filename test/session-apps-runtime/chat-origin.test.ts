@@ -1,32 +1,23 @@
-/** Internal origin seam only: the public app-send route is not wired by this checkpoint. */
+/** Real capability ingress and FIFO, with synthetic application state and scripted harnesses. */
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import test from 'node:test';
 import { applicationMessageOrigin } from '../../src/agents/application-message-origin.ts';
 import { SessionStore } from '../../src/agents/session-store.ts';
-import { deferred, frame, signal } from '../helpers.ts';
-import { applicationFixture } from './fixture.ts';
+import { deferred, signal } from '../helpers.ts';
+import { sendFixture, waitForRelease } from './chat-send-fixture.ts';
 
 for (const harness of ['pi', 'claude-code'] as const) {
   test(`${harness}: queued app-origin input reaches the harness with provenance and preserves next-input edits`, async (context) => {
-    const fixture = await applicationFixture(context);
-    const { sessions } = fixture;
-    const id = sessions.start(frame, signal(), 'coding', harness);
-    fixture.script(id, async (turn) => {
-      await turn.tool('companion_app_apply', {
-        bundle: 'task-list',
-        expectedVersion: 0,
-        eventMode: 'next-input',
-        initialState: { title: 'Synthetic', tasks: [] },
-      });
-    });
-    await sessions.idle();
+    const fixture = await sendFixture(context, harness);
+    const { sessions, id } = fixture;
+    await fixture.grant();
     const application = fixture.view(id).application!;
     const started = deferred<void>();
     const release = deferred<void>();
-    fixture.script(id, async () => {
+    fixture.script(id, async (turn) => {
       started.resolve();
-      await release.promise;
+      await waitForRelease(release, turn.signal);
     });
     sessions.followUp(id, 'Hold before the next edit', signal());
     await started.promise;
@@ -43,15 +34,6 @@ for (const harness of ['pi', 'claude-code'] as const) {
     });
     assert.equal(response.status, 200);
     assert.equal(fixture.view(id).application!.eventStatus!.undelivered, 1);
-    const origin = applicationMessageOrigin(
-      {
-        applicationId: application.id,
-        name: application.name,
-        version: application.version,
-        bundle: 'a'.repeat(64),
-      },
-      '22222222-2222-4222-8222-222222222222',
-    );
     // Max relayed text remains admissible; its canonical provenance prefix is
     // added after input validation and survives queue/persistence boundaries.
     const text = 'x'.repeat(4000);
@@ -63,7 +45,11 @@ for (const harness of ['pi', 'claude-code'] as const) {
       assert.ok(turn.text.endsWith(text));
       assert.doesNotMatch(turn.text, /Pending edit sentinel|Companion application event/);
     });
-    assert.equal(sessions.followUp(id, text, signal(), origin).outcome, 'queued');
+    const sent = await fixture.post('chat-send', fixture.command(text));
+    assert.equal(sent.status, 200);
+    const { receipt } = await sent.json();
+    assert.equal(receipt.state, 'queued');
+    const origin = applicationMessageOrigin(receipt, receipt.receiptId);
     release.resolve();
     await sessions.idle();
     assert.equal(fixture.view(id).application!.eventStatus!.undelivered, 1);

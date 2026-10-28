@@ -24,7 +24,7 @@ async function fixtureFor(context: TestContext) {
       name: 'synthetic',
       version: 1,
       description: 'Synthetic',
-      application: { capabilities: ['chat.read'] },
+      application: { capabilities: ['chat.read', 'chat.send'] },
       parameters: { type: 'object' },
       actions: {},
       example: {},
@@ -59,6 +59,8 @@ async function fixtureFor(context: TestContext) {
 
   let queue: Promise<unknown> = Promise.resolve();
   let reads = 0;
+  let sends = 0;
+  let failAdmission = false;
   let now = 0;
   const service = new SessionApplications(
     directory,
@@ -77,6 +79,11 @@ async function fixtureFor(context: TestContext) {
     {
       changed: () => {},
       userEdit: () => {},
+      sendChat: (_owner, _text, origin) => {
+        sends++;
+        if (failAdmission) throw Error('Synthetic unconfirmed handoff');
+        return { messageId: 'synthetic-' + origin.receiptId };
+      },
       readChat: () => {
         reads++;
         return { changed: false, revision: 'a'.repeat(64) };
@@ -101,6 +108,10 @@ async function fixtureFor(context: TestContext) {
     descriptor,
     command,
     reads: () => reads,
+    sends: () => sends,
+    failAdmission: () => {
+      failAdmission = true;
+    },
     advance() {
       now += 300;
     },
@@ -113,6 +124,147 @@ async function fixtureFor(context: TestContext) {
 }
 
 const denied = (error: unknown) => error instanceof SessionApplicationError && error.status === 403;
+
+type Fixture = Awaited<ReturnType<typeof fixtureFor>>;
+async function sendCommand(f: Fixture) {
+  const descriptor = await f.descriptor();
+  return {
+    version: descriptor.version,
+    grantId: descriptor.chatAccess!.send!.grantId,
+    requestId: randomUUID(),
+    text: 'Synthetic app input',
+  };
+}
+async function sendView(f: Fixture, command: Record<string, unknown>) {
+  const descriptor = await f.descriptor();
+  return f.service.view(
+    f.owner,
+    descriptor.viewUrl!.slice(-64),
+    'chat-send',
+    'POST',
+    async () => command,
+  );
+}
+
+test('send permission is rechecked after a held body; revocation admits no work', async (context) => {
+  const f = await fixtureFor(context);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  const command = await sendCommand(f);
+  const descriptor = await f.descriptor();
+  const entered = deferred<void>();
+  const body = deferred<Record<string, unknown>>();
+  const pending = f.service.view(
+    f.owner,
+    descriptor.viewUrl!.slice(-64),
+    'chat-send',
+    'POST',
+    () => {
+      entered.resolve();
+      return body.promise;
+    },
+  );
+  await entered.promise;
+  await f.service.setChatSend(f.owner, await f.command(false));
+  body.resolve(command);
+  await assert.rejects(pending, denied);
+  assert.equal(f.sends(), 0);
+});
+
+test('an old sender body cannot transfer to a reopened view and new grant', async (context) => {
+  const f = await fixtureFor(context);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  const command = await sendCommand(f);
+  const old = await f.descriptor();
+  const entered = deferred<void>();
+  const body = deferred<Record<string, unknown>>();
+  const pending = f.service.view(f.owner, old.viewUrl!.slice(-64), 'chat-send', 'POST', () => {
+    entered.resolve();
+    return body.promise;
+  });
+  await entered.promise;
+  await f.service.unload(f.owner);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  body.resolve(command);
+  await assert.rejects(pending, denied);
+  assert.equal(f.sends(), 0);
+});
+
+test('send confirmation rechecks desktop visibility after its queue wait', async (context) => {
+  const f = await fixtureFor(context);
+  const command = await f.command(true);
+  const hold = f.hold();
+  let visible = true;
+  const pending = f.service.setChatSend(f.owner, command, () => {
+    if (!visible) throw Error('Desktop view hidden');
+  });
+  visible = false;
+  hold.resolve();
+  await assert.rejects(pending, /Desktop view hidden/);
+  assert.equal((await f.descriptor()).chatAccess!.send!.allowed, false);
+});
+
+test('Stop invalidates an older queued permission confirmation before waiting on the queue', async (context) => {
+  const f = await fixtureFor(context);
+  const command = await f.command(true);
+  const hold = f.hold();
+  const pending = f.service.setChatSend(f.owner, command);
+  f.service.revokeChatSend(f.owner);
+  hold.resolve();
+  await assert.rejects(pending, /permissions changed/);
+  assert.equal((await f.descriptor()).chatAccess!.send!.allowed, false);
+});
+
+test('an uncertain handoff is charged once, remains busy and only explicit revocation releases it', async (context) => {
+  const f = await fixtureFor(context);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  f.failAdmission();
+  const command = await sendCommand(f);
+  const first = await sendView(f, command);
+  assert.equal(first.kind, 'json');
+  if (first.kind !== 'json') throw Error('Expected receipt');
+  const { receipt } = first.value as { receipt: { state: string } };
+  assert.equal(receipt.state, 'unknown');
+  assert.deepEqual(await sendView(f, command), first);
+  assert.equal(f.sends(), 1);
+  const access = (await f.descriptor()).chatAccess!.send!;
+  assert.equal(access.remaining, 4);
+  assert.equal(access.busy, true);
+  await assert.rejects(sendView(f, { ...command, requestId: randomUUID() }), /already pending/);
+  await f.service.setChatSend(f.owner, await f.command(false));
+  assert.equal((await f.descriptor()).chatAccess!.send!.busy, false);
+});
+
+test('captured lifecycle cannot start after revoke or publish into a reopened entry', async (context) => {
+  const f = await fixtureFor(context);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  const result = await sendView(f, await sendCommand(f));
+  if (result.kind !== 'json') throw Error('Expected receipt');
+  const { receipt } = result.value as { receipt: { receiptId: string } };
+  const turn = f.service.chatSendTurn(f.owner, receipt.receiptId);
+  await f.service.setChatSend(f.owner, await f.command(false));
+  assert.equal(turn.begin(), false);
+  await f.service.unload(f.owner);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  const fresh = (await f.descriptor()).chatAccess;
+  await turn.finish('failed');
+  assert.deepEqual((await f.descriptor()).chatAccess, fresh);
+});
+
+test('old running completion cannot mutate a reopened sender grant', async (context) => {
+  const f = await fixtureFor(context);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  const result = await sendView(f, await sendCommand(f));
+  if (result.kind !== 'json') throw Error('Expected receipt');
+  const { receipt } = result.value as { receipt: { receiptId: string } };
+  const turn = f.service.chatSendTurn(f.owner, receipt.receiptId);
+  assert.equal(turn.begin(), true);
+  assert.equal(turn.begin(), false, 'A repeated begin must not undo the original started identity');
+  await f.service.unload(f.owner);
+  await f.service.setChatSend(f.owner, await f.command(true));
+  const fresh = (await f.descriptor()).chatAccess;
+  await turn.finish('completed');
+  assert.deepEqual((await f.descriptor()).chatAccess, fresh);
+});
 
 test('revocation during a request body wait is rechecked before reading canonical text', async (context) => {
   const fixture = await fixtureFor(context);
@@ -171,7 +323,13 @@ test('trusted view validity is checked again after a queued permission confirmat
 
 test('agent ingress cannot grant or read chat, even with valid-looking permission fields', async (context) => {
   const fixture = await fixtureFor(context);
-  for (const method of ['app_set_chat_read', 'app_chat_read', 'app_grant']) {
+  for (const method of [
+    'app_set_chat_read',
+    'app_chat_read',
+    'app_grant',
+    'app_set_chat_send',
+    'app_chat_send',
+  ]) {
     await assert.rejects(
       fixture.service.agent(
         fixture.owner,

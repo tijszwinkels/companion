@@ -27,6 +27,7 @@ import {
   type FrozenApplication,
 } from '../session-apps/applications.ts';
 import { SessionApplicationError } from '../session-apps/errors.ts';
+import { applicationSendLimits } from '../session-apps/sending.ts';
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 interface Lease {
@@ -547,7 +548,7 @@ export class WidgetService {
     response.end(boundedJson(value, 256 * 1024));
   }
 
-  private async body(request: IncomingMessage): Promise<JsonObject> {
+  private async body(request: IncomingMessage, limit = 160 * 1024): Promise<JsonObject> {
     if (
       request.method !== 'POST' ||
       request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json'
@@ -560,7 +561,7 @@ export class WidgetService {
     for await (const part of request) {
       content += part.toString();
       bytes += Buffer.byteLength(part.toString(), 'utf8');
-      if (bytes > 160 * 1024) {
+      if (bytes > limit) {
         throw Error('Widget request exceeds its size limit');
       }
     }
@@ -643,7 +644,7 @@ export class WidgetService {
       return;
     }
     const match =
-      /^\/view\/([0-9a-f]{64})(?:\/(state|action|query|chat-read|frame|layout|input|present|popout|viewport))?$/.exec(
+      /^\/view\/([0-9a-f]{64})(?:\/(state|action|query|chat-read|chat-send|chat-receipt|frame|layout|input|present|popout|viewport))?$/.exec(
         url.pathname,
       );
     const applicationOwner = match ? this.applications.ownerOf(match[1]) : undefined;
@@ -753,8 +754,9 @@ export class WidgetService {
 
   /**
    * A session application view: the same document/state/action transport as
-   * widget views plus POST /query. Requests through this ingress are user
-   * edits; the body cannot claim another origin.
+   * widget views plus queries and separately granted chat operations. Actions
+   * are user edits; chat sends have host-generated application provenance.
+   * The body cannot claim another origin or grant either chat permission.
    */
   private async applicationView(
     owner: string,
@@ -770,7 +772,13 @@ export class WidgetService {
       operation,
       request.method ?? '',
       async () => {
-        const body = await this.body(request);
+        const limit =
+          operation === 'chat-send'
+            ? applicationSendLimits.requestBytes
+            : operation === 'chat-receipt'
+              ? applicationSendLimits.receiptRequestBytes
+              : undefined;
+        const body = await this.body(request, limit);
         this.check(owner);
         return body;
       },
