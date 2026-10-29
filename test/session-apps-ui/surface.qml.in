@@ -554,7 +554,7 @@ TestCase {
       available: true, voiceAvailable: false, voiceReason: ""}
     fakeBackend.received({type: "agent-view-actions", actions: [{sessionId: "choosing", stopRunId: "", choices: [choice]}]})
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.choice')].some(b => b.textContent.includes('Yes'))") === true }, 5000)
-    verify(clickButton(chat, "Yes"))
+    verify(clickButton(chat, "[Yes]"))
     tryVerify(function() { return view.pendingChoice !== null })
     view.releaseComposerFocus()
     tryCompare(view, "composerFocusId", "")
@@ -1088,8 +1088,10 @@ TestCase {
     tryVerify(function() { return body.panel.htmlRailActive }, 10000, "HTML rail active")
     const rail = findChild(body.panel, "trustedRailBrowser")
     function railNumber(index) {
+      // The classic-style tab shows "Q<number>", or the number beside an emoji.
       return evaluate(rail, "(() => { const row = document.querySelectorAll('.session')[" + index + "];"
-        + " return row ? row.querySelector('.number').textContent : '' })()")
+        + " if (!row) return ''; const label = row.querySelector('.number') || row.querySelector('.glyph');"
+        + " return label.textContent.replace(/^Q/, '') })()")
     }
     function headerNumber(window) {
       const label = findChild(window, "popoutSessionNumber")
@@ -1164,6 +1166,168 @@ TestCase {
     surfaceOf(window.view).setMode("two", "chat")
     tryCompare(surfaceOf(window.view), "mode", "chat")
     compare(headerNumber(window), "1")
+  }
+
+  // ---- Live end and reading position (classic view parity) --------------
+  function longRows(prefix, from, to) {
+    const rows = []
+    for (let index = from; index < to; index++) {
+      rows.push({id: prefix + "-" + index, role: index % 2 ? "assistant" : "user", kind: index % 2 ? "assistant" : "user",
+        text: "Row " + index + ". " + "Several words that wrap onto more than one line in the transcript. ".repeat(2),
+        toolName: "", input: "", state: "done", screenshot: ""})
+    }
+    return rows
+  }
+  function longSession(id, title, total, live) {
+    const messages = longRows(id, total - live, total)
+    return {id: id, title: title, status: "idle", toolEpoch: "epoch-" + id, messages: messages,
+      history: {start: {index: total - live, offset: 0}, end: {index: total, offset: 0}, total: total, revision: 1,
+        ids: messages.map(row => row.id)}}
+  }
+  function scrollState(chat) {
+    return JSON.parse(evaluate(chat, "JSON.stringify((() => { const t = document.querySelector('.transcript');"
+      + " return {top: t.scrollTop, height: t.scrollHeight, client: t.clientHeight} })())"))
+  }
+  function atLiveEnd(chat) {
+    const state = scrollState(chat)
+    return state.height - state.top - state.client <= 4 && state.height > state.client
+  }
+  // The message at the transcript's top edge (the row the reader is on) and
+  // its top relative to that edge (negative while partly scrolled past).
+  function readerRow(chat) {
+    return JSON.parse(evaluate(chat, "JSON.stringify((() => { const t = document.querySelector('.transcript').getBoundingClientRect();"
+      + " const rows = [...document.querySelectorAll('.message')];"
+      + " const row = rows.find(r => r.getBoundingClientRect().bottom > t.top + 1);"
+      + " return {text: row.querySelector('.bubble').textContent.slice(0, 7), offset: row.getBoundingClientRect().top - t.top} })())"))
+  }
+  // The row the reader was on keeps its distance from the transcript's top
+  // edge (the classic view's reader anchor), and the view did not move to the
+  // live end.
+  function rowOffset(chat, text) {
+    return evaluate(chat, "(() => { const t = document.querySelector('.transcript').getBoundingClientRect();"
+      + " const row = [...document.querySelectorAll('.message')].find(r => r.querySelector('.bubble')"
+      + " && r.querySelector('.bubble').textContent.startsWith(" + JSON.stringify(text) + "));"
+      + " return row ? row.getBoundingClientRect().top - t.top : null })()")
+  }
+  // The reader scrolls the transcript (wheel input, then the position).
+  function readerScrollTo(chat, top) {
+    evaluate(chat, "(() => { const t = document.querySelector('.transcript');"
+      + " t.dispatchEvent(new WheelEvent('wheel', {deltaY: -120, bubbles: true})); t.scrollTop = " + top + "; return true })()")
+  }
+  // Waits for the live end; on failure reports where the transcript is.
+  function verifyAtLiveEnd(chat, label) {
+    let ok = false
+    for (let step = 0; step < 50 && !ok; step++) {
+      ok = atLiveEnd(chat)
+      if (!ok) wait(100)
+    }
+    verify(ok, label + ": " + JSON.stringify(scrollState(chat)))
+  }
+  function verifyReaderRow(chat, before, label) {
+    tryVerify(function() {
+      const offset = rowOffset(chat, before.text)
+      return offset !== null && Math.abs(offset - before.offset) <= 2
+    }, 3000, label + ": " + JSON.stringify(before))
+    wait(300)
+    const settled = rowOffset(chat, before.text)
+    verify(settled !== null && Math.abs(settled - before.offset) <= 2, label + " (settled): " + settled)
+    verify(!atLiveEnd(chat), label + ": not moved to the live end")
+  }
+
+  function test_zzk_live_end_follows_and_a_scrolled_reader_keeps_their_row() {
+    const main = body.Window.window
+    const width = main.width
+    const theme = body.theme
+    snapshot([longSession("follow", "Follow", 40, 24), longSession("other", "Other", 30, 24)])
+    body.client.sessions.select("follow")
+    tryCompare(body.panel, "selectedSessionId", "follow")
+    const view = mainView()
+    const chat = waitForChat(view)
+    tryVerify(function() { return messages(chat) === 24 }, 5000)
+    verifyAtLiveEnd(chat, "starts at the live end")
+    try {
+      // Following: a resize, a text scale change and a streamed answer that
+      // grows keep the reader at the live end.
+      main.width = width - 160
+      verifyAtLiveEnd(chat, "narrower window")
+      body.theme = Object.assign({}, theme, {unit: 1.5})
+      verifyAtLiveEnd(chat, "larger text")
+      const streaming = longSession("follow", "Follow", 40, 24)
+      streaming.messages[23] = Object.assign({}, streaming.messages[23], {state: "running",
+        text: streaming.messages[23].text + "More streamed text. ".repeat(40)})
+      fakeBackend.received({type: "agent-session", session: streaming})
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('More streamed text.')") === true })
+      verifyAtLiveEnd(chat, "streamed growth")
+      compare(view.followEnd, true)
+      // A scroll that is not the reader's (no input) does not stop following.
+      evaluate(chat, "(() => { document.querySelector('.transcript').scrollTop = 300; return true })()")
+      verifyAtLiveEnd(chat, "back at the end after a layout scroll")
+      compare(view.followEnd, true)
+
+      // The reader scrolls up: the same changes keep their row in place.
+      readerScrollTo(chat, 400)
+      tryCompare(view, "followEnd", false)
+      let before = readerRow(chat)
+      main.width = width
+      verifyReaderRow(chat, before, "wider window")
+      before = readerRow(chat)
+      body.theme = theme
+      verifyReaderRow(chat, before, "smaller text")
+      before = readerRow(chat)
+      streaming.messages[23] = Object.assign({}, streaming.messages[23], {text: streaming.messages[23].text + "Still more. ".repeat(40)})
+      fakeBackend.received({type: "agent-session", session: streaming})
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('Still more.')") === true })
+      verifyReaderRow(chat, before, "streamed growth below")
+      compare(view.followEnd, false)
+
+      // Jump to latest resumes following.
+      tryVerify(function() { return evaluate(chat, "document.querySelector('.latest') !== null") === true }, 5000)
+      evaluate(chat, "(() => { document.querySelector('.latest').click(); return true })()")
+      verifyAtLiveEnd(chat, "jumped to the live end")
+      tryCompare(view, "followEnd", true)
+      streaming.messages[23] = Object.assign({}, streaming.messages[23], {text: streaming.messages[23].text + "After the jump. ".repeat(30)})
+      fakeBackend.received({type: "agent-session", session: streaming})
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('After the jump.')") === true })
+      verifyAtLiveEnd(chat, "follows again")
+
+      // A reader away from the end who switches conversation sees the other
+      // one at its live end.
+      readerScrollTo(chat, 200)
+      tryCompare(view, "followEnd", false)
+      body.client.sessions.select("other")
+      tryCompare(body.panel, "selectedSessionId", "other")
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('Row 29.')") === true })
+      verifyAtLiveEnd(chat, "other conversation at its live end")
+
+      // Back in the first one, near the top: the older page loads above and
+      // the reader's row stays where it was.
+      body.client.sessions.select("follow")
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('After the jump.')") === true })
+      fakeBackend.sent = []
+      readerScrollTo(chat, 0)
+      tryVerify(function() { return fakeBackend.sent.some(message => message.action === "agent-history-page") }, 5000, "older page requested")
+      before = readerRow(chat)
+      const request = fakeBackend.sent.filter(message => message.action === "agent-history-page").pop()
+      compare(request.direction, "before")
+      const older = longRows("follow", request.index - 10, request.index)
+      body.client.receive({action: "agent-history-page", type: "result", requestId: request.requestId,
+        result: {id: request.id, epoch: request.epoch, messages: older,
+          history: {start: {index: request.index - 10, offset: 0}, end: {index: request.index, offset: 0}, total: 40, revision: 1,
+            ids: older.map(row => row.id)}}})
+      tryVerify(function() { return messages(chat) === 34 }, 5000, "older rows above")
+      verifyReaderRow(chat, before, "older page")
+
+      // The size observer belongs to the transcript: showing Activity (no
+      // conversation) unmounts it and disconnects the observer.
+      evaluate(chat, "(() => { window.__disconnects = 0; const original = ResizeObserver.prototype.disconnect;"
+        + " ResizeObserver.prototype.disconnect = function() { window.__disconnects++; return original.call(this) }; return true })()")
+      body.panel.sessionSelected("")
+      tryVerify(function() { return evaluate(chat, "document.querySelector('.transcript') === null") === true }, 5000)
+      compare(evaluate(chat, "window.__disconnects"), 1)
+    } finally {
+      main.width = width
+      body.theme = theme
+    }
   }
 
   function test_zzc_real_reload_discloses_lost_page_held_text() {

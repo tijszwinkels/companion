@@ -9,8 +9,8 @@
  * No external fonts or assets.
  *
  * Messages, Markdown, actions, choices and the controls row live in the
- * shared conversation stylesheet, which the desktop HTML chat also uses. It
- * reads the custom properties defined on :root below. A CSS @import must
+ * page-neutral conversation stylesheet (../../chat-ui). It reads the custom
+ * properties defined on :root below. A CSS @import must
  * come first, so those rules now precede this file's own; no earlier rule
  * here competes with them, and the phone's computed styles are unchanged.
  */

@@ -72,7 +72,7 @@ and validation limits.
 | `src/markdown.ts`              | The desktop panel's vendored markdown-it, same safety settings     |
 | `src/components/*.tsx`         | Screens: pairing, rail, Previous, conversation, Activity, settings |
 | `src/styles.css`               | Desktop dark theme, safe areas, touch sizes, keyboard-aware layout |
-| `../chat-ui/`                  | Conversation styles and icons, shared with the desktop chat        |
+| `../chat-ui/`                  | Conversation styles and icons, in a page-neutral place             |
 | `build.ts`                     | esbuild bundle (Preact) plus static files                          |
 | `demo.ts`                      | Synthetic end-to-end demo                                          |
 | `../../src/remote/protocol.ts` | Typed wire contract shared with the gateway                        |

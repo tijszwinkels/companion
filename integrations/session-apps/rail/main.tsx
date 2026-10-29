@@ -77,48 +77,79 @@ function Rail(props: {
 
   return (
     <nav class="rail" style={style} aria-label="Conversations">
-      {state.sessions.map((session) => (
-        <div
-          key={session.id}
-          class={`session ${session.selected ? 'selected' : ''}`}
-          role="tab"
-          aria-selected={session.selected}
-          title={session.title}
-          onClick={() => props.bridge.select(session.id)}
-        >
-          <div class="line">
-            <span class="number">{session.number}</span>
-            {session.running && <span class="running" aria-label="Answering" />}
-            {session.unread && <span class="unread" aria-label="Unread" />}
-            {session.wakes > 0 && <span class="wakes">⏰{session.wakes}</span>}
-            {session.poppedOut && (
-              <span class="popped" aria-label="In its own window">
-                ↗
-              </span>
-            )}
-          </div>
-          <div class="title">{session.title}</div>
-          <div class="actions" onClick={(event) => event.stopPropagation()}>
-            {state.popoutAvailable && !session.poppedOut && (
-              <button disabled={!state.online} onClick={() => props.bridge.popOut(session.id)}>
-                Pop out
+      {state.sessions.map((session) => {
+        const { glyph, caption, emoji } = badgeOf(session);
+        return (
+          <div
+            key={session.id}
+            class={`session ${session.selected ? 'selected' : ''} ${session.unread ? 'unread' : ''}`}
+            role="tab"
+            aria-selected={session.selected}
+            title={
+              session.poppedOut
+                ? `${session.title}\nIn its own window · click to focus it`
+                : session.title
+            }
+            onClick={() => props.bridge.select(session.id)}
+          >
+            <div class="badge">
+              {session.running && <span class="running" aria-label="Answering" />}
+              <span class={`glyph ${emoji ? 'emoji' : ''}`}>{glyph}</span>
+              {emoji && <span class="number">{session.number}</span>}
+              {session.poppedOut && (
+                <span class="popped" aria-label="In its own window">
+                  ↗
+                </span>
+              )}
+              {session.unread && <span class="unread-dot" aria-label="Unread" />}
+            </div>
+            {session.wakes > 0 && <div class="wakes">◷{session.wakes}</div>}
+            <div class="title">{caption}</div>
+            {/* Shown on hover or keyboard focus, like the classic tab's close
+                button; the tab itself looks like the classic tab otherwise. */}
+            <div class="actions" onClick={(event) => event.stopPropagation()}>
+              {state.popoutAvailable && !session.poppedOut && (
+                <button disabled={!state.online} onClick={() => props.bridge.popOut(session.id)}>
+                  Pop out
+                </button>
+              )}
+              {session.poppedOut && (
+                <button onClick={() => props.bridge.returnToPanel(session.id)}>Return</button>
+              )}
+              <button
+                class="close"
+                disabled={!state.online}
+                onClick={() => props.bridge.close(session.id)}
+                aria-label="Close conversation"
+              >
+                ×
               </button>
-            )}
-            {session.poppedOut && (
-              <button onClick={() => props.bridge.returnToPanel(session.id)}>Return</button>
-            )}
-            <button
-              disabled={!state.online}
-              onClick={() => props.bridge.close(session.id)}
-              aria-label="Close conversation"
-            >
-              ×
-            </button>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </nav>
   );
+}
+
+/**
+ * The classic tab's badge: a leading emoji of the title, or "Q" and the
+ * session number; the caption is the rest of the title. Mirrors
+ * SessionTab.qml (whole emoji token, the same code point ranges).
+ */
+function badgeOf(session: RailSession): { glyph: string; caption: string; emoji: boolean } {
+  const trimmed = session.title.trim();
+  const firstToken = trimmed.split(/\s+/)[0] || '';
+  const point = firstToken.codePointAt(0) ?? 0;
+  const emoji =
+    (point >= 0x1f000 && point <= 0x1faff) ||
+    (point >= 0x2600 && point <= 0x27bf) ||
+    firstToken.includes('️') ||
+    firstToken.includes('⃣');
+  if (emoji) {
+    return { glyph: firstToken, caption: trimmed.slice(firstToken.length).trim(), emoji: true };
+  }
+  return { glyph: `Q${session.number}`, caption: session.title, emoji: false };
 }
 
 const root = document.getElementById('rail')!;

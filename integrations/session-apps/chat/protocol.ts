@@ -44,6 +44,8 @@ export interface ChatStatus {
   sessionId: string;
   title?: string;
   sessionStatus?: string;
+  /** The conversation's failure message, shown below the transcript. */
+  sessionError?: string;
   running?: boolean;
   online?: boolean;
   paused?: boolean;
@@ -97,7 +99,10 @@ export interface ChatStatus {
     selection: string;
     fontFamily: string;
     proseFontFamily: string;
+    /** Message and composer text scale (the classic view's textScale). */
     scale: number;
+    /** Theme unit for chrome sizes (the classic view's unit). */
+    unit?: number;
   };
 }
 

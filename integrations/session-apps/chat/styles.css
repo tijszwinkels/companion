@@ -1,19 +1,22 @@
 /*
- * Trusted HTML chat. Colors, fonts and text scale come from the native
- * theme as CSS variables (see Chat.tsx); sizes scale with --scale like the
- * classic view's textScale.
+ * Trusted HTML chat, drawn like the classic Qt Quick conversation view
+ * (integrations/panel/SessionView.qml, AgentChoices.qml, PanelAction.qml and
+ * Markdown.mjs), so the desktop looks the same whichever surface shows a
+ * conversation. The values below are the classic view's, with its units:
  *
- * Messages, Markdown, actions, choices and the controls row use the phone
- * app's shared conversation stylesheet, so desktop and phone conversations
- * look alike. `.chat` below maps the native theme onto the custom properties
- * that stylesheet reads; the rules after it are desktop-only (transcript
- * scrolling, header, composer, recovery notices and voice annotations).
+ *   --unit   the theme unit (chrome: headings, buttons, spacing, choices)
+ *   --scale  the text scale (message text, Markdown and the composer)
+ *
+ * Colors and fonts come from the native theme (see Chat.tsx). Where the
+ * classic view clips or cannot render something (long action rows, Markdown
+ * tables and code fences), this page wraps or renders it instead.
+ *
+ * The phone app has its own presentation (integrations/chat-ui and
+ * integrations/mobile); this file does not change it.
  */
 
-@import '../../chat-ui/conversation.css';
-
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
 }
 
 html,
@@ -27,218 +30,560 @@ body,
 
 .chat {
   /* Defaults until the first status message carries the native theme. */
-  --foreground: #e0e0e0;
+  --foreground: #a9b1d6;
   --background: #1a1b26;
   --accent: #7aa2f7;
-  --muted: #808080;
-  --selection: #33467c;
+  --muted: #737b9c;
+  --selection: #292e42;
   --scale: 1;
+  --unit: 1;
 
-  /* The shared conversation stylesheet's inputs, from the native theme.
-     The phone's palette has a brighter message color (--strong) than its
-     chrome (--fg); the native theme has one foreground, used for both. */
-  --fg: var(--foreground);
-  --strong: var(--foreground);
-  --border: color-mix(in srgb, var(--muted) 40%, transparent);
-  --code-bg: color-mix(in srgb, var(--foreground) 8%, transparent);
-  --user-bubble: color-mix(in srgb, var(--accent) 14%, transparent);
-  --choice-bg: color-mix(in srgb, var(--accent) 8%, transparent);
-  --tool-bg: color-mix(in srgb, var(--foreground) 4%, transparent);
+  /* One pixel at each of the classic view's two scales. */
+  --u: calc(1px * var(--unit));
+  --t: calc(1px * var(--scale));
+  /* The classic view's derived colors. */
+  --tint: color-mix(in srgb, var(--foreground) 4%, transparent);
   --danger: #ef5350;
-  --shortcut: #e0af68;
   --mono: var(--font, monospace);
   --prose: var(--prose-font, sans-serif);
-  --chat-px: calc(1px * var(--scale));
-  /* Desktop density: pointer-sized controls, not the phone's 44px touch
-     targets. */
-  --tap: calc(28px * var(--scale));
 
   display: flex;
   flex-direction: column;
   height: 100%;
   color: var(--foreground);
-  font-family: var(--prose-font, sans-serif);
-  font-size: calc(16px * var(--scale));
+  font-family: var(--prose);
+  font-size: calc(16 * var(--t));
+  box-sizing: border-box;
+}
+
+.chat *,
+.chat *::before,
+.chat *::after {
   box-sizing: border-box;
 }
 
 .empty {
   padding: 16px;
-  color: #808080;
-  font-family: sans-serif;
+  color: var(--muted, #737b9c);
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+}
+
+/* Present for assistive technology only; the native header shows the title. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 button {
   font: inherit;
-  font-family: var(--font, sans-serif);
-  font-size: calc(12px * var(--scale));
-  color: var(--foreground);
-  background: var(--selection);
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 4px 10px;
+  color: inherit;
   cursor: pointer;
 }
 
 button:disabled {
-  opacity: 0.45;
   cursor: default;
 }
 
-/* An outline, not the border: actions already use their border to show
-   their role (the primary action's accent), so focus must look different. */
+/* Keyboard focus is always visible (the classic view relies on Qt's). */
 button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 button.link {
+  padding: 0 calc(4 * var(--u));
+  border: 0;
   background: transparent;
   color: var(--accent);
-  padding: 0 4px;
 }
 
-.header {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 0 0 6px;
-  font-family: var(--font, sans-serif);
-  font-size: calc(11px * var(--scale));
-  color: var(--muted);
+/* ---- PanelAction: the classic view's filled button ----------------------- */
+
+.panel-action {
+  min-height: calc(28 * var(--u));
+  padding: calc(6 * var(--u)) calc(10 * var(--u));
+  border: 0;
+  border-radius: calc(4 * var(--u));
+  background: var(--selection);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: calc(11 * var(--u));
+  line-height: 1.2;
 }
 
-.header .title {
+.panel-action:disabled {
+  opacity: 0.45;
+}
+
+.panel-action.small {
+  min-height: calc(22 * var(--u));
+  padding: calc(3 * var(--u)) calc(10 * var(--u));
+}
+
+/* ---- Transcript ------------------------------------------------------------ */
+
+.transcript-area {
+  position: relative;
   flex: 1;
+  min-height: 0;
+}
+
+.transcript {
+  height: 100%;
+  overflow-y: auto;
+  /* Chat.tsx keeps the reader's row itself (and follows the live end); the
+     browser's anchoring would move the view a second time. */
+  overflow-anchor: none;
+}
+
+/* The classic view's 4 px rounded handle, without a track or arrows. (The
+   standard scrollbar-width/-color properties would replace these rules in
+   Chromium, so they are not used.) */
+.transcript::-webkit-scrollbar,
+.markdown pre::-webkit-scrollbar,
+.markdown table::-webkit-scrollbar,
+.choices::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.transcript::-webkit-scrollbar-thumb,
+.markdown pre::-webkit-scrollbar-thumb,
+.markdown table::-webkit-scrollbar-thumb,
+.choices::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: var(--muted);
+}
+
+.transcript::-webkit-scrollbar-track,
+.transcript::-webkit-scrollbar-corner,
+.markdown pre::-webkit-scrollbar-track,
+.markdown table::-webkit-scrollbar-track,
+.choices::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.transcript::-webkit-scrollbar-button {
+  display: none;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: calc(12 * var(--u));
+}
+
+/* Loading, failure and out-of-date history notices: a pill at the top edge. */
+.history-notice {
+  position: sticky;
+  top: calc(6 * var(--u));
+  z-index: 1;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--u));
+  max-width: calc(100% - 96 * var(--u));
+  padding: calc(4 * var(--u)) calc(6 * var(--u)) calc(4 * var(--u)) calc(10 * var(--u));
+  border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 999px;
+  background: var(--selection);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(11 * var(--u));
+}
+
+.history-notice.error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.history-text {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-/* ---- Transcript ------------------------------------------------------------ */
-
-/* The transcript is also the shared `.messages` list (font, gap, colors).
-   Like the phone, a short conversation starts at the top. */
-.transcript {
-  flex: 1;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.history-notice {
-  align-self: center;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: calc(12px * var(--scale));
-}
-
+/* Jump to latest: the classic view's 32-unit arrow over the bottom right. */
 .latest {
-  position: sticky;
-  bottom: 4px;
-  align-self: flex-end;
+  position: absolute;
+  right: calc(12 * var(--u));
+  bottom: calc(8 * var(--u));
+  width: calc(32 * var(--u));
+  height: calc(32 * var(--u));
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: calc(6 * var(--u));
   background: var(--selection);
+  color: var(--foreground);
+  font-family: var(--prose);
+  font-size: calc(16 * var(--u));
 }
 
+.latest:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- Messages ---------------------------------------------------------------- */
+
+/* Every message is a rounded panel almost as wide as the transcript: a
+   20-unit gutter opposite the sender, plus 8 units for the scroll bar. */
 .message {
-  max-width: 100%;
+  display: flex;
+}
+
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--u));
+  width: calc(100% - 28 * var(--u));
+  padding: calc(10 * var(--u));
+  border-radius: calc(10 * var(--u));
+  background: var(--tint);
   overflow-wrap: anywhere;
 }
 
-/* Provenance can be a link button: keep it, the bubble and its notes on the
-   right like the phone's right-aligned text. */
-.message.user {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-/* A provenance that opens its source conversation keeps the link color. */
-.message.user .from.link {
-  padding: 0;
-  font-family: var(--mono);
-  color: var(--accent);
-}
-
-/* Icons follow the text scale like the text beside them. */
-.tool-group svg,
-.latest svg {
-  width: calc(16px * var(--scale));
-  height: calc(16px * var(--scale));
-  flex: none;
-}
-
-.message.tool .details {
+.message.user .panel {
   margin-left: auto;
-  color: var(--accent);
+  margin-right: calc(8 * var(--u));
+  background: var(--selection);
 }
 
-.message.tool .unavailable {
+/* "You", "Pi", provenance and state, in small muted monospace. Leaves room
+   for Copy on the right. */
+.heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-height: calc(24 * var(--u));
+  padding-right: calc(66 * var(--u));
   color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(10 * var(--u));
+  white-space: pre-wrap;
 }
 
-.widget-card button.link {
+.heading.error {
+  color: var(--danger);
+}
+
+.heading .from.link {
+  padding: 0;
   font-size: inherit;
 }
 
-/* ---- Choices, Stop and voice status ------------------------------------------ */
+.heading .from.link:hover {
+  text-decoration: underline;
+}
+
+.bubble {
+  color: var(--foreground);
+  font-family: var(--prose);
+  font-size: calc(16 * var(--t));
+}
+
+.message.user .bubble,
+.message.notice .bubble {
+  white-space: pre-wrap;
+}
+
+/* The conversation's failure, in red below the last message. */
+.session-error {
+  padding-right: calc(8 * var(--u));
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: calc(12 * var(--u));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Copy appears on hover (or keyboard focus) in the top-right corner. */
+.copy {
+  position: absolute;
+  top: calc(10 * var(--u));
+  right: calc(10 * var(--u));
+  width: calc(58 * var(--u));
+  height: calc(24 * var(--u));
+  padding: 0;
+  border: 0;
+  border-radius: calc(4 * var(--u));
+  background: var(--selection);
+  color: var(--foreground);
+  font-family: var(--prose);
+  font-size: calc(11 * var(--u));
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.panel:hover .copy,
+.copy:focus-visible {
+  opacity: 1;
+}
+
+.copy:hover {
+  color: var(--accent);
+}
+
+/* A collapsed tool group: only its heading, which opens the classic view. */
+.tool-heading {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.tool-heading:hover {
+  color: var(--foreground);
+}
+
+.widget-card {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(12 * var(--u));
+}
+
+/* ---- Markdown: the classic view's Markdown.mjs typography --------------------- */
+
+/* Qt's rich text applies a percentage line height to the font's own line
+   spacing (about 1.22 em for the desktop sans fonts), not to its size. The
+   line heights below are Markdown.mjs's percentages times that factor, so
+   lines fall where they do in the classic view (checked against offscreen
+   captures). */
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p {
+  margin: calc(6 * var(--t)) 0 calc(12 * var(--t));
+  line-height: 1.77;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: calc(18 * var(--t)) 0 calc(10 * var(--t));
+  line-height: 1.53;
+  font-weight: 600;
+}
+
+.markdown h1 {
+  font-size: calc(25 * var(--t));
+}
+
+.markdown h2 {
+  font-size: calc(22 * var(--t));
+}
+
+.markdown h3 {
+  font-size: calc(19 * var(--t));
+}
+
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: calc(17 * var(--t));
+}
+
+.markdown ul,
+.markdown ol {
+  margin: calc(8 * var(--t)) 0 calc(12 * var(--t));
+  /* Qt's fixed list indent. */
+  padding-left: 40px;
+}
+
+.markdown li {
+  margin: calc(4 * var(--t)) 0 calc(5 * var(--t));
+  line-height: 1.71;
+}
+
+.markdown blockquote {
+  margin: calc(10 * var(--t)) 0 calc(12 * var(--t)) calc(16 * var(--t));
+  padding: 0;
+}
+
+.markdown code {
+  background: var(--selection);
+  font-family: monospace;
+  font-size: calc(14 * var(--t));
+}
+
+/* The classic view's code frame: a full-width block that wraps long lines. */
+.markdown pre {
+  margin: calc(6 * var(--t)) 0 calc(12 * var(--t));
+  padding: calc(12 * var(--t));
+  background: var(--selection);
+  font-family: monospace;
+  font-size: calc(14 * var(--t));
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.markdown pre code {
+  background: none;
+  font-size: inherit;
+}
+
+/* Borderless cells with a shaded header row, as in the classic view. A wide
+   table scrolls on its own instead of widening the message. */
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: calc(10 * var(--t)) 0 calc(14 * var(--t));
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: calc(6 * var(--t));
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--selection);
+  font-weight: 600;
+}
+
+.markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ---- Voice status, Stop and choices (AgentChoices.qml) ------------------------ */
 
 .controls {
   display: flex;
-  flex-wrap: wrap;
-  gap: calc(6px * var(--scale));
-  padding-top: calc(8px * var(--scale));
+  flex-direction: column;
+  gap: calc(6 * var(--u));
+  padding-top: calc(12 * var(--u));
 }
 
 .controls .voice {
-  flex-basis: 100%;
+  overflow: hidden;
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: calc(11px * var(--scale));
+  font-family: var(--prose);
+  font-size: calc(11 * var(--u));
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .controls .voice.active {
   color: var(--accent);
 }
 
-/* Desktop choices wrap instead of the phone's sideways strip, so a long
-   label or description is never cut off. */
-.controls .choice {
-  max-width: 100%;
+.panel-action.stop {
+  align-self: flex-start;
+  color: var(--muted);
 }
 
-.controls .choice small {
-  white-space: normal;
+.panel-action.stop.active {
+  color: var(--accent);
 }
 
-/* The choice the voice target can say: stronger fill and border, beside the
-   [label] brackets the text already shows. */
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--u));
+  max-height: calc(180 * var(--u));
+  overflow-y: auto;
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(8 * var(--u));
+  width: 100%;
+  min-height: calc(32 * var(--u));
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  border: 1px solid transparent;
+  border-radius: calc(4 * var(--u));
+  background: var(--tint);
+  text-align: left;
+  font-family: var(--prose);
+  font-size: calc(12 * var(--u));
+}
+
+.choice:hover:not(:disabled) {
+  background: var(--selection);
+}
+
+.choice:disabled {
+  opacity: 0.6;
+}
+
 .choice.speakable {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--accent);
 }
 
-/* ---- Composer -------------------------------------------------------------- */
+.choice .label {
+  flex: 0 1 auto;
+  color: var(--muted);
+}
+
+.choice .label:not(:only-child) {
+  max-width: 40%;
+}
+
+.choice.speakable .label {
+  color: var(--accent);
+}
+
+.choice .description {
+  display: -webkit-box;
+  flex: 1;
+  overflow: hidden;
+  color: var(--foreground);
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* ---- Composer and action row -------------------------------------------------- */
 
 .composer {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-top: calc(8px * var(--scale));
+  gap: calc(8 * var(--u));
+  padding-top: calc(8 * var(--u));
+}
+
+/* Without choices, the editor keeps the classic view's 12-unit gap below the
+   transcript. */
+.transcript-area + .composer {
+  padding-top: calc(12 * var(--u));
 }
 
 .composer textarea {
-  box-sizing: border-box;
   width: 100%;
-  height: calc(76px * var(--scale));
+  height: calc(76 * var(--t));
   resize: none;
-  padding: calc(10px * var(--scale)) calc(12px * var(--scale));
-  color: var(--strong);
-  background: var(--tool-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font: inherit;
+  padding: calc(8 * var(--u));
+  border: 1px solid var(--muted);
+  border-radius: calc(4 * var(--u));
+  background: var(--tint);
+  color: var(--foreground);
   font-family: var(--prose);
-  line-height: 1.35;
+  font-size: calc(16 * var(--t));
+}
+
+.composer textarea::placeholder {
+  color: var(--muted);
 }
 
 .composer textarea:focus {
@@ -250,39 +595,56 @@ button.link {
   opacity: 0.75;
 }
 
-.from,
-.state-note,
 .note {
   color: var(--muted);
-  font-size: calc(11px * var(--scale));
-}
-
-.note {
   font-family: var(--mono);
+  font-size: calc(11 * var(--u));
 }
 
 .note.error {
   color: var(--danger);
 }
 
+/* Refused and page-held text: the classic refused-draft row's red text with
+   its actions drawn as buttons. */
 .conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(4 * var(--u)) calc(8 * var(--u));
   color: var(--danger);
-  font-size: calc(12px * var(--scale));
+  font-family: var(--mono);
+  font-size: calc(11 * var(--u));
 }
 
-/* The footer is the shared controls row: primary Send/Queue first, then the
-   secondary actions, and the conversation state at the end. */
-.actions.controls-row {
-  margin-top: calc(2px * var(--scale));
-}
-
-.actions .recording {
-  border-color: var(--danger);
-  background: rgba(240, 84, 79, 0.25);
-  color: var(--strong);
+.conflict button.link {
+  min-height: calc(28 * var(--u));
+  padding: calc(6 * var(--u)) calc(10 * var(--u));
+  border-radius: calc(4 * var(--u));
+  background: var(--selection);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: calc(11 * var(--u));
 }
 
 .copy-feedback {
-  margin-left: 4px;
   color: var(--muted);
+}
+
+/* Wraps instead of clipping when the window is narrow. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(8 * var(--u));
+}
+
+.panel-action.recording {
+  background: rgba(240, 84, 79, 0.45);
+}
+
+.actions .state {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: calc(10 * var(--u));
 }

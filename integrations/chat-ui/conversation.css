@@ -1,15 +1,13 @@
 /*
- * Shared conversation presentation: messages, Markdown, actions, choices and
- * the composer's controls row. Both the phone app (integrations/mobile) and
- * the desktop's trusted HTML chat (integrations/session-apps/chat) import
- * this file, so the two show conversations in the same visual vocabulary.
- * These rules came unchanged from the phone stylesheet, which still renders
- * exactly as before.
+ * Conversation presentation of the phone app (integrations/mobile): messages,
+ * Markdown, actions, choices and the composer's controls row, kept in a page-
+ * neutral file so another page can reuse it. The desktop's trusted HTML chat
+ * does not use it: it follows the classic Qt view instead
+ * (integrations/session-apps/chat/styles.css).
  *
  * Inputs: each page defines the colors and fonts below as CSS custom
  * properties on an ancestor. The phone app sets them on :root (its Tokyo
- * Night defaults); the desktop chat maps the native theme onto them on
- * `.chat`.
+ * Night defaults).
  *
  *   --fg, --strong, --muted, --accent, --danger, --shortcut  text colors
  *   --selection, --border, --code-bg, --user-bubble          surfaces
@@ -19,8 +17,7 @@
  * Optional, with the phone's values as fallbacks:
  *
  *   --chat-px     one CSS pixel at the page's text scale. The phone leaves
- *                 it unset (1px); the desktop sets it from the host's text
- *                 scale, so sizes grow with Companion's text size there.
+ *                 it unset (1px); a page with a text scale can set it.
  *   --choice-bg   background of a suggested reply
  *   --tool-bg     background of a collapsed tool-call row
  *

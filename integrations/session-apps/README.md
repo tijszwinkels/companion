@@ -16,11 +16,24 @@ Quick transcript and composer:
   conversation: same ID, agent, history and unsent draft.
 
 A thin native bar above an application switches between **Chat** and the
-application and opens **Classic view**. The chat page also offers Classic view.
-Classic view is the existing Qt Quick presentation of the same conversation and
+application and opens **Classic view**. The chat page also offers Classic view
+(and the application, when there is one) in its row of actions under the text
+box. Classic view is the existing Qt Quick presentation of the same conversation and
 the recovery path for anything not shown in HTML yet (tool details, inline
 widgets, pins and the panel browser stay where they were). Start the host with
 `--session-surface classic` to use the classic view everywhere.
+
+The HTML chat and rail are drawn like the classic view so that both look the
+same: messages as rounded panels with a small "You"/"Pi"/provenance heading
+and Copy on hover, Markdown with the classic typography, tool groups as
+"▸ N tool calls", choices as full-width "[label] description" rows, the same
+text box, buttons and status, and the classic tabs in the rail. The values
+come from `../panel/SessionView.qml`, `AgentChoices.qml`, `PanelAction.qml`,
+`SessionTab.qml` and `Markdown.mjs` (see `chat/styles.css`, `rail/styles.css`).
+Like the classic view, the chat stays at the newest message while the reader
+is there, through resizing, text scale changes and streaming, and otherwise
+keeps the message at the top edge in place. The phone app keeps its own
+presentation.
 
 ## Who owns what
 
@@ -30,7 +43,6 @@ widgets, pins and the panel browser stay where they were). Start the host with
 | Chat/application switch and native bar        | `SessionSurface.qml`                   |
 | Trusted chat view and its bridge              | `TrustedChatView.qml`, `ChatState.mjs` |
 | Trusted chat page (Preact)                    | `chat/`, built into `dist/`            |
-| Message, Markdown and action styles; icons    | `../chat-ui/`, shared with the phone   |
 | Restricted application view                   | `SessionAppView.qml`                   |
 | Trusted conversation list (rail)              | `TrustedRailView.qml`, `rail/`         |
 | Browser profiles                              | `../../native/widget-renderer/`        |
@@ -187,7 +199,9 @@ shape: select, pop out, focus (selecting a popped-out conversation) and return,
 and close, each through the panel's existing signals. The Activity tab,
 Previous sessions, the compact rail's Expand/Return, the divider, Alt+number
 and Alt+Shift+Up/Down stay native, and the native tab list returns if the page
-fails. Drag reordering and tab tooltips are not ported; the rest of the sidebar
+fails. Its tabs look like the classic ones; Pop out, Return and close appear
+on hover or keyboard focus. Drag reordering and the styled tab tooltip are
+not ported (the browser shows the title); the rest of the sidebar
 (Activity, settings, Previous sessions) remains Qt Quick.
 
 ## Build and test

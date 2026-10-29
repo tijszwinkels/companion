@@ -1,6 +1,7 @@
 /*
- * Trusted session rail. Colors, font and scale come from the native theme
- * as CSS variables.
+ * Trusted session rail, drawn like the classic tabs (integrations/panel/
+ * SessionTab.qml). Colors, font and the tab unit (1.25 × the theme unit)
+ * come from the native theme as CSS variables.
  */
 
 html,
@@ -13,89 +14,184 @@ body,
 
 .rail {
   --unit: 1;
+  /* One pixel at the tab scale. */
+  --u: calc(1px * var(--unit));
+  --unread: #91dbb5;
   display: flex;
   flex-direction: column;
-  gap: calc(8px * var(--unit));
-  padding: 0 calc(8px * var(--unit));
+  gap: calc(8 * var(--u));
+  padding: 0 calc(8 * var(--u));
   color: var(--foreground);
   font-family: var(--font, sans-serif);
-  font-size: calc(9px * var(--unit));
 }
 
 .session {
   position: relative;
-  padding: calc(6px * var(--unit));
-  border-radius: calc(5px * var(--unit));
+  box-sizing: border-box;
+  min-height: calc(62 * var(--u));
+  padding: calc(3 * var(--u));
+  border-radius: calc(5 * var(--u));
   cursor: pointer;
 }
 
-.session:hover,
+.session:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
 .session.selected {
   background: var(--selection);
 }
 
+.session.unread {
+  border: var(--u) solid color-mix(in srgb, var(--unread) 25%, transparent);
+  background: color-mix(in srgb, var(--unread) 12%, transparent);
+}
+
+/* The one cue that means "this conversation is shown". */
 .session.selected::after {
   content: '';
   position: absolute;
   right: 0;
-  top: 6px;
-  bottom: 6px;
-  width: 3px;
-  border-radius: 2px;
+  top: calc(6 * var(--u));
+  bottom: calc(6 * var(--u));
+  width: calc(3 * var(--u));
+  border-radius: calc(1.5 * var(--u));
   background: var(--accent);
 }
 
-.line {
+.badge {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--muted);
+  justify-content: center;
+  width: calc(28 * var(--u));
+  height: calc(28 * var(--u));
+  margin: 0 auto;
 }
 
-.number {
-  font-weight: bold;
+.glyph {
+  font-size: calc(10 * var(--u));
+}
+
+.glyph.emoji {
+  font-size: calc(15 * var(--u));
+}
+
+.session.selected .glyph {
   color: var(--accent);
 }
 
-.running,
-.unread {
-  width: 6px;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--accent);
+/* With an emoji badge, the session number stays readable top-left. */
+.number {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--muted);
+  font-size: calc(8 * var(--u));
 }
 
-.unread {
-  background: var(--foreground);
+/* Running: an open ring turning around the badge. */
+.running {
+  position: absolute;
+  inset: calc(2 * var(--u));
+  box-sizing: border-box;
+  border: calc(1.5 * var(--u)) solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: turn 1.6s linear infinite;
+}
+
+@keyframes turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.popped {
+  position: absolute;
+  left: calc(-4 * var(--u));
+  bottom: 0;
+  color: var(--accent);
+  font-size: calc(10 * var(--u));
+}
+
+.unread-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: calc(7 * var(--u));
+  height: calc(7 * var(--u));
+  border-radius: 50%;
+  background: var(--unread);
+}
+
+.wakes {
+  text-align: center;
+  color: var(--accent);
+  font-size: calc(10 * var(--u));
 }
 
 .title {
-  overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  margin-top: calc(2 * var(--u));
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(9 * var(--u));
+  text-align: center;
   overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
+.session.selected .title {
+  color: var(--accent);
+}
+
+.session.unread .title {
+  color: var(--unread);
+}
+
+/* Pop out / Return and close: only on hover or keyboard focus. */
 .actions {
-  display: none;
-  gap: 4px;
-  margin-top: 4px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  gap: calc(2 * var(--u));
+  opacity: 0;
+  transition: opacity 140ms;
 }
 
 .session:hover .actions,
-.session.selected .actions {
-  display: flex;
+.session:focus-within .actions {
+  opacity: 1;
 }
 
 button {
-  font: inherit;
+  height: calc(18 * var(--u));
+  padding: 0 calc(5 * var(--u));
+  border: 0;
+  border-radius: calc(9 * var(--u));
+  background: var(--selection);
   color: var(--foreground);
-  background: transparent;
-  border: 1px solid var(--muted);
-  border-radius: 3px;
-  padding: 1px 4px;
+  font: inherit;
+  font-size: calc(8 * var(--u));
   cursor: pointer;
+}
+
+button.close {
+  width: calc(18 * var(--u));
+  padding: 0;
+  font-size: calc(11 * var(--u));
+}
+
+button:hover {
+  box-shadow: inset 0 0 0 var(--u) var(--accent);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 button:disabled {

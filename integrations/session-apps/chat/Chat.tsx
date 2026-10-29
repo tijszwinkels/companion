@@ -11,7 +11,6 @@
 import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { ArrowDownIcon, ToolIcon } from '../../chat-ui/icons.tsx';
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
 import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
 import type { ChatStore } from './store.ts';
@@ -62,12 +61,13 @@ export function Chat(props: { store: ChatStore }) {
         '--font': theme.fontFamily,
         '--prose-font': theme.proseFontFamily,
         '--scale': String(theme.scale || 1),
+        '--unit': String(theme.unit || 1),
       }
     : {};
 
   return (
     <div class="chat" style={style}>
-      <Header status={status} bridge={bridge} />
+      <Header status={status} />
       <Transcript rows={rows} status={status} bridge={bridge} />
       <Controls status={status} bridge={bridge} />
       {/* One Composer instance per conversation: switching conversations
@@ -80,29 +80,16 @@ export function Chat(props: { store: ChatStore }) {
   );
 }
 
-function Header(props: { status: ChatStatus; bridge: NativeBridge }) {
-  const { status, bridge } = props;
-
+/**
+ * The conversation's title for assistive technology. It is not drawn: the
+ * native header above the page already shows it, as in the classic view.
+ * The application and Classic view actions are in the composer's footer.
+ */
+function Header(props: { status: ChatStatus }) {
   return (
-    <div class="header">
-      <span class="title">{status.title}</span>
-      {status.application && (
-        <button
-          class="link"
-          onClick={() => bridge.openApp()}
-          title="Show this conversation's application"
-        >
-          {status.application.name}
-        </button>
-      )}
-      <button
-        class="link"
-        onClick={() => bridge.classicView()}
-        title="Classic Companion view (tool details and widgets)"
-      >
-        Classic view
-      </button>
-    </div>
+    <h1 class="header visually-hidden">
+      <span class="title">{props.status.title}</span>
+    </h1>
   );
 }
 
@@ -111,10 +98,58 @@ function Header(props: { status: ChatStatus; bridge: NativeBridge }) {
 function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: NativeBridge }) {
   const { rows, status, bridge } = props;
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const firstKey = useRef('');
   const heightBefore = useRef(0);
+  // When the reader last scrolled the transcript themselves (wheel, keys or a
+  // pointer, such as dragging the scroll bar), in performance.now() time.
+  const readerScrolledAt = useRef(-Infinity);
+
+  function readerInput() {
+    readerScrolledAt.current = performance.now();
+  }
   const history = status.history;
+
+  // While the reader is away from the live end: the message at the
+  // transcript's top edge and its distance from that edge, so a resize or
+  // reflow can put it back where it was (the classic view's reader anchor).
+  const readerAnchor = useRef<{ row: Element; offset: number } | null>(null);
+
+  function follow(value: boolean) {
+    following.current = value;
+    if (value) {
+      readerAnchor.current = null;
+    }
+  }
+
+  function rememberReaderRow() {
+    const element = scroller.current;
+    const inner = content.current;
+    readerAnchor.current = null;
+    if (!element || !inner) {
+      return;
+    }
+    const edge = element.getBoundingClientRect().top;
+    for (const row of inner.querySelectorAll('.message')) {
+      const box = row.getBoundingClientRect();
+      if (box.bottom > edge + 1) {
+        readerAnchor.current = { row: row, offset: box.top - edge };
+        return;
+      }
+    }
+  }
+
+  function restoreReaderRow() {
+    const element = scroller.current;
+    const anchor = readerAnchor.current;
+    if (!element || !anchor || !anchor.row.isConnected) {
+      return;
+    }
+    const edge = element.getBoundingClientRect().top;
+    const offset = anchor.row.getBoundingClientRect().top - edge;
+    element.scrollTop += offset - anchor.offset;
+  }
 
   // Keep the reader's position when older rows arrive above, and follow the
   // live end otherwise.
@@ -128,15 +163,78 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       element.scrollTop = element.scrollHeight;
     } else if (first !== firstKey.current && heightBefore.current > 0) {
       element.scrollTop += element.scrollHeight - heightBefore.current;
+      rememberReaderRow();
     }
     firstKey.current = first;
     heightBefore.current = element.scrollHeight;
   }, [rows]);
 
-  // A different conversation starts at its live end.
+  // A different conversation starts at its live end. Scrolling done in the
+  // previous one does not carry over.
   useEffect(() => {
-    following.current = true;
+    follow(true);
+    readerScrolledAt.current = -Infinity;
+    const element = scroller.current;
+    if (element) {
+      element.scrollTop = element.scrollHeight;
+    }
   }, [status.sessionId]);
+
+  // Like the classic view, a reader who follows the live end stays there when
+  // the transcript or its content changes size without new rows: the window
+  // is resized, the text scale changes, or a streamed answer reflows. A
+  // reader who scrolled up keeps the message at the top edge where it was.
+  // (The browser's own scroll anchoring is off for the transcript, see the
+  // stylesheet, so it never moves the view as well.) The observer belongs to
+  // this component and is disconnected when it unmounts.
+  useEffect(() => {
+    const element = scroller.current;
+    const inner = content.current;
+    if (!element || !inner) {
+      return;
+    }
+    // Also on the window's own resize event: the native view resizes the
+    // page (and animates its height) without waiting for a rendered frame,
+    // which the observer's callbacks need.
+    const observer = new ResizeObserver(keepPlace);
+    observer.observe(element);
+    observer.observe(inner);
+    window.addEventListener('resize', keepPlace);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', keepPlace);
+    };
+  }, []);
+
+  // A new text scale or theme unit changes every row's height in this render.
+  useLayoutEffect(keepPlace, [status.theme?.scale, status.theme?.unit]);
+
+  // After a size change: at the live end while following, otherwise the
+  // reader's row back where it was.
+  function keepPlace() {
+    const element = scroller.current;
+    if (!element) {
+      return;
+    }
+    if (following.current) {
+      element.scrollTop = element.scrollHeight;
+    } else {
+      restoreReaderRow();
+      rememberReaderRow();
+    }
+    heightBefore.current = element.scrollHeight;
+  }
+
+  // Back to the live end: follow it again here and ask the host for the
+  // latest page (it may hold an older one).
+  function jumpToLatest() {
+    follow(true);
+    const element = scroller.current;
+    if (element) {
+      element.scrollTop = element.scrollHeight;
+    }
+    bridge.history(status.sessionId, 'latest');
+  }
 
   function scrolled() {
     const element = scroller.current;
@@ -144,9 +242,27 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       return;
     }
     const atEnd = element.scrollTop + element.clientHeight >= element.scrollHeight - 4;
+
+    // Like the classic view, only the reader leaves the live end: a scroll
+    // within a second of their own input (each scroll while they drag or
+    // keep scrolling extends that). Other scroll events while following come
+    // from layout changes, e.g. the native view animating its height after a
+    // text scale change; they never stop following, the view stays at the end.
+    const byReader = performance.now() - readerScrolledAt.current < 1000;
+    if (byReader) {
+      readerInput();
+    }
+    if (following.current && !atEnd && !byReader) {
+      element.scrollTop = element.scrollHeight;
+      heightBefore.current = element.scrollHeight;
+      return;
+    }
     if (atEnd !== following.current) {
-      following.current = atEnd;
+      follow(atEnd);
       bridge.following(status.sessionId, atEnd);
+    }
+    if (!following.current) {
+      rememberReaderRow();
     }
     heightBefore.current = element.scrollHeight;
 
@@ -171,27 +287,46 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     }
   }
 
+  // The Jump button floats over the transcript's bottom-right corner, like
+  // the classic view's arrow, instead of taking a row in the transcript.
   return (
-    <div class="transcript messages" ref={scroller} onScroll={scrolled} onClick={clicked}>
-      <HistoryNotice status={status} bridge={bridge} />
-      {rows.map((row) => (
-        <Row key={row.key} row={row} sessionId={status.sessionId} bridge={bridge} />
-      ))}
+    <div class="transcript-area">
+      <div
+        class="transcript"
+        ref={scroller}
+        onScroll={scrolled}
+        onClick={clicked}
+        onWheel={readerInput}
+        onKeyDown={readerInput}
+        onPointerDown={readerInput}
+      >
+        <div class="rows" ref={content}>
+          <HistoryNotice status={status} bridge={bridge} />
+          {rows.map((row) => (
+            <Row key={row.key} row={row} sessionId={status.sessionId} bridge={bridge} />
+          ))}
+          {status.sessionError && <div class="session-error">{status.sessionError}</div>}
+        </div>
+      </div>
       {history && !history.atLatest && (
         <button
-          class="action small latest"
-          onClick={() => {
-            following.current = true;
-            bridge.history(status.sessionId, 'latest');
-          }}
+          class="latest"
+          aria-label="Jump to latest"
+          title="Jump to latest"
+          onClick={jumpToLatest}
         >
-          <ArrowDownIcon size={14} /> Jump to latest
+          ↓
         </button>
       )}
     </div>
   );
 }
 
+/**
+ * Loading, failure and out-of-date notices for the history pages, drawn
+ * like the classic view's pill at the top of the transcript: a short muted
+ * message and, when there is something to do, one action.
+ */
 function HistoryNotice(props: { status: ChatStatus; bridge: NativeBridge }) {
   const { status, bridge } = props;
   const history = status.history;
@@ -199,107 +334,184 @@ function HistoryNotice(props: { status: ChatStatus; bridge: NativeBridge }) {
     return null;
   }
 
+  let message = '';
+  let action = '';
+  let request: 'older' | 'retry' | 'refresh' | null = null;
   if (history.pending) {
-    return <div class="history-notice">Loading messages…</div>;
+    message = 'Loading messages…';
+  } else if (history.error) {
+    message = history.error;
+    if (history.canRetry) {
+      action = 'Retry';
+      request = 'retry';
+    }
+  } else if (history.changed) {
+    message = 'Messages may have changed since they loaded';
+    action = 'Refresh';
+    request = 'refresh';
+  } else if (history.hasOlder) {
+    message = 'Earlier messages';
+    action = 'Load';
+    request = 'older';
+  } else {
+    return null;
   }
-  if (history.error) {
-    return (
-      <div class="history-notice">
-        {history.error}
-        {history.canRetry && (
-          <button class="link" onClick={() => bridge.history(status.sessionId, 'retry')}>
-            Retry
-          </button>
-        )}
-      </div>
-    );
-  }
-  if (history.changed) {
-    return (
-      <div class="history-notice">
-        Messages may have changed since they loaded
-        <button class="link" onClick={() => bridge.history(status.sessionId, 'refresh')}>
-          Refresh
+
+  return (
+    <div class={`history-notice ${history.error ? 'error' : ''}`}>
+      <span class="history-text">{message}</span>
+      {request && (
+        <button
+          class="panel-action small"
+          aria-label={request === 'older' ? 'Load earlier messages' : `${action} history`}
+          onClick={() => bridge.history(status.sessionId, request)}
+        >
+          {action}
         </button>
-      </div>
-    );
+      )}
+    </div>
+  );
+}
+
+/**
+ * The small line at the top of each message, as in the classic view: who
+ * wrote it ("You", "Pi", the agent or application that sent it), whether it
+ * is queued or failed, and fragment and screenshot notes. Provenance stays in
+ * its own `.from` element; a linked agent origin opens its conversation.
+ */
+function UserHeading(props: { row: ChatRow; sessionId: string; bridge: NativeBridge }) {
+  const { row, sessionId, bridge } = props;
+  const origin = row.origin;
+
+  let from = '';
+  if (origin?.kind === 'agent') {
+    from = `Agent · ${origin.title || 'another conversation'}`;
+  } else if (origin?.kind === 'external') {
+    from = `External agent (unverified) · ${origin.title}`;
+  } else if (origin?.kind === 'application-message') {
+    from =
+      `Application · ${origin.title || 'unverified application origin'}` +
+      (origin.receiptId ? ` · receipt ${origin.receiptId.slice(0, 8)}` : '');
+  } else if (origin?.kind === 'application-event') {
+    from = "Your edits in this conversation's app";
+  } else if (origin?.kind === 'scheduled-wake') {
+    from = origin.title ? `Scheduled wake · ${origin.title}` : 'Scheduled wake';
   }
-  if (history.hasOlder) {
-    return (
-      <div class="history-notice">
-        <button class="link" onClick={() => bridge.history(status.sessionId, 'older')}>
-          Earlier messages
-        </button>
-      </div>
-    );
+
+  let suffix = '';
+  if (row.state === 'queued') {
+    suffix += ' · queued';
+  } else if (row.state === 'error') {
+    suffix += ' · not sent';
   }
-  return null;
+  if (row.screenshotNotSaved) {
+    suffix += ' · screenshot not saved';
+  } else if (row.screenshot) {
+    suffix += row.screenshotAvailable ? ' · screenshot attached' : ' · screenshot unavailable';
+  }
+  suffix += row.fragmentLabel;
+
+  let who = <span>You</span>;
+  if (from && origin?.kind === 'agent' && origin.sessionId) {
+    who = (
+      <button
+        class="from link"
+        title="Opens the source conversation"
+        onClick={() => bridge.openOrigin(sessionId, row.key)}
+      >
+        {from}
+      </button>
+    );
+  } else if (from) {
+    who = <span class="from">{from}</span>;
+  }
+
+  return (
+    <div class={`heading ${row.state === 'error' ? 'error' : ''}`}>
+      {who}
+      {suffix}
+    </div>
+  );
+}
+
+/** Copy, shown on hover or keyboard focus in the message's top-right corner. */
+function CopyMessage(props: { text: string; bridge: NativeBridge }) {
+  return (
+    <button
+      class="copy"
+      aria-label="Copy message"
+      onClick={() => props.bridge.copyText(props.text)}
+    >
+      Copy
+    </button>
+  );
 }
 
 const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: NativeBridge }) {
   const { row, sessionId, bridge } = props;
 
-  if (row.kind === 'notice') {
-    return <div class={`message notice ${row.state === 'error' ? 'error' : ''}`}>{row.text}</div>;
-  }
-
-  // Collapsed like the phone's tool row; the whole row opens the classic
-  // view, which has the tool details.
+  // A tool group is a collapsed panel like the classic view's; its details
+  // are in the classic view, which the heading opens.
   if (row.kind === 'tool') {
+    let state = '';
+    if (row.toolUnavailable) {
+      state = ' · details unavailable';
+    } else if (row.state === 'running') {
+      state = ' · running';
+    } else if (row.state === 'error') {
+      state = ' · failed or stopped';
+    }
+    const count =
+      row.toolCount > 0
+        ? `${row.toolCount} tool call${row.toolCount === 1 ? '' : 's'}`
+        : row.toolName || 'Tool call';
     return (
-      <div class="message tool tool-group">
-        <button onClick={() => bridge.classicView()} title="Tool details are in the classic view">
-          <ToolIcon size={16} />
-          <span>
-            {row.toolCount > 1 ? `${row.toolCount} tool calls` : row.toolName || 'Tool call'}
-            {row.toolUnavailable ? ' · details unavailable' : ''}
-          </span>
-          <span class="details">Details</span>
-        </button>
+      <div class="message tool">
+        <div class="panel">
+          <button
+            class="heading tool-heading"
+            onClick={() => bridge.classicView()}
+            title="Tool details are in the classic view"
+          >
+            ▸ {count}
+            {state}
+          </button>
+        </div>
       </div>
     );
   }
 
   if (row.kind === 'user') {
-    let from = '';
-    if (row.origin?.kind === 'agent') {
-      from = `From ${row.origin.title}`;
-    } else if (row.origin?.kind === 'external') {
-      from = `${row.origin.title} · external (unverified)`;
-    } else if (row.origin?.kind === 'application-message') {
-      from =
-        `Application · ${row.origin.title || 'unverified application origin'}` +
-        (row.origin.receiptId ? ` · receipt ${row.origin.receiptId.slice(0, 8)}` : '');
-    } else if (row.origin?.kind === 'application-event') {
-      from = "Your edits in this conversation's app";
-    } else if (row.origin?.kind === 'scheduled-wake') {
-      from = row.origin.title || 'Scheduled wake';
-    }
-
     return (
       <div class={`message user ${row.state === 'queued' ? 'queued' : ''}`}>
-        {from &&
-          (row.origin?.kind === 'agent' && row.origin.sessionId ? (
-            <button class="from link" onClick={() => bridge.openOrigin(sessionId, row.key)}>
-              {from}
+        <div class="panel">
+          <UserHeading row={row} sessionId={sessionId} bridge={bridge} />
+          {row.screenshot && row.screenshotAvailable && !row.screenshotNotSaved && (
+            <button
+              class="panel-action small"
+              onClick={() => bridge.openScreenshot(sessionId, row.key)}
+            >
+              View screenshot
             </button>
-          ) : (
-            <div class="from">{from}</div>
-          ))}
-        {row.screenshotNotSaved && <div class="state-note">Screenshot not saved</div>}
-        {row.screenshot && !row.screenshotNotSaved && (
-          <button
-            class="link"
-            disabled={!row.screenshotAvailable}
-            onClick={() => bridge.openScreenshot(sessionId, row.key)}
-          >
-            {row.screenshotAvailable ? 'View screenshot' : 'Screenshot unavailable'}
-          </button>
-        )}
-        {row.text && <div class="bubble">{row.text}</div>}
-        {row.fragmentLabel && <div class="state-note">{row.fragmentLabel.replace(/^ · /, '')}</div>}
-        {row.state === 'queued' && <div class="state-note">Queued · sends after this answer</div>}
-        {row.state === 'error' && <div class="state-note">Not delivered</div>}
+          )}
+          {row.text && <div class="bubble">{row.text}</div>}
+          {row.text && <CopyMessage text={row.text} bridge={bridge} />}
+        </div>
+      </div>
+    );
+  }
+
+  const heading = (
+    <div class={`heading ${row.state === 'error' ? 'error' : ''}`}>Pi{row.fragmentLabel}</div>
+  );
+
+  if (row.kind === 'notice') {
+    return (
+      <div class={`message assistant notice ${row.state === 'error' ? 'error' : ''}`}>
+        <div class="panel">
+          {heading}
+          <div class="bubble">{row.text}</div>
+        </div>
       </div>
     );
   }
@@ -307,12 +519,15 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
   if (row.widget) {
     return (
       <div class="message assistant">
-        <div class="widget-card">
-          <strong>{row.widget.name}</strong> widget — shown in the classic view.
-          <button class="link" onClick={() => bridge.classicView()}>
-            Open
-          </button>
-          {row.text && <div>{row.text}</div>}
+        <div class="panel">
+          {heading}
+          <div class="widget-card">
+            <strong>{row.widget.name}</strong> widget — shown in the classic view.
+            <button class="link" onClick={() => bridge.classicView()}>
+              Open
+            </button>
+            {row.text && <div>{row.text}</div>}
+          </div>
         </div>
       </div>
     );
@@ -320,23 +535,29 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
 
   return (
     <div class={`message assistant ${row.state === 'error' ? 'error' : ''}`}>
-      <div
-        class="bubble markdown"
-        // renderMarkdown escapes every HTML tag in agent text and only keeps
-        // explicit http(s) links; the page CSP also forbids inline scripts.
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(row.text || '…') }}
-      />
-      {row.text && row.state !== 'running' && (
-        <div class="message-actions">
-          <button onClick={() => bridge.copyText(row.text)}>Copy</button>
-        </div>
-      )}
+      <div class="panel">
+        {heading}
+        <div
+          class="bubble markdown"
+          // renderMarkdown escapes every HTML tag in agent text and only keeps
+          // explicit http(s) links; the page CSP also forbids inline scripts.
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(row.text || '…') }}
+        />
+        {row.text && row.state !== 'running' && <CopyMessage text={row.text} bridge={bridge} />}
+      </div>
     </div>
   );
 });
 
 // ---- Choices, Stop and voice status -----------------------------------------
 
+/**
+ * Voice status, the run's Stop and the offered choices, laid out like the
+ * classic view: one full-width row per choice with its "[label]" and the
+ * description beside it. A choice the voice target can say right now has an
+ * accent label and border; the others are muted, so the brackets never claim
+ * more than the voice annotation does.
+ */
 function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
   const { status, bridge } = props;
   const choices = status.choices || [];
@@ -356,28 +577,49 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
       )}
       {status.stopRunId && (
         <button
-          class="action small"
+          class={`panel-action stop ${status.voiceTarget && listening ? 'active' : ''}`}
           disabled={!status.online}
           onClick={() => bridge.stopRun(status.sessionId, status.stopRunId || '')}
         >
           {status.voiceTarget ? '[stop]' : 'Stop'}
         </button>
       )}
-      {choices.map((choice) => {
-        const speakable = status.voiceTarget && listening && !pending && choice.voiceAvailable;
-        return (
-          <button
-            key={`${choice.revision}:${choice.index}`}
-            class={`choice ${speakable ? 'speakable' : ''}`}
-            disabled={!status.online || pending || !choice.available}
-            title={choice.description || choice.voiceReason}
-            onClick={() => bridge.choose(choice.sessionId, choice.revision, choice.index)}
-          >
-            {speakable ? `[${choice.label}]` : choice.label}
-            {choice.description && <small>{choice.description}</small>}
-          </button>
-        );
-      })}
+      {choices.length > 0 && (
+        <div class="choices" role="group" aria-label="Choices">
+          {choices.map((choice) => {
+            const speakable = status.voiceTarget && listening && !pending && choice.voiceAvailable;
+            let hint = choice.voiceReason;
+            if (!status.online) {
+              hint = 'Disconnected';
+            } else if (!hint) {
+              if (status.paused) {
+                hint = 'Click to select; voice listening is paused';
+              } else if (!status.voiceTarget) {
+                hint = 'Click to select; voice goes elsewhere';
+              } else if (!choice.voiceAvailable) {
+                hint = 'Click to select';
+              } else {
+                hint = `Say “${choice.label}” to select`;
+              }
+            }
+            return (
+              <button
+                key={`${choice.revision}:${choice.index}`}
+                class={`choice ${speakable ? 'speakable' : ''}`}
+                disabled={!status.online || pending || !choice.available}
+                title={choice.description ? `${hint}\n${choice.description}` : hint}
+                aria-label={
+                  choice.description ? `${choice.label}: ${choice.description}` : choice.label
+                }
+                onClick={() => bridge.choose(choice.sessionId, choice.revision, choice.index)}
+              >
+                <span class="label">[{choice.label}]</span>
+                {choice.description && <span class="description">{choice.description}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -566,6 +808,8 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     store.hold(sessionOfText, value);
   }
   const [inputNotice, setInputNotice] = useState('');
+  // Whether this editor has keyboard focus (only for the placeholder).
+  const [focused, setFocused] = useState(false);
   // The newest known host draft, kept by the store in message order (see
   // ChatStore.hostDraft), not from render state that may lag behind.
   const hostDraft = {
@@ -778,11 +1022,11 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     recordLabel = 'Stop recording';
   }
 
-  let placeholder = status.running
-    ? 'Write a follow-up while the agent answers…'
-    : 'Ask a follow-up…';
-  if (status.focusShortcut) {
-    placeholder += ` (${status.focusShortcut} to focus)`;
+  // The classic view's wording: the focus shortcut while the editor is not
+  // focused, otherwise what typing here does.
+  let placeholder = status.running ? 'Write a follow-up while Pi answers…' : 'Ask a follow-up…';
+  if (status.focusShortcut && !focused) {
+    placeholder = `${status.focusShortcut} to focus`;
   }
 
   let stateLabel = 'Done';
@@ -798,6 +1042,58 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
 
   return (
     <div class="composer">
+      <textarea
+        ref={area}
+        aria-label="Message to this agent session"
+        value={text}
+        readOnly={readOnly}
+        placeholder={placeholder}
+        onInput={(event) => {
+          const element = event.currentTarget;
+          if (unkeptHere) {
+            // Shortening or editing text only this page holds.
+            setText(element.value);
+            setUnkept(status.sessionId, element.value);
+            return;
+          }
+          edited(element.value, element.selectionStart);
+        }}
+        onBeforeInput={(event) => {
+          // Typing, line breaks, replacement and drops that would go past
+          // the limit change nothing (input methods cannot be cancelled).
+          const input = event as unknown as InputEvent;
+          const inserted = input.data ?? input.dataTransfer?.getData('text/plain') ?? '';
+          const inserting = input.inputType.startsWith('insert');
+          const addition = input.inputType === 'insertLineBreak' ? '\n' : inserted;
+          if (inserting && input.cancelable && insertionTooLong(addition)) {
+            event.preventDefault();
+          }
+        }}
+        onPaste={(event) => {
+          if (insertionTooLong(event.clipboardData?.getData('text/plain') ?? '')) {
+            event.preventDefault();
+          }
+        }}
+        onDrop={(event) => {
+          if (insertionTooLong(event.dataTransfer?.getData('text/plain') ?? '')) {
+            event.preventDefault();
+          }
+        }}
+        onKeyDown={keyDown}
+        onKeyUp={cursorMoved}
+        onMouseUp={cursorMoved}
+        onSelect={cursorMoved}
+        onFocus={() => {
+          setFocused(true);
+          bridge.composerFocus(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          bridge.composerFocus(false);
+        }}
+      />
+      {/* Notices and recovery come below the editor, as in the classic
+          view, so the editor never moves when one appears. */}
       {inputNotice && <div class="conflict">{inputNotice}</div>}
       <HeldNotices store={store} status={status} />
       {unkept !== null && (
@@ -844,50 +1140,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           </button>
         </div>
       )}
-      <textarea
-        ref={area}
-        aria-label="Message to this agent session"
-        value={text}
-        readOnly={readOnly}
-        placeholder={placeholder}
-        onInput={(event) => {
-          const element = event.currentTarget;
-          if (unkeptHere) {
-            // Shortening or editing text only this page holds.
-            setText(element.value);
-            setUnkept(status.sessionId, element.value);
-            return;
-          }
-          edited(element.value, element.selectionStart);
-        }}
-        onBeforeInput={(event) => {
-          // Typing, line breaks, replacement and drops that would go past
-          // the limit change nothing (input methods cannot be cancelled).
-          const input = event as unknown as InputEvent;
-          const inserted = input.data ?? input.dataTransfer?.getData('text/plain') ?? '';
-          const inserting = input.inputType.startsWith('insert');
-          const addition = input.inputType === 'insertLineBreak' ? '\n' : inserted;
-          if (inserting && input.cancelable && insertionTooLong(addition)) {
-            event.preventDefault();
-          }
-        }}
-        onPaste={(event) => {
-          if (insertionTooLong(event.clipboardData?.getData('text/plain') ?? '')) {
-            event.preventDefault();
-          }
-        }}
-        onDrop={(event) => {
-          if (insertionTooLong(event.dataTransfer?.getData('text/plain') ?? '')) {
-            event.preventDefault();
-          }
-        }}
-        onKeyDown={keyDown}
-        onKeyUp={cursorMoved}
-        onMouseUp={cursorMoved}
-        onSelect={cursorMoved}
-        onFocus={() => bridge.composerFocus(true)}
-        onBlur={() => bridge.composerFocus(false)}
-      />
       {draft.source && (
         <div class="note">Drafted by agent · {draft.source} — review before sending</div>
       )}
@@ -904,15 +1156,16 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
             : status.inputError}
         </div>
       )}
-      {/* The phone's footer hierarchy: primary Send/Queue, then secondary
-          actions, and the conversation state at the end. */}
-      <div class="actions controls-row">
-        <button class="action primary" disabled={!sendable} onClick={send}>
+      {/* The classic view's action row: Send/Queue, Record, Stop, the
+          application and Classic view escapes, Close session, then the
+          conversation's state right after the buttons. */}
+      <div class="actions">
+        <button class="panel-action" disabled={!sendable} onClick={send}>
           {status.running ? 'Queue' : 'Send'}
         </button>
         {recording?.available && (
           <button
-            class={recording.here ? 'action recording' : 'action'}
+            class={recording.here ? 'panel-action recording' : 'panel-action'}
             disabled={recording.here ? !recording.canStop : !recording.canRecord}
             onClick={() => bridge.toggleRecording(status.sessionId)}
           >
@@ -921,21 +1174,37 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         )}
         {status.running && !status.stopRunId && (
           <button
-            class="action"
+            class="panel-action"
             disabled={!status.online}
             onClick={() => bridge.stop(status.sessionId)}
           >
             Stop
           </button>
         )}
+        {status.application && (
+          <button
+            class="panel-action"
+            onClick={() => bridge.openApp()}
+            title="Show this conversation's application"
+          >
+            {status.application.name}
+          </button>
+        )}
         <button
-          class="action"
+          class="panel-action"
+          onClick={() => bridge.classicView()}
+          title="Classic Companion view (tool details and widgets)"
+        >
+          Classic view
+        </button>
+        <button
+          class="panel-action"
           disabled={!status.online || recording?.busy === true}
           onClick={() => bridge.closeSession(status.sessionId)}
         >
           Close session
         </button>
-        <span class="state status-text">{stateLabel}</span>
+        <span class="state">{stateLabel}</span>
       </div>
     </div>
   );

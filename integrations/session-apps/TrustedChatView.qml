@@ -186,6 +186,7 @@ Item {
       sessionId: session.id,
       title: session.title || "",
       sessionStatus: session.status || "",
+      sessionError: typeof session.error === "string" ? session.error.slice(0, 2000) : "",
       running: view.running === true,
       online: view.online,
       paused: view.paused,
@@ -215,7 +216,8 @@ Item {
       application: session.application ? {name: session.application.name, version: session.application.version} : null,
       theme: {foreground: root.cssColor(view.foreground), background: root.cssColor(view.background),
         accent: root.cssColor(view.accent), muted: root.cssColor(view.muted), selection: root.cssColor(view.selection),
-        fontFamily: view.fontFamily, proseFontFamily: view.proseFontFamily, scale: view.textScale}
+        fontFamily: view.fontFamily, proseFontFamily: view.proseFontFamily, scale: view.textScale,
+        unit: view.unit}
     }
   }
 
