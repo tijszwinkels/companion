@@ -45,6 +45,7 @@ import { CleanupPreference } from './cleanup-preference.ts';
 import type { TranscriptionCleanupSetting } from '../core/transcription-cleanup/setting.ts';
 import { migrateDesktopStorage } from './storage-migration.ts';
 import { ActivityHistory } from './activity-history.ts';
+import { DraftStore, type DraftChange } from './draft-store.ts';
 import { agentChoiceStates, type AgentActions } from '../agents/choice-intents.ts';
 import {
   agentHarnesses,
@@ -154,6 +155,8 @@ const desktopOnlyActions = new Set([
   'media-playback',
   'composer-focus',
   'agent-draft-result',
+  // Unsent text-box drafts belong to the desktop's trusted editors only.
+  'draft-set',
   'agent-browser-open-result',
   // Pop-out windows are native desktop windows.
   'agent-present-result',
@@ -282,6 +285,10 @@ export class DesktopRuntime {
   // Panels that hold composer drafts, by client, with the sequence of their
   // latest panel report. The most recently active panel receives a draft.
   private readonly draftHosts = new Map<number, number>();
+  // The authoritative unsent text of every conversation's text box (last
+  // received write wins). Read and written only by trusted desktop editors,
+  // the draft hosts; never sent to remote panels or applications.
+  private readonly drafts = new DraftStore((id) => this.knownConversation(id));
   private draftReportSequence = 0;
   // Connections that declared the remote role, keyed by server client ID.
   private readonly remoteClients = new Map<number, RemoteClient>();
@@ -400,6 +407,7 @@ export class DesktopRuntime {
       },
     );
     options.agents?.setDraftHost((request, signal) => this.requestDraft(request, signal));
+    this.drafts.subscribe((change) => this.publishDraft(change));
     options.agents?.setBrowserHost((request, signal) => this.requestBrowserOpen(request, signal));
     options.agents?.setPresentationHost({
       available: () => this.nativeViews.size > 0,
@@ -1461,6 +1469,34 @@ export class DesktopRuntime {
     });
   }
 
+  /** Open or saved conversations the listener knows; drafts exist only for those. */
+  private knownConversation(id: string): boolean {
+    const agents = this.options.agents;
+    if (!agents || typeof id !== 'string' || id === '') {
+      return false;
+    }
+    return agents.has(id) || agents.previousSnapshot().some((entry) => entry.id === id);
+  }
+
+  /**
+   * Every trusted desktop editor learns each accepted draft change. The
+   * editor that wrote it gets its own edit ID back, so it does not apply its
+   * own edit a second time (no echo). Remote panels never receive drafts.
+   */
+  private publishDraft(change: DraftChange): void {
+    for (const clientId of this.draftHosts.keys()) {
+      const own = change.writer.clientId === clientId ? change.writer.editId : undefined;
+      this.server.publishTo(clientId, {
+        type: 'draft',
+        id: change.sessionId,
+        text: change.text,
+        source: change.source,
+        sequence: change.sequence,
+        ...(own ? { editId: own } : {}),
+      });
+    }
+  }
+
   /**
    * Prefer the panel that currently owns visible navigation; otherwise the
    * draft-capable panel that reported most recently. Each UI instance keeps its
@@ -2263,7 +2299,22 @@ export class DesktopRuntime {
       }
       // Only UIs that implement agent-draft advertise it; older ones omit it.
       if (request.draftHost === true) {
+        const attached = this.draftHosts.has(clientId);
         this.draftHosts.set(clientId, ++this.draftReportSequence);
+        // A newly attached editor reads every draft once. Reading never
+        // writes: the snapshot changes nothing in the map.
+        if (!attached) {
+          this.server.publishTo(clientId, {
+            type: 'draft-snapshot',
+            sequence: this.drafts.latestSequence(),
+            drafts: this.drafts.snapshot().map((change) => ({
+              id: change.sessionId,
+              text: change.text,
+              source: change.source,
+              sequence: change.sequence,
+            })),
+          });
+        }
       } else {
         this.draftHosts.delete(clientId);
       }
@@ -2407,6 +2458,28 @@ export class DesktopRuntime {
       return 'queued';
     }
 
+    if (request.action === 'draft-set') {
+      // Only a trusted desktop editor that declared itself a draft host may
+      // write. The edit names its conversation; the last one received wins.
+      if (!this.draftHosts.has(clientId)) {
+        throw Error('Only a desktop editor can change drafts');
+      }
+      if (
+        typeof request.id !== 'string' ||
+        typeof request.text !== 'string' ||
+        typeof request.editId !== 'string' ||
+        request.editId.length === 0 ||
+        request.editId.length > 100
+      ) {
+        throw Error('Expected a conversation id, draft text and an edit id');
+      }
+      return this.drafts.write(request.id, request.text, {
+        kind: 'editor',
+        clientId: clientId,
+        editId: request.editId,
+      });
+    }
+
     if (request.action === 'send-agent') {
       if (
         !this.options.agents ||
@@ -2421,6 +2494,11 @@ export class DesktopRuntime {
         throw Error(`A follow-up requires 1–${MAX_RELAYED_MESSAGE_LENGTH} characters`);
       }
       this.options.agents.followUp(request.id, request.text, this.signal);
+      // A desktop send came from the conversation's draft: clear it, but
+      // only if it is still exactly the sent text (typing since then stays).
+      if (!remote) {
+        this.drafts.clearIfEqual(request.id, request.text);
+      }
       return 'submitted';
     }
 

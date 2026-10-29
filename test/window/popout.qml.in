@@ -532,6 +532,67 @@ TestCase {
     compare(findChild(window, "popoutSessionNumber").visible, true)
   }
 
+  // ---- Listener-owned drafts (last write received wins) -----------------
+  function draftWrites() {
+    return fakeBackend.sent.filter(message => message.action === "draft-set")
+  }
+
+  // Showing, switching and reloading drafts only read them; typing writes
+  // to the conversation it was typed for; another editor's change is shown
+  // without being written back; this UI's own late echo cannot undo newer
+  // typing.
+  function test_listener_drafts_read_on_switch_and_write_only_edits() {
+    const view = mainView()
+    const composer = composerOf(view)
+    fakeBackend.sent = []
+
+    // A (re)connecting UI reads every draft once.
+    body.client.receive({type: "draft-snapshot", sequence: 3, drafts: [{id: "two", text: "Two from elsewhere", source: "", sequence: 3}]})
+    compare(body.client.serverDrafts["two"], "Two from elsewhere")
+    compare(draftWrites().length, 0, "reading a snapshot writes nothing")
+
+    // Typing writes to the shown conversation, by name.
+    composer.text = "One typed"
+    let writes = draftWrites()
+    compare(writes.length, 1)
+    compare(writes[0].id, "one")
+    compare(writes[0].text, "One typed")
+    verify(typeof writes[0].editId === "string" && writes[0].editId !== "")
+
+    // Switching shows the other conversation's listener draft and writes nothing.
+    fakeBackend.sent = []
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryCompare(composer, "text", "Two from elsewhere")
+    compare(draftWrites().length, 0, "switching writes nothing")
+    body.client.sessions.select("one")
+    tryCompare(composer, "text", "One typed")
+    compare(draftWrites().length, 0, "switching back writes nothing")
+
+    // Another editor's change is shown without being written back (no echo).
+    body.client.receive({type: "draft", id: "one", text: "One changed elsewhere", source: "", sequence: 5})
+    compare(composer.text, "One changed elsewhere")
+    compare(draftWrites().length, 0, "a received change is not an edit")
+
+    // This UI's own edit coming back late never undoes newer typing.
+    composer.text = "Newest typing"
+    const ownEdit = draftWrites().pop().editId
+    composer.text = "Newest typing!"
+    body.client.receive({type: "draft", id: "one", text: "Newest typing", source: "", sequence: 6, editId: ownEdit})
+    compare(composer.text, "Newest typing!")
+
+    // A change for a conversation not shown updates what it shows later.
+    body.client.receive({type: "draft", id: "two", text: "Two again", source: "", sequence: 7})
+    compare(composer.text, "Newest typing!")
+    body.client.sessions.select("two")
+    tryCompare(composer, "text", "Two again")
+    body.client.sessions.select("one")
+    tryCompare(composer, "text", "Newest typing!")
+
+    composer.text = ""
+    body.client.receive({type: "draft", id: "two", text: "", source: "", sequence: 8})
+  }
+
   function test_at_most_eight_windows() {
     const entries = []
     for (let index = 0; index < 9; index++) entries.push(session("s" + index, "Chat " + index))

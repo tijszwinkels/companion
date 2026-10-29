@@ -234,6 +234,18 @@ test('HTML chat, session application and code replacement share one conversation
       );
       assert.match(result.stdout, /Totals: \d+ passed, 0 failed/);
     } catch (error) {
+      // Optional: keep the generated test file and the whole output of a
+      // failing run (COMPANION_TEST_ARTIFACTS names a directory to copy to).
+      const artifacts = process.env.COMPANION_TEST_ARTIFACTS;
+      if (artifacts) {
+        const target = join(artifacts, `surface-${Date.now()}`);
+        await mkdir(target, { recursive: true });
+        await writeFile(join(target, 'tst_surface.qml'), await readFile(path));
+        await writeFile(
+          join(target, 'output.log'),
+          [String(error), (error as any).stdout, (error as any).stderr].join('\n'),
+        );
+      }
       throw Error([String(error), (error as any).stdout, (error as any).stderr].join('\n'));
     }
 

@@ -322,12 +322,17 @@ Item {
         }
         return JSON.stringify({accepted: false, reason: reason, kept: kept, draft: view.pageDraft()})
       }
-      if (view.recordingBusy) return refuse("recording")
+      if (typeof sessionId !== "string" || typeof text !== "string") return refuse("invalid")
       // The listener's own limit is 8000; the page cannot send more than
       // twice that across the bridge, so oversize text is visibly refused.
-      const check = ChatState.draftEditAllowed({sessionId: sessionId, base: base, text: text},
-        view.displayedId, view.draftRevision, 2 * view.maximumMessageLength)
-      if (!check.allowed) return refuse(check.reason)
+      if (text.length > 2 * view.maximumMessageLength) return refuse("too-long")
+      // The last edit received wins: an edit based on an older draft is no
+      // longer refused. An edit typed before a switch still names its own
+      // conversation and goes there, not to the one now shown.
+      if (sessionId !== view.displayedId) {
+        return JSON.stringify({accepted: view.writeDraftFor(sessionId, text)})
+      }
+      if (view.recordingBusy) return refuse("recording")
       view.replaceDraftFromPage(text, typeof cursor === "number" ? cursor : text.length)
       return JSON.stringify({accepted: true})
     }
@@ -337,10 +342,13 @@ Item {
     // unapplied edit can never result in older text being sent.
     function send(sessionId, base, text) {
       const view = root.view
-      if (!sameSession(sessionId) || base !== view.draftRevision || !view.canSend
-          || typeof text !== "string" || text !== view.pageDraft().text || view.displayedRefusedDraft !== "") {
+      if (!sameSession(sessionId) || !view.canSend || typeof text !== "string" || text.trim() === ""
+          || text.length > view.maximumMessageLength || view.displayedRefusedDraft !== "") {
         return JSON.stringify({accepted: false})
       }
+      // Send exactly what the page shows, even if another editor changed the
+      // draft meanwhile (last write wins): it becomes the draft, then is sent.
+      if (text !== view.pageDraft().text) view.replaceDraftFromPage(text, text.length)
       view.submit()
       return JSON.stringify({accepted: view.pendingSubmission !== null})
     }

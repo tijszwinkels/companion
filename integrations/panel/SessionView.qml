@@ -205,6 +205,14 @@ Item {
   // do not; see ChatState.draftEditAllowed().
   property int draftRevision: 0
   property bool applyingPageDraft: false
+  // The listener owns every conversation's draft (last write received wins).
+  // `sharedDrafts` is this UI's mirror of it (Client.serverDrafts): showing a
+  // conversation reads it. Each real edit is written back through
+  // `draftWritten`, naming the conversation it was typed for. Loading or
+  // showing a draft is not an edit and writes nothing (`loadingDraft`).
+  property var sharedDrafts: null
+  property bool loadingDraft: false
+  signal draftWritten(string id, string text)
   // Conversation id -> text typed in the HTML composer that could not be
   // applied to the draft (it changed meanwhile, was too long, or words were
   // being recorded). Kept here, not in the page, until the person uses,
@@ -588,6 +596,38 @@ Item {
   // Replace the displayed draft with text typed in the HTML composer. The
   // caller (ChatBridge.qml) has already checked the session and revision.
   // Runs synchronously, so no host-side change interleaves.
+  // A draft change the listener accepted from another editor (or an older
+  // UI state being corrected). Shown without writing it back (no echo); the
+  // cursor stays where it was, within the new text.
+  function serverDraft(id, text, source) {
+    if (typeof id !== "string" || typeof text !== "string") return
+    if (text === "") delete root.drafts[id]
+    else root.drafts[id] = text
+    if (root.displayedId === id && composer.text !== text) {
+      const cursor = composer.cursorPosition
+      root.loadingDraft = true
+      composer.text = text
+      root.loadingDraft = false
+      composer.cursorPosition = Math.min(cursor, composer.length)
+    }
+    if (source) root.draftSources = Object.assign({}, root.draftSources, {[id]: source})
+  }
+
+  // An edit typed for a conversation this view no longer shows (it arrived
+  // after a switch). It still belongs to that conversation: the listener
+  // keeps it there; the shown conversation is untouched.
+  function writeDraftFor(id, text) {
+    if (typeof id !== "string" || id === "" || typeof text !== "string") return false
+    if (id === root.displayedId) {
+      root.replaceDraftFromPage(text, text.length)
+      return true
+    }
+    if (text === "") delete root.drafts[id]
+    else root.drafts[id] = text
+    root.draftWritten(id, text)
+    return true
+  }
+
   function replaceDraftFromPage(text, cursor) {
     root.applyingPageDraft = true
     composer.text = text
@@ -692,7 +732,10 @@ Item {
     const separator = current === "" || /\s$/.test(current) ? "" : " "
     const addition = separator + request.text
     if (displayed) composer.insert(composer.length, addition)
-    else root.drafts[request.id] = current + addition
+    else {
+      root.drafts[request.id] = current + addition
+      root.draftWritten(request.id, current + addition)
+    }
     return {outcome: "appended", length: current.length + addition.length}
   }
 
@@ -759,6 +802,7 @@ Item {
       composer.cursorPosition = composer.length
     } else {
       root.drafts[id] = next
+      root.draftWritten(id, next)
     }
     return {outcome: outcome, reason: ""}
   }
@@ -1105,7 +1149,11 @@ Item {
       root.shownRows = []
       root.resetHistory()
       root.displayedId = id
-      composer.text = root.drafts[id] || ""
+      // Showing a conversation reads its draft; it never writes one.
+      const shared = root.sharedDrafts && root.sharedDrafts[id] !== undefined ? root.sharedDrafts[id] : undefined
+      root.loadingDraft = true
+      composer.text = shared !== undefined ? shared : (root.drafts[id] || "")
+      root.loadingDraft = false
       // A draft handed over from another view keeps its cursor position.
       if (root.draftCursors[id] !== undefined) {
         composer.cursorPosition = Math.min(root.draftCursors[id], composer.length)
@@ -1686,6 +1734,9 @@ Item {
           if (!root.applyingPageDraft) root.draftRevision++
           if (root.displayedId) root.drafts[root.displayedId] = text
           if (text === "") root.forgetDraftSource(root.displayedId)
+          // An edit of the shown conversation (typing here or in the HTML
+          // chat, an agent draft, recorded words): the listener keeps it.
+          if (root.displayedId && !root.loadingDraft) root.draftWritten(root.displayedId, text)
         }
         onSelectedTextChanged: if (selectedText !== "") root.clearMessageSelection()
         TapHandler { onPressedChanged: if (pressed) root.clearMessageSelection() }

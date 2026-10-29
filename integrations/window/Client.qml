@@ -59,6 +59,28 @@ Item {
   // An agent asked this panel to place unsent text in a composer. The host
   // applies it and must answer with answerDraft(); nothing is ever submitted.
   signal draftRequested(var message)
+  // A draft change from the listener that this UI did not write itself.
+  signal draftChanged(string id, string text, string source)
+
+  // This UI's copy of the listener's drafts (conversation id -> text), for
+  // views that show a conversation. Updated by its own writes at once and by
+  // the listener's changes. Never sent anywhere else.
+  property var serverDrafts: ({})
+  // Edit IDs this UI sent and whose change it has not seen come back yet.
+  property var ownDraftEdits: ({})
+  property int draftEditCounter: 0
+
+  // A view's edit, for the conversation it was typed for. The last write the
+  // listener receives wins; there is no base revision to be refused for.
+  function writeDraft(id, text) {
+    if (typeof id !== "string" || id === "" || typeof text !== "string") return
+    root.draftEditCounter++
+    const editId = "edit-" + root.draftEditCounter
+    root.ownDraftEdits[editId] = true
+    if (text === "") delete root.serverDrafts[id]
+    else root.serverDrafts[id] = text
+    root.send({action: "draft-set", id: id, text: text, editId: editId})
+  }
   // True when the panel has the built-in browser (standalone native window).
   // Only then does the listener route companion_browser_open here.
   property bool browserHost: false
@@ -288,6 +310,14 @@ Item {
       }
       return
     }
+    // The listener refused a draft write (e.g. longer than may be edited):
+    // the text stays on screen, and the person is told it is not saved.
+    if (message.action === "draft-set" && (message.type === "error"
+        || (message.type === "result" && message.result && message.result.accepted === false))) {
+      root.error = "Your text is not saved: " + (message.type === "error" ? message.message : message.result.reason)
+      root.errorAction = "draft-set"
+      return
+    }
     sessions.controlReceived(message)
     if (message.type === "state" && message.protocol === 1) {
       root.paused = message.paused === true
@@ -330,6 +360,25 @@ Item {
       sessions.previousSessions = message.sessions || []
     } else if (message.type === "agent-restored") {
       sessions.restore(message.session, message.reveal)
+    } else if (message.type === "draft-snapshot") {
+      // Reading on (re)connect: every nonempty draft, written nowhere.
+      const drafts = {}
+      for (const entry of message.drafts || []) {
+        if (entry && typeof entry.id === "string" && typeof entry.text === "string") drafts[entry.id] = entry.text
+      }
+      root.serverDrafts = drafts
+      for (const id of Object.keys(drafts)) root.draftChanged(id, drafts[id], "")
+    } else if (message.type === "draft") {
+      if (typeof message.id !== "string" || typeof message.text !== "string") return
+      // Our own edit coming back: already shown here, and a newer local edit
+      // may follow it, so applying it again could undo typing.
+      if (message.editId && root.ownDraftEdits[message.editId]) {
+        delete root.ownDraftEdits[message.editId]
+        return
+      }
+      if (message.text === "") delete root.serverDrafts[message.id]
+      else root.serverDrafts[message.id] = message.text
+      root.draftChanged(message.id, message.text, message.source || "")
     } else if (message.type === "agent-draft") {
       root.draftRequested(message)
     } else if (message.type === "recording-append") {

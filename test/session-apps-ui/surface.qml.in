@@ -148,11 +148,20 @@ TestCase {
     tryCompare(body.panel, "selectedSessionId", "one")
     mainView().classicView = false
   }
+  // The listener owns drafts; this fake transport has no listener, so tests
+  // set or clear a draft the way the listener reports it to every view.
+  function listenerDraft(id, text) {
+    body.client.receive({type: "draft", id: id, text: text, source: "", sequence: 0})
+  }
+  // An edit that is longer than the page may edit (twice the 8000-unit Send
+  // limit): still refused and kept as refused text, as before.
+  readonly property string overLong: "o".repeat(16001)
   function cleanup() {
     for (const id of body.popouts.order.slice()) {
       body.popouts.windows[id].view.clearDraft(id)
       body.popouts.returnToSidebar(id, {focus: false})
     }
+    for (const id of Object.keys(body.client.serverDrafts)) listenerDraft(id, "")
     mainView().clearDraft("one")
     mainView().refusedDrafts = ({})
     tryCompare(body.popouts, "report", [])
@@ -206,33 +215,37 @@ TestCase {
 
   // An edit based on a host draft revision the page has not seen is refused,
   // and the page keeps the refused text for the person to restore.
-  function test_b_stale_page_edit_is_refused_and_kept() {
+  // SUPERSEDED: an edit based on an older draft used to be refused and kept
+  // as refused text. The listener now keeps the last edit it receives (last
+  // write wins). An edit naming another conversation goes to that
+  // conversation's draft; the one shown is untouched.
+  function test_b_page_edits_win_and_keep_their_conversation() {
     const view = mainView()
     const chat = waitForChat(view)
     settled(view, chat)
     typeInto(chat, "first")
     tryCompare(composerOf(view), "text", "first")
-    // Simulate a page whose host revision is old: replay an edit with base -1.
+    fakeBackend.sent = []
     evaluate(chat, "(() => { window.__answer = null; const bridge = window.__companionBridge;"
-      + " bridge.editDraft('one', -1, 'stale text', 10, answer => window.__answer = answer); return true })()")
+      + " bridge.editDraft('one', -1, 'stale but last', 14, answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
-    const answer = JSON.parse(evaluate(chat, "window.__answer"))
-    compare(answer.accepted, false)
-    compare(answer.reason, "stale")
-    compare(composerOf(view).text, "first")
-    // The host keeps the refused text and the page offers it back.
-    compare(view.refusedDrafts["one"], "stale text")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true })
-    verify(clickButton(chat, "Dismiss"))
-    tryCompare(view, "displayedRefusedDraft", "")
-    // Another conversation's ID is refused as well.
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    compare(composerOf(view).text, "stale but last")
+    compare(view.refusedDrafts["one"], undefined)
+    let writes = fakeBackend.sent.filter(message => message.action === "draft-set")
+    compare(writes.pop().text, "stale but last")
+    // Another conversation's ID: its own draft, not the shown one.
+    fakeBackend.sent = []
     evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('two', "
-      + view.draftRevision + ", 'x', 1, answer => window.__answer = answer); return true })()")
+      + view.draftRevision + ", 'for two', 7, answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
-    compare(JSON.parse(evaluate(chat, "window.__answer")).reason, "other-session")
-    compare(composerOf(view).text, "first")
-    compare(view.refusedDrafts["two"], "x")
-    verify(view.resolveRefusedDraft("two", "dismiss"))
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    compare(composerOf(view).text, "stale but last")
+    writes = fakeBackend.sent.filter(message => message.action === "draft-set")
+    compare([writes[0].id, writes[0].text], ["two", "for two"])
+    compare(view.exportDraft("two").text, "for two")
+    listenerDraft("two", "")
+    view.clearDraft("two")
   }
 
   // The trusted page reports composer focus for voice routing; focusing the
@@ -653,8 +666,8 @@ TestCase {
     const view = mainView()
     const chat = waitForChat(view)
     settled(view, chat)
-    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', -1, 'my words', 8); return true })()")
-    tryCompare(view, "displayedRefusedDraft", "my words")
+    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
+    tryCompare(view, "displayedRefusedDraft", testCase.overLong)
     body.client.sessions.select("two")
     tryCompare(body.panel, "selectedSessionId", "two")
     tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') === null") === true })
@@ -674,12 +687,12 @@ TestCase {
     verify(body.client.error.includes("could not be added"))
     body.client.error = ""
     verify(clickButton(chat, "Use my text"))
-    tryCompare(composerOf(view), "text", "my words")
+    tryCompare(composerOf(view), "text", testCase.overLong)
     compare(view.displayedRefusedDraft, "")
-    tryVerify(function() { return textarea(chat) === "my words" })
+    tryVerify(function() { return textarea(chat) === testCase.overLong })
     // The classic view offers the same recovery.
-    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', -1, 'second try', 10); return true })()")
-    tryCompare(view, "displayedRefusedDraft", "second try")
+    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', 0, 'second try' + 'x'.repeat(16000), 10); return true })()")
+    tryCompare(view, "displayedRefusedDraft", "second try" + "x".repeat(16000))
     view.classicView = true
     tryCompare(view, "htmlActive", false)
     verify(findChild(view, "refusedDraft").visible)
@@ -978,13 +991,13 @@ TestCase {
     const view = mainView()
     for (let index = 0; index < 32; index++) verify(view.keepRefusedDraft("other-" + index, "t" + index))
     compare(view.keepRefusedDraft("other-overflow", "lost?"), false)
-    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', -1, 'mine', 4,"
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', 0, 'm'.repeat(16001), 4,"
       + " answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
     const shown = JSON.parse(evaluate(chat, "window.__answer"))
     compare([shown.accepted, shown.kept], [false, true])
-    compare(view.displayedRefusedDraft, "mine")
-    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('elsewhere', -1, 'other text', 10,"
+    compare(view.displayedRefusedDraft, "m".repeat(16001))
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('elsewhere', 0, 'e'.repeat(16001), 10,"
       + " answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
     const other = JSON.parse(evaluate(chat, "window.__answer"))
@@ -1366,14 +1379,14 @@ TestCase {
     const window = body.popouts.windows["one"]
     const windowChat = waitForChat(window.view)
     tryVerify(function() { return textarea(windowChat) === "host original" })
-    evaluate(windowChat, "(() => { window.__companionBridge.editDraft('one', -1, 'KEEP-REFUSED-TEXT', 17); return true })()")
-    tryCompare(window.view, "displayedRefusedDraft", "KEEP-REFUSED-TEXT")
+    evaluate(windowChat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
+    tryCompare(window.view, "displayedRefusedDraft", testCase.overLong)
     body.popouts.orphanDrafts = []
     fakeBackend.sent = []
     snapshot([session("two", "Second chat", null)])
     tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
     const orphans = body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text])
-    compare(JSON.stringify(orphans), JSON.stringify([["draft", "host original"], ["refused", "KEEP-REFUSED-TEXT"]]))
+    compare(JSON.stringify(orphans), JSON.stringify([["draft", "host original"], ["refused", testCase.overLong]]))
     compare(fakeBackend.sent.filter(message => message.action === "restore-agent" || message.action === "send-agent").length, 0)
     body.popouts.orphanDrafts = []
 
@@ -1398,11 +1411,11 @@ TestCase {
     body.client.sessions.select("two")
     tryCompare(body.panel, "selectedSessionId", "two")
     settled(main, mainChat)
-    evaluate(mainChat, "(() => { window.__companionBridge.editDraft('two', -1, 'SIDEBAR-REFUSED', 15); return true })()")
-    tryCompare(main, "displayedRefusedDraft", "SIDEBAR-REFUSED")
+    evaluate(mainChat, "(() => { window.__companionBridge.editDraft('two', 0, 'SIDEBAR-REFUSED' + 'x'.repeat(16000), 15); return true })()")
+    tryCompare(main, "displayedRefusedDraft", "SIDEBAR-REFUSED" + "x".repeat(16000))
     body.client.sessions.select("one")
     snapshot([session("one", "First chat", null)])
-    tryVerify(function() { return body.popouts.orphanDrafts.some(entry => entry.kind === "refused" && entry.text === "SIDEBAR-REFUSED") }, 5000)
+    tryVerify(function() { return body.popouts.orphanDrafts.some(entry => entry.kind === "refused" && entry.text === "SIDEBAR-REFUSED" + "x".repeat(16000)) }, 5000)
     compare(main.refusedDrafts["two"], undefined)
     body.popouts.orphanDrafts = []
   }
@@ -1502,7 +1515,8 @@ TestCase {
     const chat = waitForChat(view)
     view.clearDraft("A")
     view.clearDraft("B")
-    view.drafts["B"] = draftB
+    listenerDraft("A", "")
+    listenerDraft("B", draftB)
     settled(view, chat)
     if (draftA !== "") typeInto(chat, draftA)
     tryCompare(composerOf(view), "text", draftA)
@@ -1600,20 +1614,22 @@ TestCase {
     tryCompare(composerOf(setup.view), "text", "B-TEXTx", 5000)
     compare(setup.view.exportDraft("A").text, "A-ACCEPTED")
 
-    // A refused edit for A (kept by the host), answered after the switch.
+    // SUPERSEDED: an edit with an old base used to be refused and kept as
+    // A's refused text. Last write wins now: the late edit is A's draft, and
+    // B (shown) is untouched.
     setup = twoConversations("", "")
     holdNextAnswer(setup.chat)
-    evaluate(setup.chat, "(() => { window.__companionBridge.editDraft('A', -1, 'A-REFUSED', 9); return true })()")
+    evaluate(setup.chat, "(() => { window.__companionBridge.editDraft('A', -1, 'A-LATE', 6); return true })()")
     tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
     body.client.sessions.select("B")
     tryCompare(body.panel, "selectedSessionId", "B")
     settled(setup.view, setup.chat)
     releaseHeld(setup.chat)
     wait(300)
-    compare(setup.view.refusedDrafts["A"], "A-REFUSED")
+    compare(setup.view.refusedDrafts["A"], undefined)
+    compare(setup.view.exportDraft("A").text, "A-LATE")
     compare(setup.view.displayedRefusedDraft, "")
     compare(textarea(setup.chat), "")
-    setup.view.refusedDrafts = ({})
 
     // A refused edit the host could not keep (beyond its bound): after the
     // switch it reaches A's page-held recovery, B's editor is unchanged.
