@@ -59,15 +59,26 @@ Markdown with raw HTML disabled.
 restricted widget renderer (`../panel/NativeWidgetView.qml`, `WidgetProfile`):
 off-the-record profile, no QWebChannel, no permissions, and a broker that maps
 exactly `GET /`, `GET /state`, `POST /action`, `POST /query` and bounded
-`POST /chat-read` onto that application's capability URL. History requires
+`POST /chat-read`, `/chat-send` and `/chat-receipt` onto that application's capability URL. History requires
 explicit native read consent and excludes drafts, tools and attachments. The
 native permission control lives below the escape bar, outside both browsers;
-only the dedicated native Client command can grant or revoke access. Authored
+only the dedicated native Client commands can grant or revoke access. Sending has
+its own review/allow-five/revoke controls, exact-identity confirmation and quota
+status; reading never grants sending. Native replies do not optimistically change
+status. Renewals need explicit review and timeout never causes automatic retry. Authored
 `api.chat.read()` and `api.chat.subscribe()` receive the bounded text projection,
 never the trusted Chat bridge. See the [read contract](../../src/session-apps/README.md#optional-chat-read-checkpoint).
-The app cannot read the draft, send chat, move focus, call window commands or
-reach other conversations. It is never a
+The authored sending/status API is still pending; native controls and its bounded
+transport are ready for that integration, not a complete sender. The app cannot
+read the draft, claim human origin, move focus, call window commands or reach
+other conversations. It is never a
 composer: only the trusted chat page reports composer focus for voice routing.
+
+Host `application-message` rows have explicit Application/name/version/receipt
+labels in both trusted HTML and Classic chat. They are not app-edit events or
+linked agent conversations. Classic derives app titles from validated host
+metadata; malformed app metadata stays explicitly unverified/non-human. Labels
+and bodies render as text, and body prefixes never manufacture trusted provenance.
 
 This is a constrained contract, not a claim that arbitrary hostile code is
 safely sandboxed. Chromium's renderer sandbox, the private profile, the request

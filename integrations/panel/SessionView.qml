@@ -940,6 +940,14 @@ Item {
 
   function rowData(row) {
     const message = row.message
+    const origin = message.origin
+    const appMessage = !!origin && origin.kind === "application-message"
+    const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/
+    const appVerified = appMessage && typeof origin.name === "string" && /^[a-z][a-z0-9-]{0,47}$/.test(origin.name)
+      && Number.isSafeInteger(origin.version) && origin.version > 0 && origin.depth === 1
+      && typeof origin.applicationId === "string" && uuid.test(origin.applicationId)
+      && typeof origin.receiptId === "string" && uuid.test(origin.receiptId)
+      && typeof origin.bundle === "string" && /^[0-9a-f]{64}$/.test(origin.bundle)
     return {rowKey: row.key, messageId: message.id, kind: message.kind, body: message.text,
       toolName: message.toolName, input: message.input, state: message.state,
       toolCount: message.toolGroup ? message.toolGroup.count : 0,
@@ -953,8 +961,13 @@ Item {
       // The person's own committed edits in this conversation's session
       // application, delivered by the host as a turn; not another agent.
       fromApplication: message.origin ? message.origin.kind === "application-event" : false,
+      fromAppMessage: appMessage,
       fromAgent: message.origin !== undefined && message.origin !== null,
-      originTitle: message.origin ? message.origin.title || "" : "",
+      // App labels derive only from host metadata, never a body prefix or an
+      // arbitrary title. Malformed app provenance stays explicitly non-human.
+      originTitle: appMessage ? (appVerified ? origin.name + " · v" + origin.version : "unverified application origin")
+        : message.origin ? message.origin.title || "" : "",
+      originReceiptId: appVerified ? origin.receiptId : "",
       // External origins carry unverified labels, never a linkable conversation.
       originSessionId: message.origin && message.origin.kind === "agent" ? message.origin.sessionId || "" : "",
       originGroupId: message.origin && message.origin.kind === "agent" ? message.origin.sourceGroupId || "" : "",
@@ -1230,6 +1243,8 @@ Item {
       required property bool fromAgent
       required property bool fromWake
       required property bool fromApplication
+      required property bool fromAppMessage
+      required property string originReceiptId
       required property string originTitle
       required property string originSessionId
       required property string originGroupId
@@ -1306,7 +1321,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? (bubble.fromApplication ? "Your edits in this conversation's app" : bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
+              : bubble.kind === "user" ? (bubble.fromAppMessage ? "Application · " + bubble.originTitle + (bubble.originReceiptId ? " · receipt " + bubble.originReceiptId.slice(0, 8) : "") : bubble.fromApplication ? "Your edits in this conversation's app" : bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") + bubble.fragmentLabel : "Pi" + bubble.fragmentLabel
             textFormat: Text.PlainText
@@ -1862,48 +1877,70 @@ Item {
   readonly property var appChatAccess: appChatApplication && appChatApplication.chatAccess ? appChatApplication.chatAccess : null
   readonly property bool appChatReadRequested: appChatAccess !== null && Array.isArray(appChatAccess.requested)
     && appChatAccess.requested.indexOf("chat.read") >= 0
+  readonly property bool appChatSendRequested: appChatAccess !== null && Array.isArray(appChatAccess.requested)
+    && appChatAccess.requested.indexOf("chat.send") >= 0
+  readonly property var appChatSendAccess: appChatAccess && appChatAccess.send ? appChatAccess.send : null
   readonly property string appChatIdentity: session && appChatApplication && appChatAccess
     ? session.id + ":" + appChatApplication.id + ":" + appChatApplication.version + ":" + appChatAccess.revision : ""
   property string appChatDisclosureIdentity: ""
   readonly property bool appChatDisclosureOpen: appChatIdentity !== "" && appChatDisclosureIdentity === appChatIdentity
+  property string appChatSendDisclosureIdentity: ""
+  readonly property bool appChatSendDisclosureOpen: appChatIdentity !== "" && appChatSendDisclosureIdentity === appChatIdentity
   property var appChatPermissionPending: null
   property string appChatPermissionError: ""
   property int appChatPermissionTimeoutMilliseconds: 10000
   readonly property bool appChatCanChange: root.visible && root.online && root.appChatPermissionTransportReady
-    && root.appChatReadRequested && root.appChatIdentity !== "" && root.appChatPermissionPending === null
+    && (root.appChatReadRequested || root.appChatSendRequested) && root.appChatIdentity !== "" && root.appChatPermissionPending === null
   signal appChatPermissionRequested(var request)
 
   // A different conversation, replacement, reopen or permission update cannot
   // inherit an open confirmation or be changed by an earlier request's reply.
   onAppChatIdentityChanged: {
     root.appChatDisclosureIdentity = ""
+    root.appChatSendDisclosureIdentity = ""
     root.appChatPermissionPending = null
     root.appChatPermissionError = ""
     appChatPermissionDeadline.stop()
   }
 
   function reviewAppChatAccess() {
-    if (!root.appChatCanChange) return false
+    if (!root.appChatCanChange || !root.appChatReadRequested) return false
     root.appChatDisclosureIdentity = root.appChatIdentity
+    root.appChatSendDisclosureIdentity = ""
     root.appChatPermissionError = ""
     return true
   }
 
-  function requestAppChatRead(allowed) {
+  function reviewAppChatSending() {
+    if (!root.appChatCanChange || !root.appChatSendRequested || !root.appChatSendAccess) return false
+    root.appChatSendDisclosureIdentity = root.appChatIdentity
+    root.appChatDisclosureIdentity = ""
+    root.appChatPermissionError = ""
+    return true
+  }
+
+  function requestAppChatRead(allowed) { return root.requestAppChatPermission("read", allowed) }
+  function requestAppChatSend(allowed) { return root.requestAppChatPermission("send", allowed) }
+
+  function requestAppChatPermission(kind, allowed) {
     if (typeof allowed !== "boolean" || !root.appChatCanChange) return false
-    // Enabling requires this exact code/version/grant's disclosure to have
-    // been opened. Revoking remains available without an extra confirmation.
-    if (allowed && !root.appChatDisclosureOpen) return false
+    if (kind === "read") {
+      if (!root.appChatReadRequested || (allowed && !root.appChatDisclosureOpen)) return false
+    } else if (kind === "send") {
+      if (!root.appChatSendRequested || !root.appChatSendAccess || (allowed && !root.appChatSendDisclosureOpen)) return false
+    } else return false
+    // Each kind has its own exact-identity disclosure. Neither permits the
+    // other; renewals need a new review and revocations never need disclosure.
     const request = {
-      action: "set-application-chat-read",
-      requestId: "app-chat-read-" + Date.now() + "-" + Math.random().toString(36).slice(2),
+      action: "set-application-chat-" + kind,
+      requestId: "app-chat-" + kind + "-" + Date.now() + "-" + Math.random().toString(36).slice(2),
       id: root.session.id,
       applicationId: root.appChatApplication.id,
       version: root.appChatApplication.version,
       revision: root.appChatAccess.revision,
       allowed: allowed
     }
-    root.appChatPermissionPending = {requestId: request.requestId, identity: root.appChatIdentity}
+    root.appChatPermissionPending = {requestId: request.requestId, action: request.action, identity: root.appChatIdentity}
     root.appChatPermissionError = ""
     appChatPermissionDeadline.restart()
     root.appChatPermissionRequested(request)
@@ -1912,7 +1949,7 @@ Item {
 
   function receiveAppChatPermissionResult(message) {
     const pending = root.appChatPermissionPending
-    if (!pending || !message || message.action !== "set-application-chat-read"
+    if (!pending || !message || message.action !== pending.action
       || message.requestId !== pending.requestId || pending.identity !== root.appChatIdentity
       || (message.type !== "result" && message.type !== "error")) return false
     appChatPermissionDeadline.stop()
@@ -1920,6 +1957,7 @@ Item {
     // Never optimistically change the descriptor. Its next snapshot/patch is
     // the authority, including when it arrives before this acknowledgement.
     root.appChatDisclosureIdentity = ""
+    root.appChatSendDisclosureIdentity = ""
     root.appChatPermissionError = message.type === "error"
       ? String(message.message || "Permission was not changed.").slice(0, 500) : ""
     return true
@@ -1932,6 +1970,7 @@ Item {
       if (!root.appChatPermissionPending) return
       root.appChatPermissionPending = null
       root.appChatDisclosureIdentity = ""
+      root.appChatSendDisclosureIdentity = ""
       root.appChatPermissionError = "No confirmation received. Permission may have changed; check its current status before trying again."
     }
   }
@@ -1969,7 +2008,7 @@ Item {
     Rectangle {
       objectName: "appChatPermissionControl"
       color: root.overlayColor
-      visible: root.appChatReadRequested
+      visible: root.appChatReadRequested || root.appChatSendRequested
       // The disclosure scrolls instead of covering the trusted Chat/app bar
       // or taking the whole available conversation height at large text scale.
       implicitHeight: visible ? Math.min(appChatPermissionContent.implicitHeight + 16 * root.unit,
@@ -1998,7 +2037,7 @@ Item {
             objectName: "appChatPermissionStatus"
             width: parent.width
             text: (root.appChatApplication ? root.appChatApplication.name + " · v" + root.appChatApplication.version : "")
-              + " — Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "allowed" : "off")
+              + (root.appChatReadRequested ? " — Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "allowed" : "off") : "")
               + (!root.online ? " · Disconnected" : "")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
@@ -2020,6 +2059,7 @@ Item {
           }
           Flow {
             width: parent.width
+            visible: root.appChatReadRequested
             spacing: 8 * root.unit
             AppChatPermissionButton {
               objectName: "appChatReviewRead"
@@ -2052,6 +2092,69 @@ Item {
               enabled: root.appChatCanChange
               text: "Revoke reading"
               onClicked: root.requestAppChatRead(false)
+            }
+          }
+          Text {
+            objectName: "appChatSendStatus"
+            width: parent.width
+            visible: root.appChatSendRequested
+            text: "App sending " + (!root.appChatSendAccess ? "unavailable on this host"
+              : root.appChatSendAccess.allowed ? (root.appChatSendAccess.remaining > 0 ? "allowed" : "exhausted") + " · " + root.appChatSendAccess.remaining + " of 5 attempts remaining" : "off")
+              + (root.appChatSendAccess && root.appChatSendAccess.busy ? " · app message active" : "")
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.fontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Text {
+            objectName: "appChatSendDisclosure"
+            width: parent.width
+            visible: root.appChatSendDisclosureOpen
+            text: "Allow this exact app code to send up to 5 messages to this conversation's agent, without asking you for each message? These are labelled app messages, not authenticated human input or new authorization. Reading and drafts are not granted.\n\n"
+              + "One app message can be active at a time, with at least two seconds between admissions. Failed or uncertain attempts can consume quota; they are never retried automatically. Revoking or replacing code withdraws unstarted app messages, but already-running work may have effects and continues until finished or stopped. Use the conversation's Stop control to halt it; Stop also revokes sending.\n\n"
+              + "A new grant replaces the old quota and withdraws unstarted app messages. Existing application-edit notifications remain separate; this quota covers app chat sends only. Consent ends on code replacement, close/reopen or Companion restart. Merely hiding this view does not revoke backend consent."
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.proseFontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Flow {
+            width: parent.width
+            visible: root.appChatSendRequested
+            spacing: 8 * root.unit
+            AppChatPermissionButton {
+              objectName: "appChatReviewSend"
+              scrollHost: appChatPermissionScroll
+              visible: !root.appChatSendDisclosureOpen
+              enabled: root.appChatCanChange && root.appChatSendAccess !== null
+              text: root.appChatSendAccess && root.appChatSendAccess.allowed ? "Review new sending grant" : "Review app sending"
+              onClicked: root.reviewAppChatSending()
+            }
+            AppChatPermissionButton {
+              objectName: "appChatAllowSend"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatSendDisclosureOpen
+              enabled: root.appChatCanChange && root.appChatSendAccess !== null
+              text: "Allow 5 app messages"
+              onClicked: root.requestAppChatSend(true)
+            }
+            AppChatPermissionButton {
+              objectName: "appChatDeclineSend"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatSendDisclosureOpen
+              enabled: root.appChatPermissionPending === null
+              text: "Not now"
+              onClicked: root.appChatSendDisclosureIdentity = ""
+            }
+            AppChatPermissionButton {
+              objectName: "appChatRevokeSend"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatSendAccess !== null && root.appChatSendAccess.allowed === true
+              enabled: root.appChatCanChange
+              text: "Revoke sending"
+              onClicked: root.requestAppChatSend(false)
             }
           }
           Text {

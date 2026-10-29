@@ -19,7 +19,8 @@ export interface ChatRow {
   screenshotNotSaved: boolean;
   fragmentLabel: string;
   origin: {
-    kind: 'agent' | 'external' | 'scheduled-wake' | 'application-event';
+    kind: 'agent' | 'external' | 'scheduled-wake' | 'application-event' | 'application-message';
+    receiptId?: string;
     title: string;
     sessionId: string;
     groupId: string;

@@ -18,18 +18,18 @@ TestCase {
     id: bodyComponent
     Native.WindowContent { host: TestHost; transport: backend; parent: TestHost.contentItem }
   }
-  function descriptor(version, revision, allowed) {
+  function descriptor(version, revision, allowed, send) {
     return {id: "one", title: "Synthetic chat reader", status: "completed", messages: [],
       application: {id: "app-one", name: "chat-reader", version: version, revision: 1,
         viewUrl: "@VIEW_URL@", text: "Synthetic reader", eventMode: "next-input",
-        chatAccess: {requested: ["chat.read"], read: allowed, revision: revision}}}
+        chatAccess: {requested: send ? ["chat.read", "chat.send"] : ["chat.read"], read: allowed, revision: revision, send: send || null}}}
   }
-  function announce(version, revision, allowed) {
+  function announce(version, revision, allowed, send) {
     // Direct JS ingress avoids the known Qt fake-var-signal array conversion.
     // This is the real Client receive path, not a substitute model.
     body.client.receive({type: "state", protocol: 1, ready: true,
       activitySessionId: "activity", activityHistoryCount: 0,
-      sessions: [descriptor(version, revision, allowed)]})
+      sessions: [descriptor(version, revision, allowed, send)]})
   }
   function control(operation) {
     let done = false
@@ -95,6 +95,62 @@ TestCase {
     for (const id of body.popouts.order.slice()) body.popouts.returnToSidebar(id, {focus: false})
     TestHost.hide()
     body.destroy()
+  }
+
+  function test_send_controls_route_through_native_sidebar_and_popout() {
+    body.popouts.returnToSidebar("one", {focus:false})
+    // The previous test left keyboard focus in its pop-out. Activate only the
+    // isolated test host before synthesizing a sidebar key; not a product fix.
+    TestHost.show(true)
+    announce(2, "send-off", false, {allowed:false,remaining:0,busy:false})
+    body.client.sessions.select("one")
+    const sidebar = body.panel.conversationView
+    browser(sidebar)
+    const composer = findChild(sidebar, "sessionComposer")
+    const draft = composer.text
+    function allow(view) {
+      verify(view.reviewAppChatSending())
+      const button = findChild(view, "appChatAllowSend")
+      verify(button !== null && button.visible && button.enabled,
+        "Send button state " + [!!button, button && button.visible, button && button.enabled, view.appChatSendDisclosureOpen, view.htmlActive])
+      button.forceActiveFocus()
+      tryCompare(button, "activeFocus", true)
+      keyClick(Qt.Key_Space)
+      tryVerify(function() { return view.appChatPermissionPending !== null }, 1000,
+        "Send confirmation not pending after key: " + [button.visible, button.enabled, button.activeFocus, view.visible, view.online])
+      const requests = backend.sent.filter(message => message.action === "set-application-chat-send")
+      const request = requests[requests.length - 1]
+      verify(request !== undefined)
+      compare(request.id, "one")
+      compare(request.applicationId, "app-one")
+      compare(request.version, 2)
+      compare(request.allowed, true)
+      return request
+    }
+    const first = allow(sidebar)
+    compare(first.revision, "send-off")
+    answer(first, "Synthetic sending denial")
+    tryCompare(sidebar, "appChatPermissionError", "Synthetic sending denial")
+    verify(!sidebar.appChatAccess.read)
+    verify(!sidebar.appChatSendAccess.allowed)
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows.one !== undefined })
+    const popped = body.popouts.windows.one.view
+    browser(popped)
+    const second = allow(popped)
+    answer(second, "")
+    tryCompare(popped, "appChatPermissionPending", null)
+    verify(!popped.appChatSendAccess.allowed, "Native acknowledgement is not a descriptor grant")
+    announce(2, "send-on", false, {allowed:true,remaining:5,busy:false})
+    tryVerify(function() { return popped.appChatSendAccess.allowed })
+    verify(!popped.appChatAccess.read)
+    const revoke = findChild(popped, "appChatRevokeSend")
+    revoke.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    const requests = backend.sent.filter(message => message.action === "set-application-chat-send")
+    compare(requests[requests.length - 1].allowed, false)
+    compare(requests[requests.length - 1].revision, "send-on")
+    compare(findChild(popped, "sessionComposer").text, draft)
   }
 
   function test_read_consent_native_routing_iframe_streaming_revocation_and_popout() {

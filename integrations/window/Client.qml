@@ -352,7 +352,7 @@ Item {
     } else if (message.type === "activity-entry") {
       activity.update(message.sessionId, message.entry)
     } else if (message.type === "result" || message.type === "error") {
-      if (message.action === "set-application-chat-read") { root.appChatPermissionReceived(message); return }
+      if (message.action === "set-application-chat-read" || message.action === "set-application-chat-send") { root.appChatPermissionReceived(message); return }
       if (message.action === "agent-tool-page" || message.action === "agent-history-page") { root.toolPageReceived(message); return }
       const failure = message.type === "error" ? message.message : ""
       if (message.action === "send-agent") root.finishInput(failure)

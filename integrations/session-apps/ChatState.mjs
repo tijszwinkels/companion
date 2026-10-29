@@ -35,7 +35,16 @@ export function chatRow(data) {
   }
 
   let origin = null;
-  if (data.fromApplication) {
+  if (data.fromAppMessage) {
+    // Already checked/derived by SessionView.rowData; no authored body heuristic.
+    origin = {
+      kind: 'application-message',
+      title: data.originTitle || 'unverified application origin',
+      receiptId: data.originReceiptId || '',
+      sessionId: '',
+      groupId: '',
+    };
+  } else if (data.fromApplication) {
     // The person's own committed app edits, delivered by the host.
     origin = { kind: 'application-event', title: '', sessionId: '', groupId: '' };
   } else if (data.fromAgent) {

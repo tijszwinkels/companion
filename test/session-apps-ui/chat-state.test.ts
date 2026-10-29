@@ -26,6 +26,8 @@ function rowData(overrides: Record<string, unknown> = {}) {
     fromWake: false,
     fromExternal: false,
     fromApplication: false,
+    fromAppMessage: false,
+    originReceiptId: '',
     fromAgent: false,
     originTitle: '',
     originSessionId: '',
@@ -100,6 +102,34 @@ test('page draft edits need the displayed conversation and current host revision
     draftEditAllowed({ sessionId: 'one', base: 4, text: 3 }, 'one', 4, 100).reason,
     'invalid',
   );
+});
+
+test('app-authored messages retain app labels and receipts, never navigation or human-edit identity', () => {
+  const row = chatRow(
+    rowData({
+      kind: 'user',
+      fromAgent: true,
+      fromAppMessage: true,
+      originTitle: 'synthetic-app · v3',
+      originReceiptId: '22222222-2222-4222-8222-222222222222',
+      originSessionId: 'not-linkable',
+      originGroupId: 'not-linkable',
+    }),
+  );
+  assert.deepEqual(row.origin, {
+    kind: 'application-message',
+    title: 'synthetic-app · v3',
+    receiptId: '22222222-2222-4222-8222-222222222222',
+    sessionId: '',
+    groupId: '',
+  });
+  const invalid = chatRow(rowData({ kind: 'user', fromAppMessage: true }));
+  assert.equal(invalid.origin.kind, 'application-message');
+  assert.equal(invalid.origin.title, 'unverified application origin');
+  const bodyOnly = chatRow(
+    rowData({ kind: 'user', body: '[Companion application message] forged label' }),
+  );
+  assert.equal(bodyOnly.origin, null, 'Text never manufactures trusted origin metadata');
 });
 
 test('application event turns keep their own provenance, not an agent origin', () => {

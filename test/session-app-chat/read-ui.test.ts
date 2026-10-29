@@ -169,7 +169,7 @@ test('trusted sidebar and pop-out consent reaches the real sandboxed chat API wi
         killSignal: 'SIGKILL',
       },
     );
-    assert.match(result.stdout, /Totals: 3 passed, 0 failed/);
+    assert.match(result.stdout, /Totals: 4 passed, 0 failed/);
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string };
     throw Error([String(error), output.stdout, output.stderr].join('\n'));

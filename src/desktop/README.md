@@ -744,8 +744,10 @@ is ephemeral; close/reopen, listener restart and successful code replacement
 reset it. No agent tool or app-view route can grant it. Sidebar and pop-out
 HTML surfaces mount the native consent component below the trusted escape bar;
 its dedicated native Client route never becomes an authored-page bridge. These
-mounted controls currently grant **reading only**. Sending controls and authored
-API integration remain pending; the sender backend enforces five attempts per
+mounted controls now provide separate read and send disclosures, allow/revoke
+controls and sending quota/busy status. They require exact-identity confirmation,
+never optimistically change permission, and never retry an uncertain grant.
+The authored sender API remains pending; the backend enforces five attempts per
 explicit grant, one active slot, two-second spacing and late pre-model checks.
 Stop revokes sending before awaiting the queue. See the
 [read contract and required disclosure](../session-apps/README.md#optional-chat-read-checkpoint)

@@ -266,6 +266,10 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
       from = `From ${row.origin.title}`;
     } else if (row.origin?.kind === 'external') {
       from = `${row.origin.title} · external (unverified)`;
+    } else if (row.origin?.kind === 'application-message') {
+      from =
+        `Application · ${row.origin.title || 'unverified application origin'}` +
+        (row.origin.receiptId ? ` · receipt ${row.origin.receiptId.slice(0, 8)}` : '');
     } else if (row.origin?.kind === 'application-event') {
       from = "Your edits in this conversation's app";
     } else if (row.origin?.kind === 'scheduled-wake') {

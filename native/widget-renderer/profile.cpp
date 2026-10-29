@@ -18,6 +18,9 @@ constexpr qsizetype maximumReply = 4 * 1024 * 1024;
 // Chat has a much smaller, text-only contract than documents/widget state.
 constexpr qsizetype maximumChatReadBody = 1024;
 constexpr qsizetype maximumChatReadReply = 64 * 1024;
+constexpr qsizetype maximumChatSendBody = 32 * 1024;
+constexpr qsizetype maximumChatReceiptBody = 1024;
+constexpr qsizetype maximumChatSendReply = 4 * 1024;
 
 class Requests : public QWebEngineUrlRequestInterceptor {
 public:
@@ -33,7 +36,8 @@ public:
             && url.userInfo().isEmpty() && url.port() == -1 && !url.hasQuery()
             && !url.hasFragment()
             && (url.path() == "/state" || url.path() == "/action" || url.path() == "/query"
-                || url.path() == "/chat-read");
+                || url.path() == "/chat-read" || url.path() == "/chat-send"
+                || url.path() == "/chat-receipt");
         const bool inlineAsset = url.scheme() == "data"
             && (type == QWebEngineUrlRequestInfo::ResourceTypeScript
                 || type == QWebEngineUrlRequestInfo::ResourceTypeImage
@@ -92,15 +96,19 @@ public:
             || url.port() != -1 || url.hasQuery() || url.hasFragment()
             || !((method == "GET" && (path == "/" || path == "/state"))
                 || (method == "POST" && (path == "/action" || path == "/query"
-                    || path == "/chat-read")))) {
+                    || path == "/chat-read" || path == "/chat-send"
+                    || path == "/chat-receipt")))) {
             refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
             return;
         }
 
-        // This allowlist only transports requests. Read consent and exact-code
-        // checks belong to the backend; there is deliberately no grant path.
-        const qsizetype bodyLimit = path == "/chat-read" ? maximumChatReadBody : maximumBody;
-        const qsizetype replyLimit = path == "/chat-read" ? maximumChatReadReply : maximumReply;
+        // This allowlist transports fixed operations, never grants. Exact code,
+        // consent, quota, deduplication and late admission belong to the backend.
+        const qsizetype bodyLimit = path == "/chat-read" ? maximumChatReadBody
+            : path == "/chat-send" ? maximumChatSendBody
+            : path == "/chat-receipt" ? maximumChatReceiptBody : maximumBody;
+        const qsizetype replyLimit = path == "/chat-read" ? maximumChatReadReply
+            : (path == "/chat-send" || path == "/chat-receipt") ? maximumChatSendReply : maximumReply;
         QByteArray body;
         if (method == "POST") {
             auto *input = job->requestBody();
@@ -149,7 +157,7 @@ public:
             if (generation != profile->generation() || reply->error() != QNetworkReply::NoError
                 || status != 200 || buffer->size() > replyLimit) {
                 // Only a failed document/state load, or an expired view,
-                // makes the view unusable. A refused action, query or chat read (e.g.
+                // makes the view unusable. A refused action, query or chat request (e.g.
                 // 409 stale code version, invalid arguments) is the page's
                 // own error to show; later valid requests still work.
                 const bool viewFailed = path == "/" || path == "/state" || status == 404;

@@ -38,11 +38,11 @@ TestCase {
     }
   }
 
-  function entry(id, version, revision, read) {
+  function entry(id, version, revision, read, send) {
     return {id: id, title: "Synthetic", status: "completed", messages: [], updatedAt: 0,
       application: {id: "application-" + id, name: "synthetic", version: version,
         revision: 1, text: "Synthetic", eventMode: "next-input",
-        chatAccess: {requested: ["chat.read"], read: read, revision: revision}}}
+        chatAccess: {requested: send ? ["chat.read", "chat.send"] : ["chat.read"], read: read, revision: revision, send: send || null}}}
   }
   function button(name) { return findChild(mount, name) }
   function initTestCase() {
@@ -181,6 +181,136 @@ TestCase {
     compare(sent.length, 1)
   }
 
+  function test_app_message_metadata_labels_and_plain_text() {
+    const valid = {kind:"application-message", applicationId:"11111111-1111-4111-8111-111111111111", name:"synthetic-app",
+      version:3, bundle:"a".repeat(64), receiptId:"22222222-2222-4222-8222-222222222222", depth:1,
+      title:"<b>You</b>", sessionId:"must-not-link", sourceGroupId:"must-not-link"}
+    const malformed = Object.assign({}, valid, {bundle:"bad"})
+    const cases = [
+      {origin: valid, label:"Application · synthetic-app · v3 · receipt 22222222"},
+      {origin: malformed, label:"Application · unverified application origin"},
+      {origin: {kind:"application-message"}, label:"Application · unverified application origin"},
+      {origin: {kind:"agent", title:"Helper", sessionId:"other"}, label:"Agent · Helper"},
+      {origin: {kind:"application-event"}, label:"Your edits in this conversation's app"},
+      {origin: {kind:"external", title:"<b>Unverified</b>"}, label:"External agent (unverified) · <b>Unverified</b>"},
+      {origin: {kind:"future-source", title:"Unknown"}, label:"Agent · Unknown"},
+      {origin: undefined, label:"You"}
+    ]
+    for (let index = 0; index < cases.length; index++) {
+      const sample = cases[index]
+      const message = {id:"label-" + index, kind:"user", text:"[Companion application message] body cannot choose origin",
+        toolName:"", input:"", state:"done", screenshot:false, origin:sample.origin}
+      const row = view.rowData({key:message.id, message:message})
+      compare(row.fromAppMessage, index < 3)
+      if (index < 3) { compare(row.originSessionId, ""); compare(row.originGroupId, "") }
+      const next = entry("one", 1, "unchanged", false)
+      next.messages = [message]
+      view.session = next
+      tryVerify(function() { return findChild(view, "bubble-" + message.id) !== null })
+      const heading = findChild(findChild(view, "bubble-" + message.id), "messageHeading")
+      compare(heading.text, sample.label)
+      compare(heading.textFormat, Text.PlainText)
+    }
+  }
+
+  function test_separate_send_consent_and_exact_action_reply() {
+    view.appChatPermissionTransportReady = true
+    view.session = entry("one", 1, "both-off", false, {allowed:false,remaining:0,busy:false})
+    const composer = findChild(view, "sessionComposer")
+    composer.text = "Trusted draft stays untouched"
+    verify(!view.requestAppChatSend(true))
+    verify(view.reviewAppChatAccess())
+    verify(!view.requestAppChatSend(true), "Reading disclosure does not permit sending")
+    verify(view.reviewAppChatSending())
+    verify(!view.appChatDisclosureOpen)
+    verify(!view.requestAppChatRead(true), "Sending disclosure does not permit reading")
+    const disclosure = findChild(mount, "appChatSendDisclosure")
+    for (const fragment of ["up to 5", "not authenticated human", "uncertain attempts", "Stop", "hiding", "replaces the old quota"]) verify(disclosure.text.indexOf(fragment) >= 0)
+    const allow = button("appChatAllowSend")
+    allow.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    compare(sent.length, 1)
+    compare(sent[0].action, "set-application-chat-send")
+    compare(sent[0].revision, "both-off")
+    verify(!view.appChatSendAccess.allowed)
+    verify(!view.requestAppChatRead(false), "One shared pending control mutation")
+    verify(!view.receiveAppChatPermissionResult({type:"result", action:"set-application-chat-read", requestId:sent[0].requestId}))
+    verify(view.receiveAppChatPermissionResult({type:"result", action:sent[0].action, requestId:sent[0].requestId}))
+    verify(!view.appChatSendAccess.allowed, "Acknowledgements do not grant optimistically")
+    verify(!view.requestAppChatSend(true), "Renewing requires a fresh review")
+    view.session = entry("one", 1, "both-on", true, {allowed:true,remaining:4,busy:true})
+    const status = findChild(mount, "appChatSendStatus")
+    verify(status.text.indexOf("4 of 5") >= 0)
+    verify(status.text.indexOf("active") >= 0)
+    const revoke = button("appChatRevokeSend")
+    revoke.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    compare(sent.length, 2)
+    compare(sent[1].allowed, false)
+    compare(sent[1].action, "set-application-chat-send")
+    verify(view.appChatAccess.read)
+    verify(view.appChatSendAccess.allowed, "Revocation waits for canonical status too")
+    compare(composer.text, "Trusted draft stays untouched")
+  }
+
+  function test_send_renewal_replacement_timeout_and_old_host() {
+    view.appChatPermissionTransportReady = true
+    view.appChatPermissionTimeoutMilliseconds = 50
+    view.session = entry("one", 1, "exhausted", true, {allowed:true,remaining:0,busy:false})
+    verify(findChild(mount, "appChatSendStatus").text.indexOf("exhausted") >= 0)
+    verify(view.reviewAppChatSending())
+    view.session = entry("one", 2, "new-code", false, {allowed:false,remaining:0,busy:false})
+    verify(!view.requestAppChatSend(true))
+    verify(view.reviewAppChatSending())
+    view.online = false
+    verify(!view.requestAppChatSend(true))
+    view.online = true
+    view.visible = false
+    verify(!view.requestAppChatSend(true))
+    view.visible = true
+    verify(view.requestAppChatSend(true))
+    tryVerify(function() { return view.appChatPermissionPending === null }, 1000)
+    verify(!view.appChatSendDisclosureOpen)
+    verify(view.appChatPermissionError.indexOf("No confirmation") >= 0)
+    compare(sent.length, 1)
+    verify(!view.receiveAppChatPermissionResult({type:"result",action:sent[0].action,requestId:sent[0].requestId}))
+    wait(100)
+    compare(sent.length, 1)
+    const oldHost = entry("two", 1, "old-host", false)
+    oldHost.application.chatAccess.requested = ["chat.send"]
+    view.session = oldHost
+    verify(!view.reviewAppChatSending(), "Older host without sender status must not grant")
+    verify(!button("appChatReviewSend").enabled)
+  }
+
+  function test_send_only_narrow_disclosure_keyboard_and_decline() {
+    view.appChatPermissionTransportReady = true
+    view.width = 180; view.height = 260; view.zoomPercent = 200
+    const onlySend = entry("one", 1, "send-only", false, {allowed:false,remaining:0,busy:false})
+    onlySend.application.chatAccess.requested = ["chat.send"]
+    view.session = onlySend
+    verify(!view.reviewAppChatAccess())
+    verify(view.reviewAppChatSending())
+    wait(40)
+    verify(mount.item.visible)
+    verify(!button("appChatReviewRead").visible)
+    verify(mount.height <= view.height * 0.55 + 1)
+    const scroll = findChild(mount, "appChatPermissionScroll")
+    const decline = button("appChatDeclineSend")
+    verify(decline.width <= mount.width - 16 * view.unit + 1)
+    decline.forceActiveFocus()
+    wait(30)
+    verify(scroll.contentY > 0)
+    keyClick(Qt.Key_Space)
+    verify(!view.appChatSendDisclosureOpen)
+    compare(sent.length, 0)
+    verify(view.reviewAppChatSending())
+    const allow = button("appChatAllowSend")
+    allow.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    compare(sent.length, 1)
+  }
+
   function evaluate(browser, code) {
     let settled = false
     let value = null
@@ -196,13 +326,14 @@ TestCase {
     evaluate(browser, "window.runChatChecks(); true")
     tryVerify(function() { return evaluate(browser, "Boolean(window.checks && window.checks.done)") }, 20000)
     const checks = evaluate(browser, "window.checks")
-    compare(checks.allowed, "ok")
-    compare(checks.exactReply, "ok")
-    compare(checks.exactBody, "ok")
-    for (const name of ["denied", "oversizedReply", "oversizedBody", "redirect", "wrongMethod", "grant", "send", "queryString", "otherHost", "network"]) {
-      compare(checks[name], "rejected", name + " must fail promptly, not hang or gain authority")
+    for (const operation of ["chat-read", "chat-send", "chat-receipt"]) {
+      const part = checks[operation]
+      for (const name of ["allowed", "exactReply", "exactBody", "recovered"]) compare(part[name], "ok", operation + " / " + name)
+      for (const name of ["denied", "oversizedReply", "oversizedBody", "redirect", "wrongMethod", "queryString", "otherHost"]) {
+        compare(part[name], "rejected", operation + " / " + name + " must fail promptly")
+      }
     }
-    compare(checks.recovered, "ok")
-    compare(browser.error, "", "Read refusal must not break the whole application")
+    for (const name of ["grant", "nativeGrant", "network"]) compare(checks[name], "rejected")
+    compare(browser.error, "", "Chat refusal must not break the whole application")
   }
 }

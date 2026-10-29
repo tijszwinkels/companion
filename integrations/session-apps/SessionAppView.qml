@@ -5,9 +5,10 @@ import QtQuick
 // The authored bundle runs in the existing restricted widget renderer
 // (../panel/NativeWidgetView.qml): its own off-the-record WidgetProfile, the
 // sandboxed iframe and CSP served by the listener, and a broker that maps
-// exactly GET /, GET /state and POST /action, /query, /chat-read onto this
-// application's capability URL. Bounded history needs explicit native consent.
-// It gets no QWebChannel, draft, chat sending, window commands or other conversations.
+// exactly GET /, GET /state and POST /action, /query, /chat-read, /chat-send,
+// /chat-receipt onto this application's capability URL. Reading and finite
+// sending require separate native consent. The authored sender API is pending.
+// It gets no QWebChannel, draft, trusted-composer privilege or other conversations.
 //
 // Input: `application` (SessionApplicationDescriptor from the session
 // snapshot). The listener keeps the same view capability across code

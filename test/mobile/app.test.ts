@@ -261,6 +261,27 @@ test(
     );
     assert.match(await text(page, '.message.assistant .bubble'), /<img src=x/);
 
+    // Canonical app provenance is a plain-text label, not a phone sending capability.
+    run.emit({
+      ...chatMessage('app-origin', 'user', '<b>Synthetic app input</b>'),
+      origin: {
+        kind: 'application-message',
+        applicationId: '11111111-1111-4111-8111-111111111111',
+        name: 'synthetic-app',
+        version: 3,
+        bundle: 'a'.repeat(64),
+        receiptId: '22222222-2222-4222-8222-222222222222',
+        title: 'synthetic-app · v3',
+        depth: 1,
+      },
+    });
+    await page.waitFor(`document.querySelector('.message.user .from')`);
+    assert.equal(
+      await text(page, '.message.user .from'),
+      'Application · synthetic-app · v3 · receipt 22222222',
+    );
+    assert.equal(await page.evaluate(`document.querySelectorAll('.message.user b').length`), 0);
+
     // While running, the stop button is offered and works.
     await page.waitFor(`document.querySelector('.action.stop')`);
 

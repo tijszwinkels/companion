@@ -16,7 +16,8 @@ import { offscreenPlatform } from '../window/offscreen.ts';
 
 const execute = promisify(execFile);
 const build = resolve('native/window/build');
-const replyLimit = 64 * 1024;
+const bodyLimits = { 'chat-read': 1024, 'chat-send': 32 * 1024, 'chat-receipt': 1024 };
+const replyLimits = { 'chat-read': 64 * 1024, 'chat-send': 4096, 'chat-receipt': 4096 };
 
 const document = `<!doctype html><html><head>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src companion-widget: http:; style-src 'unsafe-inline'">
@@ -34,22 +35,25 @@ window.runChatChecks = async () => {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: encoded || JSON.stringify({version}),
   }));
-  checks.allowed = await post(1);
-  checks.denied = await post(2);
-  checks.oversizedReply = await post(3);
-  checks.redirect = await post(4);
-  checks.exactReply = await post(5);
-  const prefix = JSON.stringify({version: 1, pad: ''});
-  const exactBody = JSON.stringify({version: 1, pad: 'x'.repeat(1024 - prefix.length)});
-  checks.exactBody = await post(1, 'chat-read', exactBody);
-  checks.oversizedBody = await post(1, 'chat-read', exactBody + ' ');
-  checks.wrongMethod = await settle(fetch('chat-read'));
+  for (const [path, limit] of Object.entries(${JSON.stringify(bodyLimits)})) {
+    const part = checks[path] = {};
+    part.allowed = await post(1, path);
+    part.denied = await post(2, path);
+    part.oversizedReply = await post(3, path);
+    part.redirect = await post(4, path);
+    part.exactReply = await post(5, path);
+    const prefix = JSON.stringify({version: 1, pad: ''});
+    const exactBody = JSON.stringify({version: 1, pad: 'x'.repeat(limit - prefix.length)});
+    part.exactBody = await post(1, path, exactBody);
+    part.oversizedBody = await post(1, path, exactBody + ' ');
+    part.wrongMethod = await settle(fetch(path));
+    part.queryString = await post(1, path + '?version=1');
+    part.otherHost = await post(1, 'companion-widget://other/' + path);
+    part.recovered = await post(1, path);
+  }
   checks.grant = await post(1, 'chat-grant');
-  checks.send = await post(1, 'chat-send');
-  checks.queryString = await post(1, 'chat-read?version=1');
-  checks.otherHost = await post(1, 'companion-widget://other/chat-read');
+  checks.nativeGrant = await post(1, 'set-application-chat-send');
   checks.network = await settle(fetch('http://127.0.0.1:9/'));
-  checks.recovered = await post(1);
   checks.done = true;
   window.checks = checks;
 };
@@ -83,7 +87,9 @@ test('native app-chat consent and broker obey their separate trust boundaries', 
       response.end(document);
       return;
     }
-    if (request.url === root + '/chat-read' && request.method === 'POST') {
+    const operation = (request.url ?? '').slice(root.length + 1) as keyof typeof replyLimits;
+    if (Object.hasOwn(replyLimits, operation) && request.method === 'POST') {
+      const replyLimit = replyLimits[operation];
       const version = body.version;
       response.writeHead(version === 2 ? 403 : version === 4 ? 302 : 200, {
         'Content-Type': 'application/json',
@@ -140,25 +146,26 @@ test('native app-chat consent and broker obey their separate trust boundaries', 
         killSignal: 'SIGKILL',
       },
     );
-    assert.match(result.stdout, /Totals: 8 passed, 0 failed/);
+    assert.match(result.stdout, /Totals: 12 passed, 0 failed/);
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string };
     throw Error([String(error), output.stdout, output.stderr].join('\n'));
   }
 
-  assert.ok(
-    requests.some((request) => request.path === root + '/chat-read' && request.bytes === 1024),
-  );
-  assert.ok(!requests.some((request) => request.bytes > 1024));
+  for (const [operation, limit] of Object.entries(bodyLimits)) {
+    const forwarded = requests.filter((request) => request.path === root + '/' + operation);
+    assert.ok(forwarded.some((request) => request.bytes === limit));
+    assert.ok(forwarded.every((request) => request.bytes <= limit && request.method === 'POST'));
+    assert.deepEqual(
+      forwarded.map((request) => request.version),
+      [1, 2, 3, 4, 5, 1, 1],
+    );
+  }
   assert.ok(
     requests
       .filter((request) => request.path !== root)
-      .every((request) => request.path === root + '/chat-read' && request.method === 'POST'),
-  );
-  assert.deepEqual(
-    requests
-      .filter((request) => request.path === root + '/chat-read')
-      .map((request) => request.version),
-    [1, 2, 3, 4, 5, 1, 1],
+      .every((request) =>
+        Object.keys(bodyLimits).some((operation) => request.path === root + '/' + operation),
+      ),
   );
 });

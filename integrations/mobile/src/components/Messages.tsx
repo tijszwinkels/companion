@@ -54,6 +54,12 @@ function UserMessage(props: { message: AgentMessage }) {
   let fromClass = 'from';
   if (origin?.kind === 'agent') {
     from = `From ${origin.title}`;
+  } else if (origin?.kind === 'application-message') {
+    // Canonical host provenance only; this does not expose app permissions or
+    // add a phone sender. Ordinary JSX renders labels as text, never HTML.
+    from =
+      `Application · ${origin.title || 'unverified application origin'}` +
+      (typeof origin.receiptId === 'string' ? ` · receipt ${origin.receiptId.slice(0, 8)}` : '');
   } else if (origin?.kind === 'external') {
     from = `${origin.title} · external (unverified)`;
     fromClass = 'from external';

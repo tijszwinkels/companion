@@ -23,18 +23,18 @@ trusted HTML chat. Patches replace the whole session object, so a patch without
 it means there is none. It is live-only and never saved in the conversation
 archive; the application's own record is the durable source.
 
-| Field         | Meaning                                                                       |
-| ------------- | ----------------------------------------------------------------------------- |
-| `id`          | Stable UUID, kept across code replacement.                                    |
-| `name`        | Library bundle name of the current code.                                      |
-| `version`     | Code version: 1 on first apply, +1 per replacement. Host-assigned.            |
-| `revision`    | State revision: +1 per committed state change.                                |
-| `viewUrl`     | Desktop-only view capability, `http://127.0.0.1:<port>/view/<64 hex>`.        |
-| `text`        | The bundle's readable text description (1–4000 characters).                   |
-| `eventMode`   | `immediate` (default) or `next-input`; see [Events](#user-edit-events).       |
-| `eventStatus` | Delivery state of user-edit events (display only).                            |
-| `chatAccess`  | Desktop-only requested chat capabilities, read grant and permission revision. |
-| `error`       | The saved application could not be restored; `viewUrl` is absent, data kept.  |
+| Field         | Meaning                                                                        |
+| ------------- | ------------------------------------------------------------------------------ |
+| `id`          | Stable UUID, kept across code replacement.                                     |
+| `name`        | Library bundle name of the current code.                                       |
+| `version`     | Code version: 1 on first apply, +1 per replacement. Host-assigned.             |
+| `revision`    | State revision: +1 per committed state change.                                 |
+| `viewUrl`     | Desktop-only view capability, `http://127.0.0.1:<port>/view/<64 hex>`.         |
+| `text`        | The bundle's readable text description (1–4000 characters).                    |
+| `eventMode`   | `immediate` (default) or `next-input`; see [Events](#user-edit-events).        |
+| `eventStatus` | Delivery state of user-edit events (display only).                             |
+| `chatAccess`  | Desktop-only requested capabilities, read/send status and permission revision. |
+| `error`       | The saved application could not be restored; `viewUrl` is absent, data kept.   |
 
 When `error` is present the saved record could not be used. If the file is
 unreadable, `id` and `name` are empty and `version`/`revision` are 0. The file is
@@ -85,8 +85,8 @@ limited to 20 each. `agent` (default `true`) exposes a query/action to the
 agent; `false` keeps it view-only. `application.eventMode` is the default event
 mode for a first apply. `application.capabilities` may request `chat.read` and
 `chat.send` (no duplicates, at most two). A declaration is **not** consent.
-Reading is integrated end-to-end. Sending has backend grants, capability ingress
-and FIFO enforcement; its native controls and authored API are still pending.
+Reading is integrated end-to-end. Sending has backend grants, capability ingress,
+FIFO enforcement and native controls/transport; its authored API is still pending.
 See [optional chat](#optional-chat-read-checkpoint) and [sending](#sending-backend).
 
 `widget.js` exports:
@@ -154,17 +154,21 @@ ignored, never echoed), operation names of at most 48 characters, and JSON
 arguments of at most 32 KiB. Non-JSON arguments (for example cyclic objects)
 are refused with an answer, so they never hold a request slot.
 
-| Request                    | Body / response                                                                            |
-| -------------------------- | ------------------------------------------------------------------------------------------ |
-| `GET <viewUrl>`            | Trusted host document with the bundle inside a sandboxed iframe.                           |
-| `GET <viewUrl>/state`      | `SessionApplicationStateResponse`.                                                         |
-| `POST <viewUrl>/action`    | `SessionApplicationActionRequest` → action result + `id`, `revision`.                      |
-| `POST <viewUrl>/query`     | `SessionApplicationQueryRequest` → `{result, revision}`.                                   |
-| `POST <viewUrl>/chat-read` | `{version, after?}` → bounded changed snapshot or unchanged revision; read grant required. |
+| Request                       | Body / response                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET <viewUrl>`               | Trusted host document with the bundle inside a sandboxed iframe.                           |
+| `GET <viewUrl>/state`         | `SessionApplicationStateResponse`.                                                         |
+| `POST <viewUrl>/action`       | `SessionApplicationActionRequest` → action result + `id`, `revision`.                      |
+| `POST <viewUrl>/query`        | `SessionApplicationQueryRequest` → `{result, revision}`.                                   |
+| `POST <viewUrl>/chat-read`    | `{version, after?}` → bounded changed snapshot or unchanged revision; read grant required. |
+| `POST <viewUrl>/chat-send`    | `{version, grantId, requestId, text}` → host receipt; separate finite grant required.      |
+| `POST <viewUrl>/chat-receipt` | `{version, grantId, requestId}` → read-only receipt or unknown/null; never admission.      |
 
 The native profile maps `companion-widget://view/` onto `viewUrl`. It forwards
-only document/state GETs and action/query/chat-read POSTs to that exact capability.
-It never forwards permission-grant or chat-send operations. Chat-read request
+only document/state GETs and action/query/chat-read/chat-send/chat-receipt POSTs
+to that exact capability.
+It never forwards permission-grant operations. Sending and receipt probes have
+separate fixed routes and stricter bounds described below. Chat-read request
 bodies are capped at 1 KiB and replies at 64 KiB; other operation bounds stay
 unchanged. Non-200 backend replies become generic fetch failures in Qt, never
 successful empty history. A refused chat read does not disable the whole view.
@@ -176,8 +180,8 @@ execute successor actions. An action request from this view ingress is a
 
 Read consent is shown in native controls below the app's trusted escape bar in
 both sidebar and pop-out HTML surfaces. It enables the gated iframe read API,
-not chat sending. The sending backend exists, but native send controls and the
-authored sender API are not integrated yet.
+not chat sending. Separate native send controls and transport are implemented,
+but the authored sender API is not integrated yet.
 The application remains able to show app-only content. Canonical trusted chat,
 its escape bar and the trusted draft remain separate from authored content.
 
@@ -259,9 +263,18 @@ The read service never implicitly writes its projection into app state.
 
 ## Sending backend
 
-**Native send controls, the native broker's sender routes and authored
-`api.chat.send` are not integrated yet.** The backend below is exercised by
-isolated synthetic HTTP/native-command tests, not a complete application UI.
+**The authored sender API is not integrated yet.** Native controls, broker routes
+and the backend below have isolated synthetic coverage; this is not a complete
+app-facing sender.
+
+Native sending consent has its own disclosure and explicit allow-five/renewal
+step, independent of reading, plus direct revoke and canonical quota/busy status.
+Confirmations bind code and permission identity, share one pending mutation and
+never change displayed permission optimistically or retry on timeout. A missing
+sender descriptor on an older host disables sending controls. Disclosure covers
+non-human origin, consumed uncertain attempts, running-work effects, Stop,
+replacement/renewal, lifetime, hiding not revoking backend consent and the fact
+that existing app-edit notifications remain separate from this chat-send quota.
 
 The separate trusted `set-application-chat-send` command takes the same identity,
 permission revision and allowed flag as reading, with the same shown/non-remote
