@@ -233,10 +233,10 @@ Item {
       keyboardFocused: root.keyboardFocused,
       visible: root.popoutHost ? root.anyViewVisible : root.panelVisible,
       navigationToken: sessions.navigationToken,
-      draftHost: true, browserHost: root.browserHost, incrementalSessions: true,
-      // A send from this conversation's text box awaits its reply: agent
-      // drafts for it are refused meanwhile (the listener checks this).
-      pendingSend: root.pendingInput ? root.pendingInput.id : ""}
+      draftHost: true, browserHost: root.browserHost, incrementalSessions: true}
+    // A send from this conversation's text box awaits its reply: agent drafts
+    // for it are refused meanwhile (the listener checks this). Absent: none.
+    if (root.pendingInput) report.pendingSend = root.pendingInput.id
     if (root.popoutHost) {
       report.popoutHost = true
       report.rail = root.rail
