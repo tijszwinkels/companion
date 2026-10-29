@@ -82,55 +82,32 @@ test('the desktop protocol confirms drafts only from the asked panel', async (co
   desktop.send({ action: 'panel-state', id: '', composerFocused: false, draftHost: true });
   assert.equal((await desktop.reply('panel-state')).result, 'panel-recorded');
 
-  const pending = attempt('Please review this');
-  await waitFor(() => desktop.messages.some((message) => message.type === 'agent-draft'));
-  const index = desktop.messages.findIndex((message) => message.type === 'agent-draft');
-  const request = desktop.messages.splice(index, 1)[0] as unknown as DraftMessage;
-  assert.equal(request.id, target);
-  assert.equal(request.text, 'Please review this');
-  assert.equal(request.ifDraftExists, 'reject');
-  assert.equal(request.focus, false);
-  assert.deepEqual(request.source, { sessionId: requester, title: 'Requester' });
+  // The listener applies the proposal to its own draft map in one step and
+  // every desktop editor sees it, with the requester as its source.
+  const drafts = () =>
+    desktop.messages.filter((message) => message.type === 'draft') as unknown as {
+      id: string;
+      text: string;
+      source: string;
+    }[];
+  const inserted = await attempt('Please review this');
+  assert.equal((inserted as { outcome?: string }).outcome, 'inserted');
+  await waitFor(() => drafts().length === 1);
+  assert.deepEqual(drafts()[0].id, target);
+  assert.equal(drafts()[0].text, 'Please review this');
+  assert.equal(drafts()[0].source, 'Requester');
 
-  // Another connection cannot answer for the panel that was asked.
-  const stranger = createConnection(desktop.socketPath);
-  await once(stranger, 'connect');
-  const strangerReplies: string[] = [];
-  stranger.setEncoding('utf8');
-  stranger.on('data', (chunk: string) => strangerReplies.push(chunk));
-  stranger.write(
-    JSON.stringify({
-      action: 'agent-draft-result',
-      requestId: request.requestId,
-      outcome: 'inserted',
-    }) + '\n',
-  );
-  await waitFor(() => strangerReplies.join('').includes('This draft request has expired'));
-  stranger.destroy();
+  // Text already there is never overwritten: a conflict, nothing changes.
+  assert.match(String((await attempt('Another idea')).error), /left unchanged.*\[conflict\]$/);
+  assert.equal(drafts().length, 1);
 
-  desktop.send({
-    action: 'agent-draft-result',
-    requestId: request.requestId,
-    outcome: 'conflict',
-    reason: '',
-  });
-  assert.equal((await desktop.reply('agent-draft-result')).result, 'draft-recorded');
-  assert.match(String((await pending).error), /left unchanged.*\[conflict\]$/);
-
-  // A late duplicate answer is refused rather than applied to a later draft.
-  desktop.send({ action: 'agent-draft-result', requestId: request.requestId, outcome: 'inserted' });
+  // SUPERSEDED: answers from a panel (agent-draft-result) and the
+  // "unconfirmed" outcome after a disconnect. Nothing waits for a panel now;
+  // a stray answer is refused as expired.
+  desktop.send({ action: 'agent-draft-result', requestId: 'not-pending', outcome: 'inserted' });
   assert.match(
     String((await desktop.reply('agent-draft-result')).message),
     /This draft request has expired/,
-  );
-
-  // The panel disconnecting before it answers leaves the outcome uncertain.
-  const uncertain = attempt('Second proposal');
-  await waitFor(() => desktop.messages.some((message) => message.type === 'agent-draft'));
-  desktop.client.destroy();
-  assert.match(
-    String((await uncertain).error),
-    /may or may not have been inserted.*\[unconfirmed\]$/,
   );
 
   // Nothing was ever submitted to the target conversation.

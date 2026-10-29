@@ -1064,42 +1064,87 @@ an answer, disconnection, capability withdrawal or the end of the agent turn
 give `unconfirmed`: the UI may have acted, so it is never retried or sent to
 another UI. Reconnects never replay a request.
 
-### Agent drafts
+### Text-box drafts (listener-owned, last write wins)
 
-Unsent composer text belongs to a UI instance, not the listener. A client that
-can hold agent drafts adds `draftHost: true` to every `panel-state` report;
-older clients omit it and never receive drafts. For `companion_session_draft`,
-the listener picks one draft host: the client owning visible navigation, else
-the one with the most recent report. It sends only that client:
+The unsent text of every conversation's text box lives in the listener
+(`src/desktop/draft-store.ts`), in memory, keyed by the conversation's stable
+ID. The native view and the HTML chat, in the sidebar or a pop-out window, all
+read and write that one record; no UI keeps its own authoritative copy. The
+rule is simple: **the last write the listener receives wins**. There is no
+base revision, merge or refusal because an edit started from older text, and
+a delayed edit can therefore overwrite one made elsewhere.
+
+Only trusted desktop editors take part: clients that add `draftHost: true` to
+their `panel-state` report. When a client first reports it, the listener
+sends every nonempty draft once (`draft-snapshot`). Reading never writes.
 
 ```json
 {
-  "type": "agent-draft",
-  "requestId": "draft-request-uuid",
-  "id": "question-uuid",
-  "text": "Could you also cover the logout path?",
-  "ifDraftExists": "reject",
-  "focus": false,
-  "source": { "sessionId": "sender-uuid", "title": "🔐 Auth review" }
+  "type": "draft-snapshot",
+  "sequence": 12,
+  "drafts": [{ "id": "question-uuid", "text": "Half a question", "source": "", "sequence": 11 }]
 }
 ```
 
-The client applies it synchronously and answers with `agent-draft-result`:
-`inserted` (the composer was empty or whitespace), `appended` (only with
-`ifDraftExists: "append"`, below existing text after a blank line), `conflict`
-(existing text kept unchanged, a send from that composer is awaiting its reply,
-or the result would exceed the composer's 8000 characters), or `unavailable` (no such open tab).
-An optional `reason` (≤300 characters) is passed to the agent. The listener
-accepts an answer only from the asked client, only once, and returns
-`draft-recorded`. After 5 seconds, disconnection or the end of the agent turn,
-the outcome is `unconfirmed`; a later answer is refused as expired. No draft
-host means `offline`. Drafts never submit text, start a turn or reorder a queue.
+An edit names the conversation it was typed for and an editor-chosen edit ID:
 
-Draft text replaces the composer only when that tab is displayed; otherwise it
-waits in that tab's saved draft. The composer shows **Drafted by agent · title —
-review before sending** until it is cleared or sent. `focus: true` selects the
-tab and reveals the panel after a confirmed insertion; otherwise selection and
-keyboard focus do not change.
+```json
+{
+  "action": "draft-set",
+  "id": "question-uuid",
+  "text": "Half a question, now longer",
+  "editId": "edit-7"
+}
+```
+
+The answer is `{"accepted":true,"sequence":13}` or `{"accepted":false,"reason":"..."}`
+for an unknown conversation or text longer than may be edited (16,000 UTF-16
+units, twice the 8,000-unit Send limit). A refused write changes nothing; the
+UI keeps the text on screen and says it is not saved. Recorded words may grow a
+draft up to 64,000 units (`"recording":true`, accepted only from the panel
+recording into that conversation), so a long final dictation chunk is kept
+whole. Every accepted change goes to every draft host:
+
+```json
+{
+  "type": "draft",
+  "id": "question-uuid",
+  "text": "Half a question, now longer",
+  "source": "",
+  "sequence": 13,
+  "editId": "edit-7"
+}
+```
+
+`editId` is included only for the client that wrote the change, so it can
+ignore its own echo (a newer local edit may already follow it). Other clients
+show the change without writing it back. `sequence` orders what is displayed;
+it is never used to refuse a write. Showing, switching or reopening a
+conversation reads its draft and writes nothing.
+
+A desktop `send-agent` clears the draft after the listener accepted the send,
+but only if the draft still equals exactly the sent text: anything typed or
+recorded meanwhile stays. Remote panels (the phone) can neither read nor write
+drafts. Drafts never start a turn and are not saved to transcripts, the
+utterance database or logs. They survive views being destroyed and
+conversations being closed and reopened while the listener runs; they are not
+written to disk, so a listener restart loses them. Empty drafts are removed;
+unknown conversation IDs are refused.
+
+### Agent drafts
+
+`companion_session_draft` proposals are applied by the listener to the same
+draft map, in one step (`DraftStore.propose`): `inserted` into an empty draft,
+`appended` below existing text only with `ifDraftExists: "append"` (after a
+blank line), and otherwise `conflict` with the text left unchanged (also when
+the result would exceed 16,000 units). Every desktop editor then shows it as an
+ordinary `draft` change whose `source` is shown as **Drafted by agent · source
+— review before sending** until the person edits it. With `focus: true` the
+client owning navigation receives `{"type":"agent-draft-focus","id":"..."}`
+and shows that conversation; otherwise selection and focus do not change. No
+connected draft host means `offline` and nothing is stored. Drafts never
+submit text, start a turn or reorder a queue. `agent-draft-result` answers are
+no longer used and are refused as expired.
 
 ### Manual recording into the text box
 

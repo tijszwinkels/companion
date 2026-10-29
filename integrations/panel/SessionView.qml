@@ -212,7 +212,8 @@ Item {
   // showing a draft is not an edit and writes nothing (`loadingDraft`).
   property var sharedDrafts: null
   property bool loadingDraft: false
-  signal draftWritten(string id, string text)
+  signal draftWritten(string id, string text, bool recording)
+  function recordingInto(id) { return root.ownRecording !== null && root.ownRecording.id === id }
   // Conversation id -> text typed in the HTML composer that could not be
   // applied to the draft (it changed meanwhile, was too long, or words were
   // being recorded). Kept here, not in the page, until the person uses,
@@ -624,7 +625,7 @@ Item {
     }
     if (text === "") delete root.drafts[id]
     else root.drafts[id] = text
-    root.draftWritten(id, text)
+    root.draftWritten(id, text, root.recordingInto(id))
     return true
   }
 
@@ -734,7 +735,7 @@ Item {
     if (displayed) composer.insert(composer.length, addition)
     else {
       root.drafts[request.id] = current + addition
-      root.draftWritten(request.id, current + addition)
+      root.draftWritten(request.id, current + addition, true)
     }
     return {outcome: "appended", length: current.length + addition.length}
   }
@@ -802,7 +803,7 @@ Item {
       composer.cursorPosition = composer.length
     } else {
       root.drafts[id] = next
-      root.draftWritten(id, next)
+      root.draftWritten(id, next, false)
     }
     return {outcome: outcome, reason: ""}
   }
@@ -1736,7 +1737,7 @@ Item {
           if (text === "") root.forgetDraftSource(root.displayedId)
           // An edit of the shown conversation (typing here or in the HTML
           // chat, an agent draft, recorded words): the listener keeps it.
-          if (root.displayedId && !root.loadingDraft) root.draftWritten(root.displayedId, text)
+          if (root.displayedId && !root.loadingDraft) root.draftWritten(root.displayedId, text, root.recordingInto(root.displayedId))
         }
         onSelectedTextChanged: if (selectedText !== "") root.clearMessageSelection()
         TapHandler { onPressedChanged: if (pressed) root.clearMessageSelection() }

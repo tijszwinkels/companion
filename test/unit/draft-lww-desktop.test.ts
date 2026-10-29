@@ -137,6 +137,17 @@ test('one listener draft map: last write wins, no echo, snapshot, trusted editor
     reason: 'unknown conversation',
   });
 
+  // Claiming to record does not lift the editing bound for a panel that is
+  // not recording into that conversation.
+  desktop.send({
+    action: 'draft-set',
+    id: b,
+    text: 'x'.repeat(16_001),
+    editId: 'e6',
+    recording: true,
+  });
+  assert.equal(((await desktop.reply('draft-set')) as Message).result.accepted, false);
+
   // A newly attached editor reads every draft once.
   const third = await connect(desktop.socketPath);
   context.after(() => third.close());

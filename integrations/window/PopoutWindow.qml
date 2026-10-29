@@ -185,7 +185,7 @@ Window {
     htmlSurface: root.controller.htmlSessions
     appChatPermissionTransportReady: root.controller.htmlSessions
     sharedDrafts: root.client.serverDrafts
-    onDraftWritten: (id, text) => root.client.writeDraft(id, text)
+    onDraftWritten: (id, text, recording) => root.client.writeDraft(id, text, recording)
     onAppChatPermissionRequested: request => { root.client.reportPanel(); root.client.send(request) }
     widgetsRunning: root.client.online && root.visible
     background: root.theme.background

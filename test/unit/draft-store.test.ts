@@ -197,3 +197,17 @@ test('empty drafts are removed; nonempty ones survive views and reopening', () =
   // A new view (another window, a reload) reads the same record.
   assert.equal(drafts.read('A').text, 'kept while the listener runs');
 });
+
+test('a recording write may pass the editing bound up to the storage ceiling only', () => {
+  const { drafts } = store();
+  const long = 'r'.repeat(draftEditLimit + 500);
+  assert.equal(drafts.write('A', long, editor(1, 'a1')).accepted, false);
+  assert.equal(
+    drafts.write('A', long, { kind: 'recording', clientId: 1 }, 'storage').accepted,
+    true,
+  );
+  assert.equal(drafts.read('A').text, long);
+  const tooLong = 'r'.repeat(draftStorageLimit + 1);
+  assert.equal(drafts.write('A', tooLong, { kind: 'recording' }, 'storage').accepted, false);
+  assert.equal(drafts.read('A').text, long);
+});

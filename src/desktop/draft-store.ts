@@ -129,17 +129,25 @@ export class DraftStore {
    * A trusted editor's edit: replaces the conversation's draft, whatever it
    * was based on. The person's own edit removes any agent provenance.
    */
-  write(sessionId: string, text: string, writer: DraftWriter): DraftWriteResult {
+  write(
+    sessionId: string,
+    text: string,
+    writer: DraftWriter,
+    ceiling: 'edit' | 'storage' = 'edit',
+  ): DraftWriteResult {
     if (!this.isKnown(sessionId)) {
       return { accepted: false, reason: 'unknown conversation' };
     }
     if (typeof text !== 'string') {
       return { accepted: false, reason: 'invalid text' };
     }
-    if (text.length > this.editLimit) {
+    // Recorded words (`storage`) may pass the editing envelope, so a long
+    // final dictation chunk is kept whole; nothing is ever cut.
+    const limit = ceiling === 'storage' ? this.storageLimit : this.editLimit;
+    if (text.length > limit) {
       return {
         accepted: false,
-        reason: `The text would be ${text.length} characters; at most ${this.editLimit} can be edited.`,
+        reason: `The text would be ${text.length} characters; at most ${limit} can be kept.`,
       };
     }
     const sequence = this.store(sessionId, text, '', writer);

@@ -61,6 +61,8 @@ Item {
   signal draftRequested(var message)
   // A draft change from the listener that this UI did not write itself.
   signal draftChanged(string id, string text, string source)
+  // An agent's draft asked to be shown: select its conversation.
+  signal draftFocusRequested(string id)
 
   // This UI's copy of the listener's drafts (conversation id -> text), for
   // views that show a conversation. Updated by its own writes at once and by
@@ -72,14 +74,18 @@ Item {
 
   // A view's edit, for the conversation it was typed for. The last write the
   // listener receives wins; there is no base revision to be refused for.
-  function writeDraft(id, text) {
+  function writeDraft(id, text, recording) {
     if (typeof id !== "string" || id === "" || typeof text !== "string") return
     root.draftEditCounter++
     const editId = "edit-" + root.draftEditCounter
     root.ownDraftEdits[editId] = true
     if (text === "") delete root.serverDrafts[id]
     else root.serverDrafts[id] = text
-    root.send({action: "draft-set", id: id, text: text, editId: editId})
+    const request = {action: "draft-set", id: id, text: text, editId: editId}
+    // Recorded words may pass the editing bound; the listener checks that
+    // this panel really records into that conversation.
+    if (recording === true) request.recording = true
+    root.send(request)
   }
   // True when the panel has the built-in browser (standalone native window).
   // Only then does the listener route companion_browser_open here.
@@ -368,6 +374,8 @@ Item {
       }
       root.serverDrafts = drafts
       for (const id of Object.keys(drafts)) root.draftChanged(id, drafts[id], "")
+    } else if (message.type === "agent-draft-focus") {
+      if (typeof message.id === "string") root.draftFocusRequested(message.id)
     } else if (message.type === "draft") {
       if (typeof message.id !== "string" || typeof message.text !== "string") return
       // Our own edit coming back: already shown here, and a newer local edit

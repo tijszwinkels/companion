@@ -62,9 +62,6 @@ import {
   type PresentPanelOutcome,
 } from '../agents/session-presentation.ts';
 
-/** A connected panel must confirm a forwarded draft within this time. */
-const draftConfirmationMilliseconds = 5000;
-
 /** The recording panel must confirm each appended transcript chunk within this time. */
 const recordingAppendConfirmationMilliseconds = 5000;
 
@@ -1519,9 +1516,13 @@ export class DesktopRuntime {
   }
 
   /**
-   * Forward an agent's draft to one panel and wait for its explicit answer.
-   * Once sent, timeout, disconnect or turn cancellation are `unconfirmed`: the
-   * panel may already have applied it. Never retried automatically.
+   * An agent's proposed draft, applied to the listener's draft map in one
+   * step: it never overwrites text the person wrote, and appends below it
+   * only when asked (DraftStore.propose). Every desktop editor then shows it
+   * as an ordinary draft change, with the agent's provenance. With `focus`,
+   * the panel that owns navigation is asked to show the conversation.
+   * Without a connected desktop editor nobody could review it: `offline`,
+   * nothing is stored.
    */
   private requestDraft(
     request: AgentDraftRequest,
@@ -1532,46 +1533,24 @@ export class DesktopRuntime {
       return Promise.resolve({ outcome: 'offline', reason: '' });
     }
 
-    const requestId = randomUUID();
-    return new Promise((resolve) => {
-      const finish = (outcome: AgentDraftOutcome) => {
-        if (!this.pendingDrafts.delete(requestId)) {
-          return;
-        }
-        clearTimeout(timer);
-        signal.removeEventListener('abort', cancelled);
-        resolve(outcome);
-      };
-      const timer = setTimeout(
-        () =>
-          finish({
-            outcome: 'unconfirmed',
-            reason: 'The panel did not confirm the draft within 5 seconds.',
-          }),
-        draftConfirmationMilliseconds,
-      );
-      const cancelled = () =>
-        finish({
-          outcome: 'unconfirmed',
-          reason: 'The agent turn ended before the panel confirmed the draft.',
-        });
-
-      this.pendingDrafts.set(requestId, { clientId, finish });
-      signal.addEventListener('abort', cancelled, { once: true });
-
-      const sent = this.server.publishTo(clientId, {
-        type: 'agent-draft',
-        requestId,
-        id: request.sessionId,
-        text: request.text,
-        ifDraftExists: request.ifDraftExists,
-        focus: request.focus,
-        source: request.source,
-      });
-      if (!sent) {
-        finish({ outcome: 'offline', reason: 'The panel disconnected.' });
-      }
+    let source = request.source.title || 'another conversation';
+    if ('kind' in request.source && request.source.kind === 'external') {
+      source = `external (unverified) · ${request.source.title}`;
+    }
+    const result = this.drafts.propose({
+      sessionId: request.sessionId,
+      text: request.text,
+      ifDraftExists: request.ifDraftExists,
+      source: source,
     });
+    if (result.outcome === 'conflict') {
+      return Promise.resolve({ outcome: 'conflict', reason: result.reason });
+    }
+
+    if (request.focus) {
+      this.server.publishTo(clientId, { type: 'agent-draft-focus', id: request.sessionId });
+    }
+    return Promise.resolve({ outcome: result.outcome, reason: '' });
   }
 
   /**
@@ -2473,11 +2452,20 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected a conversation id, draft text and an edit id');
       }
-      return this.drafts.write(request.id, request.text, {
-        kind: 'editor',
-        clientId: clientId,
-        editId: request.editId,
-      });
+      // Recorded words may pass the editing bound (up to the storage
+      // ceiling), but only from the panel recording into that conversation.
+      const status = this.dictation?.status;
+      const recording =
+        request.recording === true &&
+        status !== undefined &&
+        status.sessionId === request.id &&
+        this.dictation!.ownedBy(clientId);
+      return this.drafts.write(
+        request.id,
+        request.text,
+        { kind: recording ? 'recording' : 'editor', clientId: clientId, editId: request.editId },
+        recording ? 'storage' : 'edit',
+      );
     }
 
     if (request.action === 'send-agent') {

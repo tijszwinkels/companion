@@ -339,6 +339,10 @@ Item {
     }
     onOnlineChanged: root.publish()
     // The listener's draft changed elsewhere: every view updates its copy.
+    onDraftFocusRequested: id => {
+      if (popoutViews.isPopped(id)) popoutViews.focusWindow(id)
+      else client.sessions.reveal(id)
+    }
     onDraftChanged: (id, text, source) => {
       for (const view of popoutViews.allViews()) view.serverDraft(id, text, source)
     }
@@ -350,7 +354,7 @@ Item {
   }
   Connections {
     target: panel.conversationView
-    function onDraftWritten(id, text) { client.writeDraft(id, text) }
+    function onDraftWritten(id, text, recording) { client.writeDraft(id, text, recording) }
   }
 
   // Trusted native consent has its own command/reply route, never a page
