@@ -1128,8 +1128,13 @@ that was refused, or that was unconfirmed when the connection dropped stays on
 screen marked as not saved, with Save and Discard; the UI never writes it again
 by itself after reconnecting (the draft may have changed elsewhere), and the
 conversation does not move to another view or close until one is chosen.
-Recorded words are applied by the recording panel and acknowledged
-(`recording-append-result`) only once the listener confirmed that edit.
+Recorded words are appended by the listener itself, in one step against its
+current draft (read, a space if needed, append), so a change made meanwhile by
+an agent or another editor is kept. A chunk is kept whole up to 64,000 units or
+refused whole. The owning panel still receives `recording-append`, now with
+`"applied": true` and the resulting `length`, and only acknowledges it; the
+dictation controller uses the listener's real draft length (recording stops
+once it reaches 8,000).
 
 A desktop `send-agent` clears the draft after the listener accepted the send,
 but only if the draft still equals exactly the sent text: anything typed or
@@ -1151,7 +1156,11 @@ ordinary `draft` change whose `source` is shown as **Drafted by agent · source
 — review before sending** until the person edits it. With `focus: true` the
 client owning navigation receives `{"type":"agent-draft-focus","id":"..."}`
 and shows that conversation; otherwise selection and focus do not change. No
-connected draft host means `offline` and nothing is stored. Drafts never
+connected draft host means `offline` and nothing is stored. While a desktop
+editor reports a send from that conversation awaiting its reply
+(`"pendingSend": "<id>"` in `panel-state`, sent before `send-agent`), proposals
+for it are a `conflict`, as when the editor owned drafts; recording does not
+block them. Drafts never
 submit text, start a turn or reorder a queue. `agent-draft-result` answers are
 no longer used and are refused as expired.
 
