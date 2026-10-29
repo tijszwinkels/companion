@@ -287,6 +287,38 @@ TestCase {
     composerOf(view).text = ""
   }
 
+  // Text the listener refused stays on screen as not saved in the HTML chat
+  // too: a notice with Save and Discard, and Close session waits for it.
+  function test_bb_unsaved_text_is_shown_and_blocks_close() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    listenerDraft("one", "kept by the listener")
+    tryVerify(function() { return textarea(chat) === "kept by the listener" })
+    fakeBackend.sent = []
+    typeInto(chat, "refused by the listener")
+    tryCompare(composerOf(view), "text", "refused by the listener")
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set").pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: write.editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    body.client.error = ""
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unsaved') !== null") === true })
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Close session').disabled"), true)
+    compare(textarea(chat), "refused by the listener")
+    fakeBackend.sent = []
+    verify(clickButton(chat, "Save"))
+    const again = fakeBackend.sent.filter(message => message.action === "draft-set")
+    compare(again.map(entry => entry.text), ["refused by the listener"])
+    body.client.receive({type: "result", action: "draft-set", requestId: again[0].editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    body.client.error = ""
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unsaved') !== null") === true })
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "kept by the listener" })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unsaved') === null") === true })
+    listenerDraft("one", "")
+  }
+
   // The trusted page reports composer focus for voice routing; focusing the
   // conversation (focus shortcut) reaches the HTML composer.
   function test_c_composer_focus_is_reported_by_the_trusted_view() {

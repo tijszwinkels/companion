@@ -783,8 +783,10 @@ function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
 }
 
 // Keyboard focus moving from a replaced editor to its successor (see the
-// layout effect in Composer).
-const editorFocus = { transfer: false };
+// layout effect in Composer). `requested`: a native focus request (focus
+// shortcut) that arrived before the conversation's editor was rendered; the
+// editor takes focus when it appears, instead of the request being lost.
+const editorFocus = { transfer: false, requested: false };
 
 function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: ChatStore }) {
   const { status, bridge, store } = props;
@@ -858,8 +860,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       const cursor = Math.min(draft.cursor, element.value.length);
       element.setSelectionRange(cursor, cursor);
     }
-    if (element && editorFocus.transfer) {
+    if (element && (editorFocus.transfer || editorFocus.requested)) {
       editorFocus.transfer = false;
+      editorFocus.requested = false;
       element.focus();
     }
     return () => {
@@ -1224,10 +1227,16 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
 /** Native focus requests (focus shortcut) reach the composer through this. */
 export function focusComposer() {
   const area = document.querySelector('textarea');
-  area?.focus();
+  if (area) {
+    area.focus();
+  } else {
+    // No editor yet (the page is still rendering the conversation).
+    editorFocus.requested = true;
+  }
 }
 
 export function blurComposer() {
+  editorFocus.requested = false;
   const area = document.querySelector('textarea');
   area?.blur();
 }
