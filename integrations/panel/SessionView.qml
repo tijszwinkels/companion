@@ -611,7 +611,10 @@ Item {
       root.loadingDraft = false
       composer.cursorPosition = Math.min(cursor, composer.length)
     }
-    if (source) root.draftSources = Object.assign({}, root.draftSources, {[id]: source})
+    // The listener's provenance: an agent's source, or none after the
+    // person edited it.
+    if (source && text !== "") root.draftSources = Object.assign({}, root.draftSources, {[id]: source})
+    else root.forgetDraftSource(id)
   }
 
   // An edit typed for a conversation this view no longer shows (it arrived
@@ -1151,9 +1154,11 @@ Item {
       root.resetHistory()
       root.displayedId = id
       // Showing a conversation reads its draft; it never writes one.
-      const shared = root.sharedDrafts && root.sharedDrafts[id] !== undefined ? root.sharedDrafts[id] : undefined
+      // With the listener's mirror, a conversation it has no draft for is
+      // empty; a view's own older copy never comes back.
+      const shown = root.sharedDrafts ? (root.sharedDrafts[id] || "") : (root.drafts[id] || "")
       root.loadingDraft = true
-      composer.text = shared !== undefined ? shared : (root.drafts[id] || "")
+      composer.text = shown
       root.loadingDraft = false
       // A draft handed over from another view keeps its cursor position.
       if (root.draftCursors[id] !== undefined) {

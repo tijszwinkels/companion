@@ -141,6 +141,11 @@ TestCase {
     body.destroy()
   }
   function init() {
+    // A fresh listener draft map per test (this transport never confirms).
+    body.client.ownDraftEdits = ({})
+    body.client.draftEditsInFlight = ({})
+    body.client.unsyncedDrafts = ({})
+    body.client.serverDrafts = ({})
     TestHost.setPresentation("window")
     TestHost.show(true)
     snapshot([session("one", "First chat", null)])
@@ -151,6 +156,10 @@ TestCase {
   // The listener owns drafts; this fake transport has no listener, so tests
   // set or clear a draft the way the listener reports it to every view.
   function listenerDraft(id, text) {
+    // A listener change that follows every earlier write of this UI (which
+    // this transport never confirms).
+    delete body.client.draftEditsInFlight[id]
+    delete body.client.unsyncedDrafts[id]
     body.client.receive({type: "draft", id: id, text: text, source: "", sequence: 0})
   }
   // An edit that is longer than the page may edit (twice the 8000-unit Send
@@ -246,6 +255,33 @@ TestCase {
     compare(view.exportDraft("two").text, "for two")
     listenerDraft("two", "")
     view.clearDraft("two")
+  }
+
+  // Send sends exactly the page's text even when another editor emptied the
+  // host draft meanwhile (admission is separate from the host text); a draft
+  // changed after that send is not cleared by its confirmation.
+  function test_ba_page_send_uses_its_own_text_whatever_the_host_holds() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "page text to send")
+    tryCompare(composerOf(view), "text", "page text to send")
+    listenerDraft("one", "")
+    tryCompare(composerOf(view), "text", "")
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.send('one', 0, 'page text to send',"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    const sends = fakeBackend.sent.filter(message => message.action === "send-agent")
+    compare(sends.length, 1)
+    compare(sends[0].text, "page text to send")
+    // Typing continues before the confirmation: the newer draft stays.
+    composerOf(view).text = "typed after sending"
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryVerify(function() { return view.pendingSubmission === null })
+    compare(composerOf(view).text, "typed after sending")
+    composerOf(view).text = ""
   }
 
   // The trusted page reports composer focus for voice routing; focusing the

@@ -68,6 +68,12 @@ TestCase {
     body.destroy()
   }
   function init() {
+    // Each test starts with a fresh listener draft map: no writes in flight
+    // or unconfirmed from earlier tests (this transport never confirms).
+    body.client.ownDraftEdits = ({})
+    body.client.draftEditsInFlight = ({})
+    body.client.unsyncedDrafts = ({})
+    body.client.serverDrafts = ({})
     TestHost.setPresentation("window")
     TestHost.show(true)
     snapshot([session("one", "First chat"), session("two", "Second chat")])
@@ -536,6 +542,17 @@ TestCase {
   function draftWrites() {
     return fakeBackend.sent.filter(message => message.action === "draft-set")
   }
+  // The fake transport has no listener: confirm a sent write the way the
+  // listener does (the accepted change, with the writer's edit ID).
+  property int listenerSequence: 100
+  function confirmWrite(write) {
+    testCase.listenerSequence++
+    body.client.receive({type: "draft", id: write.id, text: write.text, source: "",
+      sequence: testCase.listenerSequence, editId: write.editId})
+  }
+  function confirmAllWrites() {
+    for (const write of draftWrites()) confirmWrite(write)
+  }
 
   // Showing, switching and reloading drafts only read them; typing writes
   // to the conversation it was typed for; another editor's change is shown
@@ -558,6 +575,7 @@ TestCase {
     compare(writes[0].id, "one")
     compare(writes[0].text, "One typed")
     verify(typeof writes[0].editId === "string" && writes[0].editId !== "")
+    confirmAllWrites()
 
     // Switching shows the other conversation's listener draft and writes nothing.
     fakeBackend.sent = []
@@ -575,10 +593,13 @@ TestCase {
     compare(draftWrites().length, 0, "a received change is not an edit")
 
     // This UI's own edit coming back late never undoes newer typing.
+    fakeBackend.sent = []
     composer.text = "Newest typing"
-    const ownEdit = draftWrites().pop().editId
     composer.text = "Newest typing!"
-    body.client.receive({type: "draft", id: "one", text: "Newest typing", source: "", sequence: 6, editId: ownEdit})
+    const pending = draftWrites()
+    confirmWrite(pending[0])
+    compare(composer.text, "Newest typing!")
+    confirmWrite(pending[1])
     compare(composer.text, "Newest typing!")
 
     // A change for a conversation not shown updates what it shows later.
@@ -613,6 +634,76 @@ TestCase {
     compare(writes.length, 1)
     compare([writes[0].id, writes[0].text], ["one", "Typed while offline"])
     composer.text = ""
+  }
+
+  // The display converges on the listener's order: own old edit, another
+  // editor's change, own newer edit -> the newer own text; another editor's
+  // change after ours -> theirs. No write is ever refused for its order.
+  function test_listener_drafts_converge_on_the_listener_order() {
+    const view = mainView()
+    const composer = composerOf(view)
+    fakeBackend.sent = []
+    composer.text = "own old"
+    composer.text = "own new"
+    const writes = draftWrites()
+    compare(writes.length, 2)
+    confirmWrite(writes[0])
+    body.client.receive({type: "draft", id: "one", text: "foreign", source: "", sequence: 200})
+    compare(composer.text, "own new", "our newer edit is still on its way")
+    confirmWrite(writes[1])
+    compare(composer.text, "own new")
+    compare(body.client.serverDrafts["one"], "own new")
+    // Another editor's change after ours: everyone shows it.
+    body.client.receive({type: "draft", id: "one", text: "foreign later", source: "", sequence: 201})
+    compare(composer.text, "foreign later")
+    compare(body.client.serverDrafts["one"], "foreign later")
+    composer.text = ""
+    confirmAllWrites()
+  }
+
+  // A reconnect snapshot without a conversation means its draft is now
+  // empty: shown or not, the old text does not come back; reading writes
+  // nothing.
+  function test_listener_drafts_empty_snapshot_clears_shown_and_hidden() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: [
+      {id: "one", text: "One before", source: "", sequence: 1}, {id: "two", text: "Two before", source: "Helper", sequence: 1}]})
+    tryCompare(composer, "text", "One before")
+    fakeBackend.sent = []
+    body.client.receive({type: "draft-snapshot", sequence: 9, drafts: []})
+    compare(composer.text, "")
+    compare(draftWrites().length, 0, "reading a snapshot writes nothing")
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    compare(composer.text, "")
+    compare(view.exportDraft("two").source, undefined)
+    body.client.sessions.select("one")
+    tryCompare(composer, "text", "")
+    compare(draftWrites().length, 0)
+  }
+
+  // A refused write keeps the text on screen as not saved; the next
+  // snapshot keeps it and writes it again instead of the listener's copy.
+  function test_listener_drafts_refused_write_stays_unsaved() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: [{id: "one", text: "saved", source: "", sequence: 1}]})
+    tryCompare(composer, "text", "saved")
+    fakeBackend.sent = []
+    composer.text = "refused text"
+    const write = draftWrites().pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: write.editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    verify(body.client.error.includes("not saved"))
+    compare(composer.text, "refused text")
+    body.client.error = ""
+    fakeBackend.sent = []
+    body.client.receive({type: "draft-snapshot", sequence: 3, drafts: [{id: "one", text: "saved", source: "", sequence: 1}]})
+    compare(composer.text, "refused text")
+    compare(draftWrites().map(entry => entry.text), ["refused text"])
+    composer.text = ""
+    confirmAllWrites()
   }
 
   function test_at_most_eight_windows() {

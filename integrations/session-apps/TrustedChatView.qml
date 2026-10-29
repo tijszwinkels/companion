@@ -342,7 +342,13 @@ Item {
     // unapplied edit can never result in older text being sent.
     function send(sessionId, base, text) {
       const view = root.view
-      if (!sameSession(sessionId) || !view.canSend || typeof text !== "string" || text.trim() === ""
+      // Admission (connection, no send/choice awaiting its answer, no words
+      // being recorded) is separate from the host's current text: the text
+      // sent is the page's own, checked here, whatever another editor did to
+      // the draft meanwhile.
+      const admitted = view.online && view.session !== null && view.pendingSubmission === null
+        && view.pendingChoice === null && !view.recordingBusy
+      if (!sameSession(sessionId) || !admitted || typeof text !== "string" || text.trim() === ""
           || text.length > view.maximumMessageLength || view.displayedRefusedDraft !== "") {
         return JSON.stringify({accepted: false})
       }

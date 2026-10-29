@@ -68,12 +68,20 @@ Item {
   // views that show a conversation. Updated by its own writes at once and by
   // the listener's changes. Never sent anywhere else.
   property var serverDrafts: ({})
-  // Edit IDs this UI sent and whose change it has not seen come back yet.
+  // Own edits sent and not yet confirmed by the listener's change:
+  // edit ID -> {id, text}, and per conversation how many are in flight.
+  // While any is in flight, other editors' changes for that conversation are
+  // not shown: ours were sent before we saw theirs, so the listener receives
+  // ours after theirs and ours win. Once none is in flight the display
+  // follows the listener's latest change (its order, never a refusal).
   property var ownDraftEdits: ({})
+  property var draftEditsInFlight: ({})
   property int draftEditCounter: 0
-  // Text typed while the listener could not be reached (conversation id ->
-  // text). It stays on screen and is written again once connected, so the
-  // listener's older copy in the next snapshot never replaces it.
+  // Text not (yet) known to be saved: typed while disconnected, sent but not
+  // confirmed, or refused (conversation id -> text). It stays on screen and,
+  // after reconnecting, is written again instead of being replaced by the
+  // listener's older copy. Writing the same whole text again is harmless under
+  // last-write-wins; it never sends a message.
   property var unsyncedDrafts: ({})
 
   // A view's edit, for the conversation it was typed for. The last write the
@@ -82,20 +90,31 @@ Item {
     if (typeof id !== "string" || id === "" || typeof text !== "string") return
     root.draftEditCounter++
     const editId = "edit-" + root.draftEditCounter
-    root.ownDraftEdits[editId] = true
     if (text === "") delete root.serverDrafts[id]
     else root.serverDrafts[id] = text
-    const request = {action: "draft-set", id: id, text: text, editId: editId}
+    root.unsyncedDrafts[id] = text
+    // `requestId` correlates a refusal with this edit.
+    const request = {action: "draft-set", id: id, text: text, editId: editId, requestId: editId}
     // Recorded words may pass the editing bound; the listener checks that
     // this panel really records into that conversation.
     if (recording === true) request.recording = true
     if (root.send(request)) {
-      delete root.unsyncedDrafts[id]
-    } else {
-      delete root.ownDraftEdits[editId]
-      root.unsyncedDrafts[id] = text
+      root.ownDraftEdits[editId] = {id: id, text: text}
+      root.draftEditsInFlight[id] = (root.draftEditsInFlight[id] || 0) + 1
     }
   }
+
+  // An own edit is settled: confirmed by its change, or refused.
+  function settleDraftEdit(editId) {
+    const edit = root.ownDraftEdits[editId]
+    if (!edit) return null
+    delete root.ownDraftEdits[editId]
+    const remaining = (root.draftEditsInFlight[edit.id] || 1) - 1
+    if (remaining > 0) root.draftEditsInFlight[edit.id] = remaining
+    else delete root.draftEditsInFlight[edit.id]
+    return edit
+  }
+
   // True when the panel has the built-in browser (standalone native window).
   // Only then does the listener route companion_browser_open here.
   property bool browserHost: false
@@ -327,8 +346,12 @@ Item {
     }
     // The listener refused a draft write (e.g. longer than may be edited):
     // the text stays on screen, and the person is told it is not saved.
+    // The listener refused a draft write (e.g. longer than may be edited):
+    // the text stays on screen as not saved (unsyncedDrafts keeps it), and
+    // the person is told.
     if (message.action === "draft-set" && (message.type === "error"
         || (message.type === "result" && message.result && message.result.accepted === false))) {
+      root.settleDraftEdit(message.requestId)
       root.error = "Your text is not saved: " + (message.type === "error" ? message.message : message.result.reason)
       root.errorAction = "draft-set"
       return
@@ -376,37 +399,50 @@ Item {
     } else if (message.type === "agent-restored") {
       sessions.restore(message.session, message.reveal)
     } else if (message.type === "draft-snapshot") {
-      // Reading on (re)connect: every nonempty draft, written nowhere.
+      // Reading on (re)connect: the listener's whole map. A conversation it
+      // does not list has no draft there (cleared elsewhere meanwhile).
       const drafts = {}
+      const sources = {}
       for (const entry of message.drafts || []) {
-        if (entry && typeof entry.id === "string" && typeof entry.text === "string") drafts[entry.id] = entry.text
+        if (entry && typeof entry.id === "string" && typeof entry.text === "string") {
+          drafts[entry.id] = entry.text
+          sources[entry.id] = typeof entry.source === "string" ? entry.source : ""
+        }
       }
-      // Text typed while disconnected is newer than the listener's copy:
-      // keep it on screen and write it now (the last write received wins).
+      // Edits in flight before the reconnect are uncertain: their text stays
+      // in unsyncedDrafts. Text not known to be saved is kept on screen and
+      // written again (it becomes the last write); everything else follows
+      // the listener, including drafts that are now empty.
+      root.ownDraftEdits = ({})
+      root.draftEditsInFlight = ({})
       const unsynced = root.unsyncedDrafts
-      root.unsyncedDrafts = ({})
+      const previous = root.serverDrafts
       for (const id of Object.keys(unsynced)) {
         if (unsynced[id] === "") delete drafts[id]
         else drafts[id] = unsynced[id]
       }
       root.serverDrafts = drafts
-      for (const id of Object.keys(drafts)) {
-        if (unsynced[id] === undefined) root.draftChanged(id, drafts[id], "")
+      const ids = Object.keys(Object.assign({}, previous, drafts))
+      for (const id of ids) {
+        if (unsynced[id] === undefined) root.draftChanged(id, drafts[id] || "", sources[id] || "")
       }
       for (const id of Object.keys(unsynced)) root.writeDraft(id, unsynced[id])
     } else if (message.type === "agent-draft-focus") {
       if (typeof message.id === "string") root.draftFocusRequested(message.id)
     } else if (message.type === "draft") {
       if (typeof message.id !== "string" || typeof message.text !== "string") return
-      // Our own edit coming back: already shown here, and a newer local edit
-      // may follow it, so applying it again could undo typing.
-      if (message.editId && root.ownDraftEdits[message.editId]) {
-        delete root.ownDraftEdits[message.editId]
-        return
-      }
-      if (message.text === "") delete root.serverDrafts[message.id]
-      else root.serverDrafts[message.id] = message.text
-      root.draftChanged(message.id, message.text, message.source || "")
+      const id = message.id
+      // Our own edit confirmed: that text is saved.
+      const own = message.editId ? root.settleDraftEdit(message.editId) : null
+      if (own && root.unsyncedDrafts[id] === message.text) delete root.unsyncedDrafts[id]
+      // Newer own edits still in flight: they arrive after this change, so
+      // the display keeps the local text.
+      if ((root.draftEditsInFlight[id] || 0) > 0) return
+      // Otherwise the display follows the listener's latest change (own or
+      // another editor's), so every editor converges on the same text.
+      if (message.text === "") delete root.serverDrafts[id]
+      else root.serverDrafts[id] = message.text
+      root.draftChanged(id, message.text, message.source || "")
     } else if (message.type === "agent-draft") {
       root.draftRequested(message)
     } else if (message.type === "recording-append") {
