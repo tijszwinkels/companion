@@ -521,8 +521,21 @@ TestCase {
   function test_k_first_application_waits_while_send_is_pending() {
     const chat = freshChat("sending")
     const view = mainView()
+    // Native draft acceptance precedes the page's edit acknowledgement/render.
+    // Hold that acknowledgement to prove the former is not a Send-ready fence:
+    // the page intentionally disables Send until the exact edit is confirmed.
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
     typeInto(chat, "on its way")
     tryCompare(composerOf(view), "text", "on its way")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    compare(clickButton(chat, "Send"), false)
+    compare(view.pendingSubmission, null)
+    releaseHeld(chat)
+    // Restore the bridge before later tests call its optional-callback overload.
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "page has acknowledged the edit and enabled Send")
     verify(clickButton(chat, "Send"))
     tryVerify(function() { return view.pendingSubmission !== null })
     view.releaseComposerFocus()

@@ -254,11 +254,7 @@ async function sendChatOperation(message) {
     if (prepare) {
       // Obtain a fresh observed grant, not an app-supplied field or a cached
       // optimistic acknowledgement. The backend still rechecks on admission.
-      const response = await fetch(api + '/state', { signal: abort.signal });
-      if (!response.ok) {
-        throw Error('Sending permission is unavailable');
-      }
-      const state = await response.json();
+      const state = await fetchState({ signal: abort.signal });
       const grant = state.chatSend;
       if (
         document.hidden ||
@@ -368,6 +364,30 @@ function withdrawChat(error = 'Chat reading is not currently permitted') {
     chatFlight.abort.abort();
   }
   publishChat(false, error);
+}
+
+// Every authoritative state observation has the same read-delivery effects,
+// including explicit reads and send preparation (not just interval refresh).
+// Transport/status/parse failures withdraw old delivery. Sender quota/consent
+// refusals happen AFTER this helper and must not revoke independent reading.
+async function fetchState(options) {
+  try {
+    const response = await fetch(api + '/state', options);
+    const snapshot = await response.json();
+    if (!response.ok) {
+      throw Error(typeof snapshot?.error === 'string' ? snapshot.error : 'Widget is unavailable');
+    }
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw Error('Invalid application state');
+    }
+    observeChatAccess(snapshot);
+    return snapshot;
+  } catch (error) {
+    if (application) {
+      withdrawChat('Application connection is unavailable');
+    }
+    throw error;
+  }
 }
 
 function observeChatAccess(snapshot) {
@@ -530,15 +550,8 @@ function readState(id) {
       reply(reader, value, error);
     }
   };
-  void fetch(api + '/state')
-    .then(async (response) => {
-      const value = await response.json();
-      if (!response.ok) {
-        throw Error(value.error);
-      }
-      observeChatAccess(value);
-      return { revision: value.revision, data: value.props };
-    })
+  void fetchState()
+    .then((value) => ({ revision: value.revision, data: value.props }))
     .then(
       (value) => settle(value, ''),
       (error) => settle(null, error.message),
@@ -577,12 +590,7 @@ async function refresh() {
   }
   refreshing = true;
   try {
-    const response = await fetch(api + '/state');
-    if (!response.ok) {
-      throw Error('Widget is unavailable');
-    }
-    const snapshot = await response.json();
-    observeChatAccess(snapshot);
+    const snapshot = await fetchState();
     if (application && snapshot.version !== application.version) {
       // The application's code was replaced. Load the new document; the
       // capability URL stays the same and state lives in the service.

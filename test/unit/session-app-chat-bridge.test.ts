@@ -32,7 +32,7 @@ function host(application = true) {
   const requests: {
     url: string;
     body: any;
-    resolve: (value: unknown, status?: number) => void;
+    resolve: (value: unknown, status?: number, malformed?: boolean) => void;
     reject: (error: Error) => void;
   }[] = [];
   const child = {
@@ -90,10 +90,13 @@ function host(application = true) {
           url,
           body: init?.body ? JSON.parse(init.body) : null,
           reject,
-          resolve(value, status = 200) {
+          resolve(value, status = 200, malformed = false) {
             resolve({
               ok: status === 200,
-              json: async () => value,
+              json: async () => {
+                if (malformed) throw new SyntaxError('Synthetic invalid JSON');
+                return value;
+              },
               text: async () => JSON.stringify(value),
             });
           },
@@ -417,4 +420,100 @@ test('sender preparation/send/probes share the existing eight-operation budget a
   await settle();
   view.post({ type: 'chat-prepare-send', id: 'after-timeout' });
   assert.equal(view.requests.length, 9);
+});
+
+// All paths observing /state must invalidate the same cached/pending delivery,
+// not just the periodic refresh. This also retains the reviewer's three races.
+for (const operation of ['prepare', 'explicit', 'refresh'] as const) {
+  function observe(view: ReturnType<typeof host>) {
+    if (operation === 'refresh') view.tick();
+    else
+      view.post({
+        type: operation === 'prepare' ? 'chat-prepare-send' : 'state-read',
+        id: 'observation',
+      });
+  }
+  for (const outcome of [
+    'revoked',
+    'replaced',
+    'network',
+    'status',
+    'parse',
+    'invalid-state',
+  ] as const) {
+    test(`${operation} state ${outcome} withdraws cached/subscribed and held chat delivery`, async () => {
+      for (const pending of [true, false]) {
+        const view = host();
+        view.post({ type: 'chat-watch', watching: true });
+        await view.access(true);
+        view.post({ type: 'chat-read', id: 'history' });
+        const held = view.requests.at(-1)!;
+        if (!pending) {
+          held.resolve(snapshot());
+          await settle();
+          assert.ok(view.updates().at(-1).snapshot);
+        }
+        observe(view);
+        const state = view.requests.at(-1)!;
+        if (outcome === 'network') state.reject(Error('Synthetic connection failure'));
+        else if (outcome === 'status') state.resolve({ error: 'Unavailable' }, 503);
+        else if (outcome === 'parse') state.resolve(null, 200, true);
+        else if (outcome === 'invalid-state') state.resolve(null);
+        else
+          state.resolve({
+            version: outcome === 'replaced' ? 8 : 7,
+            revision: 1,
+            props: {},
+            chatReadAllowed: outcome === 'replaced',
+            chatSend: { allowed: true, remaining: 5, grantId: sendHandle.grantId },
+          });
+        await settle();
+        if (pending) {
+          held.resolve(snapshot());
+          await settle();
+          assert.ok(view.replies().find((reply) => reply.id === 'history').error);
+          assert.ok(!view.replies().some((reply) => reply.result?.messages));
+        }
+        assert.equal(view.updates().at(-1).available, false);
+        assert.equal(view.updates().at(-1).snapshot, null);
+        const count = view.requests.length;
+        view.post({ type: 'chat-read', id: 'after-withdrawal' });
+        assert.ok(view.replies().at(-1).error);
+        assert.equal(
+          view.requests.length,
+          count,
+          'No old cache or new source request after withdrawal',
+        );
+        // Only a fresh permission observation lets the app read again.
+        await view.access(true);
+        view.advance();
+        view.post({ type: 'chat-read', id: 'fresh' });
+        view.requests.at(-1)!.resolve(snapshot('b'));
+        await settle();
+        assert.equal(view.replies().at(-1).result.revision, 'b'.repeat(64));
+      }
+    });
+  }
+}
+
+test('sender preparation refusals do not withdraw independently granted reading', async () => {
+  for (const grant of [
+    undefined,
+    { allowed: false, remaining: 0, grantId: sendHandle.grantId },
+    { allowed: true, remaining: 0, grantId: sendHandle.grantId },
+  ]) {
+    const view = host();
+    view.post({ type: 'chat-watch', watching: true });
+    await view.access(true);
+    view.post({ type: 'chat-read', id: 'held' });
+    const held = view.requests.at(-1)!;
+    view.post({ type: 'chat-prepare-send', id: 'prepare' });
+    view.requests.at(-1)!.resolve({ version: 7, chatReadAllowed: true, chatSend: grant });
+    await settle();
+    assert.ok(view.replies().find((reply) => reply.id === 'prepare').error);
+    held.resolve(snapshot());
+    await settle();
+    assert.equal(view.replies().find((reply) => reply.id === 'held').result.messages.length, 1);
+    assert.equal(view.updates().at(-1).available, true);
+  }
 });
