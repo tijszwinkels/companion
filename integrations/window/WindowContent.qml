@@ -333,7 +333,7 @@ Item {
     // accepted the resulting draft (see Client.answerRecordingAppendWhenSaved).
     onRecordingAppendRequested: message => client.answerRecordingAppendWhenSaved(message.requestId,
       popoutViews.isPopped(message.id) ? popoutViews.ownerView(message.id).appendRecording(message) : panel.appendRecording(message),
-      message.id)
+      message.id, message.applied === true)
     onRecordingFinished: message => {
       for (const view of popoutViews.allViews()) view.recordingFinished(message)
     }

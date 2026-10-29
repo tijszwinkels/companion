@@ -739,6 +739,11 @@ Item {
     if (!own || own.id !== request.id || own.recordingId === "" || own.recordingId !== request.recordingId) {
       return {outcome: "unavailable", reason: "This panel is not recording into that conversation."}
     }
+    // A listener that applies recorded words itself (`applied`) sends them as
+    // an ordinary draft change; the panel only acknowledges the chunk.
+    if (request.applied === true) {
+      return {outcome: "appended", length: typeof request.length === "number" ? request.length : 0}
+    }
     const displayed = root.displayedId === request.id
     const current = displayed ? composer.text : (root.drafts[request.id] || "")
     const separator = current === "" || /\s$/.test(current) ? "" : " "

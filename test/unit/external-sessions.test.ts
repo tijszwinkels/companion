@@ -167,6 +167,41 @@ test('real desktop draft routing keeps external source distinct and confirms con
       ['inserted\n\nappended', 'external (unverified) · Rowan'],
     ],
   );
+  // While this editor reports a send from that conversation awaiting its
+  // reply, agent drafts are refused (also with --append); afterwards the
+  // append works again.
+  desktop.send({
+    action: 'panel-state',
+    id: '',
+    composerFocused: false,
+    draftHost: true,
+    pendingSend: id,
+  });
+  await desktop.reply('panel-state');
+  const pending = await f.cli([
+    'draft',
+    '--label',
+    'Rowan',
+    '--id',
+    id,
+    '--text',
+    'during send',
+    '--append',
+  ]);
+  assert.equal(pending.code, 4);
+  desktop.send({ action: 'panel-state', id: '', composerFocused: false, draftHost: true });
+  await desktop.reply('panel-state');
+  const after = await f.cli([
+    'draft',
+    '--label',
+    'Rowan',
+    '--id',
+    id,
+    '--text',
+    'after send',
+    '--append',
+  ]);
+  assert.equal(after.code, 0);
   assert.equal(f.prompts.length, 1);
 });
 

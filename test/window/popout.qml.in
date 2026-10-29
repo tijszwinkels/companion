@@ -761,6 +761,17 @@ TestCase {
     compare(composer.text, "refused text")
     body.client.error = ""
     verify(view.displayedUnsaved.includes("not saved"))
+    // Another editor's change does not replace the unsaved text on screen.
+    fakeBackend.sent = []
+    body.client.receive({type: "draft", id: "one", text: "foreign meanwhile", source: "", sequence: 50})
+    compare(composer.text, "refused text")
+    compare(body.client.serverDrafts["one"], "refused text")
+    compare(draftWrites().length, 0)
+    findChild(view, "unsavedDraftSave").triggered()
+    compare(draftWrites().map(entry => entry.text), ["refused text"], "Save writes the shown text")
+    const saved = draftWrites().pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: saved.editId, result: {accepted: false, reason: "again"}})
+    body.client.error = ""
     fakeBackend.sent = []
     body.client.receive({type: "draft-snapshot", sequence: 3, drafts: [{id: "one", text: "saved", source: "", sequence: 1}]})
     compare(composer.text, "refused text")
@@ -908,6 +919,16 @@ TestCase {
     confirmWrite(recorded)
     const appended = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
     compare([appended.requestId, appended.outcome, appended.length], ["a1", "appended", "Before spoken words".length])
+
+    // A listener that applied the chunk itself: the panel only acknowledges,
+    // the text arrives as an ordinary draft change.
+    fakeBackend.sent = []
+    fakeBackend.received({type: "recording-append", requestId: "a0", id: "two", recordingId: "rec-1", text: "x",
+      applied: true, length: 42})
+    compare(composerOf(window.view).text, "Before spoken words")
+    compare(draftWrites().length, 0)
+    const applied = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
+    compare([applied.requestId, applied.outcome, applied.length], ["a0", "appended", 42])
 
     // A chunk the listener refuses is reported as not appended.
     fakeBackend.received({type: "recording-append", requestId: "a2", id: "two", recordingId: "rec-1", text: "more"})

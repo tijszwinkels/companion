@@ -286,6 +286,10 @@ export class DesktopRuntime {
   // received write wins). Read and written only by trusted desktop editors,
   // the draft hosts; never sent to remote panels or applications.
   private readonly drafts = new DraftStore((id) => this.knownConversation(id));
+  // Per desktop editor: the conversation whose send awaits its reply there
+  // (reported in panel-state). Agent drafts for it are refused meanwhile, as
+  // the editor itself did when it owned drafts.
+  private readonly pendingDraftSends = new Map<number, string>();
   private draftReportSequence = 0;
   // Connections that declared the remote role, keyed by server client ID.
   private readonly remoteClients = new Map<number, RemoteClient>();
@@ -364,6 +368,7 @@ export class DesktopRuntime {
         }
         this.viewActionKeys.delete(clientId);
         this.draftHosts.delete(clientId);
+        this.pendingDraftSends.delete(clientId);
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
         this.browserHosts.delete(clientId);
         this.abandonBrowserOpens(clientId, 'The panel disconnected before confirming.');
@@ -930,6 +935,21 @@ export class DesktopRuntime {
       return Promise.resolve({ outcome: 'offline', reason: 'The recording has ended.' });
     }
 
+    // The chunk is added to the listener's draft in one step: read, a space
+    // if needed, append. An agent's or another editor's change made just
+    // before is kept, never replaced by an older copy. A long final chunk is
+    // kept whole up to the storage ceiling, or refused whole.
+    const current = this.drafts.read(request.sessionId).text;
+    const separator = current === '' || /\s$/.test(current) ? '' : ' ';
+    const applied = this.drafts.append(request.sessionId, separator + request.text, {
+      kind: 'recording',
+      clientId: request.clientId,
+    });
+    if (!applied.accepted) {
+      return Promise.resolve({ outcome: 'unavailable', reason: applied.reason });
+    }
+    const length = this.drafts.read(request.sessionId).text.length;
+
     const requestId = randomUUID();
     return new Promise((resolve) => {
       const finish = (result: DictationAppendResult) => {
@@ -954,9 +974,15 @@ export class DesktopRuntime {
           reason: 'The recording ended before the panel confirmed the transcript.',
         });
 
-      this.pendingRecordingAppends.set(requestId, { clientId: request.clientId, finish });
+      this.pendingRecordingAppends.set(requestId, {
+        clientId: request.clientId,
+        finish: (result) =>
+          finish(result.outcome === 'appended' ? { outcome: 'appended', length } : result),
+      });
       signal.addEventListener('abort', cancelled, { once: true });
 
+      // The owning panel only acknowledges (its recording bookkeeping); the
+      // text reaches every editor as an ordinary draft change.
       const sent = this.server.publishTo(request.clientId, {
         type: 'recording-append',
         requestId,
@@ -964,6 +990,8 @@ export class DesktopRuntime {
         id: request.sessionId,
         sequence: request.sequence,
         text: request.text,
+        applied: true,
+        length,
       });
       if (!sent) {
         finish({ outcome: 'offline', reason: 'The panel disconnected.' });
@@ -1531,6 +1559,15 @@ export class DesktopRuntime {
     const clientId = this.draftClient();
     if (clientId === undefined || signal.aborted) {
       return Promise.resolve({ outcome: 'offline', reason: '' });
+    }
+
+    for (const pendingId of this.pendingDraftSends.values()) {
+      if (pendingId === request.sessionId) {
+        return Promise.resolve({
+          outcome: 'conflict',
+          reason: "A message from that conversation's input is still being sent.",
+        });
+      }
     }
 
     let source = request.source.title || 'another conversation';
@@ -2275,6 +2312,11 @@ export class DesktopRuntime {
         this.navigation = { clientId, token: request.navigationToken };
       } else if (this.navigation?.clientId === clientId) {
         this.navigation = undefined;
+      }
+      if (typeof request.pendingSend === 'string' && request.pendingSend !== '') {
+        this.pendingDraftSends.set(clientId, request.pendingSend.slice(0, 200));
+      } else {
+        this.pendingDraftSends.delete(clientId);
       }
       // Only UIs that implement agent-draft advertise it; older ones omit it.
       if (request.draftHost === true) {

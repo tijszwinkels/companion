@@ -233,7 +233,10 @@ Item {
       keyboardFocused: root.keyboardFocused,
       visible: root.popoutHost ? root.anyViewVisible : root.panelVisible,
       navigationToken: sessions.navigationToken,
-      draftHost: true, browserHost: root.browserHost, incrementalSessions: true}
+      draftHost: true, browserHost: root.browserHost, incrementalSessions: true,
+      // A send from this conversation's text box awaits its reply: agent
+      // drafts for it are refused meanwhile (the listener checks this).
+      pendingSend: root.pendingInput ? root.pendingInput.id : ""}
     if (root.popoutHost) {
       report.popoutHost = true
       report.rail = root.rail
@@ -292,8 +295,9 @@ Item {
   // the chunk as unconfirmed. Edit ID -> {requestId, length}.
   property var recordingAcks: ({})
 
-  function answerRecordingAppendWhenSaved(requestId, result, id) {
-    if (result.outcome !== "appended") {
+  function answerRecordingAppendWhenSaved(requestId, result, id, applied) {
+    // Applied by the listener itself: nothing to wait for.
+    if (applied === true || result.outcome !== "appended") {
       root.answerRecordingAppend(requestId, result)
       return
     }
@@ -325,6 +329,7 @@ Item {
   function finishInput(error) {
     const pending = root.pendingInput
     root.pendingInput = null
+    if (pending) Qt.callLater(root.reportPanel)
     if (pending) root.inputFinished(pending.id, pending.text, error)
   }
 
@@ -357,6 +362,9 @@ Item {
       return
     }
     root.pendingInput = {id: id, text: text}
+    // Tell the listener before the send itself, so an agent draft it handles
+    // after this point already sees the pending send.
+    root.reportPanel()
     if (!root.send({action: "send-agent", id: id, text: text})) {
       root.finishInput("Companion is disconnected; your draft is retained.")
     }
@@ -537,6 +545,9 @@ Item {
       // Newer own edits still in flight: they arrive after this change, so
       // the display keeps the local text.
       if ((root.draftEditsInFlight[id] || 0) > 0) return
+      // Unsaved text stays shown (and is what Save writes) until the person
+      // saves or discards it; Discard then shows this latest listener text.
+      if (root.unsavedDrafts[id] !== undefined) return
       // Otherwise the display follows the listener's latest change (own or
       // another editor's), so every editor converges on the same text.
       if (message.text === "") delete root.serverDrafts[id]
