@@ -46,6 +46,8 @@ export interface ChatStatus {
   sessionStatus?: string;
   /** The conversation's failure message, shown below the transcript. */
   sessionError?: string;
+  /** Why the shown text is not saved in the listener, or '' (it is). */
+  draftUnsaved?: string;
   running?: boolean;
   online?: boolean;
   paused?: boolean;
@@ -156,6 +158,8 @@ export interface NativeBridge {
   stopRun(sessionId: string, runId: string, callback?: (answer: string) => void): void;
   stop(sessionId: string, callback?: (answer: string) => void): void;
   closeSession(sessionId: string, callback?: (answer: string) => void): void;
+  saveDraft(sessionId: string, callback?: (answer: string) => void): void;
+  discardUnsavedDraft(sessionId: string, callback?: (answer: string) => void): void;
   toggleRecording(sessionId: string, callback?: (answer: string) => void): void;
   history(sessionId: string, request: 'older' | 'newer' | 'latest' | 'retry' | 'refresh'): void;
   following(sessionId: string, atEnd: boolean): void;

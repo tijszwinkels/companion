@@ -187,6 +187,8 @@ Item {
       title: session.title || "",
       sessionStatus: session.status || "",
       sessionError: typeof session.error === "string" ? session.error.slice(0, 2000) : "",
+      // Why the shown text is not saved in the listener, or "" (it is).
+      draftUnsaved: view.displayedUnsaved,
       running: view.running === true,
       online: view.online,
       paused: view.paused,
@@ -264,7 +266,7 @@ Item {
     root.view.voiceStatus, root.view.voiceTarget, root.view.online, root.view.paused, root.view.hasOlder,
     root.view.historyPending, root.view.historyError, root.view.historyChanged, root.view.atLatest,
     root.view.displayedDraftSource, root.view.displayedRecordingNotice, String(root.view.foreground),
-    String(root.view.background), root.view.textScale]) : ""
+    String(root.view.background), root.view.textScale, root.view.displayedUnsaved]) : ""
   onStatusWatchChanged: root.schedule(false)
 
   // The page's only native interface. Arguments come from page JavaScript:
@@ -411,9 +413,25 @@ Item {
       return JSON.stringify({accepted: true})
     }
 
+    // Save writes the shown, unsaved text again; Discard shows the
+    // listener's version (Client.saveDraft / discardUnsavedDraft).
+    function saveDraft(sessionId) {
+      if (!sameSession(sessionId) || root.view.displayedUnsaved === "") return JSON.stringify({accepted: false})
+      root.view.draftSaveRequested(sessionId)
+      return JSON.stringify({accepted: true})
+    }
+
+    function discardUnsavedDraft(sessionId) {
+      if (!sameSession(sessionId) || root.view.displayedUnsaved === "") return JSON.stringify({accepted: false})
+      root.view.draftDiscardRequested(sessionId)
+      return JSON.stringify({accepted: true})
+    }
+
     function closeSession(sessionId) {
       const view = root.view
-      if (!sameSession(sessionId) || !view.online || view.recordingBusy) return JSON.stringify({accepted: false})
+      if (!sameSession(sessionId) || !view.online || view.recordingBusy || view.displayedUnsaved !== "") {
+        return JSON.stringify({accepted: false})
+      }
       view.dismissRequested(sessionId)
       return JSON.stringify({accepted: true})
     }

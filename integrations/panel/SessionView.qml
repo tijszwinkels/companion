@@ -213,6 +213,14 @@ Item {
   property var sharedDrafts: null
   property bool loadingDraft: false
   signal draftWritten(string id, string text, bool recording)
+  // Conversations whose shown text is not saved in the listener, with the
+  // reason (Client.unsavedDrafts). Save writes it again; Discard shows the
+  // listener's version. Such a conversation does not move to another view
+  // or close until one of them is chosen.
+  property var unsavedDrafts: ({})
+  readonly property string displayedUnsaved: root.unsavedDrafts[root.displayedId] || ""
+  signal draftSaveRequested(string id)
+  signal draftDiscardRequested(string id)
   function recordingInto(id) { return root.ownRecording !== null && root.ownRecording.id === id }
   // Conversation id -> text typed in the HTML composer that could not be
   // applied to the draft (it changed meanwhile, was too long, or words were
@@ -830,6 +838,9 @@ Item {
     }
     if (root.pageHeldDrafts[id] === true) {
       return "Typed text that could not be kept is still shown in this conversation's chat. Copy, use or discard it first."
+    }
+    if (root.unsavedDrafts[id] !== undefined) {
+      return "This conversation's text is not saved yet. Save or discard it first."
     }
     if (root.refusedDrafts[id] !== undefined) {
       return "Some typed text could not be added to this conversation's draft. Use, copy or dismiss it first."
@@ -1807,6 +1818,45 @@ Item {
       }
     }
 
+    // Text the listener has not saved (see unsavedDrafts).
+    Column {
+      objectName: "unsavedDraft"
+      width: parent.width
+      visible: root.displayedUnsaved !== ""
+      spacing: 4 * root.unit
+      Text {
+        width: parent.width
+        text: root.displayedUnsaved
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: "#ef5350"
+        font.family: root.fontFamily
+        font.pixelSize: 11 * root.unit
+      }
+      Row {
+        spacing: 8 * root.unit
+        PanelAction {
+          objectName: "unsavedDraftSave"
+          enabled: root.online
+          text: "Save"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.draftSaveRequested(root.displayedId)
+        }
+        PanelAction {
+          objectName: "unsavedDraftDiscard"
+          text: "Discard"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.draftDiscardRequested(root.displayedId)
+        }
+      }
+    }
+
     Text {
       objectName: "agentDraftSource"
       width: parent.width
@@ -1904,7 +1954,7 @@ Item {
       }
       PanelAction {
         objectName: "dismissSession"
-        enabled: root.online && root.session !== null && !root.recordingBusy
+        enabled: root.online && root.session !== null && !root.recordingBusy && root.displayedUnsaved === ""
         text: "Close session"
         foreground: root.foreground
         selection: root.selection

@@ -352,9 +352,16 @@ Item {
     property: "sharedDrafts"
     value: client.serverDrafts
   }
+  Binding {
+    target: panel.conversationView
+    property: "unsavedDrafts"
+    value: client.unsavedDrafts
+  }
   Connections {
     target: panel.conversationView
     function onDraftWritten(id, text, recording) { client.writeDraft(id, text, recording) }
+    function onDraftSaveRequested(id) { client.saveDraft(id) }
+    function onDraftDiscardRequested(id) { client.discardUnsavedDraft(id) }
   }
 
   // Trusted native consent has its own command/reply route, never a page

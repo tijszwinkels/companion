@@ -77,12 +77,27 @@ Item {
   property var ownDraftEdits: ({})
   property var draftEditsInFlight: ({})
   property int draftEditCounter: 0
-  // Text not (yet) known to be saved: typed while disconnected, sent but not
-  // confirmed, or refused (conversation id -> text). It stays on screen and,
-  // after reconnecting, is written again instead of being replaced by the
-  // listener's older copy. Writing the same whole text again is harmless under
-  // last-write-wins; it never sends a message.
-  property var unsyncedDrafts: ({})
+  // The latest edit of each conversation this UI wrote and has not seen
+  // confirmed (conversation id -> {editId, text}). Only the confirmation of
+  // that latest edit settles it: an older edit with equal text does not.
+  property var latestDraftEdits: ({})
+  // The listener's last known text per conversation, including changes not
+  // shown because own edits were in flight; Discard returns to it.
+  property var listenerDrafts: ({})
+  // Conversations whose shown text is NOT saved in the listener, with the
+  // reason (conversation id -> reason): typed while disconnected, refused,
+  // or sent before a disconnect without a confirmation. The text stays on
+  // screen and is never written again by itself (another editor may have
+  // changed the draft meanwhile); the person saves or discards it. Replaced
+  // as a whole object on every change, so views can bind to it.
+  property var unsavedDrafts: ({})
+
+  function markUnsaved(id, reason) {
+    const next = Object.assign({}, root.unsavedDrafts)
+    if (reason) next[id] = reason
+    else delete next[id]
+    root.unsavedDrafts = next
+  }
 
   // A view's edit, for the conversation it was typed for. The last write the
   // listener receives wins; there is no base revision to be refused for.
@@ -92,7 +107,7 @@ Item {
     const editId = "edit-" + root.draftEditCounter
     if (text === "") delete root.serverDrafts[id]
     else root.serverDrafts[id] = text
-    root.unsyncedDrafts[id] = text
+    root.latestDraftEdits[id] = {editId: editId, text: text}
     // `requestId` correlates a refusal with this edit.
     const request = {action: "draft-set", id: id, text: text, editId: editId, requestId: editId}
     // Recorded words may pass the editing bound; the listener checks that
@@ -101,7 +116,27 @@ Item {
     if (root.send(request)) {
       root.ownDraftEdits[editId] = {id: id, text: text}
       root.draftEditsInFlight[id] = (root.draftEditsInFlight[id] || 0) + 1
+    } else {
+      root.markUnsaved(id, "Companion is not connected; your text is not saved yet.")
     }
+  }
+
+  // The person saves the shown (unsaved) text: an ordinary new edit.
+  function saveDraft(id) {
+    if (root.unsavedDrafts[id] === undefined) return
+    root.markUnsaved(id, "")
+    root.writeDraft(id, root.serverDrafts[id] || "", false)
+  }
+
+  // The person discards the unsaved text: the listener's version is shown.
+  function discardUnsavedDraft(id) {
+    if (root.unsavedDrafts[id] === undefined) return
+    root.markUnsaved(id, "")
+    delete root.latestDraftEdits[id]
+    const text = root.listenerDrafts[id] || ""
+    if (text === "") delete root.serverDrafts[id]
+    else root.serverDrafts[id] = text
+    root.draftChanged(id, text, "")
   }
 
   // An own edit is settled: confirmed by its change, or refused.
@@ -347,12 +382,17 @@ Item {
     // The listener refused a draft write (e.g. longer than may be edited):
     // the text stays on screen, and the person is told it is not saved.
     // The listener refused a draft write (e.g. longer than may be edited):
-    // the text stays on screen as not saved (unsyncedDrafts keeps it), and
+    // the text stays on screen as not saved (unsavedDrafts), and
     // the person is told.
     if (message.action === "draft-set" && (message.type === "error"
         || (message.type === "result" && message.result && message.result.accepted === false))) {
-      root.settleDraftEdit(message.requestId)
-      root.error = "Your text is not saved: " + (message.type === "error" ? message.message : message.result.reason)
+      const refused = root.settleDraftEdit(message.requestId)
+      const reason = "Your text is not saved: " + (message.type === "error" ? message.message : message.result.reason)
+      // The conversation's latest edit was refused: its shown text is unsaved.
+      if (refused && root.latestDraftEdits[refused.id] && root.latestDraftEdits[refused.id].editId === message.requestId) {
+        root.markUnsaved(refused.id, reason)
+      }
+      root.error = reason
       root.errorAction = "draft-set"
       return
     }
@@ -409,32 +449,56 @@ Item {
           sources[entry.id] = typeof entry.source === "string" ? entry.source : ""
         }
       }
-      // Edits in flight before the reconnect are uncertain: their text stays
-      // in unsyncedDrafts. Text not known to be saved is kept on screen and
-      // written again (it becomes the last write); everything else follows
-      // the listener, including drafts that are now empty.
+      // Edits in flight before the reconnect are uncertain, and text typed
+      // while disconnected was never sent. That text stays on screen as
+      // unsaved, unless the listener already holds exactly it; it is not
+      // written again by itself (the draft may have changed elsewhere
+      // meanwhile). Everything else follows the listener, including drafts
+      // that are now empty. Reading never writes.
       root.ownDraftEdits = ({})
       root.draftEditsInFlight = ({})
-      const unsynced = root.unsyncedDrafts
+      root.listenerDrafts = Object.assign({}, drafts)
       const previous = root.serverDrafts
-      for (const id of Object.keys(unsynced)) {
-        if (unsynced[id] === "") delete drafts[id]
-        else drafts[id] = unsynced[id]
+      const pending = root.latestDraftEdits
+      root.latestDraftEdits = ({})
+      const kept = {}
+      for (const id of Object.keys(pending)) {
+        if ((drafts[id] || "") === pending[id].text) {
+          root.markUnsaved(id, "")
+          continue
+        }
+        kept[id] = pending[id].text
+        root.markUnsaved(id, root.unsavedDrafts[id]
+          || "Companion reconnected before this text was confirmed; it may not be saved.")
+      }
+      for (const id of Object.keys(root.unsavedDrafts)) {
+        if (kept[id] === undefined && previous[id] !== undefined && (drafts[id] || "") !== previous[id]) kept[id] = previous[id]
+      }
+      for (const id of Object.keys(kept)) {
+        if (kept[id] === "") delete drafts[id]
+        else drafts[id] = kept[id]
       }
       root.serverDrafts = drafts
       const ids = Object.keys(Object.assign({}, previous, drafts))
       for (const id of ids) {
-        if (unsynced[id] === undefined) root.draftChanged(id, drafts[id] || "", sources[id] || "")
+        if (kept[id] === undefined) root.draftChanged(id, drafts[id] || "", sources[id] || "")
       }
-      for (const id of Object.keys(unsynced)) root.writeDraft(id, unsynced[id])
     } else if (message.type === "agent-draft-focus") {
       if (typeof message.id === "string") root.draftFocusRequested(message.id)
     } else if (message.type === "draft") {
       if (typeof message.id !== "string" || typeof message.text !== "string") return
       const id = message.id
       // Our own edit confirmed: that text is saved.
+      if (message.text === "") delete root.listenerDrafts[id]
+      else root.listenerDrafts[id] = message.text
       const own = message.editId ? root.settleDraftEdit(message.editId) : null
-      if (own && root.unsyncedDrafts[id] === message.text) delete root.unsyncedDrafts[id]
+      // Only the conversation's latest edit settles its pending text (an
+      // older edit with equal text does not), and clears "not saved".
+      const latest = root.latestDraftEdits[id]
+      if (own && latest && latest.editId === message.editId) {
+        delete root.latestDraftEdits[id]
+        root.markUnsaved(id, "")
+      }
       // Newer own edits still in flight: they arrive after this change, so
       // the display keeps the local text.
       if ((root.draftEditsInFlight[id] || 0) > 0) return

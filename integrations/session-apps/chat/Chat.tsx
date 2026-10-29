@@ -1125,6 +1125,17 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           </button>
         </div>
       )}
+      {status.draftUnsaved && (
+        <div class="conflict unsaved">
+          {status.draftUnsaved}
+          <button class="link" onClick={() => bridge.saveDraft(status.sessionId)}>
+            Save
+          </button>
+          <button class="link" onClick={() => bridge.discardUnsavedDraft(status.sessionId)}>
+            Discard
+          </button>
+        </div>
+      )}
       {refused && (
         <div class="conflict refused">
           Some of your text could not be added to the draft (it changed elsewhere, was too long or
@@ -1199,7 +1210,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         </button>
         <button
           class="panel-action"
-          disabled={!status.online || recording?.busy === true}
+          disabled={!status.online || recording?.busy === true || Boolean(status.draftUnsaved)}
           onClick={() => bridge.closeSession(status.sessionId)}
         >
           Close session

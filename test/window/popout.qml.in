@@ -72,7 +72,9 @@ TestCase {
     // or unconfirmed from earlier tests (this transport never confirms).
     body.client.ownDraftEdits = ({})
     body.client.draftEditsInFlight = ({})
-    body.client.unsyncedDrafts = ({})
+    body.client.latestDraftEdits = ({})
+    body.client.listenerDrafts = ({})
+    body.client.unsavedDrafts = ({})
     body.client.serverDrafts = ({})
     TestHost.setPresentation("window")
     TestHost.show(true)
@@ -615,7 +617,8 @@ TestCase {
   }
 
   // Text typed while the listener cannot be reached stays on screen and is
-  // written once connected; the listener's older snapshot never replaces it.
+  // marked not saved; reconnecting never writes it by itself (the draft may
+  // have changed elsewhere) and never replaces it; Save writes it.
   function test_listener_drafts_keep_text_typed_while_disconnected() {
     const view = mainView()
     const composer = composerOf(view)
@@ -626,14 +629,73 @@ TestCase {
     fakeBackend.sent = []
     composer.text = "Typed while offline"
     compare(draftWrites().length, 0, "nothing can be sent while disconnected")
+    verify(view.displayedUnsaved !== "")
+    verify(findChild(view, "unsavedDraft").visible)
+    verify(view.transferBlocker("one").includes("not saved"))
     snapshot([session("one", "First chat"), session("two", "Second chat")])
     tryCompare(body.client, "online", true)
-    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "Before", source: "", sequence: 1}]})
+    // Another editor changed the draft meanwhile.
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "Changed elsewhere", source: "", sequence: 2}]})
     compare(composer.text, "Typed while offline")
+    compare(draftWrites().length, 0, "a reconnect does not replay the text")
+    verify(view.displayedUnsaved !== "")
+    findChild(view, "unsavedDraftSave").triggered()
     const writes = draftWrites()
-    compare(writes.length, 1)
     compare([writes[0].id, writes[0].text], ["one", "Typed while offline"])
+    confirmAllWrites()
+    compare(view.displayedUnsaved, "")
+    compare(view.transferBlocker("one"), "")
     composer.text = ""
+    confirmAllWrites()
+  }
+
+  // Only the latest edit's confirmation settles pending text: A, B, A again
+  // (equal to the first), then the first A is confirmed and the listener
+  // goes away; the newest text stays and is not treated as saved.
+  function test_listener_drafts_pending_identity_is_the_latest_edit() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: []})
+    fakeBackend.sent = []
+    composer.text = "A"
+    composer.text = "B"
+    composer.text = "A"
+    const writes = draftWrites()
+    compare(writes.map(entry => entry.text), ["A", "B", "A"])
+    confirmWrite(writes[0])
+    compare(composer.text, "A")
+    verify(body.client.latestDraftEdits["one"] !== undefined, "the first A does not settle the latest A")
+    fakeBackend.disconnected()
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(body.client, "online", true)
+    fakeBackend.sent = []
+    // The listener only got the first A, then another editor wrote.
+    body.client.receive({type: "draft-snapshot", sequence: 5, drafts: [{id: "one", text: "foreign", source: "", sequence: 5}]})
+    compare(composer.text, "A")
+    verify(view.displayedUnsaved !== "", "uncertain: shown as not saved")
+    compare(draftWrites().length, 0)
+    // Discard shows the listener's version.
+    findChild(view, "unsavedDraftDiscard").triggered()
+    compare(composer.text, "foreign")
+    compare(view.displayedUnsaved, "")
+    compare(draftWrites().length, 0, "showing the listener's text writes nothing")
+    body.client.receive({type: "draft", id: "one", text: "", source: "", sequence: 6})
+  }
+
+  // A reconnect where the listener already holds the pending text: saved.
+  function test_listener_drafts_reconnect_with_matching_text_is_saved() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: []})
+    fakeBackend.sent = []
+    composer.text = "arrived"
+    fakeBackend.disconnected()
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(body.client, "online", true)
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "arrived", source: "", sequence: 2}]})
+    compare(view.displayedUnsaved, "")
+    compare(composer.text, "arrived")
+    body.client.receive({type: "draft", id: "one", text: "", source: "", sequence: 3})
   }
 
   // The display converges on the listener's order: own old edit, another
@@ -698,12 +760,14 @@ TestCase {
     verify(body.client.error.includes("not saved"))
     compare(composer.text, "refused text")
     body.client.error = ""
+    verify(view.displayedUnsaved.includes("not saved"))
     fakeBackend.sent = []
     body.client.receive({type: "draft-snapshot", sequence: 3, drafts: [{id: "one", text: "saved", source: "", sequence: 1}]})
     compare(composer.text, "refused text")
-    compare(draftWrites().map(entry => entry.text), ["refused text"])
-    composer.text = ""
-    confirmAllWrites()
+    compare(draftWrites().length, 0, "not written again by itself")
+    verify(view.displayedUnsaved !== "")
+    findChild(view, "unsavedDraftDiscard").triggered()
+    compare(composer.text, "saved")
   }
 
   function test_at_most_eight_windows() {

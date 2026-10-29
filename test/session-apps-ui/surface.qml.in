@@ -144,7 +144,9 @@ TestCase {
     // A fresh listener draft map per test (this transport never confirms).
     body.client.ownDraftEdits = ({})
     body.client.draftEditsInFlight = ({})
-    body.client.unsyncedDrafts = ({})
+    body.client.latestDraftEdits = ({})
+    body.client.listenerDrafts = ({})
+    body.client.unsavedDrafts = ({})
     body.client.serverDrafts = ({})
     TestHost.setPresentation("window")
     TestHost.show(true)
@@ -159,7 +161,8 @@ TestCase {
     // A listener change that follows every earlier write of this UI (which
     // this transport never confirms).
     delete body.client.draftEditsInFlight[id]
-    delete body.client.unsyncedDrafts[id]
+    delete body.client.latestDraftEdits[id]
+    body.client.markUnsaved(id, "")
     body.client.receive({type: "draft", id: id, text: text, source: "", sequence: 0})
   }
   // An edit that is longer than the page may edit (twice the 8000-unit Send
