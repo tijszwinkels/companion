@@ -285,6 +285,36 @@ Item {
     if (!root.send({action: "stop-recording", id: id})) root.recordingStopFinished("Companion is disconnected.")
   }
 
+  // Recorded words applied to a conversation's text box are acknowledged
+  // only once the listener accepted that exact edit (draft change with its
+  // edit ID): `appended` then, `unavailable` if the listener refused it. If
+  // the connection drops first, no answer is sent and the listener reports
+  // the chunk as unconfirmed. Edit ID -> {requestId, length}.
+  property var recordingAcks: ({})
+
+  function answerRecordingAppendWhenSaved(requestId, result, id) {
+    if (result.outcome !== "appended") {
+      root.answerRecordingAppend(requestId, result)
+      return
+    }
+    const latest = root.latestDraftEdits[id]
+    if (!latest || !root.ownDraftEdits[latest.editId]) {
+      // Nothing in flight for it: either already confirmed text (no change)
+      // or the write could not be sent (then the listener never answers).
+      if (root.unsavedDrafts[id] === undefined) root.answerRecordingAppend(requestId, result)
+      return
+    }
+    root.recordingAcks[latest.editId] = {requestId: requestId, length: result.length}
+  }
+
+  function settleRecordingAck(editId, saved, reason) {
+    const ack = root.recordingAcks[editId]
+    if (!ack) return
+    delete root.recordingAcks[editId]
+    if (saved) root.answerRecordingAppend(ack.requestId, {outcome: "appended", length: ack.length})
+    else root.answerRecordingAppend(ack.requestId, {outcome: "unavailable", reason: reason})
+  }
+
   function answerRecordingAppend(requestId, result) {
     const answer = {action: "recording-append-result", requestId: requestId, outcome: result.outcome}
     if (result.outcome === "appended") answer.length = result.length
@@ -387,6 +417,7 @@ Item {
     if (message.action === "draft-set" && (message.type === "error"
         || (message.type === "result" && message.result && message.result.accepted === false))) {
       const refused = root.settleDraftEdit(message.requestId)
+      root.settleRecordingAck(message.requestId, false, message.type === "error" ? message.message : message.result.reason)
       const reason = "Your text is not saved: " + (message.type === "error" ? message.message : message.result.reason)
       // The conversation's latest edit was refused: its shown text is unsaved.
       if (refused && root.latestDraftEdits[refused.id] && root.latestDraftEdits[refused.id].editId === message.requestId) {
@@ -457,6 +488,9 @@ Item {
       // that are now empty. Reading never writes.
       root.ownDraftEdits = ({})
       root.draftEditsInFlight = ({})
+      // Recorded chunks not confirmed before the reconnect stay unanswered:
+      // the listener already reported them as unconfirmed.
+      root.recordingAcks = ({})
       root.listenerDrafts = Object.assign({}, drafts)
       const previous = root.serverDrafts
       const pending = root.latestDraftEdits
@@ -492,6 +526,7 @@ Item {
       if (message.text === "") delete root.listenerDrafts[id]
       else root.listenerDrafts[id] = message.text
       const own = message.editId ? root.settleDraftEdit(message.editId) : null
+      if (own) root.settleRecordingAck(message.editId, true, "")
       // Only the conversation's latest edit settles its pending text (an
       // older edit with equal text does not), and clears "not saved".
       const latest = root.latestDraftEdits[id]

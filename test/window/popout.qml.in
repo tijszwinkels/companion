@@ -900,8 +900,23 @@ TestCase {
     tryCompare(window.view, "recordingState", "recording")
 
     fakeBackend.received({type: "recording-append", requestId: "a1", id: "two", recordingId: "rec-1", text: "spoken words"})
+    compare(composerOf(window.view).text, "Before spoken words")
+    // Acknowledged only once the listener accepted that exact edit.
+    compare(fakeBackend.sent.filter(message => message.action === "recording-append-result").length, 0)
+    const recorded = draftWrites().pop()
+    compare([recorded.id, recorded.text, recorded.recording], ["two", "Before spoken words", true])
+    confirmWrite(recorded)
     const appended = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
-    compare(appended.outcome, "appended")
+    compare([appended.requestId, appended.outcome, appended.length], ["a1", "appended", "Before spoken words".length])
+
+    // A chunk the listener refuses is reported as not appended.
+    fakeBackend.received({type: "recording-append", requestId: "a2", id: "two", recordingId: "rec-1", text: "more"})
+    const second = draftWrites().pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: second.editId, result: {accepted: false, reason: "synthetic refusal"}})
+    const refused = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
+    compare([refused.requestId, refused.outcome], ["a2", "unavailable"])
+    body.client.error = ""
+    findChild(window.view, "unsavedDraftDiscard").triggered()
     compare(composerOf(window.view).text, "Before spoken words")
 
     // Neither a native close nor the agent can move the composer meanwhile.
