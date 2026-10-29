@@ -1122,6 +1122,15 @@ show the change without writing it back. `sequence` orders what is displayed;
 it is never used to refuse a write. Showing, switching or reopening a
 conversation reads its draft and writes nothing.
 
+A UI treats its text as saved only when the change carrying its own edit ID
+arrives, and only for the conversation's latest edit. Text it could not send,
+that was refused, or that was unconfirmed when the connection dropped stays on
+screen marked as not saved, with Save and Discard; the UI never writes it again
+by itself after reconnecting (the draft may have changed elsewhere), and the
+conversation does not move to another view or close until one is chosen.
+Recorded words are applied by the recording panel and acknowledged
+(`recording-append-result`) only once the listener confirmed that edit.
+
 A desktop `send-agent` clears the draft after the listener accepted the send,
 but only if the draft still equals exactly the sent text: anything typed or
 recorded meanwhile stays. Remote panels (the phone) can neither read nor write

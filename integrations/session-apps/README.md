@@ -102,28 +102,34 @@ broker and the listener's iframe/CSP form the application boundary.
 
 ## Draft synchronization
 
-The draft lives in `SessionView`. The page sends each edit with the draft
-revision it is based on. Host-side changes (agent draft, recorded words, a
-confirmed send, a handover, another tab) advance the revision; the page's own
-accepted edits do not, so edits in flight stay in order. An edit based on an
-older revision, or one that cannot be applied (too long, words being recorded),
-is refused. The host keeps the refused text for that conversation until the
-person chooses **Use my text**, **Copy my text** or **Dismiss** (in HTML chat or
-Classic view); switching conversations or reloading the page keeps it, and
-moving the conversation to another view waits until it is resolved. The
-composer is read-only while recording appends to the draft.
+The listener owns every conversation's draft; the last edit it receives wins
+(see [the desktop protocol](../../src/desktop/README.md), "Text-box drafts").
+`SessionView` shows it and sends each edit, naming the conversation it was
+typed for. The page sends its edits to `SessionView`; an edit is no longer
+refused because it was based on an older draft, and an edit that arrives after
+a switch goes to its own conversation, not the one now shown. Showing,
+switching or reloading only reads drafts. Text the listener has not saved
+(typed while disconnected, refused, or unconfirmed at a reconnect) stays on
+screen with **Save** and **Discard**, is never written again by itself, and
+the conversation does not move to another view or close until one is chosen.
+Edits that are longer than may be edited, or that arrive while words are being
+recorded, are still refused and kept as refused text (below). The composer is
+read-only while recording appends to the draft.
 
-Send names the exact text the page shows and is accepted only when that is the
-host draft at the page's revision, so a refused or unanswered edit never sends
-older text. The page also waits for its latest edit's answer before sending.
+Send sends exactly the text the page shows, whatever the host draft holds at
+that moment (another editor may have changed it): admission depends only on
+the connection, a send or choice awaiting its answer and recording. The page
+also waits for its latest edit's answer before sending. A confirmed send
+clears the draft only while it still equals the sent text.
 Cursor movement without typing (keys, pointer, selection) is reported as well,
 so Classic view and pop-out handover resume at the same position.
 
 Each conversation gets its own composer instance, created from that
 conversation's host draft in the same render that switches to it, so typing
 right after a switch goes to the right draft and is never erased. Answers that
-arrive later for a previous instance's edits do not touch the editor now shown;
-text the host could not keep still reaches that conversation's recovery.
+arrive later for a previous instance's edits do not touch the editor now shown.
+A focus request (focus shortcut) that arrives before the editor is shown is
+kept until it appears.
 
 Typing, pasting or dropping past twice the message limit is cancelled before
 it changes the editor. Over-limit text that still arrives (an input method
