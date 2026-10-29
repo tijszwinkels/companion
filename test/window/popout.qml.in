@@ -593,6 +593,28 @@ TestCase {
     body.client.receive({type: "draft", id: "two", text: "", source: "", sequence: 8})
   }
 
+  // Text typed while the listener cannot be reached stays on screen and is
+  // written once connected; the listener's older snapshot never replaces it.
+  function test_listener_drafts_keep_text_typed_while_disconnected() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: [{id: "one", text: "Before", source: "", sequence: 1}]})
+    tryCompare(composer, "text", "Before")
+    fakeBackend.disconnected()
+    tryCompare(body.client, "online", false)
+    fakeBackend.sent = []
+    composer.text = "Typed while offline"
+    compare(draftWrites().length, 0, "nothing can be sent while disconnected")
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(body.client, "online", true)
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "Before", source: "", sequence: 1}]})
+    compare(composer.text, "Typed while offline")
+    const writes = draftWrites()
+    compare(writes.length, 1)
+    compare([writes[0].id, writes[0].text], ["one", "Typed while offline"])
+    composer.text = ""
+  }
+
   function test_at_most_eight_windows() {
     const entries = []
     for (let index = 0; index < 9; index++) entries.push(session("s" + index, "Chat " + index))

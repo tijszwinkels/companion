@@ -71,6 +71,10 @@ Item {
   // Edit IDs this UI sent and whose change it has not seen come back yet.
   property var ownDraftEdits: ({})
   property int draftEditCounter: 0
+  // Text typed while the listener could not be reached (conversation id ->
+  // text). It stays on screen and is written again once connected, so the
+  // listener's older copy in the next snapshot never replaces it.
+  property var unsyncedDrafts: ({})
 
   // A view's edit, for the conversation it was typed for. The last write the
   // listener receives wins; there is no base revision to be refused for.
@@ -85,7 +89,12 @@ Item {
     // Recorded words may pass the editing bound; the listener checks that
     // this panel really records into that conversation.
     if (recording === true) request.recording = true
-    root.send(request)
+    if (root.send(request)) {
+      delete root.unsyncedDrafts[id]
+    } else {
+      delete root.ownDraftEdits[editId]
+      root.unsyncedDrafts[id] = text
+    }
   }
   // True when the panel has the built-in browser (standalone native window).
   // Only then does the listener route companion_browser_open here.
@@ -372,8 +381,19 @@ Item {
       for (const entry of message.drafts || []) {
         if (entry && typeof entry.id === "string" && typeof entry.text === "string") drafts[entry.id] = entry.text
       }
+      // Text typed while disconnected is newer than the listener's copy:
+      // keep it on screen and write it now (the last write received wins).
+      const unsynced = root.unsyncedDrafts
+      root.unsyncedDrafts = ({})
+      for (const id of Object.keys(unsynced)) {
+        if (unsynced[id] === "") delete drafts[id]
+        else drafts[id] = unsynced[id]
+      }
       root.serverDrafts = drafts
-      for (const id of Object.keys(drafts)) root.draftChanged(id, drafts[id], "")
+      for (const id of Object.keys(drafts)) {
+        if (unsynced[id] === undefined) root.draftChanged(id, drafts[id], "")
+      }
+      for (const id of Object.keys(unsynced)) root.writeDraft(id, unsynced[id])
     } else if (message.type === "agent-draft-focus") {
       if (typeof message.id === "string") root.draftFocusRequested(message.id)
     } else if (message.type === "draft") {
