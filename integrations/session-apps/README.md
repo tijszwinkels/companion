@@ -68,8 +68,12 @@ status; reading never grants sending. Native replies do not optimistically chang
 status. Renewals need explicit review and timeout never causes automatic retry. Authored
 `api.chat.read()` and `api.chat.subscribe()` receive the bounded text projection,
 never the trusted Chat bridge. See the [read contract](../../src/session-apps/README.md#optional-chat-read-checkpoint).
-The authored sending/status API is still pending; native controls and its bounded
-transport are ready for that integration, not a complete sender. The app cannot
+Authored sending uses `api.chat.prepareSend()` to obtain a handle **before**
+`api.chat.send(handle, text)`. Keep that exact handle across errors/timeouts and
+use `api.chat.receipt(handle)` for read-only recovery. No automatic replay, implicit
+renewal or human-origin claim is offered. A null receipt is unknown, not proof of
+no execution. See the [sender contract](../../src/session-apps/README.md#sending-backend).
+The app cannot
 read the draft, claim human origin, move focus, call window commands or reach
 other conversations. It is never a
 composer: only the trusted chat page reports composer focus for voice routing.

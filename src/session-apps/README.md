@@ -85,8 +85,8 @@ limited to 20 each. `agent` (default `true`) exposes a query/action to the
 agent; `false` keeps it view-only. `application.eventMode` is the default event
 mode for a first apply. `application.capabilities` may request `chat.read` and
 `chat.send` (no duplicates, at most two). A declaration is **not** consent.
-Reading is integrated end-to-end. Sending has backend grants, capability ingress,
-FIFO enforcement and native controls/transport; its authored API is still pending.
+Reading and sending use separate native consent controls. The authored sender API
+retains a handle before admission and offers read-only receipt lookup after uncertainty.
 See [optional chat](#optional-chat-read-checkpoint) and [sending](#sending-backend).
 
 `widget.js` exports:
@@ -138,18 +138,41 @@ data})` runs after each observed revision change. The view host polls
   cache and invalidate in-flight delivery. Permission/state refresh is required
   before reading resumes. Already delivered copies cannot be erased.
 
+- `api.chat.prepareSend()` → `Promise<{version, grantId, requestId}>`. Gets fresh
+  sending status and returns a frozen handle while the view is visible and a
+  grant has remaining quota. It does not reserve, send, consume quota or grant
+  permission. Retain this handle **before** calling send.
+- `api.chat.send(handle, text)` → host receipt. Sends nonempty text of at most
+  4000 UTF-16 units with exactly the retained handle. A queued receipt is not
+  proof of execution or completion. See [receipt states](#capability-protocol).
+- `api.chat.receipt(handle)` → host receipt or `null`. Read-only lookup; it never
+  admits or retries a message. Missing status is **not** proof of no execution.
+  Neither sending nor probing needs read permission. Existing handles can be
+  probed after revoke/renewal, but not after code replacement or reopen.
+
+Sender calls share the eight-operation budget. Host requests have an abortable
+10-second timeout; frame requests also time out after 12 seconds if the host
+reply is lost. These are browser timers, not execution deadlines. Errors/timeouts
+are not proof of non-admission or cancellation. Keep the original handle and
+inspect its receipt; never automatically resend, manufacture a new request ID,
+or prepare a fresh handle to retry uncertainty. Explicit exact retries deduplicate
+on the original grant/request pair; changing the text with that identity is refused.
+Applications that need recovery after a view reload must retain the handle before
+sending (for example through their own declared state action). This API does not
+persist it automatically, and code replacement/restart can make status unavailable.
+
 The view keeps the widget iframe sandbox and CSP: no network, storage, nested
 frames, workers, microphone or other browser permissions. It has no access to
-the draft, chat sending, native window commands or other sessions. History is
-available only through the separately consented, bounded read API. These methods
-do not themselves grant permission or persist text into application state.
+the draft, native window commands or other sessions. History and app-origin
+sending are available only through separately consented bounded APIs. These
+methods do not themselves grant permission or persist text into application state.
 
 ## View HTTP protocol
 
 All requests go to the loopback widget service; Host and Origin must match it.
 The trusted host page bounds what authored code can ask of it, including
 messages posted directly: at most eight outstanding requests (actions, queries
-and shared state/chat reads), request IDs of 1–100 characters (others are
+and shared state/chat reads plus sender preparation/send/probes), reply IDs of 1–100 characters (others are
 ignored, never echoed), operation names of at most 48 characters, and JSON
 arguments of at most 32 KiB. Non-JSON arguments (for example cyclic objects)
 are refused with an answer, so they never hold a request slot.
@@ -170,7 +193,9 @@ to that exact capability.
 It never forwards permission-grant operations. Sending and receipt probes have
 separate fixed routes and stricter bounds described below. Chat-read request
 bodies are capped at 1 KiB and replies at 64 KiB; other operation bounds stay
-unchanged. Non-200 backend replies become generic fetch failures in Qt, never
+unchanged. The portable Chromium broker admits the same fixed chat POST routes
+with identical chat request/response limits, scoped to the view capability and
+without redirects or grant routes. Non-200 backend replies become generic fetch failures in Qt, never
 successful empty history. A refused chat read does not disable the whole view.
 `version` mismatches are refused (`409`), so a view running replaced code cannot
 execute successor actions. An action request from this view ingress is a
@@ -180,8 +205,8 @@ execute successor actions. An action request from this view ingress is a
 
 Read consent is shown in native controls below the app's trusted escape bar in
 both sidebar and pop-out HTML surfaces. It enables the gated iframe read API,
-not chat sending. Separate native send controls and transport are implemented,
-but the authored sender API is not integrated yet.
+not chat sending. Sending uses its own native controls and the separately granted
+sender API.
 The application remains able to show app-only content. Canonical trusted chat,
 its escape bar and the trusted draft remain separate from authored content.
 
@@ -263,9 +288,9 @@ The read service never implicitly writes its projection into app state.
 
 ## Sending backend
 
-**The authored sender API is not integrated yet.** Native controls, broker routes
-and the backend below have isolated synthetic coverage; this is not a complete
-app-facing sender.
+The authored API is `prepareSend()` → retain handle → `send(handle, text)`;
+use `receipt(handle)` to inspect outcomes, never an automatic retry. Native
+controls and both view transports enforce the backend contract below.
 
 Native sending consent has its own disclosure and explicit allow-five/renewal
 step, independent of reading, plus direct revoke and canonical quota/busy status.

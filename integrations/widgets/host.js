@@ -161,6 +161,10 @@ window.addEventListener('message', (event) => {
       return;
     }
     readChat(message.id);
+  } else if (['chat-prepare-send', 'chat-send', 'chat-receipt'].includes(message.type)) {
+    if (validRequestId(message.id)) {
+      sendChatOperation(message);
+    }
   } else if (message.type === 'state-read') {
     if (!validRequestId(message.id)) {
       return;
@@ -194,6 +198,137 @@ function validArguments(args) {
     return false;
   }
   return typeof json === 'string' && new TextEncoder().encode(json).byteLength <= 32768;
+}
+
+// Sending has its own explicit, finite backend grant. Prepare returns an identity
+// BEFORE any possible admission; it is not a reservation or permission renewal.
+// Keep no unbounded handle table here. Exact retries/probes use the caller's
+// retained handle, and the backend owns deduplication across views/reloads.
+function validSendHandle(handle) {
+  return (
+    handle &&
+    typeof handle === 'object' &&
+    !Array.isArray(handle) &&
+    Object.keys(handle).length === 3 &&
+    Object.keys(handle).every((key) => ['version', 'grantId', 'requestId'].includes(key)) &&
+    handle.version === application?.version &&
+    typeof handle.grantId === 'string' &&
+    /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(handle.grantId) &&
+    typeof handle.requestId === 'string' &&
+    /^[a-zA-Z0-9_-]{16,128}$/.test(handle.requestId)
+  );
+}
+
+async function sendChatOperation(message) {
+  const prepare = message.type === 'chat-prepare-send';
+  const sending = message.type === 'chat-send';
+  const keys = prepare
+    ? ['type', 'id']
+    : sending
+      ? ['type', 'id', 'handle', 'text']
+      : ['type', 'id', 'handle'];
+  const refuse = (error) => reply(message.id, null, error, false);
+  if (
+    Object.keys(message).length !== keys.length ||
+    Object.keys(message).some((key) => !keys.includes(key)) ||
+    (!prepare && !validSendHandle(message.handle)) ||
+    (sending &&
+      (typeof message.text !== 'string' || !message.text.trim() || message.text.length > 4000))
+  ) {
+    refuse('Expected an exact send handle and bounded text; no origin or permission arguments');
+    return;
+  }
+  if (!application || !api || (prepare && document.hidden)) {
+    refuse('Preparing a send needs a visible live application');
+    return;
+  }
+  if (liveActions >= 8) {
+    refuse('Too many widget requests');
+    return;
+  }
+
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 10000);
+  liveActions++;
+  try {
+    if (prepare) {
+      // Obtain a fresh observed grant, not an app-supplied field or a cached
+      // optimistic acknowledgement. The backend still rechecks on admission.
+      const response = await fetch(api + '/state', { signal: abort.signal });
+      if (!response.ok) {
+        throw Error('Sending permission is unavailable');
+      }
+      const state = await response.json();
+      const grant = state.chatSend;
+      if (
+        document.hidden ||
+        state.version !== application.version ||
+        grant?.allowed !== true ||
+        !(grant.remaining > 0)
+      ) {
+        throw Error('Chat sending needs current trusted consent and remaining quota');
+      }
+      const handle = {
+        version: application.version,
+        grantId: grant.grantId,
+        requestId: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+          byte.toString(16).padStart(2, '0'),
+        ).join(''),
+      };
+      if (!validSendHandle(handle)) {
+        throw Error('Invalid sending permission');
+      }
+      reply(message.id, handle, '', false);
+      return;
+    }
+
+    // No read grant or current-grant observation gate here: an old, already
+    // admitted handle must remain probeable after revocation/renewal. Current
+    // code/owner and original grant are checked by the service on every call.
+    const body = { ...message.handle, ...(sending ? { text: message.text } : {}) };
+    const response = await fetch(api + (sending ? '/chat-send' : '/chat-receipt'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+    if (!response.ok) {
+      throw Error('Chat operation was not confirmed');
+    }
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > 4096) {
+      throw Error('Chat receipt exceeds the response limit');
+    }
+    const value = JSON.parse(text);
+    const receipt = value?.receipt;
+    if (receipt === null && !sending) {
+      reply(message.id, null, '', false);
+      return;
+    }
+    if (
+      !receipt ||
+      receipt.version !== message.handle.version ||
+      receipt.grantId !== message.handle.grantId ||
+      receipt.requestId !== message.handle.requestId ||
+      !['reserved', 'queued', 'running', 'completed', 'failed', 'cancelled', 'unknown'].includes(
+        receipt.state,
+      )
+    ) {
+      throw Error('Invalid chat receipt');
+    }
+    reply(message.id, receipt, '', false);
+  } catch (error) {
+    // Qt deliberately hides non-200 bodies/status. Even a timeout, malformed
+    // response or lost acknowledgement may follow admission. Never replay.
+    refuse(
+      prepare
+        ? String(error.message || error).slice(0, 200)
+        : 'Chat outcome is unconfirmed; retain the original handle and inspect its receipt. Do not automatically resend.',
+    );
+  } finally {
+    clearTimeout(timer);
+    liveActions--;
+  }
 }
 
 // Optional, text-only chat reads. Neither the frame nor its state/actions may

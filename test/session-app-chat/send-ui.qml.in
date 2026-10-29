@@ -1,0 +1,104 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+TestCase {
+  id: tests
+  name: "ApplicationChatSendUI"
+  when: windowShown
+  property var body: null
+  QtObject {
+    id: backend
+    signal received(var message)
+    signal disconnected()
+    function send(message) {
+      if (message.action === "set-application-chat-send") tests.control(message)
+      return true
+    }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent { host: TestHost; transport: backend; parent: TestHost.contentItem }
+  }
+  function control(message) {
+    let done = false
+    const xhr = new XMLHttpRequest()
+    xhr.onreadystatechange = function() { if (xhr.readyState === XMLHttpRequest.DONE) done = true }
+    xhr.open(message ? "POST" : "GET", "@CONTROL_URL@")
+    xhr.setRequestHeader("Content-Type", "application/json")
+    xhr.send(message ? JSON.stringify(message) : "")
+    tryVerify(function() { return done }, 10000)
+    compare(xhr.status, 200, xhr.responseText)
+    const state = JSON.parse(xhr.responseText)
+    body.client.receive({type:"state",protocol:1,ready:true,activitySessionId:"activity",activityHistoryCount:0,sessions:[state.session]})
+    if (message && message.requestId) {
+      body.client.receive({type:"result",action:message.action,requestId:message.requestId,result:{allowed:message.allowed}})
+    }
+    return state.session
+  }
+  function evaluate(page, script) {
+    let done = false
+    let result = null
+    page.mainFrame.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 10000)
+    return result
+  }
+  function report(page, operation) {
+    evaluate(page, "window.testReport=null;window.widgetHost.command({kind:'describe',props:" + JSON.stringify(operation ? {operation:operation} : {}) + "}).then(value=>window.testReport=value);true")
+    tryVerify(function() { return evaluate(page, "typeof window.testReport==='string'") }, 10000)
+    return JSON.parse(evaluate(page,"window.testReport"))
+  }
+  function operation(page, name) {
+    report(page, name)
+    let result
+    tryVerify(function() { result=report(page);return result.done }, 15000)
+    return result
+  }
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    TestHost.attach(body)
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+  }
+  function cleanupTestCase() { TestHost.hide(); body.destroy() }
+  function test_native_grant_send_lost_ack_probe_stop_and_draft() {
+    control()
+    body.client.sessions.select("@SESSION_ID@")
+    const view=body.panel.conversationView
+    tryVerify(function() { return view.htmlActive },10000)
+    const page=findChild(view,"sessionAppBrowser")
+    verify(page!==null)
+    tryVerify(function() { return page.rendered },15000)
+    const composer=findChild(view,"sessionComposer")
+    composer.text="Trusted draft must not be sent"
+    verify(operation(page,"prepare").error.indexOf("consent")>=0)
+    verify(view.reviewAppChatSending())
+    const allow=findChild(view,"appChatAllowSend")
+    verify(allow.visible && allow.enabled)
+    allow.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return view.appChatSendAccess.allowed })
+    const prepared=operation(page,"prepare")
+    verify(!prepared.error, prepared.error || "")
+    verify(prepared.value.requestId.length>=16)
+    compare(control().application.chatAccess.send.remaining,5)
+    verify(operation(page,"read").error.indexOf("not currently permitted")>=0)
+    evaluate(page,"window.originalFetch=window.fetch;window.dropSend=true;window.fetch=async(...args)=>{const response=await window.originalFetch(...args);if(String(args[0]).endsWith('/chat-send')&&window.dropSend){window.dropSend=false;throw Error('Synthetic lost acknowledgement');}return response;};true")
+    const sent=operation(page,"send")
+    verify(sent.error.indexOf("unconfirmed")>=0)
+    compare(JSON.stringify(sent.handle),JSON.stringify(prepared.value))
+    let receipt
+    tryVerify(function() { receipt=operation(page,"receipt");return receipt.value && receipt.value.state==="running" },10000)
+    compare(receipt.value.requestId,prepared.value.requestId)
+    compare(control().application.chatAccess.send.remaining,4)
+    compare(composer.text,"Trusted draft must not be sent")
+    control({action:"stop",id:"@SESSION_ID@"})
+    const stopped=operation(page,"receipt")
+    verify(stopped.value.state==="failed" || stopped.value.state==="cancelled")
+    compare(stopped.value.receiptId,receipt.value.receiptId)
+    verify(!view.appChatSendAccess.allowed)
+    verify(operation(page,"prepare").error.indexOf("consent")>=0)
+    compare(composer.text,"Trusted draft must not be sent")
+    compare(evaluate(page,"typeof window.qt"),"undefined")
+  }
+}

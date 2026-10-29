@@ -282,12 +282,23 @@ export class Chromium {
     const url = String(request.url);
     const method = String(request.method);
     // This is a tiny capability-scoped transport, never a general HTTP proxy.
-    // `query` serves session application views (read-only queries).
+    // Chat routes mirror the native broker's method and byte bounds. Neither
+    // transport exposes permission grants; the service rechecks code and owner.
+    const route =
+      /^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}(?:\/(state|action|query|chat-read|chat-send|chat-receipt))?$/.exec(
+        url,
+      );
+    const operation = route?.[1];
+    const chat = operation?.startsWith('chat-') === true;
+    const body = String(request.postData ?? '');
+    const requestBytes = operation === 'chat-send' ? 32768 : 1024;
+    const responseBytes = chat ? (operation === 'chat-read' ? 65536 : 4096) : 4 * 1024 * 1024;
     if (
       !allowed ||
-      !/^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}(?:\/(?:state|action|query))?$/.test(url) ||
+      !route ||
       !['GET', 'POST'].includes(method) ||
-      String(request.postData ?? '').length > 160 * 1024
+      (chat && (method !== 'POST' || Buffer.byteLength(body) > requestBytes)) ||
+      (!chat && body.length > 160 * 1024)
     ) {
       await this.call(
         'Fetch.failRequest',
@@ -299,12 +310,12 @@ export class Chromium {
     const response = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: method === 'POST' ? String(request.postData ?? '') : undefined,
+      body: method === 'POST' ? body : undefined,
       redirect: 'error',
       signal: AbortSignal.timeout(10000),
     });
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > 4 * 1024 * 1024) {
+    if (bytes.length > responseBytes) {
       throw Error('Widget viewer response exceeds its limit');
     }
     await this.call(

@@ -21,18 +21,27 @@ const chatSubscribers = new Set();
 let latestChat = { available: false, snapshot: null, error: '' };
 
 // Every request to the host shares one bounded table of pending replies.
-function request(message) {
+function request(message, timeoutError) {
   if (pendingActions.size >= 8) {
     return Promise.reject(Error('Widget actions are busy'));
   }
   return new Promise((resolve, reject) => {
     const id = `user-${++nextAction}`;
-    pendingActions.set(id, { resolve, reject });
+    // Sender calls also bound a lost postMessage acknowledgement. A timed-out
+    // send is uncertain, not cancelled: the caller already has its exact handle.
+    const timer = timeoutError
+      ? setTimeout(() => {
+          pendingActions.delete(id);
+          reject(Error(timeoutError));
+        }, 12000)
+      : null;
+    pendingActions.set(id, { resolve, reject, timer });
     try {
       parent.postMessage({ ...message, id }, '*');
     } catch (error) {
       // Values that cannot be cloned never reach the host; release the slot.
       pendingActions.delete(id);
+      clearTimeout(timer);
       reject(error);
     }
   });
@@ -46,6 +55,24 @@ const api = {
     return request({ type: 'query', name, args });
   },
   chat: {
+    prepareSend() {
+      return request(
+        { type: 'chat-prepare-send' },
+        'Send preparation was not confirmed; no send was requested.',
+      ).then((handle) => Object.freeze(handle));
+    },
+    send(handle, text) {
+      return request(
+        { type: 'chat-send', handle, text },
+        'Chat outcome is unconfirmed; retain the original handle and inspect its receipt. Do not automatically resend.',
+      );
+    },
+    receipt(handle) {
+      return request(
+        { type: 'chat-receipt', handle },
+        'Receipt lookup was not confirmed. Retain the original handle; missing status does not prove no execution.',
+      );
+    },
     read() {
       return request({ type: 'chat-read' });
     },
@@ -121,6 +148,7 @@ window.addEventListener('message', async (event) => {
   if (message.type === 'action-result') {
     const pending = pendingActions.get(message.id);
     pendingActions.delete(message.id);
+    clearTimeout(pending?.timer);
     if (message.error) {
       pending?.reject(Error(message.error));
     } else {
