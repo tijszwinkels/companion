@@ -260,6 +260,14 @@ Item {
     // document (a reload).
     function ready(documentId) {
       root.loadedDocumentId = typeof documentId === "string" ? documentId : ""
+      // Input only the previous document's editor held is gone with that
+      // document (a reload). Say so; never claim it survived.
+      const unresolved = root.view ? root.view.unresolvedInput : null
+      if (unresolved && unresolved.documentId !== root.loadedDocumentId) {
+        root.view.inputError = "Text (" + unresolved.length
+          + " characters) that was only in the chat editor was lost when the chat page reloaded."
+        root.view.unresolvedInput = null
+      }
       root.readyCount++
       root.pageReady = true
       root.operational = true
@@ -284,14 +292,26 @@ Item {
     // refused here; the page then keeps it in its own editor and says so.
     // An edit typed before a switch names its own conversation and goes
     // there, not to the one now shown.
+    //
+    // While words are recorded into the conversation, its draft takes only
+    // the recorded words (appended by the listener), so a whole editor value
+    // can never replace a recorded chunk that arrived meanwhile. The page is
+    // read-only then; an input that still arrives (raced with the recording
+    // start) is refused. A refused edit stays in the page's editor; the host
+    // records that before answering, so the conversation cannot move or
+    // close while the answer travels (see SessionView.unresolvedInput).
     function editDraft(sessionId, base, text, cursor) {
       const view = root.view
       if (!view) return JSON.stringify({accepted: false, reason: "unavailable"})
       if (typeof sessionId !== "string" || typeof text !== "string") {
         return JSON.stringify({accepted: false, reason: "invalid"})
       }
-      if (text.length > 4 * view.maximumMessageLength) {
-        return JSON.stringify({accepted: false, reason: "too-long"})
+      let refusal = ""
+      if (text.length > 4 * view.maximumMessageLength) refusal = "too-long"
+      else if (view.recordingInto(sessionId) || (sessionId === view.displayedId && view.recordingBusy)) refusal = "recording"
+      if (refusal !== "") {
+        view.setUnresolvedInput(sessionId, text.length, root.loadedDocumentId)
+        return JSON.stringify({accepted: false, reason: refusal, unresolved: true})
       }
       if (sessionId !== view.displayedId) {
         return JSON.stringify({accepted: view.writeDraftFor(sessionId, text)})
@@ -365,6 +385,13 @@ Item {
 
     // Save writes the shown, unsaved text again; Discard shows the
     // listener's version (Client.saveDraft / discardUnsavedDraft).
+    // The page keeps (length > 0) or no longer keeps (0) input the host does
+    // not have, typed in `sessionId`. Only the length crosses the bridge.
+    function inputUnresolved(sessionId, length) {
+      if (!root.view) return false
+      return root.view.setUnresolvedInput(sessionId, length, root.loadedDocumentId)
+    }
+
     function saveDraft(sessionId) {
       if (!sameSession(sessionId) || root.view.displayedUnsaved === "") return JSON.stringify({accepted: false})
       root.view.draftSaveRequested(sessionId)
@@ -379,7 +406,8 @@ Item {
 
     function closeSession(sessionId) {
       const view = root.view
-      if (!sameSession(sessionId) || !view.online || view.recordingBusy || view.displayedUnsaved !== "") {
+      if (!sameSession(sessionId) || !view.online || view.recordingBusy || view.displayedUnsaved !== ""
+          || view.displayedUnresolved) {
         return JSON.stringify({accepted: false})
       }
       view.dismissRequested(sessionId)

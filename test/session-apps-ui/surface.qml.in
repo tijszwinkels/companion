@@ -148,6 +148,7 @@ TestCase {
     body.client.listenerDrafts = ({})
     body.client.unsavedDrafts = ({})
     body.client.serverDrafts = ({})
+    if (body.panel && mainView()) mainView().unresolvedInput = null
     TestHost.setPresentation("window")
     TestHost.show(true)
     snapshot([session("one", "First chat", null)])
@@ -1628,6 +1629,176 @@ TestCase {
 
   // SUPERSEDED: test_zzj (numbered Copy parts of 1 MiB page-held text in
   // the native export) tested the removed recovery archive.
+
+  // ---- Input only the editor holds (unresolved input) --------------------
+  // Text a non-cancellable input makes longer than the page may hand to the
+  // host stays in the one editor holding it; the host knows its length only
+  // and holds the conversation back until it is resolved.
+  function unresolvedText() {
+    // 16001 emoji (two UTF-16 units each) = 32002 units, just past 32000.
+    return "\u{1F600}".repeat(16001)
+  }
+  function heldNotice(chat) {
+    return evaluate(chat, "(() => { const notice = document.querySelector('.unkept'); return notice ? notice.textContent : '' })()")
+  }
+  function test_zzl_editor_only_input_survives_navigation_and_gates_departure() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("one", "saved one")
+    settled(view, chat)
+    const big = unresolvedText()
+    compare(big.length, 32002)
+    fakeBackend.sent = []
+    typeInto(chat, big)
+    // The host knows at once (before anything else), by length only.
+    tryVerify(function() { return view.unresolvedInput !== null }, 5000)
+    compare([view.unresolvedInput.sessionId, view.unresolvedInput.length], ["one", 32002])
+    compare(fakeBackend.sent.filter(message => message.action === "draft-set").length, 0, "the text never goes to the listener")
+    compare(composerOf(view).text, "saved one")
+    // Immediately another conversation, then Activity: the text stays in
+    // this page, offered with Copy and Discard; typing elsewhere waits.
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return heldNotice(chat).includes("32002 characters") && heldNotice(chat).includes("another conversation") }, 5000)
+    compare(evaluate(chat, "document.querySelector('textarea').readOnly"), true)
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null") === true }, 5000)
+    tryVerify(function() { return heldNotice(chat).includes("32002 characters") }, 5000)
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null"
+      + " && document.querySelector('textarea').value === " + JSON.stringify(big)) === true }, 5000)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Close session').disabled"), true)
+    // Classic view and back: the page (and its text) stays.
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    view.classicView = false
+    tryCompare(view, "htmlActive", true, 5000)
+    compare(textarea(chat), big)
+    // It does not move to a window meanwhile.
+    body.popouts.popOut("one")
+    compare(body.popouts.windows["one"], undefined)
+    verify(body.client.error.includes("only in its editor"), body.client.error)
+    body.client.error = ""
+    // Copy copies exactly the shown text (Unicode intact).
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(chat, "Copy"))
+    tryVerify(function() { return copyFeedback(chat) === "Copied (32002 characters)." }, 5000, copyFeedback(chat))
+    verify(clipboardText() === big, "clipboard holds exactly the shown text")
+    // Shortened, the host takes it and the conversation is free again.
+    view.focusComposer()
+    typeInto(chat, "short again")
+    tryCompare(composerOf(view), "text", "short again", 5000)
+    tryCompare(view, "unresolvedInput", null, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+  }
+
+  // In a pop-out window: Return and the native close wait; when the
+  // conversation is closed elsewhere the window (and its editor) stays
+  // until the text is discarded; a reload discloses the loss.
+  function test_zzm_window_keeps_editor_only_input_until_resolved() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    const big = unresolvedText()
+    typeInto(windowChat, big)
+    tryVerify(function() { return window.view.unresolvedInput !== null }, 5000)
+    body.popouts.returnToSidebar("one", {focus: false, source: "button"})
+    verify(body.popouts.windows["one"] !== undefined)
+    verify(window.notice.includes("only in its editor"), window.notice)
+    window.close()
+    wait(100)
+    verify(body.popouts.windows["one"] !== undefined, "the native close waits too")
+    // Closed elsewhere: the window stays with its editor's text.
+    body.popouts.orphanDrafts = []
+    snapshot([session("two", "Second chat", null)])
+    wait(300)
+    verify(body.popouts.windows["one"] !== undefined, "window kept for its editor-only input")
+    verify(window.notice.includes("closed elsewhere"), window.notice)
+    tryVerify(function() { return heldNotice(windowChat).includes("32002 characters") }, 5000)
+    verify(clickInHeld(windowChat, "Discard"))
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    compare(body.popouts.orphanDrafts.length, 0)
+
+    // A real reload of the page that held it says the text was lost.
+    snapshot([session("one", "First chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, big)
+    tryVerify(function() { return view.unresolvedInput !== null }, 5000)
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    const loads = trusted.readyCount
+    chat.reload()
+    tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
+    tryCompare(view, "unresolvedInput", null, 5000)
+    verify(view.inputError.includes("32002 characters") && view.inputError.includes("lost"), view.inputError)
+    view.inputError = ""
+  }
+
+  // While words are recorded into the draft, an edit (only a synthetic or
+  // raced input: the real editor is read-only then) never replaces the
+  // recorded text; it is refused and kept in the editor, held back by the
+  // host before the answer, also when the editor is replaced meanwhile.
+  function test_zzn_input_during_recording_never_replaces_recorded_words() {
+    snapshot([session("rec", "Recording chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("rec", "spoken so far")
+    settled(view, chat)
+    view.releaseComposerFocus()
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return view.recordingBusy })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').readOnly") === true }, 5000)
+    // The recorded tail arrives from the listener.
+    listenerDraft("rec", "spoken so far and recorded words")
+    tryCompare(composerOf(view), "text", "spoken so far and recorded words")
+    // A stale whole-editor value raced with the recording: refused, and the
+    // host holds the conversation back before the answer reaches the page.
+    holdNextAnswer(chat)
+    fakeBackend.sent = []
+    // (A synthetic input event: a real read-only textarea produces none.)
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'spoken so far typed';"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    compare(view.unresolvedInput !== null && view.unresolvedInput.sessionId === "rec", true)
+    compare(composerOf(view).text, "spoken so far and recorded words")
+    compare(fakeBackend.sent.filter(message => message.action === "draft-set").length, 0)
+    // Activity before the answer: the page still keeps the refused input.
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null") === true }, 5000)
+    releaseHeld(chat)
+    tryVerify(function() { return heldNotice(chat).includes("19 characters") }, 5000)
+    // The listener refuses the recording; the recorded words stay.
+    fakeBackend.received({type: "error", action: "start-recording", message: "Recording is unavailable in this test"})
+    tryCompare(view, "ownRecording", null)
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    tryVerify(function() { return textarea(chat) === "spoken so far typed" }, 5000)
+    compare(composerOf(view).text, "spoken so far and recorded words")
+    verify(clickInHeld(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "spoken so far and recorded words" }, 5000)
+    tryCompare(view, "unresolvedInput", null)
+  }
 
   function findChildren(item, name) {
     let found = []

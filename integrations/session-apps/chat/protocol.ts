@@ -148,6 +148,11 @@ export interface NativeBridge {
   stopRun(sessionId: string, runId: string, callback?: (answer: string) => void): void;
   stop(sessionId: string, callback?: (answer: string) => void): void;
   closeSession(sessionId: string, callback?: (answer: string) => void): void;
+  /**
+   * The page keeps (`length` > 0) or no longer keeps (0) input the host does
+   * not have, typed in `sessionId`. Only its length crosses the bridge.
+   */
+  inputUnresolved(sessionId: string, length: number): void;
   saveDraft(sessionId: string, callback?: (answer: string) => void): void;
   discardUnsavedDraft(sessionId: string, callback?: (answer: string) => void): void;
   toggleRecording(sessionId: string, callback?: (answer: string) => void): void;

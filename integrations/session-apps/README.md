@@ -137,9 +137,15 @@ cannot be cancelled) stays visible in the editor and is never cut. Up to four
 times the message limit it becomes the conversation's text and, since the
 listener does not keep it, shows as not saved with Save and Discard; moving or
 closing that conversation waits until it is saved (after shortening) or
-discarded. Longer text stays only in this editor, with a notice offering Copy
-and Discard; it cannot be sent and host changes do not replace it, but it is
-lost if the editor switches to another conversation or the page reloads.
+discarded. Longer text, and an edit that arrives while words are being
+recorded into the draft, stays only in this editor, with a notice offering Copy
+and Discard; it cannot be sent and never replaces the draft or recorded words.
+The page keeps at most one such text. The host knows only its length and
+keeps that conversation from moving to or from a window or closing until the
+text is shortened or discarded; while another conversation or Activity is
+shown, the notice stays and typing waits for it. A window whose conversation
+is closed elsewhere stays open for that text. If the page reloads anyway, the
+host says the text was lost.
 If a conversation is closed elsewhere while its window is open, the text its
 editor shows stays in the sidebar's closed-conversation notice with Copy and
 Dismiss. Copy says whether it worked (with the number of characters) or why

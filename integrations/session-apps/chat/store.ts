@@ -39,6 +39,12 @@ export class ChatStore {
     byte.toString(16).padStart(2, '0'),
   ).join('');
 
+  // Input only this page's editor holds (see Composer): at most one, for the
+  // conversation it was typed in. The host knows only its length, which
+  // keeps that conversation from moving or closing until it is resolved;
+  // the page is the only place the text is.
+  private unresolvedInput: { sessionId: string; text: string } | null = null;
+
   attach(bridge: NativeBridge): void {
     this.bridge = bridge;
     bridge.message.connect((json) => this.receive(json));
@@ -55,6 +61,26 @@ export class ChatStore {
 
   hostDraft(): { sessionId: string; text: string; cursor: number; revision: number } {
     return this.latestHostDraft;
+  }
+
+  unresolved(): { sessionId: string; text: string } | null {
+    return this.unresolvedInput;
+  }
+
+  /** Keep (or, with null, release) the editor-only input and tell the host. */
+  setUnresolved(entry: { sessionId: string; text: string } | null): void {
+    const previous = this.unresolvedInput;
+    this.unresolvedInput = entry;
+    if (this.bridge) {
+      if (entry) {
+        this.bridge.inputUnresolved(entry.sessionId, entry.text.length);
+      } else if (previous) {
+        this.bridge.inputUnresolved(previous.sessionId, 0);
+      }
+    }
+    // A new snapshot object, so every view of the store renders again.
+    this.snapshot = { rows: this.snapshot.rows, status: this.snapshot.status };
+    this.notify();
   }
 
   /** The host accepted this page's edit: its draft is now that text. */

@@ -200,6 +200,9 @@ Item {
     root.order = root.order.concat([id])
     window.activeChanged.connect(root.refreshReport)
     window.visibleChanged.connect(root.refreshReport)
+    // A window kept open only for its editor's unresolved input (its
+    // conversation disappeared) closes once that input is resolved.
+    window.view.unresolvedInputChanged.connect(function() { Qt.callLater(root.sessionsChanged) })
     window.view.composerFocusIdChanged.connect(root.refreshReport)
 
     // Marking it popped detaches the sidebar view (its session becomes
@@ -429,6 +432,15 @@ Item {
       const window = root.windows[id]
       if (!window) {
         root.forget(id)
+        continue
+      }
+      // Its editor alone holds input the host does not have: keep the
+      // window (and that editor) until the person copies, shortens or
+      // discards it; sessionsChanged runs again then.
+      const unresolved = window.view.unresolvedInput
+      if (unresolved && unresolved.sessionId === id) {
+        window.notice = "This conversation was closed elsewhere. Its editor still holds text ("
+          + unresolved.length + " characters) that is kept nowhere else: copy or discard it, then close this window."
         continue
       }
       const draft = window.view.exportDraft(id)

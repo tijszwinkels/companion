@@ -219,9 +219,31 @@ Item {
   // or close until one of them is chosen.
   property var unsavedDrafts: ({})
   readonly property string displayedUnsaved: root.unsavedDrafts[root.displayedId] || ""
+  // The shown conversation has input only the HTML editor holds (see
+  // unresolvedInput): it cannot be closed meanwhile.
+  readonly property bool displayedUnresolved: root.unresolvedInput !== null && root.unresolvedInput.sessionId === root.displayedId
   signal draftSaveRequested(string id)
   signal draftDiscardRequested(string id)
   function recordingInto(id) { return root.ownRecording !== null && root.ownRecording.id === id }
+
+  // Input only this view's HTML chat editor holds, because the host could
+  // not take it (longer than the page may hand over, or typed while words
+  // were being recorded into the draft): {sessionId, length, documentId},
+  // or null. Metadata only, never the text; at most one per view, because
+  // the page keeps at most one such input. While it is set, that
+  // conversation does not move to or from a window and does not close
+  // (transferBlocker), so the only editor holding the text stays.
+  property var unresolvedInput: null
+  function setUnresolvedInput(id, length, documentId) {
+    if (typeof id !== "string" || id === "" || id.length > 256) return false
+    if (!Number.isInteger(length) || length < 0) return false
+    if (length === 0) {
+      if (root.unresolvedInput && root.unresolvedInput.sessionId === id) root.unresolvedInput = null
+      return true
+    }
+    root.unresolvedInput = {sessionId: id, length: length, documentId: String(documentId).slice(0, 64)}
+    return true
+  }
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
   signal stopRequested(string id)
@@ -773,6 +795,10 @@ Item {
     }
     if (root.unsavedDrafts[id] !== undefined) {
       return "This conversation's text is not saved yet. Save or discard it first."
+    }
+    if (root.unresolvedInput && root.unresolvedInput.sessionId === id) {
+      return "This conversation has text (" + root.unresolvedInput.length
+        + " characters) that is only in its editor. Shorten, copy or discard it first."
     }
     return ""
   }
@@ -1835,6 +1861,7 @@ Item {
       PanelAction {
         objectName: "dismissSession"
         enabled: root.online && root.session !== null && !root.recordingBusy && root.displayedUnsaved === ""
+          && !root.displayedUnresolved
         text: "Close session"
         foreground: root.foreground
         selection: root.selection

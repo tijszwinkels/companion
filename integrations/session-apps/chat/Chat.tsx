@@ -41,9 +41,13 @@ export function Chat(props: { store: ChatStore }) {
   const bridge = props.store.native;
 
   if (!bridge || !status.sessionId) {
+    // Input only this editor held stays reachable while no conversation is
+    // shown (Activity, or its window's conversation was closed elsewhere).
+    const held = props.store.unresolved();
     return (
       <div class="chat">
         <div class="empty">No conversation</div>
+        {bridge && held && <HeldElsewhere held={held} store={props.store} bridge={bridge} />}
       </div>
     );
   }
@@ -640,6 +644,44 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
  * past twice the editing bound does this editor keep it on screen itself
  * (`unsynced`), with Copy and Discard.
  */
+// Input only this page holds, typed in another conversation than the one
+// shown (or with none shown): its length, Copy and Discard. Typing here waits
+// until it is resolved, so the page never holds more than one such input.
+function HeldElsewhere(props: {
+  held: { sessionId: string; text: string };
+  store: ChatStore;
+  bridge: NativeBridge;
+}) {
+  const { held, store, bridge } = props;
+  const [copyFeedback, setCopyFeedback] = useState('');
+  return (
+    <div class="conflict unkept elsewhere">
+      Text ({held.text.length} characters) typed in another conversation is only in this editor.
+      Copy or discard it before typing here.
+      <button
+        class="link"
+        onClick={() => {
+          setCopyFeedback('Copying…');
+          bridge.copyText(held.text, (json) => {
+            const answer = decode(json) as BridgeAnswer & { length?: number };
+            setCopyFeedback(
+              answer.accepted
+                ? `Copied (${answer.length ?? held.text.length} characters).`
+                : `Copy refused: ${answer.reason || 'the text was not copied.'}`,
+            );
+          });
+        }}
+      >
+        Copy
+      </button>
+      <button class="link" onClick={() => store.setUnresolved(null)}>
+        Discard
+      </button>
+      {copyFeedback && <span class="copy-feedback">{copyFeedback}</span>}
+    </div>
+  );
+}
+
 // Keyboard focus moving from a replaced editor to its successor (see the
 // layout effect in Composer). `requested`: a native focus request (focus
 // shortcut) that arrived before the conversation's editor was rendered; the
@@ -650,18 +692,28 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const { status, bridge, store } = props;
   const draft = status.draft || { text: '', cursor: -1, revision: 0, source: '', notice: '' };
   const area = useRef<HTMLTextAreaElement>(null);
-  const [text, setText] = useState(draft.text);
+  // Input only this page holds (see ChatStore.unresolved): for this
+  // conversation it is what this editor shows; for another one, this editor
+  // is read-only until that input is resolved.
+  const held = store.unresolved();
+  const heldHere = held !== null && held.sessionId === status.sessionId ? held.text : null;
+  const heldElsewhere = held !== null && held.sessionId !== status.sessionId ? held : null;
+  const [text, setText] = useState(heldHere ?? draft.text);
   const base = useRef(draft.revision);
   const sessionId = useRef(status.sessionId);
   const inFlight = useRef(0);
   // Rendered copy of inFlight, so Send waits for the latest edit's answer.
   const [editsInFlight, setEditsInFlight] = useState(0);
   const lastCursor = useRef(draft.cursor);
-  // Text this editor shows that the host did not take: only an edit longer
-  // than twice the editing bound (an input method can insert text that the
-  // page cannot cancel). It stays on screen, is never replaced by the host
-  // draft, and cannot be sent until it is shortened or discarded.
-  const [unsynced, setUnsynced] = useState<string | null>(null);
+  // Text this editor shows that the host did not take (`heldHere`): an edit
+  // longer than twice the editing bound (an input method can insert text
+  // that the page cannot cancel), or one refused while words were being
+  // recorded. It stays on screen, is never replaced by the host draft, and
+  // cannot be sent until it is shortened or discarded.
+  const unsynced = heldHere;
+  // Numbers this editor's inputs, so only the answer to the latest one can
+  // release held input (an older accepted edit must not).
+  const inputNumber = useRef(0);
   const [copyFeedback, setCopyFeedback] = useState('');
   const [inputNotice, setInputNotice] = useState('');
   // Whether this editor has keyboard focus (only for the placeholder).
@@ -676,6 +728,8 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
 
   const maximum = status.maximumMessageLength || 8000;
   const editLimit = status.editLimit || 2 * maximum;
+  // The longest text the host takes from the page (TrustedChatView.editDraft).
+  const handOverLimit = 2 * editLimit;
   const sendable =
     status.canSend === true &&
     editsInFlight === 0 &&
@@ -684,7 +738,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
-  const readOnly = status.recording?.busy === true;
+  const readOnly = status.recording?.busy === true || heldElsewhere !== null;
 
   // Adopt the host draft when it changed on the host side (or the view now
   // shows another conversation). Never while the page's own edits are still
@@ -736,7 +790,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       setEditsInFlight(0);
       lastCursor.current = -1;
       setInputNotice('');
-      setUnsynced(null);
     } else if (unsynced !== null) {
       // Never replace text only this editor holds with the host draft.
       return;
@@ -754,11 +807,29 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   function edited(value: string, cursor: number) {
     setInputNotice('');
     setText(value);
+    lastCursor.current = cursor;
+    inputNumber.current++;
+    const thisInput = inputNumber.current;
+    const editedSession = status.sessionId;
+    // Too long to hand to the host: this editor keeps it, and the host
+    // learns its length before anything else can happen.
+    if (value.length > handOverLimit) {
+      store.setUnresolved({ sessionId: editedSession, text: value });
+      return;
+    }
     inFlight.current++;
     setEditsInFlight(inFlight.current);
-    lastCursor.current = cursor;
-    const editedSession = status.sessionId;
     bridge.editDraft(editedSession, base.current, value, cursor, (json) => {
+      const answer = decode(json) as BridgeAnswer & { unresolved?: boolean };
+      // Refused (e.g. raced with a recording): the host already holds that
+      // conversation back; the page keeps the text, also when this editor
+      // was replaced meanwhile, so it is never silently lost.
+      const current = store.unresolved();
+      if (!answer.accepted && answer.unresolved) {
+        if (current === null || current.sessionId === editedSession) {
+          store.setUnresolved({ sessionId: editedSession, text: value });
+        }
+      }
       // Answers for a replaced instance or another conversation never touch
       // the editor now shown; the host applied an accepted edit to the
       // conversation it named.
@@ -767,14 +838,18 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       }
       inFlight.current = Math.max(0, inFlight.current - 1);
       setEditsInFlight(inFlight.current);
-      const answer = decode(json);
       if (!answer.accepted) {
-        // Refused (too long to keep): it stays here, on screen, unsynced.
-        setUnsynced(value);
         setText(value);
         return;
       }
-      setUnsynced(null);
+      // The latest input was taken by the host: nothing is held any more.
+      if (
+        thisInput === inputNumber.current &&
+        current !== null &&
+        current.sessionId === editedSession
+      ) {
+        store.setUnresolved(null);
+      }
       store.acceptedEdit(editedSession, value, cursor);
       // The host changed while this edit travelled; its status update was
       // held back for the answer, so apply it now.
@@ -920,10 +995,13 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       {/* Notices and recovery come below the editor, as in the classic
           view, so the editor never moves when one appears. */}
       {inputNotice && <div class="conflict">{inputNotice}</div>}
+      {heldElsewhere !== null && (
+        <HeldElsewhere held={heldElsewhere} store={store} bridge={bridge} />
+      )}
       {unsynced !== null && (
         <div class="conflict unkept">
-          This text ({unsynced.length} characters) is longer than can be kept and is only in this
-          editor. Shorten it, copy it or discard it.
+          This text ({unsynced.length} characters) is only in this editor: it is longer than can be
+          kept, or arrived while words were being recorded. Shorten it, copy it or discard it.
           <button
             class="link"
             onClick={() => {
@@ -943,7 +1021,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           <button
             class="link"
             onClick={() => {
-              setUnsynced(null);
+              store.setUnresolved(null);
               setCopyFeedback('');
               adoptHostDraft();
             }}
@@ -1023,7 +1101,12 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         </button>
         <button
           class="panel-action"
-          disabled={!status.online || recording?.busy === true || Boolean(status.draftUnsaved)}
+          disabled={
+            !status.online ||
+            recording?.busy === true ||
+            Boolean(status.draftUnsaved) ||
+            props.store.unresolved()?.sessionId === status.sessionId
+          }
           onClick={() => bridge.closeSession(status.sessionId)}
         >
           Close session
