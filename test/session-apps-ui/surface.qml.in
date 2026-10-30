@@ -1917,6 +1917,55 @@ TestCase {
     tryCompare(composerOf(setup.view), "text", "B now", 5000)
   }
 
+  // L6 (gate 3015e37): the latest edit's acceptance releases held input also
+  // when its editor was replaced (switch, or away and back) before the
+  // answer: the hold ends, the shortened text is A's, B can type.
+  function test_zzq_latest_acceptance_releases_after_a_switch() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, unresolvedText())
+    tryVerify(function() { return view.unresolvedInput !== null }, 5000)
+    holdNextAnswer(chat)
+    typeInto(chat, "SHORTENED")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    compare(composerOf(view).text, "SHORTENED")
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return heldNotice(chat).includes("32002") }, 5000)
+    releaseHeld(chat)
+    tryCompare(view, "unresolvedInput", null, 3000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true }, 3000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').readOnly") === false }, 3000)
+    typeInto(chat, "B types")
+    tryCompare(composerOf(view), "text", "B types", 5000)
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return shownIs(chat, "SHORTENED") }, 5000)
+    compare(evaluate(chat, "document.querySelector('.unkept') === null"), true)
+
+    // Away and back before the answer: the new A editor shows the held
+    // text until then, and the shortened text after it.
+    typeInto(chat, unresolvedText())
+    tryCompare(view.unresolvedInput, "length", 32002)
+    holdNextAnswer(chat)
+    typeInto(chat, "SHORTER AGAIN")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return heldNotice(chat).includes("32002") }, 5000)
+    releaseHeld(chat)
+    tryCompare(view, "unresolvedInput", null, 3000)
+    tryVerify(function() { return shownIs(chat, "SHORTER AGAIN") }, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true }, 3000)
+    compare(composerOf(view).text, "SHORTER AGAIN")
+  }
+
   function findChildren(item, name) {
     let found = []
     if (!item) return found

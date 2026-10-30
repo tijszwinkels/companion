@@ -800,6 +800,19 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
   }, [status.sessionId, draft.revision]);
 
+  // Held input released while this editor showed it, by an answer this
+  // editor did not wait for (the edit came from an editor it replaced, e.g.
+  // away and back): show the host draft, which already has that edit, so
+  // the released text is not offered any more. This editor's own edits in
+  // flight decide first.
+  const wasHeld = useRef(heldHere !== null);
+  useEffect(() => {
+    if (wasHeld.current && heldHere === null && inFlight.current === 0) {
+      adoptHostDraft();
+    }
+    wasHeld.current = heldHere !== null;
+  }, [heldHere]);
+
   // Every edit goes to the host, which applies it to the conversation's
   // draft (the last edit wins). Over-limit text that still arrives (an input
   // that cannot be cancelled, e.g. an input method) is applied too and shown
@@ -851,6 +864,12 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           bridge.inputUnresolved(editedSession, 0);
         }
       }
+      // The latest input was taken by the host: nothing is held any more.
+      // Also when this editor was replaced meanwhile (a switch), so the hold
+      // and the other editors' wait end with the answer, not with a remount.
+      if (answer.accepted && latest && current !== null && current.sessionId === editedSession) {
+        store.setUnresolved(null);
+      }
       // Answers for a replaced instance or another conversation never touch
       // the editor now shown; the host applied an accepted edit to the
       // conversation it named.
@@ -864,10 +883,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           setText(value);
         }
         return;
-      }
-      // The latest input was taken by the host: nothing is held any more.
-      if (latest && current !== null && current.sessionId === editedSession) {
-        store.setUnresolved(null);
       }
       store.acceptedEdit(editedSession, value, cursor);
       // The host changed while this edit travelled; its status update was
