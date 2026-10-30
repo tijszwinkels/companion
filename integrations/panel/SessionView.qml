@@ -623,7 +623,14 @@ Item {
         delete root.drafts[id]
         root.forgetDraftSource(id)
       }
-      if (root.displayedId === id && composer.text === text) composer.text = ""
+      // Clearing the shown text is not an edit: it writes nothing. The
+      // listener already cleared its draft if it still was the sent text,
+      // and the Client then shows whatever the listener holds (R3-1).
+      if (root.displayedId === id && composer.text === text) {
+        root.loadingDraft = true
+        composer.text = ""
+        root.loadingDraft = false
+      }
     }
   }
 

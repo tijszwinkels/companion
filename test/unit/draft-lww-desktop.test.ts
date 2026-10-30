@@ -182,21 +182,35 @@ test('one listener draft map: last write wins, no echo, snapshot, trusted editor
   assert.equal(prompts.length, turns);
 
   // A confirmed send clears the draft only while it equals the sent text.
+  // Each check looks only at changes after its own send, before any other
+  // write could repair the draft.
+  const changesOfB = (from: number) =>
+    third.messages.slice(from).filter((message) => message.type === 'draft' && message.id === b);
+  const beforeUnequalSend = third.messages.length;
   desktop.send({ action: 'send-agent', id: b, text: 'Something else' });
   assert.equal(((await desktop.reply('send-agent')) as Message).result, 'submitted');
   await sessions.idle();
-  desktop.send({ action: 'draft-set', id: b, text: 'B words', editId: 'e5' });
-  await desktop.reply('draft-set');
+  assert.deepEqual(changesOfB(beforeUnequalSend), [], 'an unequal send changes no draft');
+  const fourth = await connect(desktop.socketPath);
+  context.after(() => fourth.close());
+  fourth.send({ action: 'panel-state', id: '', composerFocused: false, draftHost: true });
+  assert.equal((await fourth.reply('panel-state')).result, 'panel-recorded');
+  await waitFor(() => fourth.messages.some((message) => message.type === 'draft-snapshot'));
+  const afterUnequalSend = fourth.messages.find((message) => message.type === 'draft-snapshot')!;
   assert.equal(
-    third.messages.filter((message) => message.type === 'draft' && message.id === b).at(-1)?.text,
+    afterUnequalSend.drafts.find((entry: Message) => entry.id === b)?.text,
     'B words',
+    'the listener still holds B after the unequal send',
   );
+
+  const beforeEqualSend = third.messages.length;
   desktop.send({ action: 'send-agent', id: b, text: 'B words' });
   assert.equal(((await desktop.reply('send-agent')) as Message).result, 'submitted');
-  await waitFor(() =>
-    third.messages.some(
-      (message) => message.type === 'draft' && message.id === b && message.text === '',
-    ),
+  await waitFor(() => changesOfB(beforeEqualSend).length > 0);
+  assert.deepEqual(
+    changesOfB(beforeEqualSend).map((message) => message.text),
+    [''],
+    'the equal send clears B exactly once',
   );
   await sessions.idle();
   assert.ok(prompts.includes('B words'));

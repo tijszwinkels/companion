@@ -208,7 +208,7 @@ Window {
     onOriginRequested: (id, groupId) => root.controller.panel.openOrigin(id, groupId)
     onScreenshotRequested: (source, title) => root.screenshotSource = source
     onStopRequested: id => root.client.send({action: "stop-agent", id: id})
-    onDismissRequested: id => root.client.send({action: "close-agent", id: id})
+    onDismissRequested: id => root.controller.closeSession(id)
     onSendRequested: (id, text) => root.client.sendInput(id, text)
     onRecordRequested: (id, draftLength) => root.client.startRecording(id, draftLength)
     onStopRecordingRequested: id => root.client.stopRecording(id)

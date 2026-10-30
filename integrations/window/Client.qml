@@ -331,6 +331,41 @@ Item {
     root.pendingInput = null
     if (pending) Qt.callLater(root.reportPanel)
     if (pending) root.inputFinished(pending.id, pending.text, error)
+    if (pending && !error) root.settleSentDraft(pending.id, pending.text)
+  }
+
+  // A message was sent. Only the listener clears the draft, and only while it
+  // still is exactly the sent text (clear-if-equal); this UI never writes an
+  // empty draft for a send, so a different draft (another editor's, or one
+  // seen after a reconnect) stays. If this UI still shows the sent text, the
+  // text no longer needs saving: show the listener's current draft instead.
+  // Newer typing, or own edits still awaiting their answer, stay as they are.
+  function settleSentDraft(id, text) {
+    if ((root.serverDrafts[id] || "") !== text) return
+    if ((root.draftEditsInFlight[id] || 0) > 0) return
+    root.markUnsaved(id, "")
+    delete root.latestDraftEdits[id]
+    const current = root.listenerDrafts[id] || ""
+    if (current === "") delete root.serverDrafts[id]
+    else root.serverDrafts[id] = current
+    root.draftChanged(id, current, "")
+  }
+
+  // A conversation disappeared (closed elsewhere, or missing after a
+  // reconnect). Text this UI showed for it that the listener has not
+  // confirmed (not saved, or its latest edit still unanswered) is returned
+  // once, for the closed-conversation notice, and forgotten here; a later
+  // answer to that edit no longer marks it. Confirmed text stays the
+  // listener's (it keeps drafts of closed conversations).
+  function takeUnconfirmedDraft(id) {
+    if (root.unsavedDrafts[id] === undefined && root.latestDraftEdits[id] === undefined) return ""
+    const text = root.serverDrafts[id] || ""
+    root.markUnsaved(id, "")
+    delete root.latestDraftEdits[id]
+    const current = root.listenerDrafts[id] || ""
+    if (current === "") delete root.serverDrafts[id]
+    else root.serverDrafts[id] = current
+    return text
   }
 
   function finishChoice(error) {

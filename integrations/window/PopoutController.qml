@@ -48,6 +48,9 @@ Item {
   }
   // Unsent text of popped-out conversations closed elsewhere: [{key, title, text}].
   property var orphanDrafts: []
+  // Conversation titles at the last sessionsChanged(), so the notice for a
+  // conversation that disappeared can still name it.
+  property var knownTitles: ({})
   property int orphanSequence: 0
   // Quiet (focus:false) openings still settling. While above zero the host
   // holds back panel-state reports, so a window that Qt or the compositor
@@ -406,6 +409,37 @@ Item {
     }, id)
   }
 
+  // Closing a conversation, from any control (HTML or native rail, header,
+  // footer, a pop-out window, app mode). Every view that may own part of its
+  // state must agree: text not saved or only in an editor, a message or
+  // choice still being confirmed, words still being recorded. Returns why
+  // not, or "".
+  function closeBlocker(id) {
+    for (const view of root.allViews()) {
+      const blocker = view.transferBlocker(id)
+      if (blocker !== "") return blocker
+      if (view.displayedId === id && view.recordingBusy) {
+        return "Words are still being recorded into this conversation. Wait for the recording to finish."
+      }
+    }
+    return ""
+  }
+
+  // The one place that asks the listener to close a conversation. A refusal
+  // is shown (in the window too, when the conversation is popped out).
+  function closeSession(id) {
+    const blocker = root.closeBlocker(id)
+    if (blocker !== "") {
+      const reason = "The conversation was not closed. " + blocker
+      root.client.error = reason
+      root.client.errorAction = "close"
+      if (root.windows[id]) root.windows[id].notice = reason
+      return false
+    }
+    root.client.send({action: "close-agent", id: id})
+    return true
+  }
+
   function addOrphan(title, text, kind) {
     root.orphanSequence += 1
     root.orphanDrafts = root.orphanDrafts.concat([{key: "orphan-" + root.orphanSequence,
@@ -418,6 +452,13 @@ Item {
   // the listener), stays available in the sidebar with Copy and Dismiss.
   // Recovery never reopens the conversation or starts a turn.
   function sessionsChanged() {
+    // Titles as they were before this change, for conversations that just
+    // disappeared (bounded by the conversations the listener reported).
+    const previousTitles = root.knownTitles
+    const titles = {}
+    for (const entry of root.client.sessions.sessions) titles[entry.id] = entry.title
+    root.knownTitles = titles
+
     for (const id of root.order.slice()) {
       if (root.sessionExists(id)) {
         // An answer shown in a visible window has been seen. Unread marks
@@ -444,8 +485,23 @@ Item {
         continue
       }
       const draft = window.view.exportDraft(id)
+      // The window's text box already shows any unconfirmed text; take it
+      // from the Client too, so it is offered exactly once.
+      root.client.takeUnconfirmedDraft(id)
       if (draft.text.trim() !== "") root.addOrphan(window.lastTitle, draft.text, "draft")
       root.forget(id)
+    }
+
+    // A conversation shown in the sidebar (or not shown at all) that
+    // disappeared: text this UI has not had confirmed by the listener (not
+    // saved, or still unanswered) would otherwise only be hidden in memory.
+    // Offer it once with Copy and Dismiss; nothing reopens the conversation.
+    // Text only the HTML editor holds stays in that editor's own notice.
+    const unconfirmed = new Set(Object.keys(root.client.unsavedDrafts).concat(Object.keys(root.client.latestDraftEdits)))
+    for (const id of unconfirmed) {
+      if (root.sessionExists(id) || root.windows[id]) continue
+      const text = root.client.takeUnconfirmedDraft(id)
+      if (text.trim() !== "") root.addOrphan(previousTitles[id] || "conversation", text, "draft")
     }
   }
 

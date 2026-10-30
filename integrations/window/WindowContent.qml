@@ -553,7 +553,7 @@ Item {
     onOrphanDraftDismissed: key => popoutViews.dismissOrphan(key)
     onPreviousRequested: client.sessions.showingPrevious = true
     onReopenSessionRequested: id => client.send({action: "reopen-agent", id: id})
-    onDismissSessionRequested: id => client.send({action: "close-agent", id: id})
+    onDismissSessionRequested: id => popoutViews.closeSession(id)
     onCancelWakeRequested: (id, timerId) => client.send({action: "cancel-agent-wake", id: id, timerId: timerId})
     onStopSessionRequested: id => client.send({action: "stop-agent", id: id})
     onSendSessionRequested: (id, text) => client.sendInput(id, text)

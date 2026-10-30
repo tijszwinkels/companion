@@ -730,6 +730,9 @@ TestCase {
     verify(clickButton(chat, "Send"))
     tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
     compare(fakeBackend.sent.find(message => message.action === "send-agent").text, "host old")
+    // The listener's clear-if-equal (its draft still is the sent text)
+    // arrives before the confirmation; this UI writes no empty draft (R3-1).
+    body.client.receive({type: "draft", id: "sendcheck", text: "", source: "", sequence: 0})
     fakeBackend.received({type: "result", action: "send-agent", result: {}})
     tryCompare(composerOf(view), "text", "")
   }
@@ -1964,6 +1967,270 @@ TestCase {
     tryVerify(function() { return shownIs(chat, "SHORTER AGAIN") }, 5000)
     tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true }, 3000)
     compare(composerOf(view).text, "SHORTER AGAIN")
+  }
+
+  // ---- R3 repairs (from Rowan's adverse probes, review/bfbc052) ----------
+  function draftWritesSince(from) {
+    return fakeBackend.sent.slice(from).filter(message => message.action === "draft-set")
+  }
+  function sendAndConfirm(chat, result) {
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    const from = fakeBackend.sent.length
+    body.client.receive(result)
+    wait(250)
+    return from
+  }
+
+  // R3-1: a successful Send never writes an empty draft; the listener's
+  // clear-if-equal alone clears it. Reconnect with a different draft from
+  // another editor: that draft stays and is shown after the send.
+  function test_zzr_send_after_reconnect_keeps_the_other_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "MY EXACT SEND")
+    tryCompare(composerOf(view), "text", "MY EXACT SEND")
+    fakeBackend.disconnected()
+    tryCompare(body.client, "online", false)
+    snapshot([session("one", "First chat", null)])
+    tryCompare(body.client, "online", true)
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "FOREIGN CANONICAL", source: "", sequence: 2}]})
+    tryVerify(function() { return unsavedNotice(chat) })
+    compare(textarea(chat), "MY EXACT SEND")
+    const from = sendAndConfirm(chat, {type: "result", action: "send-agent", result: {accepted: true}})
+    compare(draftWritesSince(from).length, 0, "no draft write after the send")
+    compare(fakeBackend.sent.find(message => message.action === "send-agent").text, "MY EXACT SEND")
+    tryVerify(function() { return shownIs(chat, "FOREIGN CANONICAL") }, 5000)
+    compare(composerOf(view).text, "FOREIGN CANONICAL")
+    compare(body.client.unsavedDrafts["one"], undefined)
+    compare(unsavedNotice(chat), false)
+  }
+
+  // R3-1: the same with text the listener refused; and newer typing,
+  // a failed send and an ordinary send.
+  function test_zzs_send_outcomes_never_write_an_empty_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("one", "FOREIGN CANONICAL")
+    settled(view, chat)
+    typeInto(chat, "MY EXACT SEND")
+    tryCompare(composerOf(view), "text", "MY EXACT SEND")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    let from = sendAndConfirm(chat, {type: "result", action: "send-agent", result: {accepted: true}})
+    compare(draftWritesSince(from).length, 0, "refused text sent: no draft write")
+    tryVerify(function() { return shownIs(chat, "FOREIGN CANONICAL") }, 5000)
+    compare(body.client.unsavedDrafts["one"], undefined)
+
+    // Newer typing before the confirmation stays (it was an ordinary edit).
+    listenerDraft("one", "send me")
+    settled(view, chat)
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    typeInto(chat, "typed while sending")
+    tryCompare(composerOf(view), "text", "typed while sending")
+    from = fakeBackend.sent.length
+    body.client.receive({type: "result", action: "send-agent", result: {accepted: true}})
+    wait(250)
+    compare(draftWritesSince(from).length, 0)
+    compare(textarea(chat), "typed while sending")
+    compare(composerOf(view).text, "typed while sending")
+
+    // A failed send keeps the text and writes nothing.
+    listenerDraft("one", "will fail")
+    settled(view, chat)
+    from = sendAndConfirm(chat, {type: "error", action: "send-agent", message: "Synthetic failure"})
+    compare(draftWritesSince(from).length, 0)
+    compare(textarea(chat), "will fail")
+    body.client.error = ""
+
+    // Ordinary send: the listener's clear arrives first; nothing is written.
+    listenerDraft("one", "ordinary")
+    settled(view, chat)
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    from = fakeBackend.sent.length
+    body.client.receive({type: "draft", id: "one", text: "", source: "", sequence: 9})
+    body.client.receive({type: "result", action: "send-agent", result: {accepted: true}})
+    wait(250)
+    compare(draftWritesSince(from).length, 0)
+    tryVerify(function() { return shownIs(chat, "") }, 5000)
+  }
+
+  // R3-2: every close control asks the one close admission: HTML rail x,
+  // native right-click, the view's own close request, a popped-out target,
+  // and a send still being confirmed. A refusal is shown; once resolved the
+  // same control closes.
+  function test_zzt_every_close_control_waits_for_unsaved_text() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "UNSAVED SHORT INPUT")
+    tryCompare(composerOf(view), "text", "UNSAVED SHORT INPUT")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    const rail = findChild(body, "trustedRailBrowser")
+    verify(rail !== null)
+    const closes = () => fakeBackend.sent.filter(message => message.action === "close-agent").length
+    fakeBackend.sent = []
+    verify(evaluate(rail, "(() => { const b = document.querySelector('.close'); if (!b || b.disabled) return false; b.click(); return true })()"))
+    wait(250)
+    compare(closes(), 0, "HTML rail x")
+    verify(body.client.error.includes("not closed") && body.client.error.includes("not saved"), body.client.error)
+    body.client.error = ""
+    view.dismissRequested("one")
+    wait(100)
+    compare(closes(), 0, "header/footer close request")
+    body.client.error = ""
+    compare(textarea(chat), "UNSAVED SHORT INPUT")
+    // Resolved: the rail x closes.
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return unsavedNotice(chat) === false })
+    verify(evaluate(rail, "(() => { const b = document.querySelector('.close'); if (!b || b.disabled) return false; b.click(); return true })()"))
+    tryVerify(function() { return closes() === 1 }, 3000)
+
+    // A send still being confirmed blocks closing too.
+    snapshot([session("one", "First chat", null)])
+    listenerDraft("one", "sending")
+    settled(view, chat)
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    fakeBackend.sent = []
+    view.dismissRequested("one")
+    wait(100)
+    compare(closes(), 0, "pending send")
+    body.client.receive({type: "result", action: "send-agent", result: {accepted: true}})
+    body.client.error = ""
+
+    // A popped-out conversation with unsaved text: closing it from the
+    // sidebar is refused and the window says why.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.popouts.popOut("two")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    const window = body.popouts.windows["two"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    typeInto(windowChat, "WINDOW UNSAVED")
+    tryCompare(composerOf(window.view), "text", "WINDOW UNSAVED")
+    refuseLatestEdit("two")
+    tryVerify(function() { return unsavedNotice(windowChat) })
+    fakeBackend.sent = []
+    body.panel.dismissSessionRequested("two")
+    window.view.dismissRequested("two")
+    wait(100)
+    compare(closes(), 0, "popped-out target")
+    verify(window.notice.includes("not closed"), window.notice)
+    body.client.discardUnsavedDraft("two")
+    body.client.error = ""
+  }
+
+  function test_zzu_native_rail_right_click_waits_for_unsaved_text() {
+    body.htmlSessions = false
+    const view = mainView()
+    composerOf(view).text = "NATIVE UNSAVED INPUT"
+    refuseLatestEdit("one")
+    verify(view.displayedUnsaved !== "")
+    const tab = findChild(body, "tab-one")
+    verify(tab !== null)
+    fakeBackend.sent = []
+    mouseClick(tab, tab.width / 2, tab.height / 2, Qt.RightButton)
+    wait(250)
+    compare(fakeBackend.sent.filter(message => message.action === "close-agent").length, 0)
+    verify(body.client.error.includes("not closed"), body.client.error)
+    compare(composerOf(view).text, "NATIVE UNSAVED INPUT")
+    body.client.error = ""
+    body.client.discardUnsavedDraft("one")
+    body.htmlSessions = true
+  }
+
+  // R3-3: a sidebar conversation that disappears offers its unconfirmed
+  // text (refused, or still unanswered) once, with Copy and Dismiss; also
+  // after a reconnect; a popped-out one exactly once too.
+  function orphanTexts() {
+    return body.popouts.orphanDrafts.map(entry => entry.text)
+  }
+  function test_zzv_disappearing_sidebar_conversation_offers_unconfirmed_text() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    body.popouts.orphanDrafts = []
+    typeInto(chat, "MAIN UNSAVED DISAPPEARING")
+    tryCompare(composerOf(view), "text", "MAIN UNSAVED DISAPPEARING")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    snapshot([session("two", "Second chat", null)])
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return orphanTexts().length === 1 }, 3000)
+    compare(JSON.stringify(orphanTexts()), JSON.stringify(["MAIN UNSAVED DISAPPEARING"]))
+    compare(body.popouts.orphanDrafts[0].title, "First chat")
+    // Exactly once: another change of the list adds nothing.
+    snapshot([session("two", "Second chat", null)])
+    wait(100)
+    compare(orphanTexts().length, 1)
+    // Actual Copy and Dismiss in the sidebar notice.
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    const copy = findChild(body, "orphanCopy")
+    verify(copy !== null)
+    copy.triggered()
+    tryVerify(function() { return clipboardText() === "MAIN UNSAVED DISAPPEARING" }, 3000)
+    findChild(body, "orphanDismiss").triggered()
+    tryVerify(function() { return orphanTexts().length === 0 })
+
+    // Still unanswered when it disappears; a late refusal adds nothing.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    settled(view, chat)
+    fakeBackend.sent = []
+    typeInto(chat, "STILL UNANSWERED")
+    tryCompare(composerOf(view), "text", "STILL UNANSWERED")
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return orphanTexts().length === 1 }, 3000)
+    compare(orphanTexts()[0], "STILL UNANSWERED")
+    refuseLatestEdit("one")
+    wait(100)
+    compare(body.client.unsavedDrafts["one"], undefined)
+    compare(orphanTexts().length, 1)
+    body.popouts.orphanDrafts = []
+
+    // Missing after a reconnect.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    settled(view, chat)
+    typeInto(chat, "BEFORE RECONNECT")
+    tryCompare(composerOf(view), "text", "BEFORE RECONNECT")
+    refuseLatestEdit("one")
+    fakeBackend.disconnected()
+    tryCompare(body.client, "online", false)
+    snapshot([session("two", "Second chat", null)])
+    tryCompare(body.client, "online", true)
+    tryVerify(function() { return orphanTexts().length === 1 }, 3000)
+    compare(orphanTexts()[0], "BEFORE RECONNECT")
+    body.popouts.orphanDrafts = []
+
+    // A popped-out conversation with unsaved text: offered exactly once.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    typeInto(windowChat, "WINDOW UNSAVED")
+    tryCompare(composerOf(window.view), "text", "WINDOW UNSAVED")
+    refuseLatestEdit("one")
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    wait(100)
+    compare(JSON.stringify(orphanTexts()), JSON.stringify(["WINDOW UNSAVED"]))
+    body.popouts.orphanDrafts = []
   }
 
   function findChildren(item, name) {
