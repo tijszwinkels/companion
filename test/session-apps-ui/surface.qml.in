@@ -1269,6 +1269,15 @@ TestCase {
     evaluate(chat, "(() => { const t = document.querySelector('.transcript');"
       + " t.dispatchEvent(new WheelEvent('wheel', {deltaY: -120, bubbles: true})); t.scrollTop = " + top + "; return true })()")
   }
+  // The reader scrolls, and the row they are then on, read in the same page
+  // task: before the host's answer to that scroll (e.g. "Loading messages…"
+  // replacing "Earlier messages", 8 px shorter) can render and move it.
+  function readerScrollToAndRow(chat, top) {
+    return JSON.parse(evaluate(chat, "JSON.stringify((() => { const t = document.querySelector('.transcript');"
+      + " t.dispatchEvent(new WheelEvent('wheel', {deltaY: -120, bubbles: true})); t.scrollTop = " + top + ";"
+      + " const edge = t.getBoundingClientRect(); const row = [...document.querySelectorAll('.message')].find(r => r.getBoundingClientRect().bottom > edge.top + 1);"
+      + " return {text: row.querySelector('.bubble').textContent.slice(0, 7), offset: row.getBoundingClientRect().top - edge.top} })())"))
+  }
   // Waits for the live end; on failure reports where the transcript is.
   function verifyAtLiveEnd(chat, label) {
     let ok = false
@@ -1279,10 +1288,15 @@ TestCase {
     verify(ok, label + ": " + JSON.stringify(scrollState(chat)))
   }
   function verifyReaderRow(chat, before, label) {
-    tryVerify(function() {
+    let ok = false
+    for (let step = 0; step < 30 && !ok; step++) {
       const offset = rowOffset(chat, before.text)
-      return offset !== null && Math.abs(offset - before.offset) <= 2
-    }, 3000, label + ": " + JSON.stringify(before))
+      ok = offset !== null && Math.abs(offset - before.offset) <= 2
+      if (!ok) wait(100)
+    }
+    // On failure: where the row actually is, and the transcript's state.
+    verify(ok, label + ": expected " + JSON.stringify(before) + ", actual " + rowOffset(chat, before.text)
+      + ", transcript " + JSON.stringify(scrollState(chat)) + ", top row " + JSON.stringify(readerRow(chat)))
     wait(300)
     const settled = rowOffset(chat, before.text)
     verify(settled !== null && Math.abs(settled - before.offset) <= 2, label + " (settled): " + settled)
@@ -1359,9 +1373,11 @@ TestCase {
       body.client.sessions.select("follow")
       tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('After the jump.')") === true })
       fakeBackend.sent = []
-      readerScrollTo(chat, 0)
+      // CHANGED: the reader's row is read with their scroll (see
+      // readerScrollToAndRow); read afterwards it could already include the
+      // loading notice's height change, a timing-dependent reference.
+      before = readerScrollToAndRow(chat, 0)
       tryVerify(function() { return fakeBackend.sent.some(message => message.action === "agent-history-page") }, 5000, "older page requested")
-      before = readerRow(chat)
       const request = fakeBackend.sent.filter(message => message.action === "agent-history-page").pop()
       compare(request.direction, "before")
       const older = longRows("follow", request.index - 10, request.index)

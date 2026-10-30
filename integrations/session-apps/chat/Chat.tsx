@@ -117,6 +117,9 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
   // transcript's top edge and its distance from that edge, so a resize or
   // reflow can put it back where it was (the classic view's reader anchor).
   const readerAnchor = useRef<{ row: Element; offset: number } | null>(null);
+  // The scroll position this component set itself to restore the reader's
+  // row; the scroll event that follows is not the reader moving.
+  const restoredTop = useRef<number | null>(null);
 
   function follow(value: boolean) {
     following.current = value;
@@ -142,15 +145,26 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     }
   }
 
-  function restoreReaderRow() {
+  // Puts the reader's row back at its distance from the top edge. Returns
+  // whether that worked: near the top the scroll position cannot go below
+  // zero, e.g. while the "Loading messages…" notice above the rows is
+  // shorter than "Earlier messages". The anchor is then kept as it was, so
+  // the older rows arriving next restore the row exactly; re-reading it from
+  // the clamped position would make the row drift by the notice's height.
+  function restoreReaderRow(): boolean {
     const element = scroller.current;
     const anchor = readerAnchor.current;
     if (!element || !anchor || !anchor.row.isConnected) {
-      return;
+      return false;
     }
     const edge = element.getBoundingClientRect().top;
     const offset = anchor.row.getBoundingClientRect().top - edge;
-    element.scrollTop += offset - anchor.offset;
+    if (Math.abs(offset - anchor.offset) > 0.5) {
+      element.scrollTop += offset - anchor.offset;
+      restoredTop.current = element.scrollTop;
+    }
+    const restored = anchor.row.getBoundingClientRect().top - edge;
+    return Math.abs(restored - anchor.offset) <= 1;
   }
 
   // Keep the reader's position when older rows arrive above, and follow the
@@ -163,6 +177,14 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     const first = rows.length > 0 ? rows[0].key : '';
     if (following.current) {
       element.scrollTop = element.scrollHeight;
+    } else if (readerAnchor.current && readerAnchor.current.row.isConnected) {
+      // The reader's own row back in place, whatever changed above it in
+      // this render or since the last frame (older rows, the history
+      // notice). A height difference alone is wrong when such a change was
+      // rendered after heightBefore was measured.
+      if (restoreReaderRow()) {
+        rememberReaderRow();
+      }
     } else if (first !== firstKey.current && heightBefore.current > 0) {
       element.scrollTop += element.scrollHeight - heightBefore.current;
       rememberReaderRow();
@@ -220,8 +242,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     }
     if (following.current) {
       element.scrollTop = element.scrollHeight;
-    } else {
-      restoreReaderRow();
+    } else if (restoreReaderRow()) {
       rememberReaderRow();
     }
     heightBefore.current = element.scrollHeight;
@@ -263,7 +284,12 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       follow(atEnd);
       bridge.following(status.sessionId, atEnd);
     }
-    if (!following.current) {
+    // The reader's new row, unless this scroll is the one this component
+    // made to restore it (the anchor stays as the reader left it).
+    const ownRestore =
+      restoredTop.current !== null && Math.abs(element.scrollTop - restoredTop.current) <= 1;
+    restoredTop.current = null;
+    if (!following.current && !ownRestore) {
       rememberReaderRow();
     }
     heightBefore.current = element.scrollHeight;
