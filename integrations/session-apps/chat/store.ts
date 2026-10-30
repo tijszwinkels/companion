@@ -44,6 +44,13 @@ export class ChatStore {
   // keeps that conversation from moving or closing until it is resolved;
   // the page is the only place the text is.
   private unresolvedInput: { sessionId: string; text: string } | null = null;
+  // This page's edits whose answers are still outstanding, per conversation:
+  // how many, and the serial of that conversation's latest input. Kept for
+  // the page, not per editor, because an editor can be replaced (switch,
+  // remount) before its answers arrive. Entries go away with their last
+  // answer, so this holds at most the conversations with edits in flight.
+  private pendingEdits = new Map<string, { count: number; latest: number }>();
+  private inputSerial = 0;
 
   attach(bridge: NativeBridge): void {
     this.bridge = bridge;
@@ -61,6 +68,61 @@ export class ChatStore {
 
   hostDraft(): { sessionId: string; text: string; cursor: number; revision: number } {
     return this.latestHostDraft;
+  }
+
+  /**
+   * A new input in `sessionId`, before anything asynchronous can happen;
+   * returns its serial. `sent`: an edit for it now awaits its answer. Every
+   * input becomes the conversation's latest, so an answer to an older one
+   * can no longer change what the page holds.
+   */
+  beginInput(sessionId: string, sent: boolean): number {
+    this.inputSerial++;
+    const serial = this.inputSerial;
+    const entry = this.pendingEdits.get(sessionId);
+    if (entry) {
+      entry.latest = serial;
+      if (sent) {
+        entry.count++;
+      }
+    } else if (sent) {
+      this.pendingEdits.set(sessionId, { count: 1, latest: serial });
+    }
+    return serial;
+  }
+
+  /** The answer to input `serial` arrived: whether it is still the latest. */
+  finishInput(sessionId: string, serial: number): boolean {
+    const entry = this.pendingEdits.get(sessionId);
+    if (!entry) {
+      return true;
+    }
+    entry.count--;
+    const latest = entry.latest === serial;
+    if (entry.count <= 0) {
+      this.pendingEdits.delete(sessionId);
+      // An editor of another conversation may be waiting for this (see
+      // pendingElsewhere): let it render again.
+      if (sessionId !== this.snapshot.status.sessionId) {
+        this.snapshot = { rows: this.snapshot.rows, status: this.snapshot.status };
+        this.notify();
+      }
+    }
+    return latest;
+  }
+
+  /**
+   * Another conversation's edits still await answers. A refusal among them
+   * leaves that input only in this page, which keeps one such input; so an
+   * editor of any other conversation waits (read-only) until they settled.
+   */
+  pendingElsewhere(sessionId: string): boolean {
+    for (const pendingSession of this.pendingEdits.keys()) {
+      if (pendingSession !== sessionId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   unresolved(): { sessionId: string; text: string } | null {

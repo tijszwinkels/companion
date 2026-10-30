@@ -310,7 +310,11 @@ Item {
       if (text.length > 4 * view.maximumMessageLength) refusal = "too-long"
       else if (view.recordingInto(sessionId) || (sessionId === view.displayedId && view.recordingBusy)) refusal = "recording"
       if (refusal !== "") {
-        view.setUnresolvedInput(sessionId, text.length, root.loadedDocumentId)
+        // Never take over another conversation's hold: the page keeps one
+        // such input and does not admit a second (ChatStore.pendingElsewhere).
+        if (!view.unresolvedInput || view.unresolvedInput.sessionId === sessionId) {
+          view.setUnresolvedInput(sessionId, text.length, root.loadedDocumentId)
+        }
         return JSON.stringify({accepted: false, reason: refusal, unresolved: true})
       }
       if (sessionId !== view.displayedId) {

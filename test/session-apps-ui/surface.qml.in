@@ -1543,6 +1543,8 @@ TestCase {
   }
   function test_zzi_late_answers_from_a_replaced_editor() {
     // Accepted edit for A, answered after the switch to B.
+    // CHANGED (L7 admission): B's editor now waits while A's edit awaits its
+    // answer, so B's input is attempted before and typed after the answer.
     let setup = twoConversations("", "")
     holdNextAnswer(setup.chat)
     typeInto(setup.chat, "A-ACCEPTED")
@@ -1551,14 +1553,22 @@ TestCase {
     body.client.sessions.select("B")
     tryCompare(body.panel, "selectedSessionId", "B")
     settled(setup.view, setup.chat)
-    typeInto(setup.chat, "B-TEXT")
-    tryCompare(composerOf(setup.view), "text", "B-TEXT", 5000)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === true }, 5000)
+    typeInto(setup.chat, "B-TOO-EARLY")
+    wait(100)
+    compare(textarea(setup.chat), "")
+    compare(composerOf(setup.view).text, "")
     const revisionB = setup.view.draftRevision
     releaseHeld(setup.chat)
     wait(300)
+    compare(textarea(setup.chat), "")
+    compare(composerOf(setup.view).text, "")
+    compare(setup.view.draftRevision, revisionB)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === false }, 5000)
+    typeInto(setup.chat, "B-TEXT")
+    tryCompare(composerOf(setup.view), "text", "B-TEXT", 5000)
     compare(textarea(setup.chat), "B-TEXT")
     compare(composerOf(setup.view).text, "B-TEXT")
-    compare(setup.view.draftRevision, revisionB)
     compare(evaluate(setup.chat, "document.activeElement === document.querySelector('textarea')"), true)
     keyClick(Qt.Key_X)
     tryCompare(composerOf(setup.view), "text", "B-TEXTx", 5000)
@@ -1798,6 +1808,113 @@ TestCase {
     verify(clickInHeld(chat, "Discard"))
     tryVerify(function() { return textarea(chat) === "spoken so far and recorded words" }, 5000)
     tryCompare(view, "unresolvedInput", null)
+  }
+
+  // ---- L6/L7: identity and admission for refused edits -------------------
+  // From the lead's failing probes (lead/ebc0a26): a raced input refused
+  // during a (synthetic) recording, its answer held back in the page.
+  function refusedPending() {
+    snapshot([session("rec", "Recording chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("rec", "canonical recorded words")
+    settled(view, chat)
+    view.releaseComposerFocus()
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return view.recordingBusy })
+    holdNextAnswer(chat)
+    typeInto(chat, "OLD RACED INPUT")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    verify(view.unresolvedInput !== null)
+    fakeBackend.received({type: "error", action: "start-recording", message: "Synthetic recording ended"})
+    tryCompare(view, "ownRecording", null)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').readOnly") === false }, 5000)
+    return {view: view, chat: chat}
+  }
+  function shownIs(chat, expected) {
+    return evaluate(chat, "document.querySelector('textarea') !== null && document.querySelector('textarea').value === "
+      + JSON.stringify(expected))
+  }
+
+  // L6: an older answer (refused or accepted) never replaces newer input.
+  function test_zzo_old_answers_cannot_replace_newer_input() {
+    const setup = refusedPending()
+    const big = unresolvedText()
+    typeInto(setup.chat, big)
+    tryCompare(setup.view.unresolvedInput, "length", 32002)
+    releaseHeld(setup.chat)
+    wait(300)
+    verify(shownIs(setup.chat, big), "editor length " + textarea(setup.chat).length)
+    compare([setup.view.unresolvedInput.sessionId, setup.view.unresolvedInput.length], ["rec", 32002])
+    verify(heldNotice(setup.chat).includes("32002 characters"), heldNotice(setup.chat).slice(0, 80))
+    compare(composerOf(setup.view).text, "canonical recorded words")
+    // An older ACCEPTED answer cannot release newer held input either.
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "accepted but older")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    typeInto(setup.chat, big)
+    tryCompare(setup.view.unresolvedInput, "length", 32002)
+    releaseHeld(setup.chat)
+    wait(300)
+    verify(shownIs(setup.chat, big), "editor length " + textarea(setup.chat).length)
+    compare(setup.view.unresolvedInput.length, 32002)
+    // The latest input's acceptance (shortened) releases the hold.
+    setup.view.focusComposer()
+    typeInto(setup.chat, "shortened")
+    tryCompare(composerOf(setup.view), "text", "shortened", 5000)
+    tryCompare(setup.view, "unresolvedInput", null, 5000)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('.unkept') === null") === true })
+    // Held again, Discard releases it and shows the listener's text.
+    typeInto(setup.chat, big)
+    tryCompare(setup.view.unresolvedInput, "length", 32002)
+    verify(clickInHeld(setup.chat, "Discard"))
+    tryCompare(setup.view, "unresolvedInput", null, 5000)
+    tryVerify(function() { return shownIs(setup.chat, "shortened") }, 5000)
+  }
+
+  // L7: while A's refused answer is outstanding, B waits: a real key and a
+  // synthetic input change nothing; A's exact input then stays reachable
+  // (Copy, its own editor) and B is usable once A is resolved.
+  function test_zzp_second_conversation_waits_for_first_refusal() {
+    const setup = refusedPending()
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return shownIs(setup.chat, "") }, 5000)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === true }, 5000)
+    verify(evaluate(setup.chat, "document.querySelector('.composer').textContent.includes('Waiting for text typed in another conversation')"))
+    // A real key into B, then a synthetic oversize input: nothing changes.
+    evaluate(setup.chat, "(() => { document.querySelector('textarea').focus(); return true })()")
+    keyClick(Qt.Key_B)
+    typeInto(setup.chat, unresolvedText())
+    wait(200)
+    verify(shownIs(setup.chat, ""), "B editor length " + textarea(setup.chat).length)
+    compare(composerOf(setup.view).text, "")
+    compare(setup.view.unresolvedInput.sessionId, "rec")
+    // A's refusal arrives: A's exact input is offered in B with Copy.
+    releaseHeld(setup.chat)
+    tryVerify(function() { return heldNotice(setup.chat).includes("15 characters") }, 5000)
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(setup.chat, "Copy"))
+    tryVerify(function() { return copyFeedback(setup.chat) === "Copied (15 characters)." }, 5000, copyFeedback(setup.chat))
+    compare(clipboardText(), "OLD RACED INPUT")
+    // A's own editor shows it exactly; Discard resolves it.
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    tryVerify(function() { return shownIs(setup.chat, "OLD RACED INPUT") }, 5000)
+    compare(composerOf(setup.view).text, "canonical recorded words")
+    verify(clickInHeld(setup.chat, "Discard"))
+    tryVerify(function() { return shownIs(setup.chat, "canonical recorded words") }, 5000)
+    tryCompare(setup.view, "unresolvedInput", null)
+    // B is usable now.
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === false }, 5000)
+    typeInto(setup.chat, "B now")
+    tryCompare(composerOf(setup.view), "text", "B now", 5000)
   }
 
   function findChildren(item, name) {

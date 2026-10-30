@@ -711,9 +711,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // recorded. It stays on screen, is never replaced by the host draft, and
   // cannot be sent until it is shortened or discarded.
   const unsynced = heldHere;
-  // Numbers this editor's inputs, so only the answer to the latest one can
-  // release held input (an older accepted edit must not).
-  const inputNumber = useRef(0);
   const [copyFeedback, setCopyFeedback] = useState('');
   const [inputNotice, setInputNotice] = useState('');
   // Whether this editor has keyboard focus (only for the placeholder).
@@ -738,7 +735,11 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
-  const readOnly = status.recording?.busy === true || heldElsewhere !== null;
+  // Admission: while another conversation holds input only this page has,
+  // or still awaits answers that could leave such input here, this editor
+  // waits, so the page never needs a second place for such input.
+  const waitingElsewhere = heldElsewhere === null && store.pendingElsewhere(status.sessionId);
+  const readOnly = status.recording?.busy === true || heldElsewhere !== null || waitingElsewhere;
 
   // Adopt the host draft when it changed on the host side (or the view now
   // shows another conversation). Never while the page's own edits are still
@@ -805,15 +806,28 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // as not saved by the native view; only past twice the editing bound is it
   // refused, and then this editor keeps it on screen (`unsynced`).
   function edited(value: string, cursor: number) {
+    const editedSession = status.sessionId;
+    // Not admitted (see readOnly): a real read-only editor produces no
+    // input, so this is a synthetic one; it changes nothing, and in
+    // particular cannot take the place of the other conversation's input.
+    const held = store.unresolved();
+    if (
+      (held !== null && held.sessionId !== editedSession) ||
+      store.pendingElsewhere(editedSession)
+    ) {
+      if (area.current) {
+        area.current.value = text;
+      }
+      return;
+    }
     setInputNotice('');
     setText(value);
     lastCursor.current = cursor;
-    inputNumber.current++;
-    const thisInput = inputNumber.current;
-    const editedSession = status.sessionId;
     // Too long to hand to the host: this editor keeps it, and the host
     // learns its length before anything else can happen.
-    if (value.length > handOverLimit) {
+    const handOver = value.length <= handOverLimit;
+    const serial = store.beginInput(editedSession, handOver);
+    if (!handOver) {
       store.setUnresolved({ sessionId: editedSession, text: value });
       return;
     }
@@ -821,13 +835,20 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     setEditsInFlight(inFlight.current);
     bridge.editDraft(editedSession, base.current, value, cursor, (json) => {
       const answer = decode(json) as BridgeAnswer & { unresolved?: boolean };
-      // Refused (e.g. raced with a recording): the host already holds that
-      // conversation back; the page keeps the text, also when this editor
-      // was replaced meanwhile, so it is never silently lost.
+      // Only the answer to the conversation's latest input may change what
+      // the page holds; an older answer (refused or accepted) never
+      // replaces newer input, also when this editor was replaced meanwhile.
+      const latest = store.finishInput(editedSession, serial);
       const current = store.unresolved();
       if (!answer.accepted && answer.unresolved) {
-        if (current === null || current.sessionId === editedSession) {
+        if (latest && (current === null || current.sessionId === editedSession)) {
+          // Refused (e.g. raced with a recording): the host already holds
+          // that conversation back; the page keeps the text.
           store.setUnresolved({ sessionId: editedSession, text: value });
+        } else if (current === null || current.sessionId !== editedSession) {
+          // Superseded: nothing of it is held, so the host's hold for it
+          // (set when it refused) is released.
+          bridge.inputUnresolved(editedSession, 0);
         }
       }
       // Answers for a replaced instance or another conversation never touch
@@ -839,15 +860,13 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       inFlight.current = Math.max(0, inFlight.current - 1);
       setEditsInFlight(inFlight.current);
       if (!answer.accepted) {
-        setText(value);
+        if (latest) {
+          setText(value);
+        }
         return;
       }
       // The latest input was taken by the host: nothing is held any more.
-      if (
-        thisInput === inputNumber.current &&
-        current !== null &&
-        current.sessionId === editedSession
-      ) {
+      if (latest && current !== null && current.sessionId === editedSession) {
         store.setUnresolved(null);
       }
       store.acceptedEdit(editedSession, value, cursor);
@@ -997,6 +1016,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       {inputNotice && <div class="conflict">{inputNotice}</div>}
       {heldElsewhere !== null && (
         <HeldElsewhere held={heldElsewhere} store={store} bridge={bridge} />
+      )}
+      {waitingElsewhere && (
+        <div class="note">Waiting for text typed in another conversation to be saved…</div>
       )}
       {unsynced !== null && (
         <div class="conflict unkept">
