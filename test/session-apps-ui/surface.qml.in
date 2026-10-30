@@ -1115,6 +1115,14 @@ TestCase {
   function test_x_edit_bounds_at_the_bridge() {
     const chat = freshChat("capacity")
     const view = mainView()
+    // CHANGED (R4-1): "elsewhere" is a real second conversation; unconfirmed
+    // text for a conversation that does not exist goes to the
+    // closed-conversation notice instead (test_zzw*).
+    snapshot([session("capacity", "Fresh capacity", null), session("elsewhere", "Elsewhere", null)])
+    body.client.sessions.select("capacity")
+    tryCompare(body.panel, "selectedSessionId", "capacity")
+    tryCompare(view, "displayedId", "capacity")
+    settled(view, chat)
     evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', 0, 'm'.repeat(32001), 4,"
       + " answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
@@ -1457,6 +1465,16 @@ TestCase {
   function copyFeedback(chat) {
     return evaluate(chat, "(() => { const entry = document.querySelector('.unkept .copy-feedback'); return entry ? entry.textContent : '' })()")
   }
+  // Clicks an enabled notice button once the page has answered this script.
+  // For a click whose own effect removes the page (Discard in a window kept
+  // only for that text closes the window), the page's answer otherwise races
+  // the window's removal and is lost when it comes later (R4-3: author/r4
+  // ordering probes).
+  function clickInHeldAfterAnswer(chat, label) {
+    return evaluate(chat, "(() => { const button = [...document.querySelectorAll('.unkept button')]"
+      + ".find(b => b.textContent === " + JSON.stringify(label) + "); if (!button || button.disabled) return false;"
+      + " setTimeout(() => button.click(), 0); return true })()")
+  }
   function clickInHeld(chat, label) {
     return evaluate(chat, "(() => { const button = [...document.querySelectorAll('.unkept button')]"
       + ".find(b => b.textContent === " + JSON.stringify(label) + "); if (!button) return false; button.click(); return true })()")
@@ -1760,9 +1778,18 @@ TestCase {
     verify(body.popouts.windows["one"] !== undefined, "window kept for its editor-only input")
     verify(window.notice.includes("closed elsewhere"), window.notice)
     tryVerify(function() { return heldNotice(windowChat).includes("32002 characters") }, 5000)
-    verify(clickInHeld(windowChat, "Discard"))
+    // The held text is exactly what was typed (Copy does not close anything).
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(windowChat, "Copy"))
+    tryVerify(function() { return clipboardText() === big }, 5000, "held text copied exactly")
+    // CHANGED (R4-3): Discard closes this window; its click runs after the
+    // page answered (clickInHeldAfterAnswer), the outcome is checked below.
+    verify(clickInHeldAfterAnswer(windowChat, "Discard"))
     tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
     compare(body.popouts.orphanDrafts.length, 0)
+    compare(body.client.unsavedDrafts["one"], undefined)
 
     // A real reload of the page that held it says the text was lost.
     snapshot([session("one", "First chat", null)])
@@ -2247,6 +2274,117 @@ TestCase {
     wait(100)
     compare(JSON.stringify(orphanTexts()), JSON.stringify(["WINDOW UNSAVED"]))
     body.popouts.orphanDrafts = []
+  }
+
+  // ---- R4 repairs (from Rowan's adverse probes, review/98915ac) ----------
+  // R4-1: an edit that reaches the host after its conversation disappeared
+  // (late delivery; then refused, accepted, or written while offline) is
+  // offered once in the closed-conversation notice, in both orders.
+  // Holds back the page's edit carrying `text` (other calls pass through).
+  function delayNextEdit(chat, text) {
+    evaluate(chat, "(() => { const b = window.__companionBridge; const original = b.editDraft;"
+      + " b.editDraft = function(...args) { if (args[2] !== " + JSON.stringify(text) + ") return original.apply(b, args);"
+      + " b.editDraft = original; window.__deliverLateEdit = () => original.apply(b, args) }; return true })()")
+  }
+  function lateEditAfterDisappearance(outcome) {
+    {
+      snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+      body.client.sessions.select("one")
+      tryCompare(body.panel, "selectedSessionId", "one")
+      const view = mainView()
+      const chat = waitForChat(view)
+      settled(view, chat)
+      body.popouts.orphanDrafts = []
+      const text = "LATE " + outcome.toUpperCase() + " INPUT"
+      delayNextEdit(chat, text)
+      typeInto(chat, text)
+      compare(textarea(chat), text)
+      compare(composerOf(view).text, "")
+      snapshot([session("two", "Second chat", null)])
+      body.client.sessions.select("two")
+      tryCompare(body.panel, "selectedSessionId", "two")
+      if (outcome === "offline") {
+        fakeBackend.disconnected()
+        tryCompare(body.client, "online", false)
+      }
+      evaluate(chat, "window.__deliverLateEdit(); true")
+      if (outcome !== "offline") {
+        tryVerify(function() { return fakeBackend.sent.some(m => m.action === "draft-set" && m.id === "one" && m.text === text) })
+      }
+      tryVerify(function() { return orphanTexts().includes(text) }, 3000, outcome + ": offered")
+      compare(body.popouts.orphanDrafts.find(entry => entry.text === text).title, "First chat")
+      if (outcome === "refused") {
+        refuseLatestEdit("one")
+      } else if (outcome === "accepted") {
+        confirmLatestEdit("one")
+      } else {
+        snapshot([session("two", "Second chat", null)])
+        tryCompare(body.client, "online", true)
+      }
+      wait(200)
+      compare(orphanTexts().filter(entry => entry === text).length, 1, outcome + ": exactly once")
+      compare(body.client.unsavedDrafts["one"], undefined)
+      compare(body.client.sessions.sessions.some(entry => entry.id === "one"), false, "nothing reopened")
+      // Actual Copy and Dismiss.
+      clipboardProbe.text = "previous"
+      clipboardProbe.selectAll()
+      clipboardProbe.copy()
+      findChild(body, "orphanCopy").triggered()
+      tryVerify(function() { return clipboardText() === text }, 3000)
+      findChild(body, "orphanDismiss").triggered()
+      tryVerify(function() { return orphanTexts().length === 0 })
+    }
+  }
+
+  function test_zzw_late_edit_refused_after_disappearance_is_offered_once() { lateEditAfterDisappearance("refused") }
+  function test_zzwa_late_edit_accepted_after_disappearance_is_offered_once() { lateEditAfterDisappearance("accepted") }
+  function test_zzwb_late_edit_offline_after_disappearance_is_offered_once() { lateEditAfterDisappearance("offline") }
+
+  // R4-2: the listener's agent provenance stays with its text when this UI
+  // returns to it (after a send of other text, or Discard); sending
+  // different text is not editing the proposal; a person's edit clears it.
+  function test_zzx_send_and_discard_keep_the_proposals_agent_label() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "MY EXACT SEND")
+    tryCompare(composerOf(view), "text", "MY EXACT SEND")
+    fakeBackend.disconnected()
+    snapshot([session("one", "First chat", null)])
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "AGENT PROPOSAL", source: "Synthetic Helper", sequence: 2}]})
+    tryVerify(function() { return unsavedNotice(chat) })
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    const from = fakeBackend.sent.length
+    body.client.receive({type: "result", action: "send-agent", result: "submitted"})
+    tryVerify(function() { return textarea(chat) === "AGENT PROPOSAL" })
+    compare(view.displayedDraftSource, "Synthetic Helper")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Drafted by agent · Synthetic Helper')") === true }, 3000)
+    compare(draftWritesSince(from).length, 0, "no draft write")
+    // Discard of other unsaved text returns to the proposal with its label.
+    typeInto(chat, "MY OTHER TEXT")
+    tryCompare(composerOf(view), "text", "MY OTHER TEXT")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "AGENT PROPOSAL" })
+    compare(view.displayedDraftSource, "Synthetic Helper")
+    // The person's own edit clears it (the listener reports it without a source).
+    typeInto(chat, "AGENT PROPOSAL, edited")
+    tryCompare(composerOf(view), "text", "AGENT PROPOSAL, edited")
+    const write = fakeBackend.sent.filter(m => m.action === "draft-set" && m.id === "one").pop()
+    body.client.receive({type: "draft", id: "one", text: write.text, editId: write.editId, source: "", sequence: 3})
+    tryCompare(view, "displayedDraftSource", "")
+    compare(body.client.listenerSources["one"], undefined)
+    // Native view shows the same label (Classic view).
+    listenerDraft("one", "")
+    body.client.receive({type: "draft", id: "one", text: "SECOND PROPOSAL", source: "Synthetic Helper", sequence: 4})
+    tryVerify(function() { return textarea(chat) === "SECOND PROPOSAL" })
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    compare(view.displayedDraftSource, "Synthetic Helper")
+    view.classicView = false
+    tryCompare(view, "htmlActive", true, 5000)
   }
 
   function findChildren(item, name) {

@@ -84,6 +84,14 @@ Item {
   // The listener's last known text per conversation, including changes not
   // shown because own edits were in flight; Discard returns to it.
   property var listenerDrafts: ({})
+  // The provenance of that text ("" for the person's own): an agent's name
+  // while the draft is still its unedited proposal. Shown again with the
+  // text whenever this UI returns to the listener's draft (R4-2).
+  property var listenerSources: ({})
+  // Unconfirmed text appeared or changed (unsavedDrafts/latestDraftEdits),
+  // possibly for a conversation that no longer exists (a late edit); the
+  // window controller then offers it in the closed-conversation notice.
+  signal unconfirmedDraftsChanged()
   // Conversations whose shown text is NOT saved in the listener, with the
   // reason (conversation id -> reason): typed while disconnected, refused,
   // or sent before a disconnect without a confirmation. The text stays on
@@ -97,6 +105,7 @@ Item {
     if (reason) next[id] = reason
     else delete next[id]
     root.unsavedDrafts = next
+    root.unconfirmedDraftsChanged()
   }
 
   // A view's edit, for the conversation it was typed for. The last write the
@@ -108,6 +117,7 @@ Item {
     if (text === "") delete root.serverDrafts[id]
     else root.serverDrafts[id] = text
     root.latestDraftEdits[id] = {editId: editId, text: text}
+    root.unconfirmedDraftsChanged()
     // `requestId` correlates a refusal with this edit.
     const request = {action: "draft-set", id: id, text: text, editId: editId, requestId: editId}
     // Recorded words may pass the editing bound; the listener checks that
@@ -136,7 +146,7 @@ Item {
     const text = root.listenerDrafts[id] || ""
     if (text === "") delete root.serverDrafts[id]
     else root.serverDrafts[id] = text
-    root.draftChanged(id, text, "")
+    root.draftChanged(id, text, root.listenerSources[id] || "")
   }
 
   // An own edit is settled: confirmed by its change, or refused.
@@ -348,7 +358,7 @@ Item {
     const current = root.listenerDrafts[id] || ""
     if (current === "") delete root.serverDrafts[id]
     else root.serverDrafts[id] = current
-    root.draftChanged(id, current, "")
+    root.draftChanged(id, current, root.listenerSources[id] || "")
   }
 
   // A conversation disappeared (closed elsewhere, or missing after a
@@ -535,6 +545,7 @@ Item {
       // the listener already reported them as unconfirmed.
       root.recordingAcks = ({})
       root.listenerDrafts = Object.assign({}, drafts)
+      root.listenerSources = Object.assign({}, sources)
       const previous = root.serverDrafts
       const pending = root.latestDraftEdits
       root.latestDraftEdits = ({})
@@ -568,6 +579,8 @@ Item {
       // Our own edit confirmed: that text is saved.
       if (message.text === "") delete root.listenerDrafts[id]
       else root.listenerDrafts[id] = message.text
+      if (message.text === "" || !message.source) delete root.listenerSources[id]
+      else root.listenerSources[id] = message.source
       const own = message.editId ? root.settleDraftEdit(message.editId) : null
       if (own) root.settleRecordingAck(message.editId, true, "")
       // Only the conversation's latest edit settles its pending text (an

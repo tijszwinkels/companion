@@ -51,6 +51,9 @@ Item {
   // Conversation titles at the last sessionsChanged(), so the notice for a
   // conversation that disappeared can still name it.
   property var knownTitles: ({})
+  // Titles of conversations that disappeared, for text that arrives for
+  // them later (a late edit). Bounded: the most recent 32.
+  property var removedTitles: ({})
   property int orphanSequence: 0
   // Quiet (focus:false) openings still settling. While above zero the host
   // holds back panel-state reports, so a window that Qt or the compositor
@@ -458,6 +461,13 @@ Item {
     const titles = {}
     for (const entry of root.client.sessions.sessions) titles[entry.id] = entry.title
     root.knownTitles = titles
+    const removed = Object.assign({}, root.removedTitles)
+    for (const id of Object.keys(previousTitles)) {
+      if (titles[id] === undefined) removed[id] = previousTitles[id]
+    }
+    const removedIds = Object.keys(removed)
+    for (const id of removedIds.slice(0, Math.max(0, removedIds.length - 32))) delete removed[id]
+    root.removedTitles = removed
 
     for (const id of root.order.slice()) {
       if (root.sessionExists(id)) {
@@ -492,16 +502,23 @@ Item {
       root.forget(id)
     }
 
-    // A conversation shown in the sidebar (or not shown at all) that
-    // disappeared: text this UI has not had confirmed by the listener (not
-    // saved, or still unanswered) would otherwise only be hidden in memory.
-    // Offer it once with Copy and Dismiss; nothing reopens the conversation.
-    // Text only the HTML editor holds stays in that editor's own notice.
+    root.offerAbsentDrafts()
+  }
+
+  // A conversation shown in the sidebar (or not shown at all) that no
+  // longer exists: text this UI has not had confirmed by the listener (not
+  // saved, or still unanswered) would otherwise only be hidden in memory.
+  // Offer it once with Copy and Dismiss; nothing reopens the conversation.
+  // Runs when the conversations change AND when such text appears later
+  // (an edit delivered or refused after its conversation disappeared, in
+  // either order). Text only the HTML editor holds stays in that editor's
+  // own notice.
+  function offerAbsentDrafts() {
     const unconfirmed = new Set(Object.keys(root.client.unsavedDrafts).concat(Object.keys(root.client.latestDraftEdits)))
     for (const id of unconfirmed) {
       if (root.sessionExists(id) || root.windows[id]) continue
       const text = root.client.takeUnconfirmedDraft(id)
-      if (text.trim() !== "") root.addOrphan(previousTitles[id] || "conversation", text, "draft")
+      if (text.trim() !== "") root.addOrphan(root.removedTitles[id] || "conversation", text, "draft")
     }
   }
 
@@ -512,6 +529,12 @@ Item {
   Connections {
     target: root.client.sessions
     function onSessionsChanged() { root.sessionsChanged() }
+  }
+  // After the change that made the text unconfirmed has finished (callLater),
+  // so the Client's state is complete when it is taken.
+  Connections {
+    target: root.client
+    function onUnconfirmedDraftsChanged() { Qt.callLater(root.offerAbsentDrafts) }
   }
 
   Component.onDestruction: {
