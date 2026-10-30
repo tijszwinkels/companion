@@ -9,7 +9,7 @@
  */
 
 import { memo } from 'preact/compat';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
 import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
@@ -41,10 +41,8 @@ export function Chat(props: { store: ChatStore }) {
   const bridge = props.store.native;
 
   if (!bridge || !status.sessionId) {
-    // Page-held text stays reachable while no conversation is shown.
     return (
       <div class="chat">
-        <HeldNotices store={props.store} status={status} />
         <div class="empty">No conversation</div>
       </div>
     );
@@ -627,161 +625,21 @@ function Controls(props: { status: ChatStatus; bridge: NativeBridge }) {
 // ---- Composer -----------------------------------------------------------------
 
 /**
- * The composer edits the host-owned draft. Each input is sent with the host
- * draft revision it is based on. A host-side change (agent draft, recorded
- * words, completed send, handover) advances the revision; an edit based on
- * an older revision (or one that cannot be applied, e.g. too long) is
- * refused natively. The host keeps the refused text for that conversation
- * (`draft.refused`) until the person uses, copies or dismisses it, so
- * nothing typed is lost on navigation or handover.
+ * The composer edits the conversation's draft, which the listener owns (the
+ * last edit it receives wins). Each input goes to the host, which applies it
+ * to the conversation it was typed for, even after a switch. Text the
+ * listener has not saved is shown by the native view's "not saved" notice
+ * (with Save and Discard) and keeps the conversation from moving or closing.
  *
- * Send names the exact text it means; the host refuses it unless that is the
- * host draft. The cursor position follows the page's selection, so a
- * handover or Classic view resumes where the person left off.
+ * Send names the exact text it means. The cursor position follows the page's
+ * selection, so a handover or Classic view resumes where the person left off.
  *
- * Bounds never drop text silently. A paste or drop that would make the text
- * longer than the host accepts is rejected before it changes anything. Text
- * that still cannot be applied and that the host could not keep (too long
- * to store, or no free recovery slot) stays on screen as `unkept`, with
- * Copy, Use my text and Discard; it is never replaced by the host draft.
+ * Bounds never drop text silently. Typing, a paste or a drop that would make
+ * the text longer than may be edited is rejected before it changes anything.
+ * Text an input method still adds is applied and shown as not saved; only
+ * past twice the editing bound does this editor keep it on screen itself
+ * (`unsynced`), with Copy and Discard.
  */
-/**
- * Splits `text` into consecutive parts of at most `limit` UTF-16 units each,
- * never between the two halves of a surrogate pair (a character outside the
- * Basic Multilingual Plane, such as most emoji). Concatenated, the parts are
- * exactly `text`, and each is well-formed wherever `text` is, so the native
- * plain-text clipboard export keeps every character. Returns null when the
- * limit cannot hold one character (a pair needs two units): nothing is
- * copied then, and the caller says so.
- */
-export function copyParts(text: string, limit: number): string[] | null {
-  const parts: string[] = [];
-  let start = 0;
-
-  while (start < text.length) {
-    let end = Math.min(start + limit, text.length);
-    const splitsPair =
-      end < text.length &&
-      isHighSurrogate(text.charCodeAt(end - 1)) &&
-      isLowSurrogate(text.charCodeAt(end));
-    if (splitsPair) {
-      end -= 1;
-    }
-    if (end <= start) {
-      return null;
-    }
-    parts.push(text.slice(start, end));
-    start = end;
-  }
-
-  return parts.length > 0 ? parts : [''];
-}
-
-function isHighSurrogate(unit: number): boolean {
-  return unit >= 0xd800 && unit <= 0xdbff;
-}
-
-function isLowSurrogate(unit: number): boolean {
-  return unit >= 0xdc00 && unit <= 0xdfff;
-}
-
-/**
- * Copy for retained text. One Copy hands at most `copyLimit` characters to
- * the host's clipboard; longer text is offered as numbered parts in order,
- * each within the limit, so nothing is cut off and the text stays here until
- * it is discarded. The host's answer is shown: copied (with the length) or
- * refused (with its reason), never a silent no-op.
- */
-function CopyActions(props: { text: string; bridge: NativeBridge; copyLimit: number }) {
-  const { text, bridge } = props;
-  const limit = Math.max(1, Math.floor(props.copyLimit));
-  // Feedback belongs to the text and limit it was given for; a different
-  // text or limit shows none. (Not reset in an effect: that runs after the
-  // next paint and could erase the answer to a click made just before.)
-  const [feedbackFor, setFeedbackFor] = useState<{ text: string; limit: number; message: string }>({
-    text: '',
-    limit: 0,
-    message: '',
-  });
-  const feedback =
-    feedbackFor.text === text && feedbackFor.limit === limit ? feedbackFor.message : '';
-  function setFeedback(message: string) {
-    setFeedbackFor({ text: text, limit: limit, message: message });
-  }
-  // Part boundaries, counts and labels all come from the actual parts.
-  const chunks = useMemo(() => copyParts(text, limit), [text, limit]);
-  const parts = chunks ? chunks.length : 0;
-
-  function copy(index: number) {
-    if (!chunks) {
-      return;
-    }
-    const part = chunks[index];
-    const label = parts === 1 ? 'Copied' : `Copied part ${index + 1} of ${parts}`;
-    setFeedback('Copying…');
-    bridge.copyText(part, (json) => {
-      const answer = decode(json) as BridgeAnswer & { length?: number };
-      if (answer.accepted) {
-        setFeedback(`${label} (${answer.length ?? part.length} characters).`);
-      } else {
-        setFeedback(
-          `Copy refused: ${answer.reason || 'the text was not copied.'} Your text is still kept here.`,
-        );
-      }
-    });
-  }
-
-  if (!chunks) {
-    // Only a misconfigured limit gets here; the text stays kept.
-    return (
-      <span class="copy-feedback">
-        Copy is not possible: the copy limit ({limit}) is smaller than one character. Your text is
-        still kept here.
-      </span>
-    );
-  }
-
-  return (
-    <>
-      {Array.from({ length: parts }, (_, index) => (
-        <button class="link" key={index} onClick={() => copy(index)}>
-          {parts === 1 ? 'Copy my text' : `Copy part ${index + 1} of ${parts}`}
-        </button>
-      ))}
-      {feedback && <span class="copy-feedback">{feedback}</span>}
-    </>
-  );
-}
-
-/**
- * Text the host could not keep for conversations other than the shown one
- * (or while none is shown): Copy or Discard. The shown conversation's held
- * text is in its editor, with the composer's own controls.
- */
-function HeldNotices(props: { store: ChatStore; status: ChatStatus }) {
-  const held = props.store.held();
-  const bridge = props.store.native;
-  const others = Object.entries(held).filter(([owner]) => owner !== props.status.sessionId);
-  if (!bridge || others.length === 0) {
-    return null;
-  }
-
-  return (
-    <>
-      {others.map(([owner, text]) => (
-        <div class="conflict unkept" key={owner}>
-          Text typed for another conversation ({text.length} characters) could not be added to its
-          draft and is only kept here.
-          <CopyActions text={text} bridge={bridge} copyLimit={props.status.copyLimit || 1048576} />
-          <button class="link" onClick={() => props.store.hold(owner, '')}>
-            Discard
-          </button>
-        </div>
-      ))}
-    </>
-  );
-}
-
 // Keyboard focus moving from a replaced editor to its successor (see the
 // layout effect in Composer). `requested`: a native focus request (focus
 // shortcut) that arrived before the conversation's editor was rendered; the
@@ -792,23 +650,19 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const { status, bridge, store } = props;
   const draft = status.draft || { text: '', cursor: -1, revision: 0, source: '', notice: '' };
   const area = useRef<HTMLTextAreaElement>(null);
-  const [text, setText] = useState(store.held()[status.sessionId] ?? draft.text);
+  const [text, setText] = useState(draft.text);
   const base = useRef(draft.revision);
   const sessionId = useRef(status.sessionId);
   const inFlight = useRef(0);
   // Rendered copy of inFlight, so Send waits for the latest edit's answer.
   const [editsInFlight, setEditsInFlight] = useState(0);
   const lastCursor = useRef(draft.cursor);
-  // Text the host refused and could not keep (only when its bounded
-  // recovery is exhausted), per conversation, held by the store so it
-  // outlives this component. The host is told, so moving that conversation
-  // to another view waits until it is resolved.
-  const unkeptBySession = store.held();
-  const unkept = unkeptBySession[status.sessionId] ?? null;
-  const unkeptHere = unkept !== null;
-  function setUnkept(sessionOfText: string, value: string) {
-    store.hold(sessionOfText, value);
-  }
+  // Text this editor shows that the host did not take: only an edit longer
+  // than twice the editing bound (an input method can insert text that the
+  // page cannot cancel). It stays on screen, is never replaced by the host
+  // draft, and cannot be sent until it is shortened or discarded.
+  const [unsynced, setUnsynced] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState('');
   const [inputNotice, setInputNotice] = useState('');
   // Whether this editor has keyboard focus (only for the placeholder).
   const [focused, setFocused] = useState(false);
@@ -822,12 +676,10 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
 
   const maximum = status.maximumMessageLength || 8000;
   const editLimit = status.editLimit || 2 * maximum;
-  const refused = draft.refused || '';
   const sendable =
     status.canSend === true &&
     editsInFlight === 0 &&
-    refused === '' &&
-    unkept === null &&
+    unsynced === null &&
     text.trim() !== '' &&
     text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
@@ -879,21 +731,14 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   useEffect(() => {
     const otherSession = status.sessionId !== sessionId.current;
     if (otherSession) {
-      // Unkept text of the previous conversation stays in its notice.
       sessionId.current = status.sessionId;
       inFlight.current = 0;
       setEditsInFlight(0);
       lastCursor.current = -1;
       setInputNotice('');
-    } else if (unkeptHere) {
-      // Never replace text only this page holds with the host draft.
-      return;
-    }
-    if (otherSession && unkeptHere) {
-      // The newly shown conversation has text only this page holds: show
-      // that, not the host draft, so it is never replaced.
-      base.current = draft.revision;
-      setText(unkept);
+      setUnsynced(null);
+    } else if (unsynced !== null) {
+      // Never replace text only this editor holds with the host draft.
       return;
     }
     if (otherSession || (draft.revision !== base.current && inFlight.current === 0)) {
@@ -901,10 +746,11 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
   }, [status.sessionId, draft.revision]);
 
-  // Over-limit text that still arrives (an input that cannot be cancelled,
-  // e.g. an input method) is sent anyway: the host refuses it and keeps it
-  // as this conversation's refused text, which handover and navigation
-  // preserve.
+  // Every edit goes to the host, which applies it to the conversation's
+  // draft (the last edit wins). Over-limit text that still arrives (an input
+  // that cannot be cancelled, e.g. an input method) is applied too and shown
+  // as not saved by the native view; only past twice the editing bound is it
+  // refused, and then this editor keeps it on screen (`unsynced`).
   function edited(value: string, cursor: number) {
     setInputNotice('');
     setText(value);
@@ -913,41 +759,23 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     lastCursor.current = cursor;
     const editedSession = status.sessionId;
     bridge.editDraft(editedSession, base.current, value, cursor, (json) => {
-      if (!alive.current) {
-        // A replaced instance only makes sure nothing is lost: text the host
-        // could not keep goes to its own conversation's page-held recovery.
-        if (decode(json).kept === false) {
-          setUnkept(editedSession, value);
-        }
-        return;
-      }
-      if (editedSession !== sessionId.current) {
-        // The view moved on. The host normally kept this refused edit for
-        // that conversation; if it could not, the notice keeps it here.
-        if (decode(json).kept === false) {
-          setUnkept(editedSession, value);
-        }
+      // Answers for a replaced instance or another conversation never touch
+      // the editor now shown; the host applied an accepted edit to the
+      // conversation it named.
+      if (!alive.current || editedSession !== sessionId.current) {
         return;
       }
       inFlight.current = Math.max(0, inFlight.current - 1);
       setEditsInFlight(inFlight.current);
       const answer = decode(json);
-      if (!answer.accepted && answer.draft) {
-        if (answer.kept === false) {
-          // The host could not keep it: it stays here, on screen.
-          setUnkept(editedSession, value);
-          setText(value);
-          return;
-        }
-        // Refused: the host kept this text as the conversation's refused
-        // text (shown below); show what the host draft holds now.
-        base.current = answer.draft.revision;
-        setText(answer.draft.text);
+      if (!answer.accepted) {
+        // Refused (too long to keep): it stays here, on screen, unsynced.
+        setUnsynced(value);
+        setText(value);
         return;
       }
-      if (answer.accepted) {
-        store.acceptedEdit(editedSession, value, cursor);
-      }
+      setUnsynced(null);
+      store.acceptedEdit(editedSession, value, cursor);
       // The host changed while this edit travelled; its status update was
       // held back for the answer, so apply it now.
       if (inFlight.current === 0 && hostDraft.current.revision !== base.current) {
@@ -1053,12 +881,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         placeholder={placeholder}
         onInput={(event) => {
           const element = event.currentTarget;
-          if (unkeptHere) {
-            // Shortening or editing text only this page holds.
-            setText(element.value);
-            setUnkept(status.sessionId, element.value);
-            return;
-          }
           edited(element.value, element.selectionStart);
         }}
         onBeforeInput={(event) => {
@@ -1098,34 +920,37 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       {/* Notices and recovery come below the editor, as in the classic
           view, so the editor never moves when one appears. */}
       {inputNotice && <div class="conflict">{inputNotice}</div>}
-      <HeldNotices store={store} status={status} />
-      {unkept !== null && (
+      {unsynced !== null && (
         <div class="conflict unkept">
-          This text ({unkept.length} characters) could not be added to the draft and is only kept
-          here.
-          <CopyActions text={unkept} bridge={bridge} copyLimit={status.copyLimit || 1048576} />
-          {unkept.length <= editLimit && (
-            <button
-              class="link"
-              onClick={() => {
-                const value = unkept;
-                setUnkept(status.sessionId, '');
-                base.current = hostDraft.current.revision;
-                edited(value, value.length);
-              }}
-            >
-              Use my text
-            </button>
-          )}
+          This text ({unsynced.length} characters) is longer than can be kept and is only in this
+          editor. Shorten it, copy it or discard it.
           <button
             class="link"
             onClick={() => {
-              setUnkept(status.sessionId, '');
+              setCopyFeedback('Copying…');
+              bridge.copyText(unsynced, (json) => {
+                const answer = decode(json) as BridgeAnswer & { length?: number };
+                setCopyFeedback(
+                  answer.accepted
+                    ? `Copied (${answer.length ?? unsynced.length} characters).`
+                    : `Copy refused: ${answer.reason || 'the text was not copied.'}`,
+                );
+              });
+            }}
+          >
+            Copy
+          </button>
+          <button
+            class="link"
+            onClick={() => {
+              setUnsynced(null);
+              setCopyFeedback('');
               adoptHostDraft();
             }}
           >
             Discard
           </button>
+          {copyFeedback && <span class="copy-feedback">{copyFeedback}</span>}
         </div>
       )}
       {status.draftUnsaved && (
@@ -1136,21 +961,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           </button>
           <button class="link" onClick={() => bridge.discardUnsavedDraft(status.sessionId)}>
             Discard
-          </button>
-        </div>
-      )}
-      {refused && (
-        <div class="conflict refused">
-          Some of your text could not be added to the draft (it changed elsewhere, was too long or
-          words were being recorded). Your text is kept.
-          <button class="link" onClick={() => bridge.resolveRefused(status.sessionId, 'use')}>
-            Use my text
-          </button>
-          <button class="link" onClick={() => bridge.resolveRefused(status.sessionId, 'copy')}>
-            Copy my text
-          </button>
-          <button class="link" onClick={() => bridge.resolveRefused(status.sessionId, 'dismiss')}>
-            Dismiss
           </button>
         </div>
       )}

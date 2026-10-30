@@ -40,10 +40,8 @@ Item {
   property bool operational: false
   // How often a page completed the handshake (each load calls ready()).
   property int readyCount: 0
-  // The most characters one Copy hands to the clipboard. Text the host keeps
-  // for recovery is at most SessionView.maximumRefusedDraftLength (262144),
-  // so it always copies in one piece. Longer text only the page holds is
-  // copied in numbered parts of at most this size; nothing is cut off.
+  // The most characters one Copy hands to the clipboard (message and code
+  // Copy); longer text is refused with a reason, never cut.
   property int copyLimit: 1048576
   // The page document that last completed the handshake (see ready()).
   property string loadedDocumentId: ""
@@ -110,30 +108,6 @@ Item {
     if (root.pageReady) browser.runJavaScript("window.companionChat && window.companionChat.focusComposer()")
   }
 
-  // Read text only the page holds for a conversation (store.held()); the
-  // callback runs once, with "" when the page does not answer in time.
-  Component {
-    id: deadlineComponent
-    Timer {}
-  }
-  function collectPageHeldText(id, timeout, done) {
-    let finished = false
-    const deadline = deadlineComponent.createObject(root, {interval: timeout, running: true})
-    function finish(text) {
-      if (finished) return
-      finished = true
-      deadline.destroy()
-      done(typeof text === "string" ? text : "")
-    }
-    deadline.triggered.connect(function() { finish("") })
-    const lifetime = root.lifetime
-    browser.mainFrame.runJavaScript("window.companionChat && window.companionChat.heldText ? window.companionChat.heldText("
-      + JSON.stringify(id) + ") : ''", 0, function(text) {
-      if (!lifetime.active) return
-      finish(text)
-    })
-  }
-
   function releaseComposerFocus() {
     if (root.pageReady) browser.runJavaScript("window.companionChat && window.companionChat.blurComposer()")
     root.pageComposerFocused = false
@@ -176,7 +150,7 @@ Item {
   function currentStatus() {
     const view = root.view
     const session = view ? view.session : null
-    if (!session) return {sessionId: "", copyLimit: root.copyLimit}
+    if (!session) return {sessionId: ""}
     const draft = view.pageDraft()
     const history = {hasOlder: view.hasOlder, pending: view.historyPending !== "", error: view.historyError,
       canRetry: view.historyError !== "" && view.failedHistoryRequest !== null,
@@ -192,12 +166,11 @@ Item {
       running: view.running === true,
       online: view.online,
       paused: view.paused,
-      draft: {text: draft.text, cursor: draft.cursor, revision: draft.revision, refused: draft.refused,
+      draft: {text: draft.text, cursor: draft.cursor, revision: draft.revision,
         source: view.displayedDraftSource, notice: view.displayedRecordingNotice},
       maximumMessageLength: view.maximumMessageLength,
       // The longest draft the bridge accepts from the page (editDraft).
       editLimit: 2 * view.maximumMessageLength,
-      copyLimit: root.copyLimit,
       canSend: view.canSend,
       pendingSend: view.pendingSubmission !== null,
       pendingChoice: view.pendingChoice !== null,
@@ -258,7 +231,6 @@ Item {
   readonly property var rowsWatch: root.view ? [root.view.shownRows, root.view.session ? root.view.session.id : ""] : []
   onRowsWatchChanged: root.schedule(true)
   readonly property string statusWatch: root.view ? JSON.stringify([root.view.session ? root.view.session.status : "",
-    root.view.displayedRefusedDraft, root.copyLimit,
     root.view.session && root.view.session.application ? root.view.session.application.version : 0,
     root.view.draftRevision, root.view.canSend, root.view.pendingSubmission !== null, root.view.pendingChoice !== null,
     root.view.inputError, root.view.recordingAvailable, root.view.recordingState, root.view.recordingBusy,
@@ -285,16 +257,9 @@ Item {
     // The page loaded (or reloaded): send everything again.
     // `documentId` is constant for one loaded page. The page also calls
     // ready() to resynchronize after a sequence gap; only a new id is a new
-    // document (a reload), which loses text that page held.
+    // document (a reload).
     function ready(documentId) {
-      const newDocument = typeof documentId !== "string" || documentId === "" || documentId !== root.loadedDocumentId
       root.loadedDocumentId = typeof documentId === "string" ? documentId : ""
-      // A new document holds nothing yet. Text an earlier document held
-      // (only when the host's bounded recovery was full) is gone: say so.
-      if (newDocument && root.view && Object.keys(root.view.pageHeldDrafts).length > 0) {
-        root.view.pageHeldDrafts = ({})
-        root.view.inputError = "Typed text that could not be kept was lost when the chat page reloaded."
-      }
       root.readyCount++
       root.pageReady = true
       root.operational = true
@@ -308,33 +273,29 @@ Item {
       return true
     }
 
+    // The page's current text for a conversation. The last edit received
+    // wins (no base revision). Ordinary editing stays within 16,000 units:
+    // the page cancels longer typing, pastes and drops before they change
+    // anything. A non-cancellable input (an input method) can still pass it;
+    // that text is the person's current text, so it goes into the text box
+    // too, where the listener refuses it and it stays shown as not saved
+    // until shortened, copied or discarded (and the conversation does not
+    // move or close meanwhile). Only beyond twice that bound is an edit
+    // refused here; the page then keeps it in its own editor and says so.
+    // An edit typed before a switch names its own conversation and goes
+    // there, not to the one now shown.
     function editDraft(sessionId, base, text, cursor) {
       const view = root.view
       if (!view) return JSON.stringify({accepted: false, reason: "unavailable"})
-      // Recording appends to this draft; typing meanwhile is not accepted
-      // (the page shows the composer read-only), so words never interleave.
-      // Every refusal keeps the person's text in the host (refusedDrafts).
-      // `kept` tells the page whether the host now holds the text. If not
-      // (beyond the bound, or no free slot), the page must keep it itself.
-      function refuse(reason) {
-        let kept = false
-        if (typeof sessionId === "string" && typeof text === "string") {
-          kept = sessionId === view.displayedId && text === view.pageDraft().text
-            || view.keepRefusedDraft(sessionId, text)
-        }
-        return JSON.stringify({accepted: false, reason: reason, kept: kept, draft: view.pageDraft()})
+      if (typeof sessionId !== "string" || typeof text !== "string") {
+        return JSON.stringify({accepted: false, reason: "invalid"})
       }
-      if (typeof sessionId !== "string" || typeof text !== "string") return refuse("invalid")
-      // The listener's own limit is 8000; the page cannot send more than
-      // twice that across the bridge, so oversize text is visibly refused.
-      if (text.length > 2 * view.maximumMessageLength) return refuse("too-long")
-      // The last edit received wins: an edit based on an older draft is no
-      // longer refused. An edit typed before a switch still names its own
-      // conversation and goes there, not to the one now shown.
+      if (text.length > 4 * view.maximumMessageLength) {
+        return JSON.stringify({accepted: false, reason: "too-long"})
+      }
       if (sessionId !== view.displayedId) {
         return JSON.stringify({accepted: view.writeDraftFor(sessionId, text)})
       }
-      if (view.recordingBusy) return refuse("recording")
       view.replaceDraftFromPage(text, typeof cursor === "number" ? cursor : text.length)
       return JSON.stringify({accepted: true})
     }
@@ -351,7 +312,7 @@ Item {
       const admitted = view.online && view.session !== null && view.pendingSubmission === null
         && view.pendingChoice === null && !view.recordingBusy
       if (!sameSession(sessionId) || !admitted || typeof text !== "string" || text.trim() === ""
-          || text.length > view.maximumMessageLength || view.displayedRefusedDraft !== "") {
+          || text.length > view.maximumMessageLength) {
         return JSON.stringify({accepted: false})
       }
       // Send exactly what the page shows, even if another editor changed the
@@ -369,17 +330,6 @@ Item {
       }
       view.setPageCursor(cursor)
       return true
-    }
-
-    function holdText(sessionId, held) {
-      if (!root.view || typeof sessionId !== "string" || typeof held !== "boolean") return false
-      root.view.setPageHeldDraft(sessionId, held)
-      return true
-    }
-
-    function resolveRefused(sessionId, how) {
-      if (!sameSession(sessionId)) return false
-      return root.view.resolveRefusedDraft(sessionId, how)
     }
 
     function choose(sessionId, revision, index) {
@@ -467,9 +417,8 @@ Item {
       return true
     }
 
-    // Copies at most `copyLimit` characters per call (the page splits
-    // longer retained text into numbered parts, see Chat.tsx CopyActions).
-    // The answer says what happened, so the page can show it.
+    // Copies at most `copyLimit` characters per call; longer text is refused
+    // with a reason. The answer says what happened, so the page can show it.
     function copyText(text) {
       if (typeof text !== "string" || text === "") {
         return JSON.stringify({accepted: false, length: 0, reason: "Nothing to copy."})

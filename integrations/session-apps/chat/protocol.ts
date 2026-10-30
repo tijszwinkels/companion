@@ -57,14 +57,10 @@ export interface ChatStatus {
     revision: number;
     source: string;
     notice: string;
-    /** Text the host could not apply to this draft, kept until resolved. */
-    refused?: string;
   };
   maximumMessageLength?: number;
   /** Longest draft text the host accepts from the page. */
   editLimit?: number;
-  /** Most characters one copyText call accepts. */
-  copyLimit?: number;
   canSend?: boolean;
   pendingSend?: boolean;
   pendingChoice?: boolean;
@@ -123,9 +119,6 @@ export type HostMessage =
 export interface BridgeAnswer {
   accepted: boolean;
   reason?: string;
-  /** For a refused edit: whether the host kept the text for recovery. */
-  kept?: boolean;
-  draft?: { sessionId: string; text: string; cursor: number; revision: number };
 }
 
 /**
@@ -146,9 +139,6 @@ export interface NativeBridge {
   /** `text` is what the page shows; the host sends only if it is the draft. */
   send(sessionId: string, base: number, text: string, callback?: (answer: string) => void): void;
   moveCursor(sessionId: string, base: number, cursor: number): void;
-  resolveRefused(sessionId: string, how: 'use' | 'copy' | 'dismiss'): void;
-  /** The page holds text for that conversation that the host could not keep. */
-  holdText(sessionId: string, held: boolean): void;
   choose(
     sessionId: string,
     revision: string,

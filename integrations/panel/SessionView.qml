@@ -222,34 +222,6 @@ Item {
   signal draftSaveRequested(string id)
   signal draftDiscardRequested(string id)
   function recordingInto(id) { return root.ownRecording !== null && root.ownRecording.id === id }
-  // Conversation id -> text typed in the HTML composer that could not be
-  // applied to the draft (it changed meanwhile, was too long, or words were
-  // being recorded). Kept here, not in the page, until the person uses,
-  // copies or dismisses it, so tab switches and reloads cannot lose it.
-  // Moving the conversation to another view waits until it is resolved.
-  property var refusedDrafts: ({})
-  // Conversation id -> true while the HTML composer holds typed text the
-  // host could not keep (only when the bounded recovery above is full).
-  // Moving that conversation to another view waits until it is resolved.
-  property var pageHeldDrafts: ({})
-  // Text only the HTML page holds for `id`, read from the page; `done(text)`
-  // is called once, with "" if the page does not answer within `timeout` ms.
-  function collectPageHeldText(id, timeout, done) {
-    if (!root.htmlSurface || htmlLoader.item === null) {
-      done("")
-      return
-    }
-    htmlLoader.item.collectPageHeldText(id, timeout, done)
-  }
-
-  function setPageHeldDraft(id, held) {
-    if (typeof id !== "string" || id === "" || (root.pageHeldDrafts[id] === true) === held) return
-    const next = Object.assign({}, root.pageHeldDrafts)
-    if (held) next[id] = true
-    else delete next[id]
-    root.pageHeldDrafts = next
-  }
-  readonly property string displayedRefusedDraft: root.refusedDrafts[root.displayedId] || ""
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
   signal stopRequested(string id)
@@ -552,54 +524,12 @@ Item {
   // The displayed conversation's draft, for the HTML composer.
   function pageDraft() {
     return {sessionId: root.displayedId, text: composer.text, cursor: composer.cursorPosition,
-      revision: root.draftRevision, refused: root.displayedRefusedDraft}
+      revision: root.draftRevision}
   }
 
   // The HTML composer's cursor moved without an edit.
   function setPageCursor(cursor) {
     composer.cursorPosition = Math.max(0, Math.min(cursor, composer.length))
-  }
-
-  // Keep text the HTML composer could not apply (see refusedDrafts). The
-  // latest refusal replaces an older one for the same conversation: it is
-  // the person's newest version of the text. Bounded by
-  // `maximumRefusedDraftLength` characters each. Returns
-  // whether the text is kept; when not, the caller must leave it with the
-  // person (the HTML composer then keeps it on screen with Copy). The
-  // displayed conversation always gets its slot; other conversations share
-  // at most 32 (more than the 16 open tabs, for edits still in flight while
-  // the view switched).
-  // Larger than anything the HTML composer can send (it cancels insertions
-  // past twice the message limit), so its refused text is always kept.
-  readonly property int maximumRefusedDraftLength: 262144
-  function keepRefusedDraft(id, text) {
-    if (!id || typeof text !== "string" || text === "" || text.length > root.maximumRefusedDraftLength) return false
-    if (root.refusedDrafts[id] === undefined && id !== root.displayedId
-        && Object.keys(root.refusedDrafts).length >= 32) return false
-    root.refusedDrafts = Object.assign({}, root.refusedDrafts, {[id]: text})
-    return true
-  }
-
-  // "use" replaces the draft with the kept text (an explicit choice, so it
-  // counts as a host-side change), "copy" copies it, "dismiss" forgets it.
-  function resolveRefusedDraft(id, how) {
-    const text = root.refusedDrafts[id]
-    if (text === undefined) return false
-    if (how === "copy") {
-      root.copyMessage(text)
-      return true
-    }
-    if (how === "use") {
-      if (id !== root.displayedId || root.recordingBusy || root.pendingSubmission !== null) return false
-      composer.text = text
-      composer.cursorPosition = composer.length
-    } else if (how !== "dismiss") {
-      return false
-    }
-    const kept = Object.assign({}, root.refusedDrafts)
-    delete kept[id]
-    root.refusedDrafts = kept
-    return true
   }
 
   // Replace the displayed draft with text typed in the HTML composer. The
@@ -841,14 +771,8 @@ Item {
     if (root.ownRecording && root.ownRecording.id === id) {
       return "Recording into this conversation is still running. Stop it and wait for the text first."
     }
-    if (root.pageHeldDrafts[id] === true) {
-      return "Typed text that could not be kept is still shown in this conversation's chat. Copy, use or discard it first."
-    }
     if (root.unsavedDrafts[id] !== undefined) {
       return "This conversation's text is not saved yet. Save or discard it first."
-    }
-    if (root.refusedDrafts[id] !== undefined) {
-      return "Some typed text could not be added to this conversation's draft. Use, copy or dismiss it first."
     }
     return ""
   }
@@ -1771,55 +1695,6 @@ Item {
         Keys.onReturnPressed: event => root.enterPressed(event)
         Keys.onEnterPressed: event => root.enterPressed(event)
         Accessible.name: "Message to the selected agent session"
-      }
-    }
-
-    // Text the HTML composer could not apply, also reachable here.
-    Column {
-      objectName: "refusedDraft"
-      width: parent.width
-      visible: root.displayedRefusedDraft !== ""
-      spacing: 4 * root.unit
-      Text {
-        width: parent.width
-        text: "Typed text that could not be added to the draft: " + root.displayedRefusedDraft
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        maximumLineCount: 3
-        elide: Text.ElideRight
-        color: "#ef5350"
-        font.family: root.fontFamily
-        font.pixelSize: 11 * root.unit
-      }
-      Row {
-        spacing: 8 * root.unit
-        PanelAction {
-          objectName: "refusedDraftUse"
-          text: "Use my text"
-          foreground: root.foreground
-          selection: root.selection
-          fontFamily: root.fontFamily
-          unit: root.unit
-          onTriggered: root.resolveRefusedDraft(root.displayedId, "use")
-        }
-        PanelAction {
-          objectName: "refusedDraftCopy"
-          text: "Copy"
-          foreground: root.foreground
-          selection: root.selection
-          fontFamily: root.fontFamily
-          unit: root.unit
-          onTriggered: root.resolveRefusedDraft(root.displayedId, "copy")
-        }
-        PanelAction {
-          objectName: "refusedDraftDismiss"
-          text: "Dismiss"
-          foreground: root.foreground
-          selection: root.selection
-          fontFamily: root.fontFamily
-          unit: root.unit
-          onTriggered: root.resolveRefusedDraft(root.displayedId, "dismiss")
-        }
       }
     }
 

@@ -165,8 +165,23 @@ TestCase {
     body.client.markUnsaved(id, "")
     body.client.receive({type: "draft", id: id, text: text, source: "", sequence: 0})
   }
-  // An edit that is longer than the page may edit (twice the 8000-unit Send
-  // limit): still refused and kept as refused text, as before.
+  // The listener's answer to this UI's latest edit of a conversation (this
+  // transport never answers by itself): refused, or confirmed as saved.
+  function refuseLatestEdit(id) {
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set" && message.id === id).pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: write.editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    body.client.error = ""
+  }
+  function confirmLatestEdit(id) {
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set" && message.id === id).pop()
+    body.client.receive({type: "draft", id: id, text: write.text, editId: write.editId, source: "", sequence: 0})
+  }
+  function unsavedNotice(chat) {
+    return evaluate(chat, "document.querySelector('.unsaved') !== null")
+  }
+  // An edit longer than the listener keeps from an editor (twice the
+  // 8000-unit Send limit), but within what the page hands to the host.
   readonly property string overLong: "o".repeat(16001)
   function cleanup() {
     for (const id of body.popouts.order.slice()) {
@@ -175,7 +190,6 @@ TestCase {
     }
     for (const id of Object.keys(body.client.serverDrafts)) listenerDraft(id, "")
     mainView().clearDraft("one")
-    mainView().refusedDrafts = ({})
     tryCompare(body.popouts, "report", [])
   }
 
@@ -225,8 +239,6 @@ TestCase {
     tryVerify(function() { return textarea(chat) === "" })
   }
 
-  // An edit based on a host draft revision the page has not seen is refused,
-  // and the page keeps the refused text for the person to restore.
   // SUPERSEDED: an edit based on an older draft used to be refused and kept
   // as refused text. The listener now keeps the last edit it receives (last
   // write wins). An edit naming another conversation goes to that
@@ -243,7 +255,6 @@ TestCase {
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
     compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
     compare(composerOf(view).text, "stale but last")
-    compare(view.refusedDrafts["one"], undefined)
     let writes = fakeBackend.sent.filter(message => message.action === "draft-set")
     compare(writes.pop().text, "stale but last")
     // Another conversation's ID: its own draft, not the shown one.
@@ -688,37 +699,32 @@ TestCase {
     tryVerify(function() { return textarea(chat) === "draft here" })
   }
 
-  // S1: Enter right after an edit the host refuses (too long) sends nothing:
-  // the page waits for the edit's answer, and the host only sends the exact
-  // text the page shows.
+  // S1: Enter right after an edit that cannot be kept sends nothing: the
+  // text stays in the editor, the listener refuses it, it shows as not
+  // saved, and after Discard Send sends exactly the listener's text.
   function test_p_send_never_submits_older_text_after_a_refused_edit() {
     const chat = freshChat("sendcheck")
     const view = mainView()
     view.focusComposer()
-    typeInto(chat, "host old")
-    tryCompare(composerOf(view), "text", "host old")
+    listenerDraft("sendcheck", "host old")
+    tryVerify(function() { return textarea(chat) === "host old" })
     fakeBackend.sent = []
     // Over the edit limit through an input that cannot be cancelled, then
-    // Enter in the same moment: nothing is sent; the host refuses the text
-    // and keeps it as this conversation's refused text.
+    // Enter in the same moment: nothing is sent.
     evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'y'.repeat(16001);"
       + " area.dispatchEvent(new Event('input', {bubbles: true}));"
       + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); return true })()")
-    tryVerify(function() { return view.displayedRefusedDraft.length === 16001 }, 5000)
+    tryCompare(composerOf(view), "text", "y".repeat(16001), 5000)
+    refuseLatestEdit("sendcheck")
+    tryVerify(function() { return unsavedNotice(chat) === true }, 5000)
     wait(300)
     compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
-    compare(composerOf(view).text, "host old")
+    compare(textarea(chat), "y".repeat(16001))
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
-    // A direct bridge send naming other text than the host draft is refused.
-    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.send('sendcheck', " + view.draftRevision
-      + ", 'something else', answer => window.__answer = answer); return true })()")
-    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
-    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, false)
-    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
-    // Dismissed, the shown text is the host draft again and sends exactly.
-    verify(clickButton(chat, "Dismiss"))
-    tryCompare(view, "displayedRefusedDraft", "")
+    // Discarded, the listener's text is shown again and sends exactly.
+    verify(clickButton(chat, "Discard"))
     tryVerify(function() { return textarea(chat) === "host old" })
+    tryVerify(function() { return unsavedNotice(chat) === false })
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === false })
     verify(clickButton(chat, "Send"))
     tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
@@ -727,51 +733,47 @@ TestCase {
     tryCompare(composerOf(view), "text", "")
   }
 
-
-  // S2: refused text is host-owned: it survives switching conversations and
-  // reloading, blocks moving the conversation to a window until resolved,
-  // and can be used.
-  function test_q_refused_text_survives_navigation_and_gates_handover() {
+  // SUPERSEDED: refused text used to be a separate host-held record per
+  // conversation (refusedDrafts, "Use my text"). Now an over-limit edit is
+  // the conversation's one text, shown as not saved: it survives switching
+  // conversations, blocks moving the conversation until saved or
+  // discarded, and saves once shortened.
+  function test_q_unsaved_text_survives_navigation_and_gates_handover() {
     snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
     body.client.sessions.select("one")
     const view = mainView()
     const chat = waitForChat(view)
+    listenerDraft("one", "saved one")
     settled(view, chat)
+    compare(textarea(chat), "saved one")
+    fakeBackend.sent = []
     evaluate(chat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
-    tryCompare(view, "displayedRefusedDraft", testCase.overLong)
+    tryCompare(composerOf(view), "text", testCase.overLong)
+    refuseLatestEdit("one")
+    tryVerify(function() { return body.client.unsavedDrafts["one"] !== undefined })
     body.client.sessions.select("two")
     tryCompare(body.panel, "selectedSessionId", "two")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') === null") === true })
+    tryVerify(function() { return unsavedNotice(chat) === false && textarea(chat) === "" }, 5000)
     body.client.sessions.select("one")
     tryCompare(body.panel, "selectedSessionId", "one")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null"
-      + " && document.querySelector('.refused').textContent.includes('Use my text')") === true })
-    // Reloading the page keeps it too (it lives in the host).
-    const trusted = findChild(surfaceOf(view), "trustedChat")
-    const loads = trusted.readyCount
-    chat.reload()
-    tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true }, 5000)
-    // Pop-out waits until it is resolved, with a reason.
+    tryVerify(function() { return textarea(chat) === testCase.overLong && unsavedNotice(chat) === true }, 5000)
+    // The conversation does not move to a window while its text is not saved.
     body.popouts.popOut("one")
     compare(body.popouts.windows["one"], undefined)
-    verify(body.client.error.includes("could not be added"))
+    verify(body.client.error.includes("not saved yet"), body.client.error)
     body.client.error = ""
-    verify(clickButton(chat, "Use my text"))
-    tryCompare(composerOf(view), "text", testCase.overLong)
-    compare(view.displayedRefusedDraft, "")
-    tryVerify(function() { return textarea(chat) === testCase.overLong })
-    // The classic view offers the same recovery.
-    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', 0, 'second try' + 'x'.repeat(16000), 10); return true })()")
-    tryCompare(view, "displayedRefusedDraft", "second try" + "x".repeat(16000))
-    view.classicView = true
-    tryCompare(view, "htmlActive", false)
-    verify(findChild(view, "refusedDraft").visible)
-    const dismiss = findChild(view, "refusedDraftDismiss")
-    verify(waitForRendering(dismiss))
-    mouseClick(dismiss)
-    tryCompare(view, "displayedRefusedDraft", "")
-    view.classicView = false
+    // Shortened, it is an ordinary edit; the listener's confirmation saves it.
+    view.focusComposer()
+    typeInto(chat, "shorter")
+    tryCompare(composerOf(view), "text", "shorter")
+    confirmLatestEdit("one")
+    tryVerify(function() { return body.client.unsavedDrafts["one"] === undefined })
+    tryVerify(function() { return unsavedNotice(chat) === false })
+    compare(textarea(chat), "shorter")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
   }
 
   // S3: moving the cursor without typing (keyboard or mouse) reaches the
@@ -934,31 +936,71 @@ TestCase {
     compare(composerOf(view).text, "old host text")
   }
 
+  // A drop far beyond the limit is rejected before it changes anything,
+  // like a paste; Unicode text from an input method (an input that cannot
+  // be cancelled) reaches the host exactly.
+  function test_va_oversize_drop_and_unicode_input() {
+    const chat = freshChat("drop")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "old host text")
+    tryCompare(composerOf(view), "text", "old host text")
+    const prevented = evaluate(chat, "(() => { const area = document.querySelector('textarea');"
+      + " const data = new DataTransfer(); data.setData('text/plain', 'x'.repeat(40001));"
+      + " const event = new DragEvent('drop', {dataTransfer: data, bubbles: true, cancelable: true});"
+      + " return !area.dispatchEvent(event) })()")
+    compare(prevented, true)
+    wait(300)
+    compare(textarea(chat), "old host text")
+    compare(composerOf(view).text, "old host text")
+    const unicode = "Grüße 👋🏽 — 你好\n🇳🇱"
+    evaluate(chat, "(() => { const area = document.querySelector('textarea');"
+      + " area.dispatchEvent(new InputEvent('beforeinput', {inputType: 'insertCompositionText', data: " + JSON.stringify(unicode) + ","
+      + " bubbles: true, cancelable: false}));"
+      + " area.value = area.value + " + JSON.stringify(unicode) + ";"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "text", "old host text" + unicode, 5000)
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set" && message.id === "drop").pop()
+    verify(write.text === "old host text" + unicode, "the listener receives the exact text")
+  }
+
   // Lead regression: oversize text that reached the editor some other way
-  // (here: replaced value plus input) stays on screen, is never replaced by
-  // the host draft, cannot be sent, and can be copied or discarded.
+  // (here: replaced value plus input, beyond what the page hands to the
+  // host) stays on screen, is never replaced by the host draft, cannot be
+  // sent, and can be copied or discarded.
+  // SUPERSEDED: this text used to be archived by the host (refused text)
+  // with "Copy my text"/Dismiss; now it stays only in this editor.
   function test_w_oversize_text_in_the_editor_is_never_dropped() {
     const chat = freshChat("large")
     const view = mainView()
     view.focusComposer()
     typeInto(chat, "old host text")
     tryCompare(composerOf(view), "text", "old host text")
-    // The lead's scenario: the editor's value becomes 40001 characters (an
-    // input that cannot be cancelled). The host refuses and keeps it.
     const pasted = "x".repeat(40001)
     typeInto(chat, pasted)
-    tryVerify(function() { return view.displayedRefusedDraft === pasted }, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true }, 5000)
     compare(composerOf(view).text, "old host text")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true })
-    // It survives an agent draft, a conversation switch and a reload.
+    compare(textarea(chat), pasted)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
+    // A host change (an appended agent draft) does not replace it.
     fakeBackend.received({type: "agent-draft", requestId: "d-large", id: "large", text: "Agent text",
       ifDraftExists: "append", focus: false, source: {sessionId: "x", title: "Helper"}})
     tryVerify(function() { return composerOf(view).text.includes("Agent text") })
-    compare(view.displayedRefusedDraft, pasted)
-    // Copy, then Dismiss returns to the host draft.
-    verify(clickButton(chat, "Copy my text"))
-    verify(clickButton(chat, "Dismiss"))
-    tryCompare(view, "displayedRefusedDraft", "")
+    wait(300)
+    compare(textarea(chat), pasted)
+    // Copy copies exactly what is shown and says so.
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    fakeBackend.sent = []
+    verify(clickInHeld(chat, "Copy"))
+    tryVerify(function() { return copyFeedback(chat) === "Copied (40001 characters)." }, 5000, copyFeedback(chat))
+    verify(clipboardText() === pasted, "clipboard holds exactly the shown text")
+    compare(textarea(chat), pasted)
+    compare(fakeBackend.sent.filter(message => message.action === "draft-set").length, 0, "copying writes no draft")
+    // Discard returns to the host draft.
+    verify(clickInHeld(chat, "Discard"))
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
     tryVerify(function() { return textarea(chat) === composerOf(view).text })
   }
 
@@ -990,41 +1032,45 @@ TestCase {
     view.clearDraft("one")
     tryVerify(function() { return textarea(chat) === "" })
 
-    // Refused text for each conversation is kept separately by the host.
+    // SUPERSEDED: refused text per conversation was a host archive. Now each
+    // conversation's over-limit text is its own unsaved text, kept apart.
+    fakeBackend.sent = []
     evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'o'.repeat(16001);"
       + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
-    tryVerify(function() { return view.refusedDrafts["one"] !== undefined && view.refusedDrafts["one"].length === 16001 })
+    tryCompare(composerOf(view), "text", "o".repeat(16001))
+    refuseLatestEdit("one")
     body.client.sessions.select("two")
     tryCompare(body.panel, "selectedSessionId", "two")
     settled(view, chat)
     evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 't'.repeat(16001);"
       + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
-    tryVerify(function() { return view.refusedDrafts["two"] !== undefined && view.refusedDrafts["two"].length === 16001 })
+    tryCompare(composerOf(view), "text", "t".repeat(16001))
+    refuseLatestEdit("two")
+    tryVerify(function() { return body.client.unsavedDrafts["two"] !== undefined })
     body.client.sessions.select("one")
     tryCompare(body.panel, "selectedSessionId", "one")
-    compare(view.refusedDrafts["one"], "o".repeat(16001))
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.refused') !== null") === true })
-    view.refusedDrafts = ({})
+    tryVerify(function() { return textarea(chat) === "o".repeat(16001) && unsavedNotice(chat) === true }, 5000)
+    compare(body.client.unsavedDrafts["one"] !== undefined, true)
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return body.client.unsavedDrafts["one"] === undefined })
+    body.client.discardUnsavedDraft("two")
 
-    // In a pop-out, refused text blocks Return (and the window close).
+    // In a pop-out, unsaved text blocks Return (and the window close).
     body.popouts.popOut("one")
     tryVerify(function() { return body.popouts.windows["one"] !== undefined })
     const window = body.popouts.windows["one"]
     const windowChat = waitForChat(window.view)
     settled(window.view, windowChat)
+    fakeBackend.sent = []
     evaluate(windowChat, "(() => { const area = document.querySelector('textarea'); area.value = 'p'.repeat(16001);"
       + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
-    tryVerify(function() { return window.view.displayedRefusedDraft.length === 16001 })
+    tryCompare(composerOf(window.view), "text", "p".repeat(16001))
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(windowChat) === true }, 5000)
     body.popouts.returnToSidebar("one", {focus: false, source: "button"})
     verify(body.popouts.windows["one"] !== undefined)
-    verify(window.notice.includes("could not be added"))
-    // Text only the page holds (host recovery full) blocks it the same way.
-    window.view.resolveRefusedDraft("one", "dismiss")
-    window.view.setPageHeldDraft("one", true)
-    body.popouts.returnToSidebar("one", {focus: false, source: "button"})
-    verify(body.popouts.windows["one"] !== undefined)
-    verify(window.notice.includes("could not be kept"))
-    window.view.setPageHeldDraft("one", false)
+    verify(window.notice.includes("not saved yet"), window.notice)
+    body.client.discardUnsavedDraft("one")
     body.popouts.returnToSidebar("one", {focus: false})
     tryVerify(function() { return body.popouts.windows["one"] === undefined })
   }
@@ -1054,112 +1100,33 @@ TestCase {
   }
 
 
-  // Bounded recovery capacity: the displayed conversation always has a slot;
-  // when other conversations' slots are full the host says it did not keep
-  // the text (kept: false), so the page keeps it instead of dropping it.
-  function test_x_recovery_capacity_never_drops_silently() {
+  // SUPERSEDED: the bounded recovery capacity (32 host slots, kept: false)
+  // and text held only by the page across conversations (270000-character
+  // page-held text surviving resynchronization, Activity, several
+  // conversations and transfers) are removed. What remains, bounded: the
+  // page hands the host at most 32000 units; a longer edit is answered
+  // "too-long" and stays only in the current editor (test_w). An edit for
+  // a conversation not shown goes to that conversation, and the listener's
+  // refusal makes it that conversation's unsaved text.
+  function test_x_edit_bounds_at_the_bridge() {
     const chat = freshChat("capacity")
     const view = mainView()
-    for (let index = 0; index < 32; index++) verify(view.keepRefusedDraft("other-" + index, "t" + index))
-    compare(view.keepRefusedDraft("other-overflow", "lost?"), false)
-    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', 0, 'm'.repeat(16001), 4,"
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', 0, 'm'.repeat(32001), 4,"
       + " answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
-    const shown = JSON.parse(evaluate(chat, "window.__answer"))
-    compare([shown.accepted, shown.kept], [false, true])
-    compare(view.displayedRefusedDraft, "m".repeat(16001))
+    compare(JSON.parse(evaluate(chat, "window.__answer")).reason, "too-long")
+    compare(composerOf(view).text, "")
+    fakeBackend.sent = []
     evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('elsewhere', 0, 'e'.repeat(16001), 10,"
       + " answer => window.__answer = answer); return true })()")
     tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
-    const other = JSON.parse(evaluate(chat, "window.__answer"))
-    compare([other.accepted, other.kept], [false, false])
-    view.refusedDrafts = ({})
-  }
-
-  // Sable R3: text only the page holds (beyond the host's bound) keeps its
-  // ownership through a same-document resynchronization, Activity and back,
-  // several conversations and transfers; only a real reload loses it, and
-  // that is disclosed and releases the transfer block.
-  // Discard in the shown conversation's own notice (not another's).
-  function discardShown(chat) {
-    return evaluate(chat, "(() => { const notice = [...document.querySelectorAll('.unkept')]"
-      + ".find(entry => entry.textContent.startsWith('This text')); if (!notice) return false;"
-      + " [...notice.querySelectorAll('button')].find(b => b.textContent === 'Discard').click(); return true })()")
-  }
-  function heldInput(chat, character) {
-    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = " + JSON.stringify(character)
-      + ".repeat(270000); area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
-  }
-  function test_zza_page_held_text_survives_resync_and_blocks_transfer() {
-    snapshot([session("one", "First chat", null)])
-    body.client.sessions.select("one")
-    const view = mainView()
-    const chat = waitForChat(view)
-    settled(view, chat)
-    heldInput(chat, "x")
-    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000, "host knows the page holds text")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true })
-    const trusted = findChild(surfaceOf(view), "trustedChat")
-    const loads = trusted.readyCount
-    // A sequence gap makes the page resynchronize (ready() again).
-    trusted.sequence += 1
-    trusted.post({type: "status", status: trusted.currentStatus()})
-    tryVerify(function() { return trusted.readyCount > loads }, 5000, "page resynchronized")
-    compare(view.pageHeldDrafts["one"], true)
-    compare(view.inputError, "")
-    compare(evaluate(chat, "document.querySelector('textarea').value.length"), 270000)
-    // The conversation does not move while only the page holds the text.
-    body.popouts.popOut("one")
-    compare(body.popouts.windows["one"], undefined)
-    verify(body.client.error.includes("could not be kept"))
-    body.client.error = ""
-    verify(discardShown(chat))
-    tryVerify(function() { return view.pageHeldDrafts["one"] === undefined })
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
-  }
-
-  function test_zzb_page_held_text_survives_activity_and_several_conversations() {
-    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
-    body.client.sessions.select("one")
-    const view = mainView()
-    const chat = waitForChat(view)
-    settled(view, chat)
-    heldInput(chat, "o")
-    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000)
-    body.client.sessions.select("two")
-    tryCompare(body.panel, "selectedSessionId", "two")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null"
-      + " && document.querySelector('textarea').value.length !== 270000") === true }, 5000)
-    // The other conversation's text is listed with Copy/Discard here.
-    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 1 }, 5000)
-    heldInput(chat, "t")
-    tryVerify(function() { return view.pageHeldDrafts["two"] === true }, 5000)
-    // Activity (no conversation): the composer goes away, the text stays.
-    body.client.sessions.select("")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null") === true }, 5000)
-    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 2 }, 5000)
-    body.client.sessions.select("one")
-    tryCompare(body.panel, "selectedSessionId", "one")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null"
-      + " && document.querySelector('textarea').value === 'o'.repeat(270000)") === true }, 5000)
-    compare(view.pageHeldDrafts["one"], true)
-    compare(view.pageHeldDrafts["two"], true)
-    // Resolving one leaves the other held; the resolved one can move.
-    verify(discardShown(chat))
-    tryVerify(function() { return view.pageHeldDrafts["one"] === undefined })
-    compare(view.pageHeldDrafts["two"], true)
-    body.popouts.popOut("one")
-    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
-    body.popouts.returnToSidebar("one", {focus: false})
-    tryVerify(function() { return body.popouts.windows["one"] === undefined })
-    body.popouts.popOut("two")
-    compare(body.popouts.windows["two"], undefined)
-    body.client.error = ""
-    body.client.sessions.select("two")
-    tryCompare(body.panel, "selectedSessionId", "two")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').value === 't'.repeat(270000)") === true }, 5000)
-    verify(discardShown(chat))
-    tryVerify(function() { return view.pageHeldDrafts["two"] === undefined })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    compare(composerOf(view).text, "")
+    refuseLatestEdit("elsewhere")
+    tryVerify(function() { return body.client.unsavedDrafts["elsewhere"] !== undefined })
+    compare(unsavedNotice(chat), false)
+    body.client.discardUnsavedDraft("elsewhere")
+    view.clearDraft("elsewhere")
   }
 
   // A pop-out window's native header shows the conversation's current
@@ -1414,27 +1381,14 @@ TestCase {
     }
   }
 
-  function test_zzc_real_reload_discloses_lost_page_held_text() {
-    snapshot([session("one", "First chat", null)])
-    body.client.sessions.select("one")
-    const view = mainView()
-    const chat = waitForChat(view)
-    settled(view, chat)
-    heldInput(chat, "x")
-    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000)
-    const trusted = findChild(surfaceOf(view), "trustedChat")
-    const loads = trusted.readyCount
-    chat.reload()
-    tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
-    tryVerify(function() { return view.pageHeldDrafts["one"] === undefined })
-    verify(view.inputError.includes("lost when the chat page reloaded"))
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('lost when the chat page reloaded')") === true }, 5000)
-    view.inputError = ""
-  }
+  // SUPERSEDED: test_zzc (a reload disclosing lost page-held text) tested
+  // the removed page-held store.
 
   // Kestrel R3 S2: a conversation that disappears (closed elsewhere) while
-  // popped out keeps all its text recoverable in the sidebar: the draft,
-  // refused text and text only its page held. Nothing reopens it.
+  // popped out keeps its text accessible in the sidebar: its draft, also
+  // when that text is not saved. Nothing reopens it.
+  // SUPERSEDED: refused and page-held text were separate orphan kinds,
+  // collected by scraping the closing page; they are removed.
   function test_zzd_disappearing_conversation_keeps_all_its_text() {
     snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
     body.client.sessions.select("one")
@@ -1447,54 +1401,39 @@ TestCase {
     tryCompare(composerOf(main), "text", "host original")
     body.popouts.popOut("one")
     tryVerify(function() { return body.popouts.windows["one"] !== undefined })
-    const window = body.popouts.windows["one"]
-    const windowChat = waitForChat(window.view)
+    let window = body.popouts.windows["one"]
+    let windowChat = waitForChat(window.view)
     tryVerify(function() { return textarea(windowChat) === "host original" })
-    evaluate(windowChat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
-    tryCompare(window.view, "displayedRefusedDraft", testCase.overLong)
     body.popouts.orphanDrafts = []
     fakeBackend.sent = []
     snapshot([session("two", "Second chat", null)])
     tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
-    const orphans = body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text])
-    compare(JSON.stringify(orphans), JSON.stringify([["draft", "host original"], ["refused", testCase.overLong]]))
+    compare(JSON.stringify(body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text])),
+      JSON.stringify([["draft", "host original"]]))
     compare(fakeBackend.sent.filter(message => message.action === "restore-agent" || message.action === "send-agent").length, 0)
     body.popouts.orphanDrafts = []
 
-    // Text only the window's page held is collected before the window goes.
+    // Unsaved text (refused by the listener) is the draft that stays.
     snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
     body.popouts.popOut("one")
     tryVerify(function() { return body.popouts.windows["one"] !== undefined })
-    const held = body.popouts.windows["one"]
-    const heldChat = waitForChat(held.view)
-    settled(held.view, heldChat)
-    heldInput(heldChat, "x")
-    tryVerify(function() { return held.view.pageHeldDrafts["one"] === true }, 5000)
+    window = body.popouts.windows["one"]
+    windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    fakeBackend.sent = []
+    evaluate(windowChat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
+    tryCompare(composerOf(window.view), "text", testCase.overLong)
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(windowChat) === true }, 5000)
     snapshot([session("two", "Second chat", null)])
-    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 8000)
-    const heldOrphan = body.popouts.orphanDrafts.find(entry => entry.kind === "held")
-    verify(heldOrphan !== undefined, JSON.stringify(body.popouts.orphanDrafts.map(entry => entry.kind)))
-    compare(heldOrphan.text.length, 270000)
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    compare(JSON.stringify(body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text.length])),
+      JSON.stringify([["draft", 16001]]))
     body.popouts.orphanDrafts = []
-
-    // Refused text the sidebar kept for a conversation that disappears.
-    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
-    body.client.sessions.select("two")
-    tryCompare(body.panel, "selectedSessionId", "two")
-    settled(main, mainChat)
-    evaluate(mainChat, "(() => { window.__companionBridge.editDraft('two', 0, 'SIDEBAR-REFUSED' + 'x'.repeat(16000), 15); return true })()")
-    tryCompare(main, "displayedRefusedDraft", "SIDEBAR-REFUSED" + "x".repeat(16000))
-    body.client.sessions.select("one")
-    snapshot([session("one", "First chat", null)])
-    tryVerify(function() { return body.popouts.orphanDrafts.some(entry => entry.kind === "refused" && entry.text === "SIDEBAR-REFUSED" + "x".repeat(16000)) }, 5000)
-    compare(main.refusedDrafts["two"], undefined)
-    body.popouts.orphanDrafts = []
+    body.client.discardUnsavedDraft("one")
   }
 
-  // Kestrel R4 S2-COPY: Copy on text only the page holds (here 270000
-  // characters, beyond the host's 262144 bound) actually copies it, shows
-  // that it did, splits text beyond the copy limit into numbered parts,
-  // and shows a refusal instead of failing silently. The text stays.
+  // Feedback and buttons of the notice for text only this editor holds.
   function copyFeedback(chat) {
     return evaluate(chat, "(() => { const entry = document.querySelector('.unkept .copy-feedback'); return entry ? entry.textContent : '' })()")
   }
@@ -1502,70 +1441,10 @@ TestCase {
     return evaluate(chat, "(() => { const button = [...document.querySelectorAll('.unkept button')]"
       + ".find(b => b.textContent === " + JSON.stringify(label) + "); if (!button) return false; button.click(); return true })()")
   }
-  function test_zze_recovery_copy_copies_what_it_offers() {
-    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
-    body.client.sessions.select("one")
-    tryCompare(body.panel, "selectedSessionId", "one")
-    const view = mainView()
-    const chat = waitForChat(view)
-    settled(view, chat)
-    // 270000 characters with a marker at each end, so order and exactness show.
-    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'BEGIN' + 'x'.repeat(269990) + 'END!!';"
-      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
-    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 5000)
-    const expected = "BEGIN" + "x".repeat(269990) + "END!!"
-    // The conversation is closed elsewhere and Activity is shown.
-    snapshot([session("two", "Second chat", null)])
-    body.client.sessions.select("")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null"
-      + " && document.querySelectorAll('.unkept').length === 1") === true }, 5000)
-
-    // One Copy, accepted, exact clipboard contents, visible confirmation.
-    clipboardProbe.text = "previous"
-    clipboardProbe.selectAll()
-    clipboardProbe.copy()
-    verify(clickInHeld(chat, "Copy my text"))
-    tryVerify(function() { return copyFeedback(chat).startsWith("Copied") }, 5000, copyFeedback(chat))
-    compare(copyFeedback(chat), "Copied (270000 characters).")
-    const copied = clipboardText()
-    compare(copied.length, 270000)
-    verify(copied === expected, "clipboard holds exactly the retained text")
-
-    // Beyond the copy limit: numbered parts, each copied exactly, in order.
-    const trusted = findChild(surfaceOf(view), "trustedChat")
-    trusted.copyLimit = 100000
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')")
-      === "Copy part 1 of 3|Copy part 2 of 3|Copy part 3 of 3|Discard" }, 5000)
-    for (let index = 0; index < 3; index++) {
-      verify(clickInHeld(chat, "Copy part " + (index + 1) + " of 3"))
-      const part = expected.slice(index * 100000, (index + 1) * 100000)
-      tryVerify(function() { return copyFeedback(chat) === "Copied part " + (index + 1) + " of 3 (" + part.length + " characters)." }, 5000, copyFeedback(chat))
-      verify(clipboardText() === part, "part " + (index + 1) + " copied exactly")
-    }
-
-    // The host refuses more than its limit in one call, with a reason.
-    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.copyText('y'.repeat(100001),"
-      + " answer => window.__answer = answer); return true })()")
-    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
-    const refusal = JSON.parse(evaluate(chat, "window.__answer"))
-    compare(refusal.accepted, false)
-    verify(refusal.reason.includes("100000"))
-    // A refusal reaching the page is shown, and the text stays (host answer
-    // simulated in the page for this step).
-    evaluate(chat, "(() => { window.__companionBridge.copyText = (text, callback) => callback(JSON.stringify("
-      + "{accepted: false, length: text.length, reason: 'Simulated refusal.'})); return true })()")
-    verify(clickInHeld(chat, "Copy part 1 of 3"))
-    tryVerify(function() { return copyFeedback(chat) === "Copy refused: Simulated refusal. Your text is still kept here." }, 5000, copyFeedback(chat))
-    compare(evaluate(chat, "document.querySelectorAll('.unkept').length"), 1)
-    compare(evaluate(chat, "window.companionChat.heldText('one').length"), 270000)
-    trusted.copyLimit = 1048576
-    // The page's bridge override is gone with a reload; discard instead.
-    verify(clickInHeld(chat, "Discard"))
-    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 0 }, 5000)
-    const loads = trusted.readyCount
-    chat.reload()
-    tryVerify(function() { return trusted.readyCount > loads }, 15000, "page reloaded without the override")
-  }
+  // SUPERSEDED: test_zze (Copy and numbered Copy parts of 270000-character
+  // page-held text) tested the removed recovery archive. Copy of text only
+  // the editor holds is covered by test_w; message and code Copy keep their
+  // own native clipboard bound.
 
   // ---- Conversation switch vs editor state (draft repair) ---------------
   // Arms the page to type `text` in the very render that shows `title`,
@@ -1608,7 +1487,7 @@ TestCase {
     wait(500)
     compare(textarea(setup.chat), "TYPED-IN-WINDOW")
     compare(composerOf(setup.view).text, "TYPED-IN-WINDOW")
-    compare(setup.view.displayedRefusedDraft, "")
+    compare(body.client.unsavedDrafts["B"], undefined)
     // Focus moved with the conversation to the new editor.
     compare(evaluate(setup.chat, "document.activeElement === document.querySelector('textarea')"), true)
     tryCompare(setup.view, "composerFocusId", "B", 5000)
@@ -1642,14 +1521,13 @@ TestCase {
     tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOW", 5000)
     wait(300)
     compare(textarea(setup.chat), "TYPED-IN-WINDOW")
-    compare(setup.view.displayedRefusedDraft, "")
-    compare(setup.view.refusedDrafts["B"], undefined)
+    compare(body.client.unsavedDrafts["B"], undefined)
     compare(setup.view.exportDraft("A").text, "alpha")
   }
 
   // Answers to a replaced editor's edits (held back here to arrive after
-  // the switch) never change the editor now shown, and anything the host
-  // could not keep still reaches its own conversation's recovery.
+  // the switch) never change the editor now shown, and an edit the
+  // listener refuses stays its own conversation's unsaved text.
   function holdNextAnswer(chat) {
     evaluate(chat, "(() => { const b = window.__companionBridge; window.__held = [];"
       + " if (!window.__holdInstalled) { window.__holdInstalled = true; const edit = b.editDraft;"
@@ -1697,27 +1575,34 @@ TestCase {
     settled(setup.view, setup.chat)
     releaseHeld(setup.chat)
     wait(300)
-    compare(setup.view.refusedDrafts["A"], undefined)
     compare(setup.view.exportDraft("A").text, "A-LATE")
-    compare(setup.view.displayedRefusedDraft, "")
     compare(textarea(setup.chat), "")
 
-    // A refused edit the host could not keep (beyond its bound): after the
-    // switch it reaches A's page-held recovery, B's editor is unchanged.
+    // SUPERSEDED: an edit beyond the host's bound used to reach A's
+    // page-held recovery after the switch. Now: an over-limit edit for A,
+    // answered after the switch to B, leaves B's editor unchanged; the
+    // listener's refusal makes it A's unsaved text, shown when A returns.
     setup = twoConversations("", "")
     holdNextAnswer(setup.chat)
-    heldInput(setup.chat, "a")
+    fakeBackend.sent = []
+    typeInto(setup.chat, testCase.overLong)
+    tryCompare(composerOf(setup.view), "text", testCase.overLong, 5000)
     tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
     body.client.sessions.select("B")
     tryCompare(body.panel, "selectedSessionId", "B")
-    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').value.length === 0") === true }, 5000)
+    settled(setup.view, setup.chat)
     releaseHeld(setup.chat)
-    tryVerify(function() { return setup.view.pageHeldDrafts["A"] === true }, 5000)
-    compare(evaluate(setup.chat, "window.companionChat.heldText('A').length"), 270000)
-    compare(evaluate(setup.chat, "document.querySelectorAll('.unkept').length"), 1)
+    refuseLatestEdit("A")
+    wait(300)
     compare(textarea(setup.chat), "")
-    verify(clickInHeld(setup.chat, "Discard"))
-    tryVerify(function() { return setup.view.pageHeldDrafts["A"] === undefined }, 5000)
+    compare(unsavedNotice(setup.chat), false)
+    compare(body.client.unsavedDrafts["B"], undefined)
+    verify(body.client.unsavedDrafts["A"] !== undefined)
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    tryVerify(function() { return textarea(setup.chat) === testCase.overLong && unsavedNotice(setup.chat) === true }, 5000)
+    verify(clickButton(setup.chat, "Discard"))
+    tryVerify(function() { return body.client.unsavedDrafts["A"] === undefined })
 
     // Away and back: the old A editor's late answer cannot change the new A
     // editor's text or base.
@@ -1741,89 +1626,8 @@ TestCase {
     tryCompare(composerOf(setup.view), "text", "NEW-Ax", 5000)
   }
 
-  // Kestrel R5 S2-COPY-U: numbered Copy parts never split a character, so
-  // the native plain-text export (what another application receives) holds
-  // exactly the retained text. Checked on the export bytes, not QString.
-  function test_zzj_copy_parts_keep_every_character_in_the_native_export() {
-    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
-    body.client.sessions.select("one")
-    tryCompare(body.panel, "selectedSessionId", "one")
-    const view = mainView()
-    const chat = waitForChat(view)
-    settled(view, chat)
-    // The reviewer's case: an emoji across the production 1048576 boundary.
-    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'a'.repeat(1048575) + '\u{1F600}' + 'END';"
-      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
-    tryVerify(function() { return view.pageHeldDrafts["one"] === true }, 15000)
-    const original = "a".repeat(1048575) + "\u{1F600}" + "END"
-    compare(original.length, 1048580)
-    snapshot([session("two", "Second chat", null)])
-    body.client.sessions.select("")
-    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null"
-      + " && document.querySelectorAll('.unkept').length === 1") === true }, 10000)
-    const trusted = findChild(surfaceOf(view), "trustedChat")
-    compare(trusted.copyLimit, 1048576)
-
-    function copyAll(labels) {
-      tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')")
-        === labels.concat(["Discard"]).join("|") }, 5000)
-      let exported = ""
-      const sizes = []
-      for (let index = 0; index < labels.length; index++) {
-        verify(clickInHeld(chat, labels[index]), "button " + labels[index])
-        // Each part's own confirmation, so an earlier part's answer is not
-        // mistaken for this one.
-        const expected = labels.length === 1 ? "Copied (" : "Copied part " + (index + 1) + " of " + labels.length + " ("
-        tryVerify(function() { return copyFeedback(chat).startsWith(expected) }, 5000, copyFeedback(chat))
-        sizes.push(TestClipboard.plainTextBytes())
-        exported += TestClipboard.plainTextDecoded()
-      }
-      return {exported: exported, sizes: sizes}
-    }
-
-    // Production limit: the boundary moves back one unit to keep the emoji
-    // whole; part 2 is the emoji and the rest, all bytes exported.
-    let result = copyAll(["Copy part 1 of 2", "Copy part 2 of 2"])
-    compare(JSON.stringify(result.sizes), JSON.stringify([1048575, 7]))
-    verify(result.exported === original, "export reassembles the exact text")
-    verify(TestClipboard.plainTextEquals("\u{1F600}END"), "last part exported as UTF-8 exactly")
-
-    // Whole-value control: with a limit above the length, one Copy, exact.
-    trusted.copyLimit = 2 * 1048576
-    result = copyAll(["Copy my text"])
-    compare(JSON.stringify(result.sizes), JSON.stringify([1048582]))
-    verify(TestClipboard.plainTextEquals(original), "whole export exact")
-
-    // A lower limit whose boundary also falls inside the emoji.
-    trusted.copyLimit = 524288
-    result = copyAll(["Copy part 1 of 3", "Copy part 2 of 3", "Copy part 3 of 3"])
-    compare(JSON.stringify(result.sizes), JSON.stringify([524288, 524287, 7]))
-    verify(result.exported === original, "three-part export reassembles the exact text")
-
-    // A limit that cannot hold the emoji at all: no Copy, an explicit
-    // notice, the text still kept.
-    trusted.copyLimit = 1
-    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept').textContent.includes('Copy is not possible')") === true }, 10000)
-    compare(evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')"), "Discard")
-    compare(evaluate(chat, "window.companionChat.heldText('one').length"), 1048580)
-
-    // A refused copy says so and keeps the text (host answer simulated).
-    trusted.copyLimit = 1048576
-    evaluate(chat, "(() => { window.__companionBridge.copyText = (text, callback) => callback(JSON.stringify("
-      + "{accepted: false, length: text.length, reason: 'Simulated refusal.'})); return true })()")
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.unkept button')].some(b => b.textContent === 'Copy part 1 of 2')") === true }, 5000)
-    const buttonsBefore = evaluate(chat, "[...document.querySelectorAll('.unkept button')].map(b => b.textContent).join('|')")
-    verify(clickInHeld(chat, "Copy part 1 of 2"), "refusal click; buttons " + buttonsBefore)
-    tryVerify(function() { return copyFeedback(chat) === "Copy refused: Simulated refusal. Your text is still kept here." }, 5000,
-      "feedback " + evaluate(chat, "JSON.stringify([...document.querySelectorAll('.unkept')].map(n => n.textContent.slice(0, 160)))"))
-    compare(evaluate(chat, "window.companionChat.heldText('one') === 'a'.repeat(1048575) + '\u{1F600}' + 'END'"), true)
-
-    verify(clickInHeld(chat, "Discard"))
-    tryVerify(function() { return evaluate(chat, "document.querySelectorAll('.unkept').length") === 0 }, 5000)
-    const loads = trusted.readyCount
-    chat.reload()
-    tryVerify(function() { return trusted.readyCount > loads }, 15000, "page reloaded without the override")
-  }
+  // SUPERSEDED: test_zzj (numbered Copy parts of 1 MiB page-held text in
+  // the native export) tested the removed recovery archive.
 
   function findChildren(item, name) {
     let found = []

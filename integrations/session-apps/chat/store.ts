@@ -4,12 +4,6 @@
  * The native view (TrustedChatView.qml) owns everything; this store only
  * applies its ordered messages. Rows arrive as an order plus changed rows;
  * a sequence gap or a session change asks for a full resynchronization.
- *
- * It also holds typed text the host could not keep (only when the host's
- * bounded recovery is exhausted), per conversation, for the lifetime of this
- * document. Components come and go (no conversation shown, Activity); this
- * store does not, so that text survives them. The host is told which
- * conversations have such text and does not move them to another view.
  */
 
 import type { ChatRow, ChatStatus, HostMessage, NativeBridge } from './protocol.ts';
@@ -28,7 +22,6 @@ export class ChatStore {
   private lastSequence = 0;
   private listeners = new Set<Listener>();
   private snapshot: ChatSnapshot = { rows: [], status: { sessionId: '' } };
-  private heldBySession: Record<string, string> = {};
   // The newest known host draft of the shown conversation, updated in the
   // order the host sent things: status updates and this page's accepted
   // edits (which produce no status update). Kept here, synchronously,
@@ -41,7 +34,7 @@ export class ChatStore {
     revision: 0,
   };
   // Identifies this document for the native view, so a resynchronization of
-  // the same page is not mistaken for a reload (which loses held text).
+  // the same page is not mistaken for a reload.
   readonly documentId = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) =>
     byte.toString(16).padStart(2, '0'),
   ).join('');
@@ -69,25 +62,6 @@ export class ChatStore {
     if (this.latestHostDraft.sessionId === sessionId) {
       this.latestHostDraft = { ...this.latestHostDraft, text: text, cursor: cursor };
     }
-  }
-
-  /** Page-held text per conversation (see the class comment). */
-  held(): Record<string, string> {
-    return this.heldBySession;
-  }
-
-  hold(sessionId: string, text: string): void {
-    const next = { ...this.heldBySession };
-    if (text === '') {
-      delete next[sessionId];
-    } else {
-      next[sessionId] = text;
-    }
-    this.heldBySession = next;
-    this.bridge?.holdText(sessionId, text !== '');
-    // A new snapshot object, so subscribed components render again.
-    this.snapshot = { ...this.snapshot };
-    this.notify();
   }
 
   subscribe(listener: Listener): () => void {

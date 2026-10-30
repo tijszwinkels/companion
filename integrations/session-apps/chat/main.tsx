@@ -20,7 +20,6 @@ declare global {
       focusComposer(): void;
       blurComposer(): void;
       connected: boolean;
-      heldText(sessionId: string): string;
     };
   }
 }
@@ -33,8 +32,6 @@ window.companionChat = {
   focusComposer,
   blurComposer,
   connected: false,
-  // Read by the native view before a disappeared conversation's window goes.
-  heldText: (sessionId: string) => store.held()[sessionId] ?? '',
 };
 
 const connected = connectChannel<NativeBridge>((bridge) => {

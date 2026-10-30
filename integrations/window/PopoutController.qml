@@ -409,14 +409,10 @@ Item {
       title: title, text: text, kind: kind}])
   }
 
-  // Conversation id -> true while its disappeared window's page is asked
-  // for text only that page holds (see SessionView.pageHeldDrafts).
-  property var collecting: ({})
-
   // Conversations changed. A popped-out conversation that disappeared (closed
   // by an agent or another client, or while disconnected) loses its window;
-  // all its unsent text stays recoverable in the sidebar: the draft, text the
-  // HTML composer could not apply (refused) and text only its page holds.
+  // its unsent text, as its text box shows it (including text not saved by
+  // the listener), stays available in the sidebar with Copy and Dismiss.
   // Recovery never reopens the conversation or starts a turn.
   function sessionsChanged() {
     for (const id of root.order.slice()) {
@@ -430,42 +426,14 @@ Item {
         }
         continue
       }
-      if (root.collecting[id] === true) continue
       const window = root.windows[id]
       if (!window) {
         root.forget(id)
         continue
       }
-      const view = window.view
-      const title = window.lastTitle
-      const draft = view.exportDraft(id)
-      if (draft.text.trim() !== "") root.addOrphan(title, draft.text, "draft")
-      const refused = view.refusedDrafts[id]
-      if (typeof refused === "string" && refused !== "") root.addOrphan(title, refused, "refused")
-      if (view.pageHeldDrafts[id] !== true) {
-        root.forget(id)
-        continue
-      }
-      // Ask the page for the text it alone holds before its window goes.
-      // Bounded: an unanswered request is reported, not waited on forever.
-      root.collecting = Object.assign({}, root.collecting, {[id]: true})
-      window.hide()
-      view.collectPageHeldText(id, 3000, function(text) {
-        const collecting = Object.assign({}, root.collecting)
-        delete collecting[id]
-        root.collecting = collecting
-        if (typeof text === "string" && text !== "") root.addOrphan(title, text, "held")
-        else root.addOrphan(title, "", "lost")
-        root.forget(id)
-      })
-    }
-
-    // Refused text the sidebar view kept for a conversation that is gone.
-    const main = root.panel.conversationView
-    for (const id of Object.keys(main.refusedDrafts)) {
-      if (root.sessionExists(id) || root.windows[id]) continue
-      root.addOrphan(root.sessionTitle(id), main.refusedDrafts[id], "refused")
-      main.resolveRefusedDraft(id, "dismiss")
+      const draft = window.view.exportDraft(id)
+      if (draft.text.trim() !== "") root.addOrphan(window.lastTitle, draft.text, "draft")
+      root.forget(id)
     }
   }
 

@@ -133,23 +133,17 @@ kept until it appears.
 
 Typing, pasting or dropping past twice the message limit is cancelled before
 it changes the editor. Over-limit text that still arrives (an input method
-cannot be cancelled) is refused and kept as the conversation's refused text.
-Only if that bounded recovery is full does the page keep the text itself, per
-conversation and for the lifetime of the page document (it survives showing
-Activity or another conversation and a resynchronization); the host is told,
-and moving that conversation waits until it is resolved. A real page reload
-loses such text and says so. If a conversation is closed elsewhere while its
-window is open, its draft, refused text and page-held text all stay in the
-sidebar's closed-conversation notice with Copy and Dismiss.
-
-Copy in these recovery notices copies at most 1,048,576 characters at once.
-Text the host keeps is at most 262,144 characters, so it always copies in one
-piece; longer text only the page holds is offered as **Copy part 1 of N** and
-so on, in order, each within that limit and never cut inside a character (an
-emoji at a boundary moves to the next part), so the plain-text clipboard keeps
-every character. Nothing is cut off, the text stays
-until Discard, and each Copy says whether it worked (with the number of
-characters) or why it was refused. A new editor (page load, pop-out) starts at the
+cannot be cancelled) stays visible in the editor and is never cut. Up to four
+times the message limit it becomes the conversation's text and, since the
+listener does not keep it, shows as not saved with Save and Discard; moving or
+closing that conversation waits until it is saved (after shortening) or
+discarded. Longer text stays only in this editor, with a notice offering Copy
+and Discard; it cannot be sent and host changes do not replace it, but it is
+lost if the editor switches to another conversation or the page reloads.
+If a conversation is closed elsewhere while its window is open, the text its
+editor shows stays in the sidebar's closed-conversation notice with Copy and
+Dismiss. Copy says whether it worked (with the number of characters) or why
+it was refused. A new editor (page load, pop-out) starts at the
 host cursor.
 
 The trusted pages count as working only after their script connected and

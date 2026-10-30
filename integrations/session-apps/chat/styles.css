@@ -605,8 +605,8 @@ button.link {
   color: var(--danger);
 }
 
-/* Refused and page-held text: the classic refused-draft row's red text with
-   its actions drawn as buttons. */
+/* Unsaved text and text only the editor holds: the classic refused-draft
+   row's red text with its actions drawn as buttons. */
 .conflict {
   display: flex;
   flex-wrap: wrap;
