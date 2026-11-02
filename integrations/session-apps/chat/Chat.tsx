@@ -760,12 +760,20 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // to the latest edit. That wait is one bridge round trip per keystroke, so
   // the button does not show it (it used to be disabled for each round trip,
   // a flicker while typing). The button shows whether this text can be sent
-  // (`sendReady`); `sendable` adds that no edit is on its way. A Send pressed
-  // in between is held and performed by the effect below once the latest
-  // edit was accepted, only for exactly the same text, if still admissible.
+  // (`sendReady`). A Send pressed while an edit is on its way is held and
+  // performed by the effect below once the latest edit was accepted, only
+  // for exactly the same text, if still admissible (`admitted`).
   const sendReady =
     status.canSend === true && unsynced === null && text.trim() !== '' && text.length <= maximum;
-  const sendable = sendReady && editsInFlight === 0;
+  // The host's admission apart from its copy of the text, which lags behind
+  // an edit on its way: connected, no send or choice awaiting its answer, no
+  // words being recorded. A held Send needs this both when it is pressed and
+  // when it is performed; it is never kept for a later reconnection.
+  const admitted =
+    status.online === true &&
+    status.pendingSend !== true &&
+    status.pendingChoice !== true &&
+    status.recording?.busy !== true;
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
   // Admission: while another conversation holds input only this page has,
@@ -943,9 +951,13 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
     // An edit is still on its way (also when its input was handled but not
     // yet rendered, so `sendReady` may still describe the previous text):
-    // hold this exact text. The effect below performs it only once the
-    // edit is accepted and Send is admissible for exactly this text.
+    // hold this exact text, if Send is admissible apart from the host's
+    // lagging copy of the text. The effect below performs it once the edit
+    // is accepted and Send is still admissible.
     if (inFlight.current > 0 || editsInFlight > 0) {
+      if (!admitted) {
+        return;
+      }
       setHeldSend({ sessionId: status.sessionId, text: shown });
       return;
     }
@@ -965,23 +977,22 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       return;
     }
     const held = heldSend;
-    const shown = area.current ? area.current.value : text;
-    if (held.sessionId !== status.sessionId || shown !== held.text || text !== held.text) {
-      setHeldSend(null);
-      return;
-    }
-    // The host's status (with its admission, `canSend`) follows the edit's
-    // answer as a separate message. Wait until it describes this text; if
-    // the host draft changes to other text instead, the editor adopts it and
-    // the check above drops the held Send.
-    if (draft.text !== held.text) {
-      return;
-    }
     setHeldSend(null);
-    if (sendable) {
+    const shown = area.current ? area.current.value : text;
+    // The accepted answer means the host holds exactly this text (it applies
+    // an edit before answering), so its own text check is met; no further
+    // status message is guaranteed, so none is awaited. The host checks
+    // admission and the text once more when Send arrives.
+    if (
+      held.sessionId === status.sessionId &&
+      shown === held.text &&
+      text === held.text &&
+      admitted &&
+      unsynced === null
+    ) {
       bridge.send(status.sessionId, base.current, held.text);
     }
-  }, [heldSend, editsInFlight, text, sendable, status.sessionId, draft.text]);
+  }, [heldSend, editsInFlight, text, admitted, unsynced, status.sessionId]);
 
   function keyDown(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {

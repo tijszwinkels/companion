@@ -2820,6 +2820,76 @@ TestCase {
     snapshot([session("one", "First chat", null)])
   }
 
+  // R2-2: an ordinary edit of nonempty text produces no further status
+  // message (nothing the page watches changes); a Send held for it is still
+  // performed as soon as the edit is accepted.
+  function test_zzzh_held_send_after_a_nonempty_edit_needs_no_status_message() {
+    const chat = freshChat("ordinary")
+    const view = mainView()
+    typeInto(chat, "already nonempty")
+    tryCompare(composerOf(view), "text", "already nonempty")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true })
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
+    typeInto(chat, "already nonempty plus final words")
+    tryCompare(composerOf(view), "text", "already nonempty plus final words")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    verify(clickButton(chat, "Send"))
+    compare(view.pendingSubmission, null)
+    releaseHeld(chat)
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    tryVerify(function() { return view.pendingSubmission !== null }, 2000, "performed on the accepted answer")
+    compare(view.pendingSubmission.text, "already nonempty plus final words")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+  }
+
+  // R2-1: Send is not held while it is not admissible apart from the text
+  // (offline here), and nothing is sent later on reconnection. A Send held
+  // while admissible is dropped when admission ends before the answer.
+  function test_zzzi_inadmissible_send_is_never_held_for_later() {
+    const chat = freshChat("offline")
+    const view = mainView()
+    typeInto(chat, "initial")
+    tryCompare(composerOf(view), "text", "initial")
+    fakeBackend.disconnected()
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && b.disabled)") === true })
+    typeInto(chat, "offline seed")
+    tryCompare(composerOf(view), "text", "offline seed")
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
+    typeInto(chat, "offline text")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    evaluate(chat, "(() => { document.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return true })()")
+    releaseHeld(chat)
+    wait(300)
+    compare(view.pendingSubmission, null)
+    fakeBackend.sent = []
+    snapshot([session("offline", "Fresh offline", null)])
+    wait(500)
+    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0,
+      "Enter while offline is not sent on reconnection")
+    compare(view.pendingSubmission, null)
+
+    // Held while connected, then the connection drops before the answer.
+    tryVerify(function() { return view.online })
+    holdNextAnswer(chat)
+    typeInto(chat, "held then offline")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    verify(clickButton(chat, "Send"))
+    fakeBackend.disconnected()
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && b.disabled)") === true })
+    releaseHeld(chat)
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    wait(300)
+    fakeBackend.sent = []
+    snapshot([session("offline", "Fresh offline", null)])
+    wait(500)
+    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0,
+      "a held Send that lost admission is dropped, not sent on reconnection")
+    compare(view.pendingSubmission, null)
+  }
+
   function findChildren(item, name) {
     let found = []
     if (!item) return found
