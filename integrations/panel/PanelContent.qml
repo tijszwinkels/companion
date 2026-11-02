@@ -1279,16 +1279,25 @@ Item {
       // An application shown in place of the chat gets the room (#16):
       // Activity starts collapsed to its one-line status there; its toggle
       // still expands it on demand. Back in chat, the person's own choice
-      // returns. The next application starts collapsed again.
+      // returns. Another conversation's application starts collapsed again,
+      // without touching that saved chat choice; replaced code of the same
+      // application keeps the person's current choice.
       property bool collapsedInChat: false
-      readonly property bool applicationShown: chat.applicationShown
-      onApplicationShownChanged: {
-        if (applicationShown) {
+      // "<conversation>:<application>" while an application is shown here,
+      // else "".
+      readonly property string shownApplication: chat.applicationShown && chat.session && chat.session.application
+        ? chat.session.id + ":" + chat.session.application.id : ""
+      property string previousApplication: ""
+      onShownApplicationChanged: {
+        if (shownApplication !== "" && previousApplication === "") {
           collapsedInChat = collapsed
+          collapsed = true
+        } else if (shownApplication !== "") {
           collapsed = true
         } else {
           collapsed = collapsedInChat
         }
+        previousApplication = shownApplication
       }
       online: root.online
       paused: root.paused

@@ -2642,6 +2642,184 @@ TestCase {
     snapshot([session("one", "First chat", null)])
   }
 
+  // R1-1: further input cancels a held Send, also when the text returns to
+  // exactly what Send meant (typed on, then deleted back).
+  function test_zzzc_held_send_is_cancelled_by_input_even_when_undone() {
+    const chat = freshChat("undo")
+    const view = mainView()
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
+    typeInto(chat, "first")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    verify(clickButton(chat, "Send"))
+    typeInto(chat, "first more")
+    typeInto(chat, "first")
+    tryCompare(composerOf(view), "text", "first")
+    releaseHeld(chat)
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    wait(300)
+    compare(view.pendingSubmission, null, "input after Send cancelled it")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "the person can press Send again")
+  }
+
+  // R1-S1: text typed into an empty editor and Enter in the same task (before
+  // the page rendered the text) is sent once the edit is accepted and the
+  // host's status describes it, exactly that text.
+  function test_zzzd_input_and_enter_before_the_first_render_send_exact_text() {
+    const chat = freshChat("enter")
+    const view = mainView()
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.focus(); area.value = 'first input';"
+      + " area.setSelectionRange(11, 11); area.dispatchEvent(new Event('input', {bubbles: true}));"
+      + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    wait(100)
+    compare(view.pendingSubmission, null, "not before the edit is answered")
+    releaseHeld(chat)
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    tryVerify(function() { return view.pendingSubmission !== null }, 5000, "held Enter performed")
+    compare(view.pendingSubmission.text, "first input")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+  }
+
+  // R1-4: switching directly from one application to another conversation's
+  // application collapses Activity again; the person's chat setting stays.
+  function test_zzze_activity_collapses_again_for_another_application() {
+    snapshot([session("one", "First chat", application(1)), Object.assign(session("two", "Second chat", null),
+      {application: application(1, {id: "app-2"})})])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const strip = findChild(body.panel, "activityStrip")
+    tryCompare(view, "applicationShown", true, 10000)
+    tryCompare(strip, "collapsed", true)
+    mouseClick(findChild(strip, "toggleActivity"))
+    tryCompare(strip, "collapsed", false)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return view.applicationShown && view.session && view.session.id === "two" }, 10000)
+    tryCompare(strip, "collapsed", true, 5000, "another application starts collapsed")
+    // Chat keeps the person's own (expanded, from before) setting.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(view, "applicationShown", false)
+    tryCompare(strip, "collapsed", false)
+    snapshot([session("one", "First chat", null)])
+  }
+
+  // #16 one row: an application that asked for chat access shows its
+  // permission status and the Permissions button in the existing
+  // Chat/application row; no separate permission row while collapsed. The
+  // button works by keyboard, wraps when narrow and at a large scale, and
+  // expanding shows the trusted controls below the row.
+  function test_zzzf_permission_status_shares_the_application_row() {
+    const access = {chatAccess: {requested: ["chat.read", "chat.send"], read: false, revision: "r1",
+      send: {allowed: true, remaining: 4, busy: false}}}
+    // Delivered as the native connection delivers it (a JS object), as the
+    // consent suites do: the fake transport's `var` signal turns arrays into
+    // lists that Array.isArray does not accept.
+    body.client.receive({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0,
+      sessions: [session("one", "First chat", application(1, access))]})
+    const view = mainView()
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app", 10000)
+    const row = findChild(view, "surfaceBarRow")
+    const summary = findChild(view, "appChatPermissionSummary")
+    const expand = findChild(view, "appChatPermissionExpand")
+    const mount = findChild(view, "appChatPermissionMount")
+    tryVerify(function() { return summary.visible && expand.visible })
+    compare(summary.text, "Chat reading off · sending on, 4/5 left")
+    compare(mount.height, 0, "no separate permission row")
+    const chatButton = findChild(view, "surfaceChatButton")
+    // Everything that fits stays on the one existing row; the rest wraps.
+    function checkRow() {
+      const spacing = 8 * body.panel.unit
+      const appButton = findChild(view, "surfaceAppButton")
+      const classic = findChild(view, "surfaceClassicButton")
+      const needed = chatButton.width + appButton.width + classic.width + summary.implicitWidth + expand.implicitWidth + 4 * spacing
+      if (row.width >= needed) {
+        compare(summary.y, chatButton.y, "one row when wide enough")
+        compare(expand.y, chatButton.y)
+      }
+      verify(summary.x + summary.width <= row.width + 1, "summary inside the row")
+      verify(expand.x + expand.width <= row.width + 1, "Permissions inside the row")
+      verify(findChild(view, "sessionApp").y >= findChild(view, "sessionSurfaceBar").y + findChild(view, "sessionSurfaceBar").height,
+        "the application starts below the row")
+    }
+    checkRow()
+    // Keyboard: the trusted controls open below the row.
+    expand.forceActiveFocus()
+    tryCompare(expand, "activeFocus", true)
+    keyClick(Qt.Key_Space)
+    tryCompare(view, "appChatPermissionExpanded", true)
+    tryVerify(function() { return mount.height > 40 })
+    verify(!summary.visible && !expand.visible)
+    verify(findChild(view, "appChatReviewRead").visible)
+    verify(findChild(view, "appChatRevokeSend").visible)
+    // Hide (by keyboard; it scrolls into view within the capped panel).
+    const hide = findChild(view, "appChatPermissionCollapse")
+    hide.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryCompare(mount, "height", 0)
+    // Narrow and twice the scale: the row wraps; nothing overlaps.
+    const originalTheme = body.theme
+    try {
+      body.theme = Object.assign({}, originalTheme, {unit: 2})
+      tryVerify(function() { return expand.visible && expand.y > chatButton.y }, 5000, "wrapped below")
+      checkRow()
+      // Still reachable by keyboard when wrapped.
+      expand.forceActiveFocus()
+      keyClick(Qt.Key_Return)
+      tryCompare(view, "appChatPermissionExpanded", true)
+      view.appChatPermissionExpanded = false
+    } finally {
+      body.theme = originalTheme
+    }
+    // Chat mode: no permission status in the row.
+    mouseClick(chatButton)
+    tryCompare(surface, "mode", "chat")
+    verify(!summary.visible && !expand.visible)
+    snapshot([session("one", "First chat", null)])
+  }
+
+  // #14 native path: "pop out session N" reaches the host as agent-select
+  // with presentation "window" and uses the ordinary Pop out; a refusal
+  // (a send still being confirmed) changes no view and renews the
+  // navigation token, so the listener drops the request.
+  function test_zzzg_voice_popout_request_pops_out_or_is_refused_visibly() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const sessions = body.client.sessions
+    body.client.receive({type: "agent-select", id: "two", token: sessions.navigationToken,
+      orderRevision: sessions.orderRevision, presentation: "window"})
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined }, 5000, "popped out")
+    compare(body.client.sessions.sessions.length, 2, "no new conversation")
+    compare(body.panel.selectedSessionId, "one")
+    body.popouts.returnToSidebar("two", {focus: false})
+    tryVerify(function() { return body.popouts.windows["two"] === undefined })
+    // Refused: a send from "one" awaits its confirmation.
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "being sent")
+    tryCompare(composerOf(view), "text", "being sent")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    const token = sessions.navigationToken
+    body.client.receive({type: "agent-select", id: "one", token: token,
+      orderRevision: sessions.orderRevision, presentation: "window"})
+    tryVerify(function() { return body.client.error.indexOf("still being sent") >= 0 })
+    compare(body.popouts.windows["one"], undefined, "no window")
+    verify(sessions.navigationToken !== token, "token renewed after the refusal")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+    body.client.error = ""
+    snapshot([session("one", "First chat", null)])
+  }
+
   function findChildren(item, name) {
     let found = []
     if (!item) return found

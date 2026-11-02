@@ -313,7 +313,7 @@ test('stale, failed and out-of-range navigation never redirects voice', async (c
   // example the person clicked into the sidebar at the same moment): ends.
   // A report of an unchanged view only means the UI has not acted yet.
   await f.say('Go to session two');
-  await f.report({ id: f.one, popouts: [window(f.three, true, true)] });
+  await f.report({ id: f.one, popouts: [window(f.three, true, true)], newToken: false });
   assert.equal(f.current().agentSessionId, f.three, 'unchanged view: not carried out yet');
   await f.report({ id: f.one, popouts: [window(f.three)] });
   assert.equal(f.current().agentSessionId, f.one);
@@ -418,4 +418,64 @@ test('pop out session N is refused clearly when the target or a pop-out host is 
 
   // Directly asking the runtime on behalf of such a UI is refused too.
   assert.equal(f.activity.popOutSession!(f.current(), 1), false);
+});
+
+test('closing or returning the chosen inactive window ends the choice (R1-2)', async (context) => {
+  const f = await fixture(context);
+  // Sidebar shows one; window three is active, window two visible behind it.
+  await f.report({ id: f.one, popouts: [window(f.three, true, true), window(f.two)] });
+  assert.equal(f.current().agentSessionId, f.three);
+  // Two is already shown: the choice takes effect at once.
+  await f.say('Go to session two');
+  assert.equal(f.current().agentSessionId, f.two);
+  assert.equal(f.current().agentTargetSource, 'navigation');
+  // Window two returns to the sidebar without being selected there.
+  await f.report({ id: f.one, popouts: [window(f.three, true, true)] });
+  assert.equal(
+    f.current().agentSessionId,
+    f.three,
+    'a conversation no longer shown is not the target',
+  );
+  assert.equal(f.current().agentTargetSource, 'popout');
+});
+
+test('a refused or not-yet-shown navigation keeps the choice in effect (R1-3)', async (context) => {
+  const f = await fixture(context);
+  await f.report({ id: f.one, popouts: [window(f.three, true, true)] });
+  // "Go to session one": already shown, in effect at once.
+  await f.say('Go to session one');
+  assert.equal(f.current().agentSessionId, f.one);
+  assert.equal(f.current().agentTargetSource, 'navigation');
+
+  // "Pop out session one" is refused by the UI (a send still being
+  // confirmed): no view changes; the UI renews its navigation token.
+  const request = await f.say('Pop out session one');
+  assert.equal(request?.presentation, 'window');
+  assert.equal(f.current().agentSessionId, f.one, 'pending request: the choice in effect stays');
+  await f.report({ id: f.one, popouts: [window(f.three, true, true)] });
+  assert.equal(f.current().agentSessionId, f.one, 'refused: still the earlier choice');
+  assert.equal(f.current().agentTargetSource, 'navigation');
+  // The dropped request cannot take effect later when the person pops one
+  // out by hand; that window's own focus decides as usual.
+  await f.report({
+    id: '',
+    rail: 'compact',
+    popouts: [window(f.three), window(f.one, true, true)],
+  });
+  assert.equal(f.current().agentSessionId, f.one);
+  assert.equal(f.current().agentTargetSource, 'popout');
+
+  // A successful second navigation replaces the first only once shown.
+  await f.report({ id: f.two, popouts: [window(f.three, true, true), window(f.one)] });
+  await f.say('Go to session two');
+  assert.equal(f.current().agentSessionId, f.two);
+  await f.say('Pop out session two');
+  assert.equal(f.current().agentSessionId, f.two, 'until shown, the earlier choice stays');
+  await f.report({
+    id: '',
+    rail: 'compact',
+    popouts: [window(f.three, true, true), window(f.one), window(f.two)],
+  });
+  assert.equal(f.current().agentSessionId, f.two);
+  assert.equal(f.current().agentTargetSource, 'navigation');
 });

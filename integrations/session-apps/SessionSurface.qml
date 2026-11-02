@@ -149,7 +149,12 @@ Item {
       width: parent.width
       spacing: 4 * (root.view ? root.view.unit : 1)
 
-      Row {
+      // One row (wrapping when narrow): Chat, the application, Classic view
+      // and, while the app-chat permission controls are collapsed, their
+      // current status and the button that shows them (#16).
+      Flow {
+        objectName: "surfaceBarRow"
+        width: parent.width
         spacing: 8 * (root.view ? root.view.unit : 1)
 
         Panel.PanelAction {
@@ -182,6 +187,42 @@ Item {
           onTriggered: root.view.classicView = true
           Accessible.name: "Show this conversation in the classic Companion view"
         }
+        Text {
+          objectName: "appChatPermissionSummary"
+          visible: root.permissionsCollapsed
+          width: Math.min(implicitWidth, parent.width)
+          height: Math.max(implicitHeight, permissionsButton.height)
+          text: root.view ? root.view.appChatPermissionSummary : ""
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+          verticalAlignment: Text.AlignVCenter
+          color: root.view ? root.view.muted : "gray"
+          font.family: root.view ? root.view.fontFamily : ""
+          font.pixelSize: 11 * (root.view ? root.view.unit : 1)
+        }
+        Panel.PanelAction {
+          id: permissionsButton
+          objectName: "appChatPermissionExpand"
+          visible: root.permissionsCollapsed
+          // Never wider than the row (very narrow or zoomed); its accessible
+          // name stays complete.
+          width: Math.min(implicitWidth, parent.width)
+          clip: true
+          text: "Permissions…"
+          foreground: root.view ? root.view.foreground : "white"
+          selection: root.view ? root.view.selection : "gray"
+          fontFamily: root.view ? root.view.fontFamily : ""
+          unit: root.view ? root.view.unit : 1
+          // Reachable by keyboard: trusted consent and revoke must not need
+          // a pointer.
+          activeFocusOnTab: true
+          border.width: activeFocus ? 2 : 0
+          border.color: root.view ? root.view.accent : "white"
+          Keys.onReturnPressed: event => { triggered(); event.accepted = true }
+          Keys.onSpacePressed: event => { triggered(); event.accepted = true }
+          onTriggered: root.view.appChatPermissionExpanded = true
+          Accessible.name: "Review or revoke this application's chat permissions"
+        }
       }
 
       Text {
@@ -202,8 +243,14 @@ Item {
     }
   }
 
+  // The app asked for chat access and its controls are collapsed: the bar
+  // row shows their status and the Permissions button.
+  readonly property bool permissionsCollapsed: root.view !== null && root.application !== null && root.mode === "app"
+    && (root.view.appChatReadRequested || root.view.appChatSendRequested) && !root.view.appChatPermissionOpen
+
   // Consent stays native and above authored content, below the permanent
   // Chat/App/Classic escape bar. No application can draw over its controls.
+  // Expanded only (collapsed, the bar row above shows their status).
   Loader {
     id: permission
     objectName: "appChatPermissionMount"

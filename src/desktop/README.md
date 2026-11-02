@@ -890,13 +890,17 @@ because navigation shows it without taking keyboard focus from a pop-out window
 the person was in. The choice takes effect once the owning connection's
 `panel-state` shows the conversation as requested (the main view or a window
 for go-to, a window for pop-out), or at dispatch when it already does. Until
-then the target is unchanged, so routing never runs ahead of the view. It ends
-on the next genuine change on that connection after it took effect (its main
-view selection, the active window or a composer's focus), when the conversation
-closes, when the connection disconnects or stops owning navigation, or with the
-next navigation. A report showing an unchanged view keeps a pending choice; any
-other change before it was shown cancels it. Stale or refused navigation changes
-nothing. Clicking into a window that already had focus produces no report and
+then the target is unchanged: the previous choice, if any, stays in effect, so
+routing never runs ahead of the view. It ends on the next genuine change on that
+connection after it took effect (its main view selection, the active window or a
+composer's focus), when that connection no longer shows the conversation (for
+example its window returned without selecting it), when the conversation
+closes, when the connection disconnects or stops owning navigation, or when a
+later navigation has been shown. A not-yet-shown navigation survives only
+reports with an unchanged view and navigation token; the pop-out host renews
+its token when it refuses a pop-out (a send still being confirmed, eight
+windows), so a refused request is dropped and never redirects voice. Stale
+navigation changes nothing. Clicking into a window that already had focus produces no report and
 does not end the choice; the voice indication shows where speech goes.
 
 The optional `previousSessions` snapshot array and

@@ -300,14 +300,16 @@ Item {
     root.refreshReport()
   }
 
-  // User button in the sidebar: pop out and focus the new window.
+  // User button in the sidebar (or "pop out session N"): pop out and focus
+  // the new window. Returns false, after showing why, when it was refused.
   function popOut(id) {
     const result = root.openWindow(id)
     if (result.outcome !== "shown") {
       root.showError(result.reason)
-      return
+      return false
     }
     root.activate(result.window, function() {})
+    return true
   }
 
   // Select a popped tab, a Focus button or "go to session N".

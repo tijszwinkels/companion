@@ -1912,29 +1912,34 @@ Item {
   readonly property bool appChatSendDisclosureOpen: appChatIdentity !== "" && appChatSendDisclosureIdentity === appChatIdentity
   property var appChatPermissionPending: null
   property string appChatPermissionError: ""
-  // The controls are collapsed to a one-line status by default, so the
-  // application gets the room (#16). The person expands them on demand; an
-  // open disclosure, a request awaiting confirmation or its error keeps them
+  // The controls are collapsed by default, so the application gets the room
+  // (#16): the HTML surface then shows `appChatPermissionSummary` and a
+  // Permissions button in its existing Chat/application row instead
+  // (SessionSurface.qml). The person expands them on demand; an open
+  // disclosure, a request awaiting confirmation or its error keeps them
   // expanded. Showing another conversation collapses them again. Collapsing
-  // changes no permission and hides no state: the status line says what is
+  // changes no permission and hides no state: the summary says what is
   // allowed now.
   property bool appChatPermissionExpanded: false
   readonly property bool appChatPermissionOpen: root.appChatPermissionExpanded || root.appChatDisclosureOpen
     || root.appChatSendDisclosureOpen || root.appChatPermissionPending !== null || root.appChatPermissionError !== ""
   readonly property string appChatPermissionConversation: session ? session.id : ""
   onAppChatPermissionConversationChanged: root.appChatPermissionExpanded = false
-  // One line for the collapsed controls: the same facts as the expanded
-  // status lines below, in the same words.
+  // The collapsed controls' status, short enough for the surface's
+  // Chat/application row: the same facts as the expanded status lines
+  // (reading on/off; sending on with remaining attempts, used up, off or
+  // unavailable; an active app message; disconnected), in fewer words.
   readonly property string appChatPermissionSummary: {
     const parts = []
     if (root.appChatReadRequested) {
-      parts.push("Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "allowed" : "off"))
+      parts.push("Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "on" : "off"))
     }
     if (root.appChatSendRequested) {
       const send = root.appChatSendAccess
-      parts.push("App sending " + (!send ? "unavailable on this host"
-        : send.allowed ? (send.remaining > 0 ? "allowed" : "exhausted") + " · " + send.remaining + " of 5 attempts remaining" : "off")
-        + (send && send.busy ? " · app message active" : ""))
+      parts.push(!send ? "sending unavailable"
+        : !send.allowed ? "sending off"
+        : send.remaining > 0 ? "sending on, " + send.remaining + "/5 left" : "sending used up")
+      if (send && send.busy) parts.push("app message active")
     }
     if (!root.online) parts.push("Disconnected")
     return parts.join(" · ")
@@ -2059,46 +2064,17 @@ Item {
     Rectangle {
       objectName: "appChatPermissionControl"
       color: root.overlayColor
-      visible: root.appChatReadRequested || root.appChatSendRequested
+      // Collapsed, the control takes no height at all; its summary is shown
+      // by the surface's existing row (see appChatPermissionExpanded).
+      visible: (root.appChatReadRequested || root.appChatSendRequested) && root.appChatPermissionOpen
       // The disclosure scrolls instead of covering the trusted Chat/app bar
       // or taking the whole available conversation height at large text scale.
-      implicitHeight: !visible ? 0 : !root.appChatPermissionOpen ? appChatPermissionCollapsed.implicitHeight + 16 * root.unit
-        : Math.min(appChatPermissionContent.implicitHeight + 16 * root.unit, Math.max(0, root.height * 0.55))
+      implicitHeight: visible ? Math.min(appChatPermissionContent.implicitHeight + 16 * root.unit,
+        Math.max(0, root.height * 0.55)) : 0
       clip: true
-      // Collapsed: the current status in one line (wrapping when narrow) and
-      // the button that shows the review/revoke controls.
-      Flow {
-        id: appChatPermissionCollapsed
-        objectName: "appChatPermissionCollapsed"
-        visible: !root.appChatPermissionOpen
-        x: 8 * root.unit
-        y: 8 * root.unit
-        width: parent.width - 16 * root.unit
-        spacing: 8 * root.unit
-        Text {
-          objectName: "appChatPermissionSummary"
-          width: Math.min(implicitWidth, parent.width)
-          height: Math.max(implicitHeight, appChatPermissionExpand.height)
-          text: root.appChatPermissionSummary
-          textFormat: Text.PlainText
-          wrapMode: Text.Wrap
-          verticalAlignment: Text.AlignVCenter
-          font.family: root.fontFamily
-          font.pixelSize: 12 * root.textScale
-          color: root.foreground
-        }
-        AppChatPermissionButton {
-          id: appChatPermissionExpand
-          objectName: "appChatPermissionExpand"
-          text: "Permissions…"
-          onClicked: root.appChatPermissionExpanded = true
-          Accessible.name: "Review or revoke this application's chat permissions"
-        }
-      }
       Flickable {
         id: appChatPermissionScroll
         objectName: "appChatPermissionScroll"
-        visible: root.appChatPermissionOpen
         anchors.fill: parent
         anchors.margins: 8 * root.unit
         contentWidth: width

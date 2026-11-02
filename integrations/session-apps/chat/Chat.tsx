@@ -869,6 +869,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
     setInputNotice('');
     setText(value);
+    // Any further input cancels a held Send, also when the text later
+    // returns to what Send meant: the person resumed editing.
+    setHeldSend(null);
     lastCursor.current = cursor;
     // Too long to hand to the host: this editor keeps it, and the host
     // learns its length before anything else can happen.
@@ -935,16 +938,18 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // what is on screen (the host checks it is the draft).
   function send() {
     const shown = area.current ? area.current.value : text;
-    if (!sendReady || heldSend !== null || shown.trim() === '' || shown.length > maximum) {
+    if (heldSend !== null || unsynced !== null || shown.trim() === '' || shown.length > maximum) {
       return;
     }
     // An edit is still on its way (also when its input was handled but not
-    // yet rendered): hold this exact text until it is answered.
+    // yet rendered, so `sendReady` may still describe the previous text):
+    // hold this exact text. The effect below performs it only once the
+    // edit is accepted and Send is admissible for exactly this text.
     if (inFlight.current > 0 || editsInFlight > 0) {
       setHeldSend({ sessionId: status.sessionId, text: shown });
       return;
     }
-    if (shown !== text) {
+    if (!sendReady || shown !== text) {
       return;
     }
     bridge.send(status.sessionId, base.current, shown);
@@ -960,17 +965,23 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       return;
     }
     const held = heldSend;
-    setHeldSend(null);
     const shown = area.current ? area.current.value : text;
-    if (
-      held.sessionId === status.sessionId &&
-      sendable &&
-      shown === held.text &&
-      text === held.text
-    ) {
+    if (held.sessionId !== status.sessionId || shown !== held.text || text !== held.text) {
+      setHeldSend(null);
+      return;
+    }
+    // The host's status (with its admission, `canSend`) follows the edit's
+    // answer as a separate message. Wait until it describes this text; if
+    // the host draft changes to other text instead, the editor adopts it and
+    // the check above drops the held Send.
+    if (draft.text !== held.text) {
+      return;
+    }
+    setHeldSend(null);
+    if (sendable) {
       bridge.send(status.sessionId, base.current, held.text);
     }
-  }, [heldSend, editsInFlight, text, sendable, status.sessionId]);
+  }, [heldSend, editsInFlight, text, sendable, status.sessionId, draft.text]);
 
   function keyDown(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {

@@ -75,13 +75,14 @@ exactly `GET /`, `GET /state`, `POST /action`, `POST /query` and bounded
 explicit native read consent and excludes drafts, tools and attachments. The
 native permission control lives below the escape bar, outside both browsers;
 only the dedicated native Client commands can grant or revoke access. So that
-the application gets the room, it starts collapsed to one status line (what
-reading and sending are allowed now, remaining sends, an active app message,
-Disconnected) with a keyboard-reachable **Permissions…** button that shows the
-review and revoke controls; **Hide permissions** collapses them again. An open
-disclosure, a change awaiting confirmation or its error keeps them shown, and
-another conversation starts collapsed. Collapsing grants, revokes or hides no
-state. In the sidebar, Activity likewise starts collapsed to its one-line status
+the application gets the room, it starts collapsed and takes no row of its own:
+the native Chat/application row shows its short status (reading on/off;
+sending on with remaining attempts, used up, off or unavailable; an active app
+message; Disconnected) and a keyboard-reachable **Permissions…** button, wrapping
+when narrow or zoomed. The button shows the review and revoke controls below
+that row; **Hide permissions** collapses them again. An open disclosure, a
+change awaiting confirmation or its error keeps them shown, and another
+conversation starts collapsed. Collapsing grants, revokes or hides no state. In the sidebar, Activity likewise starts collapsed to its one-line status
 while an application is shown and expands with its own toggle; chat keeps the
 person's own Activity setting. Sending has
 its own review/allow-five/revoke controls, exact-identity confirmation and quota

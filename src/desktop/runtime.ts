@@ -322,9 +322,12 @@ export class DesktopRuntime {
   // client, with their latest validated pop-out report (native-views.ts).
   // Only desktop connections that declared `popoutHost` appear here.
   private readonly nativeViews = new Map<number, NativeViewRecord>();
-  // The conversation most recently chosen by voice navigation, while that
-  // choice lasts; it is the voice target first (native-views.ts).
+  // The conversation most recently chosen by voice navigation and shown,
+  // while that choice lasts; it is the voice target first. A navigation
+  // dispatched but not shown yet waits beside it in `pendingNavigation` and
+  // replaces it only once shown (native-views.ts).
   private navigationSelection?: NavigationSelection;
+  private pendingNavigation?: NavigationSelection;
   private readonly pendingPresents = new Map<
     string,
     {
@@ -437,6 +440,9 @@ export class DesktopRuntime {
         // A conversation reopened later (same ID) is not chosen again.
         if (this.navigationSelection?.id === event.id) {
           this.endNavigationSelection();
+        }
+        if (this.pendingNavigation?.id === event.id) {
+          this.pendingNavigation = undefined;
         }
       }
       // Clients upsert `agent-session` by ID, so a late flush for a closed
@@ -1194,23 +1200,30 @@ export class DesktopRuntime {
       return false;
     }
 
-    // Replaces an earlier choice. It becomes the voice target once the UI
-    // shows the conversation; it may already do so (for example the sidebar
-    // shows it behind an active pop-out window), and then no report follows.
-    const previous = this.navigationSelection;
-    this.navigationSelection = startNavigationSelection(
+    // It becomes the voice target once the UI shows the conversation. It
+    // may already do so (for example the sidebar shows it behind an active
+    // pop-out window), and then no report follows. Otherwise it waits as
+    // pending; the choice in effect stays until it is shown, so a request
+    // the UI refuses (a pop-out blocked by an unconfirmed send) changes
+    // nothing. It replaces any earlier pending navigation.
+    const next = startNavigationSelection(
       id,
       captured.clientId,
       presentation,
       this.connectionView(captured.clientId),
+      captured.token,
     );
-    if (previous?.arrived || this.navigationSelection.arrived) {
-      // The voice target may have changed: utterances captured before this
-      // navigation must not be delivered to the previous one.
-      this.interactionRevision++;
-      this.server.broadcast();
-      this.publishViewAgentActions();
+    if (!next.arrived) {
+      this.pendingNavigation = next;
+      return true;
     }
+    this.pendingNavigation = undefined;
+    this.navigationSelection = next;
+    // The voice target may have changed: utterances captured before this
+    // navigation must not be delivered to the previous one.
+    this.interactionRevision++;
+    this.server.broadcast();
+    this.publishViewAgentActions();
     return true;
   }
 
@@ -1224,32 +1237,51 @@ export class DesktopRuntime {
   }
 
   /**
-   * Keep, start or end the voice navigation choice after the desktop state
-   * changed. It takes effect once its UI shows the conversation, and ends
-   * once that UI no longer owns navigation or after a genuine later
-   * selection or focus change there (native-views.ts). Returns whether the
-   * voice target may have changed; the caller broadcasts.
+   * Keep, start or end voice navigation choices after the desktop state
+   * changed (native-views.ts). The choice in effect ends once its UI no
+   * longer owns navigation, no longer shows the conversation, or after a
+   * genuine later selection or focus change there. A pending navigation
+   * takes its place once shown, and is dropped when its UI acted otherwise.
+   * Returns whether the voice target may have changed; the caller
+   * broadcasts.
    */
   private followNavigationSelection(): boolean {
+    let changed = false;
+
     const selection = this.navigationSelection;
-    if (!selection) {
-      return false;
+    if (selection) {
+      const next = this.followOnOwner(selection);
+      if (next) {
+        this.navigationSelection = next;
+      } else {
+        this.endNavigationSelection();
+        changed = true;
+      }
     }
 
-    const next =
-      this.navigation?.clientId === selection.clientId
-        ? followNavigationSelection(selection, this.connectionView(selection.clientId))
-        : undefined;
-    if (!next) {
-      this.endNavigationSelection();
-      return true;
+    const pending = this.pendingNavigation;
+    if (pending) {
+      const next = this.followOnOwner(pending);
+      this.pendingNavigation = next?.arrived ? undefined : next;
+      if (next?.arrived) {
+        this.navigationSelection = next;
+        this.interactionRevision++;
+        changed = true;
+      }
     }
-    this.navigationSelection = next;
-    if (next.arrived && !selection.arrived) {
-      this.interactionRevision++;
-      return true;
+    return changed;
+  }
+
+  /** followNavigationSelection on its UI, which must still own navigation. */
+  private followOnOwner(selection: NavigationSelection): NavigationSelection | undefined {
+    if (this.navigation?.clientId !== selection.clientId) {
+      return undefined;
     }
-    return false;
+    return followNavigationSelection(
+      selection,
+      this.connectionView(selection.clientId),
+      this.navigation.token,
+    );
   }
 
   private endNavigationSelection(): void {

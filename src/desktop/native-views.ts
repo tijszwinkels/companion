@@ -174,9 +174,14 @@ export function nativeFocusKey(report: NativeViewReport | undefined): string {
  *
  * It is not sticky. It ends (see `followNavigationSelection`) when that
  * connection's selection, window activation or composer focus changes after
- * the navigation was carried out, when the conversation closes, when the
- * connection disconnects or stops owning navigation, or when a later
- * navigation replaces it. A refused or stale navigation never creates one.
+ * the navigation was carried out, when the connection no longer shows the
+ * conversation, when the conversation closes, when the connection
+ * disconnects or stops owning navigation, or when a later navigation has
+ * been shown in its place. A refused or stale navigation never creates one
+ * and never ends the choice in effect: a dispatched navigation stays
+ * pending, beside it, until it is shown or the connection changes its view
+ * or navigation token without showing it (the UI acted otherwise, or
+ * refused the request).
  */
 export interface NavigationSelection {
   id: string;
@@ -188,6 +193,8 @@ export interface NavigationSelection {
   arrived: boolean;
   /** `navigationViewKey` at the navigation, then at its arrival. */
   viewKey: string;
+  /** The connection's navigation token the request was dispatched with. */
+  token: string;
 }
 
 /**
@@ -223,6 +230,7 @@ export function startNavigationSelection(
   clientId: number,
   presentation: 'sidebar' | 'window',
   view: ConnectionView,
+  token: string,
 ): NavigationSelection {
   const selection: NavigationSelection = {
     id,
@@ -230,6 +238,7 @@ export function startNavigationSelection(
     presentation,
     arrived: false,
     viewKey: navigationViewKey(view),
+    token,
   };
   // Already shown as requested (for example the sidebar already shows it
   // behind an active pop-out): no report will follow, it has arrived.
@@ -238,29 +247,45 @@ export function startNavigationSelection(
 }
 
 /**
- * The selection after the owning connection's view may have changed. Returns
- * the same object while nothing relevant changed, an arrived copy when the
- * view now shows the conversation as requested, or undefined when it ended.
+ * The selection after the owning connection's view may have changed; `token`
+ * is that connection's current navigation token. Returns the same object
+ * while nothing relevant changed, an arrived copy when the view now shows
+ * the conversation as requested, or undefined when it ended.
  *
- * Before arrival, an unrelated report with an unchanged view keeps it (the
- * connection has not processed the navigation yet); any other change means
- * the navigation was not carried out as asked or the person moved on. After
- * arrival, any change of the view key is a genuine later focus or selection.
+ * Before arrival (pending), a report with an unchanged view and token keeps
+ * it: the connection has not processed the navigation yet. The UI changes
+ * its token when it carries out a navigation or refuses one, so any other
+ * report means it was not carried out as asked or the person moved on.
+ * After arrival it ends as soon as the connection no longer shows the
+ * conversation, or on any change of the view key: a genuine later focus or
+ * selection.
  */
 export function followNavigationSelection(
   selection: NavigationSelection,
   view: ConnectionView,
+  token: string,
 ): NavigationSelection | undefined {
   const key = navigationViewKey(view);
-  // Arrival first: opening a window that does not take focus changes only
-  // the window list, which the view key leaves out.
-  if (!selection.arrived && showsAsRequested(selection, view)) {
-    return { ...selection, arrived: true, viewKey: key };
+  const shown = showsAsRequested(selection, view);
+
+  if (!selection.arrived) {
+    // Arrival first: opening a window that does not take focus changes
+    // only the window list, which the view key leaves out.
+    if (shown) {
+      return { ...selection, arrived: true, viewKey: key };
+    }
+    if (key === selection.viewKey && token === selection.token) {
+      return selection;
+    }
+    return undefined;
   }
-  if (key === selection.viewKey) {
-    return selection;
+
+  // Closing or returning the chosen window without showing the conversation
+  // elsewhere changes only the window list: it ends here.
+  if (!shown || key !== selection.viewKey) {
+    return undefined;
   }
-  return undefined;
+  return selection;
 }
 
 /**

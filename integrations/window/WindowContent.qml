@@ -290,7 +290,10 @@ Item {
     // also just focuses a window the conversation already has.
     onNavigationRequested: (id, window) => {
       if (window) {
-        popoutViews.popOut(id)
+        // A refusal changes no view; a new navigation token tells the
+        // listener the request was handled, so it drops it instead of
+        // waiting for this conversation to be shown.
+        if (!popoutViews.popOut(id)) client.sessions.invalidateNavigation()
         return
       }
       if (popoutViews.isPopped(id)) {
