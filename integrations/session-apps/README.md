@@ -134,7 +134,9 @@ wait on the button (it used to flicker while typing). Send or Enter pressed
 while an edit is on its way is held only if the send is otherwise admissible,
 and performed as soon as that edit is accepted, if the text is unchanged and
 the send is still admissible. Any further input, a refused edit, another
-conversation or lost admission drops it; it is never kept for a reconnection.
+conversation or lost admission drops it, also when admission is back before
+the edit's answer (each status that took it away counts); it is never kept for
+a reconnection.
 A confirmed send
 clears the draft only while it still equals the sent text.
 Cursor movement without typing (keys, pointer, selection) is reported as well,

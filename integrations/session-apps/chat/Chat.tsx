@@ -13,7 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
 import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
-import type { ChatStore } from './store.ts';
+import { sendAdmitted, type ChatStore } from './store.ts';
 
 function useSnapshot(store: ChatStore) {
   const [snapshot, setSnapshot] = useState(store.current());
@@ -731,8 +731,13 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // Rendered copy of inFlight, so Send waits for the latest edit's answer.
   const [editsInFlight, setEditsInFlight] = useState(0);
   // A Send pressed while an edit was still on its way: the exact text it
-  // meant, sent once that edit is answered (see `sendReady` below).
-  const [heldSend, setHeldSend] = useState<{ sessionId: string; text: string } | null>(null);
+  // meant, sent once that edit is answered (see `sendReady` below), and the
+  // store's admission-loss count when it was pressed.
+  const [heldSend, setHeldSend] = useState<{
+    sessionId: string;
+    text: string;
+    admissionLosses: number;
+  } | null>(null);
   const lastCursor = useRef(draft.cursor);
   // Text this editor shows that the host did not take (`heldHere`): an edit
   // longer than twice the editing bound (an input method can insert text
@@ -766,14 +771,12 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const sendReady =
     status.canSend === true && unsynced === null && text.trim() !== '' && text.length <= maximum;
   // The host's admission apart from its copy of the text, which lags behind
-  // an edit on its way: connected, no send or choice awaiting its answer, no
-  // words being recorded. A held Send needs this both when it is pressed and
-  // when it is performed; it is never kept for a later reconnection.
-  const admitted =
-    status.online === true &&
-    status.pendingSend !== true &&
-    status.pendingChoice !== true &&
-    status.recording?.busy !== true;
+  // an edit on its way (see sendAdmitted). A held Send needs it when it is
+  // pressed and without interruption until it is performed: any status that
+  // took it away in between drops the held Send, also when admission is
+  // back before the edit's answer. It is never kept for a reconnection.
+  const admitted = sendAdmitted(status);
+  const admissionLosses = store.admissionLossCount();
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
   // Admission: while another conversation holds input only this page has,
@@ -958,7 +961,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       if (!admitted) {
         return;
       }
-      setHeldSend({ sessionId: status.sessionId, text: shown });
+      setHeldSend({ sessionId: status.sessionId, text: shown, admissionLosses: admissionLosses });
       return;
     }
     if (!sendReady || shown !== text) {
@@ -973,7 +976,21 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // person typed on), an edit was refused (see above) or Send is no longer
   // admissible (for example another send or a recording started).
   useEffect(() => {
-    if (heldSend === null || editsInFlight > 0 || inFlight.current > 0) {
+    if (heldSend === null) {
+      return;
+    }
+    // Admission lost (now, or at any status since Send was pressed): drop
+    // it at once, also while its edit is still on its way.
+    if (
+      !admitted ||
+      heldSend.admissionLosses !== admissionLosses ||
+      heldSend.sessionId !== status.sessionId ||
+      unsynced !== null
+    ) {
+      setHeldSend(null);
+      return;
+    }
+    if (editsInFlight > 0 || inFlight.current > 0) {
       return;
     }
     const held = heldSend;
@@ -992,7 +1009,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     ) {
       bridge.send(status.sessionId, base.current, held.text);
     }
-  }, [heldSend, editsInFlight, text, admitted, unsynced, status.sessionId]);
+  }, [heldSend, editsInFlight, text, admitted, admissionLosses, unsynced, status.sessionId]);
 
   function keyDown(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {

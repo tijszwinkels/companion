@@ -2890,6 +2890,59 @@ TestCase {
     compare(view.pendingSubmission, null)
   }
 
+  // R3-1: admission lost and regained while the held Send's edit answer is
+  // still outstanding (disconnect → reconnect, or a choice sent → answered)
+  // drops the held Send; restoration does not revive it. A fresh Send after
+  // restoration works. Both orderings of answer and restoration are covered
+  // with test_zzzi (answer while offline).
+  function heldSendAcrossAdmissionCycle(kind) {
+    const id = "cycle-" + kind
+    const chat = freshChat(id)
+    const view = mainView()
+    typeInto(chat, "initial")
+    tryCompare(composerOf(view), "text", "initial")
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
+    typeInto(chat, "held across " + kind)
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    verify(clickButton(chat, "Send"))
+    evaluate(chat, "(() => { window.__admission = []; window.__companionBridge.message.connect(json => {"
+      + " const m = JSON.parse(json); if (m.type === 'status') window.__admission.push({online: m.status.online, pendingChoice: m.status.pendingChoice}) });"
+      + " return true })()")
+    if (kind === "connection") {
+      fakeBackend.disconnected()
+      tryVerify(function() { return evaluate(chat, "window.__admission.some(s => s.online === false)") === true })
+      snapshot([session(id, "Fresh " + id, null)])
+      tryVerify(function() { return evaluate(chat, "window.__admission.at(-1).online") === true })
+    } else {
+      view.requestChoice(id, "synthetic-choice", 0)
+      tryVerify(function() { return evaluate(chat, "window.__admission.some(s => s.pendingChoice === true)") === true })
+      fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+      tryVerify(function() { return evaluate(chat, "window.__admission.at(-1).pendingChoice") === false })
+    }
+    fakeBackend.sent = []
+    releaseHeld(chat)
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    wait(400)
+    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0,
+      kind + ": a held Send stays cancelled after admission came back")
+    compare(view.pendingSubmission, null)
+    // A new, explicit Send after restoration sends the shown text.
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "Send available again")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    compare(view.pendingSubmission.text, "held across " + kind)
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+  }
+  function test_zzzj_held_send_does_not_survive_a_reconnection_before_its_answer() {
+    heldSendAcrossAdmissionCycle("connection")
+  }
+  function test_zzzk_held_send_does_not_survive_a_choice_before_its_answer() {
+    heldSendAcrossAdmissionCycle("choice")
+  }
+
   function findChildren(item, name) {
     let found = []
     if (!item) return found
