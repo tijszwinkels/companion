@@ -6,7 +6,7 @@ build, install or replace Quickshell. The listener, agent tools, widget library
 and durable conversations keep their existing protocol and storage.
 
 The host provides Window, Sidebar and Dock controls. Window initially requests
-620 × 780 logical pixels and remembers its size. The prepared Omarchy rule makes
+620 × 780 logical pixels and remembers its size. The prepared Omarchy rules make
 it float without taking initial focus; the user can tile it normally. Sidebar
 overlays the right edge. Dock reserves its width for the workspace. Both require
 Wayland and LayerShellQt. One persistent QML body moves between the two native
@@ -114,8 +114,9 @@ tab, Activity or Previous sessions restores the full width exactly; the
 remembered width is unchanged. A Window presentation keeps its size and shows
 **Focus window** and **Return to sidebar** instead. Pinned widgets and the
 panel browser stay in the panel; the pop-out window has the conversation,
-composer, choices, Record and screenshots, but not timers, pins, the browser or
-the model picker (use Expand or Return for those).
+composer, choices, Record, screenshots and the same next-turn model (and Pi
+effort) picker as the panel footer, for its own conversation only, but not
+timers, pins or the browser (use Expand or Return for those).
 
 Voice follows the views through the existing `panel-state` report, extended
 with `popoutHost`, `rail` and `popouts: [{id, active, composerFocused}]`. The
@@ -123,11 +124,18 @@ existing fields keep describing the main surface; `visible` means any native
 Companion surface. The listener picks the target: an active window first, then
 the conversation visible in the panel, then a single window behind a compact
 rail. “Go to session N” focuses a popped-out conversation's window, or selects
-the tab in the panel. The focus shortcut (Super+Alt+D) on a selected
+the tab in the panel; “pop out session N” pops it out (or focuses its window).
+Either one also makes that conversation the target of the following speech,
+even though a pop-out window keeps keyboard focus, until a genuine later
+selection or focus change (see the [desktop contract](../../src/desktop/README.md#model-selection-ordering-and-spoken-navigation)).
+The focus shortcut (Super+Alt+D) on a selected
 popped-out conversation focuses its window's composer, with the usual media
 pause and toggle back. Window placement, size and tiling belong to the
 compositor; Companion only requests activation and reports whether it was
-granted within 1.5 seconds. An agent request without focus opens the window
+granted within 1.5 seconds. The prepared Omarchy rules float only the main
+Window (title exactly “Companion”); pop-out windows (“‹title› — Companion”) are
+tiled into the workspace like any other new window. Every Companion window is
+mapped without taking initial focus. An agent request without focus opens the window
 and, if it took focus from another Companion surface, gives that focus back;
 focus in another application is left to the compositor's policy.
 

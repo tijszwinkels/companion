@@ -872,6 +872,33 @@ connection is closed before the line is written, the command is lost with it and
 the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
 target, and a disconnected client cannot retain navigation ownership.
 
+`POP_OUT_SESSION` (“pop out session 1” through “pop out session 16”, also one
+through sixteen; inference may choose it for “pop session three out into its own
+window”) uses exactly the same number rules, captured navigation and dispatch
+checks. It is offered only while the navigation owner reported `popoutHost`
+(`agentNavigation.popoutHost`); for other UIs the shortcut is consumed and
+skipped. It sends `{"type":"agent-select",...,"presentation":"window"}`, and
+the pop-out host performs its ordinary Pop out of that existing conversation
+(moving its unsent text), or focuses the window it already has. A refusal (a
+send or recording still being confirmed, eight windows open) is shown in the
+panel's error line. Portable panels ignore an `agent-select` with a
+`presentation`.
+
+**Navigation selects the voice target.** A dispatched `GO_TO_SESSION` or
+`POP_OUT_SESSION` also chooses that conversation for the following speech,
+because navigation shows it without taking keyboard focus from a pop-out window
+the person was in. The choice takes effect once the owning connection's
+`panel-state` shows the conversation as requested (the main view or a window
+for go-to, a window for pop-out), or at dispatch when it already does. Until
+then the target is unchanged, so routing never runs ahead of the view. It ends
+on the next genuine change on that connection after it took effect (its main
+view selection, the active window or a composer's focus), when the conversation
+closes, when the connection disconnects or stops owning navigation, or with the
+next navigation. A report showing an unchanged view keeps a pending choice; any
+other change before it was shown cancels it. Stale or refused navigation changes
+nothing. Clicking into a window that already had focus produces no report and
+does not end the choice; the voice indication shows where speech goes.
+
 The optional `previousSessions` snapshot array and
 `{"type":"agent-history","sessions":[...]}` contain summaries only: the session
 metadata above without `messages`. They are sorted by latest turn first and must
@@ -1000,14 +1027,16 @@ main visibility, window open/close/activation or composer focus change, and
 after reconnecting; not because transcripts or titles stream.
 
 **Voice target.** At speech end the target conversation is, in order: the
-active window; else the conversation visible in the main sidebar body; else,
+conversation just chosen by voice navigation, while that choice lasts (see
+“Navigation selects the voice target” above); else the active window; else the
+conversation visible in the main sidebar body; else,
 when exactly one window is visible across all connections and its
 connection shows the compact rail, that window as a weak candidate; else none. Several unfocused windows are never guessed
 between. Only the chosen view's own focused composer selects the strong
 "input field selected" instruction; an active window whose composer is not
 focused, and the weak candidate, use the ordinary unfocused instruction. The
 prompt text is unchanged. `InteractionContext.agentTargetSource`
-(`popout`/`panel`/`popout-only`) records the path for logs and tests; it is not
+(`navigation`/`popout`/`panel`/`popout-only`) records the path for logs and tests; it is not
 sent to the model. Any semantic change of the report (rail, window membership,
 activation or composer focus) advances the interaction generation, so an
 utterance captured before it is refused even when the same conversation stays

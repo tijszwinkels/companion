@@ -33,7 +33,7 @@ export interface NativeViewReport {
 }
 
 /** How the voice target was chosen; for logs and tests, never shown to the model. */
-export type VoiceTargetSource = 'popout' | 'panel' | 'popout-only';
+export type VoiceTargetSource = 'navigation' | 'popout' | 'panel' | 'popout-only';
 
 export interface VoiceTarget {
   id: string;
@@ -161,9 +161,113 @@ export function nativeFocusKey(report: NativeViewReport | undefined): string {
   return `${active.id}:${active.composerFocused}`;
 }
 
+// ---- Explicit voice navigation ------------------------------------------------
+
+/**
+ * A conversation the person just chose by voice ("go to session N" or "pop
+ * out session N") on one desktop connection. Once that connection shows it
+ * as requested (`arrived`), and until something genuinely changes there, it
+ * is the voice target, even while another pop-out window keeps keyboard
+ * focus: the navigation shows the chosen conversation without taking focus
+ * from the window the person was in. Before it arrived, the voice target
+ * stays what the connection shows, so routing never runs ahead of the view.
+ *
+ * It is not sticky. It ends (see `followNavigationSelection`) when that
+ * connection's selection, window activation or composer focus changes after
+ * the navigation was carried out, when the conversation closes, when the
+ * connection disconnects or stops owning navigation, or when a later
+ * navigation replaces it. A refused or stale navigation never creates one.
+ */
+export interface NavigationSelection {
+  id: string;
+  /** The connection that owned voice navigation and carried it out. */
+  clientId: number;
+  /** "sidebar": go to session; "window": pop out session. */
+  presentation: 'sidebar' | 'window';
+  /** The connection showed `id` as requested at or after the navigation. */
+  arrived: boolean;
+  /** `navigationViewKey` at the navigation, then at its arrival. */
+  viewKey: string;
+}
+
+/**
+ * What one connection shows, as far as a genuine selection or focus change is
+ * concerned: its main view's conversation (empty unless it owns the panel
+ * selection), the conversation whose composer it has focused, and which
+ * pop-out window is active with whether its composer is focused. Transcript
+ * updates, draft hosting and similar report fields are not part of it.
+ */
+export interface ConnectionView {
+  mainId: string;
+  composerId: string;
+  report: NativeViewReport | undefined;
+}
+
+export function navigationViewKey(view: ConnectionView): string {
+  return JSON.stringify([view.mainId, view.composerId, nativeFocusKey(view.report)]);
+}
+
+/** Whether `view` shows `id` the way the navigation asked for. */
+function showsAsRequested(selection: NavigationSelection, view: ConnectionView): boolean {
+  const popped = view.report?.popouts.some((popout) => popout.id === selection.id) === true;
+  if (selection.presentation === 'window') {
+    return popped;
+  }
+  // "Go to session" focuses an existing window instead of selecting a tab.
+  return view.mainId === selection.id || popped;
+}
+
+/** Start a selection after the navigation request was sent to `clientId`. */
+export function startNavigationSelection(
+  id: string,
+  clientId: number,
+  presentation: 'sidebar' | 'window',
+  view: ConnectionView,
+): NavigationSelection {
+  const selection: NavigationSelection = {
+    id,
+    clientId,
+    presentation,
+    arrived: false,
+    viewKey: navigationViewKey(view),
+  };
+  // Already shown as requested (for example the sidebar already shows it
+  // behind an active pop-out): no report will follow, it has arrived.
+  selection.arrived = showsAsRequested(selection, view);
+  return selection;
+}
+
+/**
+ * The selection after the owning connection's view may have changed. Returns
+ * the same object while nothing relevant changed, an arrived copy when the
+ * view now shows the conversation as requested, or undefined when it ended.
+ *
+ * Before arrival, an unrelated report with an unchanged view keeps it (the
+ * connection has not processed the navigation yet); any other change means
+ * the navigation was not carried out as asked or the person moved on. After
+ * arrival, any change of the view key is a genuine later focus or selection.
+ */
+export function followNavigationSelection(
+  selection: NavigationSelection,
+  view: ConnectionView,
+): NavigationSelection | undefined {
+  const key = navigationViewKey(view);
+  // Arrival first: opening a window that does not take focus changes only
+  // the window list, which the view key leaves out.
+  if (!selection.arrived && showsAsRequested(selection, view)) {
+    return { ...selection, arrived: true, viewKey: key };
+  }
+  if (key === selection.viewKey) {
+    return selection;
+  }
+  return undefined;
+}
+
 /**
  * Choose the conversation a spoken follow-up addresses, in this order:
  *
+ * 0. the conversation just chosen by explicit voice navigation, once shown
+ *    and while that choice lasts (see `NavigationSelection`);
  * 1. the active pop-out window (the newest report wins if several
  *    connections claim one);
  * 2. the conversation visible in the main sidebar body;
@@ -179,7 +283,13 @@ export function chooseVoiceTarget(input: {
   panelClient: number;
   views: ReadonlyMap<number, NativeViewRecord>;
   isOpen: (id: string) => boolean;
+  navigation?: NavigationSelection;
 }): VoiceTarget | undefined {
+  // 0. Explicit voice navigation, once shown.
+  if (input.navigation?.arrived && input.isOpen(input.navigation.id)) {
+    return { id: input.navigation.id, clientId: input.navigation.clientId, source: 'navigation' };
+  }
+
   // 1. Active pop-out.
   let newestActive: VoiceTarget | undefined;
   let newestSequence = -1;

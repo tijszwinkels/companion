@@ -58,7 +58,55 @@ TestCase {
     mount = createTemporaryObject(mountComponent, view)
     verify(mount !== null)
     tryCompare(mount, "status", Loader.Ready)
+    // These consent tests use the expanded controls; the collapsed default
+    // has its own test below.
+    view.appChatPermissionExpanded = true
     wait(30)
+  }
+
+  // #16: the controls start collapsed to one truthful status line with a
+  // keyboard-reachable way back to review/revoke; collapsing changes nothing.
+  function test_collapsed_by_default_with_truthful_status_and_keyboard_expand() {
+    view.appChatPermissionTransportReady = true
+    view.appChatPermissionExpanded = false
+    // Another conversation's view starts collapsed.
+    view.session = entry("two", 1, "grant-two", true, {allowed: true, remaining: 3, busy: true})
+    tryCompare(view, "appChatPermissionExpanded", false)
+    const collapsed = findChild(mount, "appChatPermissionCollapsed")
+    tryVerify(function() { return collapsed.visible })
+    verify(!findChild(mount, "appChatPermissionScroll").visible, "review/revoke controls hidden")
+    const summary = findChild(mount, "appChatPermissionSummary").text
+    compare(summary, "Chat reading allowed · App sending allowed · 3 of 5 attempts remaining · app message active")
+    // Much less height than the expanded controls.
+    const collapsedHeight = mount.height
+    const expand = button("appChatPermissionExpand")
+    expand.forceActiveFocus()
+    tryCompare(expand, "activeFocus", true)
+    keyClick(Qt.Key_Space)
+    tryCompare(view, "appChatPermissionExpanded", true)
+    tryVerify(function() { return findChild(mount, "appChatPermissionScroll").visible })
+    verify(mount.height > collapsedHeight + 40, "expanded " + mount.height + " collapsed " + collapsedHeight)
+    verify(button("appChatRevokeRead").visible)
+    verify(button("appChatRevokeSend").visible)
+    compare(sent.length, 0, "expanding or collapsing sends nothing")
+    // Hide returns to the status line; an open disclosure stays in view.
+    const hide = button("appChatPermissionCollapse")
+    verify(hide.visible)
+    hide.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryCompare(view, "appChatPermissionOpen", false)
+    // The status line follows the canonical descriptor and the connection.
+    view.session = entry("two", 1, "grant-three", false, {allowed: false, remaining: 0, busy: false})
+    tryCompare(findChild(mount, "appChatPermissionSummary"), "text", "Chat reading off · App sending off")
+    view.online = false
+    tryCompare(findChild(mount, "appChatPermissionSummary"), "text", "Chat reading off · App sending off · Disconnected")
+    view.online = true
+    // Opening a disclosure (as the review buttons do) shows the controls.
+    verify(view.reviewAppChatAccess())
+    tryCompare(view, "appChatPermissionOpen", true)
+    verify(button("appChatAllowRead").visible)
+    verify(!button("appChatPermissionCollapse").visible, "no Hide while a disclosure is open")
+    compare(sent.length, 0)
   }
 
   function test_no_transport_or_disclosure_no_consent() {

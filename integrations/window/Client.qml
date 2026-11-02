@@ -192,8 +192,10 @@ Item {
   // in the sidebar. The host must answer exactly once with answerPresent().
   signal presentRequested(var message)
   // "Go to session N" (agent-select) for a pop-out host. The host focuses an
-  // existing window or selects the sidebar tab.
-  signal navigationRequested(string id)
+  // existing window or selects the sidebar tab. `window` is true for "pop out
+  // session N" (presentation "window"): the host pops the conversation out,
+  // or focuses the window it already has.
+  signal navigationRequested(string id, bool window)
   onPopoutHostChanged: Qt.callLater(reportPanel)
   onMainViewIdChanged: Qt.callLater(reportPanel)
   onRailChanged: Qt.callLater(reportPanel)
@@ -457,8 +459,9 @@ Item {
       // visible pop-out counts as a visible Companion surface.
       if (root.anyViewVisible && message.token === sessions.navigationToken
         && message.orderRevision === sessions.orderRevision
-        && sessions.sessions.some(entry => entry.id === message.id)) {
-        root.navigationRequested(message.id)
+        && sessions.sessions.some(entry => entry.id === message.id)
+        && (message.presentation === undefined || message.presentation === "window")) {
+        root.navigationRequested(message.id, message.presentation === "window")
       }
       return
     }

@@ -54,16 +54,19 @@ export interface InteractionContext {
     readonly token: string;
     readonly ids: readonly string[];
     readonly orderRevision: string;
+    /** The owning UI can show a conversation in its own window ("pop out session N"). */
+    readonly popoutHost?: boolean;
   };
   /** Empty when the panel is hidden or no agent conversation is selected. */
   readonly agentSessionId: string;
   readonly agentComposerFocused: boolean;
   /**
-   * Which view supplied `agentSessionId`: an active pop-out window, the
-   * sidebar's visible conversation, or a single pop-out beside the compact
-   * sidebar rail. For logs and tests only; never sent to the model.
+   * Which view supplied `agentSessionId`: the conversation just chosen by
+   * voice navigation, an active pop-out window, the sidebar's visible
+   * conversation, or a single pop-out beside the compact sidebar rail. For
+   * logs and tests only; never sent to the model.
    */
-  readonly agentTargetSource?: 'popout' | 'panel' | 'popout-only';
+  readonly agentTargetSource?: 'navigation' | 'popout' | 'panel' | 'popout-only';
   /** Local generation used to reject a target that changed while processing. */
   readonly revision: number;
   /** Capture choices and the running turn before ASR can outlive either one. */

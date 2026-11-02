@@ -286,7 +286,13 @@ Item {
       client.answerPresent(message.requestId, result)
     })
     // "Go to session N": focus its window, or select it in the sidebar.
-    onNavigationRequested: id => {
+    // "Pop out session N" (`window`): the Pop out button's operation, which
+    // also just focuses a window the conversation already has.
+    onNavigationRequested: (id, window) => {
+      if (window) {
+        popoutViews.popOut(id)
+        return
+      }
       if (popoutViews.isPopped(id)) {
         popoutViews.focusWindow(id)
         return

@@ -131,7 +131,9 @@ QtObject {
       root.sessions = message.ids.map(id => byId[id])
       root.orderRevision = message.revision
     } else if (message.type === "agent-select") {
-      if (root.panelVisible && message.token === root.navigationToken
+      // A pop-out request ("window") needs a pop-out host (Client.qml); this
+      // portable panel never shows conversations in windows.
+      if (root.panelVisible && message.presentation === undefined && message.token === root.navigationToken
         && message.orderRevision === root.orderRevision && root.sessions.some(entry => entry.id === message.id)) {
         root.select(message.id)
       }

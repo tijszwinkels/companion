@@ -1276,6 +1276,20 @@ Item {
         && !root.fullWidget && !(root.pinnedMessage && root.pinnedMessage.widget.presentation.replaceActivity)
       y: body.pinBottom
       width: parent.width
+      // An application shown in place of the chat gets the room (#16):
+      // Activity starts collapsed to its one-line status there; its toggle
+      // still expands it on demand. Back in chat, the person's own choice
+      // returns. The next application starts collapsed again.
+      property bool collapsedInChat: false
+      readonly property bool applicationShown: chat.applicationShown
+      onApplicationShownChanged: {
+        if (applicationShown) {
+          collapsedInChat = collapsed
+          collapsed = true
+        } else {
+          collapsed = collapsedInChat
+        }
+      }
       online: root.online
       paused: root.paused
       pauseReason: root.pauseReason

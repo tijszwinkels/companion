@@ -74,7 +74,16 @@ exactly `GET /`, `GET /state`, `POST /action`, `POST /query` and bounded
 `POST /chat-read`, `/chat-send` and `/chat-receipt` onto that application's capability URL. History requires
 explicit native read consent and excludes drafts, tools and attachments. The
 native permission control lives below the escape bar, outside both browsers;
-only the dedicated native Client commands can grant or revoke access. Sending has
+only the dedicated native Client commands can grant or revoke access. So that
+the application gets the room, it starts collapsed to one status line (what
+reading and sending are allowed now, remaining sends, an active app message,
+Disconnected) with a keyboard-reachable **Permissions…** button that shows the
+review and revoke controls; **Hide permissions** collapses them again. An open
+disclosure, a change awaiting confirmation or its error keeps them shown, and
+another conversation starts collapsed. Collapsing grants, revokes or hides no
+state. In the sidebar, Activity likewise starts collapsed to its one-line status
+while an application is shown and expands with its own toggle; chat keeps the
+person's own Activity setting. Sending has
 its own review/allow-five/revoke controls, exact-identity confirmation and quota
 status; reading never grants sending. Native replies do not optimistically change
 status. Renewals need explicit review and timeout never causes automatic retry. Authored

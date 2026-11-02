@@ -59,8 +59,19 @@ TestCase {
     tryVerify(function() { return evaluate(page, "typeof window.testReport === 'string'") }, 10000)
     return JSON.parse(evaluate(page, "window.testReport"))
   }
+  // The controls start collapsed to their one-line status (#16); the
+  // person opens them with the keyboard-reachable Permissions button.
+  function expandPermissions(view) {
+    if (view.appChatPermissionOpen) return
+    const expand = findChild(view, "appChatPermissionExpand")
+    verify(expand !== null && expand.visible && expand.enabled)
+    expand.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return view.appChatPermissionOpen })
+  }
   function request(view, allow) {
     const name = allow ? "appChatAllowRead" : "appChatRevokeRead"
+    expandPermissions(view)
     if (allow) {
       const review = findChild(view, "appChatReviewRead")
       verify(review !== null && review.visible && review.enabled)
@@ -144,6 +155,7 @@ TestCase {
     announce(2, "send-on", false, {allowed:true,remaining:5,busy:false})
     tryVerify(function() { return popped.appChatSendAccess.allowed })
     verify(!popped.appChatAccess.read)
+    expandPermissions(popped)
     const revoke = findChild(popped, "appChatRevokeSend")
     revoke.forceActiveFocus()
     keyClick(Qt.Key_Space)

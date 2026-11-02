@@ -730,6 +730,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const inFlight = useRef(0);
   // Rendered copy of inFlight, so Send waits for the latest edit's answer.
   const [editsInFlight, setEditsInFlight] = useState(0);
+  // A Send pressed while an edit was still on its way: the exact text it
+  // meant, sent once that edit is answered (see `sendReady` below).
+  const [heldSend, setHeldSend] = useState<{ sessionId: string; text: string } | null>(null);
   const lastCursor = useRef(draft.cursor);
   // Text this editor shows that the host did not take (`heldHere`): an edit
   // longer than twice the editing bound (an input method can insert text
@@ -753,12 +756,16 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const editLimit = status.editLimit || 2 * maximum;
   // The longest text the host takes from the page (TrustedChatView.editDraft).
   const handOverLimit = 2 * editLimit;
-  const sendable =
-    status.canSend === true &&
-    editsInFlight === 0 &&
-    unsynced === null &&
-    text.trim() !== '' &&
-    text.length <= maximum;
+  // Send never sends text the host has not taken: it waits for the answer
+  // to the latest edit. That wait is one bridge round trip per keystroke, so
+  // the button does not show it (it used to be disabled for each round trip,
+  // a flicker while typing). The button shows whether this text can be sent
+  // (`sendReady`); `sendable` adds that no edit is on its way. A Send pressed
+  // in between is held and performed by the effect below once the latest
+  // edit was accepted, only for exactly the same text, if still admissible.
+  const sendReady =
+    status.canSend === true && unsynced === null && text.trim() !== '' && text.length <= maximum;
+  const sendable = sendReady && editsInFlight === 0;
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
   // Admission: while another conversation holds input only this page has,
@@ -815,6 +822,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       sessionId.current = status.sessionId;
       inFlight.current = 0;
       setEditsInFlight(0);
+      setHeldSend(null);
       lastCursor.current = -1;
       setInputNotice('');
     } else if (unsynced !== null) {
@@ -907,6 +915,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       if (!answer.accepted) {
         if (latest) {
           setText(value);
+          // A Send held for this text is not performed: the person sees
+          // why the edit was refused and decides again.
+          setHeldSend(null);
         }
         return;
       }
@@ -924,17 +935,42 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // what is on screen (the host checks it is the draft).
   function send() {
     const shown = area.current ? area.current.value : text;
-    if (
-      !sendable ||
-      inFlight.current > 0 ||
-      shown !== text ||
-      shown.trim() === '' ||
-      shown.length > maximum
-    ) {
+    if (!sendReady || heldSend !== null || shown.trim() === '' || shown.length > maximum) {
+      return;
+    }
+    // An edit is still on its way (also when its input was handled but not
+    // yet rendered): hold this exact text until it is answered.
+    if (inFlight.current > 0 || editsInFlight > 0) {
+      setHeldSend({ sessionId: status.sessionId, text: shown });
+      return;
+    }
+    if (shown !== text) {
       return;
     }
     bridge.send(status.sessionId, base.current, shown);
   }
+
+  // Perform a held Send once no edit is on its way any more, with the state
+  // rendered after the last answer. It is dropped, never sent, when the
+  // conversation shown changed, the text differs from what Send meant (the
+  // person typed on), an edit was refused (see above) or Send is no longer
+  // admissible (for example another send or a recording started).
+  useEffect(() => {
+    if (heldSend === null || editsInFlight > 0 || inFlight.current > 0) {
+      return;
+    }
+    const held = heldSend;
+    setHeldSend(null);
+    const shown = area.current ? area.current.value : text;
+    if (
+      held.sessionId === status.sessionId &&
+      sendable &&
+      shown === held.text &&
+      text === held.text
+    ) {
+      bridge.send(status.sessionId, base.current, held.text);
+    }
+  }, [heldSend, editsInFlight, text, sendable, status.sessionId]);
 
   function keyDown(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -1125,7 +1161,7 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           application and Classic view escapes, Close session, then the
           conversation's state right after the buttons. */}
       <div class="actions">
-        <button class="panel-action" disabled={!sendable} onClick={send}>
+        <button class="panel-action" disabled={!sendReady || heldSend !== null} onClick={send}>
           {status.running ? 'Queue' : 'Send'}
         </button>
         {recording?.available && (

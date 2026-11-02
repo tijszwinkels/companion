@@ -19,10 +19,14 @@ import { DesktopServer, type SnapshotOptions } from './server.ts';
 import {
   activePopout,
   chooseVoiceTarget,
+  followNavigationSelection,
   nativeFocusKey,
   nativeViewKey,
   parseNativeViewReport,
+  startNavigationSelection,
+  type ConnectionView,
   type NativeViewRecord,
+  type NavigationSelection,
   type VoiceTarget,
 } from './native-views.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
@@ -318,6 +322,9 @@ export class DesktopRuntime {
   // client, with their latest validated pop-out report (native-views.ts).
   // Only desktop connections that declared `popoutHost` appear here.
   private readonly nativeViews = new Map<number, NativeViewRecord>();
+  // The conversation most recently chosen by voice navigation, while that
+  // choice lasts; it is the voice target first (native-views.ts).
+  private navigationSelection?: NavigationSelection;
   private readonly pendingPresents = new Map<
     string,
     {
@@ -386,6 +393,7 @@ export class DesktopRuntime {
         if (navigationRemoved) {
           this.navigation = undefined;
         }
+        this.followNavigationSelection();
         this.setPanelKeyboardFocus(false, clientId);
         if (this.mediaClients.delete(clientId)) {
           this.pause.setMediaPlaying(this.mediaClients.size > 0);
@@ -426,6 +434,10 @@ export class DesktopRuntime {
       // reports so; an utterance captured for it must not stay current.
       if (event.type === 'agent-removed') {
         this.removeFromNativeViews(event.id);
+        // A conversation reopened later (same ID) is not chosen again.
+        if (this.navigationSelection?.id === event.id) {
+          this.endNavigationSelection();
+        }
       }
       // Clients upsert `agent-session` by ID, so a late flush for a closed
       // conversation (for example a rolled-back model choice) would add its
@@ -455,7 +467,8 @@ export class DesktopRuntime {
         context.revision === this.interactionRevision &&
         context.agentSessionId === (this.voiceTarget()?.id ?? '') &&
         this.options.agents?.has(context.agentSessionId) === true,
-      selectSession: (context, index) => this.selectSession(context, index),
+      selectSession: (context, index) => this.navigateToSession(context, index, 'sidebar'),
+      popOutSession: (context, index) => this.navigateToSession(context, index, 'window'),
       speechChanged: (speaking) => {
         const next = speaking && !this.pause.paused;
         if (this.speaking !== next) {
@@ -1095,6 +1108,7 @@ export class DesktopRuntime {
       panelClient: this.panelClient,
       views: this.nativeViews,
       isOpen: (id) => agents.has(id),
+      navigation: this.navigationSelection,
     });
   }
 
@@ -1117,6 +1131,7 @@ export class DesktopRuntime {
               ...this.navigation,
               ids: order.ids,
               orderRevision: order.revision,
+              popoutHost: this.nativeViews.has(this.navigation.clientId),
             }
           : undefined,
       agentSessionId: id,
@@ -1127,7 +1142,22 @@ export class DesktopRuntime {
     };
   }
 
-  private selectSession(context: InteractionContext, index: number): boolean {
+  /**
+   * Voice navigation: "go to session N" (`sidebar`: select its tab, or focus
+   * its window when it is popped out) or "pop out session N" (`window`: show
+   * it in its own window). The number is resolved against the order and UI
+   * captured before transcription; anything that changed since refuses it.
+   *
+   * A navigation the owning UI was asked to carry out also makes that
+   * conversation the voice target once the UI shows it (see
+   * NavigationSelection), so the next utterance goes to it rather than to a
+   * pop-out window that kept focus.
+   */
+  private navigateToSession(
+    context: InteractionContext,
+    index: number,
+    presentation: 'sidebar' | 'window',
+  ): boolean {
     const captured = context.agentNavigation;
     const order = this.options.agents?.order();
     if (
@@ -1145,12 +1175,90 @@ export class DesktopRuntime {
     ) {
       return false;
     }
-    return this.server.publishTo(captured.clientId, {
+    // Only a UI that reported pop-out windows can open one.
+    if (presentation === 'window' && !this.nativeViews.has(captured.clientId)) {
+      return false;
+    }
+
+    const id = captured.ids[index];
+    const request: Record<string, unknown> = {
       type: 'agent-select',
-      id: captured.ids[index],
+      id,
       token: captured.token,
       orderRevision: captured.orderRevision,
-    });
+    };
+    if (presentation === 'window') {
+      request.presentation = 'window';
+    }
+    if (!this.server.publishTo(captured.clientId, request)) {
+      return false;
+    }
+
+    // Replaces an earlier choice. It becomes the voice target once the UI
+    // shows the conversation; it may already do so (for example the sidebar
+    // shows it behind an active pop-out window), and then no report follows.
+    const previous = this.navigationSelection;
+    this.navigationSelection = startNavigationSelection(
+      id,
+      captured.clientId,
+      presentation,
+      this.connectionView(captured.clientId),
+    );
+    if (previous?.arrived || this.navigationSelection.arrived) {
+      // The voice target may have changed: utterances captured before this
+      // navigation must not be delivered to the previous one.
+      this.interactionRevision++;
+      this.server.broadcast();
+      this.publishViewAgentActions();
+    }
+    return true;
+  }
+
+  /** What one desktop connection shows now, for NavigationSelection. */
+  private connectionView(clientId: number): ConnectionView {
+    return {
+      mainId: clientId === this.panelClient ? this.panelSession : '',
+      composerId: clientId === this.composerClient ? this.composerSession : '',
+      report: this.nativeViews.get(clientId)?.report,
+    };
+  }
+
+  /**
+   * Keep, start or end the voice navigation choice after the desktop state
+   * changed. It takes effect once its UI shows the conversation, and ends
+   * once that UI no longer owns navigation or after a genuine later
+   * selection or focus change there (native-views.ts). Returns whether the
+   * voice target may have changed; the caller broadcasts.
+   */
+  private followNavigationSelection(): boolean {
+    const selection = this.navigationSelection;
+    if (!selection) {
+      return false;
+    }
+
+    const next =
+      this.navigation?.clientId === selection.clientId
+        ? followNavigationSelection(selection, this.connectionView(selection.clientId))
+        : undefined;
+    if (!next) {
+      this.endNavigationSelection();
+      return true;
+    }
+    this.navigationSelection = next;
+    if (next.arrived && !selection.arrived) {
+      this.interactionRevision++;
+      return true;
+    }
+    return false;
+  }
+
+  private endNavigationSelection(): void {
+    const selection = this.navigationSelection;
+    this.navigationSelection = undefined;
+    // Only a choice in effect was the voice target.
+    if (selection?.arrived) {
+      this.interactionRevision++;
+    }
   }
 
   /**
@@ -1168,12 +1276,27 @@ export class DesktopRuntime {
     clientId: number,
     nativeHost: boolean,
   ): boolean {
+    const previousRevision = this.interactionRevision;
+    this.applyPanelState(id, composer, clientId, nativeHost);
+    if (this.interactionRevision !== previousRevision) {
+      this.server.broadcast();
+      return true;
+    }
+    return false;
+  }
+
+  /** setPanelState without its broadcast; the caller publishes the change. */
+  private applyPanelState(
+    id: string,
+    composer: string,
+    clientId: number,
+    nativeHost: boolean,
+  ): void {
     // A stale/disconnecting observer must not clear another UI's selected tab.
     const reportsMain = id !== '' || clientId === this.panelClient;
     if (!reportsMain && !nativeHost) {
-      return false;
+      return;
     }
-    const previousRevision = this.interactionRevision;
     if (reportsMain) {
       const owner = id ? clientId : 0;
       if (id !== this.panelSession || owner !== this.panelClient) {
@@ -1185,11 +1308,6 @@ export class DesktopRuntime {
     if (composer || clientId === this.composerClient) {
       this.setComposerFocus(composer, composer ? clientId : 0);
     }
-    if (this.interactionRevision !== previousRevision) {
-      this.server.broadcast();
-      return true;
-    }
-    return false;
   }
 
   /**
@@ -2364,12 +2482,18 @@ export class DesktopRuntime {
       } else if (request.composerFocused) {
         composer = request.id;
       }
-      const stateBroadcast = this.setPanelState(
-        request.id,
-        composer,
-        clientId,
-        nativeReport !== undefined,
-      );
+      const revisionBeforePanel = this.interactionRevision;
+      this.applyPanelState(request.id, composer, clientId, nativeReport !== undefined);
+      // A voice navigation choice takes effect when its UI shows the chosen
+      // conversation and lasts until that UI genuinely changes its selection
+      // or focus, or stops owning navigation (native-views.ts). Decided
+      // before the snapshot below, so the voice indication it carries agrees.
+      this.followNavigationSelection();
+      let stateBroadcast = false;
+      if (this.interactionRevision !== revisionBeforePanel) {
+        this.server.broadcast();
+        stateBroadcast = true;
+      }
       // Leaving the conversation being recorded into (another tab, Activity,
       // Previous sessions or a hidden panel) stops capture. The remaining
       // words still go to the original conversation's draft. Moving that
@@ -2410,6 +2534,7 @@ export class DesktopRuntime {
       }
       if (request.id !== '' || clientId === this.composerClient) {
         this.setComposerFocus(request.id, request.id ? clientId : 0);
+        this.followNavigationSelection();
         this.server.broadcast();
       }
       return 'focus-recorded';

@@ -35,7 +35,7 @@ const ordinalWords =
 const explicitOne = /(?:session|tab|conversation|chat|number)\s+$/u;
 
 /** Exact shortcut suffix: one complete numeral or cardinal label, nothing else. */
-function shortcutIndex(utterance: string): number {
+export function shortcutIndex(utterance: string): number {
   const label = voiceLabel(utterance);
   return /^(?:[1-9]|[1-9][0-9])$/u.test(label) ? Number(label) - 1 : spokenNumbers.indexOf(label);
 }
@@ -46,7 +46,7 @@ function shortcutIndex(utterance: string): number {
  * out-of-range number makes the request ambiguous, never a guess. Punctuation
  * separates words, so it cannot hide a mention or join two of them.
  */
-function inferredIndex(utterance: string): number {
+export function inferredIndex(utterance: string): number {
   const text = utterance.toLowerCase();
   const indexes: number[] = [];
 

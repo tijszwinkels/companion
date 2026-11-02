@@ -37,6 +37,27 @@ Window {
   property string notice: ""
   property string screenshotSource: ""
   readonly property alias view: view
+  // The same per-conversation next-turn model controls as the sidebar
+  // footer (see PanelContent), for this window's conversation only. The
+  // catalogues are shared with the sidebar through the one AgentSessionState;
+  // each harness loads only its own (Pi discovery or the Claude allowlist).
+  readonly property var sessionControls: client.sessions
+  readonly property bool claudeConversation: session !== null && session.harness === "claude-code"
+  readonly property bool modelControlsAvailable: session !== null && sessionControls.controlsAvailable
+  readonly property bool catalogueReachable: client.online && modelControlsAvailable
+  onCatalogueReachableChanged: if (catalogueReachable) Qt.callLater(ensureModels)
+  onClaudeConversationChanged: if (catalogueReachable) Qt.callLater(ensureModels)
+  Component.onCompleted: if (catalogueReachable) Qt.callLater(ensureModels)
+  function ensureModels() {
+    if (!root.catalogueReachable) return
+    if (root.claudeConversation) root.sessionControls.ensureClaudeModels()
+    else root.sessionControls.ensureModels()
+  }
+  function refreshModels() {
+    if (!root.catalogueReachable) return
+    if (root.claudeConversation) root.sessionControls.refreshClaudeModels()
+    else root.sessionControls.refreshModels()
+  }
   // A Window declared inside an Item becomes transient for that item's window
   // by default. Pop-outs are independent top-level windows, never dialogs of
   // the sidebar's layer surface.
@@ -178,7 +199,7 @@ Window {
     anchors.top: header.bottom
     anchors.left: parent.left
     anchors.right: parent.right
-    anchors.bottom: parent.bottom
+    anchors.bottom: modelPicker.visible ? modelPicker.top : parent.bottom
     anchors.margins: 12 * root.theme.unit
     session: root.session
     nativeWidgets: root.controller.nativeWidgets
@@ -218,6 +239,34 @@ Window {
       root.client.reportPanel()
       root.client.send({action: "stop-agent-run", id: id, runId: runId})
     }
+  }
+
+  Panel.ModelPicker {
+    id: modelPicker
+    objectName: "popoutModelPicker"
+    visible: root.modelControlsAvailable
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    anchors.leftMargin: 12 * root.theme.unit
+    anchors.rightMargin: 12 * root.theme.unit
+    session: root.session
+    catalog: root.sessionControls.modelCatalog
+    claudeCatalog: root.sessionControls.claudeModelCatalog
+    catalogLoaded: root.claudeConversation ? root.sessionControls.claudeModelsLoaded : root.sessionControls.modelsLoaded
+    loading: root.claudeConversation ? root.sessionControls.claudeModelsLoading : root.sessionControls.modelsLoading
+    error: root.claudeConversation ? root.sessionControls.claudeModelsError : root.sessionControls.modelsError
+    online: root.client.online
+    background: root.theme.background
+    foreground: root.theme.foreground
+    muted: root.theme.muted
+    selection: root.theme.selection
+    fontFamily: root.theme.fontFamily
+    unit: root.theme.unit
+    onRefreshRequested: root.refreshModels()
+    // `id` is the conversation the open menu was pinned to (ModelPicker).
+    onModelRequested: (id, model) => root.sessionControls.controlRequested({action: "set-agent-model", id: id, model: model})
+    onThinkingRequested: (id, thinking) => root.sessionControls.controlRequested({action: "set-agent-thinking", id: id, thinking: thinking})
   }
 
   Panel.ScreenshotViewer {

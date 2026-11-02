@@ -146,7 +146,7 @@ test('native app-chat consent and broker obey their separate trust boundaries', 
         killSignal: 'SIGKILL',
       },
     );
-    assert.match(result.stdout, /Totals: 12 passed, 0 failed/);
+    assert.match(result.stdout, /Totals: 13 passed, 0 failed/);
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string };
     throw Error([String(error), output.stdout, output.stderr].join('\n'));

@@ -619,21 +619,23 @@ TestCase {
     const view = mainView()
     // Native draft acceptance precedes the page's edit acknowledgement/render.
     // Hold that acknowledgement to prove the former is not a Send-ready fence:
-    // the page intentionally disables Send until the exact edit is confirmed.
+    // the page never sends before the exact edit is confirmed. A Send pressed
+    // meanwhile (#15: the button no longer flickers off for each edit) is
+    // held and performed once that edit is answered.
     evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
     holdNextAnswer(chat)
     typeInto(chat, "on its way")
     tryCompare(composerOf(view), "text", "on its way")
     tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    compare(clickButton(chat, "Send"), false)
-    compare(view.pendingSubmission, null)
+    verify(clickButton(chat, "Send"), "Send can be pressed while the edit is answered")
+    wait(200)
+    compare(view.pendingSubmission, null, "nothing is sent before the edit is confirmed")
+    compare(clickButton(chat, "Send"), false, "a held Send is not pressed twice")
     releaseHeld(chat)
     // Restore the bridge before later tests call its optional-callback overload.
     evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
-      5000, "page has acknowledged the edit and enabled Send")
-    verify(clickButton(chat, "Send"))
-    tryVerify(function() { return view.pendingSubmission !== null })
+    tryVerify(function() { return view.pendingSubmission !== null }, 5000, "held Send performed after the answer")
+    compare(view.pendingSubmission.text, "on its way")
     view.releaseComposerFocus()
     tryCompare(view, "composerFocusId", "")
     expectFirstApplicationWaits("sending", "a message is still being sent")
@@ -2385,6 +2387,259 @@ TestCase {
     compare(view.displayedDraftSource, "Synthetic Helper")
     view.classicView = false
     tryCompare(view, "htmlActive", true, 5000)
+  }
+
+  // #15: typing must not toggle Send. Every keystroke is an edit whose
+  // answer travels back over the bridge; Send used to be disabled for that
+  // round trip and re-enabled after it, a flicker on every keystroke. Record
+  // every change of the Send button's disabled state in a pop-out window's
+  // chat while typing one character at a time (each edit answered).
+  function sendStateRecorder(chat) {
+    evaluate(chat, "(() => { const find = () => [...document.querySelectorAll('button')]"
+      + ".find(b => ['Send', 'Queue'].includes(b.textContent.trim()));"
+      + " window.__sendChanges = []; if (window.__sendObserver) window.__sendObserver.disconnect();"
+      + " window.__sendObserver = new MutationObserver(records => { for (const record of records) {"
+      + "  if (record.attributeName === 'disabled' && record.target === find()) window.__sendChanges.push(record.target.disabled) } });"
+      + " window.__sendObserver.observe(document.body, {subtree: true, attributes: true, attributeFilter: ['disabled']});"
+      + " return true })()")
+  }
+  function test_zzy_send_does_not_flicker_while_typing_in_a_popout() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowView = window.view
+    const windowChat = waitForChat(windowView)
+    settled(windowView, windowChat)
+    // The first character makes the text sendable at all (empty → text).
+    typeInto(windowChat, "h")
+    tryCompare(composerOf(windowView), "text", "h")
+    tryVerify(function() { return evaluate(windowChat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "Send enabled for sendable text")
+    sendStateRecorder(windowChat)
+    const typed = "hello there"
+    for (let length = 2; length <= typed.length; length++) {
+      typeInto(windowChat, typed.slice(0, length))
+      tryCompare(composerOf(windowView), "text", typed.slice(0, length))
+    }
+    // Let the last answers and status updates arrive and render.
+    tryVerify(function() { return evaluate(windowChat, "document.querySelector('textarea').value") === typed })
+    wait(200)
+    compare(evaluate(windowChat, "JSON.stringify(window.__sendChanges)"), "[]", "Send kept its state while typing")
+    // Send still sends exactly the shown text.
+    verify(clickButton(windowChat, "Send"))
+    tryVerify(function() { return windowView.pendingSubmission !== null })
+    compare(windowView.pendingSubmission.text, typed)
+    compare(windowView.pendingSubmission.id, "one")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(windowView, "pendingSubmission", null)
+    evaluate(windowChat, "window.__sendObserver.disconnect(); true")
+  }
+
+  // A Send held for an edit on its way is dropped, never sent, when the
+  // person types on before the answer, or when that edit is refused.
+  function test_zzz_held_send_is_dropped_when_text_changes_or_the_edit_is_refused() {
+    const chat = freshChat("held")
+    const view = mainView()
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    // Typed on: the held Send meant "first", the editor now shows "first more".
+    holdNextAnswer(chat)
+    typeInto(chat, "first")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    verify(clickButton(chat, "Send"))
+    typeInto(chat, "first more")
+    tryCompare(composerOf(view), "text", "first more")
+    releaseHeld(chat)
+    wait(300)
+    compare(view.pendingSubmission, null, "text changed after Send: not sent")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "Send available again")
+    // Refused: the answer to the edit Send was held for refuses it. The page
+    // keeps its text, and the held Send is dropped; the person decides again.
+    evaluate(chat, "(() => { const b = window.__companionBridge; const edit = window.__sendTestEditDraft;"
+      + " b.editDraft = function(sessionId, base, text, cursor, callback) {"
+      + "  return edit.call(this, sessionId, base, text, cursor, () => { window.__refuse = () => callback && callback("
+      + "   JSON.stringify({accepted: false, reason: 'synthetic refusal'})) }) }; window.__refuse = null; return true })()")
+    typeInto(chat, "refused text")
+    tryVerify(function() { return evaluate(chat, "window.__refuse !== null") })
+    verify(clickButton(chat, "Send"))
+    evaluate(chat, "window.__refuse(); true")
+    wait(300)
+    compare(view.pendingSubmission, null, "held Send for a refused edit is not performed")
+    compare(textarea(chat), "refused text")
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "the person can press Send again")
+  }
+
+  // #16: an application shown in the sidebar gets the room: Activity
+  // starts collapsed to its one-line status, expands on demand, and the
+  // person's own chat setting returns with chat. Also at a large text scale
+  // and in a short window, where the saved height matters most.
+  function test_zzza_activity_collapses_while_an_application_is_shown() {
+    const view = mainView()
+    waitForChat(view)
+    const strip = findChild(body.panel, "activityStrip")
+    verify(strip !== null)
+    strip.collapsed = false
+    tryCompare(strip, "height", 124 * body.panel.unit)
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(1))})
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    tryCompare(view, "applicationShown", true)
+    tryCompare(strip, "collapsed", true)
+    tryCompare(strip, "height", 28 * body.panel.unit)
+    verify(strip.visible, "the one-line status stays")
+    // On demand: the toggle (also its accessible press action) expands it.
+    mouseClick(findChild(strip, "toggleActivity"))
+    tryCompare(strip, "collapsed", false)
+    // Chat: the person's own (expanded) setting; back in the application it
+    // starts collapsed again.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    tryCompare(strip, "collapsed", false)
+    strip.collapsed = true
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+    tryCompare(strip, "collapsed", true)
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    tryCompare(strip, "collapsed", true, 5000, "a collapsed chat setting stays collapsed")
+    strip.collapsed = false
+    // Another conversation without an application shows chat: its setting.
+    snapshot([session("one", "First chat", application(1)), session("two", "Second chat", null)])
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(strip, "collapsed", true)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryCompare(view, "applicationShown", false)
+    tryCompare(strip, "collapsed", false)
+    // Classic view is not the application: chat setting.
+    body.client.sessions.select("one")
+    tryCompare(view, "applicationShown", true, 10000)
+    tryCompare(strip, "collapsed", true)
+    view.classicView = true
+    tryCompare(view, "applicationShown", false)
+    tryCompare(strip, "collapsed", false)
+    view.classicView = false
+    tryCompare(view, "applicationShown", true, 10000)
+    tryCompare(strip, "collapsed", true)
+    // At twice the theme scale the collapsed strip leaves the application
+    // all of the expanded strip's height (96 of 124 units).
+    const originalTheme = body.theme
+    try {
+      body.theme = Object.assign({}, originalTheme, {unit: 2})
+      tryCompare(strip, "height", 28 * 2)
+      const appView = findChild(view, "sessionApp")
+      tryVerify(function() { return appView.height > 0 })
+      const collapsedApp = appView.height
+      mouseClick(findChild(strip, "toggleActivity"))
+      tryCompare(strip, "height", 124 * 2)
+      tryVerify(function() { return collapsedApp - appView.height >= 96 * 2 - 1 }, 5000,
+        "collapsed gives the application " + collapsedApp + ", expanded " + appView.height)
+    } finally {
+      body.theme = originalTheme
+    }
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    snapshot([session("one", "First chat", null)])
+    tryCompare(view, "applicationShown", false)
+  }
+
+  // #12: a popped-out conversation has the same next-turn model controls as
+  // the sidebar footer, for its own conversation only, also when narrow or
+  // short. Settings and drafts do not move or change with the window.
+  function test_zzzb_popout_model_picker_targets_its_own_conversation() {
+    const claude = Object.assign(session("three", "Claude chat", null),
+      {harness: "claude-code", claudeCode: {model: "claude-synthetic-a", effort: "high"}})
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessionControlsAvailable: true,
+      sessions: [session("one", "First chat", null), session("two", "Second chat", null), claude]})
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "sidebar draft stays")
+    tryCompare(composerOf(view), "text", "sidebar draft stays")
+    tryVerify(function() { return findChild(body.panel, "sessionModelFooter").visible })
+
+    body.popouts.popOut("two")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    const window = body.popouts.windows["two"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    typeInto(windowChat, "window draft stays")
+    tryCompare(composerOf(window.view), "text", "window draft stays")
+    const picker = findChild(window, "popoutModelPicker")
+    tryVerify(function() { return picker.visible }, 5000, "the pop-out shows the model controls")
+    compare(picker.session.id, "two")
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "agent-models") })
+    fakeBackend.received({type: "result", action: "agent-models", result: {models: ["synthetic/a", "synthetic/b"],
+      coding: "synthetic/a", codingThinking: "medium",
+      thinkingLevels: {"synthetic/a": ["low", "medium", "high"], "synthetic/b": ["low", "high"]}}})
+    const chooser = findChild(picker, "sessionModelPicker")
+    const effort = findChild(picker, "sessionThinkingPicker")
+    tryVerify(function() { return chooser.enabled && effort.visible && effort.enabled })
+    // The view ends above the controls, inside the window.
+    verify(window.view.y + window.view.height <= picker.y + 1)
+    verify(picker.y + picker.height <= window.height + 1)
+
+    // Choosing names this window's conversation, never the sidebar's.
+    const from = fakeBackend.sent.length
+    chooser.activated(chooser.entries.findIndex(entry => entry.value === "synthetic/b"))
+    effort.activated(effort.entries.findIndex(entry => entry.value === "high"))
+    const requests = fakeBackend.sent.slice(from)
+    compare(JSON.stringify(requests.filter(message => message.action === "set-agent-model")),
+      JSON.stringify([{action: "set-agent-model", id: "two", model: "synthetic/b"}]))
+    compare(JSON.stringify(requests.filter(message => message.action === "set-agent-thinking")),
+      JSON.stringify([{action: "set-agent-thinking", id: "two", thinking: "high"}]))
+    // No optimistic change: the listener's update is the authority.
+    fakeBackend.received({type: "agent-session", session: Object.assign(session("two", "Second chat", null),
+      {modelOverride: "synthetic/b", thinkingOverride: "high"})})
+    tryCompare(chooser, "currentText", "synthetic/b")
+
+    // Narrow and short: the controls stack and the conversation keeps room.
+    window.width = window.minimumWidth
+    window.height = window.minimumHeight
+    tryVerify(function() { return picker.stacked })
+    tryVerify(function() { return picker.y + picker.height <= window.height + 1 })
+    verify(window.view.height >= 80, "conversation height " + window.view.height)
+    verify(effort.y > chooser.y, "effort below the model when stacked")
+    window.width = 560
+    window.height = 720
+
+    // A Claude Code conversation lists the Claude allowlist; effort is fixed.
+    body.popouts.popOut("three")
+    tryVerify(function() { return body.popouts.windows["three"] !== undefined })
+    const claudeWindow = body.popouts.windows["three"]
+    const claudePicker = findChild(claudeWindow, "popoutModelPicker")
+    tryVerify(function() { return claudePicker.visible })
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "claude-models") })
+    fakeBackend.received({type: "result", action: "claude-models", result: {models: ["claude-synthetic-a", "claude-synthetic-b"], model: "claude-synthetic-a"}})
+    verify(!findChild(claudePicker, "sessionThinkingPicker").visible)
+    compare(findChild(claudePicker, "claudeSessionEffort").text, "high · fixed")
+    const claudeChooser = findChild(claudePicker, "sessionModelPicker")
+    tryVerify(function() { return claudeChooser.enabled })
+    const claudeFrom = fakeBackend.sent.length
+    claudeChooser.activated(claudeChooser.entries.findIndex(entry => entry.value === "claude-synthetic-b"))
+    compare(JSON.stringify(fakeBackend.sent.slice(claudeFrom).filter(message => message.action === "set-agent-model")),
+      JSON.stringify([{action: "set-agent-model", id: "three", model: "claude-synthetic-b"}]))
+
+    // Returning to the sidebar changes no setting and keeps both drafts.
+    const beforeReturn = fakeBackend.sent.length
+    body.popouts.returnToSidebar("two", {focus: false})
+    tryVerify(function() { return body.popouts.windows["two"] === undefined })
+    body.popouts.returnToSidebar("three", {focus: false})
+    tryVerify(function() { return body.popouts.windows["three"] === undefined })
+    compare(fakeBackend.sent.slice(beforeReturn).filter(message => message.action === "set-agent-model"
+      || message.action === "set-agent-thinking").length, 0)
+    compare(composerOf(view).text, "sidebar draft stays")
+    compare(view.exportDraft("two").text, "window draft stays")
+    view.clearDraft("two")
+    snapshot([session("one", "First chat", null)])
   }
 
   function findChildren(item, name) {
