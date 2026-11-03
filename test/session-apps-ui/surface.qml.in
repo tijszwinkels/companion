@@ -2799,7 +2799,13 @@ TestCase {
     const originalTheme = body.theme
     try {
       body.theme = Object.assign({}, originalTheme, {unit: 2})
-      tryVerify(function() { return expand.visible && expand.y > chatButton.y }, 5000, "wrapped below")
+      // The Flow lays out again on its next polish after the scale change;
+      // wait for that complete layout (wrapped and inside the row), not only
+      // for one item to move, before the exact checks.
+      tryVerify(function() {
+        return expand.visible && expand.y > chatButton.y
+          && expand.x + expand.width <= row.width + 1 && summary.x + summary.width <= row.width + 1
+      }, 5000, "wrapped below, inside the row")
       checkRow()
       // Still reachable by keyboard when wrapped.
       expand.forceActiveFocus()
