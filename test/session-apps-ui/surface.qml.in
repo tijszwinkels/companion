@@ -619,23 +619,21 @@ TestCase {
     const view = mainView()
     // Native draft acceptance precedes the page's edit acknowledgement/render.
     // Hold that acknowledgement to prove the former is not a Send-ready fence:
-    // the page never sends before the exact edit is confirmed. A Send pressed
-    // meanwhile (#15: the button no longer flickers off for each edit) is
-    // held and performed once that edit is answered.
+    // the page intentionally disables Send until the exact edit is confirmed.
     evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
     holdNextAnswer(chat)
     typeInto(chat, "on its way")
     tryCompare(composerOf(view), "text", "on its way")
     tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    verify(clickButton(chat, "Send"), "Send can be pressed while the edit is answered")
-    wait(200)
-    compare(view.pendingSubmission, null, "nothing is sent before the edit is confirmed")
-    compare(clickButton(chat, "Send"), false, "a held Send is not pressed twice")
+    compare(clickButton(chat, "Send"), false)
+    compare(view.pendingSubmission, null)
     releaseHeld(chat)
     // Restore the bridge before later tests call its optional-callback overload.
     evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    tryVerify(function() { return view.pendingSubmission !== null }, 5000, "held Send performed after the answer")
-    compare(view.pendingSubmission.text, "on its way")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "page has acknowledged the edit and enabled Send")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
     view.releaseComposerFocus()
     tryCompare(view, "composerFocusId", "")
     expectFirstApplicationWaits("sending", "a message is still being sent")
@@ -2389,18 +2387,20 @@ TestCase {
     tryCompare(view, "htmlActive", true, 5000)
   }
 
-  // #15: typing must not toggle Send. Every keystroke is an edit whose
-  // answer travels back over the bridge; Send used to be disabled for that
-  // round trip and re-enabled after it, a flicker on every keystroke. Record
-  // every change of the Send button's disabled state in a pop-out window's
-  // chat while typing one character at a time (each edit answered).
+  // #15: typing must not make Send flicker. Every keystroke is an edit whose
+  // answer travels back over the bridge, and Send is (honestly) disabled
+  // until it arrives. The button keeps its enabled look during that wait
+  // instead of dimming for each keystroke. Record its rendered opacity at
+  // every change of its state in a pop-out window's chat while typing one
+  // character at a time (each edit answered).
   function sendStateRecorder(chat) {
     evaluate(chat, "(() => { const find = () => [...document.querySelectorAll('button')]"
       + ".find(b => ['Send', 'Queue'].includes(b.textContent.trim()));"
-      + " window.__sendChanges = []; if (window.__sendObserver) window.__sendObserver.disconnect();"
+      + " window.__sendLooks = []; window.__sendDisabled = []; if (window.__sendObserver) window.__sendObserver.disconnect();"
       + " window.__sendObserver = new MutationObserver(records => { for (const record of records) {"
-      + "  if (record.attributeName === 'disabled' && record.target === find()) window.__sendChanges.push(record.target.disabled) } });"
-      + " window.__sendObserver.observe(document.body, {subtree: true, attributes: true, attributeFilter: ['disabled']});"
+      + "  if (record.target === find()) { window.__sendLooks.push(getComputedStyle(record.target).opacity);"
+      + "   window.__sendDisabled.push(record.target.disabled) } } });"
+      + " window.__sendObserver.observe(document.body, {subtree: true, attributes: true, attributeFilter: ['disabled', 'class']});"
       + " return true })()")
   }
   function test_zzy_send_does_not_flicker_while_typing_in_a_popout() {
@@ -2424,54 +2424,127 @@ TestCase {
       typeInto(windowChat, typed.slice(0, length))
       tryCompare(composerOf(windowView), "text", typed.slice(0, length))
     }
-    // Let the last answers and status updates arrive and render.
     tryVerify(function() { return evaluate(windowChat, "document.querySelector('textarea').value") === typed })
     wait(200)
-    compare(evaluate(windowChat, "JSON.stringify(window.__sendChanges)"), "[]", "Send kept its state while typing")
+    const looks = JSON.parse(evaluate(windowChat, "JSON.stringify(window.__sendLooks)"))
+    const disabled = JSON.parse(evaluate(windowChat, "JSON.stringify(window.__sendDisabled)"))
+    verify(disabled.indexOf(true) >= 0, "Send was (honestly) disabled while edits were unconfirmed: " + JSON.stringify(disabled))
+    compare(looks.filter(opacity => opacity !== "1").length, 0, "Send kept its look while typing: " + JSON.stringify(looks))
     // Send still sends exactly the shown text.
     verify(clickButton(windowChat, "Send"))
     tryVerify(function() { return windowView.pendingSubmission !== null })
     compare(windowView.pendingSubmission.text, typed)
     compare(windowView.pendingSubmission.id, "one")
+    // A send awaiting its answer dims Send as before: that is not settling.
+    tryVerify(function() { return evaluate(windowChat, "(() => { const b = [...document.querySelectorAll('button')]"
+      + ".find(b => ['Send', 'Queue'].includes(b.textContent.trim())); return b.disabled && getComputedStyle(b).opacity !== '1' })()") === true })
     fakeBackend.received({type: "result", action: "send-agent", result: {}})
     tryCompare(windowView, "pendingSubmission", null)
     evaluate(windowChat, "window.__sendObserver.disconnect(); true")
   }
 
-  // A Send held for an edit on its way is dropped, never sent, when the
-  // person types on before the answer, or when that edit is refused.
-  function test_zzz_held_send_is_dropped_when_text_changes_or_the_edit_is_refused() {
-    const chat = freshChat("held")
-    const view = mainView()
-    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
-    // Typed on: the held Send meant "first", the editor now shows "first more".
+  // #15 (simplified contract, as base): Send and Enter while the latest edit
+  // is unconfirmed do nothing, and nothing is kept to be sent later: not when
+  // the edit is accepted, after typing on and undoing, a refusal, a
+  // reconnection, a choice being answered or switching away and back. An
+  // explicit Send afterwards sends the shown text.
+  function pressSendAndEnterWhileUnconfirmed(chat, text) {
     holdNextAnswer(chat)
-    typeInto(chat, "first")
+    typeInto(chat, text)
     tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    verify(clickButton(chat, "Send"))
-    typeInto(chat, "first more")
-    tryCompare(composerOf(view), "text", "first more")
+    compare(clickButton(chat, "Send"), false, "Send is disabled while the edit is unconfirmed")
+    evaluate(chat, "(() => { document.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return true })()")
+  }
+  function sendsSince(from) {
+    return fakeBackend.sent.slice(from).filter(message => message.action === "send-agent").length
+  }
+  function test_zzzh_send_during_an_unconfirmed_edit_is_never_queued() {
+    const chat = freshChat("unqueued")
+    const view = mainView()
+    typeInto(chat, "initial")
+    tryCompare(composerOf(view), "text", "initial")
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    let from = fakeBackend.sent.length
+
+    // Accepted answer.
+    pressSendAndEnterWhileUnconfirmed(chat, "accepted later")
     releaseHeld(chat)
     wait(300)
-    compare(view.pendingSubmission, null, "text changed after Send: not sent")
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
-      5000, "Send available again")
-    // Refused: the answer to the edit Send was held for refuses it. The page
-    // keeps its text, and the held Send is dropped; the person decides again.
+    compare(sendsSince(from), 0, "edit accepted: nothing sent")
+    compare(view.pendingSubmission, null)
+
+    // Typing on and undoing back.
+    pressSendAndEnterWhileUnconfirmed(chat, "first")
+    typeInto(chat, "first more")
+    typeInto(chat, "first")
+    tryCompare(composerOf(view), "text", "first")
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "typed on and undone: nothing sent")
+
+    // Disconnect and reconnect before the answer.
+    pressSendAndEnterWhileUnconfirmed(chat, "across a reconnection")
+    fakeBackend.disconnected()
+    tryVerify(function() { return !view.online })
+    snapshot([session("unqueued", "Fresh unqueued", null)])
+    tryVerify(function() { return view.online })
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "reconnected: nothing sent")
+
+    // A choice sent and answered before the answer.
+    pressSendAndEnterWhileUnconfirmed(chat, "across a choice")
+    view.requestChoice("unqueued", "synthetic-choice", 0)
+    tryVerify(function() { return view.pendingChoice !== null })
+    fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+    tryCompare(view, "pendingChoice", null)
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "choice answered: nothing sent")
+
+    // Refused edit: the page keeps its text; nothing is sent.
     evaluate(chat, "(() => { const b = window.__companionBridge; const edit = window.__sendTestEditDraft;"
       + " b.editDraft = function(sessionId, base, text, cursor, callback) {"
       + "  return edit.call(this, sessionId, base, text, cursor, () => { window.__refuse = () => callback && callback("
       + "   JSON.stringify({accepted: false, reason: 'synthetic refusal'})) }) }; window.__refuse = null; return true })()")
     typeInto(chat, "refused text")
     tryVerify(function() { return evaluate(chat, "window.__refuse !== null") })
-    verify(clickButton(chat, "Send"))
+    compare(clickButton(chat, "Send"), false)
     evaluate(chat, "window.__refuse(); true")
     wait(300)
-    compare(view.pendingSubmission, null, "held Send for a refused edit is not performed")
-    compare(textarea(chat), "refused text")
+    compare(sendsSince(from), 0, "refused: nothing sent")
     evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+
+    // An ordinary nonempty edit confirmed: Send is available again at once
+    // (no further status message needed) and sends exactly the shown text.
+    typeInto(chat, "explicit send")
+    tryCompare(composerOf(view), "text", "explicit send")
     tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
-      5000, "the person can press Send again")
+      5000, "Send available after the answer")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    compare(view.pendingSubmission.text, "explicit send")
+    compare(sendsSince(from), 1)
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+  }
+
+  // The same across switching away and back before the answer.
+  function test_zzzi_send_during_an_unconfirmed_edit_is_not_kept_across_a_switch() {
+    let setup = twoConversations("", "")
+    const from = fakeBackend.sent.length
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "A-send")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 })
+    compare(clickButton(setup.chat, "Send"), false)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(sendsSince(from), 0)
+    compare(setup.view.pendingSubmission, null)
   }
 
   // #16: an application shown in the sidebar gets the room: Activity
@@ -2642,48 +2715,7 @@ TestCase {
     snapshot([session("one", "First chat", null)])
   }
 
-  // R1-1: further input cancels a held Send, also when the text returns to
-  // exactly what Send meant (typed on, then deleted back).
-  function test_zzzc_held_send_is_cancelled_by_input_even_when_undone() {
-    const chat = freshChat("undo")
-    const view = mainView()
-    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
-    holdNextAnswer(chat)
-    typeInto(chat, "first")
-    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    verify(clickButton(chat, "Send"))
-    typeInto(chat, "first more")
-    typeInto(chat, "first")
-    tryCompare(composerOf(view), "text", "first")
-    releaseHeld(chat)
-    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    wait(300)
-    compare(view.pendingSubmission, null, "input after Send cancelled it")
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
-      5000, "the person can press Send again")
-  }
 
-  // R1-S1: text typed into an empty editor and Enter in the same task (before
-  // the page rendered the text) is sent once the edit is accepted and the
-  // host's status describes it, exactly that text.
-  function test_zzzd_input_and_enter_before_the_first_render_send_exact_text() {
-    const chat = freshChat("enter")
-    const view = mainView()
-    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
-    holdNextAnswer(chat)
-    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.focus(); area.value = 'first input';"
-      + " area.setSelectionRange(11, 11); area.dispatchEvent(new Event('input', {bubbles: true}));"
-      + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return true })()")
-    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    wait(100)
-    compare(view.pendingSubmission, null, "not before the edit is answered")
-    releaseHeld(chat)
-    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    tryVerify(function() { return view.pendingSubmission !== null }, 5000, "held Enter performed")
-    compare(view.pendingSubmission.text, "first input")
-    fakeBackend.received({type: "result", action: "send-agent", result: {}})
-    tryCompare(view, "pendingSubmission", null)
-  }
 
   // R1-4: switching directly from one application to another conversation's
   // application collapses Activity again; the person's chat setting stays.
@@ -2820,128 +2852,7 @@ TestCase {
     snapshot([session("one", "First chat", null)])
   }
 
-  // R2-2: an ordinary edit of nonempty text produces no further status
-  // message (nothing the page watches changes); a Send held for it is still
-  // performed as soon as the edit is accepted.
-  function test_zzzh_held_send_after_a_nonempty_edit_needs_no_status_message() {
-    const chat = freshChat("ordinary")
-    const view = mainView()
-    typeInto(chat, "already nonempty")
-    tryCompare(composerOf(view), "text", "already nonempty")
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true })
-    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
-    holdNextAnswer(chat)
-    typeInto(chat, "already nonempty plus final words")
-    tryCompare(composerOf(view), "text", "already nonempty plus final words")
-    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    verify(clickButton(chat, "Send"))
-    compare(view.pendingSubmission, null)
-    releaseHeld(chat)
-    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    tryVerify(function() { return view.pendingSubmission !== null }, 2000, "performed on the accepted answer")
-    compare(view.pendingSubmission.text, "already nonempty plus final words")
-    fakeBackend.received({type: "result", action: "send-agent", result: {}})
-    tryCompare(view, "pendingSubmission", null)
-  }
 
-  // R2-1: Send is not held while it is not admissible apart from the text
-  // (offline here), and nothing is sent later on reconnection. A Send held
-  // while admissible is dropped when admission ends before the answer.
-  function test_zzzi_inadmissible_send_is_never_held_for_later() {
-    const chat = freshChat("offline")
-    const view = mainView()
-    typeInto(chat, "initial")
-    tryCompare(composerOf(view), "text", "initial")
-    fakeBackend.disconnected()
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && b.disabled)") === true })
-    typeInto(chat, "offline seed")
-    tryCompare(composerOf(view), "text", "offline seed")
-    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
-    holdNextAnswer(chat)
-    typeInto(chat, "offline text")
-    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    evaluate(chat, "(() => { document.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return true })()")
-    releaseHeld(chat)
-    wait(300)
-    compare(view.pendingSubmission, null)
-    fakeBackend.sent = []
-    snapshot([session("offline", "Fresh offline", null)])
-    wait(500)
-    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0,
-      "Enter while offline is not sent on reconnection")
-    compare(view.pendingSubmission, null)
-
-    // Held while connected, then the connection drops before the answer.
-    tryVerify(function() { return view.online })
-    holdNextAnswer(chat)
-    typeInto(chat, "held then offline")
-    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    verify(clickButton(chat, "Send"))
-    fakeBackend.disconnected()
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && b.disabled)") === true })
-    releaseHeld(chat)
-    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    wait(300)
-    fakeBackend.sent = []
-    snapshot([session("offline", "Fresh offline", null)])
-    wait(500)
-    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0,
-      "a held Send that lost admission is dropped, not sent on reconnection")
-    compare(view.pendingSubmission, null)
-  }
-
-  // R3-1: admission lost and regained while the held Send's edit answer is
-  // still outstanding (disconnect → reconnect, or a choice sent → answered)
-  // drops the held Send; restoration does not revive it. A fresh Send after
-  // restoration works. Both orderings of answer and restoration are covered
-  // with test_zzzi (answer while offline).
-  function heldSendAcrossAdmissionCycle(kind) {
-    const id = "cycle-" + kind
-    const chat = freshChat(id)
-    const view = mainView()
-    typeInto(chat, "initial")
-    tryCompare(composerOf(view), "text", "initial")
-    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
-    holdNextAnswer(chat)
-    typeInto(chat, "held across " + kind)
-    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
-    verify(clickButton(chat, "Send"))
-    evaluate(chat, "(() => { window.__admission = []; window.__companionBridge.message.connect(json => {"
-      + " const m = JSON.parse(json); if (m.type === 'status') window.__admission.push({online: m.status.online, pendingChoice: m.status.pendingChoice}) });"
-      + " return true })()")
-    if (kind === "connection") {
-      fakeBackend.disconnected()
-      tryVerify(function() { return evaluate(chat, "window.__admission.some(s => s.online === false)") === true })
-      snapshot([session(id, "Fresh " + id, null)])
-      tryVerify(function() { return evaluate(chat, "window.__admission.at(-1).online") === true })
-    } else {
-      view.requestChoice(id, "synthetic-choice", 0)
-      tryVerify(function() { return evaluate(chat, "window.__admission.some(s => s.pendingChoice === true)") === true })
-      fakeBackend.received({type: "result", action: "choose-agent", result: {}})
-      tryVerify(function() { return evaluate(chat, "window.__admission.at(-1).pendingChoice") === false })
-    }
-    fakeBackend.sent = []
-    releaseHeld(chat)
-    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
-    wait(400)
-    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0,
-      kind + ": a held Send stays cancelled after admission came back")
-    compare(view.pendingSubmission, null)
-    // A new, explicit Send after restoration sends the shown text.
-    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
-      5000, "Send available again")
-    verify(clickButton(chat, "Send"))
-    tryVerify(function() { return view.pendingSubmission !== null })
-    compare(view.pendingSubmission.text, "held across " + kind)
-    fakeBackend.received({type: "result", action: "send-agent", result: {}})
-    tryCompare(view, "pendingSubmission", null)
-  }
-  function test_zzzj_held_send_does_not_survive_a_reconnection_before_its_answer() {
-    heldSendAcrossAdmissionCycle("connection")
-  }
-  function test_zzzk_held_send_does_not_survive_a_choice_before_its_answer() {
-    heldSendAcrossAdmissionCycle("choice")
-  }
 
   function findChildren(item, name) {
     let found = []

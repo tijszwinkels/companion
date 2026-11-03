@@ -13,7 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { renderMarkdown } from '../../mobile/src/markdown.ts';
 import type { BridgeAnswer, ChatRow, ChatStatus, NativeBridge } from './protocol.ts';
-import { sendAdmitted, type ChatStore } from './store.ts';
+import type { ChatStore } from './store.ts';
 
 function useSnapshot(store: ChatStore) {
   const [snapshot, setSnapshot] = useState(store.current());
@@ -730,14 +730,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const inFlight = useRef(0);
   // Rendered copy of inFlight, so Send waits for the latest edit's answer.
   const [editsInFlight, setEditsInFlight] = useState(0);
-  // A Send pressed while an edit was still on its way: the exact text it
-  // meant, sent once that edit is answered (see `sendReady` below), and the
-  // store's admission-loss count when it was pressed.
-  const [heldSend, setHeldSend] = useState<{
-    sessionId: string;
-    text: string;
-    admissionLosses: number;
-  } | null>(null);
   const lastCursor = useRef(draft.cursor);
   // Text this editor shows that the host did not take (`heldHere`): an edit
   // longer than twice the editing bound (an input method can insert text
@@ -761,22 +753,24 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   const editLimit = status.editLimit || 2 * maximum;
   // The longest text the host takes from the page (TrustedChatView.editDraft).
   const handOverLimit = 2 * editLimit;
-  // Send never sends text the host has not taken: it waits for the answer
-  // to the latest edit. That wait is one bridge round trip per keystroke, so
-  // the button does not show it (it used to be disabled for each round trip,
-  // a flicker while typing). The button shows whether this text can be sent
-  // (`sendReady`). A Send pressed while an edit is on its way is held and
-  // performed by the effect below once the latest edit was accepted, only
-  // for exactly the same text, if still admissible (`admitted`).
-  const sendReady =
-    status.canSend === true && unsynced === null && text.trim() !== '' && text.length <= maximum;
-  // The host's admission apart from its copy of the text, which lags behind
-  // an edit on its way (see sendAdmitted). A held Send needs it when it is
-  // pressed and without interruption until it is performed: any status that
-  // took it away in between drops the held Send, also when admission is
-  // back before the edit's answer. It is never kept for a reconnection.
-  const admitted = sendAdmitted(status);
-  const admissionLosses = store.admissionLossCount();
+  const sendable =
+    status.canSend === true &&
+    editsInFlight === 0 &&
+    unsynced === null &&
+    text.trim() !== '' &&
+    text.length <= maximum;
+  // Send is unavailable only because the latest edit's answer has not
+  // arrived yet: one bridge round trip per keystroke. The button stays
+  // disabled then (a click or Enter does nothing, as always), but keeps its
+  // enabled look, so it does not flicker while typing. Presentation only;
+  // admission is `sendable` above.
+  const sendSettling =
+    !sendable &&
+    editsInFlight > 0 &&
+    status.canSend === true &&
+    unsynced === null &&
+    text.trim() !== '' &&
+    text.length <= maximum;
   // Like the classic composer, a draft can still be written while offline;
   // only words being recorded into it make it read-only.
   // Admission: while another conversation holds input only this page has,
@@ -833,7 +827,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       sessionId.current = status.sessionId;
       inFlight.current = 0;
       setEditsInFlight(0);
-      setHeldSend(null);
       lastCursor.current = -1;
       setInputNotice('');
     } else if (unsynced !== null) {
@@ -880,9 +873,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     }
     setInputNotice('');
     setText(value);
-    // Any further input cancels a held Send, also when the text later
-    // returns to what Send meant: the person resumed editing.
-    setHeldSend(null);
     lastCursor.current = cursor;
     // Too long to hand to the host: this editor keeps it, and the host
     // learns its length before anything else can happen.
@@ -929,9 +919,6 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
       if (!answer.accepted) {
         if (latest) {
           setText(value);
-          // A Send held for this text is not performed: the person sees
-          // why the edit was refused and decides again.
-          setHeldSend(null);
         }
         return;
       }
@@ -949,67 +936,17 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
   // what is on screen (the host checks it is the draft).
   function send() {
     const shown = area.current ? area.current.value : text;
-    if (heldSend !== null || unsynced !== null || shown.trim() === '' || shown.length > maximum) {
-      return;
-    }
-    // An edit is still on its way (also when its input was handled but not
-    // yet rendered, so `sendReady` may still describe the previous text):
-    // hold this exact text, if Send is admissible apart from the host's
-    // lagging copy of the text. The effect below performs it once the edit
-    // is accepted and Send is still admissible.
-    if (inFlight.current > 0 || editsInFlight > 0) {
-      if (!admitted) {
-        return;
-      }
-      setHeldSend({ sessionId: status.sessionId, text: shown, admissionLosses: admissionLosses });
-      return;
-    }
-    if (!sendReady || shown !== text) {
+    if (
+      !sendable ||
+      inFlight.current > 0 ||
+      shown !== text ||
+      shown.trim() === '' ||
+      shown.length > maximum
+    ) {
       return;
     }
     bridge.send(status.sessionId, base.current, shown);
   }
-
-  // Perform a held Send once no edit is on its way any more, with the state
-  // rendered after the last answer. It is dropped, never sent, when the
-  // conversation shown changed, the text differs from what Send meant (the
-  // person typed on), an edit was refused (see above) or Send is no longer
-  // admissible (for example another send or a recording started).
-  useEffect(() => {
-    if (heldSend === null) {
-      return;
-    }
-    // Admission lost (now, or at any status since Send was pressed): drop
-    // it at once, also while its edit is still on its way.
-    if (
-      !admitted ||
-      heldSend.admissionLosses !== admissionLosses ||
-      heldSend.sessionId !== status.sessionId ||
-      unsynced !== null
-    ) {
-      setHeldSend(null);
-      return;
-    }
-    if (editsInFlight > 0 || inFlight.current > 0) {
-      return;
-    }
-    const held = heldSend;
-    setHeldSend(null);
-    const shown = area.current ? area.current.value : text;
-    // The accepted answer means the host holds exactly this text (it applies
-    // an edit before answering), so its own text check is met; no further
-    // status message is guaranteed, so none is awaited. The host checks
-    // admission and the text once more when Send arrives.
-    if (
-      held.sessionId === status.sessionId &&
-      shown === held.text &&
-      text === held.text &&
-      admitted &&
-      unsynced === null
-    ) {
-      bridge.send(status.sessionId, base.current, held.text);
-    }
-  }, [heldSend, editsInFlight, text, admitted, admissionLosses, unsynced, status.sessionId]);
 
   function keyDown(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -1200,7 +1137,11 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
           application and Classic view escapes, Close session, then the
           conversation's state right after the buttons. */}
       <div class="actions">
-        <button class="panel-action" disabled={!sendReady || heldSend !== null} onClick={send}>
+        <button
+          class={sendSettling ? 'panel-action settling' : 'panel-action'}
+          disabled={!sendable}
+          onClick={send}
+        >
           {status.running ? 'Queue' : 'Send'}
         </button>
         {recording?.available && (

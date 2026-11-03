@@ -129,15 +129,11 @@ read-only while recording appends to the draft.
 Send sends exactly the text the page shows, whatever the host draft holds at
 that moment (another editor may have changed it): admission depends only on
 the connection, a send or choice awaiting its answer and recording. The page
-also waits for its latest edit's answer before sending, without showing that
-wait on the button (it used to flicker while typing). Send or Enter pressed
-while an edit is on its way is held only if the send is otherwise admissible,
-and performed as soon as that edit is accepted, if the text is unchanged and
-the send is still admissible. Any further input, a refused edit, another
-conversation or lost admission drops it, also when admission is back before
-the edit's answer (each status that took it away counts); it is never kept for
-a reconnection.
-A confirmed send
+also waits for its latest edit's answer before sending: until then Send is
+disabled and a click or Enter does nothing (nothing is kept to be sent later).
+That wait is one bridge round trip per keystroke, so the button keeps its
+enabled look during it instead of flickering while typing; its disabled state
+is unchanged. A confirmed send
 clears the draft only while it still equals the sent text.
 Cursor movement without typing (keys, pointer, selection) is reported as well,
 so Classic view and pop-out handover resume at the same position.

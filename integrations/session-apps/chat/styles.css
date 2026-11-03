@@ -123,6 +123,13 @@ button.link {
   opacity: 0.45;
 }
 
+/* Send waiting only for the latest edit's answer (a bridge round trip per
+   keystroke): still disabled, but not dimmed, so it does not flicker while
+   typing. See `sendSettling` in Chat.tsx. */
+.panel-action.settling:disabled {
+  opacity: 1;
+}
+
 .panel-action.small {
   min-height: calc(22 * var(--u));
   padding: calc(3 * var(--u)) calc(10 * var(--u));

@@ -51,16 +51,6 @@ export class ChatStore {
   // answer, so this holds at most the conversations with edits in flight.
   private pendingEdits = new Map<string, { count: number; latest: number }>();
   private inputSerial = 0;
-  // How many host statuses said Send is not admissible apart from the text
-  // (offline, a send or choice awaiting its answer, recording). Counted per
-  // received message, so an admission lost and regained before the page
-  // renders still counts: a Send held across it is dropped (see Composer).
-  private admissionLosses = 0;
-
-  /** See `admissionLosses`; changes only when such a status arrives. */
-  admissionLossCount(): number {
-    return this.admissionLosses;
-  }
 
   attach(bridge: NativeBridge): void {
     this.bridge = bridge;
@@ -198,9 +188,6 @@ export class ChatStore {
       this.applyRows(message);
     } else {
       this.snapshot = { rows: this.snapshot.rows, status: message.status };
-      if (!sendAdmitted(message.status)) {
-        this.admissionLosses++;
-      }
       const draft = message.status.draft;
       this.latestHostDraft = {
         sessionId: message.status.sessionId,
@@ -244,18 +231,4 @@ export class ChatStore {
       listener();
     }
   }
-}
-
-/**
- * The host's Send admission apart from its copy of the text, which lags
- * behind an edit on its way: connected, no send or choice awaiting its
- * answer, no words being recorded.
- */
-export function sendAdmitted(status: ChatStatus): boolean {
-  return (
-    status.online === true &&
-    status.pendingSend !== true &&
-    status.pendingChoice !== true &&
-    status.recording?.busy !== true
-  );
 }
