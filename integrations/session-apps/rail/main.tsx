@@ -14,11 +14,15 @@
  * conversation will go; the page scrolls near its top and bottom edges. On
  * release inside the list, one `move` names the captured revision, and the
  * native view and the listener refuse it if the order changed meanwhile.
- * Escape, a cancelled pointer, release outside the list, a no-op position, a
- * changed order or membership, going offline or controls becoming
- * unavailable all end the drag without a move. The click that follows a
- * completed drag is swallowed, so a drag never also selects, closes or pops
- * out a conversation.
+ * Escape, a cancelled pointer, lost pointer capture, release outside the
+ * list, a no-op position, a changed order or membership, going offline or
+ * controls becoming unavailable all end the drag without a move. The press
+ * is followed from the window for its whole lifetime: a release anywhere
+ * ends it (also before the threshold), movement without the button held
+ * never drags, and a new press discards anything left over. The click that
+ * follows the release of any activated drag (completed or cancelled) is
+ * swallowed, so a drag never also selects, closes or pops out a
+ * conversation; the next genuine click is unaffected.
  */
 
 import { render } from 'preact';
@@ -85,6 +89,12 @@ interface Gesture {
   key: string;
   revision: string;
   active: boolean;
+  /**
+   * An activated drag that was cancelled (Escape, lost capture, a stale
+   * order): kept until its button is released so that release's click is
+   * swallowed, and never moves anything.
+   */
+  cancelled: boolean;
   /** Latest pointer position, in viewport coordinates. */
   x: number;
   y: number;
@@ -110,6 +120,7 @@ function Rail(props: {
   const gesture = useRef<Gesture | null>(null);
   const stateRef = useRef<RailState | null>(state);
   const scrollTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const navRef = useRef<HTMLElement>(null);
   // Set when a drag completes; the click the browser sends next is ignored.
   const swallowClick = useRef(false);
   stateRef.current = state;
@@ -120,8 +131,8 @@ function Rail(props: {
 
   const ids = state ? state.sessions.map((session) => session.id) : [];
 
-  function cancelDrag() {
-    gesture.current = null;
+  /** Stop the drag's feedback and scrolling (the press itself may continue). */
+  function stopFeedback() {
     if (scrollTimer.current !== undefined) {
       clearInterval(scrollTimer.current);
       scrollTimer.current = undefined;
@@ -129,32 +140,33 @@ function Rail(props: {
     setDrag(null);
   }
 
+  /**
+   * Cancel the drag without a move. An activated drag keeps its press record
+   * (marked cancelled) until its button is released, so the click that
+   * release produces is swallowed too; a press that never became a drag is
+   * simply forgotten.
+   */
+  function cancelDrag() {
+    const current = gesture.current;
+    if (current?.active) {
+      current.cancelled = true;
+    } else {
+      gesture.current = null;
+    }
+    stopFeedback();
+  }
+
   // A changed order or membership, going offline, or controls becoming
   // unavailable ends a gesture started under the old state.
   useEffect(() => {
     const current = gesture.current;
-    if (!current || !state) {
+    if (!current || current.cancelled || !state) {
       return;
     }
     if (!state.canMove || !state.online || orderKey(ids, state.orderRevision) !== current.key) {
       cancelDrag();
     }
   }, [state]);
-
-  // Escape cancels a drag; the gesture never outlives the page.
-  useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && gesture.current?.active) {
-        event.preventDefault();
-        cancelDrag();
-      }
-    };
-    window.addEventListener('keydown', escape);
-    return () => {
-      window.removeEventListener('keydown', escape);
-      cancelDrag();
-    };
-  }, []);
 
   /** Recompute the insertion point for the gesture's latest position. */
   function track(current: Gesture) {
@@ -185,7 +197,7 @@ function Rail(props: {
   function scrollTick() {
     const current = gesture.current;
     const latest = stateRef.current;
-    if (!current?.active || !latest || !current.inside) {
+    if (!current?.active || current.cancelled || !latest || !current.inside) {
       return;
     }
     const unit = latest.theme.unit || 1;
@@ -199,7 +211,21 @@ function Rail(props: {
     track(current);
   }
 
+  /** Swallow the click the browser sends right after this release, and only that one. */
+  function swallowNextClick() {
+    swallowClick.current = true;
+    setTimeout(() => (swallowClick.current = false), 0);
+  }
+
   function pointerDown(event: PointerEvent) {
+    // A new press ends whatever an earlier press left behind, and a click
+    // owed to an earlier drag can no longer arrive.
+    if (gesture.current) {
+      gesture.current = null;
+      stopFeedback();
+    }
+    swallowClick.current = false;
+
     const latest = stateRef.current;
     if (event.button !== 0 || !latest?.canMove || !latest.online) {
       return;
@@ -222,6 +248,7 @@ function Rail(props: {
       key: orderKey(order, latest.orderRevision),
       revision: latest.orderRevision,
       active: false,
+      cancelled: false,
       x: event.clientX,
       y: event.clientY,
       beforeId: '',
@@ -229,53 +256,103 @@ function Rail(props: {
     };
   }
 
-  function pointerMove(event: PointerEvent) {
-    const current = gesture.current;
-    if (!current || event.pointerId !== current.pointerId) {
-      return;
-    }
-    current.x = event.clientX;
-    current.y = event.clientY;
-    if (!current.active) {
-      const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
-      if (distance < dragThreshold) {
+  // The press is observed for its whole lifetime from the window, not only
+  // over the list: a release or cancellation anywhere (also before the drag
+  // threshold, also after lost capture) ends it, and movement without the
+  // initiating button held never drags.
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const current = gesture.current;
+      if (!current || event.pointerId !== current.pointerId) {
         return;
       }
-      current.active = true;
-      (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-      scrollTimer.current = setInterval(scrollTick, 40);
-    }
-    event.preventDefault();
-    track(current);
-  }
+      if ((event.buttons & 1) === 0) {
+        // The release was missed: this is hovering, not a drag.
+        gesture.current = null;
+        stopFeedback();
+        return;
+      }
+      if (current.cancelled) {
+        return;
+      }
+      current.x = event.clientX;
+      current.y = event.clientY;
+      if (!current.active) {
+        const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+        if (distance < dragThreshold) {
+          return;
+        }
+        current.active = true;
+        navRef.current?.setPointerCapture?.(event.pointerId);
+        scrollTimer.current = setInterval(scrollTick, 40);
+      }
+      event.preventDefault();
+      track(current);
+    };
 
-  function pointerUp(event: PointerEvent) {
-    const current = gesture.current;
-    if (!current || event.pointerId !== current.pointerId) {
-      return;
-    }
-    if (!current.active) {
-      // A press that never moved far enough: an ordinary click follows.
+    const release = (event: PointerEvent) => {
+      const current = gesture.current;
+      if (!current || event.pointerId !== current.pointerId) {
+        return;
+      }
       gesture.current = null;
-      return;
-    }
-    current.x = event.clientX;
-    current.y = event.clientY;
-    track(current);
-    const latest = stateRef.current;
-    const order = latest ? latest.sessions.map((session) => session.id) : [];
-    const stillValid =
-      latest !== null &&
-      latest.canMove &&
-      latest.online &&
-      orderKey(order, latest.orderRevision) === current.key;
-    if (stillValid && current.inside && !isNoOp(order, current.id, current.beforeId)) {
-      props.bridge.move(current.id, current.beforeId, current.revision);
-    }
-    swallowClick.current = true;
-    setTimeout(() => (swallowClick.current = false), 0);
-    cancelDrag();
-  }
+      if (!current.active) {
+        // A press that never moved far enough: an ordinary click follows.
+        return;
+      }
+      if (!current.cancelled) {
+        current.x = event.clientX;
+        current.y = event.clientY;
+        track(current);
+        const latest = stateRef.current;
+        const order = latest ? latest.sessions.map((session) => session.id) : [];
+        const stillValid =
+          latest !== null &&
+          latest.canMove &&
+          latest.online &&
+          orderKey(order, latest.orderRevision) === current.key;
+        if (stillValid && current.inside && !isNoOp(order, current.id, current.beforeId)) {
+          props.bridge.move(current.id, current.beforeId, current.revision);
+        }
+      }
+      // Completed or cancelled, an activated drag never becomes a click.
+      swallowNextClick();
+      stopFeedback();
+    };
+
+    const cancel = (event: PointerEvent) => {
+      const current = gesture.current;
+      if (!current || event.pointerId !== current.pointerId) {
+        return;
+      }
+      gesture.current = null;
+      if (current.active) {
+        swallowNextClick();
+      }
+      stopFeedback();
+    };
+
+    // Escape cancels a drag (its release then selects nothing).
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && gesture.current?.active && !gesture.current.cancelled) {
+        event.preventDefault();
+        cancelDrag();
+      }
+    };
+
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', escape);
+      gesture.current = null;
+      stopFeedback();
+    };
+  }, []);
 
   function clickCapture(event: MouseEvent) {
     if (swallowClick.current) {
@@ -304,10 +381,8 @@ function Rail(props: {
       class={drag ? 'rail dragging' : 'rail'}
       style={style}
       aria-label="Conversations"
+      ref={navRef}
       onPointerDown={pointerDown}
-      onPointerMove={pointerMove}
-      onPointerUp={pointerUp}
-      onPointerCancel={() => cancelDrag()}
       onLostPointerCapture={() => {
         if (gesture.current?.active) {
           cancelDrag();

@@ -317,3 +317,91 @@ test('HTML rail: a long list scrolls while dragging near its edge; narrow and zo
     'No horizontal overflow at 110 px and 160 %',
   );
 });
+
+// ---- Regressions for review R2 (d2e679d), from the reviewer's probes.
+
+test('R2-F5: a press released in the blank page below the list leaves no hover drag', async (context) => {
+  const browser = new Chromium();
+  context.after(() => browser.close());
+  const page = await openRail(browser, 160, 900);
+  await push(page, railState(4));
+  const s4 = await center(page, 's4');
+  const s3 = await center(page, 's3');
+
+  // Press at the bottom of the last row, move into the blank page, release there.
+  await mouse(page, 'mousePressed', s4.x, s4.bottom - 2);
+  await mouse(page, 'mouseMoved', s4.x, s4.bottom + 50);
+  await mouse(page, 'mouseReleased', s4.x, s4.bottom + 50);
+  // Hover back with no button held: not a drag.
+  await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: s3.x, y: s3.y, buttons: 0 });
+  assert.equal(
+    await page.evaluate('document.querySelector(".rail").classList.contains("dragging")'),
+    false,
+  );
+
+  // A later Close click is just a Close.
+  await page.evaluate(
+    'document.querySelector(".session[data-id=s2] .actions").style.display = "flex"',
+  );
+  const close = (await page.evaluate(`(() => {
+    const box = document.querySelector('.session[data-id="s2"] .close').getBoundingClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  })()`)) as { x: number; y: number };
+  await mouse(page, 'mousePressed', close.x, close.y);
+  await mouse(page, 'mouseReleased', close.x, close.y);
+  assert.deepEqual(await calls(page, 'move'), [], 'An abandoned press never reorders');
+  assert.deepEqual(await calls(page, 'close'), [['close', 's2']], 'The Close click still works');
+
+  // A move without the button held (a missed release) never activates a drag.
+  await resetCalls(page);
+  const s1 = await center(page, 's1');
+  await mouse(page, 'mousePressed', s1.x, s1.y);
+  await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: s1.x, y: s3.y, buttons: 0 });
+  assert.equal(await markerVisible(page), false);
+  await mouse(page, 'mouseReleased', s1.x, s3.y);
+  assert.deepEqual(await calls(page, 'move'), []);
+});
+
+test('R2-F6: a drag cancelled by lost capture or Escape never selects; the next click does', async (context) => {
+  const browser = new Chromium();
+  context.after(() => browser.close());
+  const page = await openRail(browser, 160, 900);
+  await push(page, railState(4));
+  const s2 = await center(page, 's2');
+
+  // Lost capture during a drag within the starting row, then release over it.
+  await dragTo(page, 's2', s2.x, s2.y + 12);
+  assert.equal(
+    await page.evaluate('document.querySelector(".rail").classList.contains("dragging")'),
+    true,
+  );
+  await page.evaluate('document.querySelector(".rail").releasePointerCapture(1)');
+  await page.call('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: s2.x,
+    y: s2.y + 13,
+    button: 'left',
+    buttons: 1,
+  });
+  await mouse(page, 'mouseReleased', s2.x, s2.y + 13);
+  assert.deepEqual(await calls(page, 'select'), [], 'Lost capture never becomes a row click');
+  assert.deepEqual(await calls(page, 'move'), []);
+
+  // Escape, then release over another row: no selection either.
+  const s3 = await center(page, 's3');
+  await dragTo(page, 's1', s3.x, s3.y);
+  await page.call('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+  });
+  await mouse(page, 'mouseReleased', s3.x, s3.y);
+  assert.deepEqual(await calls(page, 'select'), []);
+  assert.deepEqual(await calls(page, 'move'), []);
+
+  // The next genuine click is not consumed.
+  await mouse(page, 'mousePressed', s3.x, s3.y);
+  await mouse(page, 'mouseReleased', s3.x, s3.y);
+  assert.deepEqual(await calls(page, 'select'), [['select', 's3']]);
+});
