@@ -368,7 +368,7 @@ test('desktop clients receive the harness fields, the Claude catalogue and model
   const catalog = await desktop.reply('claude-models');
   assert.equal(catalog.type, 'result');
   assert.deepEqual(catalog.result, {
-    models: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    models: ['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
     model: 'claude-sonnet-5',
   });
   desktop.send({ action: 'agent-models' });

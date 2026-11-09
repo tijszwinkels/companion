@@ -36,6 +36,7 @@ function claudeSettings(settings: unknown): ClaudeCodeSettings {
 
 test('the Claude catalogue is a fixed list of exact IDs plus the configured default', () => {
   assert.deepEqual(claudeCodeModelChoices, [
+    'claude-fable-5-2',
     'claude-fable-5-1',
     'claude-opus-5-5',
     'claude-sonnet-5',
@@ -125,7 +126,7 @@ test('invalid Claude model choices fail visibly and change nothing', async (cont
   for (const model of invalid) {
     await assert.rejects(
       sessions.setModel(id, model, signal()),
-      /is not an available Claude model\. Choose one of: claude-fable-5-1, claude-opus-5-5/,
+      /is not an available Claude model\. Choose one of: claude-fable-5-2, claude-fable-5-1, claude-opus-5-5/,
       JSON.stringify(model),
     );
   }
