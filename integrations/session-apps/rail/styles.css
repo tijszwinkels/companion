@@ -197,3 +197,21 @@ button:focus-visible {
 button:disabled {
   opacity: 0.45;
 }
+
+/* Drag reordering: the dragged conversation is dimmed and a line shows
+   where it will go; text is not selected while dragging. */
+.rail.dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
+.session.dragged {
+  opacity: 0.45;
+}
+
+.drop-marker {
+  height: calc(3 * var(--u));
+  margin: calc(-5.5 * var(--u)) 0;
+  border-radius: calc(1.5 * var(--u));
+  background: var(--accent);
+}

@@ -2,6 +2,7 @@ import QtQuick
 import QtWebEngine
 import QtWebChannel
 import Companion.Widgets 1.0
+import "RailOrder.mjs" as RailOrder
 
 // The trusted HTML list of open conversations inside the panel's rail
 // (dist/rail.html). It replaces only the list of conversation tabs: the
@@ -15,8 +16,12 @@ import Companion.Widgets 1.0
 // conversations; each goes through the panel's existing signal, so pop-out,
 // focus and return keep their existing rules and refusals.
 //
-// Not ported: drag reordering (Alt+Shift+Up/Down and the native list with
-// --session-surface classic still reorder) and tab tooltips.
+// Drag reordering: the page sends one `move` per completed drag, naming the
+// order revision it captured when the gesture started; this view checks it
+// against the current order (RailOrder.mjs) and asks for the listener's
+// existing move-agent operation, which checks the revision again. There is
+// no order of the page's own. Alt+Shift+Up/Down still reorder as before.
+// Not ported: tab tooltips.
 Item {
   id: root
   // The PanelContent that owns this rail.
@@ -99,6 +104,9 @@ Item {
       })),
       online: panel ? panel.online : false,
       popoutAvailable: panel ? panel.popoutAvailable : false,
+      // Drag reordering: allowed now, and the order revision a gesture captures.
+      canMove: panel ? panel.canMoveSessions && !panel.showingPrevious : false,
+      orderRevision: panel && panel.sessionControls ? panel.sessionControls.orderRevision : "",
       theme: panel ? {foreground: root.cssColor(panel.foreground), accent: root.cssColor(panel.accent),
         muted: root.cssColor(panel.muted), selection: root.cssColor(panel.selection),
         fontFamily: panel.fontFamily, unit: panel.tabUnit} : {}
@@ -115,7 +123,8 @@ Item {
 
   readonly property string watch: root.panel ? JSON.stringify([root.panel.sessions.map(entry => [entry.id, entry.title, entry.status, (entry.wakes || []).length]),
     root.panel.selectedSessionId, root.panel.showingPrevious, root.panel.unreadSessionIds, root.panel.poppedSessionIds,
-    root.panel.online, root.panel.popoutAvailable, String(root.panel.foreground), String(root.panel.selection), root.panel.tabUnit]) : ""
+    root.panel.online, root.panel.popoutAvailable, String(root.panel.foreground), String(root.panel.selection), root.panel.tabUnit,
+    root.panel.canMoveSessions, root.panel.sessionControls ? root.panel.sessionControls.orderRevision : ""]) : ""
   onWatchChanged: Qt.callLater(root.publish)
 
   QtObject {
@@ -157,6 +166,24 @@ Item {
     function close(id) {
       if (!open(id) || !root.panel.online) return false
       root.panel.dismissSessionRequested(id)
+      return true
+    }
+
+    // One completed drag: put `id` before `beforeId` ("" for the end). A drop
+    // whose captured `revision` is no longer current (another move, a new or
+    // closed conversation, a reconnect) is refused and changes nothing.
+    // Selection, drafts, turns, pop-outs and apps are untouched by a move.
+    function move(id, beforeId, revision) {
+      const panel = root.panel
+      if (panel === null || panel.sessionControls === null) return false
+      const state = {
+        ids: panel.sessions.map(entry => entry.id),
+        canMove: panel.canMoveSessions && !panel.showingPrevious,
+        online: panel.online,
+        orderRevision: panel.sessionControls.orderRevision
+      }
+      if (!RailOrder.moveAllowed(state, id, beforeId, revision)) return false
+      panel.sessionControls.move(id, beforeId)
       return true
     }
   }

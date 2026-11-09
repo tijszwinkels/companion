@@ -220,9 +220,21 @@ and close, each through the panel's existing signals. The Activity tab,
 Previous sessions, the compact rail's Expand/Return, the divider, Alt+number
 and Alt+Shift+Up/Down stay native, and the native tab list returns if the page
 fails. Its tabs look like the classic ones; Pop out, Return and close appear
-on hover or keyboard focus. Drag reordering and the styled tab tooltip are
-not ported (the browser shows the title); the rest of the sidebar
-(Activity, settings, Previous sessions) remains Qt Quick.
+on hover or keyboard focus. The styled tab tooltip is not ported (the browser
+shows the title); the rest of the sidebar (Activity, settings, Previous
+sessions) remains Qt Quick.
+
+Drag a conversation to reorder it, as in the native list: a press that moves a
+few pixels becomes a drag, a line shows where it will go, and the list scrolls
+near its top and bottom edges. The gesture captures the order revision and the
+open conversations when it starts; on release inside the list the page asks
+for one move with that revision (`RailOrder.mjs` checks it in the bridge, then
+the listener's existing `move-agent` checks it again). Escape, a cancelled
+pointer, a release outside the list, a no-op position, a changed order or
+membership, going offline or unavailable controls end the drag without a move,
+and a drag never also selects, closes or pops out a conversation. There is no
+order of the page's own; selection, drafts, turns, pop-outs and applications
+are untouched. Alt+Shift+Up/Down keeps working.
 
 ## Build and test
 
@@ -232,6 +244,9 @@ npm run ui:build -- -DBUILD_TESTING=ON
 npm run test:session-apps-ui
 ```
 
+`test/session-apps-ui/rail-drag.test.ts` drives the built rail page's real
+pointer path in an isolated headless Chromium (CDP mouse input, a recording
+stand-in for the bridge); `rail-order.test.ts` covers `RailOrder.mjs`.
 `test/session-apps-ui/surface.test.ts` runs the real native host, QML body,
 trusted chat page, rail and restricted application view offscreen against a
 scripted listener transport and a synthetic application endpoint.
