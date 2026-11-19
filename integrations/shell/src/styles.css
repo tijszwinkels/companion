@@ -127,6 +127,29 @@ body {
   margin: 0 auto;
 }
 
+.held-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px auto 0;
+  padding: 8px 12px;
+  width: calc(100% - 24px);
+  max-width: 936px;
+  border: 1px solid #e0af68;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.held-input > span:first-child {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.held-feedback {
+  color: #737b9c;
+}
+
 .list-empty {
   padding: 24px 16px;
   color: #737b9c;

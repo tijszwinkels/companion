@@ -280,9 +280,15 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       heightBefore.current = element.scrollHeight;
       return;
     }
-    if (atEnd !== following.current) {
-      follow(atEnd);
-      bridge.following(status.sessionId, atEnd);
+    // The end of a detached snapshot (older pages that no longer reach the
+    // live end) is not the live end: newer rows can still be loaded below,
+    // and the reader keeps their place when they arrive instead of being
+    // moved to the new end. The host already treats it so (following is
+    // `atEnd && !detached` there too); Jump to latest returns to the live end.
+    const followsEnd = atEnd && !history?.detached;
+    if (followsEnd !== following.current) {
+      follow(followsEnd);
+      bridge.following(status.sessionId, followsEnd);
     }
     // The reader's new row, unless this scroll is the one this component
     // made to restore it (the anchor stays as the reader left it).

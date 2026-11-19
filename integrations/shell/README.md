@@ -57,16 +57,37 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   than three pages up), the next newer page loads when the reader scrolls to
   within one viewport of its end, observed by `src/main.tsx` like
   SessionView's `readerScrolled`, so the new rows continue below without
-  moving the reader; arriving at the very end also loads it. Neither repeats
-  a failed request.
+  moving the reader (also when they reach the end before the page arrives).
+  It never repeats a failed request.
 - Connection loss: the phone Connection reconnects with backoff and never
   resends a request whose answer did not arrive; such a send keeps its text in
   the editor with an explanation. The page shows a banner and the chat's
   "Disconnected" state. Sending, choosing, stopping and closing are refused
   while offline, and after reconnecting until the listener's new snapshot has
   arrived (the shown conversation may have been closed or reopened meanwhile).
+- The conversation's own Stop (for a run without a run-scoped control) is
+  admitted only after the listener reported this conversation's controls to
+  this browser; until then a missing run ID may only mean "not reported yet",
+  and an unscoped Stop could cancel a queued turn that started meanwhile.
 - Signing out (or a revoked pairing) clears drafts, input only the editor
-  held, notices and pending state, so nothing reaches the next pairing.
+  held, notices and pending state; answers that arrive later for the previous
+  pairing are ignored. Another tab of the same browser reloads when the
+  stored pairing changes, so it cannot write its old drafts back. Input only
+  the editor holds stays reachable from the list (Copy, Discard) when its
+  conversation is not shown.
+
+### One change to the shared chat page
+
+`Chat.tsx` is otherwise unchanged. Its transcript no longer counts the end of
+a **detached** history snapshot as the live end (`following` is reported and
+kept as `atEnd && !history.detached`). The browser shell needs this: newer
+pages are appended below a detached snapshot, and a page that thought it was
+following would jump to the end of each new page, skipping it. In the Qt host
+nothing is appended below a detached snapshot, and its bridge already sets
+`followEnd = atEnd && !detached`, so what it records is unchanged; the only
+visible difference there is that a Refresh or a resize while reading at the
+end of a detached snapshot keeps the reader's row in place instead of the end
+of the rows, which is what the classic view does.
 
 ### Differences from the desktop chat
 
@@ -116,9 +137,10 @@ stand-in Store, for orderings a browser cannot time reliably: gapless sequence
 numbers and full resynchronization, no second send from a stale draft
 revision, a conversation switch sending rows with their status, pending
 choices across navigation, nothing admitted between reconnecting and the new
-snapshot, sign-out clearing held input, contiguous paging within three pages
-including newer pages, no automatic retry after a failure, and superseded
-pages dropped.
+snapshot, sign-out clearing held input and late failures, a conversation
+reopened under the same ID replaced like a switch, the unscoped Stop waiting
+for the controls report, contiguous paging within three pages including newer
+pages, no automatic retry after a failure, and superseded pages dropped.
 
 `shell.test.ts` runs the built shell in headless Chromium at desktop sizes, on
 the phone tests' fixtures (real gateway, real listener control socket,
@@ -126,9 +148,11 @@ synthetic agent backend, temporary directories, loopback). It covers pairing;
 the list and picking a conversation; a streamed Markdown answer with agent HTML
 kept literal; send; a follow-up queued while running; a choice; stop; close;
 loading older pages while scrolling up, reading down through newer pages below
-a detached snapshot without skipping rows, and Jump to latest; a send whose
+a detached snapshot without skipping rows (also when the reader reaches the
+end before the next page arrives), and Jump to latest; a send whose
 answer was lost in a gateway restart, kept with its notice and not replayed
-after reconnecting; signing out and pairing again without the previous draft;
+after reconnecting; signing out and pairing again without the previous draft, also with a second
+tab of the same browser open;
 no Activity history request; that every request and socket goes to the
 gateway's origin only; no Content-Security-Policy violation under the
 gateway's real policy; and no horizontal overflow at 420 px and 1280 px. With

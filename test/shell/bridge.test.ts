@@ -312,6 +312,64 @@ test('signing out forgets input held for the previous pairing', async () => {
   });
 });
 
+test('the same conversation reopened in a new lifetime is replaced like a switch', async () => {
+  const { store, messages } = harness();
+  await settle();
+  const before = messages.length;
+  // A reconnect snapshot: same ID, closed and reopened elsewhere meanwhile.
+  const reopened = session(sessionA, 'Question A again', { toolEpoch: 'epoch-reopened' });
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, reopened) });
+  await Promise.resolve();
+  await Promise.resolve();
+  const after = messages.slice(before);
+  assert.ok(after.length >= 2);
+  assert.equal(after[0].type, 'rows');
+  assert.equal(after[0].type === 'rows' && after[0].full, true);
+  assert.equal(after[1].type, 'status');
+});
+
+test('the unscoped Stop waits for the listener to report the controls', async () => {
+  const { store, bridge, messages } = harness();
+  const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
+  await settle();
+  assert.equal(lastStatus(messages).running, true);
+
+  // Just selected: no controls report yet, so "no run ID" is not known.
+  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
+  assert.equal(store.pending.length, 0);
+  await settle();
+  assert.match(lastStatus(messages).inputError ?? '', /controls have not arrived/);
+
+  // The listener reports this conversation's controls without a run ID.
+  store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
+  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
+  assert.equal(store.pending[0].action, 'stop-agent');
+});
+
+test('a request failing after sign-out leaves no notice for the next pairing', async () => {
+  const { store, bridge, messages } = harness();
+  store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
+  const running = session(sessionA, 'Question A', { status: 'running' });
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
+  await settle();
+  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
+
+  // Sign-out rejects the outstanding request after clearing private state.
+  store.update({
+    connection: { ...store.state.connection, status: 'unpaired' },
+    selected: '',
+    engine: undefined,
+    actions: undefined,
+  });
+  store.pending[0].reject(Error('The connection dropped before Companion answered.'));
+  await settle();
+  store.update({ connection: { ...store.state.connection, status: 'online' } });
+  store.update({ engine: { paused: false }, selected: sessionA });
+  await settle();
+  assert.equal(lastStatus(messages).inputError, '');
+});
+
 /** A conversation of `total` rows and a host serving its real pages. */
 function pagedConversation(total: number) {
   const messages = [];

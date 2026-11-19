@@ -71,8 +71,14 @@ async function desktopPage(
   browser: TestBrowser,
   width: number,
   height = 800,
-): Promise<{ page: TestPage; sockets: SocketLog }> {
-  const { browserContextId } = await browser.call('Target.createBrowserContext');
+  sharedContext = '',
+): Promise<{ page: TestPage; sockets: SocketLog; browserContextId: string }> {
+  // Another tab of an existing context shares its storage (and pairing).
+  let browserContextId = sharedContext;
+  if (!browserContextId) {
+    const created = await browser.call('Target.createBrowserContext');
+    browserContextId = String(created.browserContextId);
+  }
   const { targetId } = await browser.call('Target.createTarget', {
     url: 'about:blank',
     browserContextId,
@@ -113,7 +119,7 @@ async function desktopPage(
       }
     }
   });
-  return { page, sockets };
+  return { page, sockets, browserContextId };
 }
 
 /** Click the centre of an element with the mouse, as a desktop user would. */
@@ -221,7 +227,7 @@ function horizontalOverflow(page: TestPage): Promise<number> {
 
 /** Pair through the real UI with a code from the device store. */
 async function pairedPage(fixture: Fixture, browser: TestBrowser, width = 1280, height = 800) {
-  const { page, sockets } = await desktopPage(browser, width, height);
+  const { page, sockets, browserContextId } = await desktopPage(browser, width, height);
   await page.navigate(`${fixture.origin}/`);
   await page.waitFor(`document.querySelector('#code')`);
   const { code } = await fixture.devices.createPairingCode();
@@ -229,7 +235,7 @@ async function pairedPage(fixture: Fixture, browser: TestBrowser, width = 1280, 
   await page.type(code);
   await click(page, 'button[type=submit]');
   await page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
-  return { page, sockets };
+  return { page, sockets, browserContextId };
 }
 
 /** Open the conversation titled (or containing) `title` from the list. */
@@ -504,11 +510,48 @@ test(
     assert.ok((await rowCount(page)) <= 600);
     assert.doesNotMatch(await transcriptText(page), /History row 849\b/);
 
+    // The reader gets to the end of the snapshot before the first newer page
+    // arrives (a fast gesture or a slow gateway): when it arrives, the
+    // reader stays where they are, the new rows continue below.
+    const historyPage = fixture.sessions.historyPage.bind(fixture.sessions);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding = true;
+    fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
+      const reply = historyPage(request);
+      if (holding && request.direction === 'after') {
+        await held;
+      }
+      return reply;
+    }) as unknown as typeof historyPage;
+    const sentBeforeHold = sockets.sent.length;
+    await scrollUntil(
+      page,
+      100_000,
+      `document.querySelector('.transcript').scrollTop + document.querySelector('.transcript').clientHeight >= document.querySelector('.transcript').scrollHeight - 4`,
+    );
+    await waitFor(() =>
+      sockets.sent.slice(sentBeforeHold).some((sent) => sent.direction === 'after'),
+    );
+    assert.ok(await page.evaluate<boolean>(inView('History row 598')));
+    holding = false;
+    release();
+    await page.waitFor(shows('History row 700'));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(
+      await page.evaluate<boolean>(inView('History row 598')),
+      'the reader stayed in place',
+    );
+    assert.equal(await page.evaluate<boolean>(inView('History row 700')), false);
+    fixture.sessions.historyPage = historyPage;
+
     // Reading down in ordinary steps: newer pages load before the reader
     // reaches the end, the reader's place is kept, and the first newly
     // loaded row (History row 599) comes into view on the way. Two newer
     // pages, then the transcript continues into the live window.
-    const sentBeforeNewer = sockets.sent.length;
+    const sentBeforeNewer = sentBeforeHold;
     let sawFirstNewRow = false;
     for (let step = 0; step < 300; step++) {
       if (await page.evaluate<boolean>(inView('History row 599'))) {
@@ -651,6 +694,55 @@ test(
       false,
     );
     await assertNoViolations(page);
+  },
+);
+
+test(
+  'another tab of the same browser is retired when this one signs out',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Two-tab fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    fixture.runs[0].finish();
+    const first = await pairedPage(fixture, browser, 1280, 800);
+    // A second tab in the same browser profile is paired through storage.
+    const second = await desktopPage(browser, 1280, 800, first.browserContextId);
+    await second.page.navigate(`${fixture.origin}/`);
+    await second.page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await openConversation(second.page, 'Two-tab fixture');
+    await click(second.page, '.chat textarea');
+    await second.page.type('Draft of the previous pairing');
+
+    // Signing out in the first tab returns the second one to pairing too.
+    // (Each tab is brought to the front before it is used: Chromium slows
+    // the timers of background tabs.)
+    await first.page.call('Page.bringToFront');
+    await clickButton(first.page, 'Sign out');
+    await first.page.waitFor(`document.querySelector('#code')`);
+    await second.page.call('Page.bringToFront');
+    await second.page.waitFor(`document.querySelector('#code')`, 8000);
+
+    // Pair again in the first tab: neither tab offers the earlier draft.
+    const { code } = await fixture.devices.createPairingCode();
+    await first.page.call('Page.bringToFront');
+    await click(first.page, '#code');
+    await first.page.type(code);
+    await click(first.page, 'button[type=submit]');
+    await first.page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await second.page.call('Page.bringToFront');
+    await second.page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    for (const tab of [first.page, second.page]) {
+      await tab.call('Page.bringToFront');
+      await openConversation(tab, 'Two-tab fixture');
+      assert.equal(await tab.evaluate(`document.querySelector('.chat textarea').value`), '');
+      assert.equal(
+        await tab.evaluate(
+          `JSON.stringify(localStorage).includes('Draft of the previous pairing')`,
+        ),
+        false,
+      );
+    }
   },
 );
 

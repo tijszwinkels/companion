@@ -136,15 +136,11 @@ export class ResidentHistory {
   }
 
   /**
-   * The page reports whether the reader is at the transcript's end. Arriving
-   * at the end of a detached snapshot continues it with the next newer page
-   * (the desktop does this from its own scroll handler; the chat page reports
-   * only this transition).
+   * The page reports whether the reader follows the live end. The chat page
+   * never reports the end of a detached snapshot as following (Chat.tsx), and
+   * this keeps the desktop's rule as well.
    */
   setFollowing(atEnd: boolean): void {
-    if (atEnd && this.detached()) {
-      this.continueNewer();
-    }
     this.followEnd = atEnd && !this.detached();
   }
 

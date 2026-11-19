@@ -34,8 +34,8 @@
  *   (no second send of text already sent), and nothing is admitted after a
  *   reconnect until the listener's new snapshot arrived.
  * - Newer history pages below a detached snapshot also load as the reader
- *   scrolls toward the end (`readerNearEnd`, reported by main.tsx), not only
- *   through the page's `history('newer')`.
+ *   scrolls toward the end (`readerNearEnd`, reported by main.tsx); the page
+ *   itself never asks for them.
  *
  * Replies and messages reach the page asynchronously and in call order, as
  * QWebChannel delivers them.
@@ -67,6 +67,8 @@ const rowsIntervalMilliseconds = 30;
 const classicUnavailable =
   'Tool details, widgets and the classic view are not available in the browser yet.';
 const applicationUnavailable = 'Session applications are not available in the browser yet.';
+const stopNotReady =
+  "This conversation's controls have not arrived yet. Try Stop again in a moment.";
 
 /**
  * Where the transcript is on screen. The page draws one `.message` element
@@ -130,6 +132,9 @@ export class GatewayChatBridge implements NativeBridge {
   // Per conversation: the choice request awaiting its answer, kept until it
   // settles even when the page shows another conversation meanwhile.
   private readonly pendingChoices = new Map<string, object>();
+  // Advances on sign-out or revocation. Answers to requests of an earlier
+  // pairing are ignored, so they cannot bring back its notices.
+  private pairing = 0;
   // Input only the page's editor holds (its length only), as in SessionView.
   private unresolved: { sessionId: string; length: number } | null = null;
 
@@ -171,9 +176,9 @@ export class GatewayChatBridge implements NativeBridge {
     }
     let switched = false;
     if (session !== this.shownSession) {
-      const previousId = this.shownSession ? this.shownSession.id : '';
-      const id = session ? session.id : '';
-      switched = id !== previousId;
+      // Another conversation, or the same ID in a new lifetime (closed and
+      // reopened while this page was offline: a new tool epoch).
+      switched = this.lifetime(session) !== this.lifetime(this.shownSession);
       if (switched) {
         // Another conversation: the page replaces its rows.
         this.fullRows = true;
@@ -195,6 +200,14 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     this.scheduleStatus();
+  }
+
+  /** A conversation's identity for the page: its ID and tool epoch. */
+  private lifetime(session: AgentSession | null): string {
+    if (!session) {
+      return '';
+    }
+    return session.id + ' ' + (session.toolEpoch ?? '');
   }
 
   /** Track the connection and whether its first snapshot has arrived. */
@@ -225,6 +238,7 @@ export class GatewayChatBridge implements NativeBridge {
    * own editor-only input is cleared by main.tsx.)
    */
   private forgetPrivateState(): void {
+    this.pairing++;
     this.knownDrafts.clear();
     this.cursors.clear();
     this.errors.clear();
@@ -534,6 +548,7 @@ export class GatewayChatBridge implements NativeBridge {
   ): void {
     this.errors.delete(sessionId);
     this.scheduleStatus();
+    const pairing = this.pairing;
     work().then(
       () => {
         settled();
@@ -541,7 +556,10 @@ export class GatewayChatBridge implements NativeBridge {
       },
       (failure: unknown) => {
         settled();
-        this.fail(sessionId, failure);
+        // Signed out meanwhile: the failure belongs to the previous pairing.
+        if (pairing === this.pairing) {
+          this.fail(sessionId, failure);
+        }
       },
     );
   }
@@ -708,6 +726,13 @@ export class GatewayChatBridge implements NativeBridge {
     this.answer(callback, { accepted: true });
   }
 
+  /**
+   * The conversation's own Stop, for a run without a run-scoped control. It
+   * is admitted only after the listener reported this conversation's
+   * controls for this device: before that (just after selecting it or
+   * reconnecting) a missing run ID may only mean "not reported yet", and an
+   * unscoped Stop could cancel a queued turn that started meanwhile.
+   */
   stop(sessionId: string, callback?: (answer: string) => void): void {
     const session = this.shownSession;
     if (
@@ -717,6 +742,13 @@ export class GatewayChatBridge implements NativeBridge {
       !this.running(session) ||
       this.stopRunId(sessionId) !== ''
     ) {
+      this.answer(callback, { accepted: false });
+      return;
+    }
+    const actions = this.store.state.actions;
+    if (!actions || actions.sessionId !== sessionId) {
+      this.errors.set(sessionId, stopNotReady);
+      this.scheduleStatus();
       this.answer(callback, { accepted: false });
       return;
     }

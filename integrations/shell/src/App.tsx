@@ -9,7 +9,7 @@
  * Back/Forward through its Navigation), unread marks and toasts.
  */
 
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 import { Chat } from '../../session-apps/chat/Chat.tsx';
 import type { ChatStore } from '../../session-apps/chat/store.ts';
@@ -40,7 +40,10 @@ export function App(props: { chat: ChatStore }) {
             <Chat store={props.chat} />
           </div>
         ) : (
-          <ConversationList />
+          <>
+            <HeldInput chat={props.chat} />
+            <ConversationList />
+          </>
         )}
       </main>
       <Toasts />
@@ -78,6 +81,67 @@ function Header(props: { selected: AgentSession | undefined }) {
         </button>
       )}
     </header>
+  );
+}
+
+/**
+ * Text only the chat editor holds (an input the bridge could not take, see
+ * ChatStore.unresolved), shown on the list so it stays reachable when its
+ * conversation is not shown, for example after it was closed elsewhere: its
+ * length, Copy and Discard, as the chat page's own "No conversation" view
+ * offers. The text itself is never shown or sent anywhere.
+ */
+function HeldInput(props: { chat: ChatStore }) {
+  const { chat } = props;
+  const [held, setHeld] = useState(chat.unresolved());
+  const [feedback, setFeedback] = useState('');
+
+  useEffect(() => {
+    const unsubscribe = chat.subscribe(() => setHeld(chat.unresolved()));
+    // It can change between the first render and this effect.
+    setHeld(chat.unresolved());
+    return unsubscribe;
+  }, [chat]);
+
+  if (!held) {
+    return null;
+  }
+
+  function copy() {
+    const bridge = chat.native;
+    if (!bridge || !held) {
+      return;
+    }
+    setFeedback('Copying…');
+    bridge.copyText(held.text, (json) => {
+      let accepted = false;
+      try {
+        accepted = (JSON.parse(json) as { accepted: boolean }).accepted === true;
+      } catch {
+        accepted = false;
+      }
+      if (accepted) {
+        setFeedback('Copied.');
+      } else {
+        setFeedback('The browser did not allow copying.');
+      }
+    });
+  }
+
+  return (
+    <div class="held-input" role="status">
+      <span>
+        Text ({held.text.length} characters) typed in a conversation is only in this page. Copy it
+        or discard it.
+      </span>
+      <button class="shell-button" onClick={copy}>
+        Copy
+      </button>
+      <button class="shell-button" onClick={() => chat.setUnresolved(null)}>
+        Discard
+      </button>
+      {feedback && <span class="held-feedback">{feedback}</span>}
+    </div>
   );
 }
 

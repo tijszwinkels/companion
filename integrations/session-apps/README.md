@@ -36,7 +36,10 @@ come from `../panel/SessionView.qml`, `AgentChoices.qml`, `PanelAction.qml`,
 `SessionTab.qml` and `Markdown.mjs` (see `chat/styles.css`, `rail/styles.css`).
 Like the classic view, the chat stays at the newest message while the reader
 is there, through resizing, text scale changes and streaming, and otherwise
-keeps the message at the top edge in place. The phone app keeps its own
+keeps the message at the top edge in place. The end of a detached history
+snapshot (older pages that no longer reach the newest message) is not the
+newest message: a reader there keeps their place, as in the classic view, and
+Jump to latest returns to the live end. The phone app keeps its own
 presentation.
 
 ## Who owns what

@@ -76,6 +76,23 @@ store.subscribe(() => {
 });
 
 /**
+ * Another tab of this browser signed out, was revoked or paired again: the
+ * stored device credential changed. This tab's Store still holds the previous
+ * pairing (credential, socket and drafts in memory) and would write those
+ * drafts back to the storage both tabs share, where the next pairing would
+ * find them. So the tab reloads and starts from what is stored now. The key
+ * is the phone Connection's (integrations/mobile/src/connection.ts);
+ * test/shell/shell.test.ts checks this with two tabs.
+ */
+const credentialStorageKey = 'companion.remote.device';
+window.addEventListener('storage', (event) => {
+  // `key` is null when another tab cleared the whole storage.
+  if (event.key === credentialStorageKey || event.key === null) {
+    window.location.reload();
+  }
+});
+
+/**
  * The reader's own scrolling of the transcript, as SessionView's
  * readerScrolled sees it: a scroll within one second of their wheel, key,
  * pointer or touch input. Within one viewport of the end, the bridge loads
