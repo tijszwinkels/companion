@@ -85,6 +85,23 @@ sessions. Adapters that do not send the field (older installed shells) keep
 receiving complete snapshots. An older listener ignores the field and always
 sends complete snapshots, which new clients apply as before.
 
+### Listener time
+
+Every `state` message carries `listenerTime`: the listener's clock, in epoch
+milliseconds, when it built that message. The connect snapshot always has it,
+and so does every later `state` (it is not one of the omitted conversation
+fields). Older listeners omit it.
+
+A client whose clock may differ from the listener's (another machine, a phone)
+keeps an offset: on receiving a `state` message, `offset = listenerTime -
+Date.now()`. It then shows a running turn as `Date.now() + offset -
+turnStartedAt`, and converts a message's `createdAt` to its own clock as
+`createdAt - offset` before formatting it. Update the offset from each `state`
+message; the error is the delivery delay of that message (usually well under a
+second, more over a slow relay). Without `listenerTime`, use offset 0. A
+client on the listener's machine can also use offset 0. Clamp a negative running
+duration to zero.
+
 The listener has one ordered queue per connection. A line is written directly
 while the socket is idle; after `write` reports backpressure, later lines wait
 for `drain`. Events, replies, errors, `agent-select` and `agent-draft` keep their
@@ -694,9 +711,17 @@ snapshot for a client that did not declare `incrementalSessions`) contains
 complete chat state for reconnects. A session has `id`, `title`, `status`, `model`, `error`,
 `updatedAt` (epoch milliseconds), and `messages`. Status is `starting`, `running`,
 `completed`, `cancelled`, or `error`.
+Optional turn times (see [turn and message times](../agents/README.md#turn-and-message-times)):
+`turnStartedAt` is present exactly while a turn runs (from `starting` until the
+turn has finished, stopped or failed) and holds its start in epoch milliseconds
+on the listener's clock; `lastTurnDurationMs` is the last finished turn's
+duration in milliseconds, whatever its outcome. Show a running duration only
+while `turnStartedAt` is present; never keep counting after it disappears.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
 `toolName`, `input`, `state` (`running`, `done`, or `error`), and a boolean
-`screenshot` attachment indicator. An optional `screenshotUrl` is a local file URL
+`screenshot` attachment indicator. Optional `createdAt` is when the listener
+created the message (epoch milliseconds, listener clock); it does not change when
+the message is updated, and messages saved by older versions have none. An optional `screenshotUrl` is a local file URL
 for the private original PNG. It may be absent on older/missing attachments; keep
 the question text visible. Image bytes never travel to the UI socket. URLs are
 computed from the validated session UUID, not trusted from serialized content.
@@ -1313,6 +1338,7 @@ and order by `ids`; reconnect replaces the recent window completely. Optional
 `pinnedMessage` is the canonical pin's attachment independently of window membership
 (with body omitted); null means no canonical pin. None of these projection fields
 are saved to the archive. Archives and in-memory source rows are never fragments.
+Every row, including a fragment, keeps its message's `createdAt`.
 
 An explicit page request uses the existing selected-conversation ownership check:
 

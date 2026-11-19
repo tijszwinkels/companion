@@ -131,7 +131,8 @@ function fit(
 
 /**
  * Build from the authoritative session, not a UI history page. No timestamps
- * are invented: existing canonical rows do not retain message creation times.
+ * are included: rows saved before Companion recorded message creation times
+ * have none, and this application contract has not been extended with them.
  * `after` is merely an equality cursor; it never selects another conversation
  * or changes the permission required to read this one.
  */

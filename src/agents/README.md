@@ -244,6 +244,81 @@ is deliberately absent from saved transcripts, so reopening a historical session
 does not manufacture a new completion. Old backends without the field can show
 running rings but need a listener restart for unread completion tracking.
 
+## Turn and message times
+
+The listener records two kinds of time so that clients can show how long a
+running turn has been going, how long the last one took, and when each message
+was written. All times are milliseconds since the Unix epoch on the listener's
+own clock; durations are milliseconds. `AgentSessions` takes the clock as an
+optional constructor argument (the same one that schedules self-wake timers),
+so tests inject it.
+
+**Turn times** are measured in `sessions.ts`, around each turn, independently of
+the harness:
+
+- `turnStartedAt` (live session field) is set when a turn's message is admitted
+  and the conversation enters `starting`: in `create` for the first question and
+  in `prepareFollowUp` for every later one. It stays while the turn runs and is
+  removed when the turn ends. Clients compute the running duration from it.
+- A turn ends when the harness's `run` returns or throws: answered, stopped,
+  failed, or its process exited. `lastTurnDurationMs` (session field) is then
+  set to end minus start, whatever the outcome, before the turn's final save
+  and before `agent-turn-completed`. The final save itself is not counted.
+  A clock that was set back during the turn gives 0, not a negative value.
+- Every admitted message is its own turn. A queued follow-up starts its
+  measurement when it leaves the queue (when the previous turn has ended), not
+  when it was queued; queuing never changes the running turn's start. A
+  scheduled wake or application turn is measured the same way.
+- Retries, compaction and several executable attempts inside one harness `run`
+  belong to that one turn and one measurement. Process lifetime is never used:
+  Pi and Claude Code are started per turn today, but a harness that kept its
+  process alive between turns would be measured the same way.
+- Nothing running survives the end of a turn. `run` removes `turnStartedAt`;
+  `drain` removes it again when the conversation stops being busy (covering any
+  exception between turns), as does a scheduled wake that cannot enter the
+  conversation. Stopped queued messages never start a turn.
+- A placeholder turn that runs nothing (application edits already delivered, or
+  an application send withdrawn before it started) removes `turnStartedAt` and
+  keeps the previous turn's duration.
+- Conversations are independent: each conversation's fields change only with its
+  own turns.
+
+`turnStartedAt` is live-only and never saved. A turn does not survive a listener
+restart: the restarted listener shows that conversation as stopped ("Companion
+stopped before this answer finished") with no `turnStartedAt`, and also without
+`lastTurnDurationMs`, because the saved duration belonged to an earlier turn
+and the interrupted one has none. `lastTurnDurationMs` is otherwise saved with
+the conversation and comes back on reopening and in `previousSessions`.
+
+**Message times**: every message gets `createdAt` when it first enters a
+conversation. `message()` stamps every new row and keeps the existing row's
+value on every update of the same ID (streaming text, a queued message starting,
+a running bubble finalized as an error), so it is the time the message was
+written, not the time it last changed. A tool bubble groups consecutive tool
+calls; its `createdAt` is the time of the group's first call. Individual tool
+calls in [tool pages](../desktop/README.md#lazy-tool-transcript-pages) carry no
+time. A time supplied by a backend is never trusted for a new row.
+
+Messages saved before this change have no `createdAt` and keep none; no time is
+invented for them, also not when they are updated later. When reopening repairs
+a saved transcript, a missing timer notice is a new row and gets the current
+time, while a missing widget row (committed earlier at an unrecorded time) gets
+none. The store drops a damaged saved time or duration (anything but a
+non-negative safe integer) instead of refusing the conversation. Old archives
+are never rewritten for this; new fields are simply added on the next save.
+The session application chat projection (`session-apps/chat.ts`) does not
+include message times.
+
+Clients on another machine use `listenerTime` from the desktop protocol to
+correct for clock differences; see
+[listener time](../desktop/README.md#listener-time).
+
+`test/unit/turn-and-message-times.test.ts` covers this with an injected clock,
+temporary stores and the scripted Pi and Claude Code backends (and the real
+backends driven by the scripted executables for a process exit): independent
+conversations, queued follow-ups, Stop, errors, restarts, old-format archives,
+history pages, and relay to a phone through the gateway.
+
 ## Conversation choices
 
 `PiBackend` starts each turn with the native Pi extension `choice-tool.ts` using

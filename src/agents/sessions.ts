@@ -233,7 +233,9 @@ export class AgentSessions implements InspectableModule {
     // Gates the automatic conversation screenshot copy. Absent means a fixed
     // "off" policy: nothing is saved unless the listener passes its policy.
     private readonly captureStorage: CaptureStoragePolicy = new CaptureStoragePolicy(),
-    wakeClock: () => number = Date.now,
+    // The listener's wall clock in milliseconds since the Unix epoch. It
+    // schedules wakes and stamps turn and message times; tests inject it.
+    private readonly clock: () => number = Date.now,
   ) {
     // Graph inspection shows each wired backend under its harness name.
     const dependencies: Record<string, InspectableModule> = { pi: backends.pi };
@@ -289,7 +291,7 @@ export class AgentSessions implements InspectableModule {
         changed: (record) => this.wakeChanged(record),
         warning: (text) => this.wakeWarning(text),
       },
-      wakeClock,
+      clock,
     );
     this.sessionTools = new SessionToolService({
       wake: (owner, turnId, depth, method, command, signal) =>
@@ -330,6 +332,16 @@ export class AgentSessions implements InspectableModule {
   /** Install (or clear) the route to the native panel's pop-out windows. */
   setPresentationHost(host: AgentPresentationHost | undefined): void {
     this.presentationHost = host;
+  }
+
+  /**
+   * The listener's current time, in milliseconds since the Unix epoch, from
+   * the same clock that stamps `turnStartedAt` and message `createdAt`. The
+   * desktop runtime sends it to clients as `listenerTime` so that a client
+   * whose own clock differs can still show correct durations and times.
+   */
+  now(): number {
+    return this.clock();
   }
 
   // ---- Session applications (src/session-apps/README.md) -------------------
@@ -824,6 +836,7 @@ export class AgentSessions implements InspectableModule {
     } catch (error) {
       session.wake = undefined;
       session.busy = false;
+      delete session.view.turnStartedAt;
       session.view.status = 'error';
       session.view.error = 'Scheduled wake could not enter the conversation';
       this.wakes.transitionAttempt(claimed, 'failed', String(error));
@@ -1370,6 +1383,12 @@ export class AgentSessions implements InspectableModule {
     if (request.origin) {
       question.origin = request.origin;
     }
+
+    // The first message and the first turn start together: the question is
+    // admitted and its turn begins now (later turns: prepareFollowUp).
+    const startedAt = this.clock();
+    question.createdAt = startedAt;
+
     const session: RunningSession = {
       view: {
         id,
@@ -1382,6 +1401,7 @@ export class AgentSessions implements InspectableModule {
         error: '',
         messages: [question],
         updatedAt: Date.now(),
+        turnStartedAt: startedAt,
         runId: randomUUID(),
         acceptsFollowUp: false,
         ...(request.openInBackground ? { openInBackground: true } : {}),
@@ -1522,6 +1542,9 @@ export class AgentSessions implements InspectableModule {
     session.currentOrigin = message.origin;
     session.controller = new AbortController();
     session.busy = true;
+    // Every admitted message starts its own turn and its own measurement,
+    // including a queued follow-up that waited behind the previous turn.
+    session.view.turnStartedAt = this.clock();
     session.view.status = 'starting';
     session.view.error = '';
     session.toolError = '';
@@ -1567,8 +1590,10 @@ export class AgentSessions implements InspectableModule {
         if (delivery.skip) {
           // An application-event placeholder with nothing left to deliver:
           // no model turn runs. Restore the completed state it replaced.
+          // Nothing ran, so the previous turn's duration stays the last one.
           session.view.status = 'completed';
           delete session.view.runId;
+          delete session.view.turnStartedAt;
         } else {
           await this.run(session, delivery.prompt, resume, frameId, messageId);
           await this.finishApplicationDelivery(session, delivery.batchId);
@@ -1601,6 +1626,10 @@ export class AgentSessions implements InspectableModule {
       }
     } finally {
       session.busy = false;
+      // `run` ends every turn it ran. This also covers a turn that ended
+      // before `run` could (an exception in between), so that no running
+      // time is ever published for a conversation that is no longer busy.
+      delete session.view.turnStartedAt;
       session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
       if (session.closeAfterTurn) {
@@ -1653,6 +1682,10 @@ export class AgentSessions implements InspectableModule {
     const wake = session.wake;
     session.wake = undefined;
     const turnId = wake?.turnId ?? randomUUID();
+    // Set when this turn's message was admitted (create or prepareFollowUp).
+    // Retries and several executable attempts inside the backend's `run`
+    // belong to this one turn and this one measurement.
+    const turnStartedAt = session.view.turnStartedAt ?? this.clock();
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
     let resumeBlocked = false;
@@ -1824,6 +1857,9 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-error', session.view.error, frameId);
       }
     } finally {
+      // The harness has returned (answered, stopped, failed or exited): the
+      // turn's work ends here. Persistence below is bookkeeping, not turn time.
+      const turnEndedAt = this.clock();
       acceptingUpdates = false;
       this.flushTools(session);
       if (session.toolError) {
@@ -1858,10 +1894,9 @@ export class AgentSessions implements InspectableModule {
           let finished = { ...message, state: 'error' as const } as AgentMessage;
           if (message.toolGroup) {
             try {
-              finished = {
-                ...this.store.tools.summary(session.view.id, message.id),
-                state: 'error',
-              };
+              // A stored summary does not carry the row's creation time.
+              const summary = this.store.tools.summary(session.view.id, message.id);
+              finished = withCreationTime({ ...summary, state: 'error' }, message.createdAt);
             } catch {
               /* Keep the visible error if storage failed. */
             }
@@ -1871,6 +1906,16 @@ export class AgentSessions implements InspectableModule {
           session.changed.set(finished.id, finished);
         }
       }
+
+      // End the measurement before the final save, so the saved conversation
+      // carries the duration. A withdrawn application send never started a
+      // model turn and keeps the previous turn's duration. A clock that was
+      // set back during the turn yields 0 rather than a negative duration.
+      delete session.view.turnStartedAt;
+      if (!appSendSkipped) {
+        session.view.lastTurnDurationMs = Math.max(0, turnEndedAt - turnStartedAt);
+      }
+
       session.view.updatedAt = Date.now();
       try {
         await this.store.save(session.view);
@@ -2093,10 +2138,17 @@ export class AgentSessions implements InspectableModule {
       message = this.store.tools.put(session.view.id, message, groupId);
       session.pendingTools.delete(toolId);
     }
+
+    // Creation time belongs to the row, not to this update: a new row is
+    // stamped now; an update keeps the existing row's time, or its absence
+    // for a row saved before times were recorded. A time supplied by the
+    // caller (for example a backend) is never trusted for a new row.
     const index = session.view.messages.findIndex((entry) => entry.id === message.id);
     if (index < 0) {
+      message = withCreationTime(message, this.clock());
       session.view.messages.push(message);
     } else {
+      message = withCreationTime(message, session.view.messages[index].createdAt);
       session.view.messages[index] = message;
     }
     session.changed.set(message.id, message);
@@ -2265,12 +2317,9 @@ export class AgentSessions implements InspectableModule {
             ...chatMessage('widget:' + record.id, 'assistant', record.text),
             widget: reference,
           };
-          const index = view.messages.findIndex((entry) => entry.id === message.id);
-          if (index >= 0) {
-            view.messages[index] = message;
-          } else {
-            view.messages.push(message);
-          }
+          // A widget row missing from the saved transcript was committed
+          // earlier, at a time nobody recorded: it is repaired without one.
+          replaceOrAppend(view.messages, message, undefined);
         }
       } catch (error) {
         this.log('agent-widget', `Could not restore visuals: ${String(error)}`);
@@ -2307,13 +2356,10 @@ export class AgentSessions implements InspectableModule {
       }
       // This is authoritative history, not a bounded display page. Reconcile
       // stable notice IDs without dropping old rows or duplicating a saved warning.
+      // A notice that is new to the transcript is created now.
+      const now = this.clock();
       for (const notice of notices) {
-        const index = view.messages.findIndex((message) => message.id === notice.id);
-        if (index >= 0) {
-          view.messages[index] = notice;
-        } else {
-          view.messages.push(notice);
-        }
+        replaceOrAppend(view.messages, notice, now);
       }
       view.acceptsFollowUp = true;
       view.toolEpoch = randomUUID();
@@ -2686,6 +2732,37 @@ function adoptClaudeCode(view: AgentSession, settings: ClaudeCodeConversationSet
   view.harness = 'claude-code';
   view.claudeCode = { model: settings.model, effort: settings.effort };
   view.model = settings.model;
+}
+
+/**
+ * A copy of `message` whose creation time is `createdAt`, or without one
+ * when `createdAt` is undefined (a row saved before times were recorded).
+ */
+function withCreationTime(message: AgentMessage, createdAt: number | undefined): AgentMessage {
+  const { createdAt: _ignored, ...rest } = message;
+  if (createdAt === undefined) {
+    return rest;
+  }
+  return { ...rest, createdAt };
+}
+
+/**
+ * Put `message` into `messages` in place of the row with the same ID, which
+ * keeps that row's creation time, or append it as a new row created at
+ * `createdAt` (undefined: unknown, no time). Used where reopening repairs a
+ * saved transcript directly instead of going through `message()`.
+ */
+function replaceOrAppend(
+  messages: AgentMessage[],
+  message: AgentMessage,
+  createdAt: number | undefined,
+): void {
+  const index = messages.findIndex((entry) => entry.id === message.id);
+  if (index >= 0) {
+    messages[index] = withCreationTime(message, messages[index].createdAt);
+  } else {
+    messages.push(withCreationTime(message, createdAt));
+  }
 }
 
 /**

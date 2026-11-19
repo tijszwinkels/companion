@@ -88,6 +88,8 @@ export class SessionStore {
         'toolEpoch',
         'acceptsFollowUp',
         'completedTurnId',
+        // Live-only: a running turn never survives a restart (see types.ts).
+        'turnStartedAt',
         'openInBackground',
         'history',
         'historyFragment',
@@ -196,6 +198,8 @@ export class SessionStore {
         input: message.input,
         screenshot: message.screenshot,
         ...(message.screenshotSaved === false ? { screenshotSaved: false as const } : {}),
+        // Older rows have no creation time; a damaged one is dropped, not invented.
+        ...creationTimeField(message.createdAt),
         // Queued messages are display history, never instructions to replay
         // after reopening a tab or restarting Companion.
         state: ['queued', 'running'].includes(message.state) ? 'error' : message.state,
@@ -294,7 +298,11 @@ export class SessionStore {
         return message;
       }
       try {
-        const summary = this.tools.summary(id, message.id);
+        // The stored summary has no creation time; keep the saved row's.
+        const summary: AgentMessage = {
+          ...this.tools.summary(id, message.id),
+          ...creationTimeField(message.createdAt),
+        };
         return toolRecoveryFailed ? { ...summary, state: 'error' as const } : summary;
       } catch {
         // Expansion reports the storage error; the surrounding chat stays
@@ -302,9 +310,14 @@ export class SessionStore {
         return { ...message, toolGroup: { ...message.toolGroup, unavailable: true } };
       }
     });
+    // The last finished turn's duration. A turn cut off by a restart has no
+    // measurable duration, and the one saved before it is no longer the last
+    // turn, so such a conversation has none until its next turn finishes.
+    let lastTurnDurationMs = durationField(session.lastTurnDurationMs);
     if (session.status === 'starting' || session.status === 'running') {
       session.status = 'cancelled';
       session.error = 'Companion stopped before this answer finished.';
+      lastTurnDurationMs = {};
     }
     return {
       id,
@@ -326,6 +339,7 @@ export class SessionStore {
         : {}),
       error: session.error,
       updatedAt: session.updatedAt,
+      ...lastTurnDurationMs,
       messages,
     };
   }
@@ -369,6 +383,29 @@ export class SessionStore {
     }
     return entries;
   }
+}
+
+/**
+ * A message's saved creation time (milliseconds since the Unix epoch). Older
+ * archives have none; a value that is not a non-negative safe integer is
+ * dropped rather than hiding the conversation.
+ */
+function creationTimeField(value: unknown): Pick<AgentMessage, 'createdAt'> {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    return {};
+  }
+  return { createdAt: value as number };
+}
+
+/**
+ * The saved duration of a conversation's last finished turn, in
+ * milliseconds. Absent in older archives; a damaged value is dropped.
+ */
+function durationField(value: unknown): Pick<AgentSession, 'lastTurnDurationMs'> {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    return {};
+  }
+  return { lastTurnDurationMs: value as number };
 }
 
 /**

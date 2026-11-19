@@ -60,7 +60,7 @@ export async function harnessFixture(
     liveState?: SessionLiveState;
     /** Gates conversation screenshot copies; absent means always off. */
     captureStorage?: CaptureStoragePolicy;
-    /** Injected UTC timer clock; no elapsed real timer needed in tests. */
+    /** Injected wall clock for wakes, turn times and message times. */
     wakeClock?: () => number;
   } = {},
 ) {
