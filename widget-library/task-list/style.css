@@ -1,0 +1,63 @@
+.task-list {
+  max-width: 40rem;
+  margin: 0 auto;
+  font:
+    1rem/1.4 system-ui,
+    sans-serif;
+  color: var(--foreground);
+}
+h1 {
+  margin: 0;
+  font-size: 1.6rem;
+}
+.counter,
+.status {
+  margin: 0.25rem 0 0.75rem;
+  color: var(--muted);
+}
+.status:empty {
+  display: none;
+}
+form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--muted);
+  border-radius: 0.4rem;
+  background: transparent;
+}
+button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.4rem;
+  background: transparent;
+}
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+}
+li span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+li[data-column='done'] span {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+li small {
+  color: var(--muted);
+}

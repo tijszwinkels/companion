@@ -15,6 +15,12 @@
 namespace {
 constexpr qsizetype maximumBody = 160 * 1024;
 constexpr qsizetype maximumReply = 4 * 1024 * 1024;
+// Chat has a much smaller, text-only contract than documents/widget state.
+constexpr qsizetype maximumChatReadBody = 1024;
+constexpr qsizetype maximumChatReadReply = 64 * 1024;
+constexpr qsizetype maximumChatSendBody = 32 * 1024;
+constexpr qsizetype maximumChatReceiptBody = 1024;
+constexpr qsizetype maximumChatSendReply = 4 * 1024;
 
 class Requests : public QWebEngineUrlRequestInterceptor {
 public:
@@ -28,7 +34,10 @@ public:
         const bool api = type == QWebEngineUrlRequestInfo::ResourceTypeXhr
             && url.scheme() == "companion-widget" && url.host() == "view"
             && url.userInfo().isEmpty() && url.port() == -1 && !url.hasQuery()
-            && !url.hasFragment() && (url.path() == "/state" || url.path() == "/action");
+            && !url.hasFragment()
+            && (url.path() == "/state" || url.path() == "/action" || url.path() == "/query"
+                || url.path() == "/chat-read" || url.path() == "/chat-send"
+                || url.path() == "/chat-receipt");
         const bool inlineAsset = url.scheme() == "data"
             && (type == QWebEngineUrlRequestInfo::ResourceTypeScript
                 || type == QWebEngineUrlRequestInfo::ResourceTypeImage
@@ -38,6 +47,26 @@ public:
         request.block(!(document || api || inlineAsset || frame));
     }
 };
+
+// Where a refused data request is sent. The request interceptor blocks this
+// path, so the page's fetch() rejects with an ordinary network error.
+const QUrl refusedRequest("companion-widget://view/refused");
+
+// End a request the broker will not complete. Qt WebEngine 6.12 never
+// settles a page's fetch() whose scheme job calls fail(): the promise stays
+// pending forever (offscreen regression in test/session-apps-ui). The
+// document itself can fail normally. A data request (state, action, query, chat)
+// is instead redirected to a URL the interceptor blocks, which rejects the
+// page's fetch() at once. The page learns that the request failed, not why:
+// scheme replies cannot carry a non-200 status or its body, and a refusal is
+// never turned into a successful reply.
+void refuse(QWebEngineUrlRequestJob *job, const QString &path, QWebEngineUrlRequestJob::Error error) {
+    if (path == "/") {
+        job->fail(error);
+        return;
+    }
+    job->redirect(refusedRequest);
+}
 
 class Endpoint : public QWebEngineUrlSchemeHandler {
 public:
@@ -66,21 +95,30 @@ public:
         if (source.isEmpty() || url.host() != "view" || !url.userInfo().isEmpty()
             || url.port() != -1 || url.hasQuery() || url.hasFragment()
             || !((method == "GET" && (path == "/" || path == "/state"))
-                || (method == "POST" && path == "/action"))) {
-            job->fail(QWebEngineUrlRequestJob::RequestDenied);
+                || (method == "POST" && (path == "/action" || path == "/query"
+                    || path == "/chat-read" || path == "/chat-send"
+                    || path == "/chat-receipt")))) {
+            refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
             return;
         }
 
+        // This allowlist transports fixed operations, never grants. Exact code,
+        // consent, quota, deduplication and late admission belong to the backend.
+        const qsizetype bodyLimit = path == "/chat-read" ? maximumChatReadBody
+            : path == "/chat-send" ? maximumChatSendBody
+            : path == "/chat-receipt" ? maximumChatReceiptBody : maximumBody;
+        const qsizetype replyLimit = path == "/chat-read" ? maximumChatReadReply
+            : (path == "/chat-send" || path == "/chat-receipt") ? maximumChatSendReply : maximumReply;
         QByteArray body;
         if (method == "POST") {
             auto *input = job->requestBody();
             if (!input || (!input->isOpen() && !input->open(QIODevice::ReadOnly))) {
-                job->fail(QWebEngineUrlRequestJob::RequestDenied);
+                refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
                 return;
             }
-            body = input->read(maximumBody + 1);
-            if (body.size() > maximumBody || !input->atEnd()) {
-                job->fail(QWebEngineUrlRequestJob::RequestDenied);
+            body = input->read(bodyLimit + 1);
+            if (body.size() > bodyLimit || !input->atEnd()) {
+                refuse(job, path, QWebEngineUrlRequestJob::RequestDenied);
                 return;
             }
         }
@@ -94,7 +132,7 @@ public:
         request.setTransferTimeout(10000);
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         auto *reply = method == "GET" ? network.get(request) : network.post(request, body);
-        reply->setReadBufferSize(maximumReply + 1);
+        reply->setReadBufferSize(replyLimit + 1);
         auto *buffer = new QBuffer(job);
         buffer->open(QIODevice::ReadWrite);
 
@@ -108,22 +146,32 @@ public:
             reply->disconnect(job);
             reply->abort();
         });
-        connect(reply, &QNetworkReply::readyRead, job, [reply, buffer] {
-            buffer->write(reply->read(maximumReply + 1 - buffer->size()));
-            if (buffer->size() > maximumReply) {
+        connect(reply, &QNetworkReply::readyRead, job, [reply, buffer, replyLimit] {
+            buffer->write(reply->read(replyLimit + 1 - buffer->size()));
+            if (buffer->size() > replyLimit) {
                 reply->abort();
             }
         });
-        connect(reply, &QNetworkReply::finished, job, [this, reply, buffer, job, generation, path] {
+        connect(reply, &QNetworkReply::finished, job, [this, reply, buffer, job, generation, path, replyLimit] {
             const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (generation != profile->generation() || reply->error() != QNetworkReply::NoError
-                || status != 200 || buffer->size() > maximumReply) {
-                if (generation == profile->generation()) {
+                || status != 200 || buffer->size() > replyLimit) {
+                // Only a failed document/state load, or an expired view,
+                // makes the view unusable. A refused action, query or chat request (e.g.
+                // 409 stale code version, invalid arguments) is the page's
+                // own error to show; later valid requests still work.
+                const bool viewFailed = path == "/" || path == "/state" || status == 404;
+                if (generation == profile->generation() && viewFailed) {
                     profile->reportError(status == 404 ? "Widget view expired"
                                                       : "Could not load widget data");
                 }
-                job->fail(QWebEngineUrlRequestJob::RequestFailed);
+                refuse(job, path, QWebEngineUrlRequestJob::RequestFailed);
                 return;
+            }
+            // A view that loads its document or state again has recovered
+            // from an earlier failed load (e.g. a listener restart).
+            if (path == "/" || path == "/state") {
+                profile->reportError("");
             }
             buffer->seek(0);
             job->reply(path == "/" ? "text/html" : "application/json", buffer);

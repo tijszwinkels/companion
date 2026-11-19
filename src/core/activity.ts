@@ -72,6 +72,8 @@ export interface Activity {
   interactionCurrent?(context: InteractionContext): boolean;
   /** Select a captured visible conversation only while its UI/order are current. */
   selectSession?(context: InteractionContext, index: number): boolean;
+  /** Like selectSession, but show the conversation in its own pop-out window. */
+  popOutSession?(context: InteractionContext, index: number): boolean;
 
   /** Live VAD state, independent of work already queued for transcription. */
   speechChanged?(speaking: boolean): void;

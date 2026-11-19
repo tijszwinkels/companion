@@ -336,6 +336,38 @@ these controls only for the matching selected conversation. A nonempty `stopRunI
 enables the exact `stop` shortcut for that running turn. Choice sets and run IDs are
 also included in live session patches, but are never restored from disk.
 
+`agentActions` is the **voice** projection: it follows the voice target (see
+[pop-out windows](#pop-out-windows)), and its `sessionId` is empty when there is
+none. A view that should keep showing its own conversation's choices when it is
+not the voice target uses the per-connection view projection below.
+
+**View controls.** After a desktop connection's first `panel-state` report,
+the listener sends that connection, and only that connection,
+`{"type":"agent-view-actions","actions":[...]}` with one `agentActions`-shaped
+entry per conversation it shows: its main view's conversation while it owns
+the panel selection, and each of its own visible pop-out windows. That is
+exactly the set `choose-agent` and `stop-agent-run` accept from that
+connection, at most nine entries. `available` and `stopRunId` use the same
+rules as `agentActions`, including busy turns, closing conversations and the
+global running limit. No entry claims a label is speakable: `voiceAvailable` is
+always false, and `voiceReason` only says why an unavailable choice cannot be
+selected (empty for an available one). A view takes its voice hint only from
+`agentActions` when that has the same `sessionId` and an entry with the same
+choice `revision` and `index`. The event is resent only
+when that connection's entries change. That covers choices replaced or cleared,
+a run starting or ending, capacity changing elsewhere, a window opening or
+closing, and another connection taking the panel selection (which retracts the
+main-view entry). An empty array means the connection shows no conversation.
+
+Compatibility: an older listener never sends the event. A client that has not
+received one on the current connection keeps the older behavior of showing
+controls only for the `agentActions` conversation, and it forgets the
+projection when the connection drops. Remote connections never receive it;
+the phone gateway also refuses it as a desktop-only event. Clicks still send
+the stored session ID, revision and index, and the listener rechecks them, so
+an outdated projection can only produce a refused request, never another
+conversation's choice.
+
 `choose-agent` and `stop-agent-run` require the sending connection to own the
 selected conversation reported by `panel-state`. They return `submitted` or
 `stopped`, or an error when the supplied choice/run has expired. Send IDs and the
@@ -695,6 +727,31 @@ revealing the panel. A user message may carry `origin: {kind: "agent",
 sessionId, title, depth}`; it was written by another conversation's agent and is
 labelled with that title instead of **You**. See [session lifecycle
 tools](../agents/README.md#session-lifecycle-tools).
+`origin: {kind: "application-event"}` marks host-recorded user edits from the
+conversation's session application. Live-only `application` (absent means
+HTML chat) describes that application: `id`, `name`, code `version`, state
+`revision`, desktop-only `viewUrl`, `text`, `eventMode`, optional `eventStatus`
+and `error`. `chatAccess` holds desktop-only requested capabilities, read permission,
+sending status `{grantId, allowed, remaining, busy}` and a permission revision. Remote/phone snapshots omit `viewUrl` and `chatAccess`. See
+[session applications](../session-apps/README.md).
+
+The separate trusted native `set-application-chat-read` and
+`set-application-chat-send` commands take `{id, applicationId,
+version, revision, allowed}`. It requires a conversation still shown by the
+calling non-remote desktop client, including after a queue wait. App identity,
+code version and permission revision must match. The returned permission status
+is ephemeral; close/reopen, listener restart and successful code replacement
+reset it. No agent tool or app-view route can grant it. Sidebar and pop-out
+HTML surfaces mount the native consent component below the trusted escape bar;
+its dedicated native Client route never becomes an authored-page bridge. These
+mounted controls now provide separate read and send disclosures, allow/revoke
+controls and sending quota/busy status. They require exact-identity confirmation,
+never optimistically change permission, and never retry an uncertain grant.
+The authored sender API remains pending; the backend enforces five attempts per
+explicit grant, one active slot, two-second spacing and late pre-model checks.
+Stop revokes sending before awaiting the queue. See the
+[read contract and required disclosure](../session-apps/README.md#optional-chat-read-checkpoint)
+and [sender backend contract](../session-apps/README.md#sending-backend).
 
 ### Model selection, ordering and spoken navigation
 
@@ -815,6 +872,37 @@ connection is closed before the line is written, the command is lost with it and
 the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
 target, and a disconnected client cannot retain navigation ownership.
 
+`POP_OUT_SESSION` (“pop out session 1” through “pop out session 16”, also one
+through sixteen; inference may choose it for “pop session three out into its own
+window”) uses exactly the same number rules, captured navigation and dispatch
+checks. It is offered only while the navigation owner reported `popoutHost`
+(`agentNavigation.popoutHost`); for other UIs the shortcut is consumed and
+skipped. It sends `{"type":"agent-select",...,"presentation":"window"}`, and
+the pop-out host performs its ordinary Pop out of that existing conversation
+(moving its unsent text), or focuses the window it already has. A refusal (a
+send or recording still being confirmed, eight windows open) is shown in the
+panel's error line. Portable panels ignore an `agent-select` with a
+`presentation`.
+
+**Navigation selects the voice target.** A dispatched `GO_TO_SESSION` or
+`POP_OUT_SESSION` also chooses that conversation for the following speech,
+because navigation shows it without taking keyboard focus from a pop-out window
+the person was in. The choice takes effect once the owning connection's
+`panel-state` shows the conversation as requested (the main view or a window
+for go-to, a window for pop-out), or at dispatch when it already does. Until
+then the target is unchanged: the previous choice, if any, stays in effect, so
+routing never runs ahead of the view. It ends on the next genuine change on that
+connection after it took effect (its main view selection, the active window or a
+composer's focus), when that connection no longer shows the conversation (for
+example its window returned without selecting it), when the conversation
+closes, when the connection disconnects or stops owning navigation, or when a
+later navigation has been shown. A not-yet-shown navigation survives only
+reports with an unchanged view and navigation token; the pop-out host renews
+its token when it refuses a pop-out (a send still being confirmed, eight
+windows), so a refused request is dropped and never redirects voice. Stale
+navigation changes nothing. Clicking into a window that already had focus produces no report and
+does not end the choice; the voice indication shows where speech goes.
+
 The optional `previousSessions` snapshot array and
 `{"type":"agent-history","sessions":[...]}` contain summaries only: the session
 metadata above without `messages`. They are sorted by latest turn first and must
@@ -896,42 +984,218 @@ Agent controls remain usable while microphone
 capture is paused or a keyboard delivery is pending. Agent sessions belong to
 the application lifetime, independently of each bounded sensor job.
 
-### Agent drafts
+### Pop-out windows
 
-Unsent composer text belongs to a UI instance, not the listener. A client that
-can hold agent drafts adds `draftHost: true` to every `panel-state` report;
-older clients omit it and never receive drafts. For `companion_session_draft`,
-the listener picks one draft host: the client owning visible navigation, else
-the one with the most recent report. It sends only that client:
+A native UI can show a real open conversation in its own ordinary desktop
+window ("pop out") and return it to the sidebar. This is a view operation: the
+conversation's ID, agent, history and follow-up queue never change, and no
+conversation is created or cloned. The UI owns its windows; the listener only
+tracks what the UI reports, uses it for voice routing, and forwards agent
+requests. Only desktop connections can take part; remote panels are refused.
+
+A UI that offers windows adds three fields to **every** `panel-state` report,
+on the same single connection:
 
 ```json
 {
-  "type": "agent-draft",
-  "requestId": "draft-request-uuid",
-  "id": "question-uuid",
-  "text": "Could you also cover the logout path?",
-  "ifDraftExists": "reject",
-  "focus": false,
-  "source": { "sessionId": "sender-uuid", "title": "🔐 Auth review" }
+  "action": "panel-state",
+  "id": "",
+  "composerFocused": false,
+  "keyboardFocused": false,
+  "visible": true,
+  "draftHost": true,
+  "popoutHost": true,
+  "rail": "compact",
+  "popouts": [{ "id": "question-uuid", "active": true, "composerFocused": false }]
 }
 ```
 
-The client applies it synchronously and answers with `agent-draft-result`:
-`inserted` (the composer was empty or whitespace), `appended` (only with
-`ifDraftExists: "append"`, below existing text after a blank line), `conflict`
-(existing text kept unchanged, a send from that composer is awaiting its reply,
-or the result would exceed the composer's 8000 characters), or `unavailable` (no such open tab).
-An optional `reason` (≤300 characters) is passed to the agent. The listener
-accepts an answer only from the asked client, only once, and returns
-`draft-recorded`. After 5 seconds, disconnection or the end of the agent turn,
-the outcome is `unconfirmed`; a later answer is refused as expired. No draft
-host means `offline`. Drafts never submit text, start a turn or reorder a queue.
+- `popoutHost: true` declares the capability. A report without it (or with
+  `false`) and without `rail`/`popouts` keeps exactly the older single-view
+  semantics; `rail` or `popouts` without the capability is refused. A report
+  that drops the capability forgets that connection's windows.
+- `rail` is the main sidebar layout: `full`, or `compact` (only the session
+  rail is visible).
+- `popouts` lists the connection's **visible** windows, at most 8, each an open
+  conversation, each conversation at most once, with exactly the fields `id`,
+  `active` (it is the focused toplevel) and `composerFocused` (its composer has
+  keyboard focus; requires `active`). At most one window is active.
+- For such a UI, `id`, `composerFocused` and `keyboardFocused` describe only the
+  main sidebar view: `id` is empty while the main body shows no conversation
+  (hidden, Activity/Previous, browser, or the compact rail with a popped
+  selection). `visible` means any native Companion surface is visible.
 
-Draft text replaces the composer only when that tab is displayed; otherwise it
-waits in that tab's saved draft. The composer shows **Drafted by agent · title —
-review before sending** until it is cleared or sent. `focus: true` selects the
-tab and reveals the panel after a confirmed insertion; otherwise selection and
-keyboard focus do not change.
+The whole report is validated before any state changes; a malformed report is
+refused and the previous state stays. Send it on every deliberate selection,
+main visibility, window open/close/activation or composer focus change, and
+after reconnecting; not because transcripts or titles stream.
+
+**Voice target.** At speech end the target conversation is, in order: the
+conversation just chosen by voice navigation, while that choice lasts (see
+“Navigation selects the voice target” above); else the active window; else the
+conversation visible in the main sidebar body; else,
+when exactly one window is visible across all connections and its
+connection shows the compact rail, that window as a weak candidate; else none. Several unfocused windows are never guessed
+between. Only the chosen view's own focused composer selects the strong
+"input field selected" instruction; an active window whose composer is not
+focused, and the weak candidate, use the ordinary unfocused instruction. The
+prompt text is unchanged. `InteractionContext.agentTargetSource`
+(`navigation`/`popout`/`panel`/`popout-only`) records the path for logs and tests; it is not
+sent to the model. Any semantic change of the report (rail, window membership,
+activation or composer focus) advances the interaction generation, so an
+utterance captured before it is refused even when the same conversation stays
+the target (for example while moving from the sidebar into its window).
+Repeated identical reports, a different window order and streamed updates do
+not. Closing a conversation, disconnecting, or withdrawing the capability
+removes its windows at once, together with any window composer focus.
+Another connection cannot clear this connection's windows. An active window counts as Companion keyboard focus for the delivery
+guards (typed Activity text is refused, as with a focused panel), and
+activation moving between windows stops pending keyboard delivery.
+
+Controls that require the conversation to be shown (choices, stop, history and
+tool pages, manual recording) accept the main view's conversation or one of
+the same connection's visible windows. Each of those views keeps its own
+choices and stop control through `agent-view-actions` (see **View controls**
+above), whichever view is the voice target. A recording continues while its
+conversation moves between the sidebar and its window. `agent-select` (spoken
+"go to session N") is unchanged; the UI focuses an existing window for a
+popped conversation.
+
+**Agent requests.** `companion_session_present` (see the
+[agent contract](../agents/README.md#session-lifecycle-tools)) reaches the UI
+as a one-time event, sent to one pop-out host (the visible navigation owner if
+it is one, else the most recent reporter):
+
+```json
+{
+  "type": "agent-present",
+  "requestId": "present-request-uuid",
+  "id": "question-uuid",
+  "presentation": "window",
+  "focus": false
+}
+```
+
+The UI answers once with
+`{"action":"agent-present-result","requestId":…,"outcome":…,"reason"?:…,"focused"?:…}`:
+
+| `outcome`     | Meaning                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| `shown`       | The conversation has its own window (an existing one is reused). Answers `window` only.          |
+| `returned`    | Its view is back in the sidebar. Answers `sidebar` only.                                         |
+| `unsupported` | This UI cannot open windows now.                                                                 |
+| `unavailable` | The conversation is not open in this UI.                                                         |
+| `conflict`    | A pending send, choice or recording cannot move between views; the view and its draft were kept. |
+
+`shown` and `returned` must include `focused`: whether the UI observed the view
+gaining focus (asking the compositor is not proof). Other outcomes must omit
+it. `reason` is optional (≤300 characters); unknown fields are refused. The
+listener accepts only the asked connection's first valid answer and returns
+`present-recorded`. Without a pop-out host nothing is sent: `unsupported` when
+another panel is connected, else `offline`. After sending, 15 seconds without
+an answer, disconnection, capability withdrawal or the end of the agent turn
+give `unconfirmed`: the UI may have acted, so it is never retried or sent to
+another UI. Reconnects never replay a request.
+
+### Text-box drafts (listener-owned, last write wins)
+
+The unsent text of every conversation's text box lives in the listener
+(`src/desktop/draft-store.ts`), in memory, keyed by the conversation's stable
+ID. The native view and the HTML chat, in the sidebar or a pop-out window, all
+read and write that one record; no UI keeps its own authoritative copy. The
+rule is simple: **the last write the listener receives wins**. There is no
+base revision, merge or refusal because an edit started from older text, and
+a delayed edit can therefore overwrite one made elsewhere.
+
+Only trusted desktop editors take part: clients that add `draftHost: true` to
+their `panel-state` report. When a client first reports it, the listener
+sends every nonempty draft once (`draft-snapshot`). Reading never writes.
+
+```json
+{
+  "type": "draft-snapshot",
+  "sequence": 12,
+  "drafts": [{ "id": "question-uuid", "text": "Half a question", "source": "", "sequence": 11 }]
+}
+```
+
+An edit names the conversation it was typed for and an editor-chosen edit ID:
+
+```json
+{
+  "action": "draft-set",
+  "id": "question-uuid",
+  "text": "Half a question, now longer",
+  "editId": "edit-7"
+}
+```
+
+The answer is `{"accepted":true,"sequence":13}` or `{"accepted":false,"reason":"..."}`
+for an unknown conversation or text longer than may be edited (16,000 UTF-16
+units, twice the 8,000-unit Send limit). A refused write changes nothing; the
+UI keeps the text on screen and says it is not saved. Recorded words may grow a
+draft up to 64,000 units (`"recording":true`, accepted only from the panel
+recording into that conversation), so a long final dictation chunk is kept
+whole. Every accepted change goes to every draft host:
+
+```json
+{
+  "type": "draft",
+  "id": "question-uuid",
+  "text": "Half a question, now longer",
+  "source": "",
+  "sequence": 13,
+  "editId": "edit-7"
+}
+```
+
+`editId` is included only for the client that wrote the change, so it can
+ignore its own echo (a newer local edit may already follow it). Other clients
+show the change without writing it back. `sequence` orders what is displayed;
+it is never used to refuse a write. Showing, switching or reopening a
+conversation reads its draft and writes nothing.
+
+A UI treats its text as saved only when the change carrying its own edit ID
+arrives, and only for the conversation's latest edit. Text it could not send,
+that was refused, or that was unconfirmed when the connection dropped stays on
+screen marked as not saved, with Save and Discard; the UI never writes it again
+by itself after reconnecting (the draft may have changed elsewhere), and the
+conversation does not move to another view or close until one is chosen.
+Recorded words are appended by the listener itself, in one step against its
+current draft (read, a space if needed, append), so a change made meanwhile by
+an agent or another editor is kept. A chunk is kept whole up to 64,000 units or
+refused whole. The owning panel still receives `recording-append`, now with
+`"applied": true` and the resulting `length`, and only acknowledges it; the
+dictation controller uses the listener's real draft length (recording stops
+once it reaches 8,000).
+
+A desktop `send-agent` clears the draft after the listener accepted the send,
+but only if the draft still equals exactly the sent text: anything typed or
+recorded meanwhile stays. Remote panels (the phone) can neither read nor write
+drafts. Drafts never start a turn and are not saved to transcripts, the
+utterance database or logs. They survive views being destroyed and
+conversations being closed and reopened while the listener runs; they are not
+written to disk, so a listener restart loses them. Empty drafts are removed;
+unknown conversation IDs are refused.
+
+### Agent drafts
+
+`companion_session_draft` proposals are applied by the listener to the same
+draft map, in one step (`DraftStore.propose`): `inserted` into an empty draft,
+`appended` below existing text only with `ifDraftExists: "append"` (after a
+blank line), and otherwise `conflict` with the text left unchanged (also when
+the result would exceed 16,000 units). Every desktop editor then shows it as an
+ordinary `draft` change whose `source` is shown as **Drafted by agent · source
+— review before sending** until the person edits it. With `focus: true` the
+client owning navigation receives `{"type":"agent-draft-focus","id":"..."}`
+and shows that conversation; otherwise selection and focus do not change. No
+connected draft host means `offline` and nothing is stored. While a desktop
+editor reports a send from that conversation awaiting its reply
+(`"pendingSend": "<id>"` in `panel-state`, sent before `send-agent`), proposals
+for it are a `conflict`, as when the editor owned drafts; recording does not
+block them. Drafts never
+submit text, start a turn or reorder a queue. `agent-draft-result` answers are
+no longer used and are refused as expired.
 
 ### Manual recording into the text box
 

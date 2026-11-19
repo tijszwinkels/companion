@@ -421,6 +421,7 @@ export class DesktopServer {
           action === 'panel-state' ||
           action === 'agent-draft-result' ||
           action === 'agent-browser-open-result' ||
+          action === 'agent-present-result' ||
           // Manual recording must not wait behind a slow paste: an append
           // answer that arrives late is treated as unconfirmed.
           action === 'start-recording' ||

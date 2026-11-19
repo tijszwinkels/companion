@@ -21,14 +21,28 @@ import {
   type WidgetRecord,
   type WidgetViewport,
 } from './types.ts';
+import {
+  SessionApplications,
+  type ApplicationHooks,
+  type FrozenApplication,
+} from '../session-apps/applications.ts';
+import { SessionApplicationError } from '../session-apps/errors.ts';
+import { applicationSendLimits } from '../session-apps/sending.ts';
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 interface Lease {
   owner: string;
   scope: string;
   signal: AbortSignal;
+  /** Session application version and names callable during this turn. */
+  application?: FrozenApplication;
   release(): void;
 }
+
+const noApplicationHooks: ApplicationHooks = {
+  changed: () => {},
+  userEdit: () => {},
+};
 
 /**
  * Owns widget state, versioned bundles and the private browser transport. Agent
@@ -66,6 +80,8 @@ export class WidgetService {
   private starting?: Promise<string>;
   private origin = '';
   private closed = false;
+  /** One optional session application per conversation (src/session-apps/). */
+  readonly applications: SessionApplications;
 
   constructor(
     private readonly directory: string,
@@ -73,8 +89,20 @@ export class WidgetService {
     library?: string,
     private readonly renderer = new WidgetRenderer(),
     private readonly validateChanges: (records: WidgetRecord[]) => () => void = () => () => {},
+    applicationHooks: ApplicationHooks = noApplicationHooks,
   ) {
     this.registry = new WidgetRegistry(join(directory, 'bundles'), library);
+    this.applications = new SessionApplications(
+      directory,
+      {
+        registry: this.registry,
+        renderer: this.renderer,
+        origin: () => this.start(),
+        serialized: (owner, task) => this.serialized(owner, task),
+        check: (owner, signal) => this.check(owner, signal),
+      },
+      applicationHooks,
+    );
   }
 
   private start(): Promise<string> {
@@ -88,7 +116,7 @@ export class WidgetService {
             this.json(
               response,
               { error: error instanceof Error ? error.message : 'Widget request failed' },
-              400,
+              error instanceof SessionApplicationError ? error.status : 400,
             );
           } else {
             response.destroy();
@@ -117,6 +145,9 @@ export class WidgetService {
     signal.throwIfAborted();
     const origin = await this.start();
     await this.loadOwner(owner);
+    // The turn boundary: this lease may execute only the application code
+    // (version and exposed names) present now, even if it is replaced later.
+    const application = await this.applications.freeze(owner);
     signal.throwIfAborted();
     this.owners.add(owner);
     const token = randomBytes(32).toString('hex');
@@ -130,6 +161,7 @@ export class WidgetService {
       owner,
       scope: randomUUID(),
       signal: AbortSignal.any([signal, controller.signal]),
+      application,
       release,
     });
     signal.addEventListener('abort', release, { once: true });
@@ -157,6 +189,7 @@ export class WidgetService {
   async deactivate(owner: string): Promise<void> {
     this.owners.delete(owner);
     await this.queues.get(owner)?.catch(() => {});
+    await this.applications.unload(owner);
     for (const [token, lease] of this.leases) {
       if (lease.owner === owner) {
         lease.release();
@@ -190,6 +223,7 @@ export class WidgetService {
 
   async restored(owner: string): Promise<{ record: WidgetRecord; reference: WidgetAttachment }[]> {
     await this.loadOwner(owner);
+    await this.applications.load(owner);
     this.owners.add(owner);
     return Promise.all(
       [...this.records.values()]
@@ -514,7 +548,7 @@ export class WidgetService {
     response.end(boundedJson(value, 256 * 1024));
   }
 
-  private async body(request: IncomingMessage): Promise<JsonObject> {
+  private async body(request: IncomingMessage, limit = 160 * 1024): Promise<JsonObject> {
     if (
       request.method !== 'POST' ||
       request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json'
@@ -527,7 +561,7 @@ export class WidgetService {
     for await (const part of request) {
       content += part.toString();
       bytes += Buffer.byteLength(part.toString(), 'utf8');
-      if (bytes > 160 * 1024) {
+      if (bytes > limit) {
         throw Error('Widget request exceeds its size limit');
       }
     }
@@ -597,20 +631,27 @@ export class WidgetService {
           controller.abort();
         }
       });
-      this.json(
-        response,
-        await this.command(
-          lease.owner,
-          command,
-          AbortSignal.any([lease.signal, controller.signal]),
-        ),
-      );
+      const signal = AbortSignal.any([lease.signal, controller.signal]);
+      // Session application tools share this lease; origin is the agent.
+      if (typeof command.method === 'string' && command.method.startsWith('app_')) {
+        this.json(
+          response,
+          await this.applications.agent(lease.owner, lease.application, command, signal),
+        );
+        return;
+      }
+      this.json(response, await this.command(lease.owner, command, signal));
       return;
     }
     const match =
-      /^\/view\/([0-9a-f]{64})(?:\/(state|action|frame|layout|input|present|popout|viewport))?$/.exec(
+      /^\/view\/([0-9a-f]{64})(?:\/(state|action|query|chat-read|chat-send|chat-receipt|frame|layout|input|present|popout|viewport))?$/.exec(
         url.pathname,
       );
+    const applicationOwner = match ? this.applications.ownerOf(match[1]) : undefined;
+    if (match && applicationOwner) {
+      await this.applicationView(applicationOwner, match[1], match[2], request, response);
+      return;
+    }
     const id = match ? this.capabilities.get(match[1]) : undefined;
     if (!match || !id) {
       this.json(response, { error: 'Unknown widget view' }, 404);
@@ -711,6 +752,50 @@ export class WidgetService {
     }
   }
 
+  /**
+   * A session application view: the same document/state/action transport as
+   * widget views plus queries and separately granted chat operations. Actions
+   * are user edits; chat sends have host-generated application provenance.
+   * The body cannot claim another origin or grant either chat permission.
+   */
+  private async applicationView(
+    owner: string,
+    capability: string,
+    operation: string | undefined,
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    this.check(owner);
+    const result = await this.applications.view(
+      owner,
+      capability,
+      operation,
+      request.method ?? '',
+      async () => {
+        const limit =
+          operation === 'chat-send'
+            ? applicationSendLimits.requestBytes
+            : operation === 'chat-receipt'
+              ? applicationSendLimits.receiptRequestBytes
+              : undefined;
+        const body = await this.body(request, limit);
+        this.check(owner);
+        return body;
+      },
+    );
+    if (result.kind === 'document') {
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Referrer-Policy': 'no-referrer',
+        'X-Frame-Options': 'DENY',
+      });
+      response.end(result.html);
+      return;
+    }
+    this.json(response, result.value);
+  }
+
   /** Most recent sidebar geometry, from whichever renderer displays the widget. */
   private lastViewport(id: string) {
     return this.nativeViewports.get(id) ?? this.renderer.dimensions(id);
@@ -749,6 +834,7 @@ export class WidgetService {
       lease.release();
     }
     this.capabilities.clear();
+    this.applications.close();
     this.nativeViewports.clear();
     this.owners.clear();
     await Promise.allSettled(this.queues.values());

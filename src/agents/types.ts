@@ -1,16 +1,46 @@
 import type { WidgetAttachment } from '../widgets/types.ts';
+import type { SessionApplicationDescriptor } from '../session-apps/types.ts';
 import type { Screenshot } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import type { AgentChoice, AgentChoiceSet } from './choices.ts';
 import type { HistoryWindow } from './history-pages.ts';
 
 /**
- * Provenance of a message written by another Companion conversation's agent
- * through the session tools. The user did not type it; the UI labels it and Pi
- * receives an explicit header. `depth` counts agent-to-agent hops since the last
+ * Provenance of non-human input, including agents, scheduled work and authored
+ * applications. The trusted composer did not supply it; the UI labels it and
+ * both harnesses receive an explicit header. `depth` counts agent-to-agent hops since the last
  * human-originated turn and bounds feedback loops between conversations.
  */
-export type AgentMessageOrigin = InternalAgentOrigin | ExternalAgentOrigin | ScheduledWakeOrigin;
+export type AgentMessageOrigin =
+  | InternalAgentOrigin
+  | ExternalAgentOrigin
+  | ScheduledWakeOrigin
+  | ApplicationEventOrigin
+  | ApplicationMessageOrigin;
+
+/** Authored code used a separate finite send grant; not a trusted human composer. */
+export interface ApplicationMessageOrigin {
+  kind: 'application-message';
+  applicationId: string;
+  name: string;
+  version: number;
+  bundle: string;
+  receiptId: string;
+  /** Host-derived short label; not a link to another conversation. */
+  title: string;
+  depth: 1;
+}
+
+/**
+ * Committed user edits in this conversation's session application, delivered
+ * as their own turn (src/session-apps/README.md). The host records them; the
+ * content is untrusted data, never a new instruction or agent hop.
+ */
+export interface ApplicationEventOrigin {
+  kind: 'application-event';
+  applicationId: string;
+  depth: 0;
+}
 
 /** Earlier self-scheduled work; never a new human instruction or agent hop. */
 export interface ScheduledWakeOrigin {
@@ -186,6 +216,13 @@ export interface AgentSession {
    * add it to the rail without selecting it or revealing the panel.
    */
   openInBackground?: boolean;
+  /**
+   * Live-only: the session application that replaces this conversation's HTML
+   * chat, if any. Derived from the application service on every snapshot and
+   * patch; never saved in the conversation archive. Remote snapshots omit its
+   * `viewUrl`. See src/session-apps/README.md.
+   */
+  application?: SessionApplicationDescriptor;
 }
 
 export type PreviousSession = Omit<AgentSession, 'messages'>;

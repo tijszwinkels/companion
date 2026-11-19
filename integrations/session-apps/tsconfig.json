@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": [
+    "chat",
+    "rail",
+    "web-channel.ts",
+    "../mobile/src/vendor.d.ts",
+    "../mobile/src/markdown.ts",
+    "../chat-ui"
+  ]
+}

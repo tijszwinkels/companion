@@ -217,7 +217,7 @@ void WindowHost::updateSidebar() {
         }
         return;
     }
-    const int width = std::min(sidebarWidth, screen->geometry().width());
+    const int width = std::min(compactRail ? railWidth : sidebarWidth, screen->geometry().width());
     if (!sidebar.isVisible()) {
         if (placedScreen != screen) {
             placedScreen = screen;
@@ -252,6 +252,22 @@ void WindowHost::updateSidebar() {
     // frame so a changed width or reserved zone applies on an idle panel.
     if (sidebar.isVisible()) sidebar.update();
 #endif
+}
+
+void WindowHost::setCompact(bool value) {
+    if (value == compactRail) return;
+    compactRail = value;
+    emit compactChanged();
+    updateSidebar();
+}
+
+void WindowHost::setCompactWidth(int value) {
+    // A rail is never wider than an ordinary sidebar nor too narrow to click.
+    value = std::clamp(value, 48, 360);
+    if (value == railWidth) return;
+    railWidth = value;
+    emit compactChanged();
+    if (compactRail) updateSidebar();
 }
 
 void WindowHost::remapSidebar() {

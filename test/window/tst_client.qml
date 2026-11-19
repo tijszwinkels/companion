@@ -167,6 +167,33 @@ TestCase {
     backend.disconnected()
     compare(client.transcriptionCleanup, null)
   }
+  function test_view_actions_replace_whole_projection_and_clear_on_disconnect() {
+    snapshot([session("a"), session("b")])
+    compare(client.viewAgentActions, null, "Older listeners send no view projection")
+    const choice = {sessionId: "a", revision: "set-1", index: 0, label: "Yes", description: "",
+      available: true, voiceAvailable: false, voiceReason: ""}
+    backend.received({type: "agent-view-actions", actions: [
+      {sessionId: "a", stopRunId: "", choices: [choice]},
+      {sessionId: "b", stopRunId: "run-b", choices: []}]})
+    compare(client.viewAgentActions.a.choices[0].revision, "set-1")
+    compare(client.viewAgentActions.b.stopRunId, "run-b")
+    // The voice projection is separate and unchanged by it.
+    backend.received({type: "agent-actions", actions: {sessionId: "b", stopRunId: "run-b", choices: []}})
+    compare(client.agentActions.sessionId, "b")
+    compare(client.viewAgentActions.a.choices.length, 1)
+
+    // A conversation missing from the next projection loses its controls.
+    backend.received({type: "agent-view-actions", actions: [{sessionId: "b", stopRunId: "", choices: []}]})
+    compare(client.viewAgentActions.a, undefined)
+    // Empty: supported, but this connection shows no conversation.
+    backend.received({type: "agent-view-actions", actions: []})
+    compare(client.viewAgentActions, ({}))
+
+    // The next connection starts without a projection until its listener sends one.
+    backend.disconnected()
+    compare(client.viewAgentActions, null)
+    compare(client.agentActions, ({}))
+  }
   function test_hidden_completion_and_saved_reopen() {
     snapshot([session("a"), session("b")])
     client.panelVisible = true

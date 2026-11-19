@@ -26,6 +26,12 @@ class WindowHost : public QObject {
     Q_PROPERTY(bool switching READ switching NOTIFY stateChanged)
     // Output that the current or next Sidebar/Dock surface is placed on.
     Q_PROPERTY(QString sidebarScreen READ sidebarScreen NOTIFY placementChanged)
+    // Sidebar/Dock show only the session rail while the selected conversation
+    // is in its own window. Not saved: the remembered width is unchanged and
+    // returns exactly when compact ends. Window presentation ignores it.
+    Q_PROPERTY(bool compact READ compact WRITE setCompact NOTIFY compactChanged)
+    // Logical width of the compact rail surface, supplied by the QML body.
+    Q_PROPERTY(int compactWidth READ compactWidth WRITE setCompactWidth NOTIFY compactChanged)
 public:
     explicit WindowHost(QObject *parent = nullptr, bool testSurfaces = false);
     ~WindowHost() override;
@@ -38,6 +44,10 @@ public:
     QString error() const { return failure; }
     bool switching() const { return changingSurface; }
     QString sidebarScreen() const;
+    bool compact() const { return compactRail; }
+    void setCompact(bool value);
+    int compactWidth() const { return railWidth; }
+    void setCompactWidth(int value);
     bool listen(const QString &path);
     Q_INVOKABLE void attach(QQuickItem *body);
     Q_INVOKABLE void show(bool activate = false);
@@ -57,6 +67,7 @@ signals:
     void command(const QJsonObject &message);
     void focusCleared();
     void placementChanged();
+    void compactChanged();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -88,6 +99,8 @@ private:
     QString mode = "window";
     QString failure;
     int sidebarWidth = 600;
+    bool compactRail = false;
+    int railWidth = 104;
     bool testSurfaces = false;
     bool changingSurface = false;
     bool remapPending = false;

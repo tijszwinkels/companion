@@ -17,10 +17,15 @@ import {
  */
 export const maxAgentDepth = 3;
 
-/** Start/reopen/close/send/draft/browser-open calls admitted per agent turn, including failures. */
+/** Start/reopen/close/send/draft/browser-open/present calls admitted per agent turn, including failures. */
 export const maxLifecycleActionsPerTurn = 6;
 
 import { sessionToolCapabilities, type SessionToolCapability } from './session-tools.ts';
+import type {
+  AgentPresentOutcome,
+  AgentPresentRequest,
+  SessionPresentation,
+} from './session-presentation.ts';
 
 const sessionIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const maximumBodyBytes = 32 * 1024;
@@ -139,6 +144,14 @@ export interface SessionToolHost {
     request: { sessionId: string; url: string },
     signal: AbortSignal,
   ): Promise<AgentBrowserOpenOutcome>;
+  /**
+   * Whether a connected native panel can pop conversations out right now.
+   * Read once per lease, so `companion_session_present` is offered for a
+   * whole turn or not at all. Absent: never offered.
+   */
+  presentationAvailable?(): boolean;
+  /** Show the calling conversation in its own window, or return it to the sidebar. */
+  present?(request: AgentPresentRequest, signal: AbortSignal): Promise<AgentPresentOutcome>;
 }
 
 export interface ToolReply {
@@ -228,9 +241,15 @@ export class SessionToolService {
     return {
       endpoint: origin + '/session',
       token,
-      capabilities: sessionToolCapabilities.filter(
-        (capability) => capability !== 'self-wakes' || this.host.wake !== undefined,
-      ),
+      capabilities: sessionToolCapabilities.filter((capability) => {
+        if (capability === 'self-wakes') {
+          return this.host.wake !== undefined;
+        }
+        if (capability === 'session-present') {
+          return this.host.present !== undefined && this.host.presentationAvailable?.() === true;
+        }
+        return true;
+      }),
       release,
     };
   }
@@ -377,7 +396,8 @@ export class SessionToolService {
       method !== 'wake-schedule' &&
       method !== 'wake-cancel' &&
       method !== 'wake-list' &&
-      method !== 'browser-open'
+      method !== 'browser-open' &&
+      method !== 'present'
     ) {
       throw new SessionToolError('invalid', 'Unknown session tool method', 400);
     }
@@ -402,7 +422,9 @@ export class SessionToolService {
         ? this.wake(lease, method, command)
         : method === 'browser-open'
           ? this.openBrowser(lease, command)
-          : this.act(lease, method, command, requestId);
+          : method === 'present'
+            ? this.present(lease, command)
+            : this.act(lease, method, command, requestId);
     const reply = action.catch((error) => this.failure(error));
     lease.receipts.set(receiptKey, reply);
     return reply;
@@ -472,6 +494,57 @@ export class SessionToolService {
       return { status: 200, body: { ...result } };
     }
     throw new SessionToolError(result.outcome, browserFailure(result));
+  }
+
+  /**
+   * `companion_session_present`: an internal turn shows its OWN conversation
+   * in its own native window, or returns it to the sidebar. There is no id
+   * argument; the conversation comes from the lease, so one agent can never
+   * move another conversation's view. External callers have no conversation
+   * and are never offered this. Only a confirmed shown/returned is success;
+   * every other outcome is an explicit refusal, and `unconfirmed` must not be
+   * retried.
+   */
+  private async present(lease: Lease, command: Record<string, unknown>): Promise<ToolReply> {
+    // Validate before consuming the turn's action budget.
+    const allowed = ['method', 'requestId', 'presentation', 'focus'];
+    if (Object.keys(command).some((key) => !allowed.includes(key))) {
+      throw new SessionToolError(
+        'invalid',
+        'companion_session_present only accepts presentation and focus; it always acts on your own conversation',
+        400,
+      );
+    }
+    const presentation = command.presentation;
+    if (presentation !== 'window' && presentation !== 'sidebar') {
+      throw new SessionToolError('invalid', 'presentation must be "window" or "sidebar"', 400);
+    }
+    const focus = optionalBoolean(command.focus, 'focus') ?? false;
+
+    this.assertLive(lease);
+    if (lease.actions >= maxLifecycleActionsPerTurn) {
+      throw new SessionToolError(
+        'limit',
+        `An agent turn can perform at most ${maxLifecycleActionsPerTurn} session actions`,
+        429,
+      );
+    }
+    lease.actions++;
+    if (this.host.title(lease.owner) === undefined) {
+      throw new SessionToolError('expired', 'The calling conversation is no longer open', 403);
+    }
+    if (!this.host.present) {
+      throw new SessionToolError('unsupported', 'Conversation windows are unavailable');
+    }
+
+    const result = await this.host.present(
+      { sessionId: lease.owner, presentation: presentation as SessionPresentation, focus },
+      lease.signal,
+    );
+    if (result.outcome === 'shown' || result.outcome === 'returned') {
+      return { status: 200, body: { ...result } };
+    }
+    throw new SessionToolError(result.outcome, presentFailure(result));
   }
 
   private list(lease: Lease | undefined, command: Record<string, unknown>): ToolReply {
@@ -781,6 +854,32 @@ function browserFailure(result: AgentBrowserOpenOutcome): string {
   }
   return (
     'The Companion panel did not confirm the request; the page may or may not be showing.' +
+    reason +
+    ' Do not retry; ask the user to check.'
+  );
+}
+
+/** Model-facing explanation of a presentation request that did not succeed. */
+function presentFailure(result: AgentPresentOutcome): string {
+  const reason = result.reason ? ` ${result.reason}` : '';
+  if (result.outcome === 'unsupported') {
+    return 'Not changed: this Companion panel cannot open conversation windows.' + reason;
+  }
+  if (result.outcome === 'unavailable') {
+    return 'Not changed: the Companion panel does not have this conversation open.' + reason;
+  }
+  if (result.outcome === 'conflict') {
+    return (
+      'Not changed: something in this conversation’s view (a message being sent, a choice or a ' +
+      'recording) cannot move yet; the view and its draft were kept.' +
+      reason
+    );
+  }
+  if (result.outcome === 'offline') {
+    return 'Not changed: no Companion panel is connected.' + reason;
+  }
+  return (
+    'The Companion panel did not confirm the request; the conversation may or may not have moved.' +
     reason +
     ' Do not retry; ask the user to check.'
   );

@@ -1,0 +1,234 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+TestCase {
+  id: tests
+  name: "ApplicationChatReadUI"
+  when: windowShown
+  property var body: null
+  QtObject {
+    id: backend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent { host: TestHost; transport: backend; parent: TestHost.contentItem }
+  }
+  function descriptor(version, revision, allowed, send) {
+    return {id: "one", title: "Synthetic chat reader", status: "completed", messages: [],
+      application: {id: "app-one", name: "chat-reader", version: version, revision: 1,
+        viewUrl: "@VIEW_URL@", text: "Synthetic reader", eventMode: "next-input",
+        chatAccess: {requested: send ? ["chat.read", "chat.send"] : ["chat.read"], read: allowed, revision: revision, send: send || null}}}
+  }
+  function announce(version, revision, allowed, send) {
+    // Direct JS ingress avoids the known Qt fake-var-signal array conversion.
+    // This is the real Client receive path, not a substitute model.
+    body.client.receive({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0,
+      sessions: [descriptor(version, revision, allowed, send)]})
+  }
+  function control(operation) {
+    let done = false
+    const request = new XMLHttpRequest()
+    request.onreadystatechange = function() { if (request.readyState === XMLHttpRequest.DONE) done = true }
+    request.open("GET", "@CONTROL_URL@/" + operation)
+    request.send()
+    tryVerify(function() { return done })
+    compare(request.status, 200)
+  }
+  function evaluate(browser, script) {
+    let done = false
+    let result = null
+    browser.mainFrame.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 10000)
+    return result
+  }
+  function browser(view) {
+    tryVerify(function() { return view.htmlActive }, 10000)
+    const result = findChild(view, "sessionAppBrowser")
+    verify(result !== null)
+    tryVerify(function() { return result.rendered }, 15000)
+    return result
+  }
+  function report(page, read) {
+    evaluate(page, "window.testReport = null; window.widgetHost.command({kind:'describe', props:{read:" + (read ? "true" : "false") + "}}).then(value => window.testReport = value); true")
+    tryVerify(function() { return evaluate(page, "typeof window.testReport === 'string'") }, 10000)
+    return JSON.parse(evaluate(page, "window.testReport"))
+  }
+  // The controls start collapsed to their one-line status (#16); the
+  // person opens them with the keyboard-reachable Permissions button.
+  function expandPermissions(view) {
+    if (view.appChatPermissionOpen) return
+    const expand = findChild(view, "appChatPermissionExpand")
+    verify(expand !== null && expand.visible && expand.enabled)
+    expand.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return view.appChatPermissionOpen })
+  }
+  function request(view, allow) {
+    const name = allow ? "appChatAllowRead" : "appChatRevokeRead"
+    expandPermissions(view)
+    if (allow) {
+      const review = findChild(view, "appChatReviewRead")
+      verify(review !== null && review.visible && review.enabled)
+      review.forceActiveFocus()
+      keyClick(Qt.Key_Space)
+      verify(view.appChatDisclosureOpen)
+    }
+    const button = findChild(view, name)
+    verify(button !== null && button.visible && button.enabled)
+    button.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryVerify(function() { return view.appChatPermissionPending !== null })
+    const sent = backend.sent.filter(message => message.action === "set-application-chat-read")
+    const last = sent[sent.length - 1]
+    compare(last.id, "one")
+    compare(last.applicationId, "app-one")
+    compare(last.allowed, allow)
+    return last
+  }
+  function answer(message, error) {
+    body.client.receive({type: error ? "error" : "result", action: message.action,
+      requestId: message.requestId, message: error || "", result: {allowed: message.allowed}})
+  }
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+  }
+  function cleanupTestCase() {
+    for (const id of body.popouts.order.slice()) body.popouts.returnToSidebar(id, {focus: false})
+    TestHost.hide()
+    body.destroy()
+  }
+
+  function test_send_controls_route_through_native_sidebar_and_popout() {
+    body.popouts.returnToSidebar("one", {focus:false})
+    // The previous test left keyboard focus in its pop-out. Activate only the
+    // isolated test host before synthesizing a sidebar key; not a product fix.
+    TestHost.show(true)
+    announce(2, "send-off", false, {allowed:false,remaining:0,busy:false})
+    body.client.sessions.select("one")
+    const sidebar = body.panel.conversationView
+    browser(sidebar)
+    const composer = findChild(sidebar, "sessionComposer")
+    const draft = composer.text
+    function allow(view) {
+      verify(view.reviewAppChatSending())
+      const button = findChild(view, "appChatAllowSend")
+      verify(button !== null && button.visible && button.enabled,
+        "Send button state " + [!!button, button && button.visible, button && button.enabled, view.appChatSendDisclosureOpen, view.htmlActive])
+      button.forceActiveFocus()
+      tryCompare(button, "activeFocus", true)
+      keyClick(Qt.Key_Space)
+      tryVerify(function() { return view.appChatPermissionPending !== null }, 1000,
+        "Send confirmation not pending after key: " + [button.visible, button.enabled, button.activeFocus, view.visible, view.online])
+      const requests = backend.sent.filter(message => message.action === "set-application-chat-send")
+      const request = requests[requests.length - 1]
+      verify(request !== undefined)
+      compare(request.id, "one")
+      compare(request.applicationId, "app-one")
+      compare(request.version, 2)
+      compare(request.allowed, true)
+      return request
+    }
+    const first = allow(sidebar)
+    compare(first.revision, "send-off")
+    answer(first, "Synthetic sending denial")
+    tryCompare(sidebar, "appChatPermissionError", "Synthetic sending denial")
+    verify(!sidebar.appChatAccess.read)
+    verify(!sidebar.appChatSendAccess.allowed)
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows.one !== undefined })
+    const popped = body.popouts.windows.one.view
+    browser(popped)
+    const second = allow(popped)
+    answer(second, "")
+    tryCompare(popped, "appChatPermissionPending", null)
+    verify(!popped.appChatSendAccess.allowed, "Native acknowledgement is not a descriptor grant")
+    announce(2, "send-on", false, {allowed:true,remaining:5,busy:false})
+    tryVerify(function() { return popped.appChatSendAccess.allowed })
+    verify(!popped.appChatAccess.read)
+    expandPermissions(popped)
+    const revoke = findChild(popped, "appChatRevokeSend")
+    revoke.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    const requests = backend.sent.filter(message => message.action === "set-application-chat-send")
+    compare(requests[requests.length - 1].allowed, false)
+    compare(requests[requests.length - 1].revision, "send-on")
+    compare(findChild(popped, "sessionComposer").text, draft)
+  }
+
+  function test_read_consent_native_routing_iframe_streaming_revocation_and_popout() {
+    announce(1, "off-1", false)
+    body.client.sessions.select("one")
+    const view = body.panel.conversationView
+    const page = browser(view)
+    verify(view.appChatPermissionTransportReady)
+    const composer = findChild(view, "sessionComposer")
+    composer.text = "Unsent synthetic draft"
+    compare(report(page).view.available, false)
+    compare(report(page).view.snapshot, null)
+    verify(report(page, true).readError.indexOf("not currently permitted") >= 0)
+    const mount = findChild(view, "appChatPermissionMount")
+    const escape = findChild(view, "sessionSurfaceBar")
+    verify(mount.y >= escape.y + escape.height)
+    compare(evaluate(page, "typeof window.qt"), "undefined")
+
+    const grant = request(view, true)
+    compare(grant.version, 1)
+    compare(grant.revision, "off-1")
+    control("grant")
+    answer(grant, "")
+    announce(1, "on-1", true)
+    tryVerify(function() { return report(page).view.snapshot !== null }, 10000)
+    compare(report(page).view.snapshot.messages[0].text, "Synthetic earlier history")
+    compare(report(page, true).read.messages[0].text, "Synthetic earlier history")
+    compare(composer.text, "Unsent synthetic draft")
+
+    control("stream")
+    tryVerify(function() { return report(page).view.snapshot.messages[0].text === "Synthetic streamed reply" }, 10000)
+    compare(report(page).view.snapshot.messages[0].state, "streaming")
+    compare(report(page).view.snapshot.messages[0].source, "assistant")
+    const revoke = request(view, false)
+    control("revoke")
+    answer(revoke, "")
+    announce(1, "off-2", false)
+    tryVerify(function() { return report(page).view.available === false }, 10000)
+    compare(report(page).view.snapshot, null)
+    compare(composer.text, "Unsent synthetic draft")
+
+    // Same trusted permission route in an independently owned pop-out view.
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows.one !== undefined })
+    const popped = body.popouts.windows.one.view
+    const poppedPage = browser(popped)
+    verify(popped.appChatPermissionTransportReady)
+    const refused = request(popped, true)
+    answer(refused, "Synthetic denial")
+    tryCompare(popped, "appChatPermissionError", "Synthetic denial")
+    compare(report(poppedPage).view.available, false)
+    const second = request(popped, true)
+    control("grant")
+    answer(second, "")
+    announce(1, "on-2", true)
+    tryVerify(function() { return report(poppedPage).view.snapshot !== null }, 10000)
+
+    // Code replacement is not consent to the successor, even at the same URL.
+    control("replace")
+    announce(2, "replacement", false)
+    // Wait for the successor document before issuing a command whose callback
+    // would otherwise belong to the unloading predecessor's JavaScript world.
+    tryVerify(function() { return evaluate(poppedPage, "Boolean(window.widgetReady && window.widgetBootstrap && window.widgetBootstrap.application.version === 2)") }, 15000)
+    compare(report(poppedPage).version, 2)
+    compare(report(poppedPage).view.available, false)
+    compare(report(poppedPage).view.snapshot, null)
+    compare(findChild(popped, "sessionComposer").text, "Unsent synthetic draft")
+  }
+}

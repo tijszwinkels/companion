@@ -9,7 +9,14 @@ import { describeRecurrence } from './wakes/recurrence.ts';
 
 import { WidgetService } from '../widgets/service.ts';
 import { bundledLibraryDirectory } from '../widgets/library-path.ts';
-import type { WidgetLease, WidgetRecord } from '../widgets/types.ts';
+import type { JsonObject, WidgetLease, WidgetRecord } from '../widgets/types.ts';
+import {
+  sessionApplicationLimits,
+  type SessionApplicationDescriptor,
+  type SessionApplicationEventMode,
+} from '../session-apps/types.ts';
+import { applicationChatSnapshot } from '../session-apps/chat.ts';
+import type { ApplicationSendReceipt } from '../session-apps/sending.ts';
 import type { UserSensorFrame, Log } from '../core/frame.ts';
 import type { InspectableModule } from '../core/module.ts';
 import {
@@ -33,7 +40,8 @@ import { historyPage, type HistoryPage, type HistoryPageRequest } from './histor
 import { choiceText, parseChoices, type AgentChoice, type AgentChoiceSet } from './choices.ts';
 import { parseSessionName } from './session-name.ts';
 import { conversationContext, type AgentConversationContext } from './conversation-context.ts';
-import { promptText } from './agent-origin.ts';
+import { canonicalText, promptText } from './agent-origin.ts';
+import { applicationMessageAncestry } from './application-message-origin.ts';
 import type { SessionLiveState } from './harness-live-state.ts';
 import { CaptureStoragePolicy, type CaptureAdmission } from '../capture-storage/policy.ts';
 import { claudeCodeModelCatalog } from './claude/models.ts';
@@ -45,6 +53,11 @@ import {
   type SessionDirectory,
   type SessionToolSummary,
 } from './session-tools-service.ts';
+import type {
+  AgentPresentationHost,
+  AgentPresentOutcome,
+  AgentPresentRequest,
+} from './session-presentation.ts';
 import {
   chatMessage,
   agentThinkingLevels,
@@ -132,6 +145,12 @@ interface RunningSession {
    * following the configured Pi coding model.
    */
   pendingPiModel?: boolean;
+  /** Live session application descriptor, from the widget service. */
+  application?: SessionApplicationDescriptor;
+  /** Immediate-mode debounce before queueing an application event turn. */
+  applicationTimer?: ReturnType<typeof setTimeout>;
+  /** An application-event placeholder message is waiting in `pending`. */
+  applicationEventQueued?: boolean;
 }
 
 /**
@@ -189,6 +208,8 @@ export class AgentSessions implements InspectableModule {
   private draftHost?: AgentDraftHost;
   // The desktop runtime also owns the native panel's built-in browser.
   private browserHost?: AgentBrowserHost;
+  // ... and the native panel's pop-out conversation windows.
+  private presentationHost?: AgentPresentationHost;
   // Refuses to close a conversation that is being recorded into (manual
   // recording, core/dictation). Returns the reason, or undefined to allow it.
   private closeGuard?: (id: string) => string | undefined;
@@ -243,6 +264,22 @@ export class AgentSessions implements InspectableModule {
       widgetLibrary,
       undefined,
       (records) => this.validateWidgetChanges(records),
+      {
+        changed: (owner, descriptor) => this.applicationChanged(owner, descriptor),
+        userEdit: (owner, eventMode) => this.applicationEdited(owner, eventMode),
+        sendChat: (owner, text, origin) =>
+          this.acceptFollowUp(owner, text, new AbortController().signal, origin),
+        withdrawChat: (owner, receipts) => this.withdrawApplicationChat(owner, receipts),
+        readChat: (owner, after) => {
+          const session = this.sessions.get(owner);
+          if (!session) {
+            throw Error('Conversation is closed');
+          }
+          // The application service checked version, grant and read rate first.
+          // Use canonical rows, never a possibly historical UI page or draft.
+          return applicationChatSnapshot(session.view, after);
+        },
+      },
     );
     this.wakes = new WakeScheduler(
       new WakeStore(join(directory, '.companion-wakes'), (text) => this.wakeWarning(text)),
@@ -266,6 +303,8 @@ export class AgentSessions implements InspectableModule {
       send: (id, text, origin, signal) => this.sendFromAgent(id, text, origin, signal),
       draft: (request, signal) => this.draftFromAgent(request, signal),
       browserOpen: (request, signal) => this.browserOpenFromAgent(request, signal),
+      presentationAvailable: () => this.presentationHost?.available() === true,
+      present: (request, signal) => this.presentFromAgent(request, signal),
     });
   }
 
@@ -286,6 +325,199 @@ export class AgentSessions implements InspectableModule {
   /** Install (or clear) the route to the native panel's built-in browser. */
   setBrowserHost(host: AgentBrowserHost | undefined): void {
     this.browserHost = host;
+  }
+
+  /** Install (or clear) the route to the native panel's pop-out windows. */
+  setPresentationHost(host: AgentPresentationHost | undefined): void {
+    this.presentationHost = host;
+  }
+
+  // ---- Session applications (src/session-apps/README.md) -------------------
+
+  /** Trusted desktop route only; never exposed through agent or application tools. */
+  setApplicationChatRead(id: string, command: JsonObject, validateDesktop?: () => void) {
+    return this.widgets.applications.setChatRead(id, command, validateDesktop);
+  }
+
+  setApplicationChatSend(id: string, command: JsonObject, validateDesktop?: () => void) {
+    return this.widgets.applications.setChatSend(id, command, validateDesktop);
+  }
+
+  private withdrawApplicationChat(owner: string, receipts: ApplicationSendReceipt[]): void {
+    const session = this.sessions.get(owner);
+    if (!session || !receipts.length) return;
+    const ids = new Set(receipts.map((receipt) => receipt.receiptId));
+    const withdrawn = (message: AgentMessage) =>
+      message.origin?.kind === 'application-message' && ids.has(message.origin.receiptId);
+    session.pending = session.pending.filter((message) => !withdrawn(message));
+    for (const message of session.view.messages.filter(withdrawn)) {
+      this.message(session, { ...message, state: 'error' });
+    }
+    // A current pre-model wait is deliberately not aborted: its late gate will
+    // skip it, then continue unrelated human input already in the FIFO.
+    this.flush(session);
+  }
+
+  /**
+   * Debounce for immediate-mode application events, in milliseconds. Edits
+   * within this window share one turn. Tests may shorten it.
+   */
+  applicationEventDelayMilliseconds: number =
+    sessionApplicationLimits.immediateDebounceMilliseconds;
+
+  private applicationChanged(
+    owner: string,
+    descriptor: SessionApplicationDescriptor | undefined,
+  ): void {
+    const session = this.sessions.get(owner);
+    if (!session) {
+      return;
+    }
+    session.application = descriptor;
+    this.flush(session);
+  }
+
+  /**
+   * A user edit in the application view was committed together with its
+   * event. Immediate mode schedules an event turn after a short quiet period;
+   * next-input mode waits for the person's next message. Agent-origin
+   * changes never reach this method, so they cannot trigger turns.
+   */
+  private applicationEdited(owner: string, eventMode: SessionApplicationEventMode): void {
+    const session = this.sessions.get(owner);
+    if (!session || session.closing || this.closed || eventMode !== 'immediate') {
+      return;
+    }
+    clearTimeout(session.applicationTimer);
+    session.applicationTimer = setTimeout(() => {
+      session.applicationTimer = undefined;
+      this.queueApplicationEvents(session);
+    }, this.applicationEventDelayMilliseconds);
+  }
+
+  /**
+   * Put one placeholder turn for the pending application edits into the
+   * ordinary follow-up FIFO. Its prompt is built when the turn starts, so it
+   * keeps absorbing edits while it waits behind other turns. A refused
+   * admission leaves the edits pending with a note; nothing retries on a timer.
+   */
+  private queueApplicationEvents(session: RunningSession): void {
+    const id = session.view.id;
+    if (this.sessions.get(id) !== session || session.closing || this.closed) {
+      return;
+    }
+    if (session.applicationEventQueued || !this.widgets.applications.hasPendingEdits(id)) {
+      return;
+    }
+    const application = session.application;
+    if (!application?.id) {
+      return;
+    }
+    try {
+      this.acceptFollowUp(
+        id,
+        'Application edits are waiting to be delivered.',
+        new AbortController().signal,
+        { kind: 'application-event', applicationId: application.id, depth: 0 },
+      );
+    } catch (error) {
+      const reason = `No turn could be queued for these edits: ${error instanceof Error ? error.message : String(error)}`;
+      void this.widgets.applications.noteAdmissionFailure(id, reason).catch((failure) => {
+        this.log(
+          'agent-application',
+          `Could not record event admission failure: ${String(failure)}`,
+        );
+      });
+    }
+  }
+
+  /**
+   * Called as a turn starts. An application-event placeholder takes the
+   * pending batch as its whole prompt; a person's own message takes it as an
+   * attachment (both event modes). Other turns (agent messages, wakes) carry
+   * no application events. `skip` means the placeholder has nothing to deliver.
+   */
+  private async startApplicationDelivery(
+    session: RunningSession,
+    messageId: string | undefined,
+    prompt: Parameters<AgentBackend['run']>[0]['prompt'],
+  ): Promise<
+    | { skip: true }
+    | { skip: false; prompt: Parameters<AgentBackend['run']>[0]['prompt']; batchId?: string }
+  > {
+    const message = session.view.messages.find((entry) => entry.id === messageId);
+    const eventOnly = message?.origin?.kind === 'application-event';
+    if (eventOnly) {
+      session.applicationEventQueued = false;
+      this.widgets.applications.setQueued(session.view.id, false);
+    } else if (!message || message.origin || !session.application?.id) {
+      return { skip: false, prompt };
+    } else {
+      // The person's message takes the pending edits now, so an older
+      // immediate-mode debounce must not offer them again later, whether
+      // this attachment succeeds or fails. Edits made after this point arm
+      // a new debounce themselves.
+      clearTimeout(session.applicationTimer);
+      session.applicationTimer = undefined;
+    }
+
+    const id = session.view.id;
+    let delivery: Awaited<ReturnType<typeof this.widgets.applications.beginDelivery>>;
+    let preparationFailed = false;
+    try {
+      delivery = await this.widgets.applications.beginDelivery(id);
+    } catch (error) {
+      // Without a durable `delivering` record the edits must not reach the
+      // model: they stay pending for the next edit or message.
+      this.log('agent-application', `Could not record event delivery: ${String(error)}`);
+      delivery = undefined;
+      preparationFailed = true;
+    }
+    if (!eventOnly) {
+      if (!delivery) {
+        return { skip: false, prompt };
+      }
+      return {
+        skip: false,
+        prompt: { ...prompt, text: prompt.text + '\n\n' + delivery.text },
+        batchId: delivery.batchId,
+      };
+    }
+
+    if (!delivery) {
+      // Usually another turn (the person's own message) already carried them.
+      const text = preparationFailed
+        ? 'Application edits could not be prepared for delivery; they are kept for the next edit or message.'
+        : 'Application edits were delivered with an earlier message.';
+      this.message(session, { ...message, text, state: preparationFailed ? 'error' : 'done' });
+      return { skip: true };
+    }
+    this.message(session, { ...message, text: delivery.summary, state: 'done' });
+    return { skip: false, prompt: { text: delivery.text }, batchId: delivery.batchId };
+  }
+
+  private async finishApplicationDelivery(
+    session: RunningSession,
+    batchId: string | undefined,
+  ): Promise<void> {
+    if (!batchId) {
+      return;
+    }
+    const delivered = session.view.status === 'completed' && !session.controller.signal.aborted;
+    let reason = 'The turn carrying these edits was stopped.';
+    if (session.view.status === 'error') {
+      reason = `The turn carrying these edits failed: ${session.view.error}`;
+    }
+    try {
+      await this.widgets.applications.finishDelivery(
+        session.view.id,
+        batchId,
+        delivered ? { delivered: true } : { delivered: false, reason },
+      );
+    } catch (error) {
+      // The batch stays `delivering`; the next restart marks it failed.
+      this.log('agent-application', `Could not record event delivery outcome: ${String(error)}`);
+    }
   }
 
   private validateWidgetChanges(records: WidgetRecord[]): () => void {
@@ -356,10 +588,16 @@ export class AgentSessions implements InspectableModule {
       }
       return this.wakes.cancel(owner, command.timerId);
     }
+    // Application-event turns stand for the person's own edits (depth 0), so
+    // like human turns they give a timer no agent ancestry.
     const ancestry =
       session.currentOrigin?.kind === 'scheduled-wake'
         ? session.currentOrigin.ancestry
-        : session.currentOrigin;
+        : session.currentOrigin?.kind === 'application-event'
+          ? undefined
+          : session.currentOrigin?.kind === 'application-message'
+            ? applicationMessageAncestry(session.currentOrigin)
+            : session.currentOrigin;
     return this.wakes.schedule(
       {
         owner,
@@ -554,8 +792,10 @@ export class AgentSessions implements InspectableModule {
     if (!claimed) {
       return false;
     }
-    const ancestry =
+    const recorded =
       record.ancestry?.kind === 'scheduled-wake' ? record.ancestry.ancestry : record.ancestry;
+    const ancestry =
+      recorded?.kind === 'agent' || recorded?.kind === 'external' ? recorded : undefined;
     const origin: AgentMessageOrigin = {
       kind: 'scheduled-wake',
       timerId: record.id,
@@ -900,6 +1140,7 @@ export class AgentSessions implements InspectableModule {
       messages: page.messages,
       history: page.history,
       pinnedMessage: pinned ? { ...pinned, text: '', input: '' } : null,
+      ...(session.application ? { application: session.application } : {}),
     };
   }
 
@@ -1124,7 +1365,7 @@ export class AgentSessions implements InspectableModule {
     }
 
     const id = randomUUID();
-    const question = chatMessage('user', 'user', request.text);
+    const question = chatMessage('user', 'user', canonicalText(request.text, request.origin));
     question.screenshot = request.screenshot !== undefined;
     if (request.origin) {
       question.origin = request.origin;
@@ -1206,6 +1447,17 @@ export class AgentSessions implements InspectableModule {
     signal: AbortSignal,
     origin?: AgentMessageOrigin,
   ): { outcome: 'started' | 'queued'; queuePosition: number } {
+    const { outcome, queuePosition } = this.acceptFollowUp(id, text, signal, origin);
+    return { outcome, queuePosition };
+  }
+
+  /** followUp, also returning the accepted message's ID for internal callers. */
+  private acceptFollowUp(
+    id: string,
+    text: string,
+    signal: AbortSignal,
+    origin?: AgentMessageOrigin,
+  ): { outcome: 'started' | 'queued'; queuePosition: number; messageId: string } {
     signal.throwIfAborted();
     const session = this.sessions.get(id);
     if (this.closed || !session || session.closing) {
@@ -1234,22 +1486,34 @@ export class AgentSessions implements InspectableModule {
       throw new SessionToolError('rejected', runningCapacityReason);
     }
 
-    const message = chatMessage(`user-${randomUUID()}`, 'user', text);
+    const message = chatMessage(`user-${randomUUID()}`, 'user', canonicalText(text, origin));
     message.state = session.busy ? 'queued' : 'done';
     if (origin) {
       message.origin = origin;
     }
     this.message(session, message);
     delete session.view.choices;
+    if (origin?.kind === 'application-event') {
+      session.applicationEventQueued = true;
+    }
     if (session.busy) {
       session.pending.push(message);
+      if (origin?.kind === 'application-event') {
+        this.widgets.applications.setQueued(id, true);
+      }
       this.flush(session);
-      return { outcome: 'queued', queuePosition: session.pending.length };
+      return { outcome: 'queued', queuePosition: session.pending.length, messageId: message.id };
     }
 
     this.prepareFollowUp(session, message);
-    session.done = this.drain(session, { text: promptText(text, origin) }, true);
-    return { outcome: 'started', queuePosition: 0 };
+    session.done = this.drain(
+      session,
+      { text: promptText(text, origin) },
+      true,
+      undefined,
+      message.id,
+    );
+    return { outcome: 'started', queuePosition: 0, messageId: message.id };
   }
 
   private prepareFollowUp(session: RunningSession, message: AgentMessage): void {
@@ -1270,6 +1534,15 @@ export class AgentSessions implements InspectableModule {
   private cancelPending(session: RunningSession): void {
     for (const message of session.pending.splice(0)) {
       this.message(session, { ...message, state: 'error' });
+      if (message.origin?.kind === 'application-message') {
+        this.widgets.applications.cancelChatSend(session.view.id, message.origin.receiptId);
+      }
+      if (message.origin?.kind === 'application-event') {
+        // Never admitted to a model turn: the edits stay pending and are
+        // carried by the next edit's turn or the person's next message.
+        session.applicationEventQueued = false;
+        this.widgets.applications.setQueued(session.view.id, false);
+      }
     }
   }
 
@@ -1284,10 +1557,22 @@ export class AgentSessions implements InspectableModule {
     prompt: Parameters<AgentBackend['run']>[0]['prompt'],
     resume: boolean,
     frameId?: number,
+    // The user-kind message this turn answers, when known. Used to attach
+    // pending session-application edits; see startApplicationDelivery.
+    messageId?: string,
   ): Promise<void> {
     try {
       while (true) {
-        await this.run(session, prompt, resume, frameId);
+        const delivery = await this.startApplicationDelivery(session, messageId, prompt);
+        if (delivery.skip) {
+          // An application-event placeholder with nothing left to deliver:
+          // no model turn runs. Restore the completed state it replaced.
+          session.view.status = 'completed';
+          delete session.view.runId;
+        } else {
+          await this.run(session, delivery.prompt, resume, frameId, messageId);
+          await this.finishApplicationDelivery(session, delivery.batchId);
+        }
         if (
           this.closed ||
           session.closing ||
@@ -1312,6 +1597,7 @@ export class AgentSessions implements InspectableModule {
         prompt = { text: promptText(next.text, next.origin) };
         resume = true;
         frameId = undefined;
+        messageId = next.id;
       }
     } finally {
       session.busy = false;
@@ -1357,7 +1643,13 @@ export class AgentSessions implements InspectableModule {
     prompt: Parameters<AgentBackend['run']>[0]['prompt'],
     resume: boolean,
     frameId?: number,
+    messageId?: string,
   ): Promise<void> {
+    const appSend =
+      session.currentOrigin?.kind === 'application-message'
+        ? this.widgets.applications.chatSendTurn(session.view.id, session.currentOrigin.receiptId)
+        : undefined;
+    let appSendSkipped = false;
     const wake = session.wake;
     session.wake = undefined;
     const turnId = wake?.turnId ?? randomUUID();
@@ -1435,6 +1727,13 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-session-tools', `Session tools unavailable: ${String(error)}`, frameId);
       }
       session.controller.signal.throwIfAborted();
+      if (appSend && !appSend.begin()) {
+        appSendSkipped = true;
+        const message = session.view.messages.find((row) => row.id === messageId);
+        if (message) this.message(session, { ...message, state: 'error' });
+        session.view.status = 'completed';
+        return;
+      }
       if (wake) {
         this.wakes.transitionAttempt(wake, 'started');
       }
@@ -1580,7 +1879,23 @@ export class AgentSessions implements InspectableModule {
         session.view.error = `Could not save session history: ${String(error)}`;
         this.log('agent-history', session.view.error, frameId);
       }
-      const completed = session.view.status === 'completed' && !session.controller.signal.aborted;
+      const completed =
+        session.view.status === 'completed' &&
+        !session.controller.signal.aborted &&
+        !appSendSkipped;
+      if (appSend) {
+        try {
+          await appSend.finish(
+            completed ? 'completed' : session.controller.signal.aborted ? 'cancelled' : 'failed',
+          );
+        } catch (error) {
+          this.log(
+            'agent-application',
+            `Could not publish sending outcome: ${String(error)}`,
+            frameId,
+          );
+        }
+      }
       if (wake) {
         try {
           this.wakes.transitionAttempt(
@@ -1594,7 +1909,7 @@ export class AgentSessions implements InspectableModule {
           );
         }
       }
-      if (!completed && !this.closed) {
+      if (!completed && !appSendSkipped && !this.closed) {
         try {
           this.wakes.blockOwner(session.view.id, 'Preceding turn failed or stopped');
         } catch {
@@ -1850,8 +2165,13 @@ export class AgentSessions implements InspectableModule {
     if (!session) {
       throw Error('Question session not found');
     }
+    this.widgets.applications.revokeChatSend(id);
     session.controller.abort();
     session.closeAfterTurn = false;
+    // Stop also withdraws a not-yet-queued application event turn. The edits
+    // stay pending for the next edit or the person's next message.
+    clearTimeout(session.applicationTimer);
+    session.applicationTimer = undefined;
     let cancelledTimers = 0;
     try {
       cancelledTimers = this.wakes.cancelOwner(id, 'Human Stop or explicit close');
@@ -1897,6 +2217,7 @@ export class AgentSessions implements InspectableModule {
       session.closing = false;
       if (this.sessions.has(id)) {
         try {
+          session.application = await this.widgets.applications.descriptor(id);
           for (const { record, reference } of await this.widgets.restored(id)) {
             this.message(session, {
               ...chatMessage('widget:' + record.id, 'assistant', record.text),
@@ -1954,6 +2275,14 @@ export class AgentSessions implements InspectableModule {
       } catch (error) {
         this.log('agent-widget', `Could not restore visuals: ${String(error)}`);
       }
+      // The session application is restored as data and view capability only;
+      // reopening never starts a turn, even with pending edits.
+      let application: SessionApplicationDescriptor | undefined;
+      try {
+        application = await this.widgets.applications.descriptor(id);
+      } catch (error) {
+        this.log('agent-application', `Could not restore the application: ${String(error)}`);
+      }
       if (this.closed || signal?.aborted) {
         await this.widgets.deactivate(id);
         throw this.closed
@@ -2005,6 +2334,7 @@ export class AgentSessions implements InspectableModule {
         pending: [],
         depth: 0,
         closeAfterTurn: false,
+        application,
       });
       this.previous.delete(id);
       for (const listener of this.listeners) {
@@ -2266,7 +2596,8 @@ export class AgentSessions implements InspectableModule {
             ? { kind: 'external', title: request.origin.title }
             : {
                 sessionId: request.origin.kind === 'agent' ? request.origin.sessionId : request.id,
-                title: request.origin.title,
+                // Session tools never build an application-event origin.
+                title: request.origin.kind === 'application-event' ? '' : request.origin.title,
               },
       },
       signal,
@@ -2296,6 +2627,30 @@ export class AgentSessions implements InspectableModule {
     return this.browserHost(request, signal);
   }
 
+  /**
+   * Forward a conversation's own request to show it in its own window or
+   * return it to the sidebar. The service has already validated the request
+   * and the caller's live turn. This only changes where the conversation is
+   * displayed; its identity, history and queue stay exactly as they are.
+   */
+  private async presentFromAgent(
+    request: AgentPresentRequest,
+    signal: AbortSignal,
+  ): Promise<AgentPresentOutcome> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) {
+      throw this.notOpen(request.sessionId);
+    }
+    if (session.closing || this.closed) {
+      return { outcome: 'unavailable', reason: 'The conversation is closing.' };
+    }
+    signal.throwIfAborted();
+    if (!this.presentationHost) {
+      return { outcome: 'offline', reason: '' };
+    }
+    return this.presentationHost.present(request, signal);
+  }
+
   async idle(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((session) => session.done));
   }
@@ -2303,7 +2658,10 @@ export class AgentSessions implements InspectableModule {
   async close(): Promise<void> {
     this.closed = true;
     for (const session of this.sessions.values()) {
+      this.widgets.applications.revokeChatSend(session.view.id, 'closed');
       session.controller.abort();
+      clearTimeout(session.applicationTimer);
+      session.applicationTimer = undefined;
       delete session.view.choices;
       delete session.view.runId;
       session.view.acceptsFollowUp = false;

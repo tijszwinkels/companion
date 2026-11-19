@@ -312,7 +312,11 @@ test('a hidden panel also stops capture', async (context) => {
 test('reaching 8000 characters stops capture; the queued chunk and final words are kept', async (context) => {
   const f = await setup(context, { 1: 'one', 2: 'two', 3: 'three' });
   await f.show(f.id);
-  const { recording, sink, stop } = await f.startRecording(7990);
+  // The listener's draft is the length that counts: 7,996 characters, so
+  // the first chunk (" one") reaches 8,000.
+  f.desktop.send({ action: 'draft-set', id: f.id, text: 'x'.repeat(7996), editId: 'seed' });
+  await f.desktop.reply('draft-set');
+  const { recording, sink, stop } = await f.startRecording(7996);
 
   f.capture.script.tail = chunk(3);
   sink.accept(chunk(1));
@@ -325,11 +329,41 @@ test('reaching 8000 characters stops capture; the queued chunk and final words a
   const last = await f.next('recording-append');
   assert.equal(last.text, 'three');
   await f.answer(last, 'appended', 8010);
+  // Every chunk was added whole to the listener's draft, after the limit too.
+  const drafts = f.messages.filter((message) => message.type === 'draft' && message.id === f.id);
+  assert.equal(drafts.at(-1)?.text, 'x'.repeat(7996) + ' one two three');
 
   const finished = await f.next('recording-finished');
   assert.equal(finished.reason, 'limit');
   assert.equal(finished.complete, true);
   assert.match(String(finished.message), /8000 characters/);
+});
+
+test('recorded words are appended to the latest listener draft, keeping a change made meanwhile', async (context) => {
+  const f = await setup(context, { 1: 'one', 2: 'two' });
+  await f.show(f.id);
+  const { recording, sink } = await f.startRecording(0);
+  sink.accept(chunk(1));
+  await f.answer(await f.next('recording-append'), 'appended', 3);
+  // Another editor (or an agent) changes the draft between two chunks.
+  f.desktop.send({
+    action: 'draft-set',
+    id: f.id,
+    text: 'one, edited elsewhere.',
+    editId: 'other',
+  });
+  await f.desktop.reply('draft-set');
+  sink.accept(chunk(2));
+  const second = await f.next('recording-append');
+  assert.equal(second.applied, true);
+  assert.equal(second.length, 'one, edited elsewhere. two'.length);
+  await f.answer(second, 'appended', 1);
+  const drafts = f.messages.filter((message) => message.type === 'draft' && message.id === f.id);
+  assert.equal(drafts.at(-1)?.text, 'one, edited elsewhere. two');
+  f.desktop.send({ action: 'stop-recording', id: f.id });
+  assert.equal((await f.desktop.reply('stop-recording')).result, 'finishing');
+  await recording;
+  await f.next('recording-finished');
 });
 
 test('a refused append stops recording as incomplete and is never resent', async (context) => {

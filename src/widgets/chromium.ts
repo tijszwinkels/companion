@@ -67,7 +67,7 @@ export class Chromium {
     flags.push(...(this.headed ? ['--app=about:blank'] : ['--headless=new', 'about:blank']));
     // Bubblewrap supplies a private network namespace (including loopback),
     // private /tmp and no home/runtime files. Chromium's own sandbox stays on.
-    // The trusted pop-out host's three local API requests are fulfilled over
+    // The trusted pop-out host's few local API requests are fulfilled over
     // the private CDP pipe; the browser process itself never gets networking.
     const isolation = [
       '--unshare-net',
@@ -282,11 +282,23 @@ export class Chromium {
     const url = String(request.url);
     const method = String(request.method);
     // This is a tiny capability-scoped transport, never a general HTTP proxy.
+    // Chat routes mirror the native broker's method and byte bounds. Neither
+    // transport exposes permission grants; the service rechecks code and owner.
+    const route =
+      /^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}(?:\/(state|action|query|chat-read|chat-send|chat-receipt))?$/.exec(
+        url,
+      );
+    const operation = route?.[1];
+    const chat = operation?.startsWith('chat-') === true;
+    const body = String(request.postData ?? '');
+    const requestBytes = operation === 'chat-send' ? 32768 : 1024;
+    const responseBytes = chat ? (operation === 'chat-read' ? 65536 : 4096) : 4 * 1024 * 1024;
     if (
       !allowed ||
-      !/^http:\/\/127\.0\.0\.1:\d+\/view\/[0-9a-f]{64}(?:\/(?:state|action))?$/.test(url) ||
+      !route ||
       !['GET', 'POST'].includes(method) ||
-      String(request.postData ?? '').length > 160 * 1024
+      (chat && (method !== 'POST' || Buffer.byteLength(body) > requestBytes)) ||
+      (!chat && body.length > 160 * 1024)
     ) {
       await this.call(
         'Fetch.failRequest',
@@ -298,12 +310,12 @@ export class Chromium {
     const response = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: method === 'POST' ? String(request.postData ?? '') : undefined,
+      body: method === 'POST' ? body : undefined,
       redirect: 'error',
       signal: AbortSignal.timeout(10000),
     });
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > 4 * 1024 * 1024) {
+    if (bytes.length > responseBytes) {
       throw Error('Widget viewer response exceeds its limit');
     }
     await this.call(
@@ -364,7 +376,16 @@ export class BrowserPage {
       timeout,
     );
     if (reply.exceptionDetails) {
-      throw Error('Widget code failed to finish successfully');
+      // The generic message is what widget callers see. Session applications
+      // read the bounded first line of the page's own error from `cause`.
+      const details = object(reply.exceptionDetails);
+      const exception = details.exception as JsonObject | undefined;
+      const description = String(exception?.description ?? details.text ?? '');
+      const reason = description
+        .split('\n')[0]
+        .replace(/^Error: /, '')
+        .slice(0, 300);
+      throw Error('Widget code failed to finish successfully', { cause: reason });
     }
     return object(reply.result).value;
   }

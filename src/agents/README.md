@@ -346,15 +346,16 @@ and a draft already forwarded to the panel reports `unconfirmed` because the
 panel may have inserted it. Targets are Companion session UUIDs
 from the tool's own listing; malformed IDs, paths and unknown IDs are refused.
 
-| Tool                       | Parameters                                                                                                        | Effect                                                                                                             |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `companion_sessions`       | `query?` (≤100), `limit?` (1–50, default 20)                                                                      | Lists open tabs and matching saved conversations. No transcripts or drafts.                                        |
-| `companion_session_start`  | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `harness?` `pi`\|`claude-code`, `model?`, `focus?` (false) | Opens a tab whose agent immediately answers `text`. `model` is a Pi provider/id or a Claude model ID, per harness. |
-| `companion_session_reopen` | `id`, `focus?` (false)                                                                                            | Reopens a saved conversation with its ID, transcript, profile, harness and model. Starts no turn.                  |
-| `companion_session_close`  | `id`                                                                                                              | Closes an open tab, saving it to Previous sessions; the caller's own tab closes after its turn.                    |
-| `companion_session_send`   | `id`, `text` (1–4000)                                                                                             | Follow-up to another open tab; starts its turn or queues behind earlier messages.                                  |
-| `companion_session_draft`  | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false)                   | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.                       |
-| `companion_browser_open`   | `url` (absolute `https://`, or `http://` on loopback; ≤2048)                                                      | Shows the page in the native panel's built-in browser, only for the caller's own, currently selected conversation. |
+| Tool                        | Parameters                                                                                                        | Effect                                                                                                             |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `companion_sessions`        | `query?` (≤100), `limit?` (1–50, default 20)                                                                      | Lists open tabs and matching saved conversations. No transcripts or drafts.                                        |
+| `companion_session_start`   | `text` (1–4000), `profile?` `coding`\|`quickQuestion`, `harness?` `pi`\|`claude-code`, `model?`, `focus?` (false) | Opens a tab whose agent immediately answers `text`. `model` is a Pi provider/id or a Claude model ID, per harness. |
+| `companion_session_reopen`  | `id`, `focus?` (false)                                                                                            | Reopens a saved conversation with its ID, transcript, profile, harness and model. Starts no turn.                  |
+| `companion_session_close`   | `id`                                                                                                              | Closes an open tab, saving it to Previous sessions; the caller's own tab closes after its turn.                    |
+| `companion_session_send`    | `id`, `text` (1–4000)                                                                                             | Follow-up to another open tab; starts its turn or queues behind earlier messages.                                  |
+| `companion_session_draft`   | `id`, `text` (1–4000), `ifDraftExists?` `reject`\|`append` (default `reject`), `focus?` (false)                   | Places unsent text in that tab's input for the user to review. Never submits or runs a turn.                       |
+| `companion_browser_open`    | `url` (absolute `https://`, or `http://` on loopback; ≤2048)                                                      | Shows the page in the native panel's built-in browser, only for the caller's own, currently selected conversation. |
+| `companion_session_present` | `presentation` `window`\|`sidebar`, `focus?` (false)                                                              | Shows the caller's own conversation in its own native window, or returns it to the sidebar. Changes only the view. |
 
 `companion_browser_open` is offered to Pi and, through the MCP bridge, to
 Claude Code with the same schema; it uses the same lease, receipts and action
@@ -369,8 +370,24 @@ shown and nothing opens), `not-selected`, `busy`,
 `unsupported`, `refused`, `offline` and `unconfirmed`. The page's content never
 returns to the agent. See [panel browser](../../docs/panel-browser.md#opening-a-page-from-an-agent).
 
+`companion_session_present` always acts on the caller's own conversation, taken
+from the lease; it has no `id` argument, and one is refused. It never creates,
+reopens or clones a conversation, sends text or starts a turn. Pi and Claude
+Code receive the same definition, lease, receipts and action budget; external
+callers cannot use it. The desktop runtime forwards a one-time `agent-present`
+event to the native UI (see [pop-out windows](../desktop/README.md#pop-out-windows)).
+Success is `shown` or `returned` with `focused`, which is true only when the UI
+observed the view gaining focus. Refusals are `unsupported`, `unavailable`,
+`conflict` (a pending send, choice or recording must finish; nothing moved),
+`offline` (nothing sent) and `unconfirmed` (sent, no answer: do not retry).
+The tool is offered only when a connected native UI declared `popoutHost` at
+the moment the turn's lease was issued (capability `session-present`), so a
+turn's tool list never changes mid-turn. If the UI goes away later, the call
+reports `offline`, `unsupported` or `unconfirmed` honestly.
+
 Optional session tools need the listener's positive announcement. A lease
-carries `capabilities` (currently `browser-open`), passed to Pi as
+carries `capabilities` (currently `browser-open`, `self-wakes` and
+`session-present`), passed to Pi as
 `COMPANION_SESSION_TOOLS_CAPABILITIES` and to the Claude bridge through its
 per-turn MCP configuration. Because both load the tool definitions from disk
 for every turn, a still-running older listener, which announces nothing, keeps
@@ -525,6 +542,25 @@ and place reusable widgets. See [the widget guide](../../widget-library/README.m
 for schemas, retained bundles, durable state and renderer limits. Widget fallback
 text is paged like ordinary messages; display budgets never reject canonical
 widget transactions. Tool output retains its separate storage admission limits.
+
+### Session applications
+
+The same lease adds `companion_app`, `companion_app_apply`,
+`companion_app_query` and `companion_app_call`. A conversation's own agent can
+replace its HTML chat with an authored library bundle and use the bundle's typed
+queries and targeted actions; the user's view uses the same handlers. Each
+turn's lease freezes the application version and exposed names at turn start:
+after a code replacement, that turn's query/action calls fail and the next
+turn's lease uses the new code. Applying never starts a turn.
+
+Committed user edits in the view are delivered as data through this FIFO:
+immediate mode queues one coalesced placeholder turn (user-kind message with
+`origin: {kind: "application-event", applicationId, depth: 0}`; its prompt is
+built when it starts), next-input mode attaches pending edits to the person's
+next typed or spoken message. Agent, external and wake turns never carry them.
+Failed or stopped event turns are terminal and never replayed. Stop withdraws a
+not-yet-queued event turn; reopening never starts one. See
+[session applications](../session-apps/README.md).
 
 ### Try it in the desktop sidebar
 

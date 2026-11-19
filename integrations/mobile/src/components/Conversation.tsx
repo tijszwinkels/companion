@@ -16,7 +16,7 @@ import type { HistoryPage, HistoryPosition } from '../../../../src/agents/histor
 import type { RemoteAgentActions } from '../../../../src/remote/protocol.ts';
 import { useAppState, useStore } from '../hooks.ts';
 import { listeningStatus } from './Activity.tsx';
-import { ArrowDownIcon } from './icons.tsx';
+import { ArrowDownIcon } from '../../../chat-ui/icons.tsx';
 import { Message } from './Messages.tsx';
 
 export function ConversationPage(props: { session: AgentSession }) {

@@ -7,6 +7,11 @@ Item {
   required property var host
   required property var transport
   property bool nativeWidgets: true
+  // Conversations show the trusted HTML session surface (HTML chat or the
+  // conversation's session application) unless the host chose the classic
+  // QML view (`--session-surface classic`; test hosts default to classic).
+  property bool htmlSessions: nativeWidgets && typeof CompanionSessionSurface !== "undefined"
+    && CompanionSessionSurface === "html"
   property var theme: ({background: "#1a1b26", foreground: "#a9b1d6", accent: "#7aa2f7",
     muted: "#737b9c", selection: "#292e42", tooltipBackground: "#1a1b26",
     tooltipForeground: "#a9b1d6", tooltipBorder: "#737b9c", fontFamily: "monospace", unit: 1})
@@ -16,7 +21,13 @@ Item {
   property string screenshotSource: ""
   property alias client: client
   property alias panel: panel
-  readonly property bool inputFocused: host.opened && panel.inputFocused
+  property alias popouts: popoutViews
+  // Popped-out conversation the focus shortcut is acting on, or "" for the
+  // main panel. Set while focusing and kept while that composer has focus.
+  property string focusTarget: ""
+  // A pop-out window's composer has keyboard focus (its window is active).
+  readonly property bool popoutInputFocused: popoutViews.report.some(entry => entry.composerFocused)
+  readonly property bool inputFocused: (host.opened && panel.inputFocused) || popoutInputFocused
   readonly property string composerId: host.opened ? panel.composerFocusId : ""
   readonly property bool keyboardFocused: host.opened && host.active
   readonly property bool renderDiagnostics: typeof CompanionRenderDiagnostics !== "undefined" && CompanionRenderDiagnostics
@@ -36,15 +47,34 @@ Item {
   }
 
   function releaseFocus(restore) {
+    // Read the restore target first: releasing composer focus below emits
+    // focus and report changes whose handlers may clear it.
+    const previous = root.previousWindow
     focusDeadline.stop()
     root.focusPending = false
     host.releaseFocus()
+    for (const view of popoutViews.allViews()) view.releaseComposerFocus()
     panel.releaseComposerFocus()
-    if (restore && root.previousWindow) {
+    root.focusTarget = ""
+    if (restore && previous) {
       // The bridge validates this compositor-supplied address again. It owns
       // focus restoration and sends keyboard insertion only after that boundary.
-      host.notify({type: "restore-focus", address: root.previousWindow})
+      host.notify({type: "restore-focus", address: previous})
     }
+    root.previousWindow = ""
+  }
+
+  // The main surface was hidden or lost its layer focus grab. That ends a
+  // focus request for the main panel, but not one held by a pop-out window,
+  // whose composer and restore target stay as they are.
+  // A pop-out composer the user focused directly (not via the shortcut) is
+  // independent of the main surface too, so this never touches pop-outs.
+  function releaseMainFocus() {
+    host.releaseFocus()
+    panel.releaseComposerFocus()
+    if (root.focusTarget !== "") return
+    focusDeadline.stop()
+    root.focusPending = false
     root.previousWindow = ""
   }
 
@@ -63,18 +93,35 @@ Item {
     root.previousWindow = /^0x[0-9a-f]+$/i.test(address || "") ? address : ""
     root.focusPending = true
     focusDeadline.restart()
-    host.show(true)
+    // The selected conversation's composer lives in its window when popped
+    // out: focus that window rather than the (compact) panel.
+    const id = client.sessions.conversationId
+    if (id !== "" && popoutViews.isPopped(id)) {
+      root.focusTarget = id
+      popoutViews.focusWindow(id)
+    } else {
+      root.focusTarget = ""
+      host.show(true)
+    }
     root.acquireFocus()
   }
 
   function acquireFocus() {
     // Media is paused only after the requested window actually acquired focus.
-    if (root.focusPending && root.keyboardFocused) {
+    if (!root.focusPending) return
+    if (root.focusTarget !== "") {
+      const window = popoutViews.windows[root.focusTarget]
+      if (!window || !window.active) return
+      focusDeadline.stop()
+      root.focusPending = false
+      window.view.focusComposer()
+    } else {
+      if (!root.keyboardFocused) return
       focusDeadline.stop()
       root.focusPending = false
       panel.focusComposer()
-      if (root.inputFocused) host.notify({type: "pause-media"})
     }
+    if (root.inputFocused) host.notify({type: "pause-media"})
   }
 
   function command(message) {
@@ -134,25 +181,55 @@ Item {
   }
   onKeyboardFocusedChanged: {
     root.acquireFocus()
-    if (!root.keyboardFocused && !root.focusPending && !host.switching) root.previousWindow = ""
+    root.forgetDepartedRestoreTarget()
     Qt.callLater(root.publish)
+  }
+
+  // After focus left the composer the shortcut focused, a later toggle must
+  // not restore an old application window: forget that address. A quiet
+  // window opening (agent request without focus) moves activation away and
+  // back on its own; that is not the user leaving, so the decision waits
+  // until the opening has settled and is then made on the final state.
+  function forgetDepartedRestoreTarget() {
+    if (popoutViews.quietOpenings > 0 || root.focusPending) return
+    if (root.focusTarget === "") {
+      if (!root.keyboardFocused && !host.switching) root.previousWindow = ""
+      return
+    }
+    const window = popoutViews.windows[root.focusTarget]
+    if (!(window && window.active)) {
+      root.focusTarget = ""
+      root.previousWindow = ""
+    }
   }
   onWidthChanged: Qt.callLater(root.publish)
   onHeightChanged: Qt.callLater(root.publish)
+
+  // A pop-out window gained or lost activation or composer focus.
+  Connections {
+    target: popoutViews
+    function onReportChanged() {
+      root.acquireFocus()
+      root.forgetDepartedRestoreTarget()
+    }
+    function onQuietOpeningsChanged() {
+      if (popoutViews.quietOpenings === 0) root.forgetDepartedRestoreTarget()
+    }
+  }
 
   Connections {
     target: root.host
     function onCommand(message) { root.command(message) }
     function onStateChanged() {
       if (!root.host.opened && !root.host.switching) {
-        root.releaseFocus(false)
+        root.releaseMainFocus()
         root.screenshotSource = ""
       }
       Qt.callLater(root.publish)
     }
     function onBridgeChanged() { client.reportPanel(); root.publish() }
     function onSurfaceChanged() { Qt.callLater(root.publish) }
-    function onFocusCleared() { root.releaseFocus(false) }
+    function onFocusCleared() { root.releaseMainFocus() }
   }
 
   Timer {
@@ -185,14 +262,56 @@ Item {
     composerFocusId: root.composerId
     onRevealRequested: root.host.show(false)
     onUtteranceFinished: (text, error) => { utteranceDeadline.stop(); panel.utteranceSubmitted(text, error) }
-    onInputFinished: (id, text, error) => panel.submitted(id, text, error)
-    onToolPageReceived: message => panel.toolPageReceived(message)
-    onChoiceFinished: (id, revision, index, error) => panel.choiceSubmitted(id, revision, index, error)
+    // Acknowledgements and history pages go to every conversation view; each
+    // applies only replies that match a request it made itself.
+    onInputFinished: (id, text, error) => {
+      for (const view of popoutViews.allViews()) view.submitted(id, text, error)
+    }
+    onToolPageReceived: message => {
+      for (const view of popoutViews.allViews()) view.toolPageReceived(message)
+    }
+    onChoiceFinished: (id, revision, index, error) => {
+      for (const view of popoutViews.allViews()) view.choiceSubmitted(id, revision, index, error)
+    }
     browserHost: panel.browserAvailable
+    // The main surface and pop-out windows report together (panel-state).
+    popoutHost: true
+    mainViewId: sessions.viewedId !== "" && !panel.browsing && !popoutViews.isPopped(sessions.viewedId)
+      ? sessions.viewedId : ""
+    rail: panel.compactRail ? "compact" : "full"
+    popouts: popoutViews.report
+    anyViewVisible: root.host.opened || popoutViews.report.length > 0
+    reportsHeld: popoutViews.quietOpenings > 0
+    onPresentRequested: message => popoutViews.present(message, function(result) {
+      client.answerPresent(message.requestId, result)
+    })
+    // "Go to session N": focus its window, or select it in the sidebar.
+    // "Pop out session N" (`window`): the Pop out button's operation, which
+    // also just focuses a window the conversation already has.
+    onNavigationRequested: (id, window) => {
+      if (window) {
+        // A refusal changes no view; a new navigation token tells the
+        // listener the request was handled, so it drops it instead of
+        // waiting for this conversation to be shown.
+        if (!popoutViews.popOut(id)) client.sessions.invalidateNavigation()
+        return
+      }
+      if (popoutViews.isPopped(id)) {
+        popoutViews.focusWindow(id)
+        return
+      }
+      client.sessions.select(id)
+      if (!root.host.opened) root.host.show(false)
+    }
     // The panel answers once, when the page loaded or failed, or after a
     // bounded wait. A hidden window is never shown or activated for an agent,
     // and a page the user cannot see is not opened: it answers panel-hidden.
     onBrowserOpenRequested: message => {
+      if (popoutViews.isPopped(message.id)) {
+        client.answerBrowserOpen(message.requestId, {outcome: "not-selected",
+          reason: "The conversation is shown in its own window; the panel browser is in the sidebar."})
+        return
+      }
       if (!root.host.opened) {
         client.answerBrowserOpen(message.requestId, {outcome: "panel-hidden",
           reason: "The Companion panel is hidden."})
@@ -202,18 +321,106 @@ Item {
         client.answerBrowserOpen(message.requestId, result)
       })
     }
+    // An agent draft goes to the view that owns that conversation's composer.
     onDraftRequested: message => {
-      const result = panel.applyDraft(message)
+      const popped = popoutViews.isPopped(message.id)
+      const result = popped ? popoutViews.ownerView(message.id).applyDraft(message) : panel.applyDraft(message)
       client.answerDraft(message.requestId, result)
       const changed = result.outcome === "inserted" || result.outcome === "appended"
-      if (changed && message.focus === true) client.sessions.reveal(message.id)
+      if (changed && message.focus === true) {
+        if (popped) popoutViews.focusWindow(message.id)
+        else client.sessions.reveal(message.id)
+      }
     }
-    onRecordingStartFinished: (id, recordingId, error) => panel.recordingStarted(id, recordingId, error)
-    onRecordingStopFinished: error => panel.recordingStopAnswered(error)
-    onRecordingAppendRequested: message => client.answerRecordingAppend(message.requestId, panel.appendRecording(message))
-    onRecordingFinished: message => panel.recordingFinished(message)
-    onRecordingLost: panel.recordingDisconnected()
+    // A recording belongs to the view that started it. Moving a composer is
+    // refused while its recording runs, so the owner cannot change meanwhile.
+    onRecordingStartFinished: (id, recordingId, error) => popoutViews.ownerView(id).recordingStarted(id, recordingId, error)
+    onRecordingStopFinished: error => {
+      for (const view of popoutViews.allViews()) view.recordingStopAnswered(error)
+    }
+    // Applied by the view that records, acknowledged once the listener has
+    // accepted the resulting draft (see Client.answerRecordingAppendWhenSaved).
+    onRecordingAppendRequested: message => client.answerRecordingAppendWhenSaved(message.requestId,
+      popoutViews.isPopped(message.id) ? popoutViews.ownerView(message.id).appendRecording(message) : panel.appendRecording(message),
+      message.id, message.applied === true)
+    onRecordingFinished: message => {
+      for (const view of popoutViews.allViews()) view.recordingFinished(message)
+    }
+    onRecordingLost: {
+      for (const view of popoutViews.allViews()) view.recordingDisconnected()
+    }
     onOnlineChanged: root.publish()
+    // The listener's draft changed elsewhere: every view updates its copy.
+    onDraftFocusRequested: id => {
+      if (popoutViews.isPopped(id)) popoutViews.focusWindow(id)
+      else client.sessions.reveal(id)
+    }
+    onDraftChanged: (id, text, source) => {
+      for (const view of popoutViews.allViews()) view.serverDraft(id, text, source)
+    }
+  }
+  Binding {
+    target: panel.conversationView
+    property: "sharedDrafts"
+    value: client.serverDrafts
+  }
+  Binding {
+    target: panel.conversationView
+    property: "unsavedDrafts"
+    value: client.unsavedDrafts
+  }
+  Connections {
+    target: panel.conversationView
+    function onDraftWritten(id, text, recording) { client.writeDraft(id, text, recording) }
+    function onDraftSaveRequested(id) { client.saveDraft(id) }
+    function onDraftDiscardRequested(id) { client.discardUnsavedDraft(id) }
+  }
+
+  // Trusted native consent has its own command/reply route, never a page
+  // bridge. Report the shown view before admission; the listener rechecks it.
+  Binding {
+    target: panel.conversationView
+    property: "appChatPermissionTransportReady"
+    value: root.htmlSessions
+  }
+  Connections {
+    target: panel.conversationView
+    function onAppChatPermissionRequested(request) {
+      client.reportPanel()
+      client.send(request)
+    }
+  }
+  Connections {
+    target: client
+    function onAppChatPermissionReceived(message) {
+      for (const view of popoutViews.allViews()) view.receiveAppChatPermissionResult(message)
+    }
+  }
+
+  PopoutController {
+    id: popoutViews
+    // Through root: a bare `client` here would name this object's own property.
+    client: root.client
+    panel: root.panel
+    host: root.host
+    theme: root.theme
+    nativeWidgets: root.nativeWidgets
+    htmlSessions: root.htmlSessions
+  }
+
+  // Sidebar/Dock shrink to the rail while the selected conversation is in
+  // its own window. Only the layer surface's width changes; a Window keeps
+  // the size the compositor gave it.
+  Binding {
+    target: root.host
+    property: "compactWidth"
+    // The narrowest rail (80 units) plus the panel margins on both sides.
+    value: Math.ceil(84 * root.theme.unit)
+  }
+  Binding {
+    target: root.host
+    property: "compact"
+    value: panel.compactRail
   }
 
   Rectangle { anchors.fill: parent; color: root.theme.background }
@@ -221,6 +428,7 @@ Item {
   Row {
     id: modes
     objectName: "presentationControls"
+    visible: !panel.compactRail
     anchors.top: parent.top
     anchors.right: parent.right
     anchors.margins: 6 * root.theme.unit
@@ -243,7 +451,7 @@ Item {
   Row {
     id: renderingControls
     objectName: "widgetRenderingControls"
-    visible: root.renderDiagnostics && typeof CompanionWidgetRendering !== "undefined"
+    visible: root.renderDiagnostics && typeof CompanionWidgetRendering !== "undefined" && !panel.compactRail
     anchors.top: modes.bottom
     anchors.right: parent.right
     anchors.margins: 6 * root.theme.unit
@@ -270,7 +478,7 @@ Item {
     anchors.right: parent.right
     anchors.margins: 8 * root.theme.unit
     text: root.host.error
-    visible: text !== ""
+    visible: text !== "" && !panel.compactRail
     color: root.theme.foreground
     wrapMode: Text.Wrap
     font.pixelSize: 12 * root.theme.unit
@@ -279,12 +487,14 @@ Item {
   Panel.PanelContent {
     id: panel
     objectName: "nativePanel"
-    anchors.top: hostError.visible ? hostError.bottom : renderingControls.visible ? renderingControls.bottom : modes.bottom
+    anchors.top: panel.compactRail ? parent.top : hostError.visible ? hostError.bottom
+      : renderingControls.visible ? renderingControls.bottom : modes.bottom
     anchors.bottom: parent.bottom
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.margins: 2 * root.theme.unit
     nativeWidgets: root.nativeWidgets
+    htmlSessions: root.htmlSessions
     browserAvailable: root.nativeWidgets
     // A Window/Sidebar/Dock move hides one surface and shows another; the
     // panel stays shown throughout, so a pinned page is not frozen by it.
@@ -299,6 +509,7 @@ Item {
     transcriptionCleanup: client.transcriptionCleanup
     captureStorage: client.captureStorage
     agentActions: client.agentActions
+    viewAgentActions: client.viewAgentActions
     activityHistoryModel: client.activity.model
     activityHistoryAvailable: client.activity.available
     historyDeletionAvailable: client.historyDeletionAvailable
@@ -336,10 +547,22 @@ Item {
     focusShortcut: "⌥⌘D"
     shortcutLabel: "Super + Alt + C · panel / D · input focus\nAlt + 1–9 · conversations / Ctrl + plus/minus · text size"
     onCloseRequested: root.host.hide()
-    onSessionSelected: id => client.sessions.select(id)
+    // Selecting a popped-out tab also asks for its window's focus.
+    onSessionSelected: id => {
+      client.sessions.select(id)
+      if (id !== "" && popoutViews.isPopped(id)) popoutViews.focusWindow(id)
+    }
+    popoutAvailable: true
+    poppedSessionIds: popoutViews.poppedIds
+    compactAllowed: root.host.presentation !== "window"
+    orphanDrafts: popoutViews.orphanDrafts
+    onPopoutRequested: id => popoutViews.popOut(id)
+    onPopoutFocusRequested: id => popoutViews.focusWindow(id)
+    onReturnRequested: id => popoutViews.returnToSidebar(id, {focus: true, source: "sidebar"})
+    onOrphanDraftDismissed: key => popoutViews.dismissOrphan(key)
     onPreviousRequested: client.sessions.showingPrevious = true
     onReopenSessionRequested: id => client.send({action: "reopen-agent", id: id})
-    onDismissSessionRequested: id => client.send({action: "close-agent", id: id})
+    onDismissSessionRequested: id => popoutViews.closeSession(id)
     onCancelWakeRequested: (id, timerId) => client.send({action: "cancel-agent-wake", id: id, timerId: timerId})
     onStopSessionRequested: id => client.send({action: "stop-agent", id: id})
     onSendSessionRequested: (id, text) => client.sendInput(id, text)

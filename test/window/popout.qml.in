@@ -1,0 +1,1071 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+// Pop-out windows of conversations in the real native host and QML body,
+// offscreen, against a synthetic listener transport. Checks the atomic
+// panel-state report, single-owner draft handover with provenance, pending
+// operations blocking a move, native close as "return", agent presentation
+// requests, agent drafts/navigation routing, the compact rail and orphaned
+// drafts. It does not exercise a compositor: activation is Qt's offscreen
+// activation, and layer-shell width/exclusive zones are not involved.
+TestCase {
+  id: testCase
+  name: "PopoutWindows"
+  when: windowShown
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+
+  function session(id, title) {
+    return {id: id, title: title, status: "idle", messages: [
+      {id: id + "-hello", role: "assistant", kind: "text", text: "Hello from " + title,
+       toolName: "", input: "", state: "", screenshot: ""}
+    ]}
+  }
+  function snapshot(entries) {
+    fakeBackend.received({type: "state", protocol: 1, ready: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: entries})
+  }
+  function reports() {
+    return fakeBackend.sent.filter(message => message.action === "panel-state")
+  }
+  function lastReport() {
+    const all = reports()
+    return all[all.length - 1]
+  }
+  function answers(requestId) {
+    return fakeBackend.sent.filter(message => message.action === "agent-present-result" && message.requestId === requestId)
+  }
+  function mainView() { return body.panel.conversationView }
+  function popout(id) { return body.popouts.windows[id] || null }
+  function composerOf(view) { return findChild(view, "sessionComposer") }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    TestHost.attach(body)
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryVerify(function() { return body.width > 0 && body.panel.selectedSession !== null })
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function init() {
+    // Each test starts with a fresh listener draft map: no writes in flight
+    // or unconfirmed from earlier tests (this transport never confirms).
+    body.client.ownDraftEdits = ({})
+    body.client.draftEditsInFlight = ({})
+    body.client.latestDraftEdits = ({})
+    body.client.listenerDrafts = ({})
+    body.client.unsavedDrafts = ({})
+    body.client.serverDrafts = ({})
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+  }
+  function cleanup() {
+    for (const id of body.popouts.order.slice()) {
+      const window = popout(id)
+      window.view.clearDraft(id)
+      body.popouts.returnToSidebar(id, {focus: false})
+    }
+    body.popouts.orphanDrafts = []
+    mainView().clearDraft("one")
+    mainView().clearDraft("two")
+    body.client.error = ""
+    tryCompare(body.popouts, "report", [])
+  }
+
+  function test_report_is_atomic_and_describes_the_main_surface() {
+    fakeBackend.sent = []
+    body.client.reportPanel()
+    const report = lastReport()
+    compare(report.popoutHost, true)
+    compare(report.rail, "full")
+    compare(report.popouts, [])
+    compare(report.id, "one")
+    compare(report.visible, true)
+    compare(report.draftHost, true)
+    verify(typeof report.navigationToken === "string" && report.navigationToken !== "")
+  }
+
+  function test_pop_out_moves_draft_with_provenance_and_returns_it() {
+    // An agent drafted text into the sidebar composer; the user edited it.
+    fakeBackend.received({type: "agent-draft", requestId: "d1", id: "one", text: "Agent text",
+      ifDraftExists: "reject", focus: false, source: {sessionId: "x", title: "Helper"}})
+    const mainComposer = composerOf(mainView())
+    tryCompare(mainComposer, "text", "Agent text")
+    mainComposer.insert(mainComposer.length, " plus mine")
+    mainComposer.cursorPosition = 5
+    compare(mainView().displayedDraftSource, "Helper")
+
+    fakeBackend.sent = []
+    mouseClick(findChild(body, "popoutButton"))
+    const window = popout("one")
+    verify(window !== null, "Pop out opens a window for the same conversation")
+    tryCompare(window, "visible", true)
+    compare(window.view.session.id, "one")
+    compare(body.popouts.isPopped("one"), true)
+
+    // Exactly one writable copy: the window has the text, provenance and cursor;
+    // the sidebar view is detached and holds nothing for this conversation.
+    const popComposer = composerOf(window.view)
+    compare(popComposer.text, "Agent text plus mine")
+    compare(popComposer.cursorPosition, 5)
+    compare(window.view.displayedDraftSource, "Helper")
+    compare(mainView().session, null)
+    compare(mainView().exportDraft("one").text, "")
+    compare(mainView().draftSources["one"], undefined)
+
+    // The selected tab is popped out: the main surface shows no conversation.
+    tryVerify(function() { return lastReport() && lastReport().popouts.length === 1 })
+    compare(lastReport().id, "")
+    compare(lastReport().popouts[0].id, "one")
+    compare(lastReport().rail, "full", "Window presentation keeps its layout")
+    verify(findChild(body, "poppedOutNotice").visible)
+    verify(findChild(findChild(body, "tab-one"), "sessionPoppedOutMarker").visible)
+
+    // Typing continues in the window; Return gives the newest text back.
+    popComposer.insert(popComposer.length, " and more")
+    fakeBackend.sent = []
+    mouseClick(findChild(window.contentItem, "popoutReturnButton"))
+    tryVerify(function() { return popout("one") === null })
+    compare(body.popouts.isPopped("one"), false)
+    tryCompare(composerOf(mainView()), "text", "Agent text plus mine and more")
+    compare(mainView().displayedDraftSource, "Helper")
+    tryVerify(function() { return lastReport() && lastReport().popouts.length === 0 && lastReport().id === "one" })
+    verify(!fakeBackend.sent.some(message => message.action === "close-agent"),
+      "Returning never closes the real conversation")
+  }
+
+  function test_window_activation_and_composer_focus_reach_the_report() {
+    body.popouts.popOut("two")
+    const window = popout("two")
+    verify(window !== null)
+    tryVerify(function() { return window.active })
+    tryVerify(function() { return lastReport().popouts.length === 1 && lastReport().popouts[0].active })
+    compare(lastReport().popouts[0].composerFocused, false, "An active window alone is not composer focus")
+    compare(lastReport().composerFocused, false, "Main composer focus is never synthesized for a window")
+
+    window.view.focusComposer()
+    tryVerify(function() { return lastReport().popouts[0].composerFocused === true })
+    compare(lastReport().id, "one", "The sidebar still shows the unpopped selection")
+    compare(lastReport().keyboardFocused, false, "Main keyboard focus describes the main surface only")
+
+    // Activating the main surface leaves the window visible but inactive.
+    TestHost.show(true)
+    tryVerify(function() { return lastReport().popouts.length === 1 && !lastReport().popouts[0].active })
+    compare(lastReport().popouts[0].composerFocused, false)
+  }
+
+  function test_focus_shortcut_reaches_the_selected_popped_conversation() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active && !window.active })
+
+    // Super+Alt+D with the selected tab popped out focuses its window's
+    // composer, not the detached (compact) panel.
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return window.active && window.view.composerFocusId === "one" })
+    tryCompare(body, "inputFocused", true)
+    compare(body.client.error, "", "No focus failure is reported")
+    tryVerify(function() { return lastReport().popouts[0].composerFocused === true })
+
+    // Hiding the (inactive) main panel leaves the window's composer alone.
+    TestHost.hide()
+    wait(50)
+    compare(window.view.composerFocusId, "one")
+    compare(body.inputFocused, true)
+
+    // The application to restore is still known when toggling back (the
+    // toggle then sends restore-focus to the desktop bridge, if connected).
+    compare(body.previousWindow, "0x123")
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    compare(window.view.composerFocusId, "")
+    compare(body.previousWindow, "")
+    TestHost.show(true)
+  }
+
+  function test_hiding_main_keeps_a_directly_focused_popout_composer() {
+    body.popouts.popOut("two")
+    const window = popout("two")
+    tryVerify(function() { return window.active })
+    window.view.focusComposer()
+    tryCompare(window.view, "composerFocusId", "two")
+    TestHost.hide()
+    wait(50)
+    compare(window.view.composerFocusId, "two", "Hiding the main panel does not touch the window")
+    TestHost.show(true)
+  }
+
+  function test_pending_send_blocks_return_and_native_close() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    const popComposer = composerOf(window.view)
+    popComposer.text = "Follow-up from the window"
+    window.view.submit()
+    const send = fakeBackend.sent.filter(message => message.action === "send-agent").pop()
+    compare(send.id, "one", "The window's follow-up goes to the same conversation")
+    compare(send.text, "Follow-up from the window")
+
+    // Native close while the send is unconfirmed: refused with a reason.
+    window.close()
+    verify(popout("one") !== null)
+    verify(window.notice.indexOf("still being sent") >= 0)
+    compare(popComposer.text, "Follow-up from the window")
+    const blocked = body.popouts.present({requestId: "blocked", id: "one", presentation: "sidebar", focus: false},
+      function(result) { body.client.answerPresent("blocked", result) })
+    compare(answers("blocked")[0].outcome, "conflict")
+
+    // The acknowledgement reaches the window that sent it; then close works.
+    fakeBackend.received({type: "result", action: "send-agent", result: "submitted"})
+    tryCompare(popComposer, "text", "")
+    window.close()
+    tryVerify(function() { return popout("one") === null })
+    verify(!fakeBackend.sent.some(message => message.action === "close-agent"))
+  }
+
+  function test_sidebar_pending_send_blocks_pop_out() {
+    const composer = composerOf(mainView())
+    composer.text = "Still sending"
+    mainView().submit()
+    mouseClick(findChild(body, "popoutButton"))
+    compare(popout("one"), null)
+    verify(body.client.error.indexOf("still being sent") >= 0)
+    compare(composer.text, "Still sending")
+    fakeBackend.received({type: "result", action: "send-agent", result: "submitted"})
+    tryCompare(composer, "text", "")
+  }
+
+  function test_agent_presentation_requests() {
+    fakeBackend.sent = []
+    fakeBackend.received({type: "agent-present", requestId: "w1", id: "two", presentation: "window", focus: true})
+    tryVerify(function() { return answers("w1").length === 1 })
+    compare(answers("w1")[0].outcome, "shown")
+    compare(typeof answers("w1")[0].focused, "boolean")
+    verify(popout("two") !== null)
+
+    // Idempotent: the existing window is reported, not a second one.
+    fakeBackend.received({type: "agent-present", requestId: "w2", id: "two", presentation: "window", focus: false})
+    tryVerify(function() { return answers("w2").length === 1 })
+    compare(answers("w2")[0].outcome, "shown")
+    compare(body.popouts.order, ["two"])
+
+    // A repeated request ID is never answered twice.
+    fakeBackend.received({type: "agent-present", requestId: "w1", id: "two", presentation: "sidebar", focus: false})
+    wait(50)
+    compare(answers("w1").length, 1)
+    verify(popout("two") !== null)
+
+    fakeBackend.received({type: "agent-present", requestId: "s1", id: "two", presentation: "sidebar", focus: false})
+    tryVerify(function() { return answers("s1").length === 1 })
+    compare(answers("s1")[0].outcome, "returned")
+    compare(popout("two"), null)
+    compare(body.panel.selectedSessionId, "one", "Returning without focus keeps the user's selection")
+
+    fakeBackend.received({type: "agent-present", requestId: "s2", id: "two", presentation: "sidebar", focus: false})
+    tryVerify(function() { return answers("s2").length === 1 })
+    compare(answers("s2")[0].outcome, "returned", "Already in the sidebar")
+
+    fakeBackend.received({type: "agent-present", requestId: "u1", id: "missing", presentation: "window", focus: false})
+    tryVerify(function() { return answers("u1").length === 1 })
+    compare(answers("u1")[0].outcome, "unavailable")
+    compare(body.popouts.order, [])
+
+    fakeBackend.received({type: "agent-present", requestId: "u2", id: "two", presentation: "tiled", focus: false})
+    tryVerify(function() { return answers("u2").length === 1 })
+    compare(answers("u2")[0].outcome, "unsupported")
+  }
+
+  function test_agent_focus_false_does_not_move_focus() {
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active })
+    fakeBackend.sent = []
+    fakeBackend.received({type: "agent-present", requestId: "nofocus", id: "two", presentation: "window", focus: false})
+    tryVerify(function() { return answers("nofocus").length === 1 })
+    compare(answers("nofocus")[0].outcome, "shown")
+    compare(answers("nofocus")[0].focused, false)
+    wait(150)
+    verify(popout("two").visible)
+    verify(!popout("two").active, "focus:false must not activate the new window")
+    verify(TestHost.active, "The main surface keeps focus")
+    tryVerify(function() { return lastReport().popouts.length === 1 && lastReport().popouts[0].active === false })
+    // Not even transiently: no report ever named the quiet window active,
+    // so it never became the voice target.
+    verify(reports().length > 0)
+    verify(reports().every(report => report.popouts.every(entry => !entry.active)),
+      JSON.stringify(reports()))
+    verify(reports().every(report => report.keyboardFocused === true), "Main focus never reported lost")
+
+    // The window can still be focused afterwards.
+    body.popouts.focusWindow("two")
+    tryVerify(function() { return popout("two").active })
+  }
+
+  // Super+Alt+D focused a composer and remembers the application to return
+  // to; an agent then quietly opens another conversation's window.
+  function quietlyOpenTwo(requestId) {
+    fakeBackend.received({type: "agent-present", requestId: requestId, id: "two", presentation: "window", focus: false})
+    tryVerify(function() { return answers(requestId).length === 1 })
+    compare(answers(requestId)[0].focused, false)
+  }
+
+  function test_quiet_opening_keeps_the_main_shortcut_restore_target() {
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active })
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return mainView().composerFocusId === "one" })
+    compare(body.previousWindow, "0x123")
+
+    quietlyOpenTwo("quiet-main")
+    tryVerify(function() { return TestHost.active && mainView().composerFocusId === "one" })
+    compare(body.previousWindow, "0x123", "The quiet handoff is not the user leaving")
+    compare(body.inputFocused, true)
+
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    compare(body.previousWindow, "")
+  }
+
+  function test_quiet_opening_keeps_the_popped_shortcut_restore_target() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active && !window.active })
+    // Let queued offscreen activation requests from the setup drain first.
+    wait(200)
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return window.active && window.view.composerFocusId === "one" })
+    compare(body.previousWindow, "0x123")
+
+    quietlyOpenTwo("quiet-popped")
+    tryVerify(function() { return window.active && window.view.composerFocusId === "one" })
+    compare(body.previousWindow, "0x123")
+    compare(body.focusTarget, "one")
+
+    body.command({action: "focus", address: "0x123"})
+    tryCompare(body, "inputFocused", false)
+    compare(body.previousWindow, "")
+  }
+
+  function test_leaving_after_a_quiet_opening_still_forgets_the_restore_target() {
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.active })
+    body.command({action: "focus", address: "0x123"})
+    tryVerify(function() { return mainView().composerFocusId === "one" })
+    quietlyOpenTwo("quiet-leave")
+    tryVerify(function() { return TestHost.active })
+    compare(body.previousWindow, "0x123")
+
+    // The user really moves to the new window: the old address is stale.
+    body.popouts.focusWindow("two")
+    tryVerify(function() { return popout("two").active })
+    tryCompare(body, "previousWindow", "")
+  }
+
+  function numberOf(id) {
+    const label = findChild(popout(id), "popoutSessionNumber")
+    return label.visible ? label.text : ""
+  }
+  function sidebarNumberOf(id) {
+    const tab = findChild(body.panel, "tab-" + id)
+    return tab ? String(tab.number) : ""
+  }
+
+  // Each window's header shows the conversation's current sidebar number,
+  // the one voice session navigation uses. It follows the listener's order
+  // when conversations are reordered, closed and restored, and after a
+  // reconnect with a different order; it never moves focus or selection.
+  function test_header_shows_the_current_session_number() {
+    snapshot([session("one", "First chat"), session("two", "Second chat"), session("three", "Third chat")])
+    tryCompare(body.client.sessions.sessions, "length", 3)
+    body.popouts.popOut("three")
+    body.popouts.popOut("one")
+    tryVerify(function() { return popout("three") !== null && popout("one") !== null })
+    compare(numberOf("three"), "3")
+    compare(numberOf("one"), "1")
+    compare(sidebarNumberOf("three"), "3")
+    compare(findChild(popout("three"), "popoutTitle").text, "Third chat")
+    verify(findChild(popout("three"), "popoutSessionNumber").x < findChild(popout("three"), "popoutTitle").x,
+      "the number is before the title")
+    const selected = body.panel.selectedSessionId
+    fakeBackend.sent = []
+
+    // Reordered by the listener (drag, or another client). Delivered to the
+    // client's receive() directly, as the native connection does with its
+    // parsed JSON: through this fake transport's `var` signal, Qt 6.12 hands
+    // arrays over as sequence wrappers that fail Array.isArray, so the
+    // order event would be ignored (the same cause as the existing
+    // tst_client/host order checks failing on this Qt).
+    body.client.receive({type: "agent-order", ids: ["three", "two", "one"], revision: "order-2"})
+    tryCompare(findChild(popout("three"), "popoutSessionNumber"), "text", "1")
+    compare(numberOf("one"), "3")
+    compare(sidebarNumberOf("three"), "1")
+    compare(sidebarNumberOf("one"), "3")
+
+    // Another conversation closes: later numbers move up.
+    fakeBackend.received({type: "agent-removed", id: "two"})
+    tryCompare(findChild(popout("one"), "popoutSessionNumber"), "text", "2")
+    compare(numberOf("three"), "1")
+    compare(sidebarNumberOf("one"), "2")
+
+    // A saved conversation is restored without focus: it is added at the end.
+    fakeBackend.received({type: "agent-restored", session: session("two", "Second chat"), reveal: false})
+    tryCompare(body.client.sessions.sessions, "length", 3)
+    compare(numberOf("three"), "1")
+    compare(numberOf("one"), "2")
+    compare(sidebarNumberOf("two"), "3")
+
+    // Reconnecting with a different order renumbers from the new snapshot.
+    fakeBackend.disconnected()
+    snapshot([session("two", "Second chat"), session("one", "First chat"), session("three", "Third chat")])
+    tryCompare(findChild(popout("three"), "popoutSessionNumber"), "text", "3")
+    compare(numberOf("one"), "2")
+    compare(sidebarNumberOf("three"), "3")
+
+    // Display only: no navigation, selection or focus request was made.
+    compare(body.panel.selectedSessionId, selected)
+    verify(!fakeBackend.sent.some(message => message.action === "select-agent" || message.action === "move-agent"))
+  }
+
+  // At every supported theme scale (unit 0.5 to 3) the number, the title
+  // and Return to sidebar fit in the header and never overlap: Return moves
+  // to its own row when they do not fit side by side. The window asks for a
+  // minimum width (320 px up to unit 2) at which the title keeps a readable
+  // width and Return its full label. A compositor may still make the window
+  // narrower (and Qt does not clamp a resize to the hint), so narrower
+  // windows are checked too: then the title takes all the room there is
+  // and Return shortens to "Return".
+  function test_header_layout_at_narrow_widths_and_large_scales() {
+    const entries = []
+    for (let index = 1; index <= 12; index++) {
+      entries.push(session("s" + index, "Conversation " + index + " with a long title that has to elide in the header"))
+    }
+    snapshot(entries)
+    tryCompare(body.client.sessions.sessions, "length", 12)
+    const originalTheme = body.theme
+    try {
+      for (const id of ["s3", "s12"]) {
+        body.popouts.popOut(id)
+        tryVerify(function() { return popout(id) !== null })
+        const window = popout(id)
+        const header = findChild(window, "popoutHeader")
+        const number = findChild(window, "popoutSessionNumber")
+        const title = findChild(window, "popoutTitle")
+        const back = findChild(window, "popoutReturnButton")
+        const view = findChild(window, "popoutSessionView")
+
+        for (const unit of [0.5, 1, 1.5, 2, 2.5, 3]) {
+          body.theme = Object.assign({}, originalTheme, {unit: unit})
+          const margins = 24 * unit
+          if (unit <= 2) {
+            compare(window.minimumWidth, 320, id + " keeps the 320 px minimum at unit " + unit)
+          }
+          verify(window.minimumWidth >= margins + header.numberSpace + header.minimumTitleWidth,
+            id + ": the minimum width holds the number and a readable title at unit " + unit)
+          verify(window.minimumWidth >= margins + header.fullReturnWidth,
+            id + ": the minimum width holds the full Return label at unit " + unit)
+
+          for (const width of [320, 560, window.minimumWidth]) {
+            window.width = width
+            const label = id + " at unit " + unit + " and width " + width
+            tryVerify(function() { return header.width === width - margins }, 2000, label)
+            compare(number.text, id.slice(1), label)
+            verify(number.visible && number.x >= 0, label)
+            verify(number.x + number.width <= title.x, label + ": the number comes before the title")
+            verify(title.x + title.width <= header.width, label + ": the title stays in the header")
+            const sideBySide = title.x + title.width <= back.x
+            const below = back.y >= title.y + title.height
+            verify(sideBySide || below, label + ": the title and Return do not overlap")
+            verify(back.x >= 0 && back.x + back.width <= header.width, label + ": Return stays in the header")
+            verify(back.y + back.height <= header.height, label + ": the header makes room for Return")
+            verify(view.y >= header.y + header.height, label + ": the conversation starts below the header")
+            if (width >= window.minimumWidth) {
+              verify(title.width >= header.minimumTitleWidth, label + ": readable title width " + title.width)
+              compare(back.text, "Return to sidebar", label)
+            } else {
+              // Narrower than the hint: the title gets the whole row.
+              verify(header.stacked, label)
+              compare(title.width, header.width - header.numberSpace, label)
+              verify(title.width > 0, label)
+            }
+          }
+        }
+
+        // Return still works on its own row, with the short label.
+        window.width = 320
+        tryVerify(function() { return header.stacked && back.text === "Return" })
+        mouseClick(back)
+        tryVerify(function() { return popout(id) === null })
+      }
+    } finally {
+      body.theme = originalTheme
+    }
+  }
+
+  // A window whose conversation left the list shows no number, not a stale
+  // one. (The window itself closes once the listener removes it.)
+  function test_header_number_is_hidden_without_membership() {
+    body.popouts.popOut("two")
+    tryVerify(function() { return popout("two") !== null })
+    compare(numberOf("two"), "2")
+    const window = popout("two")
+    body.client.sessions.sessions = body.client.sessions.sessions.filter(entry => entry.id !== "two")
+    compare(window.sessionNumber, 0)
+    compare(findChild(window, "popoutSessionNumber").visible, false)
+    compare(findChild(window, "popoutTitle").text, "Conversation closed")
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(window, "sessionNumber", 2)
+    compare(findChild(window, "popoutSessionNumber").visible, true)
+  }
+
+  // ---- Listener-owned drafts (last write received wins) -----------------
+  function draftWrites() {
+    return fakeBackend.sent.filter(message => message.action === "draft-set")
+  }
+  // The fake transport has no listener: confirm a sent write the way the
+  // listener does (the accepted change, with the writer's edit ID).
+  property int listenerSequence: 100
+  function confirmWrite(write) {
+    testCase.listenerSequence++
+    body.client.receive({type: "draft", id: write.id, text: write.text, source: "",
+      sequence: testCase.listenerSequence, editId: write.editId})
+  }
+  function confirmAllWrites() {
+    for (const write of draftWrites()) confirmWrite(write)
+  }
+
+  // Showing, switching and reloading drafts only read them; typing writes
+  // to the conversation it was typed for; another editor's change is shown
+  // without being written back; this UI's own late echo cannot undo newer
+  // typing.
+  function test_listener_drafts_read_on_switch_and_write_only_edits() {
+    const view = mainView()
+    const composer = composerOf(view)
+    fakeBackend.sent = []
+
+    // A (re)connecting UI reads every draft once.
+    body.client.receive({type: "draft-snapshot", sequence: 3, drafts: [{id: "two", text: "Two from elsewhere", source: "", sequence: 3}]})
+    compare(body.client.serverDrafts["two"], "Two from elsewhere")
+    compare(draftWrites().length, 0, "reading a snapshot writes nothing")
+
+    // Typing writes to the shown conversation, by name.
+    composer.text = "One typed"
+    let writes = draftWrites()
+    compare(writes.length, 1)
+    compare(writes[0].id, "one")
+    compare(writes[0].text, "One typed")
+    verify(typeof writes[0].editId === "string" && writes[0].editId !== "")
+    confirmAllWrites()
+
+    // Switching shows the other conversation's listener draft and writes nothing.
+    fakeBackend.sent = []
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryCompare(composer, "text", "Two from elsewhere")
+    compare(draftWrites().length, 0, "switching writes nothing")
+    body.client.sessions.select("one")
+    tryCompare(composer, "text", "One typed")
+    compare(draftWrites().length, 0, "switching back writes nothing")
+
+    // Another editor's change is shown without being written back (no echo).
+    body.client.receive({type: "draft", id: "one", text: "One changed elsewhere", source: "", sequence: 5})
+    compare(composer.text, "One changed elsewhere")
+    compare(draftWrites().length, 0, "a received change is not an edit")
+
+    // This UI's own edit coming back late never undoes newer typing.
+    fakeBackend.sent = []
+    composer.text = "Newest typing"
+    composer.text = "Newest typing!"
+    const pending = draftWrites()
+    confirmWrite(pending[0])
+    compare(composer.text, "Newest typing!")
+    confirmWrite(pending[1])
+    compare(composer.text, "Newest typing!")
+
+    // A change for a conversation not shown updates what it shows later.
+    body.client.receive({type: "draft", id: "two", text: "Two again", source: "", sequence: 7})
+    compare(composer.text, "Newest typing!")
+    body.client.sessions.select("two")
+    tryCompare(composer, "text", "Two again")
+    body.client.sessions.select("one")
+    tryCompare(composer, "text", "Newest typing!")
+
+    composer.text = ""
+    body.client.receive({type: "draft", id: "two", text: "", source: "", sequence: 8})
+  }
+
+  // Text typed while the listener cannot be reached stays on screen and is
+  // marked not saved; reconnecting never writes it by itself (the draft may
+  // have changed elsewhere) and never replaces it; Save writes it.
+  function test_listener_drafts_keep_text_typed_while_disconnected() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: [{id: "one", text: "Before", source: "", sequence: 1}]})
+    tryCompare(composer, "text", "Before")
+    fakeBackend.disconnected()
+    tryCompare(body.client, "online", false)
+    fakeBackend.sent = []
+    composer.text = "Typed while offline"
+    compare(draftWrites().length, 0, "nothing can be sent while disconnected")
+    verify(view.displayedUnsaved !== "")
+    verify(findChild(view, "unsavedDraft").visible)
+    verify(view.transferBlocker("one").includes("not saved"))
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(body.client, "online", true)
+    // Another editor changed the draft meanwhile.
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "Changed elsewhere", source: "", sequence: 2}]})
+    compare(composer.text, "Typed while offline")
+    compare(draftWrites().length, 0, "a reconnect does not replay the text")
+    verify(view.displayedUnsaved !== "")
+    findChild(view, "unsavedDraftSave").triggered()
+    const writes = draftWrites()
+    compare([writes[0].id, writes[0].text], ["one", "Typed while offline"])
+    confirmAllWrites()
+    compare(view.displayedUnsaved, "")
+    compare(view.transferBlocker("one"), "")
+    composer.text = ""
+    confirmAllWrites()
+  }
+
+  // Only the latest edit's confirmation settles pending text: A, B, A again
+  // (equal to the first), then the first A is confirmed and the listener
+  // goes away; the newest text stays and is not treated as saved.
+  function test_listener_drafts_pending_identity_is_the_latest_edit() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: []})
+    fakeBackend.sent = []
+    composer.text = "A"
+    composer.text = "B"
+    composer.text = "A"
+    const writes = draftWrites()
+    compare(writes.map(entry => entry.text), ["A", "B", "A"])
+    confirmWrite(writes[0])
+    compare(composer.text, "A")
+    verify(body.client.latestDraftEdits["one"] !== undefined, "the first A does not settle the latest A")
+    fakeBackend.disconnected()
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(body.client, "online", true)
+    fakeBackend.sent = []
+    // The listener only got the first A, then another editor wrote.
+    body.client.receive({type: "draft-snapshot", sequence: 5, drafts: [{id: "one", text: "foreign", source: "", sequence: 5}]})
+    compare(composer.text, "A")
+    verify(view.displayedUnsaved !== "", "uncertain: shown as not saved")
+    compare(draftWrites().length, 0)
+    // Discard shows the listener's version.
+    findChild(view, "unsavedDraftDiscard").triggered()
+    compare(composer.text, "foreign")
+    compare(view.displayedUnsaved, "")
+    compare(draftWrites().length, 0, "showing the listener's text writes nothing")
+    body.client.receive({type: "draft", id: "one", text: "", source: "", sequence: 6})
+  }
+
+  // A reconnect where the listener already holds the pending text: saved.
+  function test_listener_drafts_reconnect_with_matching_text_is_saved() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: []})
+    fakeBackend.sent = []
+    composer.text = "arrived"
+    fakeBackend.disconnected()
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryCompare(body.client, "online", true)
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "arrived", source: "", sequence: 2}]})
+    compare(view.displayedUnsaved, "")
+    compare(composer.text, "arrived")
+    body.client.receive({type: "draft", id: "one", text: "", source: "", sequence: 3})
+  }
+
+  // The display converges on the listener's order: own old edit, another
+  // editor's change, own newer edit -> the newer own text; another editor's
+  // change after ours -> theirs. No write is ever refused for its order.
+  function test_listener_drafts_converge_on_the_listener_order() {
+    const view = mainView()
+    const composer = composerOf(view)
+    fakeBackend.sent = []
+    composer.text = "own old"
+    composer.text = "own new"
+    const writes = draftWrites()
+    compare(writes.length, 2)
+    confirmWrite(writes[0])
+    body.client.receive({type: "draft", id: "one", text: "foreign", source: "", sequence: 200})
+    compare(composer.text, "own new", "our newer edit is still on its way")
+    confirmWrite(writes[1])
+    compare(composer.text, "own new")
+    compare(body.client.serverDrafts["one"], "own new")
+    // Another editor's change after ours: everyone shows it.
+    body.client.receive({type: "draft", id: "one", text: "foreign later", source: "", sequence: 201})
+    compare(composer.text, "foreign later")
+    compare(body.client.serverDrafts["one"], "foreign later")
+    composer.text = ""
+    confirmAllWrites()
+  }
+
+  // A reconnect snapshot without a conversation means its draft is now
+  // empty: shown or not, the old text does not come back; reading writes
+  // nothing.
+  function test_listener_drafts_empty_snapshot_clears_shown_and_hidden() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: [
+      {id: "one", text: "One before", source: "", sequence: 1}, {id: "two", text: "Two before", source: "Helper", sequence: 1}]})
+    tryCompare(composer, "text", "One before")
+    fakeBackend.sent = []
+    body.client.receive({type: "draft-snapshot", sequence: 9, drafts: []})
+    compare(composer.text, "")
+    compare(draftWrites().length, 0, "reading a snapshot writes nothing")
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    compare(composer.text, "")
+    compare(view.exportDraft("two").source, undefined)
+    body.client.sessions.select("one")
+    tryCompare(composer, "text", "")
+    compare(draftWrites().length, 0)
+  }
+
+  // A refused write keeps the text on screen as not saved; the next
+  // snapshot keeps it and writes it again instead of the listener's copy.
+  function test_listener_drafts_refused_write_stays_unsaved() {
+    const view = mainView()
+    const composer = composerOf(view)
+    body.client.receive({type: "draft-snapshot", sequence: 1, drafts: [{id: "one", text: "saved", source: "", sequence: 1}]})
+    tryCompare(composer, "text", "saved")
+    fakeBackend.sent = []
+    composer.text = "refused text"
+    const write = draftWrites().pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: write.editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    verify(body.client.error.includes("not saved"))
+    compare(composer.text, "refused text")
+    body.client.error = ""
+    verify(view.displayedUnsaved.includes("not saved"))
+    // Another editor's change does not replace the unsaved text on screen.
+    fakeBackend.sent = []
+    body.client.receive({type: "draft", id: "one", text: "foreign meanwhile", source: "", sequence: 50})
+    compare(composer.text, "refused text")
+    compare(body.client.serverDrafts["one"], "refused text")
+    compare(draftWrites().length, 0)
+    findChild(view, "unsavedDraftSave").triggered()
+    compare(draftWrites().map(entry => entry.text), ["refused text"], "Save writes the shown text")
+    const saved = draftWrites().pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: saved.editId, result: {accepted: false, reason: "again"}})
+    body.client.error = ""
+    fakeBackend.sent = []
+    body.client.receive({type: "draft-snapshot", sequence: 3, drafts: [{id: "one", text: "saved", source: "", sequence: 1}]})
+    compare(composer.text, "refused text")
+    compare(draftWrites().length, 0, "not written again by itself")
+    verify(view.displayedUnsaved !== "")
+    findChild(view, "unsavedDraftDiscard").triggered()
+    compare(composer.text, "saved")
+  }
+
+  function test_at_most_eight_windows() {
+    const entries = []
+    for (let index = 0; index < 9; index++) entries.push(session("s" + index, "Chat " + index))
+    snapshot(entries)
+    for (let index = 0; index < 8; index++) body.popouts.popOut("s" + index)
+    compare(body.popouts.order.length, 8)
+    fakeBackend.received({type: "agent-present", requestId: "nine", id: "s8", presentation: "window", focus: false})
+    tryVerify(function() { return answers("nine").length === 1 })
+    compare(answers("nine")[0].outcome, "conflict")
+    compare(popout("s8"), null)
+    tryVerify(function() { return lastReport().popouts.length === 8 })
+    verify(lastReport().popouts.filter(entry => entry.active).length <= 1)
+  }
+
+  function test_agent_draft_and_navigation_reach_the_window() {
+    body.popouts.popOut("two")
+    const window = popout("two")
+    fakeBackend.sent = []
+    fakeBackend.received({type: "agent-draft", requestId: "d2", id: "two", text: "For the window",
+      ifDraftExists: "reject", focus: false, source: {sessionId: "x", title: "Helper"}})
+    const result = fakeBackend.sent.filter(message => message.action === "agent-draft-result").pop()
+    compare(result.outcome, "inserted")
+    compare(composerOf(window.view).text, "For the window")
+    compare(mainView().exportDraft("two").text, "")
+
+    // Go to session N with the current token focuses the existing window.
+    TestHost.show(true)
+    tryVerify(function() { return !window.active })
+    const token = body.client.sessions.navigationToken
+    fakeBackend.received({type: "agent-select", id: "two", token: token,
+      orderRevision: body.client.sessions.orderRevision})
+    tryVerify(function() { return window.active })
+    compare(body.panel.selectedSessionId, "one", "Navigation to a window does not move the sidebar")
+
+    // A stale token from before the change is ignored.
+    TestHost.show(true)
+    tryVerify(function() { return !window.active })
+    fakeBackend.received({type: "agent-select", id: "two", token: token,
+      orderRevision: body.client.sessions.orderRevision})
+    wait(100)
+    verify(!window.active)
+  }
+
+  function test_compact_rail_in_sidebar_presentation() {
+    TestHost.setPresentation("sidebar")
+    TestHost.show(true)
+    tryVerify(function() { return TestHost.opened && body.width > 300 })
+    const fullWidth = body.width
+    body.popouts.popOut("one")
+    tryCompare(body.panel, "compactRail", true)
+    tryCompare(TestHost, "compact", true)
+    tryVerify(function() { return body.width === TestHost.compactWidth })
+    tryVerify(function() { return lastReport().rail === "compact" && lastReport().id === "" })
+    verify(findChild(body, "compactRailControls").visible)
+
+    // Expand restores the full panel without returning the conversation.
+    mouseClick(findChild(body, "compactExpandButton"))
+    tryCompare(body.panel, "compactRail", false)
+    tryCompare(body, "width", fullWidth)
+    verify(popout("one") !== null)
+
+    // Selecting another tab shows it; selecting the popped tab compacts again.
+    body.panel.sessionSelected("two")
+    tryCompare(body.panel, "compactRail", false)
+    tryVerify(function() { return lastReport().id === "two" && lastReport().rail === "full" })
+    body.panel.sessionSelected("one")
+    tryCompare(body.panel, "compactRail", true)
+    tryVerify(function() { return popout("one").active })
+
+    // Return from the compact rail restores the full width with the chat.
+    mouseClick(findChild(body, "compactReturnButton"))
+    tryVerify(function() { return popout("one") === null })
+    tryCompare(body.panel, "compactRail", false)
+    tryCompare(body, "width", fullWidth)
+    tryVerify(function() { return lastReport().id === "one" && lastReport().rail === "full" })
+  }
+
+  function test_answers_in_a_visible_window_are_not_unread() {
+    body.popouts.popOut("two")
+    fakeBackend.received({type: "agent-session", session: Object.assign(session("two", "Second chat"),
+      {completedTurnId: "turn-1"})})
+    tryVerify(function() { return body.client.sessions.unreadIds["two"] !== true })
+    wait(50)
+    compare(body.client.sessions.unreadIds["two"], undefined)
+  }
+
+  function test_closed_conversation_keeps_unsent_text_recoverable() {
+    body.popouts.popOut("two")
+    composerOf(popout("two").view).text = "Unsent words"
+    fakeBackend.received({type: "agent-removed", id: "two"})
+    tryVerify(function() { return popout("two") === null })
+    compare(body.popouts.orphanDrafts.length, 1)
+    compare(body.popouts.orphanDrafts[0].text, "Unsent words")
+    compare(body.popouts.orphanDrafts[0].title, "Second chat")
+    verify(findChild(body, "orphanDrafts").visible)
+    tryVerify(function() { return lastReport().popouts.length === 0 })
+  }
+
+  function test_reconnect_keeps_windows_and_drafts_without_replay() {
+    body.popouts.popOut("two")
+    const window = popout("two")
+    composerOf(window.view).text = "Survives reconnect"
+    fakeBackend.disconnected()
+    fakeBackend.sent = []
+    snapshot([session("one", "First chat"), session("two", "Second chat")])
+    tryVerify(function() { return lastReport() && lastReport().popouts.length === 1 })
+    compare(popout("two"), window)
+    compare(composerOf(window.view).text, "Survives reconnect")
+    verify(!fakeBackend.sent.some(message => message.action === "send-agent"), "Nothing is replayed")
+  }
+
+  function test_recording_into_a_window_stays_bound_and_blocks_moves() {
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true, recording: null,
+      activitySessionId: "activity", activityHistoryCount: 0,
+      sessions: [session("one", "First chat"), session("two", "Second chat")]})
+    tryCompare(body.client, "recordingAvailable", true)
+    body.popouts.popOut("two")
+    const window = popout("two")
+    composerOf(window.view).text = "Before"
+    fakeBackend.sent = []
+    window.view.toggleRecording()
+    const start = fakeBackend.sent.filter(message => message.action === "start-recording").pop()
+    compare(start.id, "two")
+    fakeBackend.received({type: "result", action: "start-recording", result: {recordingId: "rec-1"}})
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      recording: {recordingId: "rec-1", sessionId: "two", state: "recording", capturing: true},
+      activitySessionId: "activity", activityHistoryCount: 0})
+    tryCompare(window.view, "recordingState", "recording")
+
+    fakeBackend.received({type: "recording-append", requestId: "a1", id: "two", recordingId: "rec-1", text: "spoken words"})
+    compare(composerOf(window.view).text, "Before spoken words")
+    // Acknowledged only once the listener accepted that exact edit.
+    compare(fakeBackend.sent.filter(message => message.action === "recording-append-result").length, 0)
+    const recorded = draftWrites().pop()
+    compare([recorded.id, recorded.text, recorded.recording], ["two", "Before spoken words", true])
+    confirmWrite(recorded)
+    const appended = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
+    compare([appended.requestId, appended.outcome, appended.length], ["a1", "appended", "Before spoken words".length])
+
+    // A listener that applied the chunk itself: the panel only acknowledges,
+    // the text arrives as an ordinary draft change.
+    fakeBackend.sent = []
+    fakeBackend.received({type: "recording-append", requestId: "a0", id: "two", recordingId: "rec-1", text: "x",
+      applied: true, length: 42})
+    compare(composerOf(window.view).text, "Before spoken words")
+    compare(draftWrites().length, 0)
+    const applied = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
+    compare([applied.requestId, applied.outcome, applied.length], ["a0", "appended", 42])
+
+    // A chunk the listener refuses is reported as not appended.
+    fakeBackend.received({type: "recording-append", requestId: "a2", id: "two", recordingId: "rec-1", text: "more"})
+    const second = draftWrites().pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: second.editId, result: {accepted: false, reason: "synthetic refusal"}})
+    const refused = fakeBackend.sent.filter(message => message.action === "recording-append-result").pop()
+    compare([refused.requestId, refused.outcome], ["a2", "unavailable"])
+    body.client.error = ""
+    findChild(window.view, "unsavedDraftDiscard").triggered()
+    compare(composerOf(window.view).text, "Before spoken words")
+
+    // Neither a native close nor the agent can move the composer meanwhile.
+    window.close()
+    verify(popout("two") !== null)
+    verify(window.notice.indexOf("Recording") >= 0)
+
+    fakeBackend.received({type: "recording-finished", id: "two", recordingId: "rec-1", complete: true})
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true, recording: null,
+      activitySessionId: "activity", activityHistoryCount: 0})
+    tryCompare(window.view, "recordingState", "")
+    window.close()
+    tryVerify(function() { return popout("two") === null })
+    compare(mainView().exportDraft("two").text, "Before spoken words")
+  }
+
+  function test_pending_choice_blocks_moves() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    window.view.pendingChoice = {id: "one", revision: "r", index: 0}
+    const result = body.popouts.returnToSidebar("one", {focus: false})
+    compare(result.outcome, "conflict")
+    verify(popout("one") !== null)
+    window.view.pendingChoice = null
+  }
+
+  function test_main_view_and_window_keep_their_own_choices() {
+    body.popouts.popOut("two")
+    const window = popout("two")
+    tryCompare(window, "visible", true)
+    function choice(id, revision, label) {
+      return {sessionId: id, revision: revision, index: 0, label: label, description: "",
+        available: true, voiceAvailable: false, voiceReason: ""}
+    }
+    fakeBackend.received({type: "agent-view-actions", actions: [
+      {sessionId: "one", stopRunId: "", choices: [choice("one", "set-one", "Sidebar choice")]},
+      {sessionId: "two", stopRunId: "", choices: [choice("two", "set-two", "Window choice")]}]})
+    // Speech goes to the window; the sidebar keeps its own clickable choice.
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "two", stopRunId: "", choices: [
+      Object.assign(choice("two", "set-two", "Window choice"), {voiceAvailable: true})]}})
+
+    const mainChoice = findChild(mainView(), "agentChoice-0")
+    const windowChoice = findChild(window.view, "agentChoice-0")
+    tryVerify(function() { return mainChoice !== null && windowChoice !== null })
+    compare(findChild(mainChoice, "choiceVoiceLabel").text, "[Sidebar choice]")
+    compare(findChild(windowChoice, "choiceVoiceLabel").text, "[Window choice]")
+    compare(mainChoice.selectable, true)
+    compare(mainChoice.voiceActive, false)
+    compare(windowChoice.voiceActive, true)
+    compare(findChild(mainView(), "voiceTargetStatus").text, "Voice: another conversation")
+    compare(findChild(window.view, "voiceTargetStatus").text, "Voice: this conversation")
+
+    // Speech moves to the sidebar (the window lost focus): neither view loses
+    // its choices; only the voice annotations and status move.
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "one", stopRunId: "", choices: [
+      Object.assign(choice("one", "set-one", "Sidebar choice"), {voiceAvailable: true})]}})
+    compare(findChild(window.view, "agentChoices").visible, true)
+    compare(findChild(window.view, "agentChoice-0").voiceActive, false)
+    compare(findChild(mainView(), "agentChoice-0").voiceActive, true)
+    compare(findChild(window.view, "voiceTargetStatus").text, "Voice: another conversation")
+
+    // A click in the non-target window sends that conversation's own identity.
+    fakeBackend.sent = []
+    // The window's new controls must be on screen before a real click.
+    verify(waitForRendering(window.contentItem))
+    mouseClick(findChild(window.view, "agentChoice-0"), 10, 10)
+    const sent = fakeBackend.sent.filter(message => message.action === "choose-agent")
+    compare(sent, [{action: "choose-agent", id: "two", revision: "set-two", index: 0}])
+    fakeBackend.received({type: "result", action: "choose-agent", result: "submitted"})
+    tryCompare(window.view, "pendingChoice", null)
+    fakeBackend.received({type: "agent-view-actions", actions: []})
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "", stopRunId: "", choices: []}})
+  }
+
+  function test_newer_typing_survives_a_delayed_acknowledgement() {
+    body.popouts.popOut("one")
+    const window = popout("one")
+    const popComposer = composerOf(window.view)
+    popComposer.text = "Sent text"
+    window.view.submit()
+    popComposer.text = "Sent text, then more"
+    fakeBackend.received({type: "result", action: "send-agent", result: "submitted"})
+    wait(50)
+    compare(popComposer.text, "Sent text, then more")
+  }
+
+  function test_hidden_main_surface_keeps_a_visible_window_reported() {
+    body.popouts.popOut("two")
+    TestHost.hide()
+    tryVerify(function() { return lastReport().visible === true && lastReport().id === ""
+      && lastReport().popouts.length === 1 })
+    compare(lastReport().keyboardFocused, false)
+
+    // Go to an unpopped session while only the window is visible: the
+    // sidebar shows it again.
+    fakeBackend.received({type: "agent-select", id: "one", token: body.client.sessions.navigationToken,
+      orderRevision: body.client.sessions.orderRevision})
+    tryCompare(TestHost, "opened", true)
+    compare(body.panel.selectedSessionId, "one")
+  }
+
+  function test_return_with_focus_leaves_the_panel_browser() {
+    body.popouts.popOut("two")
+    body.panel.openBrowser()
+    body.popouts.returnToSidebar("two", {focus: true})
+    tryVerify(function() { return popout("two") === null })
+    compare(body.panel.browserOpen, false)
+    compare(body.panel.selectedSessionId, "two")
+    tryCompare(composerOf(mainView()), "visible", true)
+    tryVerify(function() { return lastReport().id === "two" })
+
+    // The agent route: focus is confirmed only once the main surface really
+    // shows the returned conversation, not the browser above it.
+    body.popouts.popOut("two")
+    body.panel.openBrowser()
+    fakeBackend.received({type: "agent-present", requestId: "rb", id: "two", presentation: "sidebar", focus: true})
+    tryVerify(function() { return answers("rb").length === 1 })
+    compare(answers("rb")[0].outcome, "returned")
+    compare(body.panel.browserOpen, false)
+    compare(answers("rb")[0].focused, body.client.mainViewId === "two" && TestHost.active)
+    verify(answers("rb")[0].focused, "Offscreen activation succeeds, so focus is confirmed")
+  }
+
+  function test_browser_request_for_a_popped_conversation_is_not_selected() {
+    body.popouts.popOut("one")
+    fakeBackend.sent = []
+    fakeBackend.received({type: "agent-browser-open", requestId: "b1", id: "one", url: "https://example.com/"})
+    const answer = fakeBackend.sent.filter(message => message.action === "agent-browser-open-result").pop()
+    compare(answer.outcome, "not-selected")
+  }
+}

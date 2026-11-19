@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { Ajv, type ValidateFunction } from 'ajv';
 
 import { bundledLibraryDirectory } from './library-path.ts';
+import { sessionApplicationChatCapabilities } from '../session-apps/types.ts';
 import {
   boundedJson,
   object,
@@ -151,26 +152,57 @@ export class WidgetRegistry {
     ) {
       throw Error('Invalid widget manifest');
     }
-    const actions = object(input.actions);
-    if (Object.keys(actions).length > 20) {
-      throw Error('A widget may expose at most 20 actions');
+    this.validateOperations(object(input.actions), 'action');
+
+    // Session application bundles (src/session-apps/README.md) add read-only
+    // queries and an `application` block. Ordinary widgets omit both.
+    if (input.queries !== undefined) {
+      this.validateOperations(object(input.queries), 'query');
     }
-    for (const [name, definition] of Object.entries(actions)) {
-      const action = object(definition);
+    if (input.application !== undefined) {
+      const application = object(input.application);
+      const eventMode = application.eventMode;
+      const capabilities = application.capabilities;
       if (
-        !/^[a-z][a-z0-9_]{0,47}$/.test(name) ||
-        typeof action.description !== 'string' ||
-        action.description.length > 500
+        Object.keys(application).some((key) => key !== 'eventMode' && key !== 'capabilities') ||
+        (eventMode !== undefined && eventMode !== 'immediate' && eventMode !== 'next-input') ||
+        (capabilities !== undefined &&
+          (!Array.isArray(capabilities) ||
+            capabilities.length > sessionApplicationChatCapabilities.length ||
+            new Set(capabilities).size !== capabilities.length ||
+            capabilities.some((value) => !sessionApplicationChatCapabilities.includes(value))))
       ) {
-        throw Error('Invalid widget action');
+        throw Error('Invalid application manifest block');
       }
-      this.validateSchema(object(action.parameters));
-      this.validateSchema(object(action.returns));
     }
     this.validateSchema(object(input.parameters));
     object(input.example);
     boundedJson(input, 48 * 1024);
     return input as unknown as WidgetManifest;
+  }
+
+  /**
+   * Actions and application queries share one declaration shape: a
+   * description, bounded argument/result schemas and optional `agent`
+   * exposure (default true). At most 20 of each.
+   */
+  private validateOperations(operations: JsonObject, kind: 'action' | 'query'): void {
+    if (Object.keys(operations).length > 20) {
+      throw Error(`A widget may expose at most 20 ${kind === 'action' ? 'actions' : 'queries'}`);
+    }
+    for (const [name, definition] of Object.entries(operations)) {
+      const operation = object(definition);
+      if (
+        !/^[a-z][a-z0-9_]{0,47}$/.test(name) ||
+        typeof operation.description !== 'string' ||
+        operation.description.length > 500 ||
+        (operation.agent !== undefined && typeof operation.agent !== 'boolean')
+      ) {
+        throw Error(`Invalid widget ${kind}`);
+      }
+      this.validateSchema(object(operation.parameters));
+      this.validateSchema(object(operation.returns));
+    }
   }
 
   private validateSchema(schema: JsonObject): void {
@@ -294,6 +326,43 @@ export class WidgetRegistry {
       }
     }
     return { directory: this.library, widgets: catalog };
+  }
+
+  /**
+   * Session application bundles in the library: entries whose manifest has an
+   * `application` block. Same loader and failure tolerance as discover().
+   */
+  async discoverApplications(): Promise<{ name: string; description: string; version: number }[]> {
+    let entries: Dirent[];
+    try {
+      entries = await this.libraryEntries();
+    } catch (error) {
+      if (isMissingDirectory(error)) {
+        return [];
+      }
+      throw error;
+    }
+    entries.sort((first, second) => first.name.localeCompare(second.name));
+
+    const applications = [];
+    for (const entry of entries.slice(0, 200)) {
+      if (!entry.isDirectory() || !names.test(entry.name)) {
+        continue;
+      }
+      try {
+        const manifest = (await this.load(entry.name)).manifest;
+        if (manifest.application) {
+          applications.push({
+            name: manifest.name,
+            description: manifest.description,
+            version: manifest.version,
+          });
+        }
+      } catch {
+        // A half-written bundle during development cannot hide working entries.
+      }
+    }
+    return applications;
   }
 
   /** Reads the library's entries through a descriptor opened without symlinks. */

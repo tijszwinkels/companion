@@ -1,0 +1,2872 @@
+import QtQuick
+import QtTest
+import "@WINDOW@" as Native
+
+// The trusted HTML session surface in the real native host and QML body,
+// offscreen, against a synthetic listener transport (the same Client,
+// AgentSessionState, PanelContent, SessionView and pop-out controller as the
+// product). The session application view loads from a synthetic loopback
+// server standing in for the listener's application endpoint; it is reached
+// only through the real restricted WidgetProfile broker.
+//
+// Not covered here: the listener's real application service (runtime
+// branch), compositor focus, and real speech routing.
+TestCase {
+  id: testCase
+  name: "SessionSurface"
+  when: windowShown
+  QtObject {
+    id: fakeBackend
+    property var sent: []
+    signal received(var message)
+    signal disconnected()
+    function send(message) { sent = sent.concat([message]); return true }
+  }
+  Component {
+    id: bodyComponent
+    Native.WindowContent {
+      host: TestHost
+      transport: fakeBackend
+      parent: TestHost.contentItem
+    }
+  }
+  property var body: null
+  readonly property string viewUrl: "@VIEW_URL@"
+  // Reads the test process's own clipboard. Offscreen Qt keeps it in this
+  // process only; the desktop clipboard is never touched.
+  TextEdit { id: clipboardProbe; visible: false; textFormat: TextEdit.PlainText }
+  function clipboardText() {
+    clipboardProbe.text = ""
+    clipboardProbe.paste()
+    return clipboardProbe.text
+  }
+
+  function session(id, title, application) {
+    const entry = {id: id, title: title, status: "idle", messages: [
+      {id: id + "-question", role: "user", kind: "user", text: "Plan the week",
+       toolName: "", input: "", state: "", screenshot: ""},
+      {id: id + "-answer", role: "assistant", kind: "text",
+       text: "Here is **the plan** for " + title + ". <img src=x onerror=alert(1)> stays text.",
+       toolName: "", input: "", state: "", screenshot: ""},
+      {id: id + "-tools", role: "tool", kind: "tool", text: "", toolName: "read",
+       input: "", state: "", screenshot: "", toolGroup: {count: 2, revision: "r1"}}
+    ]}
+    if (application) entry.application = application
+    return entry
+  }
+  function application(version, extra) {
+    return Object.assign({id: "app-1", name: version === 1 ? "task-list" : "task-board", version: version,
+      revision: 3, viewUrl: testCase.viewUrl, text: "Three tasks", eventMode: "immediate",
+      eventStatus: {state: "idle", undelivered: 0, failed: 0}}, extra || {})
+  }
+  function snapshot(entries) {
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: entries})
+  }
+  function mainView() { return body.panel.conversationView }
+  function surfaceOf(view) { return findChild(view, "htmlSurfaceLoader").item }
+  function chatOf(view) { return findChild(view, "trustedChatBrowser") }
+  function appOf(view) { return findChild(view, "sessionAppBrowser") }
+  function composerOf(view) { return findChild(view, "sessionComposer") }
+
+  function evaluate(browser, script) {
+    let done = false
+    let result = null
+    browser.runJavaScript(script, function(value) { result = value; done = true })
+    tryVerify(function() { return done }, 10000, "script answered: " + script.slice(0, 60))
+    return result
+  }
+  function waitForChat(view) {
+    tryVerify(function() { return view.htmlActive }, 10000, "HTML surface active")
+    const surface = surfaceOf(view)
+    tryVerify(function() { return findChild(surface, "trustedChat").pageReady }, 15000, "chat page ready")
+    return chatOf(view)
+  }
+  function messages(browser) {
+    return evaluate(browser, "document.querySelectorAll('.message').length")
+  }
+  // The page shows the host draft before the person types (a host change
+  // still on its way makes the page refuse the edit, by design).
+  function settled(view, browser) {
+    tryVerify(function() { return textarea(browser) === composerOf(view).text }, 5000, "page shows the host draft")
+  }
+  function typeInto(browser, text) {
+    evaluate(browser, "(() => { const area = document.querySelector('textarea'); area.focus();"
+      + " area.value = " + JSON.stringify(text) + "; area.setSelectionRange(area.value.length, area.value.length);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+  }
+  function clickButton(browser, label) {
+    return evaluate(browser, "(() => { const button = [...document.querySelectorAll('button')]"
+      + ".find(entry => entry.textContent.trim() === " + JSON.stringify(label) + ");"
+      + " if (!button || button.disabled) return false; button.click(); return true })()")
+  }
+  function textarea(browser) {
+    return evaluate(browser, "document.querySelector('textarea').value")
+  }
+
+  // The synthetic endpoint serves the code version the listener would have
+  // published; the descriptor update below announces it to the view.
+  function setServerVersion(version) {
+    let done = false
+    const request = new XMLHttpRequest()
+    request.onreadystatechange = function() { if (request.readyState === XMLHttpRequest.DONE) done = true }
+    request.open("GET", "@CONTROL_URL@/version/" + version)
+    request.send()
+    tryVerify(function() { return done })
+    compare(request.status, 200)
+  }
+
+  function setServerStateFailure(failing) {
+    let done = false
+    const request = new XMLHttpRequest()
+    request.onreadystatechange = function() { if (request.readyState === XMLHttpRequest.DONE) done = true }
+    request.open("GET", "@CONTROL_URL@/state-failure/" + (failing ? 1 : 0))
+    request.send()
+    tryVerify(function() { return done })
+    compare(request.status, 200)
+  }
+
+  function initTestCase() {
+    body = bodyComponent.createObject(null)
+    verify(body !== null)
+    verify(body.htmlSessions, "the test host opted into the HTML surface")
+    TestHost.attach(body)
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    snapshot([session("one", "First chat", null)])
+    tryVerify(function() { return body.width > 0 && body.panel.selectedSession !== null })
+  }
+  function cleanupTestCase() {
+    TestHost.hide()
+    body.destroy()
+  }
+  function init() {
+    // A fresh listener draft map per test (this transport never confirms).
+    body.client.ownDraftEdits = ({})
+    body.client.draftEditsInFlight = ({})
+    body.client.latestDraftEdits = ({})
+    body.client.listenerDrafts = ({})
+    body.client.unsavedDrafts = ({})
+    body.client.serverDrafts = ({})
+    if (body.panel && mainView()) mainView().unresolvedInput = null
+    TestHost.setPresentation("window")
+    TestHost.show(true)
+    snapshot([session("one", "First chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    mainView().classicView = false
+  }
+  // The listener owns drafts; this fake transport has no listener, so tests
+  // set or clear a draft the way the listener reports it to every view.
+  function listenerDraft(id, text) {
+    // A listener change that follows every earlier write of this UI (which
+    // this transport never confirms).
+    delete body.client.draftEditsInFlight[id]
+    delete body.client.latestDraftEdits[id]
+    body.client.markUnsaved(id, "")
+    body.client.receive({type: "draft", id: id, text: text, source: "", sequence: 0})
+  }
+  // The listener's answer to this UI's latest edit of a conversation (this
+  // transport never answers by itself): refused, or confirmed as saved.
+  function refuseLatestEdit(id) {
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set" && message.id === id).pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: write.editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    body.client.error = ""
+  }
+  function confirmLatestEdit(id) {
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set" && message.id === id).pop()
+    body.client.receive({type: "draft", id: id, text: write.text, editId: write.editId, source: "", sequence: 0})
+  }
+  function unsavedNotice(chat) {
+    return evaluate(chat, "document.querySelector('.unsaved') !== null")
+  }
+  // An edit longer than the listener keeps from an editor (twice the
+  // 8000-unit Send limit), but within what the page hands to the host.
+  readonly property string overLong: "o".repeat(16001)
+  function cleanup() {
+    for (const id of body.popouts.order.slice()) {
+      body.popouts.windows[id].view.clearDraft(id)
+      body.popouts.returnToSidebar(id, {focus: false})
+    }
+    for (const id of Object.keys(body.client.serverDrafts)) listenerDraft(id, "")
+    mainView().clearDraft("one")
+    tryCompare(body.popouts, "report", [])
+  }
+
+  // Every conversation starts as trusted HTML chat backed by the same
+  // SessionView model: transcript rows, host-owned draft and Send.
+  function test_a_html_chat_shows_transcript_and_edits_the_host_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    tryVerify(function() { return messages(chat) === 3 })
+    compare(evaluate(chat, "document.querySelector('.message.assistant .markdown strong').textContent"), "the plan")
+    // Agent text is escaped: no element was created from its markup.
+    compare(evaluate(chat, "document.querySelector('.markdown img') === null"), true)
+    compare(evaluate(chat, "document.querySelector('.message.assistant').textContent.includes('<img src=x')"), true)
+    compare(evaluate(chat, "document.querySelector('.message.tool').textContent.includes('2 tool calls')"), true)
+    // The trusted page reaches nothing but its own fixed bundle: no loopback
+    // capability, no other bundle path, no file URL.
+    evaluate(chat, "(async () => { const probe = async url => { try { await fetch(url); return 'loaded' } catch (error) { return 'blocked' } };"
+      + " window.probes = [await probe(" + JSON.stringify(testCase.viewUrl + "/state") + "), await probe('companion-shell://chat/../package.json'),"
+      + " await probe('file:///etc/hostname'), await probe('companion-widget://view/state')]; })()")
+    tryVerify(function() { return evaluate(chat, "window.probes ? window.probes.join(',') : ''") !== "" })
+    compare(evaluate(chat, "window.probes.join(',')"), "blocked,blocked,blocked,blocked")
+    // The classic composer is hidden, not a second input.
+    compare(findChild(view, "sessionTranscript").visible, false)
+
+    typeInto(chat, "hello from html")
+    tryCompare(composerOf(view), "text", "hello from html")
+    compare(view.exportDraft("one").text, "hello from html")
+
+    // An agent draft appended by the listener reaches the HTML composer.
+    fakeBackend.received({type: "agent-draft", requestId: "d1", id: "one", text: "Agent addition",
+      ifDraftExists: "append", focus: false, source: {sessionId: "x", title: "Helper"}})
+    tryVerify(function() { return textarea(chat) === "hello from html\n\nAgent addition" })
+    compare(evaluate(chat, "document.querySelector('.composer').textContent.includes('Drafted by agent · Helper')"), true)
+
+    // Send from HTML goes through the same pending-send path.
+    fakeBackend.sent = []
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
+    const request = fakeBackend.sent.find(message => message.action === "send-agent")
+    compare(request.id, "one")
+    compare(request.text, "hello from html\n\nAgent addition")
+    verify(view.pendingSubmission !== null)
+    // Pending: Send is disabled in the page too.
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+    tryVerify(function() { return textarea(chat) === "" })
+  }
+
+  // SUPERSEDED: an edit based on an older draft used to be refused and kept
+  // as refused text. The listener now keeps the last edit it receives (last
+  // write wins). An edit naming another conversation goes to that
+  // conversation's draft; the one shown is untouched.
+  function test_b_page_edits_win_and_keep_their_conversation() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "first")
+    tryCompare(composerOf(view), "text", "first")
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { window.__answer = null; const bridge = window.__companionBridge;"
+      + " bridge.editDraft('one', -1, 'stale but last', 14, answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    compare(composerOf(view).text, "stale but last")
+    let writes = fakeBackend.sent.filter(message => message.action === "draft-set")
+    compare(writes.pop().text, "stale but last")
+    // Another conversation's ID: its own draft, not the shown one.
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('two', "
+      + view.draftRevision + ", 'for two', 7, answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    compare(composerOf(view).text, "stale but last")
+    writes = fakeBackend.sent.filter(message => message.action === "draft-set")
+    compare([writes[0].id, writes[0].text], ["two", "for two"])
+    compare(view.exportDraft("two").text, "for two")
+    listenerDraft("two", "")
+    view.clearDraft("two")
+  }
+
+  // Send sends exactly the page's text even when another editor emptied the
+  // host draft meanwhile (admission is separate from the host text); a draft
+  // changed after that send is not cleared by its confirmation.
+  function test_ba_page_send_uses_its_own_text_whatever_the_host_holds() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "page text to send")
+    tryCompare(composerOf(view), "text", "page text to send")
+    listenerDraft("one", "")
+    tryCompare(composerOf(view), "text", "")
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.send('one', 0, 'page text to send',"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    const sends = fakeBackend.sent.filter(message => message.action === "send-agent")
+    compare(sends.length, 1)
+    compare(sends[0].text, "page text to send")
+    // Typing continues before the confirmation: the newer draft stays.
+    composerOf(view).text = "typed after sending"
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryVerify(function() { return view.pendingSubmission === null })
+    compare(composerOf(view).text, "typed after sending")
+    composerOf(view).text = ""
+  }
+
+  // Text the listener refused stays on screen as not saved in the HTML chat
+  // too: a notice with Save and Discard, and Close session waits for it.
+  function test_bb_unsaved_text_is_shown_and_blocks_close() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    listenerDraft("one", "kept by the listener")
+    tryVerify(function() { return textarea(chat) === "kept by the listener" })
+    fakeBackend.sent = []
+    typeInto(chat, "refused by the listener")
+    tryCompare(composerOf(view), "text", "refused by the listener")
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set").pop()
+    body.client.receive({type: "result", action: "draft-set", requestId: write.editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    body.client.error = ""
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unsaved') !== null") === true })
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Close session').disabled"), true)
+    compare(textarea(chat), "refused by the listener")
+    fakeBackend.sent = []
+    verify(clickButton(chat, "Save"))
+    const again = fakeBackend.sent.filter(message => message.action === "draft-set")
+    compare(again.map(entry => entry.text), ["refused by the listener"])
+    body.client.receive({type: "result", action: "draft-set", requestId: again[0].editId,
+      result: {accepted: false, reason: "synthetic refusal"}})
+    body.client.error = ""
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unsaved') !== null") === true })
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "kept by the listener" })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unsaved') === null") === true })
+    listenerDraft("one", "")
+  }
+
+  // The trusted page reports composer focus for voice routing; focusing the
+  // conversation (focus shortcut) reaches the HTML composer.
+  function test_c_composer_focus_is_reported_by_the_trusted_view() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    view.focusComposer()
+    tryCompare(view, "composerFocusId", "one", 5000)
+    compare(evaluate(chat, "document.activeElement === document.querySelector('textarea')"), true)
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+  }
+
+  // The agent applies an application: the same conversation shows it as its
+  // full content; the draft stays in the host model and returns with Chat.
+  function test_d_application_replaces_chat_and_keeps_draft_and_history() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "unsent words")
+    tryCompare(composerOf(view), "text", "unsent words")
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(1))})
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    compare(body.panel.selectedSessionId, "one")
+    compare(body.client.sessions.sessions.length, 1)
+    tryVerify(function() { return appOf(view) !== null })
+    const app = appOf(view)
+    tryVerify(function() { return app.rendered }, 15000, app.error)
+    tryVerify(function() { return evaluate(app, "document.body.dataset.layout") === "list" })
+    // The application has no bridge to the native host and cannot load the
+    // trusted chat bundle. (The synthetic page's own CSP allows these URLs, so
+    // the refusal comes from the restricted profile's request interceptor.)
+    compare(evaluate(app, "typeof qt === 'undefined' && typeof QWebChannel === 'undefined'"), true)
+    evaluate(app, "(async () => { try { await fetch('companion-shell://chat/chat.js'); window.shellProbe = 'loaded' } catch (error) { window.shellProbe = 'blocked' } })()")
+    tryVerify(function() { return evaluate(app, "window.shellProbe || ''") !== "" })
+    compare(evaluate(app, "window.shellProbe"), "blocked")
+    compare(view.composerFocusId, "")
+    compare(findChild(view, "surfaceStatus").text.includes("Your unsent message is kept in Chat."), true)
+
+    // Read-only query and targeted action through the fixed broker paths.
+    evaluate(app, "window.runChecks()")
+    tryVerify(function() { return evaluate(app, "window.checks && window.checks.done") === true }, 10000)
+    const checks = evaluate(app, "JSON.stringify(window.checks)")
+    const parsed = JSON.parse(checks)
+    compare(parsed.state.revision, 3)
+    compare(parsed.query.result.count, 3)
+    compare(parsed.action.revision, 4)
+    compare(parsed.blocked, true)
+    // Refused requests settle as failures in the page, promptly: a 409
+    // action, a 400 query, an oversized body and a wrong method. They change
+    // nothing, do not mark the view broken, and later valid actions work.
+    compare(parsed.refusedAction, "rejected:TypeError")
+    compare(parsed.refusedQuery, "rejected:TypeError")
+    compare(parsed.oversized, "rejected:TypeError")
+    compare(parsed.wrongMethod, "rejected:TypeError")
+    compare(parsed.revisionAfterRefusals, 4)
+    compare(parsed.afterRefusal.revision, 5)
+    compare(app.error, "")
+
+    // A failed state load rejects promptly and shows the view error; the
+    // next successful load clears it.
+    setServerStateFailure(true)
+    evaluate(app, "window.runStateProbe()")
+    tryVerify(function() { return evaluate(app, "window.stateProbe || ''") !== "" }, 10000)
+    compare(evaluate(app, "window.stateProbe"), "rejected:TypeError")
+    tryCompare(app, "error", "Could not load widget data")
+    setServerStateFailure(false)
+    evaluate(app, "window.runStateRecovery()")
+    tryVerify(function() { return evaluate(app, "window.stateRecovery || 0") === 5 }, 10000)
+    tryCompare(app, "error", "")
+
+    // Back to chat: same conversation, same draft, same history rows.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    tryVerify(function() { return textarea(chat) === "unsent words" })
+    compare(messages(chat), 3)
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+  }
+
+  // Replaced code keeps the same capability and conversation; the view shows
+  // the new layout. A replacement while input is unsettled waits visibly.
+  function test_e_code_replacement_and_safe_gating() {
+    const view = mainView()
+    waitForChat(view)
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(1))})
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    tryVerify(function() { return appOf(view) !== null && appOf(view).rendered }, 15000)
+
+    setServerVersion(2)
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(2))})
+    tryCompare(surface, "mode", "app")
+    // The native view reloads the same capability for the new code version.
+    const app = appOf(view)
+    tryVerify(function() { return evaluate(app, "document.body && document.body.dataset.layout") === "board" }, 15000)
+    compare(findChild(view, "surfaceAppButton").text, "● task-board · v2")
+
+    // In chat with a send still unconfirmed, a further replacement does not
+    // switch the view; it says why and waits.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    const chat = chatOf(view)
+    typeInto(chat, "pending one")
+    tryCompare(composerOf(view), "text", "pending one")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(3))})
+    tryVerify(function() { return findChild(view, "surfaceStatus").text.includes("is ready") })
+    compare(surface.mode, "chat")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+
+    // Delivery status and restore failure are shown truthfully.
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(3, {
+      eventStatus: {state: "failed", undelivered: 0, failed: 1, failure: "The turn was stopped"}}))})
+    tryVerify(function() { return findChild(view, "surfaceStatus").text.includes("may not have reached the agent") })
+    const broken = application(3, {error: "Bundle missing"})
+    delete broken.viewUrl
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", broken)})
+    tryVerify(function() { return findChild(view, "surfaceStatus").text.includes("Application unavailable: Bundle missing") })
+
+    // Removing the application returns to chat.
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", null)})
+    tryCompare(surface, "mode", "chat")
+  }
+
+  // Classic view is the trusted recovery: the same draft in the QML composer.
+  function test_f_classic_view_recovery_keeps_the_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "recover me")
+    tryCompare(composerOf(view), "text", "recover me")
+    verify(clickButton(chat, "Classic view"))
+    tryCompare(view, "htmlActive", false)
+    compare(findChild(view, "sessionTranscript").visible, true)
+    compare(composerOf(view).text, "recover me")
+    mouseClick(findChild(view, "htmlViewSession"))
+    tryCompare(view, "htmlActive", true)
+    tryVerify(function() { return textarea(chatOf(view)) === "recover me" })
+  }
+
+  // A pop-out window is a second view of the same conversation; its HTML
+  // surface takes over the draft through the existing handover.
+  function test_g_popout_moves_draft_into_its_html_chat() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "moving text")
+    tryCompare(composerOf(view), "text", "moving text")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    tryVerify(function() { return textarea(windowChat) === "moving text" })
+    compare(view.exportDraft("one").text, "")
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+    tryVerify(function() { return textarea(chatOf(mainView())) === "moving text" })
+  }
+
+  // The trusted HTML rail lists the same conversations in the same order and
+  // drives selection, pop-out and return through the panel's own signals.
+  function test_h_html_rail_selects_pops_out_and_returns() {
+    snapshot([session("one", "First chat", null), session("two", "Second <b>chat</b>", null)])
+    tryVerify(function() { return body.panel.htmlRailActive }, 10000, "HTML rail active")
+    compare(findChild(body.panel, "sessionTabList").visible, false)
+    const rail = findChild(body.panel, "trustedRailBrowser")
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session').length") === 2 }, 15000)
+    // Titles are text, not markup.
+    compare(evaluate(rail, "document.querySelectorAll('.session .title')[1].textContent"), "Second <b>chat</b>")
+    compare(evaluate(rail, "document.querySelector('.session b') === null"), true)
+
+    evaluate(rail, "document.querySelectorAll('.session')[1].click()")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session')[1].classList.contains('selected')") === true })
+
+    evaluate(rail, "[...document.querySelectorAll('.session')[1].querySelectorAll('button')].find(b => b.textContent === 'Pop out').click()")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session')[1].textContent.includes('↗')") === true })
+    evaluate(rail, "[...document.querySelectorAll('.session')[1].querySelectorAll('button')].find(b => b.textContent === 'Return').click()")
+    tryVerify(function() { return body.popouts.windows["two"] === undefined })
+    // Activity stays native and reachable.
+    verify(findChild(body.panel, "activityTab").visible)
+  }
+
+  // Choices, run-scoped Stop, voice status and Record in the HTML chat use
+  // the conversation's own controls and the same pending rules.
+  function test_i_choices_stop_and_record_in_html_chat() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    const choice = {sessionId: "one", revision: "set-1", index: 0, label: "Ship it", description: "",
+      available: true, voiceAvailable: true, voiceReason: ""}
+    fakeBackend.received({type: "agent-view-actions", actions: [{sessionId: "one", stopRunId: "run-7", choices: [choice]}]})
+    fakeBackend.received({type: "agent-actions", actions: {sessionId: "one", stopRunId: "run-7", choices: [choice]}})
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.controls') !== null && document.querySelector('.controls').textContent.includes('[Ship it]')") === true }, 5000)
+    compare(evaluate(chat, "document.querySelector('.controls .voice').textContent"), "Voice: this conversation")
+
+    fakeBackend.sent = []
+    verify(clickButton(chat, "[Ship it]"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "choose-agent") })
+    const chosen = fakeBackend.sent.find(message => message.action === "choose-agent")
+    compare([chosen.id, chosen.revision, chosen.index], ["one", "set-1", 0])
+    verify(view.pendingChoice !== null)
+    // Pending: the choice cannot be sent twice.
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.choice')].find(b => b.textContent.includes('Ship it')).disabled") === true })
+    fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+    tryCompare(view, "pendingChoice", null)
+
+    fakeBackend.sent = []
+    verify(clickButton(chat, "[stop]"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "stop-agent-run" && message.runId === "run-7") })
+
+    // Pausing is shown truthfully.
+    snapshot([session("one", "First chat", null)])
+    fakeBackend.received({type: "state", protocol: 1, ready: true, paused: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessions: [session("one", "First chat", null)]})
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.controls .voice') && document.querySelector('.controls .voice').textContent") === "Voice paused" }, 5000)
+
+    fakeBackend.received({type: "agent-view-actions", actions: []})
+    fakeBackend.received({type: "agent-actions", actions: {}})
+    fakeBackend.sent = []
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "start-recording" && message.id === "one") })
+    // The listener refuses it (no microphone in this test), so later cases
+    // can record again.
+    fakeBackend.received({type: "error", action: "start-recording", message: "Recording is unavailable in this test"})
+    tryCompare(mainView(), "ownRecording", null)
+  }
+
+  // A conversation that never had an application, shown alone in the panel.
+  function freshChat(id) {
+    snapshot([session(id, "Fresh " + id, null)])
+    body.client.sessions.select(id)
+    tryCompare(body.panel, "selectedSessionId", id)
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    return chat
+  }
+  // The agent's first application arrives while input is unsettled: the
+  // view stays in chat with the same draft, says the application is ready,
+  // and opens it only when the person chooses it.
+  function expectFirstApplicationWaits(id, blocker) {
+    const view = mainView()
+    fakeBackend.received({type: "agent-session", session: session(id, "Fresh " + id, application(1))})
+    const surface = surfaceOf(view)
+    tryVerify(function() { return surface.readyNotice.includes("is ready") && surface.readyNotice.includes(blocker) },
+      5000, "ready notice: " + surface.readyNotice)
+    compare(surface.mode, "chat")
+    wait(200)
+    compare(surface.mode, "chat")
+    compare(findChild(view, "surfaceStatus").text.includes("is ready"), true)
+    compare(findChild(view, "sessionApp").visible, false)
+    return surface
+  }
+
+  function test_j_first_application_waits_while_typing() {
+    const chat = freshChat("typing")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "still typing")
+    tryCompare(view, "composerFocusId", "typing", 5000)
+    const surface = expectFirstApplicationWaits("typing", "you are typing")
+    compare(composerOf(view).text, "still typing")
+    compare(textarea(chat), "still typing")
+    compare(view.composerFocusId, "typing")
+    // The person opens it; the draft stays in chat.
+    view.releaseComposerFocus()
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+    compare(surface.readyNotice, "")
+    compare(composerOf(view).text, "still typing")
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryVerify(function() { return textarea(chat) === "still typing" })
+  }
+
+  function test_k_first_application_waits_while_send_is_pending() {
+    const chat = freshChat("sending")
+    const view = mainView()
+    // Native draft acceptance precedes the page's edit acknowledgement/render.
+    // Hold that acknowledgement to prove the former is not a Send-ready fence:
+    // the page intentionally disables Send until the exact edit is confirmed.
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    holdNextAnswer(chat)
+    typeInto(chat, "on its way")
+    tryCompare(composerOf(view), "text", "on its way")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    compare(clickButton(chat, "Send"), false)
+    compare(view.pendingSubmission, null)
+    releaseHeld(chat)
+    // Restore the bridge before later tests call its optional-callback overload.
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "page has acknowledged the edit and enabled Send")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    expectFirstApplicationWaits("sending", "a message is still being sent")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+    compare(surfaceOf(view).mode, "chat")
+  }
+
+  function test_l_first_application_waits_while_choice_is_pending() {
+    const chat = freshChat("choosing")
+    const view = mainView()
+    view.releaseComposerFocus()
+    const choice = {sessionId: "choosing", revision: "c-1", index: 0, label: "Yes", description: "",
+      available: true, voiceAvailable: false, voiceReason: ""}
+    fakeBackend.received({type: "agent-view-actions", actions: [{sessionId: "choosing", stopRunId: "", choices: [choice]}]})
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.choice')].some(b => b.textContent.includes('Yes'))") === true }, 5000)
+    verify(clickButton(chat, "[Yes]"))
+    tryVerify(function() { return view.pendingChoice !== null })
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    expectFirstApplicationWaits("choosing", "a choice is still being confirmed")
+    fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+    tryCompare(view, "pendingChoice", null)
+    fakeBackend.received({type: "agent-view-actions", actions: []})
+  }
+
+  function test_m_first_application_waits_while_recording() {
+    const chat = freshChat("recording")
+    const view = mainView()
+    view.releaseComposerFocus()
+    typeInto(chat, "spoken so far")
+    tryCompare(composerOf(view), "text", "spoken so far")
+    view.releaseComposerFocus()
+    tryCompare(view, "composerFocusId", "")
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return view.recordingBusy })
+    expectFirstApplicationWaits("recording", "recording into the text box is still running")
+    compare(composerOf(view).text, "spoken so far")
+    // The listener refuses the recording; the draft stays.
+    fakeBackend.received({type: "error", action: "start-recording", message: "Recording is unavailable in this test"})
+    tryCompare(view, "ownRecording", null)
+    compare(composerOf(view).text, "spoken so far")
+    compare(surfaceOf(view).mode, "chat")
+  }
+
+  // Opening a conversation that already has an application (first sight in
+  // this view) shows the application: that is its surface, and nothing in
+  // this view was being typed or confirmed for it.
+  function test_n_other_conversation_with_application_opens_in_app() {
+    const chat = freshChat("plain")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "draft here")
+    tryCompare(view, "composerFocusId", "plain", 5000)
+    snapshot([session("plain", "Fresh plain", null), session("withapp", "Has app", application(1))])
+    body.client.sessions.select("withapp")
+    tryCompare(body.panel, "selectedSessionId", "withapp")
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    compare(surface.readyNotice, "")
+    // Back to the first conversation: chat with its draft, no application.
+    body.client.sessions.select("plain")
+    tryCompare(surface, "mode", "chat")
+    tryVerify(function() { return textarea(chat) === "draft here" })
+  }
+
+  // S1: Enter right after an edit that cannot be kept sends nothing: the
+  // text stays in the editor, the listener refuses it, it shows as not
+  // saved, and after Discard Send sends exactly the listener's text.
+  function test_p_send_never_submits_older_text_after_a_refused_edit() {
+    const chat = freshChat("sendcheck")
+    const view = mainView()
+    view.focusComposer()
+    listenerDraft("sendcheck", "host old")
+    tryVerify(function() { return textarea(chat) === "host old" })
+    fakeBackend.sent = []
+    // Over the edit limit through an input that cannot be cancelled, then
+    // Enter in the same moment: nothing is sent.
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'y'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true}));"
+      + " area.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "text", "y".repeat(16001), 5000)
+    refuseLatestEdit("sendcheck")
+    tryVerify(function() { return unsavedNotice(chat) === true }, 5000)
+    wait(300)
+    compare(fakeBackend.sent.filter(message => message.action === "send-agent").length, 0)
+    compare(textarea(chat), "y".repeat(16001))
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === true })
+    // Discarded, the listener's text is shown again and sends exactly.
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "host old" })
+    tryVerify(function() { return unsavedNotice(chat) === false })
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled") === false })
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "send-agent") })
+    compare(fakeBackend.sent.find(message => message.action === "send-agent").text, "host old")
+    // The listener's clear-if-equal (its draft still is the sent text)
+    // arrives before the confirmation; this UI writes no empty draft (R3-1).
+    body.client.receive({type: "draft", id: "sendcheck", text: "", source: "", sequence: 0})
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(composerOf(view), "text", "")
+  }
+
+  // SUPERSEDED: refused text used to be a separate host-held record per
+  // conversation (refusedDrafts, "Use my text"). Now an over-limit edit is
+  // the conversation's one text, shown as not saved: it survives switching
+  // conversations, blocks moving the conversation until saved or
+  // discarded, and saves once shortened.
+  function test_q_unsaved_text_survives_navigation_and_gates_handover() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("one", "saved one")
+    settled(view, chat)
+    compare(textarea(chat), "saved one")
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
+    tryCompare(composerOf(view), "text", testCase.overLong)
+    refuseLatestEdit("one")
+    tryVerify(function() { return body.client.unsavedDrafts["one"] !== undefined })
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return unsavedNotice(chat) === false && textarea(chat) === "" }, 5000)
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return textarea(chat) === testCase.overLong && unsavedNotice(chat) === true }, 5000)
+    // The conversation does not move to a window while its text is not saved.
+    body.popouts.popOut("one")
+    compare(body.popouts.windows["one"], undefined)
+    verify(body.client.error.includes("not saved yet"), body.client.error)
+    body.client.error = ""
+    // Shortened, it is an ordinary edit; the listener's confirmation saves it.
+    view.focusComposer()
+    typeInto(chat, "shorter")
+    tryCompare(composerOf(view), "text", "shorter")
+    confirmLatestEdit("one")
+    tryVerify(function() { return body.client.unsavedDrafts["one"] === undefined })
+    tryVerify(function() { return unsavedNotice(chat) === false })
+    compare(textarea(chat), "shorter")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+  }
+
+  // S3: moving the cursor without typing (keyboard or mouse) reaches the
+  // host draft, so Classic view and handover resume at that position.
+  function test_r_cursor_only_movement_is_synchronized() {
+    const chat = freshChat("cursor")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "abcdef")
+    tryCompare(composerOf(view), "text", "abcdef")
+    compare(view.exportDraft("cursor").cursor, 6)
+    // Real key events through the native view.
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    for (let index = 0; index < 4; index++) keyClick(Qt.Key_Left)
+    tryCompare(composerOf(view), "cursorPosition", 2, 5000)
+    compare(view.exportDraft("cursor").cursor, 2)
+    // A pointer placement (synthetic DOM selection plus mouseup).
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.setSelectionRange(5, 5);"
+      + " area.dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "cursorPosition", 5, 5000)
+    // Handover keeps it.
+    body.popouts.popOut("cursor")
+    tryVerify(function() { return body.popouts.windows["cursor"] !== undefined })
+    compare(body.popouts.windows["cursor"].view.exportDraft("cursor").cursor, 5)
+    body.popouts.returnToSidebar("cursor", {focus: false})
+    tryVerify(function() { return body.popouts.windows["cursor"] === undefined })
+  }
+
+  // S4: until the trusted page completed its handshake, the native view
+  // stays visible (a fresh pop-out starts in the classic presentation).
+  function test_s_native_view_stays_until_the_page_is_operational() {
+    const chat = freshChat("startup")
+    body.popouts.popOut("startup")
+    const window = body.popouts.windows["startup"]
+    verify(window !== undefined)
+    // Synchronously after creation the page cannot have called ready().
+    compare(window.view.htmlActive, false)
+    verify(findChild(window.view, "sessionComposer").visible)
+    tryCompare(window.view, "htmlActive", true, 15000)
+    body.popouts.returnToSidebar("startup", {focus: false})
+    tryVerify(function() { return body.popouts.windows["startup"] === undefined })
+  }
+
+  // S4: a trusted page that loads but never completes its handshake (here:
+  // its script is missing) fails within the bound instead of hiding the
+  // native presentation forever. Applies to chat and rail.
+  function test_t_page_without_handshake_fails_within_its_bound() {
+    for (const name of ["TrustedChatView.qml", "TrustedRailView.qml"]) {
+      const component = Qt.createComponent("@SESSION_APPS@/" + name)
+      verify(component.status === Component.Ready, component.errorString())
+      const view = component.createObject(testCase, {bundleDirectory: "@BROKEN_BUNDLE@",
+        readyTimeoutMilliseconds: 1500, width: 300, height: 300})
+      verify(view !== null)
+      compare(view.failed, false)
+      tryCompare(view, "failed", true, 8000)
+      compare(view.operational, false)
+      view.destroy()
+    }
+  }
+  // Kestrel R2 S4: readiness is bounded for every document, not only the
+  // first: a working page reloaded into a script that fails stops counting
+  // as operational; a working page reloaded normally stays healthy.
+  function test_t2_reloads_are_bounded_too() {
+    const cases = [{name: "TrustedChatView.qml", bundle: "@SECOND_LOAD_BROKEN@"},
+      {name: "TrustedRailView.qml", bundle: "@SECOND_LOAD_BROKEN@"}]
+    for (const entry of cases) {
+      const component = Qt.createComponent("@SESSION_APPS@/" + entry.name)
+      verify(component.status === Component.Ready, component.errorString())
+      const view = component.createObject(testCase, {bundleDirectory: entry.bundle,
+        readyTimeoutMilliseconds: 2500, width: 300, height: 300})
+      tryCompare(view, "operational", true, 15000)
+      verify(!view.failed)
+      view.browser.reload()
+      tryCompare(view, "failed", true, 10000)
+      view.destroy()
+    }
+    const component = Qt.createComponent("@SESSION_APPS@/TrustedChatView.qml")
+    const healthy = component.createObject(testCase, {readyTimeoutMilliseconds: 2500, width: 300, height: 300})
+    tryCompare(healthy, "operational", true, 15000)
+    const loads = healthy.readyCount
+    healthy.browser.reload()
+    tryVerify(function() { return healthy.readyCount > loads }, 10000)
+    wait(4000)
+    compare(healthy.failed, false)
+    healthy.destroy()
+  }
+
+
+  // The person's own app edits delivered as a turn are labelled as theirs,
+  // never as another agent or conversation, in HTML chat and Classic view.
+  function test_u_application_event_turns_show_truthful_provenance() {
+    const entry = session("events", "With app events", application(1))
+    entry.messages.push({id: "events-edit", role: "user", kind: "user", text: "[Companion application event] moved a task",
+      toolName: "", input: "", state: "", screenshot: "",
+      origin: {kind: "application-event", applicationId: "11111111-1111-4111-8111-111111111111", depth: 0}})
+    snapshot([entry])
+    body.client.sessions.select("events")
+    tryCompare(body.panel, "selectedSessionId", "events")
+    const view = mainView()
+    const surface = surfaceOf(view)
+    waitForChat(view)
+    tryCompare(surface, "mode", "app")
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    const chat = chatOf(view)
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.message.user .from')].map(e => e.textContent).join('|')")
+      === "Your edits in this conversation's app" }, 5000)
+    compare(evaluate(chat, "document.body.textContent.includes('From ') || document.body.textContent.includes('another conversation')"), false)
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    const headings = findChildren(view, "messageHeading").map(item => item.text)
+    verify(headings.some(text => text.startsWith("Your edits in this conversation's app")), JSON.stringify(headings))
+    verify(!headings.some(text => text.includes("another conversation")), JSON.stringify(headings))
+    view.classicView = false
+  }
+
+  function test_ua_app_authored_messages_have_non_human_labels_in_both_views() {
+    const entry = session("app-origin", "App messages", null)
+    const valid = {kind:"application-message", applicationId:"11111111-1111-4111-8111-111111111111", name:"synthetic-app",
+      version:3, bundle:"a".repeat(64), receiptId:"22222222-2222-4222-8222-222222222222", depth:1, title:"<b>You</b>"}
+    entry.messages.push({id:"app-valid", kind:"user", text:"<b>Synthetic app text</b>", toolName:"", input:"", state:"done", screenshot:false, origin:valid})
+    entry.messages.push({id:"app-invalid", kind:"user", text:"Malformed metadata", toolName:"", input:"", state:"done", screenshot:false,
+      origin:{kind:"application-message", title:"You"}})
+    snapshot([entry])
+    body.client.sessions.select("app-origin")
+    tryCompare(body.panel, "selectedSessionId", "app-origin")
+    const view = mainView()
+    waitForChat(view)
+    const chat = chatOf(view)
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('.message.user .from')].map(e => e.textContent).join('|')")
+      === "Application · synthetic-app · v3 · receipt 22222222|Application · unverified application origin" }, 5000)
+    compare(evaluate(chat, "document.querySelectorAll('.message.user b, .message.user .from.link').length"), 0)
+    composerOf(view).text = "Draft remains separate"
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    const headings = findChildren(view, "messageHeading").map(item => item.text)
+    verify(headings.some(text => text === "Application · synthetic-app · v3 · receipt 22222222"), JSON.stringify(headings))
+    verify(headings.some(text => text === "Application · unverified application origin"), JSON.stringify(headings))
+    compare(composerOf(view).text, "Draft remains separate")
+    view.classicView = false
+  }
+
+  // Lead regression: a paste far beyond what the host accepts is rejected
+  // before it replaces anything; the draft and editor keep their text.
+  function test_v_oversize_paste_is_rejected_before_replacing() {
+    const chat = freshChat("paste")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "old host text")
+    tryCompare(composerOf(view), "text", "old host text")
+    const prevented = evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.select();"
+      + " const data = new DataTransfer(); data.setData('text/plain', 'x'.repeat(40001));"
+      + " const event = new ClipboardEvent('paste', {clipboardData: data, bubbles: true, cancelable: true});"
+      + " return !area.dispatchEvent(event) })()")
+    compare(prevented, true)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Nothing was changed')") === true })
+    // Diagnostics for one unexplained run where the editor was empty here.
+    compare(textarea(chat), "old host text", "editor " + JSON.stringify(textarea(chat).length) + " host "
+      + composerOf(view).text.length + " revision " + view.draftRevision + " displayed " + view.displayedId)
+    compare(composerOf(view).text, "old host text")
+  }
+
+  // A drop far beyond the limit is rejected before it changes anything,
+  // like a paste; Unicode text from an input method (an input that cannot
+  // be cancelled) reaches the host exactly.
+  function test_va_oversize_drop_and_unicode_input() {
+    const chat = freshChat("drop")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "old host text")
+    tryCompare(composerOf(view), "text", "old host text")
+    const prevented = evaluate(chat, "(() => { const area = document.querySelector('textarea');"
+      + " const data = new DataTransfer(); data.setData('text/plain', 'x'.repeat(40001));"
+      + " const event = new DragEvent('drop', {dataTransfer: data, bubbles: true, cancelable: true});"
+      + " return !area.dispatchEvent(event) })()")
+    compare(prevented, true)
+    wait(300)
+    compare(textarea(chat), "old host text")
+    compare(composerOf(view).text, "old host text")
+    const unicode = "Grüße 👋🏽 — 你好\n🇳🇱"
+    evaluate(chat, "(() => { const area = document.querySelector('textarea');"
+      + " area.dispatchEvent(new InputEvent('beforeinput', {inputType: 'insertCompositionText', data: " + JSON.stringify(unicode) + ","
+      + " bubbles: true, cancelable: false}));"
+      + " area.value = area.value + " + JSON.stringify(unicode) + ";"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "text", "old host text" + unicode, 5000)
+    const write = fakeBackend.sent.filter(message => message.action === "draft-set" && message.id === "drop").pop()
+    verify(write.text === "old host text" + unicode, "the listener receives the exact text")
+  }
+
+  // Lead regression: oversize text that reached the editor some other way
+  // (here: replaced value plus input, beyond what the page hands to the
+  // host) stays on screen, is never replaced by the host draft, cannot be
+  // sent, and can be copied or discarded.
+  // SUPERSEDED: this text used to be archived by the host (refused text)
+  // with "Copy my text"/Dismiss; now it stays only in this editor.
+  function test_w_oversize_text_in_the_editor_is_never_dropped() {
+    const chat = freshChat("large")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "old host text")
+    tryCompare(composerOf(view), "text", "old host text")
+    const pasted = "x".repeat(40001)
+    typeInto(chat, pasted)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') !== null") === true }, 5000)
+    compare(composerOf(view).text, "old host text")
+    compare(textarea(chat), pasted)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
+    // A host change (an appended agent draft) does not replace it.
+    fakeBackend.received({type: "agent-draft", requestId: "d-large", id: "large", text: "Agent text",
+      ifDraftExists: "append", focus: false, source: {sessionId: "x", title: "Helper"}})
+    tryVerify(function() { return composerOf(view).text.includes("Agent text") })
+    wait(300)
+    compare(textarea(chat), pasted)
+    // Copy copies exactly what is shown and says so.
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    fakeBackend.sent = []
+    verify(clickInHeld(chat, "Copy"))
+    tryVerify(function() { return copyFeedback(chat) === "Copied (40001 characters)." }, 5000, copyFeedback(chat))
+    verify(clipboardText() === pasted, "clipboard holds exactly the shown text")
+    compare(textarea(chat), pasted)
+    compare(fakeBackend.sent.filter(message => message.action === "draft-set").length, 0, "copying writes no draft")
+    // Discard returns to the host draft.
+    verify(clickInHeld(chat, "Discard"))
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
+    tryVerify(function() { return textarea(chat) === composerOf(view).text })
+  }
+
+  // Kestrel R2 S2: typing past the limit with real key events changes
+  // nothing; refused text of two conversations is kept for each; a pop-out
+  // holding refused text cannot be returned until it is resolved.
+  function test_y_limits_keep_every_conversations_text() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    view.focusComposer()
+    typeInto(chat, "a".repeat(16000))
+    tryCompare(composerOf(view), "text", "a".repeat(16000))
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    // Diagnostics for an intermittent R3 observation (editor length 1 after
+    // this key): the editor state before and after the key, with the host's.
+    const editorState = "JSON.stringify((() => { const area = document.querySelector('textarea');"
+      + " return {length: area.value.length, start: area.selectionStart, end: area.selectionEnd} })())"
+    const before = evaluate(chat, editorState)
+    keyClick(Qt.Key_B)
+    wait(300)
+    const after = evaluate(chat, editorState)
+    compare(textarea(chat).length, 16000, "editor before " + before + " after " + after
+      + " host " + composerOf(view).text.length + " revision " + view.draftRevision)
+    compare(composerOf(view).text.length, 16000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Nothing was changed')") === true })
+    view.clearDraft("one")
+    tryVerify(function() { return textarea(chat) === "" })
+
+    // SUPERSEDED: refused text per conversation was a host archive. Now each
+    // conversation's over-limit text is its own unsaved text, kept apart.
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'o'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "text", "o".repeat(16001))
+    refuseLatestEdit("one")
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    settled(view, chat)
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 't'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryCompare(composerOf(view), "text", "t".repeat(16001))
+    refuseLatestEdit("two")
+    tryVerify(function() { return body.client.unsavedDrafts["two"] !== undefined })
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return textarea(chat) === "o".repeat(16001) && unsavedNotice(chat) === true }, 5000)
+    compare(body.client.unsavedDrafts["one"] !== undefined, true)
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return body.client.unsavedDrafts["one"] === undefined })
+    body.client.discardUnsavedDraft("two")
+
+    // In a pop-out, unsaved text blocks Return (and the window close).
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    fakeBackend.sent = []
+    evaluate(windowChat, "(() => { const area = document.querySelector('textarea'); area.value = 'p'.repeat(16001);"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryCompare(composerOf(window.view), "text", "p".repeat(16001))
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(windowChat) === true }, 5000)
+    body.popouts.returnToSidebar("one", {focus: false, source: "button"})
+    verify(body.popouts.windows["one"] !== undefined)
+    verify(window.notice.includes("not saved yet"), window.notice)
+    body.client.discardUnsavedDraft("one")
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+  }
+
+  // Kestrel R2 S3: a new HTML editor (pop-out) starts at the host cursor.
+  function test_z_new_editor_restores_the_caret() {
+    const chat = freshChat("caret")
+    const view = mainView()
+    view.focusComposer()
+    typeInto(chat, "abcdef")
+    tryCompare(composerOf(view), "text", "abcdef")
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    for (let index = 0; index < 4; index++) keyClick(Qt.Key_Left)
+    tryCompare(composerOf(view), "cursorPosition", 2, 5000)
+    body.popouts.popOut("caret")
+    tryVerify(function() { return body.popouts.windows["caret"] !== undefined })
+    const window = body.popouts.windows["caret"]
+    const windowChat = waitForChat(window.view)
+    tryVerify(function() { return textarea(windowChat) === "abcdef" })
+    tryVerify(function() { return evaluate(windowChat, "document.querySelector('textarea').selectionStart") === 2 }, 5000)
+    window.view.focusComposer()
+    tryVerify(function() { return evaluate(windowChat, "document.activeElement === document.querySelector('textarea')"
+      + " && document.querySelector('textarea').selectionStart === 2") === true }, 5000)
+    body.popouts.returnToSidebar("caret", {focus: false})
+    tryVerify(function() { return body.popouts.windows["caret"] === undefined })
+    tryVerify(function() { return evaluate(chatOf(mainView()), "document.querySelector('textarea').selectionStart") === 2 }, 5000)
+  }
+
+
+  // SUPERSEDED: the bounded recovery capacity (32 host slots, kept: false)
+  // and text held only by the page across conversations (270000-character
+  // page-held text surviving resynchronization, Activity, several
+  // conversations and transfers) are removed. What remains, bounded: the
+  // page hands the host at most 32000 units; a longer edit is answered
+  // "too-long" and stays only in the current editor (test_w). An edit for
+  // a conversation not shown goes to that conversation, and the listener's
+  // refusal makes it that conversation's unsaved text.
+  function test_x_edit_bounds_at_the_bridge() {
+    const chat = freshChat("capacity")
+    const view = mainView()
+    // CHANGED (R4-1): "elsewhere" is a real second conversation; unconfirmed
+    // text for a conversation that does not exist goes to the
+    // closed-conversation notice instead (test_zzw*).
+    snapshot([session("capacity", "Fresh capacity", null), session("elsewhere", "Elsewhere", null)])
+    body.client.sessions.select("capacity")
+    tryCompare(body.panel, "selectedSessionId", "capacity")
+    tryCompare(view, "displayedId", "capacity")
+    settled(view, chat)
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('capacity', 0, 'm'.repeat(32001), 4,"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).reason, "too-long")
+    compare(composerOf(view).text, "")
+    fakeBackend.sent = []
+    evaluate(chat, "(() => { window.__answer = null; window.__companionBridge.editDraft('elsewhere', 0, 'e'.repeat(16001), 10,"
+      + " answer => window.__answer = answer); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__answer") !== null })
+    compare(JSON.parse(evaluate(chat, "window.__answer")).accepted, true)
+    compare(composerOf(view).text, "")
+    refuseLatestEdit("elsewhere")
+    tryVerify(function() { return body.client.unsavedDrafts["elsewhere"] !== undefined })
+    compare(unsavedNotice(chat), false)
+    body.client.discardUnsavedDraft("elsewhere")
+    view.clearDraft("elsewhere")
+  }
+
+  // A pop-out window's native header shows the conversation's current
+  // number beside its title, the same number the HTML rail shows and voice
+  // navigation uses, also while the window shows the conversation's
+  // application. It follows reordering, code replacement, closing and
+  // restoring other conversations.
+  function test_zzb_popout_header_numbers_follow_the_rail_in_app_mode() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", application(1))])
+    tryVerify(function() { return body.panel.htmlRailActive }, 10000, "HTML rail active")
+    const rail = findChild(body.panel, "trustedRailBrowser")
+    function railNumber(index) {
+      // The classic-style tab shows "Q<number>", or the number beside an emoji.
+      return evaluate(rail, "(() => { const row = document.querySelectorAll('.session')[" + index + "];"
+        + " if (!row) return ''; const label = row.querySelector('.number') || row.querySelector('.glyph');"
+        + " return label.textContent.replace(/^Q/, '') })()")
+    }
+    function headerNumber(window) {
+      const label = findChild(window, "popoutSessionNumber")
+      return label.visible ? label.text : ""
+    }
+
+    body.popouts.popOut("two")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    const window = body.popouts.windows["two"]
+    tryVerify(function() { return surfaceOf(window.view) !== null && surfaceOf(window.view).mode === "app" }, 10000,
+      "the pop-out shows the application")
+    compare(headerNumber(window), "2")
+    compare(findChild(window, "popoutTitle").text, "Second chat")
+    tryVerify(function() { return railNumber(1) === "2" }, 10000)
+
+    // The application keeps the header's narrow, large-scale layout: the
+    // number, title and Return do not overlap, stay in the header, and the
+    // application starts below it. At the window's minimum width the title
+    // keeps a readable width and Return its full label.
+    const originalTheme = body.theme
+    try {
+      const header = findChild(window, "popoutHeader")
+      const number = findChild(window, "popoutSessionNumber")
+      const title = findChild(window, "popoutTitle")
+      const back = findChild(window, "popoutReturnButton")
+      for (const unit of [2, 3]) {
+        body.theme = Object.assign({}, originalTheme, {unit: unit})
+        for (const width of [320, window.minimumWidth]) {
+          window.width = width
+          const label = "unit " + unit + " width " + width
+          tryVerify(function() { return header.width === width - 24 * unit }, 2000, label)
+          verify(header.stacked, label + ": Return moves below the title")
+          verify(number.x + number.width <= title.x, label)
+          verify(title.x + title.width <= header.width, label)
+          verify(back.y >= title.y + title.height, label)
+          verify(back.x >= 0 && back.x + back.width <= header.width, label)
+          verify(window.view.y >= header.y + header.height, label)
+          if (width >= window.minimumWidth) {
+            verify(title.width >= header.minimumTitleWidth, label)
+            compare(back.text, "Return to sidebar", label)
+          }
+          compare(surfaceOf(window.view).mode, "app")
+        }
+      }
+    } finally {
+      body.theme = originalTheme
+      window.width = 560
+    }
+
+    // Reordered by the listener. Delivered to receive() as the native
+    // connection does (see popout.qml.in for the fake transport's arrays).
+    body.client.receive({type: "agent-order", ids: ["two", "one"], revision: "order-2"})
+    tryCompare(findChild(window, "popoutSessionNumber"), "text", "1")
+    tryVerify(function() { return evaluate(rail, "document.querySelectorAll('.session')[0].textContent.includes('Second chat')") === true })
+    compare(railNumber(0), "1")
+
+    // The agent replaces the application's code: same conversation, same number.
+    fakeBackend.received({type: "agent-session", session: session("two", "Second chat", application(2))})
+    tryCompare(surfaceOf(window.view), "mode", "app")
+    compare(headerNumber(window), "1")
+
+    // Closing the other conversation and restoring it at the end.
+    fakeBackend.received({type: "agent-removed", id: "one"})
+    tryVerify(function() { return body.client.sessions.sessions.length === 1 })
+    compare(headerNumber(window), "1")
+    fakeBackend.received({type: "agent-restored", session: session("one", "First chat", null), reveal: false})
+    tryVerify(function() { return body.client.sessions.sessions.length === 2 })
+    compare(headerNumber(window), "1")
+    tryVerify(function() { return railNumber(1) === "2" }, 10000)
+
+    // Back to chat: the header keeps the number; the chat page is unchanged.
+    surfaceOf(window.view).setMode("two", "chat")
+    tryCompare(surfaceOf(window.view), "mode", "chat")
+    compare(headerNumber(window), "1")
+  }
+
+  // ---- Live end and reading position (classic view parity) --------------
+  function longRows(prefix, from, to) {
+    const rows = []
+    for (let index = from; index < to; index++) {
+      rows.push({id: prefix + "-" + index, role: index % 2 ? "assistant" : "user", kind: index % 2 ? "assistant" : "user",
+        text: "Row " + index + ". " + "Several words that wrap onto more than one line in the transcript. ".repeat(2),
+        toolName: "", input: "", state: "done", screenshot: ""})
+    }
+    return rows
+  }
+  function longSession(id, title, total, live) {
+    const messages = longRows(id, total - live, total)
+    return {id: id, title: title, status: "idle", toolEpoch: "epoch-" + id, messages: messages,
+      history: {start: {index: total - live, offset: 0}, end: {index: total, offset: 0}, total: total, revision: 1,
+        ids: messages.map(row => row.id)}}
+  }
+  function scrollState(chat) {
+    return JSON.parse(evaluate(chat, "JSON.stringify((() => { const t = document.querySelector('.transcript');"
+      + " return {top: t.scrollTop, height: t.scrollHeight, client: t.clientHeight} })())"))
+  }
+  function atLiveEnd(chat) {
+    const state = scrollState(chat)
+    return state.height - state.top - state.client <= 4 && state.height > state.client
+  }
+  // The message at the transcript's top edge (the row the reader is on) and
+  // its top relative to that edge (negative while partly scrolled past).
+  function readerRow(chat) {
+    return JSON.parse(evaluate(chat, "JSON.stringify((() => { const t = document.querySelector('.transcript').getBoundingClientRect();"
+      + " const rows = [...document.querySelectorAll('.message')];"
+      + " const row = rows.find(r => r.getBoundingClientRect().bottom > t.top + 1);"
+      + " return {text: row.querySelector('.bubble').textContent.slice(0, 7), offset: row.getBoundingClientRect().top - t.top} })())"))
+  }
+  // The row the reader was on keeps its distance from the transcript's top
+  // edge (the classic view's reader anchor), and the view did not move to the
+  // live end.
+  function rowOffset(chat, text) {
+    return evaluate(chat, "(() => { const t = document.querySelector('.transcript').getBoundingClientRect();"
+      + " const row = [...document.querySelectorAll('.message')].find(r => r.querySelector('.bubble')"
+      + " && r.querySelector('.bubble').textContent.startsWith(" + JSON.stringify(text) + "));"
+      + " return row ? row.getBoundingClientRect().top - t.top : null })()")
+  }
+  // The reader scrolls the transcript (wheel input, then the position).
+  function readerScrollTo(chat, top) {
+    evaluate(chat, "(() => { const t = document.querySelector('.transcript');"
+      + " t.dispatchEvent(new WheelEvent('wheel', {deltaY: -120, bubbles: true})); t.scrollTop = " + top + "; return true })()")
+  }
+  // The reader scrolls, and the row they are then on, read in the same page
+  // task: before the host's answer to that scroll (e.g. "Loading messages…"
+  // replacing "Earlier messages", 8 px shorter) can render and move it.
+  function readerScrollToAndRow(chat, top) {
+    return JSON.parse(evaluate(chat, "JSON.stringify((() => { const t = document.querySelector('.transcript');"
+      + " t.dispatchEvent(new WheelEvent('wheel', {deltaY: -120, bubbles: true})); t.scrollTop = " + top + ";"
+      + " const edge = t.getBoundingClientRect(); const row = [...document.querySelectorAll('.message')].find(r => r.getBoundingClientRect().bottom > edge.top + 1);"
+      + " return {text: row.querySelector('.bubble').textContent.slice(0, 7), offset: row.getBoundingClientRect().top - edge.top} })())"))
+  }
+  // Waits for the live end; on failure reports where the transcript is.
+  function verifyAtLiveEnd(chat, label) {
+    let ok = false
+    for (let step = 0; step < 50 && !ok; step++) {
+      ok = atLiveEnd(chat)
+      if (!ok) wait(100)
+    }
+    verify(ok, label + ": " + JSON.stringify(scrollState(chat)))
+  }
+  function verifyReaderRow(chat, before, label) {
+    let ok = false
+    for (let step = 0; step < 30 && !ok; step++) {
+      const offset = rowOffset(chat, before.text)
+      ok = offset !== null && Math.abs(offset - before.offset) <= 2
+      if (!ok) wait(100)
+    }
+    // On failure: where the row actually is, and the transcript's state.
+    verify(ok, label + ": expected " + JSON.stringify(before) + ", actual " + rowOffset(chat, before.text)
+      + ", transcript " + JSON.stringify(scrollState(chat)) + ", top row " + JSON.stringify(readerRow(chat)))
+    wait(300)
+    const settled = rowOffset(chat, before.text)
+    verify(settled !== null && Math.abs(settled - before.offset) <= 2, label + " (settled): " + settled)
+    verify(!atLiveEnd(chat), label + ": not moved to the live end")
+  }
+
+  function test_zzk_live_end_follows_and_a_scrolled_reader_keeps_their_row() {
+    const main = body.Window.window
+    const width = main.width
+    const theme = body.theme
+    snapshot([longSession("follow", "Follow", 40, 24), longSession("other", "Other", 30, 24)])
+    body.client.sessions.select("follow")
+    tryCompare(body.panel, "selectedSessionId", "follow")
+    const view = mainView()
+    const chat = waitForChat(view)
+    tryVerify(function() { return messages(chat) === 24 }, 5000)
+    verifyAtLiveEnd(chat, "starts at the live end")
+    try {
+      // Following: a resize, a text scale change and a streamed answer that
+      // grows keep the reader at the live end.
+      main.width = width - 160
+      verifyAtLiveEnd(chat, "narrower window")
+      body.theme = Object.assign({}, theme, {unit: 1.5})
+      verifyAtLiveEnd(chat, "larger text")
+      const streaming = longSession("follow", "Follow", 40, 24)
+      streaming.messages[23] = Object.assign({}, streaming.messages[23], {state: "running",
+        text: streaming.messages[23].text + "More streamed text. ".repeat(40)})
+      fakeBackend.received({type: "agent-session", session: streaming})
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('More streamed text.')") === true })
+      verifyAtLiveEnd(chat, "streamed growth")
+      compare(view.followEnd, true)
+      // A scroll that is not the reader's (no input) does not stop following.
+      evaluate(chat, "(() => { document.querySelector('.transcript').scrollTop = 300; return true })()")
+      verifyAtLiveEnd(chat, "back at the end after a layout scroll")
+      compare(view.followEnd, true)
+
+      // The reader scrolls up: the same changes keep their row in place.
+      readerScrollTo(chat, 400)
+      tryCompare(view, "followEnd", false)
+      let before = readerRow(chat)
+      main.width = width
+      verifyReaderRow(chat, before, "wider window")
+      before = readerRow(chat)
+      body.theme = theme
+      verifyReaderRow(chat, before, "smaller text")
+      before = readerRow(chat)
+      streaming.messages[23] = Object.assign({}, streaming.messages[23], {text: streaming.messages[23].text + "Still more. ".repeat(40)})
+      fakeBackend.received({type: "agent-session", session: streaming})
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('Still more.')") === true })
+      verifyReaderRow(chat, before, "streamed growth below")
+      compare(view.followEnd, false)
+
+      // Jump to latest resumes following.
+      tryVerify(function() { return evaluate(chat, "document.querySelector('.latest') !== null") === true }, 5000)
+      evaluate(chat, "(() => { document.querySelector('.latest').click(); return true })()")
+      verifyAtLiveEnd(chat, "jumped to the live end")
+      tryCompare(view, "followEnd", true)
+      streaming.messages[23] = Object.assign({}, streaming.messages[23], {text: streaming.messages[23].text + "After the jump. ".repeat(30)})
+      fakeBackend.received({type: "agent-session", session: streaming})
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('After the jump.')") === true })
+      verifyAtLiveEnd(chat, "follows again")
+
+      // A reader away from the end who switches conversation sees the other
+      // one at its live end.
+      readerScrollTo(chat, 200)
+      tryCompare(view, "followEnd", false)
+      body.client.sessions.select("other")
+      tryCompare(body.panel, "selectedSessionId", "other")
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('Row 29.')") === true })
+      verifyAtLiveEnd(chat, "other conversation at its live end")
+
+      // Back in the first one, near the top: the older page loads above and
+      // the reader's row stays where it was.
+      body.client.sessions.select("follow")
+      tryVerify(function() { return evaluate(chat, "document.body.textContent.includes('After the jump.')") === true })
+      fakeBackend.sent = []
+      // CHANGED: the reader's row is read with their scroll (see
+      // readerScrollToAndRow); read afterwards it could already include the
+      // loading notice's height change, a timing-dependent reference.
+      before = readerScrollToAndRow(chat, 0)
+      tryVerify(function() { return fakeBackend.sent.some(message => message.action === "agent-history-page") }, 5000, "older page requested")
+      const request = fakeBackend.sent.filter(message => message.action === "agent-history-page").pop()
+      compare(request.direction, "before")
+      const older = longRows("follow", request.index - 10, request.index)
+      body.client.receive({action: "agent-history-page", type: "result", requestId: request.requestId,
+        result: {id: request.id, epoch: request.epoch, messages: older,
+          history: {start: {index: request.index - 10, offset: 0}, end: {index: request.index, offset: 0}, total: 40, revision: 1,
+            ids: older.map(row => row.id)}}})
+      tryVerify(function() { return messages(chat) === 34 }, 5000, "older rows above")
+      verifyReaderRow(chat, before, "older page")
+
+      // The size observer belongs to the transcript: showing Activity (no
+      // conversation) unmounts it and disconnects the observer.
+      evaluate(chat, "(() => { window.__disconnects = 0; const original = ResizeObserver.prototype.disconnect;"
+        + " ResizeObserver.prototype.disconnect = function() { window.__disconnects++; return original.call(this) }; return true })()")
+      body.panel.sessionSelected("")
+      tryVerify(function() { return evaluate(chat, "document.querySelector('.transcript') === null") === true }, 5000)
+      compare(evaluate(chat, "window.__disconnects"), 1)
+    } finally {
+      main.width = width
+      body.theme = theme
+    }
+  }
+
+  // SUPERSEDED: test_zzc (a reload disclosing lost page-held text) tested
+  // the removed page-held store.
+
+  // Kestrel R3 S2: a conversation that disappears (closed elsewhere) while
+  // popped out keeps its text accessible in the sidebar: its draft, also
+  // when that text is not saved. Nothing reopens it.
+  // SUPERSEDED: refused and page-held text were separate orphan kinds,
+  // collected by scraping the closing page; they are removed.
+  function test_zzd_disappearing_conversation_keeps_all_its_text() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const main = mainView()
+    const mainChat = waitForChat(main)
+    settled(main, mainChat)
+    main.focusComposer()
+    typeInto(mainChat, "host original")
+    tryCompare(composerOf(main), "text", "host original")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    let window = body.popouts.windows["one"]
+    let windowChat = waitForChat(window.view)
+    tryVerify(function() { return textarea(windowChat) === "host original" })
+    body.popouts.orphanDrafts = []
+    fakeBackend.sent = []
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    compare(JSON.stringify(body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text])),
+      JSON.stringify([["draft", "host original"]]))
+    compare(fakeBackend.sent.filter(message => message.action === "restore-agent" || message.action === "send-agent").length, 0)
+    body.popouts.orphanDrafts = []
+
+    // Unsaved text (refused by the listener) is the draft that stays.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    window = body.popouts.windows["one"]
+    windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    fakeBackend.sent = []
+    evaluate(windowChat, "(() => { window.__companionBridge.editDraft('one', 0, 'o'.repeat(16001), 16001); return true })()")
+    tryCompare(composerOf(window.view), "text", testCase.overLong)
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(windowChat) === true }, 5000)
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    compare(JSON.stringify(body.popouts.orphanDrafts.map(entry => [entry.kind, entry.text.length])),
+      JSON.stringify([["draft", 16001]]))
+    body.popouts.orphanDrafts = []
+    body.client.discardUnsavedDraft("one")
+  }
+
+  // Feedback and buttons of the notice for text only this editor holds.
+  function copyFeedback(chat) {
+    return evaluate(chat, "(() => { const entry = document.querySelector('.unkept .copy-feedback'); return entry ? entry.textContent : '' })()")
+  }
+  // Clicks an enabled notice button once the page has answered this script.
+  // For a click whose own effect removes the page (Discard in a window kept
+  // only for that text closes the window), the page's answer otherwise races
+  // the window's removal and is lost when it comes later (R4-3: author/r4
+  // ordering probes).
+  function clickInHeldAfterAnswer(chat, label) {
+    return evaluate(chat, "(() => { const button = [...document.querySelectorAll('.unkept button')]"
+      + ".find(b => b.textContent === " + JSON.stringify(label) + "); if (!button || button.disabled) return false;"
+      + " setTimeout(() => button.click(), 0); return true })()")
+  }
+  function clickInHeld(chat, label) {
+    return evaluate(chat, "(() => { const button = [...document.querySelectorAll('.unkept button')]"
+      + ".find(b => b.textContent === " + JSON.stringify(label) + "); if (!button) return false; button.click(); return true })()")
+  }
+  // SUPERSEDED: test_zze (Copy and numbered Copy parts of 270000-character
+  // page-held text) tested the removed recovery archive. Copy of text only
+  // the editor holds is covered by test_w; message and code Copy keep their
+  // own native clipboard bound.
+
+  // ---- Conversation switch vs editor state (draft repair) ---------------
+  // Arms the page to type `text` in the very render that shows `title`,
+  // before any post-paint effect (or after `delay` ms, as a control).
+  function armTypeOnSwitch(chat, title, text, delay) {
+    evaluate(chat, "(() => { window.__typed = null; window.__typedInto = null; const header = document.querySelector('.header .title');"
+      + " const type = () => { const area = document.querySelector('textarea'); window.__typedInto = area.value;"
+      + "  area.value = " + JSON.stringify(text) + "; area.dispatchEvent(new Event('input', {bubbles: true})); window.__typed = true };"
+      + " const observer = new MutationObserver(() => { if (header.textContent === " + JSON.stringify(title) + ") { observer.disconnect();"
+      + "  if (" + delay + " === 0) type(); else setTimeout(type, " + delay + ") } });"
+      + " observer.observe(header, {childList: true, characterData: true, subtree: true}); return true })()")
+  }
+  function twoConversations(draftA, draftB) {
+    snapshot([session("A", "Conversation A", null), session("B", "Conversation B", null)])
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    const view = mainView()
+    const chat = waitForChat(view)
+    view.clearDraft("A")
+    view.clearDraft("B")
+    listenerDraft("A", "")
+    listenerDraft("B", draftB)
+    settled(view, chat)
+    if (draftA !== "") typeInto(chat, draftA)
+    tryCompare(composerOf(view), "text", draftA)
+    settled(view, chat)
+    view.focusComposer()
+    tryVerify(function() { return evaluate(chat, "document.activeElement === document.querySelector('textarea')") === true })
+    return {view: view, chat: chat}
+  }
+
+  // D1 regression: an input in the render that switched to B is kept, in
+  // the editor and the host, and the next real key appends to it.
+  function test_zzf_input_right_after_a_switch_is_kept() {
+    const setup = twoConversations("", "")
+    armTypeOnSwitch(setup.chat, "Conversation B", "TYPED-IN-WINDOW", 0)
+    body.client.sessions.select("B")
+    tryVerify(function() { return evaluate(setup.chat, "window.__typed === true") }, 5000)
+    tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOW", 5000)
+    wait(500)
+    compare(textarea(setup.chat), "TYPED-IN-WINDOW")
+    compare(composerOf(setup.view).text, "TYPED-IN-WINDOW")
+    compare(body.client.unsavedDrafts["B"], undefined)
+    // Focus moved with the conversation to the new editor.
+    compare(evaluate(setup.chat, "document.activeElement === document.querySelector('textarea')"), true)
+    tryCompare(setup.view, "composerFocusId", "B", 5000)
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOWx", 5000)
+    compare(textarea(setup.chat), "TYPED-IN-WINDOWx")
+  }
+
+  // D2 control: typing after the switch has settled behaves the same.
+  function test_zzg_input_after_a_switch_control() {
+    const setup = twoConversations("", "")
+    armTypeOnSwitch(setup.chat, "Conversation B", "TYPED-AFTER-EFFECT", 300)
+    body.client.sessions.select("B")
+    tryVerify(function() { return evaluate(setup.chat, "window.__typed === true") }, 5000)
+    tryCompare(composerOf(setup.view), "text", "TYPED-AFTER-EFFECT", 5000)
+    wait(300)
+    compare(textarea(setup.chat), "TYPED-AFTER-EFFECT")
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "TYPED-AFTER-EFFECTx", 5000)
+  }
+
+  // D3: with different drafts, the switching render already shows B's own
+  // text, the input goes to B at B's revision, nothing is refused and A
+  // keeps its draft.
+  function test_zzh_switch_with_different_drafts_shows_the_right_text() {
+    const setup = twoConversations("alpha", "")
+    armTypeOnSwitch(setup.chat, "Conversation B", "TYPED-IN-WINDOW", 0)
+    body.client.sessions.select("B")
+    tryVerify(function() { return evaluate(setup.chat, "window.__typed === true") }, 5000)
+    compare(evaluate(setup.chat, "window.__typedInto"), "")
+    tryCompare(composerOf(setup.view), "text", "TYPED-IN-WINDOW", 5000)
+    wait(300)
+    compare(textarea(setup.chat), "TYPED-IN-WINDOW")
+    compare(body.client.unsavedDrafts["B"], undefined)
+    compare(setup.view.exportDraft("A").text, "alpha")
+  }
+
+  // Answers to a replaced editor's edits (held back here to arrive after
+  // the switch) never change the editor now shown, and an edit the
+  // listener refuses stays its own conversation's unsaved text.
+  function holdNextAnswer(chat) {
+    evaluate(chat, "(() => { const b = window.__companionBridge; window.__held = [];"
+      + " if (!window.__holdInstalled) { window.__holdInstalled = true; const edit = b.editDraft;"
+      + "  b.editDraft = function(sessionId, base, text, cursor, callback) {"
+      + "   if (window.__holdOne) { window.__holdOne = false; return edit.call(this, sessionId, base, text, cursor,"
+      + "    answer => window.__held.push(() => callback && callback(answer))) }"
+      + "   return edit.call(this, sessionId, base, text, cursor, callback) } }"
+      + " window.__holdOne = true; return true })()")
+  }
+  function releaseHeld(chat) {
+    evaluate(chat, "(() => { const held = window.__held; window.__held = []; held.forEach(release => release()); return held.length })()")
+  }
+  function test_zzi_late_answers_from_a_replaced_editor() {
+    // Accepted edit for A, answered after the switch to B.
+    // CHANGED (L7 admission): B's editor now waits while A's edit awaits its
+    // answer, so B's input is attempted before and typed after the answer.
+    let setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "A-ACCEPTED")
+    tryCompare(composerOf(setup.view), "text", "A-ACCEPTED", 5000)
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === true }, 5000)
+    typeInto(setup.chat, "B-TOO-EARLY")
+    wait(100)
+    compare(textarea(setup.chat), "")
+    compare(composerOf(setup.view).text, "")
+    const revisionB = setup.view.draftRevision
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(textarea(setup.chat), "")
+    compare(composerOf(setup.view).text, "")
+    compare(setup.view.draftRevision, revisionB)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === false }, 5000)
+    typeInto(setup.chat, "B-TEXT")
+    tryCompare(composerOf(setup.view), "text", "B-TEXT", 5000)
+    compare(textarea(setup.chat), "B-TEXT")
+    compare(composerOf(setup.view).text, "B-TEXT")
+    compare(evaluate(setup.chat, "document.activeElement === document.querySelector('textarea')"), true)
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "B-TEXTx", 5000)
+    compare(setup.view.exportDraft("A").text, "A-ACCEPTED")
+
+    // SUPERSEDED: an edit with an old base used to be refused and kept as
+    // A's refused text. Last write wins now: the late edit is A's draft, and
+    // B (shown) is untouched.
+    setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    evaluate(setup.chat, "(() => { window.__companionBridge.editDraft('A', -1, 'A-LATE', 6); return true })()")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(setup.view.exportDraft("A").text, "A-LATE")
+    compare(textarea(setup.chat), "")
+
+    // SUPERSEDED: an edit beyond the host's bound used to reach A's
+    // page-held recovery after the switch. Now: an over-limit edit for A,
+    // answered after the switch to B, leaves B's editor unchanged; the
+    // listener's refusal makes it A's unsaved text, shown when A returns.
+    setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    fakeBackend.sent = []
+    typeInto(setup.chat, testCase.overLong)
+    tryCompare(composerOf(setup.view), "text", testCase.overLong, 5000)
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    releaseHeld(setup.chat)
+    refuseLatestEdit("A")
+    wait(300)
+    compare(textarea(setup.chat), "")
+    compare(unsavedNotice(setup.chat), false)
+    compare(body.client.unsavedDrafts["B"], undefined)
+    verify(body.client.unsavedDrafts["A"] !== undefined)
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    tryVerify(function() { return textarea(setup.chat) === testCase.overLong && unsavedNotice(setup.chat) === true }, 5000)
+    verify(clickButton(setup.chat, "Discard"))
+    tryVerify(function() { return body.client.unsavedDrafts["A"] === undefined })
+
+    // Away and back: the old A editor's late answer cannot change the new A
+    // editor's text or base.
+    setup = twoConversations("", "")
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "OLD-A")
+    tryCompare(composerOf(setup.view), "text", "OLD-A", 5000)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    settled(setup.view, setup.chat)
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    settled(setup.view, setup.chat)
+    typeInto(setup.chat, "NEW-A")
+    tryCompare(composerOf(setup.view), "text", "NEW-A", 5000)
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(textarea(setup.chat), "NEW-A")
+    setup.view.focusComposer()
+    keyClick(Qt.Key_X)
+    tryCompare(composerOf(setup.view), "text", "NEW-Ax", 5000)
+  }
+
+  // SUPERSEDED: test_zzj (numbered Copy parts of 1 MiB page-held text in
+  // the native export) tested the removed recovery archive.
+
+  // ---- Input only the editor holds (unresolved input) --------------------
+  // Text a non-cancellable input makes longer than the page may hand to the
+  // host stays in the one editor holding it; the host knows its length only
+  // and holds the conversation back until it is resolved.
+  function unresolvedText() {
+    // 16001 emoji (two UTF-16 units each) = 32002 units, just past 32000.
+    return "\u{1F600}".repeat(16001)
+  }
+  function heldNotice(chat) {
+    return evaluate(chat, "(() => { const notice = document.querySelector('.unkept'); return notice ? notice.textContent : '' })()")
+  }
+  function test_zzl_editor_only_input_survives_navigation_and_gates_departure() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("one", "saved one")
+    settled(view, chat)
+    const big = unresolvedText()
+    compare(big.length, 32002)
+    fakeBackend.sent = []
+    typeInto(chat, big)
+    // The host knows at once (before anything else), by length only.
+    tryVerify(function() { return view.unresolvedInput !== null }, 5000)
+    compare([view.unresolvedInput.sessionId, view.unresolvedInput.length], ["one", 32002])
+    compare(fakeBackend.sent.filter(message => message.action === "draft-set").length, 0, "the text never goes to the listener")
+    compare(composerOf(view).text, "saved one")
+    // Immediately another conversation, then Activity: the text stays in
+    // this page, offered with Copy and Discard; typing elsewhere waits.
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return heldNotice(chat).includes("32002 characters") && heldNotice(chat).includes("another conversation") }, 5000)
+    compare(evaluate(chat, "document.querySelector('textarea').readOnly"), true)
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null") === true }, 5000)
+    tryVerify(function() { return heldNotice(chat).includes("32002 characters") }, 5000)
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') !== null"
+      + " && document.querySelector('textarea').value === " + JSON.stringify(big)) === true }, 5000)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Send').disabled"), true)
+    compare(evaluate(chat, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Close session').disabled"), true)
+    // Classic view and back: the page (and its text) stays.
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    view.classicView = false
+    tryCompare(view, "htmlActive", true, 5000)
+    compare(textarea(chat), big)
+    // It does not move to a window meanwhile.
+    body.popouts.popOut("one")
+    compare(body.popouts.windows["one"], undefined)
+    verify(body.client.error.includes("only in its editor"), body.client.error)
+    body.client.error = ""
+    // Copy copies exactly the shown text (Unicode intact).
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(chat, "Copy"))
+    tryVerify(function() { return copyFeedback(chat) === "Copied (32002 characters)." }, 5000, copyFeedback(chat))
+    verify(clipboardText() === big, "clipboard holds exactly the shown text")
+    // Shortened, the host takes it and the conversation is free again.
+    view.focusComposer()
+    typeInto(chat, "short again")
+    tryCompare(composerOf(view), "text", "short again", 5000)
+    tryCompare(view, "unresolvedInput", null, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true })
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    body.popouts.returnToSidebar("one", {focus: false})
+    tryVerify(function() { return body.popouts.windows["one"] === undefined })
+  }
+
+  // In a pop-out window: Return and the native close wait; when the
+  // conversation is closed elsewhere the window (and its editor) stays
+  // until the text is discarded; a reload discloses the loss.
+  function test_zzm_window_keeps_editor_only_input_until_resolved() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    const big = unresolvedText()
+    typeInto(windowChat, big)
+    tryVerify(function() { return window.view.unresolvedInput !== null }, 5000)
+    body.popouts.returnToSidebar("one", {focus: false, source: "button"})
+    verify(body.popouts.windows["one"] !== undefined)
+    verify(window.notice.includes("only in its editor"), window.notice)
+    window.close()
+    wait(100)
+    verify(body.popouts.windows["one"] !== undefined, "the native close waits too")
+    // Closed elsewhere: the window stays with its editor's text.
+    body.popouts.orphanDrafts = []
+    snapshot([session("two", "Second chat", null)])
+    wait(300)
+    verify(body.popouts.windows["one"] !== undefined, "window kept for its editor-only input")
+    verify(window.notice.includes("closed elsewhere"), window.notice)
+    tryVerify(function() { return heldNotice(windowChat).includes("32002 characters") }, 5000)
+    // The held text is exactly what was typed (Copy does not close anything).
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(windowChat, "Copy"))
+    tryVerify(function() { return clipboardText() === big }, 5000, "held text copied exactly")
+    // CHANGED (R4-3): Discard closes this window; its click runs after the
+    // page answered (clickInHeldAfterAnswer), the outcome is checked below.
+    verify(clickInHeldAfterAnswer(windowChat, "Discard"))
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    compare(body.popouts.orphanDrafts.length, 0)
+    compare(body.client.unsavedDrafts["one"], undefined)
+
+    // A real reload of the page that held it says the text was lost.
+    snapshot([session("one", "First chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, big)
+    tryVerify(function() { return view.unresolvedInput !== null }, 5000)
+    const trusted = findChild(surfaceOf(view), "trustedChat")
+    const loads = trusted.readyCount
+    chat.reload()
+    tryVerify(function() { return trusted.readyCount > loads }, 15000, "reloaded page ready")
+    tryCompare(view, "unresolvedInput", null, 5000)
+    verify(view.inputError.includes("32002 characters") && view.inputError.includes("lost"), view.inputError)
+    view.inputError = ""
+  }
+
+  // While words are recorded into the draft, an edit (only a synthetic or
+  // raced input: the real editor is read-only then) never replaces the
+  // recorded text; it is refused and kept in the editor, held back by the
+  // host before the answer, also when the editor is replaced meanwhile.
+  function test_zzn_input_during_recording_never_replaces_recorded_words() {
+    snapshot([session("rec", "Recording chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("rec", "spoken so far")
+    settled(view, chat)
+    view.releaseComposerFocus()
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return view.recordingBusy })
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').readOnly") === true }, 5000)
+    // The recorded tail arrives from the listener.
+    listenerDraft("rec", "spoken so far and recorded words")
+    tryCompare(composerOf(view), "text", "spoken so far and recorded words")
+    // A stale whole-editor value raced with the recording: refused, and the
+    // host holds the conversation back before the answer reaches the page.
+    holdNextAnswer(chat)
+    fakeBackend.sent = []
+    // (A synthetic input event: a real read-only textarea produces none.)
+    evaluate(chat, "(() => { const area = document.querySelector('textarea'); area.value = 'spoken so far typed';"
+      + " area.dispatchEvent(new Event('input', {bubbles: true})); return true })()")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    compare(view.unresolvedInput !== null && view.unresolvedInput.sessionId === "rec", true)
+    compare(composerOf(view).text, "spoken so far and recorded words")
+    compare(fakeBackend.sent.filter(message => message.action === "draft-set").length, 0)
+    // Activity before the answer: the page still keeps the refused input.
+    body.client.sessions.select("")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea') === null") === true }, 5000)
+    releaseHeld(chat)
+    tryVerify(function() { return heldNotice(chat).includes("19 characters") }, 5000)
+    // The listener refuses the recording; the recorded words stay.
+    fakeBackend.received({type: "error", action: "start-recording", message: "Recording is unavailable in this test"})
+    tryCompare(view, "ownRecording", null)
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    tryVerify(function() { return textarea(chat) === "spoken so far typed" }, 5000)
+    compare(composerOf(view).text, "spoken so far and recorded words")
+    verify(clickInHeld(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "spoken so far and recorded words" }, 5000)
+    tryCompare(view, "unresolvedInput", null)
+  }
+
+  // ---- L6/L7: identity and admission for refused edits -------------------
+  // From the lead's failing probes (lead/ebc0a26): a raced input refused
+  // during a (synthetic) recording, its answer held back in the page.
+  function refusedPending() {
+    snapshot([session("rec", "Recording chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("rec", "canonical recorded words")
+    settled(view, chat)
+    view.releaseComposerFocus()
+    verify(clickButton(chat, "Record"))
+    tryVerify(function() { return view.recordingBusy })
+    holdNextAnswer(chat)
+    typeInto(chat, "OLD RACED INPUT")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    verify(view.unresolvedInput !== null)
+    fakeBackend.received({type: "error", action: "start-recording", message: "Synthetic recording ended"})
+    tryCompare(view, "ownRecording", null)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').readOnly") === false }, 5000)
+    return {view: view, chat: chat}
+  }
+  function shownIs(chat, expected) {
+    return evaluate(chat, "document.querySelector('textarea') !== null && document.querySelector('textarea').value === "
+      + JSON.stringify(expected))
+  }
+
+  // L6: an older answer (refused or accepted) never replaces newer input.
+  function test_zzo_old_answers_cannot_replace_newer_input() {
+    const setup = refusedPending()
+    const big = unresolvedText()
+    typeInto(setup.chat, big)
+    tryCompare(setup.view.unresolvedInput, "length", 32002)
+    releaseHeld(setup.chat)
+    wait(300)
+    verify(shownIs(setup.chat, big), "editor length " + textarea(setup.chat).length)
+    compare([setup.view.unresolvedInput.sessionId, setup.view.unresolvedInput.length], ["rec", 32002])
+    verify(heldNotice(setup.chat).includes("32002 characters"), heldNotice(setup.chat).slice(0, 80))
+    compare(composerOf(setup.view).text, "canonical recorded words")
+    // An older ACCEPTED answer cannot release newer held input either.
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "accepted but older")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 }, 5000)
+    typeInto(setup.chat, big)
+    tryCompare(setup.view.unresolvedInput, "length", 32002)
+    releaseHeld(setup.chat)
+    wait(300)
+    verify(shownIs(setup.chat, big), "editor length " + textarea(setup.chat).length)
+    compare(setup.view.unresolvedInput.length, 32002)
+    // The latest input's acceptance (shortened) releases the hold.
+    setup.view.focusComposer()
+    typeInto(setup.chat, "shortened")
+    tryCompare(composerOf(setup.view), "text", "shortened", 5000)
+    tryCompare(setup.view, "unresolvedInput", null, 5000)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('.unkept') === null") === true })
+    // Held again, Discard releases it and shows the listener's text.
+    typeInto(setup.chat, big)
+    tryCompare(setup.view.unresolvedInput, "length", 32002)
+    verify(clickInHeld(setup.chat, "Discard"))
+    tryCompare(setup.view, "unresolvedInput", null, 5000)
+    tryVerify(function() { return shownIs(setup.chat, "shortened") }, 5000)
+  }
+
+  // L7: while A's refused answer is outstanding, B waits: a real key and a
+  // synthetic input change nothing; A's exact input then stays reachable
+  // (Copy, its own editor) and B is usable once A is resolved.
+  function test_zzp_second_conversation_waits_for_first_refusal() {
+    const setup = refusedPending()
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return shownIs(setup.chat, "") }, 5000)
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === true }, 5000)
+    verify(evaluate(setup.chat, "document.querySelector('.composer').textContent.includes('Waiting for text typed in another conversation')"))
+    // A real key into B, then a synthetic oversize input: nothing changes.
+    evaluate(setup.chat, "(() => { document.querySelector('textarea').focus(); return true })()")
+    keyClick(Qt.Key_B)
+    typeInto(setup.chat, unresolvedText())
+    wait(200)
+    verify(shownIs(setup.chat, ""), "B editor length " + textarea(setup.chat).length)
+    compare(composerOf(setup.view).text, "")
+    compare(setup.view.unresolvedInput.sessionId, "rec")
+    // A's refusal arrives: A's exact input is offered in B with Copy.
+    releaseHeld(setup.chat)
+    tryVerify(function() { return heldNotice(setup.chat).includes("15 characters") }, 5000)
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    verify(clickInHeld(setup.chat, "Copy"))
+    tryVerify(function() { return copyFeedback(setup.chat) === "Copied (15 characters)." }, 5000, copyFeedback(setup.chat))
+    compare(clipboardText(), "OLD RACED INPUT")
+    // A's own editor shows it exactly; Discard resolves it.
+    body.client.sessions.select("rec")
+    tryCompare(body.panel, "selectedSessionId", "rec")
+    tryVerify(function() { return shownIs(setup.chat, "OLD RACED INPUT") }, 5000)
+    compare(composerOf(setup.view).text, "canonical recorded words")
+    verify(clickInHeld(setup.chat, "Discard"))
+    tryVerify(function() { return shownIs(setup.chat, "canonical recorded words") }, 5000)
+    tryCompare(setup.view, "unresolvedInput", null)
+    // B is usable now.
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return evaluate(setup.chat, "document.querySelector('textarea').readOnly") === false }, 5000)
+    typeInto(setup.chat, "B now")
+    tryCompare(composerOf(setup.view), "text", "B now", 5000)
+  }
+
+  // L6 (gate 3015e37): the latest edit's acceptance releases held input also
+  // when its editor was replaced (switch, or away and back) before the
+  // answer: the hold ends, the shortened text is A's, B can type.
+  function test_zzq_latest_acceptance_releases_after_a_switch() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, unresolvedText())
+    tryVerify(function() { return view.unresolvedInput !== null }, 5000)
+    holdNextAnswer(chat)
+    typeInto(chat, "SHORTENED")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    compare(composerOf(view).text, "SHORTENED")
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return heldNotice(chat).includes("32002") }, 5000)
+    releaseHeld(chat)
+    tryCompare(view, "unresolvedInput", null, 3000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true }, 3000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('textarea').readOnly") === false }, 3000)
+    typeInto(chat, "B types")
+    tryCompare(composerOf(view), "text", "B types", 5000)
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return shownIs(chat, "SHORTENED") }, 5000)
+    compare(evaluate(chat, "document.querySelector('.unkept') === null"), true)
+
+    // Away and back before the answer: the new A editor shows the held
+    // text until then, and the shortened text after it.
+    typeInto(chat, unresolvedText())
+    tryCompare(view.unresolvedInput, "length", 32002)
+    holdNextAnswer(chat)
+    typeInto(chat, "SHORTER AGAIN")
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 }, 5000)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    tryVerify(function() { return heldNotice(chat).includes("32002") }, 5000)
+    releaseHeld(chat)
+    tryCompare(view, "unresolvedInput", null, 3000)
+    tryVerify(function() { return shownIs(chat, "SHORTER AGAIN") }, 5000)
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.unkept') === null") === true }, 3000)
+    compare(composerOf(view).text, "SHORTER AGAIN")
+  }
+
+  // ---- R3 repairs (from Rowan's adverse probes, review/bfbc052) ----------
+  function draftWritesSince(from) {
+    return fakeBackend.sent.slice(from).filter(message => message.action === "draft-set")
+  }
+  function sendAndConfirm(chat, result) {
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    const from = fakeBackend.sent.length
+    body.client.receive(result)
+    wait(250)
+    return from
+  }
+
+  // R3-1: a successful Send never writes an empty draft; the listener's
+  // clear-if-equal alone clears it. Reconnect with a different draft from
+  // another editor: that draft stays and is shown after the send.
+  function test_zzr_send_after_reconnect_keeps_the_other_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "MY EXACT SEND")
+    tryCompare(composerOf(view), "text", "MY EXACT SEND")
+    fakeBackend.disconnected()
+    tryCompare(body.client, "online", false)
+    snapshot([session("one", "First chat", null)])
+    tryCompare(body.client, "online", true)
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "FOREIGN CANONICAL", source: "", sequence: 2}]})
+    tryVerify(function() { return unsavedNotice(chat) })
+    compare(textarea(chat), "MY EXACT SEND")
+    const from = sendAndConfirm(chat, {type: "result", action: "send-agent", result: {accepted: true}})
+    compare(draftWritesSince(from).length, 0, "no draft write after the send")
+    compare(fakeBackend.sent.find(message => message.action === "send-agent").text, "MY EXACT SEND")
+    tryVerify(function() { return shownIs(chat, "FOREIGN CANONICAL") }, 5000)
+    compare(composerOf(view).text, "FOREIGN CANONICAL")
+    compare(body.client.unsavedDrafts["one"], undefined)
+    compare(unsavedNotice(chat), false)
+  }
+
+  // R3-1: the same with text the listener refused; and newer typing,
+  // a failed send and an ordinary send.
+  function test_zzs_send_outcomes_never_write_an_empty_draft() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    listenerDraft("one", "FOREIGN CANONICAL")
+    settled(view, chat)
+    typeInto(chat, "MY EXACT SEND")
+    tryCompare(composerOf(view), "text", "MY EXACT SEND")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    let from = sendAndConfirm(chat, {type: "result", action: "send-agent", result: {accepted: true}})
+    compare(draftWritesSince(from).length, 0, "refused text sent: no draft write")
+    tryVerify(function() { return shownIs(chat, "FOREIGN CANONICAL") }, 5000)
+    compare(body.client.unsavedDrafts["one"], undefined)
+
+    // Newer typing before the confirmation stays (it was an ordinary edit).
+    listenerDraft("one", "send me")
+    settled(view, chat)
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    typeInto(chat, "typed while sending")
+    tryCompare(composerOf(view), "text", "typed while sending")
+    from = fakeBackend.sent.length
+    body.client.receive({type: "result", action: "send-agent", result: {accepted: true}})
+    wait(250)
+    compare(draftWritesSince(from).length, 0)
+    compare(textarea(chat), "typed while sending")
+    compare(composerOf(view).text, "typed while sending")
+
+    // A failed send keeps the text and writes nothing.
+    listenerDraft("one", "will fail")
+    settled(view, chat)
+    from = sendAndConfirm(chat, {type: "error", action: "send-agent", message: "Synthetic failure"})
+    compare(draftWritesSince(from).length, 0)
+    compare(textarea(chat), "will fail")
+    body.client.error = ""
+
+    // Ordinary send: the listener's clear arrives first; nothing is written.
+    listenerDraft("one", "ordinary")
+    settled(view, chat)
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    from = fakeBackend.sent.length
+    body.client.receive({type: "draft", id: "one", text: "", source: "", sequence: 9})
+    body.client.receive({type: "result", action: "send-agent", result: {accepted: true}})
+    wait(250)
+    compare(draftWritesSince(from).length, 0)
+    tryVerify(function() { return shownIs(chat, "") }, 5000)
+  }
+
+  // R3-2: every close control asks the one close admission: HTML rail x,
+  // native right-click, the view's own close request, a popped-out target,
+  // and a send still being confirmed. A refusal is shown; once resolved the
+  // same control closes.
+  function test_zzt_every_close_control_waits_for_unsaved_text() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "UNSAVED SHORT INPUT")
+    tryCompare(composerOf(view), "text", "UNSAVED SHORT INPUT")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    const rail = findChild(body, "trustedRailBrowser")
+    verify(rail !== null)
+    const closes = () => fakeBackend.sent.filter(message => message.action === "close-agent").length
+    fakeBackend.sent = []
+    verify(evaluate(rail, "(() => { const b = document.querySelector('.close'); if (!b || b.disabled) return false; b.click(); return true })()"))
+    wait(250)
+    compare(closes(), 0, "HTML rail x")
+    verify(body.client.error.includes("not closed") && body.client.error.includes("not saved"), body.client.error)
+    body.client.error = ""
+    view.dismissRequested("one")
+    wait(100)
+    compare(closes(), 0, "header/footer close request")
+    body.client.error = ""
+    compare(textarea(chat), "UNSAVED SHORT INPUT")
+    // Resolved: the rail x closes.
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return unsavedNotice(chat) === false })
+    verify(evaluate(rail, "(() => { const b = document.querySelector('.close'); if (!b || b.disabled) return false; b.click(); return true })()"))
+    tryVerify(function() { return closes() === 1 }, 3000)
+
+    // A send still being confirmed blocks closing too.
+    snapshot([session("one", "First chat", null)])
+    listenerDraft("one", "sending")
+    settled(view, chat)
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    fakeBackend.sent = []
+    view.dismissRequested("one")
+    wait(100)
+    compare(closes(), 0, "pending send")
+    body.client.receive({type: "result", action: "send-agent", result: {accepted: true}})
+    body.client.error = ""
+
+    // A popped-out conversation with unsaved text: closing it from the
+    // sidebar is refused and the window says why.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.popouts.popOut("two")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    const window = body.popouts.windows["two"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    typeInto(windowChat, "WINDOW UNSAVED")
+    tryCompare(composerOf(window.view), "text", "WINDOW UNSAVED")
+    refuseLatestEdit("two")
+    tryVerify(function() { return unsavedNotice(windowChat) })
+    fakeBackend.sent = []
+    body.panel.dismissSessionRequested("two")
+    window.view.dismissRequested("two")
+    wait(100)
+    compare(closes(), 0, "popped-out target")
+    verify(window.notice.includes("not closed"), window.notice)
+    body.client.discardUnsavedDraft("two")
+    body.client.error = ""
+  }
+
+  function test_zzu_native_rail_right_click_waits_for_unsaved_text() {
+    body.htmlSessions = false
+    const view = mainView()
+    composerOf(view).text = "NATIVE UNSAVED INPUT"
+    refuseLatestEdit("one")
+    verify(view.displayedUnsaved !== "")
+    const tab = findChild(body, "tab-one")
+    verify(tab !== null)
+    fakeBackend.sent = []
+    mouseClick(tab, tab.width / 2, tab.height / 2, Qt.RightButton)
+    wait(250)
+    compare(fakeBackend.sent.filter(message => message.action === "close-agent").length, 0)
+    verify(body.client.error.includes("not closed"), body.client.error)
+    compare(composerOf(view).text, "NATIVE UNSAVED INPUT")
+    body.client.error = ""
+    body.client.discardUnsavedDraft("one")
+    body.htmlSessions = true
+  }
+
+  // R3-3: a sidebar conversation that disappears offers its unconfirmed
+  // text (refused, or still unanswered) once, with Copy and Dismiss; also
+  // after a reconnect; a popped-out one exactly once too.
+  function orphanTexts() {
+    return body.popouts.orphanDrafts.map(entry => entry.text)
+  }
+  function test_zzv_disappearing_sidebar_conversation_offers_unconfirmed_text() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    body.popouts.orphanDrafts = []
+    typeInto(chat, "MAIN UNSAVED DISAPPEARING")
+    tryCompare(composerOf(view), "text", "MAIN UNSAVED DISAPPEARING")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    snapshot([session("two", "Second chat", null)])
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return orphanTexts().length === 1 }, 3000)
+    compare(JSON.stringify(orphanTexts()), JSON.stringify(["MAIN UNSAVED DISAPPEARING"]))
+    compare(body.popouts.orphanDrafts[0].title, "First chat")
+    // Exactly once: another change of the list adds nothing.
+    snapshot([session("two", "Second chat", null)])
+    wait(100)
+    compare(orphanTexts().length, 1)
+    // Actual Copy and Dismiss in the sidebar notice.
+    clipboardProbe.text = "previous"
+    clipboardProbe.selectAll()
+    clipboardProbe.copy()
+    const copy = findChild(body, "orphanCopy")
+    verify(copy !== null)
+    copy.triggered()
+    tryVerify(function() { return clipboardText() === "MAIN UNSAVED DISAPPEARING" }, 3000)
+    findChild(body, "orphanDismiss").triggered()
+    tryVerify(function() { return orphanTexts().length === 0 })
+
+    // Still unanswered when it disappears; a late refusal adds nothing.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    settled(view, chat)
+    fakeBackend.sent = []
+    typeInto(chat, "STILL UNANSWERED")
+    tryCompare(composerOf(view), "text", "STILL UNANSWERED")
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return orphanTexts().length === 1 }, 3000)
+    compare(orphanTexts()[0], "STILL UNANSWERED")
+    refuseLatestEdit("one")
+    wait(100)
+    compare(body.client.unsavedDrafts["one"], undefined)
+    compare(orphanTexts().length, 1)
+    body.popouts.orphanDrafts = []
+
+    // Missing after a reconnect.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    settled(view, chat)
+    typeInto(chat, "BEFORE RECONNECT")
+    tryCompare(composerOf(view), "text", "BEFORE RECONNECT")
+    refuseLatestEdit("one")
+    fakeBackend.disconnected()
+    tryCompare(body.client, "online", false)
+    snapshot([session("two", "Second chat", null)])
+    tryCompare(body.client, "online", true)
+    tryVerify(function() { return orphanTexts().length === 1 }, 3000)
+    compare(orphanTexts()[0], "BEFORE RECONNECT")
+    body.popouts.orphanDrafts = []
+
+    // A popped-out conversation with unsaved text: offered exactly once.
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    typeInto(windowChat, "WINDOW UNSAVED")
+    tryCompare(composerOf(window.view), "text", "WINDOW UNSAVED")
+    refuseLatestEdit("one")
+    snapshot([session("two", "Second chat", null)])
+    tryVerify(function() { return body.popouts.windows["one"] === undefined }, 5000)
+    wait(100)
+    compare(JSON.stringify(orphanTexts()), JSON.stringify(["WINDOW UNSAVED"]))
+    body.popouts.orphanDrafts = []
+  }
+
+  // ---- R4 repairs (from Rowan's adverse probes, review/98915ac) ----------
+  // R4-1: an edit that reaches the host after its conversation disappeared
+  // (late delivery; then refused, accepted, or written while offline) is
+  // offered once in the closed-conversation notice, in both orders.
+  // Holds back the page's edit carrying `text` (other calls pass through).
+  function delayNextEdit(chat, text) {
+    evaluate(chat, "(() => { const b = window.__companionBridge; const original = b.editDraft;"
+      + " b.editDraft = function(...args) { if (args[2] !== " + JSON.stringify(text) + ") return original.apply(b, args);"
+      + " b.editDraft = original; window.__deliverLateEdit = () => original.apply(b, args) }; return true })()")
+  }
+  function lateEditAfterDisappearance(outcome) {
+    {
+      snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+      body.client.sessions.select("one")
+      tryCompare(body.panel, "selectedSessionId", "one")
+      const view = mainView()
+      const chat = waitForChat(view)
+      settled(view, chat)
+      body.popouts.orphanDrafts = []
+      const text = "LATE " + outcome.toUpperCase() + " INPUT"
+      delayNextEdit(chat, text)
+      typeInto(chat, text)
+      compare(textarea(chat), text)
+      compare(composerOf(view).text, "")
+      snapshot([session("two", "Second chat", null)])
+      body.client.sessions.select("two")
+      tryCompare(body.panel, "selectedSessionId", "two")
+      if (outcome === "offline") {
+        fakeBackend.disconnected()
+        tryCompare(body.client, "online", false)
+      }
+      evaluate(chat, "window.__deliverLateEdit(); true")
+      if (outcome !== "offline") {
+        tryVerify(function() { return fakeBackend.sent.some(m => m.action === "draft-set" && m.id === "one" && m.text === text) })
+      }
+      tryVerify(function() { return orphanTexts().includes(text) }, 3000, outcome + ": offered")
+      compare(body.popouts.orphanDrafts.find(entry => entry.text === text).title, "First chat")
+      if (outcome === "refused") {
+        refuseLatestEdit("one")
+      } else if (outcome === "accepted") {
+        confirmLatestEdit("one")
+      } else {
+        snapshot([session("two", "Second chat", null)])
+        tryCompare(body.client, "online", true)
+      }
+      wait(200)
+      compare(orphanTexts().filter(entry => entry === text).length, 1, outcome + ": exactly once")
+      compare(body.client.unsavedDrafts["one"], undefined)
+      compare(body.client.sessions.sessions.some(entry => entry.id === "one"), false, "nothing reopened")
+      // Actual Copy and Dismiss.
+      clipboardProbe.text = "previous"
+      clipboardProbe.selectAll()
+      clipboardProbe.copy()
+      findChild(body, "orphanCopy").triggered()
+      tryVerify(function() { return clipboardText() === text }, 3000)
+      findChild(body, "orphanDismiss").triggered()
+      tryVerify(function() { return orphanTexts().length === 0 })
+    }
+  }
+
+  function test_zzw_late_edit_refused_after_disappearance_is_offered_once() { lateEditAfterDisappearance("refused") }
+  function test_zzwa_late_edit_accepted_after_disappearance_is_offered_once() { lateEditAfterDisappearance("accepted") }
+  function test_zzwb_late_edit_offline_after_disappearance_is_offered_once() { lateEditAfterDisappearance("offline") }
+
+  // R4-2: the listener's agent provenance stays with its text when this UI
+  // returns to it (after a send of other text, or Discard); sending
+  // different text is not editing the proposal; a person's edit clears it.
+  function test_zzx_send_and_discard_keep_the_proposals_agent_label() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "MY EXACT SEND")
+    tryCompare(composerOf(view), "text", "MY EXACT SEND")
+    fakeBackend.disconnected()
+    snapshot([session("one", "First chat", null)])
+    body.client.receive({type: "draft-snapshot", sequence: 2, drafts: [{id: "one", text: "AGENT PROPOSAL", source: "Synthetic Helper", sequence: 2}]})
+    tryVerify(function() { return unsavedNotice(chat) })
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return body.client.pendingInput !== null })
+    const from = fakeBackend.sent.length
+    body.client.receive({type: "result", action: "send-agent", result: "submitted"})
+    tryVerify(function() { return textarea(chat) === "AGENT PROPOSAL" })
+    compare(view.displayedDraftSource, "Synthetic Helper")
+    tryVerify(function() { return evaluate(chat, "document.querySelector('.composer').textContent.includes('Drafted by agent · Synthetic Helper')") === true }, 3000)
+    compare(draftWritesSince(from).length, 0, "no draft write")
+    // Discard of other unsaved text returns to the proposal with its label.
+    typeInto(chat, "MY OTHER TEXT")
+    tryCompare(composerOf(view), "text", "MY OTHER TEXT")
+    refuseLatestEdit("one")
+    tryVerify(function() { return unsavedNotice(chat) })
+    verify(clickButton(chat, "Discard"))
+    tryVerify(function() { return textarea(chat) === "AGENT PROPOSAL" })
+    compare(view.displayedDraftSource, "Synthetic Helper")
+    // The person's own edit clears it (the listener reports it without a source).
+    typeInto(chat, "AGENT PROPOSAL, edited")
+    tryCompare(composerOf(view), "text", "AGENT PROPOSAL, edited")
+    const write = fakeBackend.sent.filter(m => m.action === "draft-set" && m.id === "one").pop()
+    body.client.receive({type: "draft", id: "one", text: write.text, editId: write.editId, source: "", sequence: 3})
+    tryCompare(view, "displayedDraftSource", "")
+    compare(body.client.listenerSources["one"], undefined)
+    // Native view shows the same label (Classic view).
+    listenerDraft("one", "")
+    body.client.receive({type: "draft", id: "one", text: "SECOND PROPOSAL", source: "Synthetic Helper", sequence: 4})
+    tryVerify(function() { return textarea(chat) === "SECOND PROPOSAL" })
+    view.classicView = true
+    tryCompare(view, "htmlActive", false)
+    compare(view.displayedDraftSource, "Synthetic Helper")
+    view.classicView = false
+    tryCompare(view, "htmlActive", true, 5000)
+  }
+
+  // #15: typing must not make Send flicker. Every keystroke is an edit whose
+  // answer travels back over the bridge, and Send is (honestly) disabled
+  // until it arrives. The button keeps its enabled look during that wait
+  // instead of dimming for each keystroke. Record its rendered opacity at
+  // every change of its state in a pop-out window's chat while typing one
+  // character at a time (each edit answered).
+  function sendStateRecorder(chat) {
+    evaluate(chat, "(() => { const find = () => [...document.querySelectorAll('button')]"
+      + ".find(b => ['Send', 'Queue'].includes(b.textContent.trim()));"
+      + " window.__sendLooks = []; window.__sendDisabled = []; if (window.__sendObserver) window.__sendObserver.disconnect();"
+      + " window.__sendObserver = new MutationObserver(records => { for (const record of records) {"
+      + "  if (record.target === find()) { window.__sendLooks.push(getComputedStyle(record.target).opacity);"
+      + "   window.__sendDisabled.push(record.target.disabled) } } });"
+      + " window.__sendObserver.observe(document.body, {subtree: true, attributes: true, attributeFilter: ['disabled', 'class']});"
+      + " return true })()")
+  }
+  function test_zzy_send_does_not_flicker_while_typing_in_a_popout() {
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    body.popouts.popOut("one")
+    tryVerify(function() { return body.popouts.windows["one"] !== undefined })
+    const window = body.popouts.windows["one"]
+    const windowView = window.view
+    const windowChat = waitForChat(windowView)
+    settled(windowView, windowChat)
+    // The first character makes the text sendable at all (empty → text).
+    typeInto(windowChat, "h")
+    tryCompare(composerOf(windowView), "text", "h")
+    tryVerify(function() { return evaluate(windowChat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "Send enabled for sendable text")
+    sendStateRecorder(windowChat)
+    const typed = "hello there"
+    for (let length = 2; length <= typed.length; length++) {
+      typeInto(windowChat, typed.slice(0, length))
+      tryCompare(composerOf(windowView), "text", typed.slice(0, length))
+    }
+    tryVerify(function() { return evaluate(windowChat, "document.querySelector('textarea').value") === typed })
+    wait(200)
+    const looks = JSON.parse(evaluate(windowChat, "JSON.stringify(window.__sendLooks)"))
+    const disabled = JSON.parse(evaluate(windowChat, "JSON.stringify(window.__sendDisabled)"))
+    verify(disabled.indexOf(true) >= 0, "Send was (honestly) disabled while edits were unconfirmed: " + JSON.stringify(disabled))
+    compare(looks.filter(opacity => opacity !== "1").length, 0, "Send kept its look while typing: " + JSON.stringify(looks))
+    // Send still sends exactly the shown text.
+    verify(clickButton(windowChat, "Send"))
+    tryVerify(function() { return windowView.pendingSubmission !== null })
+    compare(windowView.pendingSubmission.text, typed)
+    compare(windowView.pendingSubmission.id, "one")
+    // A send awaiting its answer dims Send as before: that is not settling.
+    tryVerify(function() { return evaluate(windowChat, "(() => { const b = [...document.querySelectorAll('button')]"
+      + ".find(b => ['Send', 'Queue'].includes(b.textContent.trim())); return b.disabled && getComputedStyle(b).opacity !== '1' })()") === true })
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(windowView, "pendingSubmission", null)
+    evaluate(windowChat, "window.__sendObserver.disconnect(); true")
+  }
+
+  // #15 (simplified contract, as base): Send and Enter while the latest edit
+  // is unconfirmed do nothing, and nothing is kept to be sent later: not when
+  // the edit is accepted, after typing on and undoing, a refusal, a
+  // reconnection, a choice being answered or switching away and back. An
+  // explicit Send afterwards sends the shown text.
+  function pressSendAndEnterWhileUnconfirmed(chat, text) {
+    holdNextAnswer(chat)
+    typeInto(chat, text)
+    tryVerify(function() { return evaluate(chat, "window.__held.length") === 1 })
+    compare(clickButton(chat, "Send"), false, "Send is disabled while the edit is unconfirmed")
+    evaluate(chat, "(() => { document.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true})); return true })()")
+  }
+  function sendsSince(from) {
+    return fakeBackend.sent.slice(from).filter(message => message.action === "send-agent").length
+  }
+  function test_zzzh_send_during_an_unconfirmed_edit_is_never_queued() {
+    const chat = freshChat("unqueued")
+    const view = mainView()
+    typeInto(chat, "initial")
+    tryCompare(composerOf(view), "text", "initial")
+    evaluate(chat, "window.__sendTestEditDraft = window.__companionBridge.editDraft; true")
+    let from = fakeBackend.sent.length
+
+    // Accepted answer.
+    pressSendAndEnterWhileUnconfirmed(chat, "accepted later")
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "edit accepted: nothing sent")
+    compare(view.pendingSubmission, null)
+
+    // Typing on and undoing back.
+    pressSendAndEnterWhileUnconfirmed(chat, "first")
+    typeInto(chat, "first more")
+    typeInto(chat, "first")
+    tryCompare(composerOf(view), "text", "first")
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "typed on and undone: nothing sent")
+
+    // Disconnect and reconnect before the answer.
+    pressSendAndEnterWhileUnconfirmed(chat, "across a reconnection")
+    fakeBackend.disconnected()
+    tryVerify(function() { return !view.online })
+    snapshot([session("unqueued", "Fresh unqueued", null)])
+    tryVerify(function() { return view.online })
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "reconnected: nothing sent")
+
+    // A choice sent and answered before the answer.
+    pressSendAndEnterWhileUnconfirmed(chat, "across a choice")
+    view.requestChoice("unqueued", "synthetic-choice", 0)
+    tryVerify(function() { return view.pendingChoice !== null })
+    fakeBackend.received({type: "result", action: "choose-agent", result: {}})
+    tryCompare(view, "pendingChoice", null)
+    releaseHeld(chat)
+    wait(300)
+    compare(sendsSince(from), 0, "choice answered: nothing sent")
+
+    // Refused edit: the page keeps its text; nothing is sent.
+    evaluate(chat, "(() => { const b = window.__companionBridge; const edit = window.__sendTestEditDraft;"
+      + " b.editDraft = function(sessionId, base, text, cursor, callback) {"
+      + "  return edit.call(this, sessionId, base, text, cursor, () => { window.__refuse = () => callback && callback("
+      + "   JSON.stringify({accepted: false, reason: 'synthetic refusal'})) }) }; window.__refuse = null; return true })()")
+    typeInto(chat, "refused text")
+    tryVerify(function() { return evaluate(chat, "window.__refuse !== null") })
+    compare(clickButton(chat, "Send"), false)
+    evaluate(chat, "window.__refuse(); true")
+    wait(300)
+    compare(sendsSince(from), 0, "refused: nothing sent")
+    evaluate(chat, "window.__companionBridge.editDraft = window.__sendTestEditDraft; delete window.__sendTestEditDraft; delete window.__holdInstalled; true")
+
+    // An ordinary nonempty edit confirmed: Send is available again at once
+    // (no further status message needed) and sends exactly the shown text.
+    typeInto(chat, "explicit send")
+    tryCompare(composerOf(view), "text", "explicit send")
+    tryVerify(function() { return evaluate(chat, "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Send' && !b.disabled)") === true },
+      5000, "Send available after the answer")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    compare(view.pendingSubmission.text, "explicit send")
+    compare(sendsSince(from), 1)
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+  }
+
+  // The same across switching away and back before the answer.
+  function test_zzzi_send_during_an_unconfirmed_edit_is_not_kept_across_a_switch() {
+    let setup = twoConversations("", "")
+    const from = fakeBackend.sent.length
+    holdNextAnswer(setup.chat)
+    typeInto(setup.chat, "A-send")
+    tryVerify(function() { return evaluate(setup.chat, "window.__held.length") === 1 })
+    compare(clickButton(setup.chat, "Send"), false)
+    body.client.sessions.select("B")
+    tryCompare(body.panel, "selectedSessionId", "B")
+    body.client.sessions.select("A")
+    tryCompare(body.panel, "selectedSessionId", "A")
+    releaseHeld(setup.chat)
+    wait(300)
+    compare(sendsSince(from), 0)
+    compare(setup.view.pendingSubmission, null)
+  }
+
+  // #16: an application shown in the sidebar gets the room: Activity
+  // starts collapsed to its one-line status, expands on demand, and the
+  // person's own chat setting returns with chat. Also at a large text scale
+  // and in a short window, where the saved height matters most.
+  function test_zzza_activity_collapses_while_an_application_is_shown() {
+    const view = mainView()
+    waitForChat(view)
+    const strip = findChild(body.panel, "activityStrip")
+    verify(strip !== null)
+    strip.collapsed = false
+    tryCompare(strip, "height", 124 * body.panel.unit)
+    fakeBackend.received({type: "agent-session", session: session("one", "First chat", application(1))})
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app")
+    tryCompare(view, "applicationShown", true)
+    tryCompare(strip, "collapsed", true)
+    tryCompare(strip, "height", 28 * body.panel.unit)
+    verify(strip.visible, "the one-line status stays")
+    // On demand: the toggle (also its accessible press action) expands it.
+    mouseClick(findChild(strip, "toggleActivity"))
+    tryCompare(strip, "collapsed", false)
+    // Chat: the person's own (expanded) setting; back in the application it
+    // starts collapsed again.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    tryCompare(strip, "collapsed", false)
+    strip.collapsed = true
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(surface, "mode", "app")
+    tryCompare(strip, "collapsed", true)
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    tryCompare(strip, "collapsed", true, 5000, "a collapsed chat setting stays collapsed")
+    strip.collapsed = false
+    // Another conversation without an application shows chat: its setting.
+    snapshot([session("one", "First chat", application(1)), session("two", "Second chat", null)])
+    mouseClick(findChild(view, "surfaceAppButton"))
+    tryCompare(strip, "collapsed", true)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryCompare(view, "applicationShown", false)
+    tryCompare(strip, "collapsed", false)
+    // Classic view is not the application: chat setting.
+    body.client.sessions.select("one")
+    tryCompare(view, "applicationShown", true, 10000)
+    tryCompare(strip, "collapsed", true)
+    view.classicView = true
+    tryCompare(view, "applicationShown", false)
+    tryCompare(strip, "collapsed", false)
+    view.classicView = false
+    tryCompare(view, "applicationShown", true, 10000)
+    tryCompare(strip, "collapsed", true)
+    // At twice the theme scale the collapsed strip leaves the application
+    // all of the expanded strip's height (96 of 124 units).
+    const originalTheme = body.theme
+    try {
+      body.theme = Object.assign({}, originalTheme, {unit: 2})
+      tryCompare(strip, "height", 28 * 2)
+      const appView = findChild(view, "sessionApp")
+      tryVerify(function() { return appView.height > 0 })
+      const collapsedApp = appView.height
+      mouseClick(findChild(strip, "toggleActivity"))
+      tryCompare(strip, "height", 124 * 2)
+      tryVerify(function() { return collapsedApp - appView.height >= 96 * 2 - 1 }, 5000,
+        "collapsed gives the application " + collapsedApp + ", expanded " + appView.height)
+    } finally {
+      body.theme = originalTheme
+    }
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(surface, "mode", "chat")
+    snapshot([session("one", "First chat", null)])
+    tryCompare(view, "applicationShown", false)
+  }
+
+  // #12: a popped-out conversation has the same next-turn model controls as
+  // the sidebar footer, for its own conversation only, also when narrow or
+  // short. Settings and drafts do not move or change with the window.
+  function test_zzzb_popout_model_picker_targets_its_own_conversation() {
+    const claude = Object.assign(session("three", "Claude chat", null),
+      {harness: "claude-code", claudeCode: {model: "claude-synthetic-a", effort: "high"}})
+    fakeBackend.received({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0, sessionControlsAvailable: true,
+      sessions: [session("one", "First chat", null), session("two", "Second chat", null), claude]})
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "sidebar draft stays")
+    tryCompare(composerOf(view), "text", "sidebar draft stays")
+    tryVerify(function() { return findChild(body.panel, "sessionModelFooter").visible })
+
+    body.popouts.popOut("two")
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined })
+    const window = body.popouts.windows["two"]
+    const windowChat = waitForChat(window.view)
+    settled(window.view, windowChat)
+    typeInto(windowChat, "window draft stays")
+    tryCompare(composerOf(window.view), "text", "window draft stays")
+    const picker = findChild(window, "popoutModelPicker")
+    tryVerify(function() { return picker.visible }, 5000, "the pop-out shows the model controls")
+    compare(picker.session.id, "two")
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "agent-models") })
+    fakeBackend.received({type: "result", action: "agent-models", result: {models: ["synthetic/a", "synthetic/b"],
+      coding: "synthetic/a", codingThinking: "medium",
+      thinkingLevels: {"synthetic/a": ["low", "medium", "high"], "synthetic/b": ["low", "high"]}}})
+    const chooser = findChild(picker, "sessionModelPicker")
+    const effort = findChild(picker, "sessionThinkingPicker")
+    tryVerify(function() { return chooser.enabled && effort.visible && effort.enabled })
+    // The view ends above the controls, inside the window.
+    verify(window.view.y + window.view.height <= picker.y + 1)
+    verify(picker.y + picker.height <= window.height + 1)
+
+    // Choosing names this window's conversation, never the sidebar's.
+    const from = fakeBackend.sent.length
+    chooser.activated(chooser.entries.findIndex(entry => entry.value === "synthetic/b"))
+    effort.activated(effort.entries.findIndex(entry => entry.value === "high"))
+    const requests = fakeBackend.sent.slice(from)
+    compare(JSON.stringify(requests.filter(message => message.action === "set-agent-model")),
+      JSON.stringify([{action: "set-agent-model", id: "two", model: "synthetic/b"}]))
+    compare(JSON.stringify(requests.filter(message => message.action === "set-agent-thinking")),
+      JSON.stringify([{action: "set-agent-thinking", id: "two", thinking: "high"}]))
+    // No optimistic change: the listener's update is the authority.
+    fakeBackend.received({type: "agent-session", session: Object.assign(session("two", "Second chat", null),
+      {modelOverride: "synthetic/b", thinkingOverride: "high"})})
+    tryCompare(chooser, "currentText", "synthetic/b")
+
+    // Narrow and short: the controls stack and the conversation keeps room.
+    window.width = window.minimumWidth
+    window.height = window.minimumHeight
+    tryVerify(function() { return picker.stacked })
+    tryVerify(function() { return picker.y + picker.height <= window.height + 1 })
+    verify(window.view.height >= 80, "conversation height " + window.view.height)
+    verify(effort.y > chooser.y, "effort below the model when stacked")
+    window.width = 560
+    window.height = 720
+
+    // A Claude Code conversation lists the Claude allowlist; effort is fixed.
+    body.popouts.popOut("three")
+    tryVerify(function() { return body.popouts.windows["three"] !== undefined })
+    const claudeWindow = body.popouts.windows["three"]
+    const claudePicker = findChild(claudeWindow, "popoutModelPicker")
+    tryVerify(function() { return claudePicker.visible })
+    tryVerify(function() { return fakeBackend.sent.some(message => message.action === "claude-models") })
+    fakeBackend.received({type: "result", action: "claude-models", result: {models: ["claude-synthetic-a", "claude-synthetic-b"], model: "claude-synthetic-a"}})
+    verify(!findChild(claudePicker, "sessionThinkingPicker").visible)
+    compare(findChild(claudePicker, "claudeSessionEffort").text, "high · fixed")
+    const claudeChooser = findChild(claudePicker, "sessionModelPicker")
+    tryVerify(function() { return claudeChooser.enabled })
+    const claudeFrom = fakeBackend.sent.length
+    claudeChooser.activated(claudeChooser.entries.findIndex(entry => entry.value === "claude-synthetic-b"))
+    compare(JSON.stringify(fakeBackend.sent.slice(claudeFrom).filter(message => message.action === "set-agent-model")),
+      JSON.stringify([{action: "set-agent-model", id: "three", model: "claude-synthetic-b"}]))
+
+    // Returning to the sidebar changes no setting and keeps both drafts.
+    const beforeReturn = fakeBackend.sent.length
+    body.popouts.returnToSidebar("two", {focus: false})
+    tryVerify(function() { return body.popouts.windows["two"] === undefined })
+    body.popouts.returnToSidebar("three", {focus: false})
+    tryVerify(function() { return body.popouts.windows["three"] === undefined })
+    compare(fakeBackend.sent.slice(beforeReturn).filter(message => message.action === "set-agent-model"
+      || message.action === "set-agent-thinking").length, 0)
+    compare(composerOf(view).text, "sidebar draft stays")
+    compare(view.exportDraft("two").text, "window draft stays")
+    view.clearDraft("two")
+    snapshot([session("one", "First chat", null)])
+  }
+
+
+
+  // R1-4: switching directly from one application to another conversation's
+  // application collapses Activity again; the person's chat setting stays.
+  function test_zzze_activity_collapses_again_for_another_application() {
+    snapshot([session("one", "First chat", application(1)), Object.assign(session("two", "Second chat", null),
+      {application: application(1, {id: "app-2"})})])
+    body.client.sessions.select("one")
+    const view = mainView()
+    const strip = findChild(body.panel, "activityStrip")
+    tryCompare(view, "applicationShown", true, 10000)
+    tryCompare(strip, "collapsed", true)
+    mouseClick(findChild(strip, "toggleActivity"))
+    tryCompare(strip, "collapsed", false)
+    body.client.sessions.select("two")
+    tryCompare(body.panel, "selectedSessionId", "two")
+    tryVerify(function() { return view.applicationShown && view.session && view.session.id === "two" }, 10000)
+    tryCompare(strip, "collapsed", true, 5000, "another application starts collapsed")
+    // Chat keeps the person's own (expanded, from before) setting.
+    mouseClick(findChild(view, "surfaceChatButton"))
+    tryCompare(view, "applicationShown", false)
+    tryCompare(strip, "collapsed", false)
+    snapshot([session("one", "First chat", null)])
+  }
+
+  // #16 one row: an application that asked for chat access shows its
+  // permission status and the Permissions button in the existing
+  // Chat/application row; no separate permission row while collapsed. The
+  // button works by keyboard, wraps when narrow and at a large scale, and
+  // expanding shows the trusted controls below the row.
+  function test_zzzf_permission_status_shares_the_application_row() {
+    const access = {chatAccess: {requested: ["chat.read", "chat.send"], read: false, revision: "r1",
+      send: {allowed: true, remaining: 4, busy: false}}}
+    // Delivered as the native connection delivers it (a JS object), as the
+    // consent suites do: the fake transport's `var` signal turns arrays into
+    // lists that Array.isArray does not accept.
+    body.client.receive({type: "state", protocol: 1, ready: true, recordingAvailable: true,
+      activitySessionId: "activity", activityHistoryCount: 0,
+      sessions: [session("one", "First chat", application(1, access))]})
+    const view = mainView()
+    const surface = surfaceOf(view)
+    tryCompare(surface, "mode", "app", 10000)
+    const row = findChild(view, "surfaceBarRow")
+    const summary = findChild(view, "appChatPermissionSummary")
+    const expand = findChild(view, "appChatPermissionExpand")
+    const mount = findChild(view, "appChatPermissionMount")
+    tryVerify(function() { return summary.visible && expand.visible })
+    compare(summary.text, "Chat reading off · sending on, 4/5 left")
+    compare(mount.height, 0, "no separate permission row")
+    const chatButton = findChild(view, "surfaceChatButton")
+    // Everything that fits stays on the one existing row; the rest wraps.
+    function checkRow() {
+      const spacing = 8 * body.panel.unit
+      const appButton = findChild(view, "surfaceAppButton")
+      const classic = findChild(view, "surfaceClassicButton")
+      const needed = chatButton.width + appButton.width + classic.width + summary.implicitWidth + expand.implicitWidth + 4 * spacing
+      if (row.width >= needed) {
+        compare(summary.y, chatButton.y, "one row when wide enough")
+        compare(expand.y, chatButton.y)
+      }
+      verify(summary.x + summary.width <= row.width + 1, "summary inside the row")
+      verify(expand.x + expand.width <= row.width + 1, "Permissions inside the row")
+      verify(findChild(view, "sessionApp").y >= findChild(view, "sessionSurfaceBar").y + findChild(view, "sessionSurfaceBar").height,
+        "the application starts below the row")
+    }
+    checkRow()
+    // Keyboard: the trusted controls open below the row.
+    expand.forceActiveFocus()
+    tryCompare(expand, "activeFocus", true)
+    keyClick(Qt.Key_Space)
+    tryCompare(view, "appChatPermissionExpanded", true)
+    tryVerify(function() { return mount.height > 40 })
+    verify(!summary.visible && !expand.visible)
+    verify(findChild(view, "appChatReviewRead").visible)
+    verify(findChild(view, "appChatRevokeSend").visible)
+    // Hide (by keyboard; it scrolls into view within the capped panel).
+    const hide = findChild(view, "appChatPermissionCollapse")
+    hide.forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    tryCompare(mount, "height", 0)
+    // Narrow and twice the scale: the row wraps; nothing overlaps.
+    const originalTheme = body.theme
+    try {
+      body.theme = Object.assign({}, originalTheme, {unit: 2})
+      // The Flow lays out again on its next polish after the scale change;
+      // wait for that complete layout (wrapped and inside the row), not only
+      // for one item to move, before the exact checks.
+      tryVerify(function() {
+        return expand.visible && expand.y > chatButton.y
+          && expand.x + expand.width <= row.width + 1 && summary.x + summary.width <= row.width + 1
+      }, 5000, "wrapped below, inside the row")
+      checkRow()
+      // Still reachable by keyboard when wrapped.
+      expand.forceActiveFocus()
+      keyClick(Qt.Key_Return)
+      tryCompare(view, "appChatPermissionExpanded", true)
+      view.appChatPermissionExpanded = false
+    } finally {
+      body.theme = originalTheme
+    }
+    // Chat mode: no permission status in the row.
+    mouseClick(chatButton)
+    tryCompare(surface, "mode", "chat")
+    verify(!summary.visible && !expand.visible)
+    snapshot([session("one", "First chat", null)])
+  }
+
+  // #14 native path: "pop out session N" reaches the host as agent-select
+  // with presentation "window" and uses the ordinary Pop out; a refusal
+  // (a send still being confirmed) changes no view and renews the
+  // navigation token, so the listener drops the request.
+  function test_zzzg_voice_popout_request_pops_out_or_is_refused_visibly() {
+    snapshot([session("one", "First chat", null), session("two", "Second chat", null)])
+    body.client.sessions.select("one")
+    tryCompare(body.panel, "selectedSessionId", "one")
+    const sessions = body.client.sessions
+    body.client.receive({type: "agent-select", id: "two", token: sessions.navigationToken,
+      orderRevision: sessions.orderRevision, presentation: "window"})
+    tryVerify(function() { return body.popouts.windows["two"] !== undefined }, 5000, "popped out")
+    compare(body.client.sessions.sessions.length, 2, "no new conversation")
+    compare(body.panel.selectedSessionId, "one")
+    body.popouts.returnToSidebar("two", {focus: false})
+    tryVerify(function() { return body.popouts.windows["two"] === undefined })
+    // Refused: a send from "one" awaits its confirmation.
+    const view = mainView()
+    const chat = waitForChat(view)
+    settled(view, chat)
+    typeInto(chat, "being sent")
+    tryCompare(composerOf(view), "text", "being sent")
+    verify(clickButton(chat, "Send"))
+    tryVerify(function() { return view.pendingSubmission !== null })
+    const token = sessions.navigationToken
+    body.client.receive({type: "agent-select", id: "one", token: token,
+      orderRevision: sessions.orderRevision, presentation: "window"})
+    tryVerify(function() { return body.client.error.indexOf("still being sent") >= 0 })
+    compare(body.popouts.windows["one"], undefined, "no window")
+    verify(sessions.navigationToken !== token, "token renewed after the refusal")
+    fakeBackend.received({type: "result", action: "send-agent", result: {}})
+    tryCompare(view, "pendingSubmission", null)
+    body.client.error = ""
+    snapshot([session("one", "First chat", null)])
+  }
+
+
+
+  function findChildren(item, name) {
+    let found = []
+    if (!item) return found
+    if (item.objectName === name) found.push(item)
+    const children = item.children || []
+    for (let index = 0; index < children.length; index++) found = found.concat(findChildren(children[index], name))
+    if (item.contentItem && item.contentItem !== item) found = found.concat(findChildren(item.contentItem, name))
+    return found
+  }
+}

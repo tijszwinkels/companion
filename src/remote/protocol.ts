@@ -144,7 +144,8 @@ export type GatewayMessage =
 /**
  * Listener events relayed to the phone. Screenshot file URLs are replaced by
  * `screenshotId`, which the phone fetches through the authenticated image
- * route; widget view URLs are removed because they only work on the desktop.
+ * route; widget and session application view URLs are removed because they
+ * only work on the desktop.
  */
 export type EngineEvent =
   | ({ type: 'state' } & EngineState)
@@ -215,10 +216,14 @@ export interface ToolPage {
 export const desktopOnlyEvents: ReadonlySet<string> = new Set([
   // Controls for the desktop's selection, not the phone's.
   'agent-actions',
+  // Controls for the conversations one desktop connection shows.
+  'agent-view-actions',
   // Composer drafts belong to desktop panels, which must acknowledge them.
   'agent-draft',
   // Spoken "go to session N" navigation for the desktop panel.
   'agent-select',
+  // Pop-out conversation windows are native desktop windows.
+  'agent-present',
   // Manual recording appends to the desktop panel that started it.
   'recording-append',
   'recording-finished',

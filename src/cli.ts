@@ -15,6 +15,7 @@ import { QuickQuestion } from './processors/quick-question.ts';
 import { StartClaudeCodeSession } from './processors/start-claude-code-session.ts';
 import { StartPiSession } from './processors/start-pi-session.ts';
 import { GoToSession } from './processors/go-to-session.ts';
+import { PopOutSession } from './processors/pop-out-session.ts';
 import { ContinueOpenAgentConversation } from './processors/continue-open-agent-conversation.ts';
 import { CloseAgentSession } from './processors/close-agent-session.ts';
 import { LabelPreviousCorrect } from './processors/label-previous-correct.ts';
@@ -308,6 +309,7 @@ Other dictation never presses Enter. Start inside your Hyprland desktop session.
     );
     new StartPiSession({ sessions: agents }, log, values.preview, activity).subscribe(router);
     new GoToSession(log, values.preview, activity).subscribe(router);
+    new PopOutSession(log, values.preview, activity).subscribe(router);
     new ContinueOpenAgentConversation(
       { sessions: agents },
       log,

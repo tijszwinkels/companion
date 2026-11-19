@@ -22,6 +22,7 @@ import { Ignore } from '../../src/processors/ignore.ts';
 import { SendTextToApplication } from '../../src/processors/send-text-to-application.ts';
 import { StartCodingAgentSession } from '../../src/processors/start-coding-agent-session.ts';
 import { GoToSession } from '../../src/processors/go-to-session.ts';
+import { PopOutSession } from '../../src/processors/pop-out-session.ts';
 import { QuickQuestion } from '../../src/processors/quick-question.ts';
 import { StartClaudeCodeSession } from '../../src/processors/start-claude-code-session.ts';
 import { StartPiSession } from '../../src/processors/start-pi-session.ts';
@@ -267,6 +268,7 @@ test('CLI exports its real wiring without requiring desktop, model, or audio res
   new StartClaudeCodeSession({ sessions }, () => {}, false, activity).subscribe(router);
   new StartPiSession({ sessions }, () => {}, false, activity).subscribe(router);
   new GoToSession(() => {}, false, activity).subscribe(router);
+  new PopOutSession(() => {}, false, activity).subscribe(router);
   new ContinueOpenAgentConversation({ sessions }, () => {}, false, activity).subscribe(router);
   new CloseAgentSession({ sessions }, () => {}, false, activity).subscribe(router);
   new LabelPreviousCorrect(() => {}, false, activity).subscribe(router);
@@ -335,8 +337,8 @@ process.once('exit', () => {
       assert.deepEqual(graph, desktopGraph);
       assert.equal(graph.nodes[0].id, 'pipeline');
       // Includes the transcription cleanup call used by explicit shortcuts.
-      assert.equal(graph.nodes.length, 22);
-      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 12);
+      assert.equal(graph.nodes.length, 23);
+      assert.equal(graph.edges.filter((edge) => edge.kind === 'route').length, 13);
     } else {
       assert.ok(stdout.startsWith('flowchart LR\n'));
     }

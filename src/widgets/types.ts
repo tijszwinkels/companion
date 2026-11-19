@@ -1,3 +1,5 @@
+import type { SessionApplicationChatCapability } from '../session-apps/types.ts';
+
 /** Browser code and capabilities never belong in the agent's tool arguments. */
 export type JsonObject = Record<string, unknown>;
 
@@ -5,6 +7,8 @@ export interface WidgetAction {
   description: string;
   parameters: JsonObject;
   returns: JsonObject;
+  /** Session applications only: false keeps the operation view-only (default true). */
+  agent?: boolean;
 }
 
 export interface WidgetManifest {
@@ -14,6 +18,14 @@ export interface WidgetManifest {
   parameters: JsonObject;
   actions: Record<string, WidgetAction>;
   example: JsonObject;
+  /** Session applications only: read-only queries (src/session-apps/README.md). */
+  queries?: Record<string, WidgetAction>;
+  /** Present on session application bundles; absent on ordinary widgets. */
+  application?: {
+    eventMode?: 'immediate' | 'next-input';
+    /** Requests only; the user grants access through trusted desktop controls. */
+    capabilities?: SessionApplicationChatCapability[];
+  };
 }
 
 export interface WidgetBundle {

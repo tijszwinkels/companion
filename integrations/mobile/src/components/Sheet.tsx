@@ -2,7 +2,7 @@
 
 import type { ComponentChildren } from 'preact';
 
-import { CloseIcon } from './icons.tsx';
+import { CloseIcon } from '../../../chat-ui/icons.tsx';
 import { Modal } from './Modal.tsx';
 
 export function Sheet(props: { title: string; onClose(): void; children: ComponentChildren }) {

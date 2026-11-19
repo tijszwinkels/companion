@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.8 REQUIRED COMPONENTS Quick WebEngineQuick Network QuickTest)
 
-add_library(companionwidgets MODULE profile.cpp plugin.cpp)
+add_library(companionwidgets MODULE profile.cpp shell-profile.cpp plugin.cpp)
 target_link_libraries(companionwidgets PRIVATE Qt6::WebEngineQuick Qt6::Network)
 set_target_properties(companionwidgets PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/qml/Companion/Widgets")
