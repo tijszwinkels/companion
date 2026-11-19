@@ -999,7 +999,7 @@ recording the latest state no longer shows also clears it. Reasons:
 | `navigation`               | the owner's `panel-state` shows another conversation, a non-conversation page or a hidden panel | appended to the original conversation                    |
 | `paused`                   | listening becomes paused (manual or media)                                                      | appended                                                 |
 | `overload`                 | 3 chunks wait for ASR                                                                           | appended; the 4th slot is reserved for the final chunk   |
-| `microphone`               | capture or VAD fails                                                                            | audio before the failure is appended; `complete: false`  |
+| `microphone`               | capture or VAD fails, including lost capture (the recorder ended or exited on its own)          | audio before the failure is appended; `complete: false`  |
 | `transcription`            | a chunk's ASR fails                                                                             | earlier text kept; later chunks discarded, never retried |
 | `delivery`                 | an append is `unavailable`/`unconfirmed`/`offline`                                              | later chunks discarded, never resent                     |
 | `disconnected`, `shutdown` | the owner disconnects or the listener stops                                                     | nothing more is delivered                                |
@@ -1277,7 +1277,13 @@ authentication belong to the separate gateway process.
 
 Conversation snapshots/updates optionally carry `wakes`: bounded timer summaries
 with ID, label, due/expiry, state, last transition, cancellation intent and linked
-turn ID. These are projections from the dedicated timer store, never restored
+turn ID. An occurrence of a repeating timer also carries `recurrence`
+(`seriesId`, `everySeconds`, `anchorAt`, `slot`, `occurrence`). The panel and
+transcript notice show its interval and occurrence. Pending repeating timers
+label their due time as the next run; running ones show the earliest next run
+if they finish before that slot (updated while the overlay is open), or that
+cancellation ends the series after this run. Finished entries retain the interval
+and occurrence without promising another run. These are projections from the dedicated timer store, never restored
 as executable transcript messages. The shared panel shows a clock/count on tabs.
 The conversation header shows a compact clock with the pending (scheduled/waiting)
 count, "Running" when only dispatching/started timers remain, or Attention with

@@ -83,7 +83,10 @@ without a segment (with its measured silence) or listening ends (without); a
 replaces the held one in place. The router receives that attempt as an optional
 third argument, `route(frame, signal, commitment?)`, and awaits
 `commitment.commit(...)` immediately before dispatching or skipping. A spoken
-decision commits at `max(speech end + 800 ms, decision ready)`. Typed input and
+decision commits at `max(speech end + 800 ms, decision ready)`. When the
+detector sets `startsAfterSpeechQuiet` (the `groq` request profile), the router
+also awaits `commitment.speechQuiet(signal)` before starting the classifier
+request: the same floor, without committing. Typed input and
 direct callers pass no commitment. The pipeline's optional sixth constructor
 argument is the monotonic `CommitClock` for these deadlines; tests pass a
 controlled clock. See [speech timing](speech-timing.md). Both capture the

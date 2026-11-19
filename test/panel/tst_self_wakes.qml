@@ -182,6 +182,75 @@ Item {
       tryVerify(() => !overlay(panel).opened)
     }
 
+    function test_repeating_timers_show_interval_and_next_run() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const now = Date.now()
+      const series = {seriesId: "series", everySeconds: 2700, anchorAt: now - 2 * 2700000, slot: 0, occurrence: 1}
+      open(panel, [
+        timer("next", "scheduled", {dueAt: now + 18 * 60000,
+          recurrence: Object.assign({}, series, {anchorAt: now + 18 * 60000 - 2 * 2700000, slot: 2, occurrence: 3})}),
+        timer("run", "started", {dueAt: now - 60000, recurrence: Object.assign({}, series, {anchorAt: now - 60000})}),
+        timer("ending", "started", {cancellationRequested: true,
+          recurrence: Object.assign({}, series, {anchorAt: now + 18 * 60000})}),
+        timer("once", "scheduled"),
+        timer("done-series", "completed", {recurrence: series}),
+        timer("missed", "failed", {reason: "Provider error", recurrence: Object.assign({}, series, {occurrence: 2})})])
+      mouseClick(control(panel))
+      tryVerify(() => overlay(panel).opened)
+      verify(waitForRendering(panel))
+
+      const next = find(panel, "timer-next")
+      compare(findChild(next, "timerRecurrence").text, "Repeats every 45 min · occurrence 3")
+      verify(findChild(next, "timerDue").text.startsWith("Next run · In 18 min · "))
+
+      // While an occurrence runs, the next slot is one interval after it.
+      const running = findChild(find(panel, "timer-run"), "timerRecurrence").text
+      const expected = new Date(now - 60000 + 2700000)
+      const sameDay = expected.toDateString() === new Date(now).toDateString()
+      const clock = Qt.formatDateTime(expected, sameDay ? "hh:mm" : "ddd d MMM hh:mm")
+      verify(running.startsWith("Repeats every 45 min · earliest next run " + clock), running)
+      verify(running.endsWith("· occurrence 1"))
+      compare(findChild(find(panel, "timer-ending"), "timerRecurrence").text,
+        "Repeats every 45 min · series ends after this run · occurrence 1")
+      compare(findChild(find(panel, "timer-missed"), "timerRecurrence").text, "Repeats every 45 min · occurrence 2")
+
+      // One-shot timers are unchanged.
+      const once = find(panel, "timer-once")
+      verify(!findChild(once, "timerRecurrence").visible)
+      verify(findChild(once, "timerDue").text.startsWith("In 18 min · "))
+
+      // Finished history retains the interval without promising a next run.
+      overlay(panel).historyExpanded = true
+      verify(waitForRendering(panel))
+      const finished = find(panel, "finishedTimer-done-series").text
+      verify(finished.includes("Repeats every 45 min · occurrence 1"))
+      verify(!finished.includes("next run"))
+    }
+
+    function test_repeating_timer_skips_slots_while_running() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      const timerControl = control(panel).parent
+      const anchor = Date.UTC(2026, 0, 1, 23, 30)
+      const interval = 2700000
+      const recurrence = {seriesId: "series", everySeconds: 2700, anchorAt: anchor, slot: 0, occurrence: 1}
+
+      // A long run must skip missed slots, and a slot less than a minute away.
+      compare(timerControl.nextSlotAfterRun(recurrence, anchor + 3 * interval), anchor + 4 * interval)
+      compare(timerControl.nextSlotAfterRun(recurrence, anchor + interval - 60000), anchor + interval)
+      compare(timerControl.nextSlotAfterRun(recurrence, anchor + interval - 59999), anchor + 2 * interval)
+
+      // Starting already describes the current run, so only its recurrence
+      // line describes the earliest successor. Do not label both as next run.
+      const starting = timer("starting", "dispatching", {dueAt: anchor, recurrence: recurrence})
+      verify(!timerControl.dueLabel(starting, anchor).startsWith("Next run"))
+      verify(timerControl.recurrenceLabel(starting, anchor).includes("earliest next run "))
+
+      // A backwards wall-clock jump beyond the scheduler's limit cannot
+      // promise a successor that the scheduler would refuse to create.
+      compare(timerControl.nextSlotAfterRun(recurrence, anchor - 31 * 86400000), undefined)
+      verify(timerControl.recurrenceLabel(starting, anchor - 31 * 86400000).includes("next run unavailable"))
+    }
+
     function test_switching_conversations_closes_the_overlay() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.sessions = [conversation([timer("a", "scheduled")]), conversation([], {id: "other", title: "Other"})]

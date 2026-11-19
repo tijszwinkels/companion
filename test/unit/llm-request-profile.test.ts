@@ -21,6 +21,7 @@ import { IntentDetector, localStream, type LlmConfig } from '../../src/core/inte
 import { restoreIntentRequest } from '../../src/core/intent-request.ts';
 import {
   LLM_REQUEST_PROFILES,
+  waitsForSpeechQuiet,
   type LlmRequestProfile,
 } from '../../src/core/llm-request-profile.ts';
 import { FixedRouteCleaner } from '../../src/core/transcription-cleanup/fixed-route-cleaner.ts';
@@ -510,4 +511,34 @@ test('provider-like host names do not change the profile request', async () => {
       await loopback.close();
     }
   }
+});
+
+test('only the Groq profile waits for speech quiet before a spoken request', () => {
+  // Tijs (2026-10-15): Groq only. Request bodies are unchanged; only when a
+  // spoken utterance's request starts (see utterance-continuation tests).
+  const expected: Record<LlmRequestProfile, boolean> = {
+    'local-qwen': false,
+    groq: true,
+    openrouter: false,
+  };
+
+  for (const requestProfile of LLM_REQUEST_PROFILES) {
+    assert.equal(waitsForSpeechQuiet(requestProfile), expected[requestProfile], requestProfile);
+
+    const detector = new IntentDetector({
+      baseUrl: 'http://127.0.0.1:9/v1',
+      model: 'synthetic-model',
+      timeoutMs: 1000,
+      requestProfile,
+    });
+    assert.equal(detector.startsAfterSpeechQuiet, expected[requestProfile], requestProfile);
+  }
+
+  // An absent profile is the local default and does not wait.
+  const unset = new IntentDetector({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    model: 'synthetic-model',
+    timeoutMs: 1000,
+  });
+  assert.equal(unset.startsAfterSpeechQuiet, false);
 });

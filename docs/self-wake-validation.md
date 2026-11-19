@@ -39,11 +39,29 @@ queued ones and reconstructs the store across listener lifetimes.
 | 14. Terminal backend failures                               | Scripted provider failure and missing resume; ordinary predecessor quota/policy/runtime/exception cases block pending work                                         |
 | 15. No live side effects                                    | Injected clocks, temporary directories, scripted backends; offscreen UI only; no screenshot in wake request                                                        |
 | 16. Ordinary restore remains dormant                        | Existing `session-store`, `agent-sessions` and lazy-tool restart tests; timer projection excluded from transcript persistence                                      |
+| 17. Repeating timers                                        | `self-wakes-recurring`: see the table below                                                                                                                        |
 
 The `self-wakes-races` suite preserves the independent R1 reproductions and adds
 multi-candidate cancellation/replacement/Stop/block/expiry across owners, failed
 Stop/close/block writes before and during preparation, explicit recovery across
 restart, intervening ordinary turns, and absolute receipt replay after reopen.
+
+## Repeating timers
+
+| Accepted scenario                                  | `self-wakes-recurring` coverage                                                                                           |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Successor creation and anchor math                 | Four late-run occurrences keep to anchor + k·interval; inherited fields; one live occurrence; published notice and list   |
+| Long outage or restart: skip, no burst             | Ten-hour outage gives one expired row and one future successor; no dispatch until its slot                                |
+| Restart persistence and interrupted claims         | Series survives restarts; dispatching/started become uncertain with exactly one successor, never replayed                 |
+| No duplicate successor                             | Duplicate receipt, repeated/stale terminal transitions, defensive store check against a second live occurrence            |
+| Cancel by series, current or old occurrence, races | Series ID, current ID and post-dispatch intent end it; old ID leaves it running; cancel during preparation wins           |
+| Stop/close/self-close/delete end the series        | Scheduler owner settlement and real sessions: Stop mid-run, tab close, agent self-close, deletion, unavailable owner      |
+| Closed owner never restored                        | Real session restart: occurrence skipped as "not an open tab", conversation stays closed, runs after manual reopen        |
+| Continuation after failure                         | Failed, blocked and skipped occurrences continue with the next slot; a real provider error is not retried                 |
+| Bounds                                             | 45-minute minimum, 30-day maximum, whole seconds, grace below interval, 30-day successor beyond 30 days persists          |
+| Existing one-shot rows and malformed series rows   | A row in the existing one-shot format loads and runs unchanged; inconsistent version/recurrence rows are quarantined      |
+| Pending limits                                     | A running series holds its slot; same-key schedule ends the series (unstarted or running)                                 |
+| Prompt and notice                                  | Series-aware wake prompt (no re-arm, end with series ID, no new authority) and transcript notice with interval/occurrence |
 
 ## Delivery limits to review
 
@@ -116,3 +134,9 @@ Gateway and phone history fixtures schedule/cancel real leased synthetic timers
 while exercising old-page URL sanitization, canonical pins and draft retention;
 remote timer writes remain refused. These fixtures use no production transcripts,
 providers, capture devices or installed clients.
+
+The offscreen panel suite (`tst_self_wakes.qml`) checks repeating timers' interval,
+occurrence and next-run labels, the earliest successor while starting/running,
+skipped slots and the one-minute scheduling margin, cancellation intent, and
+unchanged one-shot labels. Running estimates may advance until the occurrence
+finishes; no successor is created by opening or viewing the overlay.

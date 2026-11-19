@@ -373,8 +373,8 @@ the native Claude session and its history stay the same: the turn runs
 model ID is never reinterpreted, and nothing moves between harnesses.
 
 - **Catalogue.** `models.ts` holds a small allowlist of exact IDs
-  (`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
-  `claude-haiku-4-5-20251001`). The configured `claudeCode.model` is added
+  (`claude-fable-5-2`, `claude-fable-5-1`, `claude-opus-5-5`,
+  `claude-sonnet-5`, `claude-haiku-4-5-20251001`). The configured `claudeCode.model` is added
   when it is not listed. `AgentSessions.claudeModels()` returns them as
   `{models, model}` (`model` is the configured default) through the desktop
   action `claude-models`. It only reads the configuration file and starts

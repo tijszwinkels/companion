@@ -44,7 +44,35 @@ export async function* pcmFrames(chunks: AsyncIterable<Buffer>): AsyncGenerator<
   }
 }
 
-/** Both microphone and file input produce the same mono, 16 kHz PCM stream. */
+/**
+ * The live microphone recorder failed on its own: `pw-record` exited with an
+ * error, could not be started, or its stream broke. This typically happens
+ * while PipeWire or WirePlumber restarts (for example during an audio-service
+ * repair). It is never raised for a requested stop (pause, handoff, Stop
+ * recording or shutdown), nor for file input, which keeps its plain errors.
+ *
+ * Callers may open a new recorder after this error; see
+ * `microphone-loop.ts` for ordinary listening. The original failure is kept
+ * as `cause`, and its message (including the recorder's stderr) is reused.
+ */
+export class CaptureLostError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'CaptureLostError';
+  }
+}
+
+/**
+ * Both microphone and file input produce the same mono, 16 kHz PCM stream.
+ *
+ * Endings. A file ends normally at EOF and its failures throw plain errors.
+ * The microphone ends normally only if `pw-record` exits successfully, which
+ * it does not do on its own while PipeWire runs; callers treat such an end of
+ * live capture as lost capture (see `listenToMicrophone`). Its failures throw
+ * `CaptureLostError`. A requested stop through `signal` throws its abort
+ * reason for both. At most one child process exists per call, and it has
+ * exited before the generator finishes.
+ */
 export async function* audioFrames(
   signal: AbortSignal,
   options: { file?: string; device?: string } = {},
@@ -115,6 +143,16 @@ export async function* audioFrames(
     if (code !== 0) {
       throw Error(`${binary} exited ${code}: ${stderr}`);
     }
+  } catch (failure) {
+    // File input and requested stops keep their original errors. Every other
+    // microphone failure comes from the recorder itself, so it is marked as
+    // lost capture that a new recorder may recover from.
+    if (options.file || signal.aborted) {
+      throw failure;
+    }
+
+    const message = failure instanceof Error ? failure.message : String(failure);
+    throw new CaptureLostError(message, { cause: failure });
   } finally {
     // This also runs when the caller breaks out of the async iterator early.
     stop();

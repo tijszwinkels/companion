@@ -190,6 +190,11 @@ field itself and the prepared-payload hook still records the exact request.
 | `groq`                 | `reasoning_effort: "none"`                                                | `thinkingFormat: 'openai'`, `supportsReasoningEffort`, `off: 'none'` |
 | `openrouter`           | `reasoning: {enabled: false}`                                             | `thinkingFormat: 'together'` (not the adapter's `openrouter` format) |
 
+`groq` also changes when a spoken utterance's classifier request starts: only
+once 800 ms have passed since the latest speech (`waitsForSpeechQuiet`, read by
+the router through `Detector.startsAfterSpeechQuiet`). See
+[speech timing](speech-timing.md#groq-the-classifier-request-waits-for-the-floor).
+
 The installed `@earendil-works/pi-ai` 0.85.1 `openrouter` format sends
 `reasoning: {effort: "none"}`, which is not the form earlier probes showed working;
 its documented `together` format sends exactly `reasoning: {enabled: false}`. An

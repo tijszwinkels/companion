@@ -204,6 +204,19 @@ input, empty model output, worker errors, and later capture/recording/routing
 failures. See [short-phrase evidence and diagnosis](short-phrase-recognition.md)
 and run `npm run asr:short-phrases` for a local, prerecorded regression.
 
+Lost microphone capture: when `pw-record` ends or fails on its own, for example
+while PipeWire or WirePlumber restarts, ordinary listening logs it and opens a
+new recorder in the same process after 0.5, 1, 2 and 4 seconds, then every 5
+seconds until capture works. A recorder that ran for 10 seconds resets the
+delay. Pause, Record and shutdown end a wait early, and only one recorder runs
+at a time. Flags, configuration, credentials and conversations are untouched.
+Only lost capture is retried; any other error escaping the listening loop (for
+example from VAD) still stops the listener, and ASR and pipeline job failures
+keep their existing handling: logged and counted while listening continues.
+`--wav` input still ends at EOF with its own errors. A manual recording that
+loses capture ends with the `microphone` reason, keeps its draft and is not
+restarted. See `src/sensors/audio/microphone-loop.ts` and `capture-retry.ts`.
+
 ## Text delivery
 
 Both text processors use the same delivery helper to re-read the active window before invoking
@@ -711,8 +724,10 @@ and each transcription (including recovery startup), default 90 seconds.
 `COMPANION_LLM_API_KEY` supplies endpoint authentication. Classifier requests
 always switch model reasoning off; `llm.requestProfile` says how the endpoint
 expects that: `local-qwen` (default, a local vLLM/Qwen server), `groq` or
-`openrouter`. A hosted profile sends every classified utterance's transcript,
-screenshot and window details to that provider; see
+`openrouter`. With `groq`, a spoken request is sent only after 800 ms of
+quiet, so short pauses send fewer requests that are then replaced; spoken
+actions can take up to about 0.6 s longer. A hosted profile sends every
+classified utterance's transcript, screenshot and window details to that provider; see
 [installation step 4](installation.md#4-set-up-an-image-capable-intent-and-agent-endpoint).
 
 ### Local external coding agents

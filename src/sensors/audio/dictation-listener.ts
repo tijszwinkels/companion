@@ -1,5 +1,5 @@
 import type { Log } from '../../core/frame.ts';
-import { audioFrames } from './capture.ts';
+import { audioFrames, CaptureLostError } from './capture.ts';
 import { LEGACY_ENDPOINT_MS, Segmenter } from './segmenter.ts';
 import type { VoiceActivityDetector } from './vad.ts';
 
@@ -43,7 +43,10 @@ export interface DictationSink {
  * then the open candidate is closed with `Segmenter.finish()` and handed over
  * as the final chunk, so the last words before Stop are kept. A microphone or
  * VAD failure ends capture the same way, keeping the audio captured so far, and
- * is reported to the sink rather than thrown.
+ * is reported to the sink rather than thrown. Lost microphone capture (for
+ * example while PipeWire restarts) is such a failure: the recording ends with
+ * a `CaptureLostError` and is not restarted here. The draft keeps what was
+ * transcribed; sending it remains the user's decision.
  *
  * `signal` is shutdown. It discards the open candidate and is rethrown, as for
  * ordinary listening.
@@ -96,6 +99,13 @@ export async function recordDictation(
     if (!stop.aborted) {
       captureError = error;
     }
+  }
+
+  // The live microphone does not end on its own while PipeWire runs. Ending
+  // without Stop therefore means capture was lost, and the recording must say
+  // so rather than look like an ordinary Stop. A file simply ended.
+  if (!options.file && !stop.aborted && captureError === undefined) {
+    captureError = new CaptureLostError('The microphone recorder ended unexpectedly');
   }
 
   // Graceful end, after Stop, a failure or the end of a file: keep the audio

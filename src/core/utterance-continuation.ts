@@ -8,11 +8,13 @@ export { LEGACY_ENDPOINT_MS };
  * The segmenter closes a candidate after a short silence (ENDPOINT_MS, 224 ms).
  * The pipeline treats that segment as a provisional attempt: it plays the
  * processing cue, captures the screen, and starts ASR and then the intent LLM
- * immediately. Until the attempt commits to an action, the user may resume
+ * immediately (with the Groq request profile, the intent LLM only after the
+ * speech floor; see below). Until the attempt commits to an action, the user may resume
  * speaking. The listener then reports:
  *
  * 1. Resumed speech (a new VAD candidate opened): the attempt is held. ASR and
  *    inference keep running, but the attempt cannot pass its commitment point.
+ *    With the Groq profile, a classifier request not yet started stays unsent.
  * 2. The candidate was rejected as too short: the hold is released and the
  *    attempt continues as if nothing happened. No work is lost or repeated.
  * 3. The candidate was accepted: the attempt is superseded. Its routing work is
@@ -30,6 +32,11 @@ export { LEGACY_ENDPOINT_MS };
  * Once `commit` returns, the attempt can no longer be held or superseded, so
  * later speech is a new request and no side effect is ever undone or replayed.
  *
+ * For the Groq request profile only, the router also waits for the inference
+ * floor before it starts the classifier request (`speechQuiet`), so a short
+ * pause does not send a hosted request that resumed speech would replace.
+ * That wait commits nothing; the attempt remains continuable during inference.
+ *
  * Timing: all deadlines use one monotonic clock (performance.now() in
  * production). The speech end is derived from the silence the segmenter
  * actually measured, never assumed: see `AttemptTiming.trailingSilenceMs`.
@@ -45,7 +52,8 @@ export { LEGACY_ENDPOINT_MS };
  * decision (the intent LLM's answer, or a prefix/exact-label shortcut) commits.
  * Tijs (2026-09-26): the same total quiet period as the legacy endpoint, 800 ms.
  * Work is not delayed: ASR and inference start at the provisional endpoint, and
- * only the commitment waits. After an ordinary silence endpoint, 224 ms of this
+ * only the commitment waits (except the Groq profile's classifier request,
+ * which also waits for this floor). After an ordinary silence endpoint, 224 ms of this
  * period have already passed at admission, so 800 − 224 = 576 ms remain.
  *
  * For shortcuts this is product choice D1: they have no inference time in which
@@ -129,6 +137,25 @@ export interface DispatchCommitment {
    * decision without first awaiting anything else.
    */
   commit(route: CommitRoute, signal: AbortSignal): Promise<void>;
+
+  /**
+   * Resolve once an inference decision could commit (no hold is open and
+   * SPEECH_QUIET_MS have passed since the latest speech), without committing.
+   * Rejects like `commit`. The router awaits this before starting a classifier
+   * request that should not be sent during a short pause (the Groq profile;
+   * see `Detector.startsAfterSpeechQuiet`). The attempt stays continuable, so
+   * speech that resumes during the request still holds or replaces it.
+   */
+  speechQuiet(signal: AbortSignal): Promise<void>;
+
+  /**
+   * Synchronous check of the same condition: true when no hold is open, the
+   * attempt was not replaced and SPEECH_QUIET_MS have passed since the latest
+   * speech. Resuming after `await speechQuiet()` takes a microtask, in which a
+   * VAD onset or a rejected burst can still arrive, so the caller checks this
+   * again and starts its request without awaiting anything in between.
+   */
+  isSpeechQuiet(): boolean;
 }
 
 /** Abort reason for an attempt replaced by a combined, retranscribed utterance. */
@@ -265,7 +292,39 @@ export class ProvisionalAttempt implements DispatchCommitment {
     return true;
   }
 
-  async commit(route: CommitRoute, signal: AbortSignal): Promise<void> {
+  commit(route: CommitRoute, signal: AbortSignal): Promise<void> {
+    return this.waitUntilDue(route, signal, true);
+  }
+
+  /**
+   * The same wait as an inference commitment, using the same anchor: the
+   * latest VAD-detected speech end, moved later by a rejected burst. A
+   * continuation is a new attempt with its own anchor. Nothing is marked
+   * committed, so the later `commit('inference')` still re-examines hold and
+   * supersession; if no speech resumed meanwhile, it passes without waiting.
+   */
+  speechQuiet(signal: AbortSignal): Promise<void> {
+    return this.waitUntilDue('inference', signal, false);
+  }
+
+  isSpeechQuiet(): boolean {
+    if (this.held || this.superseded) {
+      return false;
+    }
+
+    return this.clock.now() >= this.deadline('inference');
+  }
+
+  /**
+   * Wait until `route` is due: not held, not superseded and past its deadline.
+   * With `commitWhenDue`, mark the attempt committed in the same synchronous
+   * step as the final checks.
+   */
+  private async waitUntilDue(
+    route: CommitRoute,
+    signal: AbortSignal,
+    commitWhenDue: boolean,
+  ): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
       this.supersession.signal.throwIfAborted();
@@ -286,7 +345,9 @@ export class ProvisionalAttempt implements DispatchCommitment {
       }
 
       // No await since the checks above: resumed speech cannot slip in between.
-      this.isCommitted = true;
+      if (commitWhenDue) {
+        this.isCommitted = true;
+      }
       return;
     }
   }

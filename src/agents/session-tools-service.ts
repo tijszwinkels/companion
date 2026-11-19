@@ -415,7 +415,7 @@ export class SessionToolService {
   ): Promise<ToolReply> {
     const fields =
       method === 'wake-schedule'
-        ? ['afterSeconds', 'at', 'message', 'label', 'key', 'expiresAfterSeconds']
+        ? ['afterSeconds', 'at', 'message', 'label', 'key', 'expiresAfterSeconds', 'everySeconds']
         : method === 'wake-cancel'
           ? ['timerId']
           : ['recent'];

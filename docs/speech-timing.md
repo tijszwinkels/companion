@@ -25,6 +25,7 @@ the product constants), `src/core/pipeline.ts` (merge, supersession, cleanup) an
 | ----------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Provisional endpoint    | `VAD_SETTINGS.silenceMs = 200`          | **224 ms**: silence is counted in whole 32 ms frames; 7 frames is the smallest count ≥ 200 ms (6 frames = 192 ms). Exported as `ENDPOINT_MS`.                               |
 | Spoken commitment floor | `SPEECH_QUIET_MS = LEGACY_ENDPOINT_MS`  | **800 ms** after the latest VAD-detected speech ended, for inference and shortcuts. After a silence endpoint 224 ms have already passed at admission, so **576 ms** remain. |
+| Groq request start      | `waitsForSpeechQuiet('groq')`           | The same **800 ms** floor, before the classifier request starts, with `llm.requestProfile: "groq"` only. See [Groq](#groq-the-classifier-request-waits-for-the-floor).      |
 | Empty-transcript window | `EMPTY_QUIET_MS`                        | **1200 ms** after the provisional endpoint (see the evaluation).                                                                                                            |
 | Restored pause          | `CONTINUATION_GAP_MS = 800 − 224 − 256` | **320 ms** of audio after the previous candidate that the preroll cannot hold (`Segment.leadIn`).                                                                           |
 | Combined audio cap      | `MAX_UTTERANCE_SAMPLES`                 | 60 s, the segmenter's `maxMs` (raised from 30 s on 2026-10-06).                                                                                                             |
@@ -39,12 +40,15 @@ to 60 seconds for single and combined utterances.
    As before, admission plays the `processing` cue, copies the interaction
    context and starts the screenshot. ASR starts as soon as the worker is free,
    and the intent LLM starts as soon as the transcript is ready. There is no
-   waiting period before either; only the commitment (step 4) waits.
+   waiting period before either; only the commitment (step 4) waits. The
+   exception is the `groq` request profile, whose classifier request waits for
+   the 800 ms floor ([below](#groq-the-classifier-request-waits-for-the-floor)).
 2. **Resumed speech.** When the listener's segmenter opens a new candidate
    (the first frame at probability ≥ 0.65), `SensorPipeline.speechResumed()`
    _holds_ the newest job if it is an uncommitted speech attempt. A hold stops
    nothing: ASR and inference continue, but the attempt cannot pass its
-   commitment point.
+   commitment point. (With the `groq` profile, a classifier request that has
+   not started yet stays unsent while the hold is open.)
 3. **The candidate resolves.**
    - _Rejected_ (fewer than 128 ms voiced): `speechDiscarded()` releases the
      hold. The attempt continues with its own result; nothing is lost or
@@ -72,6 +76,47 @@ closed by the 60-second `limit` is an accepted segment and follows `submit`.
 | Prefix and exact-label shortcuts, including their skips        | After routing **and** the same 800 ms floor. With cleanup on, a text shortcut's separate cleanup call starts after commitment, as before.          | Product choice D1. Shortcuts have no inference time in which a pause can be bridged; without the floor, "go to session ‹pause› three" would dispatch the bare prefix. Shortcuts are still faster than before provisional endpoints: ASR overlaps the floor.                                                                                                                                   |
 | Empty transcript (no earlier text)                             | After 1200 ms of quiet after the provisional endpoint, before the empty clip is retained.                                                          | A fragment cut by a pause can be unreadable alone (see the evaluation). No action or cue is involved, so the wait is invisible; the window is comparable to how long an attempt with text stays continuable (the 800 ms floor, or longer during slow inference). Costs: typed input queued behind it waits up to 1.2 s, and speech within the window is joined with the unreadable sound.     |
 | Typed input                                                    | Never held, and has no quiet window of its own; it waits only in FIFO order behind earlier jobs (for example up to 1.2 s behind an empty attempt). | Typed input has no VAD. A typed job admitted (or dropped as overload) after a speech attempt is a boundary: later speech cannot merge past it. Text typed while a VAD candidate is open therefore also releases that candidate's hold, so neither the earlier attempt nor the text waits for the candidate to close; the order stays attempt, text, then the resumed speech as a new request. |
+
+### Groq: the classifier request waits for the floor
+
+Tijs (2026-10-15), for `llm.requestProfile: "groq"` only: a spoken attempt's
+classifier request, bare-name or inferred cleanup, starts at
+`max(speech end + 800 ms, transcript ready)`. It is not 800 ms after the
+transcript. Every other profile still starts the request as soon as the
+transcript is ready. Purpose: a request sent at the 224 ms endpoint goes to a
+hosted, metered service and is often replaced when the user keeps talking.
+
+- **Same anchor and checks as commitment.** The router awaits
+  `ProvisionalAttempt.speechQuiet` before it collects the intents for the
+  request, then re-checks `isSpeechQuiet()` synchronously (an onset can arrive
+  in the microtask before the router resumes) and calls the detector without
+  awaiting anything in between. It uses the inference deadline (latest speech end, moved later by a
+  rejected burst; a continuation has its own) and waits while a hold is open.
+  It commits nothing. A continuation that replaces the attempt during the wait
+  rejects it, so a replaced attempt never sends a request. Pause and shutdown
+  reject it too and remove its timer.
+- **After the request is sent**, the attempt is still continuable exactly as
+  before: resumed speech holds it and a continuation aborts the request (the
+  provider may still bill a cancelled request). `commit('inference')` follows
+  the answer; without new speech it passes at once.
+- **Unchanged:** the 224 ms endpoint, ASR starting at admission, the commitment
+  floor, the empty window, prefix and exact-label shortcuts and their
+  fixed-route cleanup call (which already starts after commitment), typed
+  input, composer sends and manual recording. Request bodies, prompts, models
+  and token limits are unchanged.
+- **Cost.** Speech end → dispatch becomes about
+  `max(800 ms, 224 ms + ASR) + inference` instead of
+  `max(800 ms, 224 ms + ASR + inference)`, up to 576 ms later: with immediate
+  ASR and a 300 ms model, 1100 ms instead of 800 ms. The join window grows with it:
+  speech resuming within 800 ms plus the inference time still merges, where a
+  fast answer could previously have dispatched at 800 ms. Supplied audio
+  without a measured silence waits the whole 800 ms after admission.
+
+The synthetic fixture in `test/unit/utterance-continuation.test.ts` (one
+utterance in four parts with pauses of 300, 500 and 700 ms, immediate ASR, a
+constant model latency on a controlled clock) sends 4 classifier requests
+before and 1 with Groq, with the same single dispatch. This counts requests in
+a fixture; it is not a measurement of live usage or billing.
 
 Direct `submit()` callers without a listener never hold an attempt. They pass no
 measured silence, so their spoken decisions wait the full 800 ms after admission,

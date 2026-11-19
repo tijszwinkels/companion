@@ -12,7 +12,7 @@ import {
   SPEECH_QUIET_MS,
   UtteranceSupersededError,
 } from '../../src/core/utterance-continuation.ts';
-import type { CleanupDetection } from '../../src/core/router.ts';
+import type { CleanupDetection, Detector } from '../../src/core/router.ts';
 import { ENDPOINT_MS } from '../../src/sensors/audio/segmenter.ts';
 import type { TranscriptionDiagnostic } from '../../src/sensors/audio/transcriber.ts';
 import {
@@ -128,6 +128,13 @@ function harness(
      * processor is a text route, whose prefix text is cleaned after commitment.
      */
     cleanup?: boolean;
+    /** The Groq request profile: inference starts only after the speech floor. */
+    groq?: boolean;
+    /**
+     * Answer every inference with the send intent this long after it started,
+     * on the controlled clock, instead of waiting for the test to answer it.
+     */
+    inferenceMs?: number;
   } = {},
 ) {
   const controller = new AbortController();
@@ -140,10 +147,15 @@ function harness(
   const audioSaved = new Map<number, number[]>();
   const emptyClips: number[][] = [];
   const dispatched: { id: number; utterance: string }[] = [];
+  // Controlled-clock time of each processor dispatch, in dispatch order.
+  const dispatchedAt: number[] = [];
   const asrSignals: AbortSignal[] = [];
   const asrInputs: number[][] = [];
   const asrLengths: number[] = [];
   const detectSignals: AbortSignal[] = [];
+  // Every inference request, when it started on the controlled clock and how
+  // it ended: answered, or aborted while it was still running.
+  const requests: { startedAt: number; utterance: string; ended?: 'answered' | 'aborted' }[] = [];
   const logs: { stage: string; detail: string; id?: number }[] = [];
 
   const transcriptions: {
@@ -155,13 +167,49 @@ function harness(
 
   const detect = async (frame: UserSensorFrame, signal: AbortSignal): Promise<string> => {
     detectSignals.push(signal);
+    const request: (typeof requests)[number] = {
+      startedAt: clock.now(),
+      utterance: frame.utterance,
+    };
+    requests.push(request);
+    signal.addEventListener(
+      'abort',
+      () => {
+        request.ended ??= 'aborted';
+      },
+      { once: true },
+    );
+
     const known = options.intent?.(frame);
     if (known) {
+      request.ended = 'answered';
       return known;
     }
 
+    if (options.inferenceMs !== undefined) {
+      const inferenceMs = options.inferenceMs;
+      return new Promise<string>((resolve, reject) => {
+        const aborted = () => {
+          cancelAnswer();
+          reject(signal.reason);
+        };
+        const cancelAnswer = clock.schedule(() => {
+          signal.removeEventListener('abort', aborted);
+          request.ended = 'answered';
+          resolve(send);
+        }, inferenceMs);
+        signal.addEventListener('abort', aborted, { once: true });
+      });
+    }
+
     const reply = deferred<string>();
-    detections.push({ utterance: frame.utterance, answer: reply.resolve });
+    detections.push({
+      utterance: frame.utterance,
+      answer: (intent) => {
+        request.ended ??= 'answered';
+        reply.resolve(intent);
+      },
+    });
     if (options.ignoresAbort) {
       return reply.promise;
     }
@@ -171,9 +219,12 @@ function harness(
     return Promise.race([reply.promise, aborted]);
   };
 
-  const detector = testDetector({
-    detect: async (frame, _intents, signal) => detect(frame, signal),
-  });
+  const detector: Detector = {
+    ...testDetector({
+      detect: async (frame, _intents, signal) => detect(frame, signal),
+    }),
+    ...(options.groq ? { startsAfterSpeechQuiet: true } : {}),
+  };
   if (options.cleanup) {
     // One call returns the intent and the cleaned text, as json-cleanup-v1 does.
     detector.detectWithCleanup = async (frame, _intents, signal): Promise<CleanupDetection> => {
@@ -205,6 +256,7 @@ function harness(
   const sendProcessor = processor(send, async (frame) => {
     events.push(`dispatch ${frame.id}`);
     dispatched.push({ id: frame.id, utterance: frame.utterance });
+    dispatchedAt.push(clock.now());
     await dispatchGate;
   });
   if (options.prefixes) {
@@ -298,10 +350,12 @@ function harness(
     audioSaved,
     emptyClips,
     dispatched,
+    dispatchedAt,
     asrSignals,
     asrInputs,
     asrLengths,
     detectSignals,
+    requests,
     transcriptions,
     detections,
     logs,
@@ -1537,3 +1591,589 @@ for (const earlierText of [true, false]) {
     );
   });
 }
+
+// ---------------------------------------------------------------------------
+// Groq request profile: the classifier request waits for the speech floor
+// ---------------------------------------------------------------------------
+//
+// Tijs (2026-10-15): with `llm.requestProfile: "groq"`, a spoken utterance's
+// classifier request (bare-name or inferred cleanup) starts only once 800 ms
+// have passed since the latest speech AND the transcript is ready. It is not
+// 800 ms after ASR. ASR still starts at the 224 ms provisional endpoint, the
+// commitment floor is unchanged, and other profiles, typed input and shortcuts
+// do not wait.
+
+test('speechQuiet resolves at the inference floor without committing the attempt', async () => {
+  const clock = new ManualClock();
+  const attempt = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  let quiet = false;
+  const waiting = attempt.speechQuiet(signal()).then(() => {
+    quiet = true;
+  });
+
+  clock.advance(SPEECH_QUIET_MS - ENDPOINT_MS - 1);
+  await settle();
+  assert.equal(quiet, false, 'Not quiet 799 ms after speech');
+
+  clock.advance(1);
+  await waiting;
+  assert.equal(quiet, true, 'Quiet 800 ms after speech');
+  assert.equal(attempt.committed, false, 'Waiting for quiet commits nothing');
+  assert.equal(clock.pendingTimers, 0);
+
+  // The attempt is still continuable: speech can hold and replace it.
+  assert.equal(attempt.hold(), true);
+  assert.equal(attempt.supersede(), true);
+});
+
+test('speechQuiet follows holds, rejected bursts, supersession and cancellation', async () => {
+  const clock = new ManualClock();
+
+  // A hold blocks past the deadline; a rejected burst restarts the floor from
+  // the burst's own end, exactly as for commitment.
+  const burst = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  const spoke = clock.now() - ENDPOINT_MS;
+  let quiet = false;
+  const waiting = burst.speechQuiet(signal()).then(() => {
+    quiet = true;
+  });
+  clock.advanceTo(spoke + 799);
+  assert.equal(burst.hold(), true);
+  clock.advanceTo(spoke + 900);
+  await settle();
+  assert.equal(quiet, false, 'Held across the old deadline');
+  burst.release(ENDPOINT_MS);
+  clock.advanceTo(spoke + 900 - ENDPOINT_MS + 799);
+  await settle();
+  assert.equal(quiet, false, 'Not quiet 799 ms after the burst ended');
+  clock.advanceTo(spoke + 900 - ENDPOINT_MS + 800);
+  await waiting;
+  assert.equal(quiet, true);
+  assert.equal(burst.committed, false);
+
+  // Supersession rejects the wait and leaves no timer.
+  const replaced = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  const rejected = replaced.speechQuiet(signal());
+  await settle();
+  assert.equal(clock.pendingTimers, 1);
+  replaced.supersede();
+  await assert.rejects(rejected, UtteranceSupersededError);
+  assert.equal(clock.pendingTimers, 0);
+
+  // Pause or shutdown rejects with the abort reason and leaves no timer.
+  const controller = new AbortController();
+  const cancelled = new ProvisionalAttempt({ clock, trailingSilenceMs: ENDPOINT_MS });
+  const aborted = cancelled.speechQuiet(controller.signal);
+  await settle();
+  controller.abort(Error('paused'));
+  await assert.rejects(aborted, /paused/);
+  assert.equal(clock.pendingTimers, 0);
+});
+
+test('Groq: the request starts 800 ms after speech, not at 224 or 799 ms', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+
+  // ASR starts at the provisional endpoint and is ready at once.
+  assert.equal(setup.transcriptions.length, 1, 'Local ASR still starts at 224 ms');
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+  assert.equal(setup.requests.length, 0, 'No Groq request at the 224 ms endpoint');
+
+  await advanceTo(setup, spoke + 799);
+  assert.equal(setup.requests.length, 0, 'No Groq request 799 ms after speech');
+
+  await advanceTo(setup, spoke + 800);
+  assert.deepEqual(setup.requests, [{ startedAt: spoke + 800, utterance: 'Open the browser' }]);
+  assert.equal(setup.clock.pendingTimers, 0, 'The quiet timer has ended');
+
+  // The commitment floor has already passed: a 300 ms answer dispatches at once.
+  await advanceTo(setup, spoke + 1100);
+  setup.detections[0].answer('SEND');
+  await settle();
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+  assert.equal(setup.clock.now(), spoke + 1100);
+  await finish(setup);
+});
+
+test('Groq: a transcript ready after the floor starts the request at once, without another 800 ms', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+
+  await advanceTo(setup, spoke + 1000);
+  assert.equal(setup.requests.length, 0, 'Inference needs the transcript');
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  assert.deepEqual(setup.requests, [{ startedAt: spoke + 1000, utterance: 'Open the browser' }]);
+  assert.equal(setup.clock.pendingTimers, 0, 'No timer: the floor had passed');
+  setup.detections[0].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+});
+
+test('Groq: other profiles still start inference at the provisional endpoint', async () => {
+  const setup = harness();
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  assert.deepEqual(setup.requests, [
+    { startedAt: spoke + ENDPOINT_MS, utterance: 'Open the browser' },
+  ]);
+  assert.ok(!setup.logs.some((entry) => entry.stage === 'quiet'));
+  setup.detections[0].answer('SEND');
+  await advanceTo(setup, spoke + 800);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+  await finish(setup);
+});
+
+test('Groq: speech resumed before the floor sends nothing for the replaced attempt', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the');
+  await settle();
+
+  await advanceTo(setup, spoke + 700);
+  setup.pipeline.speechResumed();
+  await advanceTo(setup, spoke + 1500);
+  assert.equal(setup.requests.length, 0, 'A hold keeps the request unsent past the floor');
+
+  const resumedSpoke = endpoint(setup, 0.2);
+  await settle();
+  assert.equal(setup.outcomes.get(1), 'superseded');
+  setup.transcriptions[1].answer('Open the browser');
+  await settle();
+
+  // The continuation measures 800 ms from its own, latest speech end.
+  await advanceTo(setup, resumedSpoke + 799);
+  assert.equal(setup.requests.length, 0);
+  await advanceTo(setup, resumedSpoke + 800);
+  assert.deepEqual(setup.requests, [
+    { startedAt: resumedSpoke + 800, utterance: 'Open the browser' },
+  ]);
+  setup.detections[0].answer('SEND');
+  await finish(setup);
+
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
+  assert.equal(setup.requests.length, 1, 'The superseded attempt never sent a request');
+});
+
+test('Groq: a VAD onset in the same tick as the quiet deadline keeps the request unsent', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the');
+  await settle();
+
+  // The quiet timer fires, and the listener reports speech before the waiting
+  // request resumes: the wait re-examines the hold first.
+  setup.clock.advanceTo(spoke + 800);
+  setup.pipeline.speechResumed();
+  await settle();
+  assert.equal(setup.requests.length, 0);
+
+  const resumedSpoke = endpoint(setup, 0.2);
+  await settle();
+  setup.transcriptions[1].answer('Open the browser');
+  await advanceTo(setup, resumedSpoke + 800);
+  setup.detections[0].answer('SEND');
+  await finish(setup);
+
+  assert.deepEqual(
+    setup.requests.map((request) => request.utterance),
+    ['Open the browser'],
+  );
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
+  assert.equal(setup.outcomes.get(1), 'superseded');
+});
+
+for (const cleanup of [false, true]) {
+  test(`Groq: an onset queued just behind the quiet deadline keeps the request unsent (cleanup ${cleanup ? 'on' : 'off'})`, async () => {
+    const setup = harness({ groq: true, cleanup });
+    const spoke = endpoint(setup, 0.1);
+    await settle();
+    setup.transcriptions[0].answer('Open the');
+    await settle();
+
+    // The quiet timer resolves the wait; the onset arrives in the microtask
+    // right behind it, before the router has resumed. The router re-checks
+    // the attempt synchronously and does not start the request.
+    setup.clock.advanceTo(spoke + 800);
+    queueMicrotask(() => {
+      setup.pipeline.speechResumed();
+    });
+    await settle();
+    assert.equal(setup.requests.length, 0, 'No request after the onset');
+
+    const resumedSpoke = endpoint(setup, 0.2);
+    await settle();
+    setup.transcriptions[1].answer('Open the browser');
+    await advanceTo(setup, resumedSpoke + 800);
+    setup.detections[0].answer(setup.send);
+    await finish(setup);
+
+    assert.deepEqual(
+      setup.requests.map((request) => request.utterance),
+      ['Open the browser'],
+    );
+    assert.equal(setup.dispatched.length, 1);
+    assert.equal(setup.dispatched[0].id, 2);
+    assert.equal(setup.outcomes.get(1), 'superseded');
+  });
+}
+
+test('Groq: a burst rejected just behind the quiet deadline delays the request to its new floor', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  // A zero-silence rejected tail in the microtask after the deadline: the
+  // floor now counts from +800, so the request starts at +1600.
+  setup.clock.advanceTo(spoke + 800);
+  queueMicrotask(() => {
+    setup.pipeline.speechResumed();
+    setup.pipeline.speechDiscarded(0);
+  });
+  await settle();
+  assert.equal(setup.requests.length, 0, 'Not sent against the old deadline');
+
+  await advanceTo(setup, spoke + 1599);
+  assert.equal(setup.requests.length, 0);
+  await advanceTo(setup, spoke + 1600);
+  assert.deepEqual(setup.requests, [{ startedAt: spoke + 1600, utterance: 'Open the browser' }]);
+
+  setup.detections[0].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+});
+
+test('Groq: a rejected burst near the boundary restarts the quiet period from the burst', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await settle();
+
+  // A cough at +790 is rejected at +1000, having ended at +776.
+  await advanceTo(setup, spoke + 790);
+  setup.pipeline.speechResumed();
+  await advanceTo(setup, spoke + 1000);
+  setup.pipeline.speechDiscarded(ENDPOINT_MS);
+  await advanceTo(setup, spoke + 1575);
+  assert.equal(setup.requests.length, 0, '799 ms after the burst ended');
+  await advanceTo(setup, spoke + 1576);
+  assert.deepEqual(setup.requests, [{ startedAt: spoke + 1576, utterance: 'Open the browser' }]);
+
+  setup.detections[0].answer('SEND');
+  await finish(setup);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Open the browser' }]);
+  assert.equal(setup.transcriptions.length, 1, 'The burst repeated no work');
+});
+
+test('Groq: speech resumed after the request was sent cancels it and never dispatches it', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the');
+  await advanceTo(setup, spoke + 800);
+  assert.equal(setup.requests.length, 1, 'Sent at the floor');
+
+  // Speech resumes 1000 ms after the first part, while Groq is answering.
+  await advanceTo(setup, spoke + 1000);
+  setup.pipeline.speechResumed();
+  const resumedSpoke = endpoint(setup, 0.2);
+  await settle();
+  assert.equal(setup.requests[0].ended, 'aborted', 'Already sent, then cancelled');
+  assert.equal(setup.detectSignals[0].aborted, true);
+
+  // A late answer from a client that ignored the abort changes nothing.
+  setup.detections[0].answer('SEND');
+  setup.transcriptions[1].answer('Open the browser');
+  await advanceTo(setup, resumedSpoke + 800);
+  setup.detections[1].answer('SEND');
+  await finish(setup);
+
+  assert.deepEqual(setup.dispatched, [{ id: 2, utterance: 'Open the browser' }]);
+});
+
+test('Groq: inferred cleanup waits for quiet; fixed-route cleanup runs once after commitment', async () => {
+  // Inferred cleanup: the json-cleanup call is the Groq request that waits.
+  const inferred = harness({ groq: true, cleanup: true });
+  const spoke = endpoint(inferred, 0.1);
+  await settle();
+  inferred.transcriptions[0].answer('Open the browser');
+  await advanceTo(inferred, spoke + 799);
+  assert.equal(inferred.requests.length, 0);
+  await advanceTo(inferred, spoke + 800);
+  assert.equal(inferred.requests.length, 1);
+  inferred.detections[0].answer('SEND_TEXT_TO_APPLICATION');
+  await finish(inferred);
+  assert.deepEqual(inferred.dispatched, [{ id: 1, utterance: 'Open the browser (cleaned)' }]);
+  assert.deepEqual(inferred.cleanerCalls, [], 'Inference does not call the separate cleaner');
+
+  // A prefix shortcut: no inference; its cleanup call already starts after
+  // the 800 ms commitment, so it gets no second wait.
+  const shortcut = harness({ groq: true, cleanup: true, prefixes: ['insert'] });
+  const shortcutSpoke = endpoint(shortcut, 0.1);
+  await settle();
+  shortcut.transcriptions[0].answer('Insert hello there');
+  await advanceTo(shortcut, shortcutSpoke + 799);
+  assert.deepEqual(shortcut.cleanerCalls, []);
+  await advanceTo(shortcut, shortcutSpoke + 800);
+  assert.deepEqual(shortcut.cleanerCalls, ['hello there']);
+  assert.deepEqual(shortcut.dispatched, [{ id: 1, utterance: 'hello there (cleaned)' }]);
+  assert.equal(shortcut.clock.now(), shortcutSpoke + 800, 'Dispatched at the floor');
+  assert.equal(shortcut.requests.length, 0);
+  await finish(shortcut);
+});
+
+test('Groq: exact labels and prefixes bypass inference and dispatch at the floor', async () => {
+  const setup = harness({ groq: true, prefixes: ['insert'], exactLabel: 'Option two' });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Option two');
+  await advanceTo(setup, spoke + 800);
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'CHOICE Option two' }]);
+
+  const prefixSpoke = endpoint(setup, 0.2);
+  await settle();
+  setup.transcriptions[1].answer('Insert words');
+  await advanceTo(setup, prefixSpoke + 800);
+  assert.deepEqual(setup.dispatched[1], { id: 2, utterance: 'words' });
+  assert.equal(setup.requests.length, 0);
+  await finish(setup);
+});
+
+test('Groq: typed input starts its request at once, also when queued behind speech', async () => {
+  const setup = harness({ groq: true });
+  setup.pipeline.submitText('Typed request');
+  await settle();
+  assert.deepEqual(setup.requests, [{ startedAt: 0, utterance: 'Typed request' }]);
+  setup.detections[0].answer('SEND');
+  await settle();
+  assert.deepEqual(setup.dispatched, [{ id: 1, utterance: 'Typed request' }]);
+
+  // Behind a waiting speech attempt, typed text keeps its FIFO place and
+  // starts as soon as the attempt ahead of it has dispatched.
+  const spoke = endpoint(setup, 0.1);
+  setup.pipeline.submitText('Typed after speech');
+  await settle();
+  setup.transcriptions[0].answer('Spoken request');
+  await advanceTo(setup, spoke + 800);
+  assert.equal(setup.requests.length, 2);
+  await advanceTo(setup, spoke + 1000);
+  setup.detections[1].answer('SEND');
+  await settle();
+  assert.deepEqual(setup.requests.at(-1), {
+    startedAt: spoke + 1000,
+    utterance: 'Typed after speech',
+  });
+  setup.detections[2].answer('SEND');
+  await finish(setup);
+
+  assert.deepEqual(
+    setup.dispatched.map((entry) => entry.utterance),
+    ['Typed request', 'Spoken request', 'Typed after speech'],
+  );
+});
+
+test('Groq: pause or shutdown during the quiet wait sends nothing and leaves no timer', async () => {
+  const setup = harness({ groq: true });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await advanceTo(setup, spoke + 500);
+  assert.equal(setup.clock.pendingTimers, 1, 'Waiting for quiet');
+
+  setup.controller.abort();
+  await settle();
+  await setup.pipeline.idle();
+
+  assert.equal(setup.requests.length, 0);
+  assert.deepEqual(setup.dispatched, []);
+  assert.equal(setup.outcomes.get(1), 'cancelled');
+  assert.equal(setup.pipeline.failures, 0);
+  assert.equal(setup.clock.pendingTimers, 0);
+
+  // Nothing resurfaces later.
+  setup.clock.advance(10_000);
+  await settle();
+  assert.equal(setup.requests.length, 0);
+});
+
+test('Groq: an empty transcript sends nothing and keeps its 1200 ms window', async () => {
+  const setup = harness({ groq: true });
+  endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('');
+  await advanceTo(setup, EMPTY_QUIET_MS - 1);
+  assert.equal(setup.emptyClips.length, 0);
+  await advanceTo(setup, EMPTY_QUIET_MS);
+  assert.equal(setup.emptyClips.length, 1);
+  await finish(setup);
+  assert.equal(setup.requests.length, 0);
+});
+
+test('Groq: a failed request after the wait is an ordinary error, with nothing dispatched', async () => {
+  const setup = harness({
+    groq: true,
+    intent: () => {
+      throw Error('HTTP 503');
+    },
+  });
+  const spoke = endpoint(setup, 0.1);
+  await settle();
+  setup.transcriptions[0].answer('Open the browser');
+  await advanceTo(setup, spoke + 800);
+  await finish(setup);
+
+  assert.equal(setup.requests.length, 1);
+  assert.equal(setup.outcomes.get(1), 'error');
+  assert.equal(setup.pipeline.failures, 1);
+  assert.deepEqual(setup.dispatched, []);
+});
+
+/**
+ * Move the controlled clock to `time` 1 ms at a time, letting woken work run
+ * after each step, so that every request and dispatch happens at its exact time.
+ */
+async function stepTo(setup: Harness, time: number): Promise<void> {
+  while (setup.clock.now() < time) {
+    await advanceTo(setup, setup.clock.now() + 1);
+  }
+}
+
+/**
+ * Speak one utterance in parts, as the listener reports it on the controlled
+ * clock. Each part is `speechMs` of speech; `pausesMs[i]` is the VAD-measured
+ * silence between part i and part i + 1 (at least the 224 ms endpoint, so each
+ * part is a provisional attempt). Returns when the last part ended.
+ */
+async function speakWithPauses(
+  setup: Harness,
+  pausesMs: readonly number[],
+  speechMs: number,
+): Promise<number> {
+  let speechEnd = setup.clock.now();
+
+  for (let part = 0; part <= pausesMs.length; part++) {
+    await stepTo(setup, speechEnd + ENDPOINT_MS);
+    endpoint(setup, (part + 1) / 10);
+    await settle();
+
+    if (part === pausesMs.length) {
+      break;
+    }
+
+    // The next part begins after the pause, and ends speechMs later.
+    await stepTo(setup, speechEnd + pausesMs[part]);
+    setup.pipeline.speechResumed();
+    speechEnd = speechEnd + pausesMs[part] + speechMs;
+  }
+
+  return speechEnd;
+}
+
+/** Synthetic ASR: one word per part, e.g. "w1 w2 w3" for three combined parts. */
+function partWords(samples: Float32Array): string {
+  return markers(samples)
+    .map((marker) => `w${Math.round(marker * 10)}`)
+    .join(' ');
+}
+
+// Request counts and latency on the controlled clock, ASR answering at once.
+// "Discarded" requests were answered but superseded; "cancelled" ones were
+// aborted while still running. Latency is final speech end → dispatch.
+const pauseFixtures = [
+  {
+    name: 'three pauses under 800 ms',
+    pausesMs: [300, 500, 700],
+    expected: {
+      300: {
+        before: { requests: 4, discarded: 3, cancelled: 0, latencyMs: 800 },
+        groq: { requests: 1, discarded: 0, cancelled: 0, latencyMs: 1100 },
+      },
+      700: {
+        before: { requests: 4, discarded: 2, cancelled: 1, latencyMs: 924 },
+        groq: { requests: 1, discarded: 0, cancelled: 0, latencyMs: 1500 },
+      },
+    },
+  },
+] as const;
+
+for (const fixture of pauseFixtures) {
+  for (const inferenceMs of [300, 700] as const) {
+    test(`Groq: ${fixture.name}, ${inferenceMs} ms inference: fewer requests, same final action`, async () => {
+      const results: Record<string, unknown> = {};
+
+      for (const groq of [false, true]) {
+        const setup = harness({ groq, inferenceMs, transcript: partWords });
+        const finalSpeechEnd = await speakWithPauses(setup, fixture.pausesMs, 300);
+
+        await stepTo(setup, finalSpeechEnd + 2000);
+        await finish(setup);
+
+        // One action with the whole utterance, from the final attempt only.
+        assert.equal(setup.dispatched.length, 1);
+        assert.equal(setup.dispatched[0].utterance, 'w1 w2 w3 w4');
+        assert.equal(setup.dispatched[0].id, 4);
+
+        results[groq ? 'groq' : 'before'] = {
+          requests: setup.requests.length,
+          discarded: setup.requests.filter(
+            (request, index) => request.ended === 'answered' && index < setup.requests.length - 1,
+          ).length,
+          cancelled: setup.requests.filter((request) => request.ended === 'aborted').length,
+          latencyMs: setup.dispatchedAt[0] - finalSpeechEnd,
+        };
+      }
+
+      assert.deepEqual(results, fixture.expected[inferenceMs]);
+    });
+  }
+}
+
+test('Groq: a pause over 800 ms is sent first, then replaced by the continuation', async () => {
+  // The cost of waiting: the join window becomes 800 ms plus inference time.
+  // Before, a 300 ms answer had committed "w1" at 800 ms, so speech 1000 ms
+  // after the first part was a second request. With Groq the first request
+  // is sent at 800 ms and still running at 1000 ms, so the resumed speech
+  // holds it. Its answer at 1100 ms cannot commit; the continuation replaces
+  // it (already sent and answered, then discarded) and the whole utterance is
+  // one request.
+  const before = harness({ inferenceMs: 300, transcript: partWords });
+  const beforeEnd = await speakWithPauses(before, [1000], 300);
+  await stepTo(before, beforeEnd + 2000);
+  await finish(before);
+  assert.deepEqual(
+    before.dispatched.map((entry) => entry.utterance),
+    ['w1', 'w2'],
+  );
+  assert.deepEqual(
+    before.requests.map((request) => request.ended),
+    ['answered', 'answered'],
+  );
+
+  const groq = harness({ groq: true, inferenceMs: 300, transcript: partWords });
+  const groqEnd = await speakWithPauses(groq, [1000], 300);
+  await stepTo(groq, groqEnd + 2000);
+  await finish(groq);
+  assert.deepEqual(
+    groq.dispatched.map((entry) => entry.utterance),
+    ['w1 w2'],
+  );
+  assert.deepEqual(
+    groq.requests.map((request) => [request.startedAt, request.ended]),
+    [
+      [800, 'answered'],
+      [1300 + 800, 'answered'],
+    ],
+  );
+});

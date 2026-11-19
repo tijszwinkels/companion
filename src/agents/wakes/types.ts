@@ -1,4 +1,5 @@
 import type { AgentHarness, AgentMessageOrigin } from '../types.ts';
+import { defaultGraceSeconds, validateInterval } from './recurrence.ts';
 
 export const wakeStates = [
   'scheduled',
@@ -15,9 +16,30 @@ export const wakeStates = [
 ] as const;
 export type WakeState = (typeof wakeStates)[number];
 
-/** Durable occurrence, never an executable callback or a saved chat queue. */
+/**
+ * Where one occurrence sits in a fixed-interval series (see recurrence.ts).
+ * Times are milliseconds since the epoch; the interval is in seconds.
+ */
+export interface WakeRecurrence {
+  /** Stable handle for the whole series; also accepted by cancel. */
+  seriesId: string;
+  everySeconds: number;
+  /** Due time of slot 0, the series' first occurrence. */
+  anchorAt: number;
+  /** This occurrence is due at anchorAt + slot * everySeconds. */
+  slot: number;
+  /** 1-based count of occurrences created in this series; skipped slots have none. */
+  occurrence: number;
+}
+
+/**
+ * Durable occurrence, never an executable callback or a saved chat queue.
+ * Version 1 is a one-shot timer. Version 2 is one occurrence of a repeating
+ * series and always carries `recurrence`; an older listener quarantines it
+ * instead of running it as a one-shot that could quietly reopen a closed tab.
+ */
 export interface WakeRecord {
-  version: 1;
+  version: 1 | 2;
   id: string;
   owner: string;
   receipt: string;
@@ -38,6 +60,7 @@ export interface WakeRecord {
   turnId?: string;
   attemptId?: string;
   cancellationRequested?: boolean;
+  recurrence?: WakeRecurrence;
 }
 
 export type WakeSummary = Omit<WakeRecord, 'message' | 'receipt' | 'ancestry'>;
@@ -53,6 +76,20 @@ export function unstarted(record: WakeRecord): boolean {
   return record.state === 'scheduled' || record.state === 'waiting';
 }
 
+/**
+ * Pending-limit accounting. An unstarted occurrence holds a slot. So does a
+ * running occurrence of a series that will continue: its successor is created
+ * when it finishes, and must never exceed the per-conversation limit.
+ * For one-shot timers this is exactly `unstarted`.
+ */
+export function holdsPendingSlot(record: WakeRecord): boolean {
+  if (unstarted(record)) {
+    return true;
+  }
+  const running = record.state === 'dispatching' || record.state === 'started';
+  return running && record.recurrence !== undefined && !record.cancellationRequested;
+}
+
 export interface WakeSchedule {
   label: string;
   message: string;
@@ -60,6 +97,8 @@ export interface WakeSchedule {
   afterSeconds?: number;
   at?: string;
   expiresAfterSeconds?: number;
+  /** Repeat at this fixed interval after the first due time. Absent: a one-shot. */
+  everySeconds?: number;
 }
 
 /** Exact offset required. Date.parse alone accepts ambiguous local dates. */
@@ -114,7 +153,10 @@ export function scheduleDeadline(
     throw Error('afterSeconds must be a number');
   }
   const dueAt = input.at === undefined ? now + input.afterSeconds! * 1000 : Date.parse(input.at);
-  const grace = input.expiresAfterSeconds ?? 3600;
+  if (input.everySeconds !== undefined) {
+    validateInterval(input.everySeconds);
+  }
+  const grace = input.expiresAfterSeconds ?? defaultGraceSeconds(input.everySeconds);
   if (
     !Number.isFinite(dueAt) ||
     dueAt - now < 60_000 ||
@@ -125,6 +167,9 @@ export function scheduleDeadline(
     grace > 86400
   ) {
     throw Error('Delay must be 60 seconds–30 days; lateness must be 1 second–24 hours');
+  }
+  if (input.everySeconds !== undefined && grace >= input.everySeconds) {
+    throw Error('A repeating timer’s lateness must be shorter than its interval');
   }
   return { dueAt, expiresAt: dueAt + grace * 1000 };
 }

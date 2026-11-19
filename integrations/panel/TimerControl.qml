@@ -11,6 +11,8 @@ import QtQuick.Controls
 // Output: cancelRequested with the existing conversation and timer IDs.
 // Attention comes from current terminal states only (failed, blocked,
 // delivery-uncertain); viewing the overlay never clears or acknowledges it.
+// A repeating timer's entries also say that it repeats, its interval and its
+// next run (see src/agents/README.md, Repeating timers).
 // Opening, scrolling and closing the overlay never change timers, the draft,
 // keyboard focus or the transcript's position.
 Item {
@@ -83,16 +85,75 @@ Item {
     return labels[timer.state] || timer.state
   }
 
+  // "14:30 CEST" today; other days include the date.
+  function clockLabel(time, now) {
+    const date = new Date(time)
+    const sameDay = date.toDateString() === new Date(now).toDateString()
+    return Qt.formatDateTime(date, sameDay ? "hh:mm t" : "ddd d MMM hh:mm t")
+  }
+
   // "In 18 min · 14:30 CEST": relative first, then the local time and zone;
-  // other days include the date.
+  // other days include the date. A pending occurrence of a repeating timer is
+  // its series' next run, and says so.
   function dueLabel(timer, now) {
-    const due = new Date(timer.dueAt)
-    const sameDay = due.toDateString() === new Date(now).toDateString()
-    const clock = Qt.formatDateTime(due, sameDay ? "hh:mm t" : "ddd d MMM hh:mm t")
+    const clock = root.clockLabel(timer.dueAt, now)
     if (!root.active(timer.state) || timer.state === "started") return clock
     const minutes = Math.ceil(Math.abs(timer.dueAt - now) / 60000)
     const span = minutes < 60 ? minutes + " min" : Math.floor(minutes / 60) + " h" + (minutes % 60 ? " " + minutes % 60 + " min" : "")
-    return (timer.dueAt >= now ? "In " : "Overdue ") + span + " · " + clock
+    const relative = (timer.dueAt >= now ? "In " : "Overdue ") + span + " · " + clock
+    const pending = timer.state === "scheduled" || timer.state === "waiting"
+    return timer.recurrence && pending ? "Next run · " + relative : relative
+  }
+
+  // "45 min", "1 h 30 min", "2 d": the same wording as the transcript notice.
+  function intervalLabel(seconds) {
+    const units = [[86400, "d"], [3600, "h"], [60, "min"], [1, "s"]]
+    const parts = []
+    let remaining = seconds
+    for (const [size, name] of units) {
+      const count = Math.floor(remaining / size)
+      if (count > 0) {
+        parts.push(count + " " + name)
+        remaining -= count * size
+      }
+    }
+    return parts.join(" ")
+  }
+
+  // A running occurrence has no successor yet: Companion creates it when the
+  // run ends, at the first slot after this one that is at least a minute
+  // away. This is that slot as it stands now (anchor + slot × interval).
+  function nextSlotAfterRun(recurrence, now) {
+    const interval = recurrence.everySeconds * 1000
+    const firstFutureSlot = Math.ceil((now + 60000 - recurrence.anchorAt) / interval)
+    let slot = Math.max(recurrence.slot + 1, firstFutureSlot)
+    let dueAt = recurrence.anchorAt + slot * interval
+
+    // Keep the same rounding safeguard and backwards-clock limit as the
+    // scheduler. This is an estimate until the current occurrence finishes.
+    if (dueAt < now + 60000) {
+      slot += 1
+      dueAt = recurrence.anchorAt + slot * interval
+    }
+    const maximumLead = Math.max(30 * 86400000, interval + 60000)
+    return dueAt - now <= maximumLead ? dueAt : undefined
+  }
+
+  // "Repeats every 45 min · occurrence 3", plus the next run while this
+  // occurrence runs, or that the series ends after it. Empty for one-shots.
+  function recurrenceLabel(timer, now) {
+    const recurrence = timer.recurrence
+    if (!recurrence) return ""
+    const parts = ["Repeats every " + root.intervalLabel(recurrence.everySeconds)]
+    const running = timer.state === "dispatching" || timer.state === "started"
+    if (running && timer.cancellationRequested) {
+      parts.push("series ends after this run")
+    } else if (running) {
+      const nextRun = root.nextSlotAfterRun(recurrence, now)
+      parts.push(nextRun === undefined ? "next run unavailable" : "earliest next run " + root.clockLabel(nextRun, now))
+    }
+    parts.push("occurrence " + recurrence.occurrence)
+    return parts.join(" · ")
   }
 
   function toggle() {
@@ -328,11 +389,23 @@ Item {
                   font.bold: true
                 }
                 Text {
+                  objectName: "timerDue"
                   width: parent.width
                   text: root.dueLabel(entry.modelData, overlay.now)
                   textFormat: Text.PlainText
                   wrapMode: Text.Wrap
                   color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: 11 * root.unit
+                }
+                Text {
+                  objectName: "timerRecurrence"
+                  width: parent.width
+                  visible: text !== ""
+                  text: root.recurrenceLabel(entry.modelData, overlay.now)
+                  textFormat: Text.PlainText
+                  wrapMode: Text.Wrap
+                  color: root.muted
                   font.family: root.fontFamily
                   font.pixelSize: 11 * root.unit
                 }
@@ -400,6 +473,7 @@ Item {
               width: rows.width
               text: modelData.label + " · " + root.stateLabel(modelData) + " · "
                 + Qt.formatDateTime(new Date(modelData.transitionedAt || modelData.dueAt), "ddd d MMM hh:mm")
+                + (modelData.recurrence ? " · " + root.recurrenceLabel(modelData, overlay.now) : "")
                 + (modelData.reason ? "\n" + modelData.reason : "")
               textFormat: Text.PlainText
               wrapMode: Text.Wrap

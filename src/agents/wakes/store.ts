@@ -12,6 +12,13 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { parseOrigin } from '../agent-origin.ts';
+import {
+  maximumLeadMilliseconds,
+  nextOccurrence,
+  seriesContinues,
+  validRecurrence,
+  withReason,
+} from './recurrence.ts';
 import { unstarted, wakeStates, type WakeRecord } from './types.ts';
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
@@ -76,6 +83,9 @@ export class WakeStore {
       }
       let quarantined = 0;
       this.transaction(() => {
+        // First set malformed rows aside, so the conversion below (which may
+        // look up other occurrences of a series) only reads valid records.
+        const valid: WakeRecord[] = [];
         for (const row of db.prepare('SELECT id, body FROM timers').all()) {
           let record: WakeRecord;
           try {
@@ -89,14 +99,23 @@ export class WakeStore {
             quarantined++;
             continue;
           }
+          valid.push(record);
+        }
+        // A claimed occurrence whose outcome was never saved is uncertain. A
+        // repeating series still moves on to its next future slot.
+        for (const record of valid) {
           if (record.state === 'dispatching' || record.state === 'started') {
-            this.put({
-              ...record,
-              state: 'delivery-uncertain',
-              reason: 'Listener stopped across dispatch; never replayed automatically',
-              revision: record.revision + 1,
-              transitionedAt: now,
-            });
+            this.finish(
+              {
+                ...record,
+                state: 'delivery-uncertain',
+                reason: 'Listener stopped across dispatch; never replayed automatically',
+                revision: record.revision + 1,
+                transitionedAt: now,
+              },
+              now,
+              false,
+            );
           }
         }
       });
@@ -157,6 +176,66 @@ export class WakeStore {
       record.id,
       JSON.stringify(record),
     );
+  }
+
+  /**
+   * Save an occurrence's terminal state. When it continues a repeating series,
+   * also insert the series' next occurrence. Must run inside `transaction()`:
+   * the terminal state and the successor commit together, so a crash can
+   * neither lose the successor nor, through a repeated transition, create two.
+   *
+   * `endSeries` stops a series even from a state that would otherwise continue.
+   * An occurrence that ends its series says so in its reason. Returns the
+   * successor, if one was created, for the caller to publish.
+   */
+  finish(record: WakeRecord, now: number, endSeries: boolean): WakeRecord | undefined {
+    if (!record.recurrence) {
+      this.put(record);
+      return undefined;
+    }
+
+    if (!seriesContinues(record, endSeries)) {
+      const clause = record.cancellationRequested
+        ? 'series ended (cancelled during this run)'
+        : 'series ended';
+      this.put({ ...record, reason: withReason(record.reason, clause) });
+      return undefined;
+    }
+
+    // Defensive: a series never has two live occurrences, even if an earlier
+    // version or a manual edit left one behind.
+    if (this.otherLiveOccurrence(record)) {
+      this.put(record);
+      return undefined;
+    }
+
+    const successor = nextOccurrence(record, now);
+    if (!successor) {
+      const clause = 'series ended: the clock moved too far back for a valid next slot';
+      this.put({ ...record, reason: withReason(record.reason, clause) });
+      return undefined;
+    }
+
+    this.put(record);
+    this.put(successor);
+    return successor;
+  }
+
+  private otherLiveOccurrence(record: WakeRecord): boolean {
+    const seriesId = record.recurrence!.seriesId;
+    return this.all().some((other) => {
+      if (other.id === record.id || other.recurrence?.seriesId !== seriesId) {
+        return false;
+      }
+      return unstarted(other) || other.state === 'dispatching' || other.state === 'started';
+    });
+  }
+
+  /** All stored occurrences of one owner's series, oldest first. */
+  series(owner: string, seriesId: string): WakeRecord[] {
+    return this.all()
+      .filter((record) => record.owner === owner && record.recurrence?.seriesId === seriesId)
+      .sort((first, second) => first.recurrence!.occurrence - second.recurrence!.occurrence);
   }
 
   receipt(id: string): Record<string, unknown> | undefined {
@@ -253,9 +332,14 @@ export class WakeStore {
 
 function validateRecord(value: unknown): WakeRecord {
   const record = value as WakeRecord;
+  // Version 1 is a one-shot without recurrence; version 2 must carry one.
+  const versionMatchesShape =
+    !!record &&
+    ((record.version === 1 && record.recurrence === undefined) ||
+      (record.version === 2 && validRecurrence(record, uuid)));
   if (
     !record ||
-    record.version !== 1 ||
+    !versionMatchesShape ||
     !uuid.test(record.id) ||
     !uuid.test(record.owner) ||
     !uuid.test(record.schedulingTurn) ||
@@ -278,7 +362,7 @@ function validateRecord(value: unknown): WakeRecord {
       Number.isFinite,
     ) ||
     record.dueAt - record.createdAt < 60_000 ||
-    record.dueAt - record.createdAt > 30 * 86400_000 ||
+    record.dueAt - record.createdAt > maximumLeadMilliseconds(record.recurrence) ||
     record.expiresAt - record.dueAt < 1000 ||
     record.expiresAt - record.dueAt > 86400_000 ||
     !Number.isFinite(new Date(record.expiresAt).getTime()) ||

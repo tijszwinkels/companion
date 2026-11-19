@@ -19,6 +19,7 @@
 
 /** Exact model IDs, most capable first. Aliases such as `opus` are not listed. */
 export const claudeCodeModelChoices: readonly string[] = Object.freeze([
+  'claude-fable-5-2',
   'claude-fable-5-1',
   'claude-opus-5-5',
   'claude-sonnet-5',
