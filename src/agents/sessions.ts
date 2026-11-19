@@ -200,6 +200,8 @@ export class AgentSessions implements InspectableModule {
   readonly sessionTools: SessionToolService;
   readonly wakes: WakeScheduler;
   private wakeWarningText = '';
+  /** When this listener first raised a timer service warning (listener clock). */
+  private wakeWarningAt?: number;
   private readonly wakePreparation = new Map<
     string,
     { configuration: string; session: RunningSession; controller: AbortController }
@@ -626,6 +628,7 @@ export class AgentSessions implements InspectableModule {
 
   private wakeWarning(text: string): void {
     this.wakeWarningText = text.slice(0, 600);
+    this.wakeWarningAt ??= this.clock();
     this.log('agent-wake', this.wakeWarningText);
     for (const session of this.sessions.values()) {
       try {
@@ -1679,6 +1682,9 @@ export class AgentSessions implements InspectableModule {
         ? this.widgets.applications.chatSendTurn(session.view.id, session.currentOrigin.receiptId)
         : undefined;
     let appSendSkipped = false;
+    // Whether this application send was admitted to the model. Stop or close
+    // can withdraw it before that point; then no model turn ever ran.
+    let appSendBegan = false;
     const wake = session.wake;
     session.wake = undefined;
     const turnId = wake?.turnId ?? randomUUID();
@@ -1760,12 +1766,15 @@ export class AgentSessions implements InspectableModule {
         this.log('agent-session-tools', `Session tools unavailable: ${String(error)}`, frameId);
       }
       session.controller.signal.throwIfAborted();
-      if (appSend && !appSend.begin()) {
-        appSendSkipped = true;
-        const message = session.view.messages.find((row) => row.id === messageId);
-        if (message) this.message(session, { ...message, state: 'error' });
-        session.view.status = 'completed';
-        return;
+      if (appSend) {
+        if (!appSend.begin()) {
+          appSendSkipped = true;
+          const message = session.view.messages.find((row) => row.id === messageId);
+          if (message) this.message(session, { ...message, state: 'error' });
+          session.view.status = 'completed';
+          return;
+        }
+        appSendBegan = true;
       }
       if (wake) {
         this.wakes.transitionAttempt(wake, 'started');
@@ -1907,14 +1916,19 @@ export class AgentSessions implements InspectableModule {
         }
       }
 
-      // End the measurement before the final save, so the saved conversation
-      // carries the duration. A withdrawn application send never started a
-      // model turn and keeps the previous turn's duration. A clock that was
-      // set back during the turn yields 0 rather than a negative duration.
+      // End the measurement. An application send withdrawn before it began
+      // (refused at the gate, or stopped while starting) never ran a model
+      // turn and keeps the previous turn's duration. A clock that was set
+      // back during the turn yields 0 rather than a negative duration.
       delete session.view.turnStartedAt;
-      if (!appSendSkipped) {
+      if (!appSend || appSendBegan) {
         session.view.lastTurnDurationMs = Math.max(0, turnEndedAt - turnStartedAt);
       }
+
+      // Publish the end of the turn before awaiting the final save, so that
+      // no client keeps counting while persistence is slow. The completion
+      // event still waits for a successful save below.
+      this.flush(session);
 
       session.view.updatedAt = Date.now();
       try {
@@ -2347,19 +2361,28 @@ export class AgentSessions implements InspectableModule {
       // first instead, so a series' newest occurrence (its next due time) ends
       // up last, as it would have while the tab was open.
       const chronological = [...wakes].sort((first, second) => first.createdAt - second.createdAt);
-      const notices = chronological.map((wake) => this.wakeNotice(wake));
+
+      // A notice missing from the transcript takes the time its timer was
+      // created (when it would have appeared while the tab was open), and the
+      // warning the time it was first raised. Reopening does not save, so a
+      // time taken from the clock here would change on every reopen.
+      const notices: { notice: AgentMessage; createdAt: number | undefined }[] = [];
+      for (const wake of chronological) {
+        notices.push({ notice: this.wakeNotice(wake), createdAt: wake.createdAt });
+      }
       if (this.wakeWarningText) {
-        notices.push(chatMessage('wake-service-warning', 'notice', this.wakeWarningText));
+        notices.push({
+          notice: chatMessage('wake-service-warning', 'notice', this.wakeWarningText),
+          createdAt: this.wakeWarningAt,
+        });
       }
       if (wakes.length) {
         view.wakes = wakes;
       }
       // This is authoritative history, not a bounded display page. Reconcile
       // stable notice IDs without dropping old rows or duplicating a saved warning.
-      // A notice that is new to the transcript is created now.
-      const now = this.clock();
-      for (const notice of notices) {
-        replaceOrAppend(view.messages, notice, now);
+      for (const { notice, createdAt } of notices) {
+        replaceOrAppend(view.messages, notice, createdAt);
       }
       view.acceptsFollowUp = true;
       view.toolEpoch = randomUUID();

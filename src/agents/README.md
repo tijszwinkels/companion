@@ -262,9 +262,14 @@ the harness:
   removed when the turn ends. Clients compute the running duration from it.
 - A turn ends when the harness's `run` returns or throws: answered, stopped,
   failed, or its process exited. `lastTurnDurationMs` (session field) is then
-  set to end minus start, whatever the outcome, before the turn's final save
-  and before `agent-turn-completed`. The final save itself is not counted.
-  A clock that was set back during the turn gives 0, not a negative value.
+  set to end minus start, whatever the outcome. Both changes are published
+  at once, before the turn's final save is awaited, so a slow save cannot keep
+  a client counting; `agent-turn-completed` still follows the successful
+  save. The final save itself is not counted. The end includes the harness's
+  own bounded shutdown after the answer (Pi's final name read, Claude Code's
+  natural exit, process cleanup; each bounded to a few seconds), because the
+  turn only ends when the harness returns. A clock that was set back during the turn gives 0, not
+  a negative value.
 - Every admitted message is its own turn. A queued follow-up starts its
   measurement when it leaves the queue (when the previous turn has ended), not
   when it was queued; queuing never changes the running turn's start. A
@@ -278,8 +283,9 @@ the harness:
   exception between turns), as does a scheduled wake that cannot enter the
   conversation. Stopped queued messages never start a turn.
 - A placeholder turn that runs nothing (application edits already delivered, or
-  an application send withdrawn before it started) removes `turnStartedAt` and
-  keeps the previous turn's duration.
+  an application send withdrawn before it started, including by Stop or close
+  while it was still starting) removes `turnStartedAt` and keeps the previous
+  turn's duration.
 - Conversations are independent: each conversation's fields change only with its
   own turns.
 
@@ -300,14 +306,17 @@ calls in [tool pages](../desktop/README.md#lazy-tool-transcript-pages) carry no
 time. A time supplied by a backend is never trusted for a new row.
 
 Messages saved before this change have no `createdAt` and keep none; no time is
-invented for them, also not when they are updated later. When reopening repairs
-a saved transcript, a missing timer notice is a new row and gets the current
-time, while a missing widget row (committed earlier at an unrecorded time) gets
-none. The store drops a damaged saved time or duration (anything but a
+invented for them, also not when they are updated later. Reopening repairs a
+saved transcript without saving it, so a repaired row must get the same time on
+every reopen: a missing timer notice takes its timer's creation time (when the
+notice first appeared while the tab was open), the timer service warning the
+time this listener first raised it, and a missing widget row (committed earlier
+at an unrecorded time) none. The store drops a damaged saved time or duration (anything but a
 non-negative safe integer) instead of refusing the conversation. Old archives
 are never rewritten for this; new fields are simply added on the next save.
-The session application chat projection (`session-apps/chat.ts`) does not
-include message times.
+The session application chat-read projection (`session-apps/chat.ts`) does not
+include message times: that contract and its consent disclosure cover recent
+conversation text, and extending them to timing metadata is a separate decision.
 
 Clients on another machine use `listenerTime` from the desktop protocol to
 correct for clock differences; see

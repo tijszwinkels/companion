@@ -18,7 +18,7 @@ import {
   type SessionEvent,
 } from '../../src/agents/types.ts';
 import { desktopFixture, stopped, waitFor } from '../desktop-fixture.ts';
-import { harnessFixture } from '../harness-fixture.ts';
+import { callTool, harnessFixture } from '../harness-fixture.ts';
 import { deferred, frame, signal } from '../helpers.ts';
 import { remoteFixture } from '../remote-fixture.ts';
 
@@ -604,31 +604,34 @@ test('state messages carry the listener clock from the same source as turn times
   assert.equal((state as Record<string, unknown> | undefined)?.listenerTime, clock.current);
 });
 
-test('a remote client receives turn times, message times and the listener clock', async (context) => {
-  const fixture = await remoteFixture();
+test('a remote client receives exactly the listener’s turn times, message times and clock', async (context) => {
+  // A listener clock far from the test machine's, so that a value the
+  // gateway substituted from its own clock could not pass.
+  const clock = fakeClock();
+  const fixture = await remoteFixture({ clock: clock.now });
   context.after(() => fixture.close());
   const { token } = await fixture.pair();
   const phone = await fixture.phone(token);
 
-  const connectedAt = Date.now();
   const state = await phone.engine('state');
-  assert.equal(typeof state.listenerTime, 'number');
-  assert.ok(Math.abs(state.listenerTime - connectedAt) < 60_000);
+  assert.equal(state.listenerTime, clock.current);
 
+  const startedAt = clock.advance(1_000);
   const id = fixture.sessions.start(frame, signal());
   await waitFor(() => fixture.runs.length === 1);
   const running = await phone.engine(
     'agent-session',
     (message) => message.session.id === id && message.session.status === 'running',
   );
-  assert.equal(typeof running.session.turnStartedAt, 'number');
+  assert.equal(running.session.turnStartedAt, startedAt);
 
   const question = await phone.engine('agent-session', (message) =>
     message.session.messages.some((row: AgentMessage) => row.id === 'user'),
   );
   const questionRow = question.session.messages.find((row: AgentMessage) => row.id === 'user');
-  assert.equal(questionRow.createdAt, running.session.turnStartedAt);
+  assert.equal(questionRow.createdAt, startedAt);
 
+  const answeredAt = clock.advance(2_000);
   fixture.runs[0].emit(chatMessage('answer', 'assistant', 'Synthetic answer'));
   fixture.runs[0].finish();
   await fixture.sessions.idle();
@@ -638,7 +641,7 @@ test('a remote client receives turn times, message times and the listener clock'
     (message) => message.session.id === id && message.session.status === 'completed',
   );
   assert.equal('turnStartedAt' in finished.session, false);
-  assert.equal(typeof finished.session.lastTurnDurationMs, 'number');
+  assert.equal(finished.session.lastTurnDurationMs, 2_000);
 
   // A history page relayed to the phone keeps every message's time.
   phone.send({ requestId: 'select', action: 'panel-state', id });
@@ -654,16 +657,187 @@ test('a remote client receives turn times, message times and the listener clock'
   });
   const reply = (await phone.reply('page')) as { type: string; result: HistoryPage };
   assert.equal(reply.type, 'result');
-  assert.equal(reply.result.messages.length, 2);
-  for (const message of reply.result.messages) {
-    assert.equal(typeof message.createdAt, 'number');
-  }
+  assert.deepEqual(
+    reply.result.messages.map((message) => message.createdAt),
+    [startedAt, answeredAt],
+  );
 
   // A phone that connects later receives the same fields in its snapshot.
+  const connectedAt = clock.advance(5_000);
   const later = await fixture.phone(token);
   const snapshot = await later.engine('state');
   const session = snapshot.sessions.find((entry: AgentSession) => entry.id === id);
-  assert.equal(session.lastTurnDurationMs, finished.session.lastTurnDurationMs);
+  assert.equal(session.lastTurnDurationMs, 2_000);
   assert.equal('turnStartedAt' in session, false);
-  assert.equal(typeof snapshot.listenerTime, 'number');
+  assert.equal(snapshot.listenerTime, connectedAt);
+});
+
+/**
+ * Hold the session store's saves while `held` is set, to observe what clients
+ * see while persistence is slow. Reaches into the private store on purpose.
+ */
+function holdSaves(sessions: AgentSessions) {
+  const store = (sessions as unknown as { store: SessionStore }).store;
+  const save = store.save.bind(store);
+  let gate: ReturnType<typeof deferred<void>> | undefined;
+  let waiting = 0;
+
+  store.save = async (session) => {
+    const current = gate;
+    if (current) {
+      waiting++;
+      await current.promise;
+    }
+    return save(session);
+  };
+
+  return {
+    hold() {
+      gate = deferred<void>();
+      waiting = 0;
+    },
+    waiting: () => waiting,
+    release() {
+      const current = gate;
+      gate = undefined;
+      current?.resolve();
+    },
+  };
+}
+
+test('the end of a turn is published before its final save finishes', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const events = recordEvents(fixture.sessions);
+  const saves = holdSaves(fixture.sessions);
+
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(900);
+    saves.hold();
+  });
+  await waitFor(() => saves.waiting() === 1);
+
+  // The save is still pending: clients already see the turn ended, but not
+  // the completion signal, which still waits for the save. The save is
+  // released even when an assertion fails, so that cleanup cannot hang.
+  try {
+    const published = lastPublished(events, id);
+    assert.equal('turnStartedAt' in published, false);
+    assert.equal(published.lastTurnDurationMs, 900);
+    assert.equal(
+      events.some((event) => event.type === 'agent-turn-completed'),
+      false,
+    );
+  } finally {
+    saves.release();
+  }
+  await fixture.sessions.idle();
+  assert.equal(
+    events.some((event) => event.type === 'agent-turn-completed'),
+    true,
+  );
+});
+
+test('an application send stopped before it began keeps the previous duration', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(800);
+  });
+  await fixture.sessions.idle();
+  assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+
+  // A stand-in for an authorized application send; no authored code runs.
+  let began = 0;
+  const applications = (
+    fixture.sessions as unknown as {
+      widgets: { applications: { chatSendTurn: () => unknown } };
+    }
+  ).widgets.applications;
+  applications.chatSendTurn = () => {
+    return {
+      begin: () => {
+        began++;
+        return true;
+      },
+      finish: async () => {},
+    };
+  };
+  const origin = {
+    kind: 'application-message' as const,
+    applicationId: '8b1c2d3e-4f5a-4b6c-8d7e-0123456789ab',
+    name: 'synthetic',
+    version: 1,
+    bundle: 'synthetic-bundle',
+    receiptId: '9c1d2e3f-4a5b-4c6d-8e7f-0123456789ab',
+    title: 'Synthetic application',
+    depth: 1 as const,
+  };
+
+  // Stop while the send is still starting: the question's save is held.
+  const saves = holdSaves(fixture.sessions);
+  saves.hold();
+  fixture.sessions.followUp(id, 'From the application', signal(), origin);
+  let stopping: Promise<number> | undefined;
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    clock.advance(15);
+    stopping = fixture.sessions.stop(id);
+  } finally {
+    saves.release();
+  }
+  await stopping;
+  await fixture.sessions.idle();
+
+  assert.equal(began, 0);
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+});
+
+test('a recovered timer notice keeps the same time on every reopen and restart', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, {
+    configuration: { ...defaultAgentSettings, model: 'configured/one' },
+    wakeClock: clock.now,
+  });
+  const id = fixture.sessions.start(frame, signal(), 'coding', 'pi');
+  const scheduledAt = clock.advance(100);
+  fixture.script(id, async (run) => {
+    await callTool(run, 'companion_wake_schedule', {
+      afterSeconds: 60,
+      label: 'Synthetic check',
+      message: 'Look again',
+    });
+  });
+  await fixture.sessions.idle();
+  const timerId = fixture.sessions.wakes.list(id)[0].id;
+  assert.equal(fixture.sessions.wakes.list(id)[0].createdAt, scheduledAt);
+  await fixture.sessions.remove(id);
+
+  // An archive without the notice, as when a timer changed while the tab
+  // was closed.
+  const saved = await savedJson(fixture.directory, id);
+  saved.messages = saved.messages.filter(
+    (message: AgentMessage) => message.id !== `wake:${timerId}`,
+  );
+  await writeConversation(fixture.directory, saved as Record<string, unknown> & { id: string });
+
+  // Reopening does not save; a restarted listener reopens the same archive.
+  // The first listener stops first: only one may own the timer store.
+  await fixture.sessions.close();
+  for (const advance of [60_000, 120_000]) {
+    clock.advance(advance);
+    const instance = fixture.open();
+    await instance.loadPrevious();
+    await instance.reopen(id);
+    const notice = fixture
+      .view(id, instance)
+      .messages.find((message) => message.id === `wake:${timerId}`);
+    assert.ok(notice, 'the missing timer notice is recovered');
+    assert.equal(notice.createdAt, scheduledAt);
+    await instance.close();
+  }
 });
