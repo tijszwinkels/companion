@@ -11,8 +11,9 @@ A paired browser can:
 1. pair with the gateway and reconnect, exactly as the phone panel does;
 2. pick one open conversation from a plain list (Back returns to the list);
 3. show it with the **desktop chat page** (`../session-apps/chat/Chat.tsx`,
-   unchanged): streaming transcript, Markdown, tool-group summary rows and
-   origin labels;
+   shared with the Qt host; see
+   [one change to the shared chat page](#one-change-to-the-shared-chat-page)):
+   streaming transcript, Markdown, tool-group summary rows and origin labels;
 4. send a message, queue a follow-up while the agent runs, stop the run,
    answer offered choices and close the conversation;
 5. page through older and newer history, as the desktop does;
@@ -22,7 +23,7 @@ A paired browser can:
 
 ```text
 Chat.tsx + ChatStore ──NativeBridge──▶ GatewayChatBridge ──▶ phone Store/Connection ──WSS──▶ gateway ──▶ listener
- (session-apps/chat, unchanged)          (src/bridge.ts)       (mobile/src, imported)
+ (session-apps/chat, shared with Qt)     (src/bridge.ts)       (mobile/src, imported)
 ```
 
 In the Qt host the chat page talks to `TrustedChatView.qml` over QWebChannel.
@@ -58,7 +59,8 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   within one viewport of its end, observed by `src/main.tsx` like
   SessionView's `readerScrolled` (a scroll while a pointer is held in the
   transcript, as when dragging its scroll bar, or within a second of wheel, key,
-  pointer or touch input there), so the new rows continue below without
+  pointer or touch input there; at the very end, where nothing scrolls, a
+  downward wheel), so the new rows continue below without
   moving the reader (also when they reach the end before the page arrives).
   It never repeats a failed request.
 - Connection loss: the phone Connection reconnects with backoff and never
@@ -67,13 +69,16 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   "Disconnected" state. Sending, choosing, stopping and closing are refused
   while offline, and after reconnecting until the listener's new snapshot has
   arrived (the shown conversation may have been closed or reopened meanwhile).
-- Stop never reaches a later turn than the one shown. The conversation's own
-  Stop (shown while the listener's controls report has no run-scoped Stop,
-  which can lag behind the conversation) is scoped to the run the
-  conversation names (`stop-agent-run`); the listener refuses it once that
-  run is no longer current. Only a run without an ID gets the unscoped
-  `stop-agent`, and only after the listener reported this conversation's
-  controls to this browser.
+- Stop never reaches a later turn than the one shown. The page's Stop is
+  scoped to a run (`status.stopRunId`): the run the conversation names, or
+  else the one in the listener's controls report (which can lag behind). The
+  page renders Stop with that run ID; `stop-agent-run` is admitted only while
+  it is still the current run, and the listener checks it again. Only a run
+  without an ID gets the unscoped `stop-agent`, and only after the listener
+  reported this conversation's controls to this browser.
+- Notices and pending choices belong to one conversation lifetime (ID and
+  tool epoch): a conversation closed and reopened under the same ID does not
+  show the old one's notices, and late answers for the old one are ignored.
 - Signing out (or a revoked pairing) clears drafts, input only the editor
   held, notices and pending state; answers that arrive later for the previous
   pairing are ignored. Another tab of the same browser reloads when the
@@ -83,7 +88,7 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 
 ### One change to the shared chat page
 
-`Chat.tsx` is otherwise unchanged. Its transcript no longer counts the end of
+Apart from this, `Chat.tsx` is as the Qt host had it. Its transcript no longer counts the end of
 a **detached** history snapshot as the live end (`following` is reported and
 kept as `atEnd && !history.detached`), except right after Jump to latest
 until the host has shown the live rows; and Jump to latest no longer counts

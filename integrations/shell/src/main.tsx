@@ -146,14 +146,43 @@ document.addEventListener(
     if (!readerDragging && !recentInput) {
       return;
     }
-    const reach = Math.max(element.clientHeight, 160);
-    const fromEnd = element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (fromEnd <= reach) {
-      bridge.readerNearEnd();
+    readerScrolled(element);
+  },
+  { capture: true, passive: true },
+);
+
+/**
+ * At the very end the transcript cannot scroll any further, so a downward
+ * wheel there produces no scroll event. It still is the reader asking for
+ * what comes next, for example after a reconnect forgot a newer page that
+ * was pending at that end: it is passed on like a scroll.
+ */
+document.addEventListener(
+  'wheel',
+  (event) => {
+    if (!(event instanceof WheelEvent) || event.deltaY <= 0) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const transcript = target.closest('.transcript');
+    if (transcript) {
+      readerScrolled(transcript);
     }
   },
   { capture: true, passive: true },
 );
+
+/** The reader moved `transcript`: near its end, the next newer page may load. */
+function readerScrolled(transcript: Element): void {
+  const reach = Math.max(transcript.clientHeight, 160);
+  const fromEnd = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+  if (fromEnd <= reach) {
+    bridge.readerNearEnd();
+  }
+}
 
 render(
   <StoreContext.Provider value={store}>

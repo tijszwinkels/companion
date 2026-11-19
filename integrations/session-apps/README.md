@@ -3,9 +3,11 @@
 Status: first implementation path (desktop standalone host only). The phone app
 and the portable Quickshell panel keep their existing conversation views. The
 [browser shell](../shell/README.md) renders the same chat page in an ordinary
-browser, with a bridge over the remote gateway instead of QWebChannel; it keeps
-`chat/` unchanged, so changes to the page's protocol (`chat/protocol.ts`,
-`ChatState.mjs`) must keep both hosts in step.
+browser, with a bridge over the remote gateway instead of QWebChannel. Both
+hosts share `chat/`, so changes to the page or its protocol (`chat/protocol.ts`,
+`ChatState.mjs`) must keep both hosts in step. The browser shell needed one
+change to the page's history scrolling, described in
+[its README](../shell/README.md#one-change-to-the-shared-chat-page).
 
 In the standalone Companion host every conversation view, in the sidebar and in
 pop-out windows, shows the **HTML session surface** instead of the classic Qt

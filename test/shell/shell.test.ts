@@ -604,6 +604,73 @@ test(
 );
 
 test(
+  'after a reconnect at the end of a detached snapshot a downward wheel loads the next page',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Wheel fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    for (let index = 0; index < 1050; index++) {
+      fixture.runs[0].emit(chatMessage('wheel-' + index, 'assistant', 'History row ' + index));
+    }
+    fixture.runs[0].finish();
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Wheel fixture');
+    await page.waitFor(shows('History row 1049'));
+    // Up to the first message: a detached snapshot ending at History row 598.
+    await scrollUntil(page, -100_000, shows('Wheel fixture'));
+    await page.waitFor(`document.querySelector('button.latest')`);
+
+    // The newer page is requested at the end but never answered before the
+    // gateway stops: the browser forgets it and never replays it.
+    const historyPage = fixture.sessions.historyPage.bind(fixture.sessions);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
+      const reply = historyPage(request);
+      if (request.direction === 'after') {
+        await held;
+      }
+      return reply;
+    }) as unknown as typeof historyPage;
+    const newerRequests = () => sockets.sent.filter((sent) => sent.direction === 'after').length;
+    await scrollUntil(page, 100_000, inView('History row 598'));
+    await waitFor(() => newerRequests() === 1);
+    fixture.sessions.historyPage = historyPage;
+    await fixture.gateway.close();
+    await page.waitFor(`document.querySelector('.connection-banner')`, 5000);
+    const replacement = new Gateway({
+      host: '127.0.0.1',
+      port: fixture.port,
+      origins: [fixture.origin],
+      stateDirectory: join(fixture.directory, 'remote-state'),
+      controlSocket: fixture.desktop.socketPath,
+      sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+      appDirectory,
+      log: () => {},
+    });
+    await replacement.start();
+    context.after(() => replacement.close());
+    await page.waitFor(`!document.querySelector('.connection-banner')`, 20_000);
+    await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
+    assert.equal(newerRequests(), 1, 'the lost request was not replayed');
+    // The listener may now answer the old connection's request; nobody gets it.
+    release();
+
+    // Still at the very end, where nothing can scroll: a downward wheel is
+    // the reader asking for more, and the next page loads below.
+    assert.ok(await page.evaluate<boolean>(inView('History row 598')));
+    await wheel(page, 300);
+    await waitFor(() => newerRequests() === 2, 5000);
+    await page.waitFor(shows('History row 700'));
+    assert.ok(await page.evaluate<boolean>(inView('History row 598')), 'the reader stayed');
+    await assertNoViolations(page);
+  },
+);
+
+test(
   'shows connection loss and recovers after a gateway restart without replaying requests',
   { skip },
   async (context) => {

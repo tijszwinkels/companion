@@ -127,11 +127,15 @@ export class GatewayChatBridge implements NativeBridge {
   private readonly knownDrafts = new Map<string, string>();
   private readonly cursors = new Map<string, number>();
 
-  // Per conversation: the last refusal or failure to show (`inputError`).
-  private readonly errors = new Map<string, string>();
-  // Per conversation: the choice request awaiting its answer, kept until it
-  // settles even when the page shows another conversation meanwhile.
-  private readonly pendingChoices = new Map<string, object>();
+  // Per conversation: the last refusal or failure to show (`inputError`),
+  // with the conversation lifetime (ID and tool epoch) it belongs to. A
+  // conversation closed and reopened under the same ID is a new lifetime and
+  // does not show the old one's notices.
+  private readonly errors = new Map<string, { lifetime: string; message: string }>();
+  // Per conversation: the choice request awaiting its answer and the
+  // lifetime it was made in, kept until it settles even when the page shows
+  // another conversation meanwhile.
+  private readonly pendingChoices = new Map<string, { lifetime: string }>();
   // Advances on sign-out or revocation. Answers to requests of an earlier
   // pairing are ignored, so they cannot bring back its notices.
   private pairing = 0;
@@ -403,7 +407,7 @@ export class GatewayChatBridge implements NativeBridge {
     if (send && send.error) {
       notices.push(send.error);
     }
-    const notice = this.errors.get(id);
+    const notice = this.notice(id);
     if (notice) {
       notices.push(notice);
     }
@@ -433,9 +437,9 @@ export class GatewayChatBridge implements NativeBridge {
       maximumMessageLength: maximumMessageLength,
       editLimit: 2 * maximumMessageLength,
       // The same admission as send(): connected, nothing awaiting an answer.
-      canSend: this.online && !pendingSend && !this.pendingChoices.has(id),
+      canSend: this.online && !pendingSend && !this.choicePending(id),
       pendingSend: pendingSend,
-      pendingChoice: this.pendingChoices.has(id),
+      pendingChoice: this.choicePending(id),
       inputError: inputError,
       // Recording into the text box is a desktop feature.
       recording: {
@@ -485,7 +489,20 @@ export class GatewayChatBridge implements NativeBridge {
     return choices;
   }
 
+  /**
+   * The run the page's Stop is scoped to (`status.stopRunId`). The run the
+   * conversation itself names comes first: it is never older than the
+   * listener's controls report, which can lag behind. The page renders its
+   * Stop with this ID and stopRun() accepts it only while it is still the
+   * current one, so a Stop pressed for one turn never reaches the next.
+   */
   private stopRunId(sessionId: string): string {
+    const session = this.store.state.sessions.get(sessionId);
+    if (session && this.running(session) && typeof session.runId === 'string') {
+      if (session.runId !== '') {
+        return session.runId;
+      }
+    }
     const actions = this.store.state.actions;
     if (!actions || actions.sessionId !== sessionId) {
       return '';
@@ -534,14 +551,39 @@ export class GatewayChatBridge implements NativeBridge {
     return send !== undefined && send.pending;
   }
 
+  /** The ID and tool epoch of an open conversation, or '' when it is not open. */
+  private lifetimeOf(sessionId: string): string {
+    return this.lifetime(this.store.state.sessions.get(sessionId) ?? null);
+  }
+
+  /** Show `message` as the conversation's notice, for its current lifetime. */
+  private setNotice(sessionId: string, message: string): void {
+    this.errors.set(sessionId, { lifetime: this.lifetimeOf(sessionId), message: message });
+    this.scheduleStatus();
+  }
+
+  /** The conversation's notice, unless it belongs to an earlier lifetime. */
+  private notice(sessionId: string): string {
+    const entry = this.errors.get(sessionId);
+    if (!entry || entry.lifetime !== this.lifetimeOf(sessionId)) {
+      return '';
+    }
+    return entry.message;
+  }
+
+  /** Whether a choice of the conversation's current lifetime awaits its answer. */
+  private choicePending(sessionId: string): boolean {
+    const entry = this.pendingChoices.get(sessionId);
+    return entry !== undefined && entry.lifetime === this.lifetimeOf(sessionId);
+  }
+
   /** Remember a refusal or failure for the conversation's `inputError`. */
   private fail(sessionId: string, failure: unknown): void {
     let message = String(failure);
     if (failure instanceof Error) {
       message = failure.message;
     }
-    this.errors.set(sessionId, message);
-    this.scheduleStatus();
+    this.setNotice(sessionId, message);
   }
 
   /**
@@ -556,6 +598,7 @@ export class GatewayChatBridge implements NativeBridge {
     this.errors.delete(sessionId);
     this.scheduleStatus();
     const pairing = this.pairing;
+    const lifetime = this.lifetimeOf(sessionId);
     work().then(
       () => {
         settled();
@@ -563,8 +606,9 @@ export class GatewayChatBridge implements NativeBridge {
       },
       (failure: unknown) => {
         settled();
-        // Signed out meanwhile: the failure belongs to the previous pairing.
-        if (pairing === this.pairing) {
+        // Signed out, or the conversation closed or reopened meanwhile: the
+        // failure belongs to a pairing or lifetime that is no longer shown.
+        if (pairing === this.pairing && lifetime === this.lifetimeOf(sessionId)) {
           this.fail(sessionId, failure);
         }
       },
@@ -635,7 +679,7 @@ export class GatewayChatBridge implements NativeBridge {
       this.online &&
       this.sameSession(sessionId) &&
       !this.pendingSend(sessionId) &&
-      !this.pendingChoices.has(sessionId);
+      !this.choicePending(sessionId);
     if (
       !admitted ||
       base !== this.draftRevision(sessionId) ||
@@ -680,7 +724,7 @@ export class GatewayChatBridge implements NativeBridge {
     if (
       !this.sameSession(sessionId) ||
       !this.online ||
-      this.pendingChoices.has(sessionId) ||
+      this.choicePending(sessionId) ||
       this.pendingSend(sessionId)
     ) {
       this.answer(callback, { accepted: false });
@@ -697,7 +741,7 @@ export class GatewayChatBridge implements NativeBridge {
       this.answer(callback, { accepted: false });
       return;
     }
-    const pending = {};
+    const pending = { lifetime: this.lifetimeOf(sessionId) };
     this.pendingChoices.set(sessionId, pending);
     this.act(
       sessionId,
@@ -734,16 +778,14 @@ export class GatewayChatBridge implements NativeBridge {
   }
 
   /**
-   * The conversation's own Stop, shown while it runs without a run-scoped
-   * control in the listener's latest controls report (which can lag behind
-   * the conversation itself). A Stop must never reach a later turn than the
-   * one shown, so:
-   * - when the conversation names its current run, the Stop is scoped to
-   *   that run (`stop-agent-run`); the listener refuses it if that run is no
-   *   longer current, so a queued turn that started meanwhile keeps running;
-   * - only a run without an ID gets the unscoped `stop-agent`, and only after
-   *   the listener reported this conversation's controls to this browser
-   *   (before that, "no run ID" may only mean "not reported yet").
+   * The conversation's own Stop, offered by the page only while it runs
+   * without a run to scope a Stop to (`stopRunId` is empty: neither the
+   * conversation nor the listener's controls name one). It is refused when
+   * a run is named by now (the page then shows the scoped Stop), and the
+   * unscoped `stop-agent` is admitted only after the listener reported this
+   * conversation's controls to this browser: before that, "no run ID" may
+   * only mean "not reported yet", and an unscoped Stop could cancel a queued
+   * turn that started meanwhile.
    */
   stop(sessionId: string, callback?: (answer: string) => void): void {
     const session = this.shownSession;
@@ -757,18 +799,9 @@ export class GatewayChatBridge implements NativeBridge {
       this.answer(callback, { accepted: false });
       return;
     }
-    const runId = session.runId;
-    if (typeof runId === 'string' && runId !== '') {
-      this.act(sessionId, () =>
-        this.store.request('stop-agent-run', { id: sessionId, runId: runId }, { quiet: true }),
-      );
-      this.answer(callback, { accepted: true });
-      return;
-    }
     const actions = this.store.state.actions;
     if (!actions || actions.sessionId !== sessionId) {
-      this.errors.set(sessionId, stopNotReady);
-      this.scheduleStatus();
+      this.setNotice(sessionId, stopNotReady);
       this.answer(callback, { accepted: false });
       return;
     }
@@ -931,15 +964,13 @@ export class GatewayChatBridge implements NativeBridge {
 
   classicView(): void {
     if (this.shownSession) {
-      this.errors.set(this.shownSession.id, classicUnavailable);
-      this.scheduleStatus();
+      this.setNotice(this.shownSession.id, classicUnavailable);
     }
   }
 
   openApp(): void {
     if (this.shownSession) {
-      this.errors.set(this.shownSession.id, applicationUnavailable);
-      this.scheduleStatus();
+      this.setNotice(this.shownSession.id, applicationUnavailable);
     }
   }
 }

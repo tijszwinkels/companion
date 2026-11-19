@@ -328,22 +328,42 @@ test('the same conversation reopened in a new lifetime is replaced like a switch
   assert.equal(after[1].type, 'status');
 });
 
-test('Stop is scoped to the shown run, and unscoped only once controls arrived', async () => {
+test('Stop is scoped to the run the page shows, and unscoped only once controls arrived', async () => {
   const { store, bridge, messages } = harness();
-  // The conversation names its run before the controls report arrives.
+  // The conversation names its run before the listener's controls report
+  // arrives: the page's Stop is scoped to that run.
   const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
   store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
   await settle();
-  assert.equal(lastStatus(messages).running, true);
-  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
+  const shown = lastStatus(messages);
+  assert.equal(shown.running, true);
+  assert.equal(shown.stopRunId, 'run-1');
+  // The unscoped Stop is not offered then, and refused if asked anyway.
+  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
+  assert.equal(store.pending.length, 0);
+
+  // The next turn starts before the page has seen it: a Stop pressed for the
+  // shown run must not reach the new one.
+  const next = session(sessionA, 'Question A', { status: 'running', runId: 'run-2' });
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, next) });
+  assert.deepEqual(await ask((answer) => bridge.stopRun(sessionA, shown.stopRunId!, answer)), {
+    accepted: false,
+  });
+  assert.equal(store.pending.length, 0);
+  await settle();
+  assert.equal(lastStatus(messages).stopRunId, 'run-2');
+  assert.deepEqual(await ask((answer) => bridge.stopRun(sessionA, 'run-2', answer)), {
+    accepted: true,
+  });
   assert.equal(store.pending[0].action, 'stop-agent-run');
-  assert.deepEqual(store.pending[0].parameters, { id: sessionA, runId: 'run-1' });
+  assert.deepEqual(store.pending[0].parameters, { id: sessionA, runId: 'run-2' });
 
   // A run without an ID: no Stop until the listener reported the controls,
   // since "no run ID" may only mean "not reported yet".
   const unnamed = session(sessionA, 'Question A', { status: 'running' });
   store.update({ sessions: new Map(store.state.sessions).set(sessionA, unnamed) });
   await settle();
+  assert.equal(lastStatus(messages).stopRunId, '');
   assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
   assert.equal(store.pending.length, 1);
   await settle();
@@ -351,6 +371,53 @@ test('Stop is scoped to the shown run, and unscoped only once controls arrived',
   store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
   assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
   assert.equal(store.pending[1].action, 'stop-agent');
+});
+
+test('notices and pending choices end with the conversation lifetime', async () => {
+  const { store, bridge, messages } = harness();
+  store.update({
+    actions: {
+      sessionId: sessionA,
+      stopRunId: '',
+      choices: [
+        {
+          sessionId: sessionA,
+          revision: 'choice-1',
+          index: 0,
+          label: 'Yes',
+          description: 'Go ahead',
+          available: true,
+          voiceAvailable: false,
+          voiceReason: '',
+        },
+      ],
+    },
+  });
+  await settle();
+  bridge.classicView();
+  assert.deepEqual(await ask((answer) => bridge.choose(sessionA, 'choice-1', 0, answer)), {
+    accepted: true,
+  });
+  await settle();
+  assert.equal(lastStatus(messages).pendingChoice, true);
+
+  // Closed and reopened elsewhere under the same ID (a new tool epoch).
+  const reopened = session(sessionA, 'Question A again', { toolEpoch: 'epoch-reopened' });
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, reopened),
+    actions: undefined,
+  });
+  await settle();
+  let status = lastStatus(messages);
+  assert.equal(status.inputError, '');
+  assert.equal(status.pendingChoice, false);
+  assert.equal(status.canSend, true);
+
+  // The old lifetime's choice fails late: no notice in the new lifetime.
+  store.pending[0].reject(Error('This choice is no longer offered'));
+  await settle();
+  status = lastStatus(messages);
+  assert.equal(status.inputError, '');
 });
 
 test('an uncertain send stays visible next to other notices', async () => {
