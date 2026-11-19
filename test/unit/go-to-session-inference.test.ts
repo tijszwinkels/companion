@@ -118,6 +118,11 @@ test('inferred navigation selects the one explicit number anywhere in the uttera
     ['go to session thirty two', 32],
     ['go to session thirty-two', 32],
     ['Go back to 32…', 32],
+    // Review R3 positive controls: ordinary words after the number.
+    ['please switch to session twenty-one, please', 21],
+    ['please switch to session twenty-one about the budget', 21],
+    ['switch to session twenty\u2011one', 21],
+    ['switch to session 21, so I can read it', 21],
   ] as const) {
     const run = setup();
     assert.equal(await run.route(utterance), 'GO_TO_SESSION', utterance);
@@ -170,6 +175,23 @@ test('inferred navigation skips missing, multiple, ordinal, homophone and malfor
     'switch to session six and a quarter',
     'switch to session twenty trillion',
     'switch to session two dozen',
+    // Review R3: qualifiers next to the number, across punctuation and dash forms.
+    'please switch to session twenty-one or so',
+    'please switch to session twenty-one, or so',
+    'please switch to session twenty-one or something',
+    'please switch to session twenty-one... or something',
+    'please switch to session about twenty-one',
+    'please switch to session, about, twenty-one',
+    'switch to session around 21',
+    'switch to session roughly thirty',
+    'switch to session 21, or 22',
+    'switch to session 21 or whichever',
+    'switch to session twenty\u2011something',
+    'switch to session twenty\u2013something',
+    'switch to session 20\u2014ish',
+    'switch to session twentyish',
+    'switch to session \u22126',
+    'switch to session \u2011six',
     'switch to session 1.5',
     'switch to session -3',
     'switch to session −3',
@@ -404,6 +426,11 @@ test('R2-F1: inferred go-to and pop-out share the refusal of approximate numbers
     'thirty-something, in its own window',
     'session twenty-one and a quarter',
     'session twenty trillion',
+    'please switch to session twenty-one, or so',
+    'please pop out session twenty-one, or so',
+    'session twenty-one or something',
+    'session about twenty-one',
+    'session twenty\u2011something',
   ]) {
     await goTo.process(input(utterance), signal(), 'inference');
     await popOut.process(input(utterance), signal(), 'inference');
@@ -414,6 +441,10 @@ test('R2-F1: inferred go-to and pop-out share the refusal of approximate numbers
 
   await goTo.process(input('switch to session twenty-one'), signal(), 'inference');
   await popOut.process(input('please pop out session thirty two'), signal(), 'inference');
-  assert.deepEqual(selected, [20]);
-  assert.deepEqual(poppedOut, [31]);
+  for (const utterance of ['session twenty-one, please', 'session twenty-one about the budget']) {
+    await goTo.process(input(utterance), signal(), 'inference');
+    await popOut.process(input(utterance), signal(), 'inference');
+  }
+  assert.deepEqual(selected, [20, 20, 20]);
+  assert.deepEqual(poppedOut, [31, 20, 20]);
 });

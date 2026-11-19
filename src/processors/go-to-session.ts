@@ -41,11 +41,28 @@ function cardinalValue(first: string, unit?: string): number | undefined {
 // Inferred requests count every number they mention, so these only ever cause a skip
 // (plurals such as "twentys" and words with no session position).
 const otherNumberWords =
-  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|dozen|hundred|thousand|million|billion|trillion|half|halves|quarter)s?$/u;
-// A number made approximate: attached to another word by a hyphen
-// ("twenty-something", "6-ish", "3-4") or followed by a vague word
-// ("twenty something", "thirty odd", "six or so"). Never a session position.
-const approximate = /^(?:-[\p{L}\p{N}]|\s+(?:something|odd|ish|or\s+so)\b)/u;
+  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|dozen|hundred|thousand|million|billion|trillion|half|halves|quarter)(?:s|ish)?$/u;
+// Words next to a number that make it approximate or one of several choices.
+// They are matched as the neighbouring word, so punctuation cannot hide them:
+// "about twenty-one", "twenty-one, or so", "twenty-one or something", "thirty odd".
+const approximateBefore = new Set([
+  'about',
+  'around',
+  'approximately',
+  'roughly',
+  'nearly',
+  'almost',
+  'circa',
+  'some',
+  'maybe',
+  'perhaps',
+  'over',
+  'under',
+]);
+const approximateAfter = new Set(['or', 'something', 'odd', 'ish', 'plus', 'thereabouts']);
+// Every dash ASR may write (hyphen, non-breaking hyphen, en/em dash, minus...)
+// reads as "-", so a sign, compound or attachment looks the same in all forms.
+const dashes = /[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]/gu;
 // The separator a spoken compound may use: one space or one hyphen.
 const compoundJoin = /^(?:\s+|-)$/u;
 const ordinalWords =
@@ -57,7 +74,7 @@ const explicitOne = /(?:session|tab|conversation|chat|number)\s+$/u;
 
 /** Exact shortcut suffix: one complete numeral or cardinal label, nothing else. */
 export function shortcutIndex(utterance: string): number {
-  const label = voiceLabel(utterance);
+  const label = voiceLabel(utterance).replace(dashes, '-');
   if (/^(?:[1-9]|[1-9][0-9])$/u.test(label)) return Number(label) - 1;
   const words = /^([a-z]+)(?:[ -]([a-z]+))?$/u.exec(label);
   const value = words ? cardinalValue(words[1], words[2]) : undefined;
@@ -71,7 +88,7 @@ export function shortcutIndex(utterance: string): number {
  * separates words, so it cannot hide a mention or join two of them.
  */
 export function inferredIndex(utterance: string): number {
-  const text = utterance.toLowerCase();
+  const text = utterance.toLowerCase().replace(dashes, '-');
   const indexes: number[] = [];
 
   const words = [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((match) => ({
@@ -91,17 +108,23 @@ export function inferredIndex(utterance: string): number {
       compoundJoin.test(text.slice(words[position].end, next.start))
         ? next
         : undefined;
+    const previous = words[position - 1]?.word ?? '';
     if (unit) position++;
+    const following = words[position + 1]?.word ?? '';
     const end = unit ? unit.end : words[position].end;
     const before = text.slice(0, start);
     const after = text.slice(end);
     // A written or spoken sign ("-6", "- six", "minus six") or decimal/grouping
     // part (".6", "point six", "6.5", "1,000", "6:30").
+    // Approximate: attached to another word by a hyphen ("twenty-something",
+    // "6-ish", "3-4"), or next to a qualifier across any punctuation.
     const malformed =
       /(?:[-+−]|\b(?:minus|negative|plus|point|dot))\s*$/u.test(before) ||
       /[.,:]$/u.test(before) ||
       /^[.,:]\p{N}/u.test(after) ||
-      approximate.test(after);
+      /^-[\p{L}\p{N}]/u.test(after) ||
+      approximateBefore.has(previous) ||
+      approximateAfter.has(following);
     const value = cardinalValue(word, unit?.word);
 
     if (/\p{N}/u.test(word)) {
