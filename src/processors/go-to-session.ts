@@ -41,7 +41,11 @@ function cardinalValue(first: string, unit?: string): number | undefined {
 // Inferred requests count every number they mention, so these only ever cause a skip
 // (plurals such as "twentys" and words with no session position).
 const otherNumberWords =
-  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|hundred|thousand|million|billion|half|halves)s?$/u;
+  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|dozen|hundred|thousand|million|billion|trillion|half|halves|quarter)s?$/u;
+// A number made approximate: attached to another word by a hyphen
+// ("twenty-something", "6-ish", "3-4") or followed by a vague word
+// ("twenty something", "thirty odd", "six or so"). Never a session position.
+const approximate = /^(?:-[\p{L}\p{N}]|\s+(?:something|odd|ish|or\s+so)\b)/u;
 // The separator a spoken compound may use: one space or one hyphen.
 const compoundJoin = /^(?:\s+|-)$/u;
 const ordinalWords =
@@ -62,8 +66,8 @@ export function shortcutIndex(utterance: string): number {
 
 /**
  * The model chose navigation but supplies no target. Accept exactly one explicit
- * number in the whole utterance; any second, ordinal, decimal, signed or
- * out-of-range number makes the request ambiguous, never a guess. Punctuation
+ * number in the whole utterance; any second, ordinal, decimal, signed,
+ * approximate or out-of-range number makes the request ambiguous, never a guess. Punctuation
  * separates words, so it cannot hide a mention or join two of them.
  */
 export function inferredIndex(utterance: string): number {
@@ -96,7 +100,8 @@ export function inferredIndex(utterance: string): number {
     const malformed =
       /(?:[-+−]|\b(?:minus|negative|plus|point|dot))\s*$/u.test(before) ||
       /[.,:]$/u.test(before) ||
-      /^[.,:]\p{N}/u.test(after);
+      /^[.,:]\p{N}/u.test(after) ||
+      approximate.test(after);
     const value = cardinalValue(word, unit?.word);
 
     if (/\p{N}/u.test(word)) {

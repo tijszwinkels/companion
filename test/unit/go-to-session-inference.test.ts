@@ -7,6 +7,7 @@ import { UserSensorRouter, type Detector } from '../../src/core/router.ts';
 import type { TranscriptionCleanupRecord } from '../../src/core/transcription-cleanup/record.ts';
 import { TranscriptionCleanupSetting } from '../../src/core/transcription-cleanup/setting.ts';
 import { GoToSession } from '../../src/processors/go-to-session.ts';
+import { PopOutSession } from '../../src/processors/pop-out-session.ts';
 import { frame, processor, signal, testDetector } from '../helpers.ts';
 
 const interaction: InteractionContext = {
@@ -156,6 +157,19 @@ test('inferred navigation skips missing, multiple, ordinal, homophone and malfor
     'switch to session thirty-second',
     'switch to session twenty one hundred',
     'switch to session twenty-one.5',
+    // Review R2-F1: approximate, fractional or magnified numbers are not positions.
+    'switch to session twenty-something',
+    'switch to session thirty-something',
+    'switch to session twenty something',
+    'switch to session thirty odd',
+    'switch to session twenty-ish',
+    'switch to session six or so',
+    'switch to session 20-something',
+    'switch to session twenty-one-something',
+    'switch to session twenty-one and a quarter',
+    'switch to session six and a quarter',
+    'switch to session twenty trillion',
+    'switch to session two dozen',
     'switch to session 1.5',
     'switch to session -3',
     'switch to session −3',
@@ -363,4 +377,43 @@ test('inferred preview reports the target without selecting it', async () => {
   );
   assert.deepEqual(outcomes, ['preview']);
   assert.deepEqual(logs, ['Would select session 6']);
+});
+
+test('R2-F1: inferred go-to and pop-out share the refusal of approximate numbers', async () => {
+  const navigation = { ...interaction.agentNavigation!, popoutHost: true };
+  const context: InteractionContext = { ...interaction, agentNavigation: navigation };
+  const selected: number[] = [];
+  const poppedOut: number[] = [];
+  const outcomes: string[] = [];
+  const activity: Activity = {
+    selectSession: (_context, index) => (selected.push(index), true),
+    popOutSession: (_context, index) => (poppedOut.push(index), true),
+    outcome: (_id, outcome) => outcomes.push(outcome),
+  };
+  const goTo = new GoToSession(() => {}, false, activity);
+  const popOut = new PopOutSession(() => {}, false, activity);
+  const input = (utterance: string): UserSensorFrame => ({
+    ...frame,
+    utterance,
+    interaction: context,
+  });
+
+  for (const utterance of [
+    'please switch to session twenty-something',
+    'please pop out session twenty-something',
+    'thirty-something, in its own window',
+    'session twenty-one and a quarter',
+    'session twenty trillion',
+  ]) {
+    await goTo.process(input(utterance), signal(), 'inference');
+    await popOut.process(input(utterance), signal(), 'inference');
+  }
+  assert.deepEqual(selected, []);
+  assert.deepEqual(poppedOut, []);
+  assert.deepEqual(new Set(outcomes), new Set(['skipped']));
+
+  await goTo.process(input('switch to session twenty-one'), signal(), 'inference');
+  await popOut.process(input('please pop out session thirty two'), signal(), 'inference');
+  assert.deepEqual(selected, [20]);
+  assert.deepEqual(poppedOut, [31]);
 });
