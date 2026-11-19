@@ -30,6 +30,12 @@
  *   classic view, tool details and screenshots are not available. Recording
  *   and applications are hidden through `status`; the page's Classic view
  *   and tool-group buttons show a notice in `inputError` instead.
+ * - Stricter admission: a send must be based on the current draft revision
+ *   (no second send of text already sent), and nothing is admitted after a
+ *   reconnect until the listener's new snapshot arrived.
+ * - Newer history pages below a detached snapshot also load as the reader
+ *   scrolls toward the end (`readerNearEnd`, reported by main.tsx), not only
+ *   through the page's `history('newer')`.
  *
  * Replies and messages reach the page asynchronously and in call order, as
  * QWebChannel delivers them.
@@ -98,8 +104,19 @@ export class GatewayChatBridge implements NativeBridge {
 
   // The shown conversation and its resident rows.
   private shownSession: AgentSession | null = null;
-  private online = false;
   private readonly resident: ResidentHistory;
+
+  // Connection state. `online` (what the page sees, and what admits
+  // requests) is true only once the current connection's first complete
+  // snapshot arrived: between authentication and that snapshot the shown
+  // conversation may be stale (closed, or reopened under the same ID while
+  // offline), so nothing may be sent for it yet. The Store ignores partial
+  // engine states until its snapshot, so a new `engine` object after the
+  // connection came up means the snapshot was applied.
+  private connected = false;
+  private engineAtConnect: unknown = undefined;
+  private snapshotSeen = false;
+  private online = false;
 
   // Drafts live in the Store; the bridge tracks their host revisions. A
   // revision advances only when the draft changes other than by this page's
@@ -110,7 +127,9 @@ export class GatewayChatBridge implements NativeBridge {
 
   // Per conversation: the last refusal or failure to show (`inputError`).
   private readonly errors = new Map<string, string>();
-  private pendingChoice: { sessionId: string } | null = null;
+  // Per conversation: the choice request awaiting its answer, kept until it
+  // settles even when the page shows another conversation meanwhile.
+  private readonly pendingChoices = new Map<string, object>();
   // Input only the page's editor holds (its length only), as in SessionView.
   private unresolved: { sessionId: string; length: number } | null = null;
 
@@ -141,23 +160,23 @@ export class GatewayChatBridge implements NativeBridge {
   /** Called on every Store change: follow the shown conversation and status. */
   private storeChanged(): void {
     const state = this.store.state;
-    const online = state.connection.status === 'online';
-    if (online !== this.online) {
-      this.online = online;
-      this.resident.setOnline(online);
+    if (state.connection.status === 'unpaired') {
+      this.forgetPrivateState();
     }
+    this.followConnection();
 
     let session: AgentSession | null = null;
     if (state.selected) {
       session = state.sessions.get(state.selected) ?? null;
     }
+    let switched = false;
     if (session !== this.shownSession) {
       const previousId = this.shownSession ? this.shownSession.id : '';
       const id = session ? session.id : '';
-      if (id !== previousId) {
+      switched = id !== previousId;
+      if (switched) {
         // Another conversation: the page replaces its rows.
         this.fullRows = true;
-        this.pendingChoice = null;
       }
       this.shownSession = session;
       this.resident.show(session);
@@ -167,7 +186,50 @@ export class GatewayChatBridge implements NativeBridge {
     if (session) {
       this.noticeDraftChange(session.id);
     }
+    if (switched && this.pageReady) {
+      // The new conversation's rows and status go out together, so the page
+      // never shows one conversation's title with another's transcript.
+      this.cancelRowsTimer();
+      this.publishRows();
+      this.publishStatus();
+      return;
+    }
     this.scheduleStatus();
+  }
+
+  /** Track the connection and whether its first snapshot has arrived. */
+  private followConnection(): void {
+    const state = this.store.state;
+    const connected = state.connection.status === 'online';
+    if (connected && !this.connected) {
+      // A new authenticated connection: its snapshot is still to come.
+      this.engineAtConnect = state.engine;
+      this.snapshotSeen = false;
+    }
+    this.connected = connected;
+    if (connected && !this.snapshotSeen) {
+      if (state.engine !== undefined && state.engine !== this.engineAtConnect) {
+        this.snapshotSeen = true;
+      }
+    }
+    const online = connected && this.snapshotSeen;
+    if (online !== this.online) {
+      this.online = online;
+      this.resident.setOnline(online);
+    }
+  }
+
+  /**
+   * Signed out or revoked: nothing typed or refused for the previous pairing
+   * may reach the next one. (The Store clears its drafts itself; the page's
+   * own editor-only input is cleared by main.tsx.)
+   */
+  private forgetPrivateState(): void {
+    this.knownDrafts.clear();
+    this.cursors.clear();
+    this.errors.clear();
+    this.pendingChoices.clear();
+    this.unresolved = null;
   }
 
   /** A draft that changed outside this page's edits advances its revision. */
@@ -194,6 +256,13 @@ export class GatewayChatBridge implements NativeBridge {
     // Known first: the Store notifies synchronously from setDraft.
     this.knownDrafts.set(sessionId, text);
     this.store.setDraft(sessionId, text);
+  }
+
+  private cancelRowsTimer(): void {
+    if (this.rowsTimer !== undefined) {
+      clearTimeout(this.rowsTimer);
+      this.rowsTimer = undefined;
+    }
   }
 
   private scheduleRows(): void {
@@ -342,9 +411,10 @@ export class GatewayChatBridge implements NativeBridge {
       },
       maximumMessageLength: maximumMessageLength,
       editLimit: 2 * maximumMessageLength,
-      canSend: this.online && !pendingSend,
+      // The same admission as send(): connected, nothing awaiting an answer.
+      canSend: this.online && !pendingSend && !this.pendingChoices.has(id),
       pendingSend: pendingSend,
-      pendingChoice: this.pendingChoice !== null && this.pendingChoice.sessionId === id,
+      pendingChoice: this.pendingChoices.has(id),
       inputError: inputError,
       // Recording into the text box is a desktop feature.
       recording: {
@@ -484,10 +554,7 @@ export class GatewayChatBridge implements NativeBridge {
     this.lastStatus = '';
     this.fullRows = true;
     this.rowsDirty = true;
-    if (this.rowsTimer !== undefined) {
-      clearTimeout(this.rowsTimer);
-      this.rowsTimer = undefined;
-    }
+    this.cancelRowsTimer();
     this.publishRows();
     this.publishStatus();
     if (callback) {
@@ -532,14 +599,21 @@ export class GatewayChatBridge implements NativeBridge {
     this.answer(callback, { accepted: true });
   }
 
-  send(sessionId: string, _base: number, text: string, callback?: (answer: string) => void): void {
+  /**
+   * `base` is the draft revision the page's text is based on. A send based on
+   * an older revision is refused: the draft changed since, most likely
+   * because this text was already sent and cleared (a second Enter before
+   * the editor caught up), and sending it would send it twice.
+   */
+  send(sessionId: string, base: number, text: string, callback?: (answer: string) => void): void {
     const admitted =
       this.online &&
       this.sameSession(sessionId) &&
       !this.pendingSend(sessionId) &&
-      this.pendingChoice === null;
+      !this.pendingChoices.has(sessionId);
     if (
       !admitted ||
+      base !== this.draftRevision(sessionId) ||
       typeof text !== 'string' ||
       text.trim() === '' ||
       text.length > maximumMessageLength
@@ -581,7 +655,7 @@ export class GatewayChatBridge implements NativeBridge {
     if (
       !this.sameSession(sessionId) ||
       !this.online ||
-      this.pendingChoice !== null ||
+      this.pendingChoices.has(sessionId) ||
       this.pendingSend(sessionId)
     ) {
       this.answer(callback, { accepted: false });
@@ -598,8 +672,8 @@ export class GatewayChatBridge implements NativeBridge {
       this.answer(callback, { accepted: false });
       return;
     }
-    const pending = { sessionId: sessionId };
-    this.pendingChoice = pending;
+    const pending = {};
+    this.pendingChoices.set(sessionId, pending);
     this.act(
       sessionId,
       () =>
@@ -609,8 +683,8 @@ export class GatewayChatBridge implements NativeBridge {
           { quiet: true },
         ),
       () => {
-        if (this.pendingChoice === pending) {
-          this.pendingChoice = null;
+        if (this.pendingChoices.get(sessionId) === pending) {
+          this.pendingChoices.delete(sessionId);
         }
       },
     );
@@ -717,6 +791,22 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     this.resident.setFollowing(atEnd === true);
+    this.scheduleRows();
+    this.scheduleStatus();
+  }
+
+  /**
+   * The reader scrolled the transcript themselves to within one viewport of
+   * its end (reported by main.tsx, like SessionView's readerScrolled). Below
+   * a detached snapshot the next newer page then loads before the reader
+   * reaches the end, so the page keeps their place and the new rows simply
+   * continue below. Not after a failure: only Retry repeats a request.
+   */
+  readerNearEnd(): void {
+    if (!this.shownSession || !this.online) {
+      return;
+    }
+    this.resident.continueNewer();
     this.scheduleRows();
     this.scheduleStatus();
   }

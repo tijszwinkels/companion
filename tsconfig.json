@@ -19,6 +19,7 @@
   "exclude": [
     "integrations/mobile/src",
     "integrations/shell/src",
+    "test/shell/bridge.test.ts",
     "integrations/session-apps/chat",
     "integrations/session-apps/rail",
     "integrations/session-apps/web-channel.ts"

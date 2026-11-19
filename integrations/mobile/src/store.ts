@@ -89,6 +89,15 @@ function emptyActivity(sessionId = ''): ActivityState {
 
 const draftKey = 'companion.remote.drafts';
 
+export interface StoreOptions {
+  /**
+   * Read Activity history pages (`activity-history`) for the current run.
+   * On by default (the phone panel shows Activity); the browser shell, which
+   * has no Activity view yet, turns it off so it never requests them.
+   */
+  activity?: boolean;
+}
+
 export class Store {
   private listeners = new Set<() => void>();
   private nextToast = 0;
@@ -126,7 +135,11 @@ export class Store {
     toasts: [],
   };
 
-  constructor() {
+  /** Whether this store reads Activity history (see StoreOptions). */
+  private readonly readsActivity: boolean;
+
+  constructor(options: StoreOptions = {}) {
+    this.readsActivity = options.activity !== false;
     this.connection = new Connection(
       (event) => this.apply(event),
       (connection) => this.connectionChanged(connection),
@@ -637,6 +650,9 @@ export class Store {
 
   /** Read new completion positions for the current run, 50 per page. */
   private async syncActivity(): Promise<void> {
+    if (!this.readsActivity) {
+      return;
+    }
     const engine = this.state.engine;
     const activity = this.state.activity;
     if (

@@ -143,9 +143,22 @@ export class ResidentHistory {
    */
   setFollowing(atEnd: boolean): void {
     if (atEnd && this.detached()) {
-      this.loadNewer();
+      this.continueNewer();
     }
     this.followEnd = atEnd && !this.detached();
+  }
+
+  /**
+   * Automatic paging below a detached snapshot, as the reader scrolls toward
+   * its end. Like SessionView.readerScrolled it does nothing while a request
+   * is pending or after a failure: only the reader's Retry repeats a failed
+   * request.
+   */
+  continueNewer(): void {
+    if (this.pending !== null || this.error !== '') {
+      return;
+    }
+    this.loadNewer();
   }
 
   /** The previous page, above the resident rows. */

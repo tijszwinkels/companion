@@ -185,23 +185,27 @@ function shows(fragment: string): string {
   return `document.querySelector('.transcript').textContent.includes(${JSON.stringify(fragment)})`;
 }
 
+/** A page expression: a row whose text has `fragment` as a word is inside the viewport. */
+function inView(fragment: string): string {
+  return `(() => {
+    const viewport = document.querySelector('.transcript').getBoundingClientRect();
+    const pattern = new RegExp(${JSON.stringify(fragment)} + '(?![0-9])');
+    return [...document.querySelectorAll('.rows > .message')].some((row) => {
+      const box = row.getBoundingClientRect();
+      return box.bottom > viewport.top && box.top < viewport.bottom && pattern.test(row.textContent);
+    });
+  })()`;
+}
+
 function rowCount(page: TestPage): Promise<number> {
   return page.evaluate<number>(`document.querySelectorAll('.rows > .message').length`);
 }
 
-/**
- * Wheel the transcript by `deltaY` until `expression` holds. With `back`,
- * each step first wheels the other way a little, so the reader leaves the
- * end and arrives there again (the page reports only that transition).
- */
-async function scrollUntil(page: TestPage, deltaY: number, expression: string, back = 0) {
+/** Wheel the transcript by `deltaY` until `expression` holds. */
+async function scrollUntil(page: TestPage, deltaY: number, expression: string) {
   for (let attempt = 0; attempt < 60; attempt++) {
     if (await page.evaluate<boolean>(`Boolean(${expression})`)) {
       return;
-    }
-    if (back !== 0) {
-      await wheel(page, back);
-      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await wheel(page, deltaY);
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -285,6 +289,15 @@ test(
     assert.match(policy, /script-src 'self'/);
     assert.match(policy, /style-src 'self'/);
     assert.doesNotMatch(policy, /unsafe-inline|unsafe-eval/);
+
+    // A finished Activity entry: the shell has no Activity view and must not
+    // request Activity history (the phone panel does).
+    const activity = fixture.desktop.runtime.activity;
+    const observed = { ...frame, id: 41, utterance: 'Synthetic Activity entry' };
+    activity.transcribed?.({ ...observed, storage: activity.admitCapture?.() });
+    activity.intentRecognized?.(observed.id, 'IGNORE');
+    activity.outcome?.(observed.id, 'ignored');
+    activity.finished?.(observed.id);
 
     fixture.sessions.start({ ...frame, utterance: 'First synthetic question' }, signal());
     fixture.sessions.start({ ...frame, utterance: 'Second synthetic question' }, signal());
@@ -491,15 +504,29 @@ test(
     assert.ok((await rowCount(page)) <= 600);
     assert.doesNotMatch(await transcriptText(page), /History row 849\b/);
 
-    // Scrolling down to the end of the snapshot loads the newer pages and
-    // finally continues into the live window.
+    // Reading down in ordinary steps: newer pages load before the reader
+    // reaches the end, the reader's place is kept, and the first newly
+    // loaded row (History row 599) comes into view on the way. Two newer
+    // pages, then the transcript continues into the live window.
     const sentBeforeNewer = sockets.sent.length;
-    await scrollUntil(page, 100_000, shows('History row 1049'), -600);
+    let sawFirstNewRow = false;
+    for (let step = 0; step < 300; step++) {
+      if (await page.evaluate<boolean>(inView('History row 599'))) {
+        sawFirstNewRow = true;
+      }
+      if (await page.evaluate<boolean>(inView('History row 1049'))) {
+        break;
+      }
+      await wheel(page, 500);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    assert.ok(await page.evaluate<boolean>(inView('History row 1049')), 'reached the live end');
+    assert.ok(sawFirstNewRow, 'the first newly loaded row was shown, not skipped');
     assert.ok((await rowCount(page)) <= 600);
     const newer = sockets.sent
       .slice(sentBeforeNewer)
       .filter((sent) => sent.action === 'agent-history-page' && sent.direction === 'after');
-    assert.ok(newer.length >= 1, 'a newer page was requested');
+    assert.equal(newer.length, 2, 'two newer pages were requested');
 
     // Jump to latest: only the live window again.
     await wheel(page, -2000);
@@ -529,22 +556,37 @@ test(
     await openConversation(page, 'Reconnect fixture');
     await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
 
+    // The listener admits the send, then the gateway stops before its answer
+    // reaches the browser: the outcome is unknown to the page.
+    const followUp = fixture.sessions.followUp.bind(fixture.sessions);
+    let stopped: Promise<void> | undefined;
+    fixture.sessions.followUp = ((...parameters: Parameters<typeof followUp>) => {
+      const result = followUp(...parameters);
+      stopped = fixture.gateway.close();
+      return result;
+    }) as typeof followUp;
+
     await click(page, '.chat textarea');
     await page.type('Sent once before the restart');
     await clickButton(page, 'Send');
     await waitFor(() => fixture.runs.length === 2, 5000);
+    fixture.sessions.followUp = followUp;
+    await stopped;
     fixture.runs[1].finish();
-    await page.waitFor(`document.querySelector('.chat textarea').value === ''`);
-    await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
-    const sentBefore = sockets.sent.length;
 
-    await fixture.gateway.close();
     await page.waitFor(`document.querySelector('.connection-banner')`, 5000);
     await page.waitFor(`document.querySelector('.state').textContent === 'Disconnected'`);
-    // Nothing can be sent while disconnected; text typed now stays here.
-    await click(page, '.chat textarea');
-    await page.type('Typed while offline');
+    // The unanswered send keeps its text and says to check before resending.
+    await page.waitFor(
+      `document.querySelector('.composer').textContent.includes('check the conversation before sending it again')`,
+    );
+    assert.equal(
+      await page.evaluate(`document.querySelector('.chat textarea').value`),
+      'Sent once before the restart',
+    );
+    // Nothing can be sent while disconnected.
     assert.equal(await page.evaluate(`${buttonExpression('Send')}.disabled`), true);
+    const sentBefore = sockets.sent.length;
 
     const replacement = new Gateway({
       host: '127.0.0.1',
@@ -563,11 +605,12 @@ test(
     await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
     assert.equal(
       await page.evaluate(`document.querySelector('.chat textarea').value`),
-      'Typed while offline',
+      'Sent once before the restart',
     );
     // Only the selection report was sent again: no send was replayed, and
     // the listener has the message exactly once and started no other turn.
     assert.deepEqual(requestActions(sockets, sentBefore), ['panel-state']);
+    assert.equal(requestActions(sockets).filter((action) => action === 'send-agent').length, 1);
     assert.equal(fixture.runs.length, 2);
     const session = fixture.sessions.snapshot().find((entry) => entry.id === id)!;
     const copies = session.messages.filter(
@@ -575,6 +618,38 @@ test(
     );
     assert.equal(copies.length, 1);
     assertOwnOrigin(fixture, page, sockets);
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'signing out forgets the drafts of this browser before the next pairing',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Sign-out fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    fixture.runs[0].finish();
+    const { page } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Sign-out fixture');
+    await click(page, '.chat textarea');
+    await page.type('Private synthetic draft');
+    await click(page, 'button.back');
+    await clickButton(page, 'Sign out');
+    await page.waitFor(`document.querySelector('#code')`);
+
+    const { code } = await fixture.devices.createPairingCode();
+    await click(page, '#code');
+    await page.type(code);
+    await click(page, 'button[type=submit]');
+    await page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await openConversation(page, 'Sign-out fixture');
+    assert.equal(await page.evaluate(`document.querySelector('.chat textarea').value`), '');
+    assert.doesNotMatch(await text(page, '.chat'), /Private synthetic draft|only in this editor/);
+    assert.equal(
+      await page.evaluate(`JSON.stringify(localStorage).includes('Private synthetic draft')`),
+      false,
+    );
     await assertNoViolations(page);
   },
 );

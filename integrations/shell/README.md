@@ -33,27 +33,40 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 - It sends the page the same `rows` and `status` messages as the Qt host, with
   the same sequence-number rules: every message is numbered, `ready()` resends
   everything in full, rows are diffed with `ChatState.diffRows` and coalesced
-  for 30 ms, status is sent whole when it changed. Rows are built with
-  `ChatState.chatRow` from a TypeScript port of `SessionView.rowData()`
-  (`src/rows.ts`).
+  for 30 ms, status is sent whole when it changed. A conversation switch sends
+  the new rows and status at once. Rows are built with `ChatState.chatRow` from
+  a TypeScript port of `SessionView.rowData()` (`src/rows.ts`).
 - It checks every page request again against the shown conversation, like the
   Qt bridge, and maps it to a gateway action: Send/Queue → `send-agent`,
   choices → `choose-agent`, Stop → `stop-agent-run` or `stop-agent`, Close
   session → `close-agent`, history → `agent-history-page`. These are all in
   the gateway's remote allowlist (`src/remote/protocol.ts`); nothing else
   leaves the page except the phone Store's own `panel-state` selection report.
+  The Store is created with `{ activity: false }`, so it never reads Activity
+  history (the phone panel's default is unchanged).
+- A send names the draft revision its text is based on and is refused when
+  the draft changed since (for example a second Enter after the first send was
+  answered and cleared the draft), so a message is never sent twice. A choice
+  awaiting its answer holds sends back for that conversation, also while the
+  reader looks at another one.
 - Resident history (`src/history.ts`) is a port of `SessionView.qml`'s paging
   on the shared `../panel/HistoryRows.mjs`: contiguous joins only, at most
   three pages resident, rows the reader can see are never trimmed, one request
   at a time with a 10 s deadline, failures only retried by the reader, empty
-  pages not requested again. The chat page reports only whether the reader is
-  at the end; arriving at the end of a detached snapshot loads the next newer
-  page (the Qt host does this from its own scroll handler instead).
+  pages not requested again. Below a detached snapshot (after loading more
+  than three pages up), the next newer page loads when the reader scrolls to
+  within one viewport of its end, observed by `src/main.tsx` like
+  SessionView's `readerScrolled`, so the new rows continue below without
+  moving the reader; arriving at the very end also loads it. Neither repeats
+  a failed request.
 - Connection loss: the phone Connection reconnects with backoff and never
   resends a request whose answer did not arrive; such a send keeps its text in
   the editor with an explanation. The page shows a banner and the chat's
-  "Disconnected" state; sending, choosing, stopping and closing are refused
-  while offline.
+  "Disconnected" state. Sending, choosing, stopping and closing are refused
+  while offline, and after reconnecting until the listener's new snapshot has
+  arrived (the shown conversation may have been closed or reopened meanwhile).
+- Signing out (or a revoked pairing) clears drafts, input only the editor
+  held, notices and pending state, so nothing reaches the next pairing.
 
 ### Differences from the desktop chat
 
@@ -71,8 +84,10 @@ the chat page:
 | Rail, Activity, settings, model picker, timers | Not in this slice                                                                                      |
 
 The gateway also limits a message to 4,000 characters (the desktop allows
-8,000), so `maximumMessageLength` is 4,000. Links in answers open in a new tab
-without opener or referrer. Copy uses the browser clipboard.
+8,000), so `maximumMessageLength` is 4,000. Copy uses the browser clipboard.
+Links in answers (http and https only) open in a new tab without opener or
+referrer when the reader clicks them, as on the phone; that navigation is the
+reader's own, the page itself never requests anything from another origin.
 
 ## Build, demo and tests
 
@@ -80,7 +95,7 @@ without opener or referrer. Copy uses the browser clipboard.
 npm ci
 npm run shell:build      # → integrations/shell/dist (index.html, app.js, app.css)
 npm run shell:demo       # synthetic listener + gateway on http://127.0.0.1:8788
-npm run test:shell       # headless Chromium against the real gateway
+npm run test:shell       # builds, then runs the unit and headless Chromium suites
 ```
 
 The demo prints a pairing code; open the URL in a desktop browser and enter it.
@@ -94,16 +109,29 @@ Against a real listener, serve the shell with the gateway's existing option:
 real browser or exposing the gateway beyond loopback is a separate, explicitly
 approved step.
 
-`npm run test:shell` (`test/shell/`) runs the built shell in headless Chromium
-at desktop sizes, on the phone tests' fixtures (real gateway, real listener
-control socket, synthetic agent backend, temporary directories, loopback). It
-covers pairing; the list and picking a conversation; a streamed Markdown answer
-with agent HTML kept literal; send; a follow-up queued while running; a choice;
-stop; close; loading older pages while scrolling up, newer pages below a
-detached snapshot and Jump to latest; reconnect after a gateway restart with no
-request replayed; that every request and socket goes to the gateway's origin
-only; no Content-Security-Policy violation under the gateway's real policy; and
-no horizontal overflow at 420 px and 1280 px. With
+`npm run test:shell` builds the shell and runs `test/shell/`.
+
+`bridge.test.ts` checks the bridge and the history model in Node with a
+stand-in Store, for orderings a browser cannot time reliably: gapless sequence
+numbers and full resynchronization, no second send from a stale draft
+revision, a conversation switch sending rows with their status, pending
+choices across navigation, nothing admitted between reconnecting and the new
+snapshot, sign-out clearing held input, contiguous paging within three pages
+including newer pages, no automatic retry after a failure, and superseded
+pages dropped.
+
+`shell.test.ts` runs the built shell in headless Chromium at desktop sizes, on
+the phone tests' fixtures (real gateway, real listener control socket,
+synthetic agent backend, temporary directories, loopback). It covers pairing;
+the list and picking a conversation; a streamed Markdown answer with agent HTML
+kept literal; send; a follow-up queued while running; a choice; stop; close;
+loading older pages while scrolling up, reading down through newer pages below
+a detached snapshot without skipping rows, and Jump to latest; a send whose
+answer was lost in a gateway restart, kept with its notice and not replayed
+after reconnecting; signing out and pairing again without the previous draft;
+no Activity history request; that every request and socket goes to the
+gateway's origin only; no Content-Security-Policy violation under the
+gateway's real policy; and no horizontal overflow at 420 px and 1280 px. With
 `COMPANION_SHELL_SCREENSHOTS=<directory>` it also saves screenshots of a
 synthetic conversation at both widths (keep them out of Git).
 

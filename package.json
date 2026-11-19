@@ -40,7 +40,7 @@
     "mobile:demo": "tsx integrations/mobile/demo.ts",
     "shell:build": "tsx integrations/shell/build.ts",
     "shell:demo": "tsx integrations/shell/demo.ts",
-    "test:shell": "tsx --test test/shell/*.test.ts",
+    "test:shell": "tsx integrations/shell/build.ts && tsx --test test/shell/*.test.ts",
     "apps:demo": "tsx src/apps/cli.ts demo",
     "test:apps": "tsx --test test/apps/*.test.ts",
     "test:phone-service": "tsx --test --test-concurrency=1 test/phone-service/*.test.ts"

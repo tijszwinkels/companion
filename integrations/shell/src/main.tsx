@@ -60,10 +60,66 @@ const transcriptView: TranscriptView = {
   },
 };
 
-const store = new Store();
+// No Activity view yet, so Activity history is never requested.
+const store = new Store({ activity: false });
 const bridge = new GatewayChatBridge(store, transcriptView);
 const chat = new ChatStore();
 chat.attach(bridge);
+
+// Signed out or revoked: text only the chat editor held (input the bridge
+// refused) belongs to the previous pairing and must not be offered to the
+// next one. The Store and the bridge clear their own state.
+store.subscribe(() => {
+  if (store.state.connection.status === 'unpaired' && chat.unresolved() !== null) {
+    chat.setUnresolved(null);
+  }
+});
+
+/**
+ * The reader's own scrolling of the transcript, as SessionView's
+ * readerScrolled sees it: a scroll within one second of their wheel, key,
+ * pointer or touch input. Within one viewport of the end, the bridge loads
+ * the next newer page below a detached snapshot before the reader gets
+ * there. Layout changes and the page's own scrolling never count. The
+ * listeners live as long as the page.
+ */
+const readerInputWindowMilliseconds = 1000;
+let readerInputAt = -Infinity;
+
+function insideTranscript(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('.transcript') !== null;
+}
+
+for (const type of ['wheel', 'keydown', 'pointerdown', 'touchstart']) {
+  document.addEventListener(
+    type,
+    (event) => {
+      if (insideTranscript(event.target)) {
+        readerInputAt = performance.now();
+      }
+    },
+    { capture: true, passive: true },
+  );
+}
+
+document.addEventListener(
+  'scroll',
+  (event) => {
+    const element = event.target;
+    if (!(element instanceof Element) || !element.classList.contains('transcript')) {
+      return;
+    }
+    if (performance.now() - readerInputAt > readerInputWindowMilliseconds) {
+      return;
+    }
+    const reach = Math.max(element.clientHeight, 160);
+    const fromEnd = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (fromEnd <= reach) {
+      bridge.readerNearEnd();
+    }
+  },
+  { capture: true, passive: true },
+);
 
 render(
   <StoreContext.Provider value={store}>

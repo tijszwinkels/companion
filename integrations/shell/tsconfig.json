@@ -12,5 +12,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["src", "../mobile/src/vendor.d.ts"]
+  "include": ["src", "../mobile/src/vendor.d.ts", "../../test/shell/bridge.test.ts"]
 }
