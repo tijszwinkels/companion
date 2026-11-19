@@ -13,7 +13,7 @@
     "asr:bench": "tsx test/bench/asr.ts",
     "asr:short-phrases": "tsx test/bench/short-phrases.ts",
     "asr:speech-timing": "tsx test/bench/speech-timing.ts",
-    "check": "tsc --noEmit && tsc --noEmit -p integrations/mobile && tsc --noEmit -p integrations/session-apps",
+    "check": "tsc --noEmit && tsc --noEmit -p integrations/mobile && tsc --noEmit -p integrations/session-apps && tsc --noEmit -p integrations/shell",
     "eval:intents": "tsx src/evals/cli.ts",
     "eval:intent-cleanup": "tsx src/evals/experiments/json-cleanup/cli.ts",
     "test": "tsx --test test/unit/*.test.ts",
@@ -38,6 +38,9 @@
     "remote": "tsx src/remote/cli.ts",
     "test:mobile": "tsx --test test/mobile/*.test.ts",
     "mobile:demo": "tsx integrations/mobile/demo.ts",
+    "shell:build": "tsx integrations/shell/build.ts",
+    "shell:demo": "tsx integrations/shell/demo.ts",
+    "test:shell": "tsx --test test/shell/*.test.ts",
     "apps:demo": "tsx src/apps/cli.ts demo",
     "test:apps": "tsx --test test/apps/*.test.ts",
     "test:phone-service": "tsx --test --test-concurrency=1 test/phone-service/*.test.ts"

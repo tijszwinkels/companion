@@ -1,0 +1,273 @@
+/**
+ * Synthetic browser-shell demo: `npm run shell:demo`.
+ *
+ * Starts, inside one process and a temporary directory (modelled on
+ * integrations/mobile/demo.ts):
+ *   - the real desktop control runtime (Unix socket, SQLite history),
+ *   - real agent sessions driven by a scripted backend that streams Markdown,
+ *     tool calls and choices (no model, no network),
+ *   - the real remote gateway on loopback, serving the built browser shell
+ *     (integrations/shell/dist) through its `appDirectory` option.
+ *
+ * It prints the URL and a pairing code. Open the URL in a desktop browser.
+ * Nothing reads personal data, starts the production listener, captures the
+ * screen or microphone, or binds a non-loopback address. Ctrl+C stops
+ * everything and removes the temporary directory.
+ *
+ * Options: --port N (default 8788).
+ */
+
+import { randomUUID } from 'node:crypto';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { parseArgs } from 'node:util';
+
+import { parseChoices } from '../../src/agents/choices.ts';
+import { AgentSessions } from '../../src/agents/sessions.ts';
+import { chatMessage, type AgentBackend, type AgentMessage } from '../../src/agents/types.ts';
+import type { UserSensorFrame } from '../../src/core/frame.ts';
+import { PauseControl } from '../../src/core/pause-control.ts';
+import { DesktopRuntime } from '../../src/desktop/runtime.ts';
+import { CaptureStoragePolicy } from '../../src/capture-storage/policy.ts';
+import { DeviceStore } from '../../src/remote/devices.ts';
+import { Gateway } from '../../src/remote/gateway.ts';
+
+const { values } = parseArgs({
+  options: {
+    port: { type: 'string', default: '8788' },
+  },
+});
+
+const root = dirname(fileURLToPath(import.meta.url));
+const appDirectory = join(root, 'dist');
+
+try {
+  await access(join(appDirectory, 'index.html'));
+} catch {
+  console.error('Build the shell first: npm run shell:build');
+  process.exit(1);
+}
+
+const directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
+const controller = new AbortController();
+
+// The demo's own agent profile, so defaults name the scripted demo models.
+await writeFile(
+  join(directory, 'companion-agent.json'),
+  JSON.stringify({
+    executable: 'demo-no-executable',
+    model: 'cloud/demo-model',
+    thinking: 'medium',
+    quickQuestion: { model: 'local/qwen-demo', thinking: 'off' },
+  }),
+  { mode: 0o600 },
+);
+
+let nextFrameId = 1;
+
+/** A complete 1×1 PNG standing in for a captured window. */
+const syntheticPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
+  'base64',
+);
+
+/**
+ * A spoken request with a synthetic screenshot. The shell does not show
+ * screenshots yet, so its message is labelled "screenshot unavailable".
+ */
+function frame(utterance: string): UserSensorFrame {
+  const frameId = nextFrameId;
+  nextFrameId++;
+  return {
+    id: frameId,
+    observedAt: Date.now(),
+    utterance: utterance,
+    screenshot: {
+      png: syntheticPng,
+      width: 1,
+      height: 1,
+      capturedAt: Date.now(),
+      window: { address: '0xdemo', app: 'org.example.Editor', title: 'Synthetic window' },
+    },
+  };
+}
+
+// ---- Scripted agent backend -------------------------------------------------
+
+const answers: Record<string, string> = {
+  trip: `Here is a relaxed **two-day plan** for the synthetic city trip:
+
+### Day 1
+1. Morning walk along the river
+2. Lunch at the market hall
+3. Afternoon at the *modern art museum*
+
+### Day 2
+- Botanical garden
+- Train home at 17:10
+
+> All places in this demo are made up.
+
+Want me to add restaurant options?`,
+  code: `I looked at the failing test. The fixture returns \`undefined\` when the list is empty:
+
+\`\`\`ts
+export function first(items: string[]): string | undefined {
+  return items[0];
+}
+\`\`\`
+
+A guard in the caller fixes it. Should I apply the change?`,
+  default: `Sure — here is a short answer with a list:
+
+- Point one
+- Point two, with a [documentation link](https://example.com/docs)
+
+Agent text such as <b>this tag</b> stays literal. That is all synthetic text for the demo.`,
+};
+
+function pickAnswer(text: string): string {
+  if (/trip|travel|city/i.test(text)) {
+    return answers.trip;
+  }
+  if (/test|code|bug|fix/i.test(text)) {
+    return answers.code;
+  }
+  return answers.default;
+}
+
+/**
+ * One turn: for coding questions two tool calls first, then the answer
+ * streamed word by word, then three choices. Stops when the turn is stopped.
+ */
+const scriptedRun: AgentBackend['run'] = async (request, signal, emit, publishChoices) => {
+  const question = request.prompt.text;
+
+  if (/test|code|bug|fix/i.test(question)) {
+    const calls: [string, string, string][] = [
+      ['read', '{"path":"src/list.ts"}', 'export function first(items) {\n  return items[0];\n}\n'],
+      ['bash', '{"command":"npm test -- list"}', 'not ok 1 - first() of empty list\n# fail 1\n'],
+    ];
+    for (const [name, input, output] of calls) {
+      const id = randomUUID();
+      const running: AgentMessage = { ...chatMessage(id, 'tool', ''), toolName: name, input };
+      emit({ ...running, state: 'running' });
+      await delay(400, undefined, { signal });
+      emit({ ...running, text: output, state: 'done' });
+    }
+  }
+
+  const id = randomUUID();
+  const words = pickAnswer(question).split(/(\s+)/);
+  let text = '';
+  for (const word of words) {
+    text += word;
+    emit({ ...chatMessage(id, 'assistant', text), state: 'running' });
+    if (word.trim()) {
+      await delay(35, undefined, { signal });
+    }
+  }
+  emit({ ...chatMessage(id, 'assistant', text), state: 'done' });
+
+  if (publishChoices) {
+    publishChoices(
+      parseChoices(['[Yes] - Go ahead', '[More detail] - Explain further', '[No] - Stop here']),
+    );
+  }
+};
+
+const sessions = new AgentSessions(
+  {
+    pi: {
+      id: 'demo-backend',
+      label: 'Scripted demo backend',
+      dependencies: {},
+      run: scriptedRun,
+      async models() {
+        return {
+          models: ['local/qwen-demo', 'cloud/demo-model'],
+          pinned: ['local/qwen-demo'],
+          thinkingLevels: {
+            'local/qwen-demo': ['off', 'low'],
+            'cloud/demo-model': ['off', 'low', 'medium', 'high'],
+          },
+        };
+      },
+    },
+  },
+  () => {},
+  directory,
+);
+
+// ---- Listener runtime ------------------------------------------------------------
+
+const pause = new PauseControl();
+const runtime = new DesktopRuntime(
+  pause,
+  () => {},
+  controller.signal,
+  {
+    database: join(directory, 'utterances.sqlite'),
+    socket: join(directory, 'control.sock'),
+    preview: false,
+    sounds: false,
+    agents: sessions,
+    captureStorage: CaptureStoragePolicy.enabledForTesting(),
+  },
+  async () => {
+    throw Error('The demo never runs desktop commands');
+  },
+);
+await runtime.start();
+
+// Two conversations: a coding question and a quick question.
+sessions.start(frame('Why does the list test fail? Please fix the bug.'), controller.signal);
+sessions.start(frame('Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
+
+// ---- Gateway --------------------------------------------------------------------
+
+const port = Number(values.port);
+const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
+const stateDirectory = join(directory, 'remote');
+
+const gateway = new Gateway({
+  host: '127.0.0.1',
+  port,
+  origins,
+  stateDirectory,
+  controlSocket: join(directory, 'control.sock'),
+  sessionsDirectory: join(directory, '.companion-sessions'),
+  appDirectory,
+  log: (message) => console.error(`[remote] ${message}`),
+});
+await gateway.start();
+
+const { code } = await new DeviceStore(stateDirectory).createPairingCode();
+
+console.log(`
+Companion browser shell demo (synthetic data only)
+
+  Open:          http://127.0.0.1:${port}/
+  Pairing code:  ${code.slice(0, 5)}-${code.slice(5)}   (10 minutes, one browser)
+
+New pairing code:
+  bin/companion-remote pair --state-directory ${stateDirectory}
+
+Temporary data: ${directory}
+Press Ctrl+C to stop and delete it.
+`);
+
+await new Promise<void>((resolve) => {
+  process.once('SIGINT', resolve);
+  process.once('SIGTERM', resolve);
+});
+
+console.error('Stopping…');
+controller.abort();
+await gateway.close();
+await sessions.close();
+await runtime.close();
+await rm(directory, { recursive: true, force: true });
