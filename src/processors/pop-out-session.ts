@@ -9,7 +9,7 @@ import { inferredIndex, shortcutIndex } from './go-to-session.ts';
  * its own window, by the same session number "go to session N" uses.
  *
  * This is session navigation with another presentation, so it shares
- * GO_TO_SESSION's number rules (exactly one explicit number from 1 to 16,
+ * GO_TO_SESSION's number rules (exactly one explicit number from 1 to 32,
  * never a guess) and its captured navigation: the order and owning UI
  * captured before transcription, rechecked by the runtime before dispatch.
  * The UI then uses its ordinary Pop out operation, which moves the existing

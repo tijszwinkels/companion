@@ -840,17 +840,20 @@ update routing without sending a state snapshot. Selection or navigation
 availability/owner changes publish at most one snapshot per report. At speech end,
 `InteractionContext.agentNavigation` captures that client/token and the immutable
 ordered IDs/revision. The `GO_TO_SESSION` shortcut accepts exactly
-“go to session 1” through “go to session 16”, also one through sixteen, with ordinary
+“go to session 1” through “go to session 32”, also one through thirty-two (a tens word
+and a unit joined by one space or hyphen, “twenty one” or “thirty-two”, is one
+number), with ordinary
 ASR casing/spacing/terminal punctuation. Ordinals, partial, missing, and
 out-of-range suffixes are consumed, as are disabled shortcuts; none is passed
-to inference or conversation text. At most 16 conversation tabs can be open; requests for higher positions
+to inference or conversation text. At most 32 conversation tabs can be open; requests for higher positions
 are rejected even if a stale client reports extra IDs.
 
 Intent recognition may also choose `GO_TO_SESSION`, for example for “hey, let's
 switch to session six”. It is offered only while navigation is captured. The
 model selects the intent only; the processor then scans the whole raw utterance
 (also with transcription cleanup on) for exactly one explicit number, digits or
-one through sixteen. A second number, an ordinal, a decimal, signed,
+one through thirty-two, including spaced or hyphenated compounds. A second number
+(“twenty or one”, “32 or 2”), an ordinal, a decimal, signed,
 out-of-range or other number word, or none at all is skipped and only logged:
 “two ideas, switch to session six”, “go to the sixth one” and “session nein” do
 nothing. Punctuation separates words but cannot hide a number, and “.6”, “- 6”,
@@ -872,8 +875,8 @@ connection is closed before the line is written, the command is lost with it and
 the reconnected UI has a new token, so nothing stale is replayed. No panel is opened by a hidden
 target, and a disconnected client cannot retain navigation ownership.
 
-`POP_OUT_SESSION` (“pop out session 1” through “pop out session 16”, also one
-through sixteen; inference may choose it for “pop session three out into its own
+`POP_OUT_SESSION` (“pop out session 1” through “pop out session 32”, also one
+through thirty-two; inference may choose it for “pop session three out into its own
 window”) uses exactly the same number rules, captured navigation and dispatch
 checks. It is offered only while the navigation owner reported `popoutHost`
 (`agentNavigation.popoutHost`); for other UIs the shortcut is consumed and

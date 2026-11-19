@@ -54,19 +54,19 @@ something, continuing an open conversation, or not talking to it at all.
 
 To skip the guessing, start with a command word:
 
-| Say                                         | What happens                                                          |
-| ------------------------------------------- | --------------------------------------------------------------------- |
-| “insert …”                                  | Types the rest into the focused app.                                  |
-| “enter …”                                   | Types the rest and presses Enter.                                     |
-| “quick question …”                          | Asks the faster quick-question model; the answer opens in a new tab.  |
-| “new session …”                             | Starts a full agent conversation (Pi by default).                     |
-| “new pi session …” / “new claude session …” | Starts the conversation on Pi or on Claude Code specifically.         |
-| “continue session …”                        | Sends a follow-up to the conversation that is open in the panel.      |
-| “close session”                             | Stops and closes the open conversation.                               |
-| “go to session three”                       | Switches to that conversation (one to sixteen); you speak to it next. |
-| “pop out session three”                     | Opens that conversation in its own window; you speak to it next.      |
-| “stop”                                      | Stops the open conversation's agent while it is answering.            |
-| “label previous correct” / “… incorrect”    | Tells Companion whether it understood your last sentence right.       |
+| Say                                         | What happens                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------------ |
+| “insert …”                                  | Types the rest into the focused app.                                     |
+| “enter …”                                   | Types the rest and presses Enter.                                        |
+| “quick question …”                          | Asks the faster quick-question model; the answer opens in a new tab.     |
+| “new session …”                             | Starts a full agent conversation (Pi by default).                        |
+| “new pi session …” / “new claude session …” | Starts the conversation on Pi or on Claude Code specifically.            |
+| “continue session …”                        | Sends a follow-up to the conversation that is open in the panel.         |
+| “close session”                             | Stops and closes the open conversation.                                  |
+| “go to session three”                       | Switches to that conversation (one to thirty-two); you speak to it next. |
+| “pop out session three”                     | Opens that conversation in its own window; you speak to it next.         |
+| “stop”                                      | Stops the open conversation's agent while it is answering.               |
+| “label previous correct” / “… incorrect”    | Tells Companion whether it understood your last sentence right.          |
 
 Matching ignores capitals and a comma after the command word (“Insert, hello”).
 Every question or new session includes a screenshot of the window you were
@@ -107,7 +107,7 @@ to see details) and any widgets it shows. In a conversation you can:
 - click the attached screenshot to view it full size;
 - hover a message for its **Copy** button.
 
-Up to sixteen conversations can be open at once. Drag a tab to reorder it.
+Up to thirty-two conversations can be open at once (ten can be answering at the same time). Drag a tab to reorder it.
 
 ### What agents can do in Companion
 

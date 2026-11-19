@@ -432,7 +432,7 @@ Summaries contain `id`, `title`, `status`, `profile`, `harness` (`pi` or
 | `busy`                    | Close refused: another conversation is running, closing or has queued messages; nothing was stopped.                                                    |
 | `unavailable-model`       | The requested model is not in Pi's current catalog; there is no fallback.                                                                               |
 | `expired`                 | The calling turn ended; its lease is gone.                                                                                                              |
-| `rejected`                | An existing lifecycle limit: 16 tabs, 10 running agents, 8 queued messages, or a stopping/closing tab.                                                  |
+| `rejected`                | An existing lifecycle limit: 32 tabs, 10 running agents, 8 queued messages, or a stopping/closing tab.                                                  |
 | `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or the combined text would exceed the composer's 8000 chars. |
 | `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                                                                        |
 | `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                                                               |
@@ -662,7 +662,7 @@ must call `wakes.deleteOwner` to erase timer instructions/receipts too; startup
 also removes timers whose owner no longer exists in open or saved history.
 
 Due timers remain removable scheduler entries outside the ordinary FIFO. Busy
-conversations, eight queued ordinary messages, ten active agents and all 16
+conversations, eight queued ordinary messages, ten active agents and all 32
 tabs occupied defer delivery until capacity returns or grace expires. Already
 accepted ordinary messages always run first, preserving their own FIFO order.
 The final claim rechecks revision, expiry, conversation availability, settings

@@ -318,6 +318,75 @@ test('HTML rail: a long list scrolls while dragging near its edge; narrow and zo
   );
 });
 
+test('HTML rail: 32 conversations stay readable and drag across both scrolling edges', async (context) => {
+  const browser = new Chromium();
+  context.after(() => browser.close());
+  const page = await openRail(browser, 160, 480);
+  await push(page, railState(32));
+  assert.equal(await page.evaluate('document.querySelectorAll(".session[data-id]").length'), 32);
+  // Every position up to 32 shows its own, unclipped number and fits the rail.
+  const labels = (await page.evaluate(`[...document.querySelectorAll('.session[data-id]')].map(
+    (row) => {
+      const glyph = row.querySelector('.glyph');
+      return [glyph.textContent, glyph.scrollWidth <= glyph.clientWidth + 1];
+    })`)) as [string, boolean][];
+  assert.deepEqual(
+    labels,
+    Array.from({ length: 32 }, (_, index) => [`Q${index + 1}`, true]),
+  );
+  assert.ok(
+    ((await page.evaluate('document.scrollingElement.scrollWidth')) as number) <= 161,
+    'No horizontal overflow with 32 rows',
+  );
+
+  // Hold s1 at the bottom edge until the list reaches its end; drop after s32.
+  const first = await center(page, 's1');
+  await dragTo(page, 's1', first.x, 474);
+  const bottom = (await page.evaluate(
+    'document.scrollingElement.scrollHeight - window.innerHeight',
+  )) as number;
+  await waitUntil(page, `window.scrollY >= ${bottom - 1}`, 8000);
+  await mouse(page, 'mouseMoved', first.x, 475);
+  const last = await center(page, 's32');
+  await mouse(page, 'mouseMoved', first.x, last.bottom - 2);
+  assert.equal(await markerVisible(page), true);
+  await mouse(page, 'mouseReleased', first.x, last.bottom - 2);
+  assert.deepEqual(await calls(page, 'move'), [['move', 's1', '', 'rev-1']]);
+  assert.deepEqual(await calls(page, 'select'), []);
+
+  // The listener applies the move with a new revision; the page follows it.
+  await resetCalls(page);
+  const moved = railState(32, { orderRevision: 'rev-2' });
+  moved.sessions = [...moved.sessions.slice(1), moved.sessions[0]];
+  await push(page, moved);
+  await waitUntil(
+    page,
+    'document.querySelector(".session[data-id]:last-of-type")?.dataset.id === "s1"',
+  );
+
+  // From the end, hold s32 at the top edge until the list is back at its start;
+  // drop before s2 (now the first row), with the new revision.
+  const s32 = await center(page, 's32');
+  await dragTo(page, 's32', s32.x, 4);
+  await waitUntil(page, 'window.scrollY <= 0', 8000);
+  await mouse(page, 'mouseMoved', s32.x, 3);
+  const s2 = await center(page, 's2');
+  await mouse(page, 'mouseMoved', s32.x, s2.top + 2);
+  assert.equal(await markerVisible(page), true);
+  await mouse(page, 'mouseReleased', s32.x, s2.top + 2);
+  assert.deepEqual(await calls(page, 'move'), [['move', 's32', 's2', 'rev-2']]);
+  assert.deepEqual(await calls(page, 'select'), []);
+
+  // An order change during a long-list drag cancels it: no move on release.
+  await resetCalls(page);
+  const s10 = await center(page, 's10');
+  await dragTo(page, 's10', s10.x, s10.y + 80);
+  await push(page, railState(32, { orderRevision: 'rev-3' }));
+  await mouse(page, 'mouseReleased', s10.x, s10.y + 80);
+  assert.deepEqual(await calls(page, 'move'), []);
+  assert.deepEqual(await calls(page, 'select'), [], 'The cancelled drag does not select either');
+});
+
 // ---- Regressions for review R2 (d2e679d), from the reviewer's probes.
 
 test('R2-F5: a press released in the blank page below the list leaves no hover drag', async (context) => {

@@ -397,6 +397,60 @@ test('pop out session N opens the numbered conversation in a window, by the same
   assert.ok(f.requests.every((entry) => !JSON.stringify(entry).includes('Pop out session')));
 });
 
+test('pop out and go to reach every position up to the 32-conversation limit, never beyond', async (context) => {
+  const f = await fixture(context);
+  for (let number = 4; number <= 32; number++) {
+    f.sessions.start({ ...frame, utterance: `Conversation ${number}` }, signal());
+    await f.sessions.idle();
+  }
+  const ids = f.sessions.order().ids;
+  assert.equal(ids.length, 32);
+
+  for (const [utterance, position] of [
+    ['Pop out session 17', 17],
+    ['Pop out session twenty', 20],
+    ['Pop out session twenty-one', 21],
+    ['Pop out session twenty nine', 29],
+    ['Pop out session 30', 30],
+    ['Pop out session thirty one', 31],
+    ['Pop out session thirty-two', 32],
+    ['Go to session 32', 32],
+    ['Go to session thirty-one', 31],
+  ] as const) {
+    await f.report({ id: f.one, popouts: [] });
+    const request = await f.say(utterance);
+    assert.equal(f.outcomes.at(-1), 'selected', utterance);
+    assert.equal(request?.id, ids[position - 1], utterance);
+    assert.equal(
+      request?.presentation,
+      utterance.startsWith('Pop out') ? 'window' : undefined,
+      utterance,
+    );
+  }
+
+  for (const utterance of [
+    'Pop out session 33',
+    'Pop out session thirty-three',
+    'Pop out session twenty or one',
+    'Pop out session 32 or 2',
+    'Pop out session minus twenty one',
+    'Pop out session thirty second',
+  ]) {
+    await f.report({ id: f.one, popouts: [] });
+    assert.equal(await f.say(utterance), undefined, utterance);
+    assert.equal(f.outcomes.at(-1), 'skipped', utterance);
+  }
+
+  // Captured before the order changed: refused, nothing sent.
+  await f.report({ id: f.one, popouts: [] });
+  const stale = f.current();
+  const order = f.sessions.order();
+  f.sessions.move(order.ids[31], order.ids[0], order.revision);
+  assert.equal(await f.say('Pop out session thirty-two', stale), undefined);
+  assert.equal(f.outcomes.at(-1), 'skipped');
+  assert.equal(f.sessions.snapshot().length, 32, 'navigation never creates conversations');
+});
+
 test('pop out session N is refused clearly when the target or a pop-out host is unavailable', async (context) => {
   const f = await fixture(context);
 

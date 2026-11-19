@@ -5,7 +5,7 @@ import { frame, signal } from '../helpers.ts';
 import { remoteFixture, waitFor } from '../remote-fixture.ts';
 
 /** Real gateway/listener, disposable sessions and an immediately completing backend. */
-test('phones share the sixteen-tab cap without taking desktop navigation ownership', async (context) => {
+test('phones share the 32-tab cap without taking desktop navigation ownership', async (context) => {
   const fixture = await remoteFixture({ backend: async () => {} });
   context.after(() => fixture.close());
   const { sessions, desktop } = fixture;
@@ -18,8 +18,15 @@ test('phones share the sixteen-tab cap without taking desktop navigation ownersh
   const { token } = await fixture.pair();
   const phone = await fixture.phone(token);
   await phone.engine('state');
+  // Half the tabs come from the listener itself and half from the phone, so the
+  // cap is shared; the phone's half stays inside its request burst limit.
   const ids: string[] = [];
   for (let number = 1; number <= 16; number++) {
+    const id = sessions.start({ ...frame, utterance: `Listener fixture ${number}` }, signal());
+    ids.push(id);
+    await waitFor(() => sessions.interaction(id).agentAcceptsFollowUp);
+  }
+  for (let number = 17; number <= 32; number++) {
     const requestId = `start-${number}`;
     phone.send({
       action: 'start-agent',
@@ -35,35 +42,40 @@ test('phones share the sixteen-tab cap without taking desktop navigation ownersh
     ids.push(result.id);
     await waitFor(() => sessions.interaction(result.id).agentAcceptsFollowUp);
   }
-  assert.equal(sessions.snapshot().length, 16);
-  assert.ok(sessions.snapshot().every((session) => session.openInBackground));
+  assert.equal(sessions.snapshot().length, 32);
+  assert.ok(
+    sessions
+      .snapshot()
+      .filter((session) => ids.slice(16).includes(session.id))
+      .every((session) => session.openInBackground),
+  );
 
   desktop.send({
     action: 'panel-state',
     id: ids[0],
     composerFocused: true,
     visible: true,
-    navigationToken: 'desktop-sixteen',
+    navigationToken: 'desktop-thirty-two',
   });
   await desktop.reply('panel-state');
   const activity = desktop.runtime.activity;
   const captured = activity.interactionContext!();
   assert.deepEqual(captured.agentNavigation?.ids, ids);
 
-  phone.send({ action: 'panel-state', id: ids[15], requestId: 'select-last' });
+  phone.send({ action: 'panel-state', id: ids[31], requestId: 'select-last' });
   assert.equal((await phone.reply('select-last')).type, 'result');
   assert.deepEqual(activity.interactionContext!(), captured);
-  assert.equal(activity.selectSession!(captured, 15), true);
+  assert.equal(activity.selectSession!(captured, 31), true);
   await waitFor(() =>
-    desktop.messages.some((message) => message.type === 'agent-select' && message.id === ids[15]),
+    desktop.messages.some((message) => message.type === 'agent-select' && message.id === ids[31]),
   );
-  assert.equal(activity.selectSession!(captured, 16), false);
+  assert.equal(activity.selectSession!(captured, 32), false);
 
   // Both create and reopen enforce the shared limit, with no partial admission.
   for (const request of [
     {
       action: 'start-agent',
-      text: 'Seventeenth fixture',
+      text: 'Thirty-third fixture',
       profile: 'coding',
       requestId: 'overflow',
     },
@@ -73,16 +85,16 @@ test('phones share the sixteen-tab cap without taking desktop navigation ownersh
     const reply = await phone.reply(request.requestId);
     assert.equal(reply.type, 'error');
     assert.ok(reply.type === 'error');
-    assert.match(reply.message, /16 tabs maximum/);
-    assert.equal(sessions.snapshot().length, 16);
+    assert.match(reply.message, /32 tabs maximum/);
+    assert.equal(sessions.snapshot().length, 32);
     assert.deepEqual(activity.interactionContext!(), captured);
   }
 
-  phone.send({ action: 'close-agent', id: ids[15], requestId: 'close-last' });
+  phone.send({ action: 'close-agent', id: ids[31], requestId: 'close-last' });
   assert.equal((await phone.reply('close-last')).type, 'result');
   phone.send({ action: 'reopen-agent', id: previousId, requestId: 'reopen-free' });
   assert.equal((await phone.reply('reopen-free')).type, 'result');
-  assert.equal(sessions.snapshot().length, 16);
+  assert.equal(sessions.snapshot().length, 32);
   assert.equal(
     sessions.snapshot().find((session) => session.id === previousId)?.openInBackground,
     true,
@@ -90,5 +102,5 @@ test('phones share the sixteen-tab cap without taking desktop navigation ownersh
   assert.equal(activity.interactionContext!().agentSessionId, ids[0]);
   assert.equal(activity.interactionContext!().agentComposerFocused, true);
   // Closing/reopening changes the tab order: an old spoken position is stale.
-  assert.equal(activity.selectSession!(captured, 15), false);
+  assert.equal(activity.selectSession!(captured, 31), false);
 });

@@ -547,7 +547,7 @@ test('close session rejects hidden/stale targets and extra text, honors preview 
 test('go to session uses captured visible order and reserves invalid, disabled and stale commands', async (context) => {
   const setup = await fixture(context);
   // Cover the last real UI position, not just the parser with a mock target.
-  for (let index = 1; index < 16; index++) {
+  for (let index = 1; index < 32; index++) {
     setup.sessions.start({ ...frame, utterance: `Session ${index + 1}` }, signal());
     await setup.sessions.idle();
   }
@@ -595,8 +595,24 @@ test('go to session uses captured visible order and reserves invalid, disabled a
     'fourteen',
     'fifteen',
     'sixteen',
+    'seventeen',
+    'eighteen',
+    'nineteen',
+    'twenty',
+    'twenty-one',
+    'twenty two',
+    'Twenty-Three',
+    'twenty four',
+    'twenty-five',
+    'twenty six',
+    'twenty-seven',
+    'twenty eight',
+    'twenty-nine',
+    'thirty',
+    'thirty one',
+    'thirty-two',
   ];
-  for (let index = 0; index < 16; index++) {
+  for (let index = 0; index < 32; index++) {
     for (const number of [String(index + 1), numbers[index]]) {
       const targetId = captured.agentNavigation!.ids[index];
       const selectedBefore = setup.desktop.messages.filter(
@@ -620,12 +636,19 @@ test('go to session uses captured visible order and reserves invalid, disabled a
     'Go to session',
     'Go to session 0',
     'Go to session zero',
-    'Go to session 17',
-    'Go to session 20',
-    'Go to session seventeen',
-    'Go to session 21',
-    'Go to session twenty one',
-    'Go to session twenty-one',
+    'Go to session 33',
+    'Go to session thirty-three',
+    'Go to session thirty three',
+    'Go to session forty',
+    'Go to session twenty or one',
+    'Go to session 32 or 2',
+    'Go to session twenty - one',
+    'Go to session twenty  -one',
+    'Go to session twenty first',
+    'Go to session thirty second',
+    'Go to session minus twenty one',
+    'Go to session -21',
+    'Go to session one twenty',
     'Go to session 01',
     'Go to session 1st',
     'Go to session tenth',
@@ -637,7 +660,7 @@ test('go to session uses captured visible order and reserves invalid, disabled a
     assert.equal(setup.outcomes.at(-1), 'skipped', utterance);
   }
   router.setEnabled(navigation.name, false, 'shortcut');
-  for (const utterance of ['Go to session 1', 'Go to session 16']) {
+  for (const utterance of ['Go to session 1', 'Go to session 32']) {
     await router.route({ ...frame, utterance, interaction: captured }, signal());
     assert.equal(setup.outcomes.at(-1), 'skipped');
   }
@@ -653,13 +676,13 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   const reordered = await visible('second-page');
   assert.equal(reordered.agentNavigation!.ids[0], order.ids[1]);
   await router.route(
-    { ...frame, utterance: 'Go to session sixteen', interaction: reordered },
+    { ...frame, utterance: 'Go to session thirty-two', interaction: reordered },
     signal(),
   );
   assert.equal(setup.outcomes.at(-1), 'selected');
   await visible('another-page');
   await router.route(
-    { ...frame, utterance: 'Go to session sixteen', interaction: reordered },
+    { ...frame, utterance: 'Go to session thirty-two', interaction: reordered },
     signal(),
   );
   assert.equal(setup.outcomes.at(-1), 'skipped', 'Changing pages invalidates captured navigation');
@@ -676,7 +699,7 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   assert.equal(setup.outcomes.at(-1), 'skipped');
   const shortList = await visible('short-list');
   await router.route(
-    { ...frame, utterance: 'Go to session sixteen', interaction: shortList },
+    { ...frame, utterance: 'Go to session thirty-two', interaction: shortList },
     signal(),
   );
   assert.equal(
@@ -686,14 +709,14 @@ test('go to session uses captured visible order and reserves invalid, disabled a
   );
 });
 
-test('go to session rejects positions above 16 even if a client reports extra IDs', async () => {
+test('go to session rejects positions above 32 even if a client reports extra IDs', async () => {
   const selectedIndexes: number[] = [];
   const outcomes: string[] = [];
   const navigation = {
     clientId: 1,
     token: 'visible-page',
     orderRevision: 'unchanged',
-    ids: Array.from({ length: 20 }, (_, index) => `session-${index + 1}`),
+    ids: Array.from({ length: 40 }, (_, index) => `session-${index + 1}`),
   };
   const interaction = {
     agentNavigation: navigation,
@@ -719,16 +742,25 @@ test('go to session rejects positions above 16 even if a client reports extra ID
     outcome: (_id, outcome) => outcomes.push(outcome),
   }).subscribe(router);
 
-  for (const label of ['16', 'sixteen']) {
+  for (const label of ['32', 'thirty-two', 'thirty two']) {
     await router.route({ ...frame, utterance: `Go to session ${label}!`, interaction }, signal());
     assert.equal(outcomes.at(-1), 'selected');
-    assert.equal(selectedIndexes.at(-1), 15);
+    assert.equal(selectedIndexes.at(-1), 31);
   }
-  for (const label of ['17', 'seventeen', '18', 'eighteen', '19', 'nineteen', '20', 'twenty']) {
+  for (const label of [
+    '33',
+    'thirty-three',
+    '34',
+    'thirty four',
+    '39',
+    'thirty-nine',
+    '40',
+    'forty',
+  ]) {
     await router.route({ ...frame, utterance: `Go to session ${label}!`, interaction }, signal());
     assert.equal(outcomes.at(-1), 'skipped');
   }
-  assert.deepEqual(selectedIndexes, [15, 15]);
+  assert.deepEqual(selectedIndexes, [31, 31, 31]);
 });
 
 test('inferred navigation keeps the captured order, owner and visibility safeguards', async (context) => {

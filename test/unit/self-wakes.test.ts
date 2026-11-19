@@ -8,6 +8,7 @@ import test from 'node:test';
 import { WakeStore } from '../../src/agents/wakes/store.ts';
 import { WakeScheduler, type WakeCaller, type WakeHost } from '../../src/agents/wakes/scheduler.ts';
 import { scheduleDeadline, type WakeRecord } from '../../src/agents/wakes/types.ts';
+import { MAX_OPEN_AGENT_SESSIONS } from '../../src/agents/session-limit.ts';
 import { AgentSessions } from '../../src/agents/sessions.ts';
 import { bridgeTools } from '../../src/agents/claude/bridge-tools.ts';
 import { ConversationUnavailableError } from '../../src/agents/resume-error.ts';
@@ -457,18 +458,18 @@ test('shutdown preserves; restarted timer waits at full tab capacity then restor
   await restarted.loadPrevious();
   restarted.subscribe((event) => events.push(event));
   const tabs: string[] = [];
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < MAX_OPEN_AGENT_SESSIONS; i++) {
     tabs.push(restarted.startRemote('Tab ' + i, 'coding', signal()));
     await restarted.idle();
   }
   await restarted.wakes.tick();
   assert.equal(restarted.wakes.list(owner)[0].state, 'waiting');
-  assert.equal(runs.length, 16);
+  assert.equal(runs.length, MAX_OPEN_AGENT_SESSIONS);
   await restarted.remove(tabs[0]);
   await restarted.wakes.tick();
   await restarted.idle();
-  assert.equal(runs.length, 17);
-  assert.equal(runs[16].id, owner);
+  assert.equal(runs.length, MAX_OPEN_AGENT_SESSIONS + 1);
+  assert.equal(runs[MAX_OPEN_AGENT_SESSIONS].id, owner);
   assert.equal(events.find((event) => event.type === 'agent-restored').reveal, false);
   assert.equal(restarted.snapshot().find((view) => view.id === owner)?.openInBackground, true);
 });

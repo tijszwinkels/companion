@@ -14,7 +14,7 @@ const interaction: InteractionContext = {
     clientId: 1,
     token: 'visible-page',
     orderRevision: 'unchanged',
-    ids: Array.from({ length: 16 }, (_, index) => `session-${index + 1}`),
+    ids: Array.from({ length: 32 }, (_, index) => `session-${index + 1}`),
   },
   agentSessionId: '',
   agentComposerFocused: false,
@@ -104,6 +104,19 @@ test('inferred navigation selects the one explicit number anywhere in the uttera
     ['session 6, please', 6],
     ['Switch to session six.', 6],
     ['okay - switch to session six', 6],
+    // Capacity 32: digits and spaced or hyphenated cardinal compounds.
+    ['switch to session 17', 17],
+    ['switch to session seventeen', 17],
+    ['switch to session twenty', 20],
+    ['switch to session twenty one', 21],
+    ['switch to session twenty-one', 21],
+    ['Switch to session Twenty-Nine.', 29],
+    ['go to tab thirty', 30],
+    ['session 31, please', 31],
+    ['show me session thirty one', 31],
+    ['go to session thirty two', 32],
+    ['go to session thirty-two', 32],
+    ['Go back to 32…', 32],
   ] as const) {
     const run = setup();
     assert.equal(await run.route(utterance), 'GO_TO_SESSION', utterance);
@@ -127,12 +140,22 @@ test('inferred navigation skips missing, multiple, ordinal, homophone and malfor
     'switch to session',
     'switch to session 0',
     'switch to session zero',
-    'switch to session 17',
-    'switch to session seventeen',
-    'switch to session twenty',
     'switch to session sixty',
-    'switch to session twenty one',
-    'switch to session twenty-one',
+    // Capacity 32: beyond the range, two numbers, signed or ordinal compounds.
+    'switch to session 33',
+    'switch to session thirty-three',
+    'switch to session thirty three',
+    'switch to session forty',
+    'switch to session twenty or one',
+    'switch to session 32 or 2',
+    'switch to session twenty 1',
+    'switch to session twenty - one',
+    'switch to session minus twenty one',
+    'switch to session -twenty-one',
+    'switch to session twenty first',
+    'switch to session thirty-second',
+    'switch to session twenty one hundred',
+    'switch to session twenty-one.5',
     'switch to session 1.5',
     'switch to session -3',
     'switch to session −3',
@@ -193,16 +216,16 @@ test('inferred navigation requires the number to exist in the captured order', a
   assert.deepEqual(run.selected, [2]);
   assert.deepEqual(run.outcomes, ['skipped', 'selected']);
 
-  // Stale clients may report more than the product limit; never go beyond 16.
+  // Stale clients may report more than the product limit; never go beyond 32.
   const oversized: InteractionContext = {
     ...interaction,
     agentNavigation: {
       ...interaction.agentNavigation!,
-      ids: Array.from({ length: 20 }, (_, index) => `session-${index + 1}`),
+      ids: Array.from({ length: 40 }, (_, index) => `session-${index + 1}`),
     },
   };
-  await run.route('switch to session 17', oversized);
-  await run.route('switch to session eighteen', oversized);
+  await run.route('switch to session 33', oversized);
+  await run.route('switch to session thirty-four', oversized);
   assert.deepEqual(run.selected, [2]);
 });
 

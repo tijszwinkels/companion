@@ -4,7 +4,7 @@
  * Lists the open conversations in their shared order and lets the person
  * select, pop out, focus, return, close or drag them into another order. The
  * native view (TrustedRailView.qml) sends the whole list on every change (at
- * most 16 conversations) and performs each request through the panel's
+ * most 32 conversations) and performs each request through the panel's
  * existing signals. Activity, Previous sessions and settings stay in the
  * native rail around this page.
  *
