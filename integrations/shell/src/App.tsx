@@ -37,7 +37,10 @@ export function App(props: { chat: ChatStore }) {
       <main class="shell-main">
         {selected ? (
           <div class="chat-host">
-            <Chat store={props.chat} />
+            {/* A new chat view for each conversation lifetime: the same ID
+                reopened elsewhere (a new tool epoch) starts at its live end
+                with a fresh editor, like a different conversation. */}
+            <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
           </div>
         ) : (
           <>

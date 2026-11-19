@@ -94,14 +94,16 @@ window.addEventListener('storage', (event) => {
 
 /**
  * The reader's own scrolling of the transcript, as SessionView's
- * readerScrolled sees it: a scroll within one second of their wheel, key,
- * pointer or touch input. Within one viewport of the end, the bridge loads
- * the next newer page below a detached snapshot before the reader gets
- * there. Layout changes and the page's own scrolling never count. The
- * listeners live as long as the page.
+ * readerScrolled sees it: a scroll while the reader holds a pointer pressed
+ * in the transcript (dragging its scroll bar, however slowly), or within one
+ * second of their wheel, key, pointer or touch input there. Within one
+ * viewport of the end, the bridge loads the next newer page below a detached
+ * snapshot before the reader gets there. Layout changes and the page's own
+ * scrolling never count. The listeners live as long as the page.
  */
 const readerInputWindowMilliseconds = 1000;
 let readerInputAt = -Infinity;
+let readerDragging = false;
 
 function insideTranscript(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('.transcript') !== null;
@@ -113,7 +115,21 @@ for (const type of ['wheel', 'keydown', 'pointerdown', 'touchstart']) {
     (event) => {
       if (insideTranscript(event.target)) {
         readerInputAt = performance.now();
+        if (type === 'pointerdown') {
+          readerDragging = true;
+        }
       }
+    },
+    { capture: true, passive: true },
+  );
+}
+
+// A drag ends wherever the pointer is released or the browser cancels it.
+for (const type of ['pointerup', 'pointercancel']) {
+  document.addEventListener(
+    type,
+    () => {
+      readerDragging = false;
     },
     { capture: true, passive: true },
   );
@@ -126,7 +142,8 @@ document.addEventListener(
     if (!(element instanceof Element) || !element.classList.contains('transcript')) {
       return;
     }
-    if (performance.now() - readerInputAt > readerInputWindowMilliseconds) {
+    const recentInput = performance.now() - readerInputAt <= readerInputWindowMilliseconds;
+    if (!readerDragging && !recentInput) {
       return;
     }
     const reach = Math.max(element.clientHeight, 160);

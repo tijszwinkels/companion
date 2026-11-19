@@ -120,6 +120,14 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
   // The scroll position this component set itself to restore the reader's
   // row; the scroll event that follows is not the reader moving.
   const restoredTop = useRef<number | null>(null);
+  // Jump to latest was pressed in a detached snapshot and the host has not
+  // shown the live rows yet (cleared when it has, or the reader scrolls).
+  const jumping = useRef(false);
+  useEffect(() => {
+    if (!history?.detached) {
+      jumping.current = false;
+    }
+  }, [history?.detached]);
 
   function follow(value: boolean) {
     following.current = value;
@@ -252,6 +260,13 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
   // latest page (it may hold an older one).
   function jumpToLatest() {
     follow(true);
+    // Until the host's answer replaces a detached snapshot with the live
+    // rows, the end of the old rows still counts as following (see
+    // scrolled), so this jump cannot undo itself.
+    jumping.current = history?.detached === true;
+    // The scrolling that follows is this jump's, not the reader's, even
+    // right after their own wheel or key input.
+    readerScrolledAt.current = -Infinity;
     const element = scroller.current;
     if (element) {
       element.scrollTop = element.scrollHeight;
@@ -274,6 +289,8 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     const byReader = performance.now() - readerScrolledAt.current < 1000;
     if (byReader) {
       readerInput();
+      // The reader moved on their own: a pending jump no longer applies.
+      jumping.current = false;
     }
     if (following.current && !atEnd && !byReader) {
       element.scrollTop = element.scrollHeight;
@@ -285,7 +302,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     // and the reader keeps their place when they arrive instead of being
     // moved to the new end. The host already treats it so (following is
     // `atEnd && !detached` there too); Jump to latest returns to the live end.
-    const followsEnd = atEnd && !history?.detached;
+    const followsEnd = atEnd && (!history?.detached || jumping.current);
     if (followsEnd !== following.current) {
       follow(followsEnd);
       bridge.following(status.sessionId, followsEnd);

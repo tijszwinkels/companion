@@ -485,10 +485,10 @@ test(
     const run = fixture.runs[0];
     // 1051 rows: the question and 1050 answers. The live window holds the
     // newest 200 (History row 850–1049); pages hold 200 rows each.
+    // The run keeps going, so a new row can stream in at the end.
     for (let index = 0; index < 1050; index++) {
       run.emit(chatMessage('history-' + index, 'assistant', 'History row ' + index));
     }
-    run.finish();
     const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
     await openConversation(page, 'Paging fixture');
     await page.waitFor(shows('History row 1049'));
@@ -526,15 +526,25 @@ test(
       }
       return reply;
     }) as unknown as typeof historyPage;
+    // The reader holds the pointer pressed in the transcript (as when
+    // dragging its scroll bar) and gets to the end only after more than a
+    // second: still their own scrolling, so the newer page is requested.
     const sentBeforeHold = sockets.sent.length;
-    await scrollUntil(
-      page,
-      100_000,
-      `document.querySelector('.transcript').scrollTop + document.querySelector('.transcript').clientHeight >= document.querySelector('.transcript').scrollHeight - 4`,
-    );
+    const middle = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = document.querySelector('.transcript').getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    const pointer = { x: middle.x, y: middle.y, button: 'left', clickCount: 1 };
+    await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...pointer });
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await page.evaluate(`(() => {
+      const transcript = document.querySelector('.transcript');
+      transcript.scrollTop = transcript.scrollHeight;
+    })()`);
     await waitFor(() =>
       sockets.sent.slice(sentBeforeHold).some((sent) => sent.direction === 'after'),
     );
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...pointer });
     assert.ok(await page.evaluate<boolean>(inView('History row 598')));
     holding = false;
     release();
@@ -571,13 +581,19 @@ test(
       .filter((sent) => sent.action === 'agent-history-page' && sent.direction === 'after');
     assert.equal(newer.length, 2, 'two newer pages were requested');
 
-    // Jump to latest: only the live window again.
-    await wheel(page, -2000);
+    // Back up into a detached snapshot, then Jump to latest from there: only
+    // the live window again, and the view follows rows streaming in.
+    await scrollUntil(page, -100_000, shows('Paging fixture'));
     await page.waitFor(`document.querySelector('button.latest')`);
     await click(page, 'button.latest');
     await page.waitFor(`document.querySelectorAll('.rows > .message').length === 200`);
     assert.match(await transcriptText(page), /History row 1049\b/);
     assert.doesNotMatch(await transcriptText(page), /History row 849\b/);
+    run.emit(chatMessage('history-1050', 'assistant', 'History row 1050'));
+    await page.waitFor(shows('History row 1050'));
+    await page.waitFor(inView('History row 1050'));
+    await page.waitFor(`!document.querySelector('button.latest')`);
+    run.finish();
 
     for (const action of requestActions(sockets)) {
       assert.ok(['panel-state', 'agent-history-page'].includes(action), `unexpected ${action}`);
@@ -662,6 +678,49 @@ test(
     assert.equal(copies.length, 1);
     assertOwnOrigin(fixture, page, sockets);
     await assertNoViolations(page);
+  },
+);
+
+test(
+  'a conversation reopened under the same ID while offline starts at its live end',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const id = fixture.sessions.start({ ...frame, utterance: 'Reopen fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    for (let index = 0; index < 80; index++) {
+      fixture.runs[0].emit(chatMessage('reopen-' + index, 'assistant', 'Reopen row ' + index));
+    }
+    fixture.runs[0].finish();
+    const { page } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Reopen fixture');
+    await page.waitFor(inView('Reopen row 79'));
+    // The reader scrolls up, away from the end.
+    await wheel(page, -3000);
+    await page.waitFor(`document.querySelector('button.latest')`);
+
+    // Closed and reopened elsewhere while this browser is offline: the same
+    // ID in a new lifetime.
+    await fixture.gateway.close();
+    await page.waitFor(`document.querySelector('.connection-banner')`, 5000);
+    await fixture.sessions.remove(id);
+    await fixture.sessions.reopen(id, false);
+    const replacement = new Gateway({
+      host: '127.0.0.1',
+      port: fixture.port,
+      origins: [fixture.origin],
+      stateDirectory: join(fixture.directory, 'remote-state'),
+      controlSocket: fixture.desktop.socketPath,
+      sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+      appDirectory,
+      log: () => {},
+    });
+    await replacement.start();
+    context.after(() => replacement.close());
+
+    await page.waitFor(`!document.querySelector('.connection-banner')`, 20_000);
+    await page.waitFor(inView('Reopen row 79'), 5000);
+    assert.equal(await page.evaluate(`Boolean(document.querySelector('button.latest'))`), false);
   },
 );
 

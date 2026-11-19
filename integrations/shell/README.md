@@ -56,7 +56,9 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   pages not requested again. Below a detached snapshot (after loading more
   than three pages up), the next newer page loads when the reader scrolls to
   within one viewport of its end, observed by `src/main.tsx` like
-  SessionView's `readerScrolled`, so the new rows continue below without
+  SessionView's `readerScrolled` (a scroll while a pointer is held in the
+  transcript, as when dragging its scroll bar, or within a second of wheel, key,
+  pointer or touch input there), so the new rows continue below without
   moving the reader (also when they reach the end before the page arrives).
   It never repeats a failed request.
 - Connection loss: the phone Connection reconnects with backoff and never
@@ -65,10 +67,13 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   "Disconnected" state. Sending, choosing, stopping and closing are refused
   while offline, and after reconnecting until the listener's new snapshot has
   arrived (the shown conversation may have been closed or reopened meanwhile).
-- The conversation's own Stop (for a run without a run-scoped control) is
-  admitted only after the listener reported this conversation's controls to
-  this browser; until then a missing run ID may only mean "not reported yet",
-  and an unscoped Stop could cancel a queued turn that started meanwhile.
+- Stop never reaches a later turn than the one shown. The conversation's own
+  Stop (shown while the listener's controls report has no run-scoped Stop,
+  which can lag behind the conversation) is scoped to the run the
+  conversation names (`stop-agent-run`); the listener refuses it once that
+  run is no longer current. Only a run without an ID gets the unscoped
+  `stop-agent`, and only after the listener reported this conversation's
+  controls to this browser.
 - Signing out (or a revoked pairing) clears drafts, input only the editor
   held, notices and pending state; answers that arrive later for the previous
   pairing are ignored. Another tab of the same browser reloads when the
@@ -80,7 +85,10 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 
 `Chat.tsx` is otherwise unchanged. Its transcript no longer counts the end of
 a **detached** history snapshot as the live end (`following` is reported and
-kept as `atEnd && !history.detached`). The browser shell needs this: newer
+kept as `atEnd && !history.detached`), except right after Jump to latest
+until the host has shown the live rows; and Jump to latest no longer counts
+its own scrolling as the reader's when the reader used the wheel just
+before. The browser shell needs this: newer
 pages are appended below a detached snapshot, and a page that thought it was
 following would jump to the end of each new page, skipping it. In the Qt host
 nothing is appended below a detached snapshot, and its bridge already sets
@@ -103,6 +111,13 @@ the chat page:
 | Screenshots                                    | Labelled "screenshot unavailable"; no viewer yet                                                       |
 | Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                     |
 | Rail, Activity, settings, model picker, timers | Not in this slice                                                                                      |
+
+Known limit: two tabs of the same browser under the same pairing each keep
+the phone Store's draft map and save it whole, so a draft typed in one tab can
+replace a draft saved by the other (for another conversation) in storage; the
+open tabs keep their own text. This is the phone Store's existing draft
+persistence; scoping it per conversation belongs in that Store, for both
+clients.
 
 The gateway also limits a message to 4,000 characters (the desktop allows
 8,000), so `maximumMessageLength` is 4,000. Copy uses the browser clipboard.
@@ -139,8 +154,9 @@ revision, a conversation switch sending rows with their status, pending
 choices across navigation, nothing admitted between reconnecting and the new
 snapshot, sign-out clearing held input and late failures, a conversation
 reopened under the same ID replaced like a switch, the unscoped Stop waiting
-for the controls report, contiguous paging within three pages including newer
-pages, no automatic retry after a failure, and superseded pages dropped.
+for the controls report, contiguous paging within three pages including newer pages, no automatic retry after a failure, superseded pages
+dropped, Stop scoped to the shown run, and an uncertain send's notice kept
+next to other notices.
 
 `shell.test.ts` runs the built shell in headless Chromium at desktop sizes, on
 the phone tests' fixtures (real gateway, real listener control socket,
@@ -148,8 +164,10 @@ synthetic agent backend, temporary directories, loopback). It covers pairing;
 the list and picking a conversation; a streamed Markdown answer with agent HTML
 kept literal; send; a follow-up queued while running; a choice; stop; close;
 loading older pages while scrolling up, reading down through newer pages below
-a detached snapshot without skipping rows (also when the reader reaches the
-end before the next page arrives), and Jump to latest; a send whose
+a detached snapshot without skipping rows (also when the reader reaches the end by a slow drag before the next page
+arrives), and Jump to latest from a detached snapshot followed by a streamed
+row; a conversation reopened under the same ID while offline shown at its
+live end; a send whose
 answer was lost in a gateway restart, kept with its notice and not replayed
 after reconnecting; signing out and pairing again without the previous draft, also with a second
 tab of the same browser open;

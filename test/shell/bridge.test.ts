@@ -328,23 +328,45 @@ test('the same conversation reopened in a new lifetime is replaced like a switch
   assert.equal(after[1].type, 'status');
 });
 
-test('the unscoped Stop waits for the listener to report the controls', async () => {
+test('Stop is scoped to the shown run, and unscoped only once controls arrived', async () => {
   const { store, bridge, messages } = harness();
+  // The conversation names its run before the controls report arrives.
   const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
   store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
   await settle();
   assert.equal(lastStatus(messages).running, true);
+  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
+  assert.equal(store.pending[0].action, 'stop-agent-run');
+  assert.deepEqual(store.pending[0].parameters, { id: sessionA, runId: 'run-1' });
 
-  // Just selected: no controls report yet, so "no run ID" is not known.
+  // A run without an ID: no Stop until the listener reported the controls,
+  // since "no run ID" may only mean "not reported yet".
+  const unnamed = session(sessionA, 'Question A', { status: 'running' });
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, unnamed) });
+  await settle();
   assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
-  assert.equal(store.pending.length, 0);
+  assert.equal(store.pending.length, 1);
   await settle();
   assert.match(lastStatus(messages).inputError ?? '', /controls have not arrived/);
-
-  // The listener reports this conversation's controls without a run ID.
   store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
   assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
-  assert.equal(store.pending[0].action, 'stop-agent');
+  assert.equal(store.pending[1].action, 'stop-agent');
+});
+
+test('an uncertain send stays visible next to other notices', async () => {
+  const { store, bridge, messages } = harness();
+  await settle();
+  const base = lastStatus(messages).draft!.revision;
+  bridge.editDraft(sessionA, base, 'Maybe sent', 10);
+  bridge.send(sessionA, base, 'Maybe sent');
+  await settle();
+  bridge.classicView();
+  store.pending[0].reject(Error('The connection dropped before Companion answered.'));
+  await settle();
+  const notice = lastStatus(messages).inputError ?? '';
+  assert.match(notice, /^The connection dropped before Companion answered\./);
+  assert.match(notice, /not available in the browser/);
+  assert.equal(store.draft(sessionA), 'Maybe sent');
 });
 
 test('a request failing after sign-out leaves no notice for the next pairing', async () => {

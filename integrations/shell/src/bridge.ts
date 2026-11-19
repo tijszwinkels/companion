@@ -397,10 +397,17 @@ export class GatewayChatBridge implements NativeBridge {
     if (cursor === undefined || cursor > draftText.length) {
       cursor = draftText.length;
     }
-    let inputError = this.errors.get(id) ?? '';
-    if (!inputError && send) {
-      inputError = send.error;
+    // A failed or uncertain send comes first: it says whether the text in
+    // the editor may already have been sent. Other notices follow it.
+    const notices: string[] = [];
+    if (send && send.error) {
+      notices.push(send.error);
     }
+    const notice = this.errors.get(id);
+    if (notice) {
+      notices.push(notice);
+    }
+    const inputError = notices.join(' ');
     let paused = false;
     if (state.engine) {
       paused = state.engine.paused;
@@ -727,11 +734,16 @@ export class GatewayChatBridge implements NativeBridge {
   }
 
   /**
-   * The conversation's own Stop, for a run without a run-scoped control. It
-   * is admitted only after the listener reported this conversation's
-   * controls for this device: before that (just after selecting it or
-   * reconnecting) a missing run ID may only mean "not reported yet", and an
-   * unscoped Stop could cancel a queued turn that started meanwhile.
+   * The conversation's own Stop, shown while it runs without a run-scoped
+   * control in the listener's latest controls report (which can lag behind
+   * the conversation itself). A Stop must never reach a later turn than the
+   * one shown, so:
+   * - when the conversation names its current run, the Stop is scoped to
+   *   that run (`stop-agent-run`); the listener refuses it if that run is no
+   *   longer current, so a queued turn that started meanwhile keeps running;
+   * - only a run without an ID gets the unscoped `stop-agent`, and only after
+   *   the listener reported this conversation's controls to this browser
+   *   (before that, "no run ID" may only mean "not reported yet").
    */
   stop(sessionId: string, callback?: (answer: string) => void): void {
     const session = this.shownSession;
@@ -743,6 +755,14 @@ export class GatewayChatBridge implements NativeBridge {
       this.stopRunId(sessionId) !== ''
     ) {
       this.answer(callback, { accepted: false });
+      return;
+    }
+    const runId = session.runId;
+    if (typeof runId === 'string' && runId !== '') {
+      this.act(sessionId, () =>
+        this.store.request('stop-agent-run', { id: sessionId, runId: runId }, { quiet: true }),
+      );
+      this.answer(callback, { accepted: true });
       return;
     }
     const actions = this.store.state.actions;
