@@ -13,7 +13,7 @@ import { useAppState, useStore } from '../hooks.ts';
 import { ActivityPage } from './Activity.tsx';
 import { AppsSheet, usePhoneApps } from './Apps.tsx';
 import { ConversationPage } from './Conversation.tsx';
-import { AppsIcon, MenuIcon, SettingsIcon } from './icons.tsx';
+import { AppsIcon, MenuIcon, SettingsIcon } from '../../../chat-ui/icons.tsx';
 import { Pairing } from './Pairing.tsx';
 import { PreviousPage } from './Previous.tsx';
 import { Rail } from './Rail.tsx';

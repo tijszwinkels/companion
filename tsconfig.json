@@ -16,5 +16,10 @@
     "native/widget-renderer/*.ts",
     "native/window/*.ts"
   ],
-  "exclude": ["integrations/mobile/src"]
+  "exclude": [
+    "integrations/mobile/src",
+    "integrations/session-apps/chat",
+    "integrations/session-apps/rail",
+    "integrations/session-apps/web-channel.ts"
+  ]
 }

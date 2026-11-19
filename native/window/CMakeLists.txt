@@ -23,7 +23,7 @@ target_link_libraries(companion-ui PRIVATE companionwindow Qt6::WebEngineQuick)
 target_compile_definitions(companion-ui PRIVATE
     COMPANION_UI_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/../../integrations/window/Main.qml")
 
-add_library(companionwidgets MODULE ../widget-renderer/profile.cpp ../widget-renderer/plugin.cpp)
+add_library(companionwidgets MODULE ../widget-renderer/profile.cpp ../widget-renderer/shell-profile.cpp ../widget-renderer/plugin.cpp)
 target_link_libraries(companionwidgets PRIVATE Qt6::WebEngineQuick Qt6::Network)
 set_target_properties(companionwidgets PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/qml/Companion/Widgets")
 configure_file(../widget-renderer/qmldir "${CMAKE_BINARY_DIR}/qml/Companion/Widgets/qmldir" COPYONLY)
@@ -38,7 +38,8 @@ endif()
 install(TARGETS companion-ui RUNTIME DESTINATION bin)
 install(TARGETS companionwidgets LIBRARY DESTINATION lib/companion/qml/Companion/Widgets)
 install(FILES ../widget-renderer/qmldir DESTINATION lib/companion/qml/Companion/Widgets)
-install(DIRECTORY ../../integrations/window ../../integrations/panel DESTINATION share/companion/integrations)
+install(DIRECTORY ../../integrations/window ../../integrations/panel ../../integrations/session-apps DESTINATION share/companion/integrations
+    PATTERN "chat" EXCLUDE PATTERN "rail" EXCLUDE PATTERN "*.ts" EXCLUDE PATTERN "tsconfig.json" EXCLUDE)
 install(FILES companion.desktop DESTINATION share/applications)
 install(FILES ../../LICENSE ../../LICENSING.md DESTINATION share/licenses/companion-ui)
 if(COMPANION_SIDEBAR)

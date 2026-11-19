@@ -33,7 +33,7 @@ Item {
       ["START_CLAUDE_CODE_SESSION", "Start a Claude Code session", false, ["new claude session"]],
       ["START_PI_SESSION", "Start a Pi session", false, ["new pi session"]],
       ["CONTINUE_OPEN_AGENT_CONVERSATION", "Continue the open agent conversation", true, ["continue session"]],
-      ["GO_TO_SESSION", "Go to session 1–16", false, ["go to session"]],
+      ["GO_TO_SESSION", "Go to session 1–32", false, ["go to session"]],
       ["CLOSE_AGENT_SESSION", "Close session", false, ["close session"]],
       ["LABEL_PREVIOUS_CORRECT", "Label previous correct", false, ["label previous correct"]],
       ["LABEL_PREVIOUS_INCORRECT", "Label previous incorrect", false, ["label previous incorrect"]],

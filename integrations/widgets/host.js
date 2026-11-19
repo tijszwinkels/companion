@@ -6,6 +6,11 @@ const bootstrap = window.widgetBootstrap;
 // viewer. Resolve its API against the actual document URL, never iframe input.
 const api = bootstrap.api ? location.href.replace(/\/$/, '') : null;
 let theme = bootstrap.theme;
+// Session application views (src/session-apps/README.md) carry the code version
+// they were loaded with. Requests name it, so replaced code is never executed
+// for this page; the page reloads itself when the service reports a new one.
+const application = bootstrap.application ?? null;
+let currentProps = bootstrap.props;
 // An embedding Companion host that calls setTheme owns the whole theme,
 // including text scale. Without one (the Chromium pop-out), refresh() follows
 // the text scale the service last received from the sidebar view.
@@ -53,13 +58,18 @@ function command(message) {
 }
 
 async function update(props, theme, nextRevision) {
-  await command({ kind: 'update', props, theme });
+  await command({ kind: 'update', props, theme, revision: nextRevision });
   revision = nextRevision;
+  currentProps = props;
 }
 
-function reply(id, result, error) {
+function reply(id, result, error, showStatus = true) {
   frame.contentWindow.postMessage({ type: 'action-result', id, result, error }, '*');
-  status.textContent = error || '';
+  // Chat permission/refusal is part of the authored subscription/read UI. It
+  // must not leave a stale global error over a later successful subscription.
+  if (showStatus) {
+    status.textContent = error || '';
+  }
 }
 
 window.addEventListener('message', (event) => {
@@ -81,14 +91,14 @@ window.addEventListener('message', (event) => {
         : pending.resolve(message.result);
     }
   } else if (message.type === 'action') {
-    if (
-      typeof message.id !== 'string' ||
-      message.id.length > 100 ||
-      typeof message.action !== 'string' ||
-      new TextEncoder().encode(JSON.stringify(message.args ?? {})).byteLength > 32768 ||
-      requests.length >= 8 ||
-      liveActions >= 8
-    ) {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    if (!validOperationName(message.action) || !validArguments(message.args)) {
+      reply(message.id, null, 'Invalid widget action name or arguments');
+      return;
+    }
+    if (requests.length >= 8 || liveActions >= 8) {
       reply(message.id, null, 'Too many widget actions or oversized arguments');
       return;
     }
@@ -96,35 +106,482 @@ window.addEventListener('message', (event) => {
       id: message.id,
       action: message.action,
       args: message.args,
-      revision,
       requestId: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
         byte.toString(16).padStart(2, '0'),
       ).join(''),
     };
+    if (application) {
+      // Application actions are targeted changes validated against current
+      // state, so they do not require the displayed revision.
+      request.version = application.version;
+    } else {
+      // Widgets reject a click on a stale displayed revision.
+      request.revision = revision;
+    }
     if (api) {
-      liveActions++;
-      void fetch(api + '/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
-      })
-        .then(async (response) => {
-          const value = await response.json();
-          if (!response.ok) {
-            throw Error(value.error);
-          }
-          await refresh();
-          reply(message.id, value);
-        })
-        .catch((error) => reply(message.id, null, error.message))
-        .finally(() => {
-          liveActions--;
-        });
+      send('/action', request, message.id, true);
     } else {
       requests.push(request);
     }
+  } else if (message.type === 'query' && application) {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    if (!validOperationName(message.name) || !validArguments(message.args)) {
+      reply(message.id, null, 'Invalid application query name or arguments');
+      return;
+    }
+    if (liveActions >= 8) {
+      reply(message.id, null, 'Too many application queries or oversized arguments');
+      return;
+    }
+    if (!api) {
+      reply(message.id, null, 'Application queries need a live view');
+      return;
+    }
+    const query = { name: message.name, args: message.args, version: application.version };
+    send('/query', query, message.id, false);
+  } else if (message.type === 'chat-watch' && application) {
+    // One subscription flag, not an unbounded table controlled by the frame.
+    if (typeof message.watching === 'boolean') {
+      if (message.watching && !chatWatching) {
+        chatNeedsSnapshot = true;
+      }
+      chatWatching = message.watching;
+      if (chatWatching) {
+        publishChat(false);
+      }
+    }
+  } else if (message.type === 'chat-read') {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    if (Object.keys(message).some((key) => key !== 'type' && key !== 'id')) {
+      reply(message.id, null, 'Chat reads accept no arguments', false);
+      return;
+    }
+    readChat(message.id);
+  } else if (['chat-prepare-send', 'chat-send', 'chat-receipt'].includes(message.type)) {
+    if (validRequestId(message.id)) {
+      sendChatOperation(message);
+    }
+  } else if (message.type === 'state-read') {
+    if (!validRequestId(message.id)) {
+      return;
+    }
+    readState(message.id);
+  } else if (validRequestId(message.id)) {
+    reply(message.id, null, 'Unsupported widget request');
   }
 });
+
+// Ingress checks for requests from authored code, which may post anything
+// structured-cloneable directly. An invalid request ID cannot be answered
+// safely, so such messages are ignored; every other refusal is answered, so
+// the frame's pending request is always released.
+function validRequestId(id) {
+  return typeof id === 'string' && id.length > 0 && id.length <= 100;
+}
+
+// Manifest operation names are at most 48 characters (src/widgets/registry.ts).
+function validOperationName(name) {
+  return typeof name === 'string' && name.length > 0 && name.length <= 48;
+}
+
+// Arguments must be JSON (cyclic or otherwise non-JSON values are refused,
+// never thrown out of this listener) and at most 32 KiB once serialized.
+function validArguments(args) {
+  let json;
+  try {
+    json = JSON.stringify(args ?? {});
+  } catch {
+    return false;
+  }
+  return typeof json === 'string' && new TextEncoder().encode(json).byteLength <= 32768;
+}
+
+// Sending has its own explicit, finite backend grant. Prepare returns an identity
+// BEFORE any possible admission; it is not a reservation or permission renewal.
+// Keep no unbounded handle table here. Exact retries/probes use the caller's
+// retained handle, and the backend owns deduplication across views/reloads.
+function validSendHandle(handle) {
+  return (
+    handle &&
+    typeof handle === 'object' &&
+    !Array.isArray(handle) &&
+    Object.keys(handle).length === 3 &&
+    Object.keys(handle).every((key) => ['version', 'grantId', 'requestId'].includes(key)) &&
+    handle.version === application?.version &&
+    typeof handle.grantId === 'string' &&
+    /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(handle.grantId) &&
+    typeof handle.requestId === 'string' &&
+    /^[a-zA-Z0-9_-]{16,128}$/.test(handle.requestId)
+  );
+}
+
+async function sendChatOperation(message) {
+  const prepare = message.type === 'chat-prepare-send';
+  const sending = message.type === 'chat-send';
+  const keys = prepare
+    ? ['type', 'id']
+    : sending
+      ? ['type', 'id', 'handle', 'text']
+      : ['type', 'id', 'handle'];
+  const refuse = (error) => reply(message.id, null, error, false);
+  if (
+    Object.keys(message).length !== keys.length ||
+    Object.keys(message).some((key) => !keys.includes(key)) ||
+    (!prepare && !validSendHandle(message.handle)) ||
+    (sending &&
+      (typeof message.text !== 'string' || !message.text.trim() || message.text.length > 4000))
+  ) {
+    refuse('Expected an exact send handle and bounded text; no origin or permission arguments');
+    return;
+  }
+  if (!application || !api || (prepare && document.hidden)) {
+    refuse('Preparing a send needs a visible live application');
+    return;
+  }
+  if (liveActions >= 8) {
+    refuse('Too many widget requests');
+    return;
+  }
+
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 10000);
+  liveActions++;
+  try {
+    if (prepare) {
+      // Obtain a fresh observed grant, not an app-supplied field or a cached
+      // optimistic acknowledgement. The backend still rechecks on admission.
+      const state = await fetchState({ signal: abort.signal });
+      const grant = state.chatSend;
+      if (
+        document.hidden ||
+        state.version !== application.version ||
+        grant?.allowed !== true ||
+        !(grant.remaining > 0)
+      ) {
+        throw Error('Chat sending needs current trusted consent and remaining quota');
+      }
+      const handle = {
+        version: application.version,
+        grantId: grant.grantId,
+        requestId: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+          byte.toString(16).padStart(2, '0'),
+        ).join(''),
+      };
+      if (!validSendHandle(handle)) {
+        throw Error('Invalid sending permission');
+      }
+      reply(message.id, handle, '', false);
+      return;
+    }
+
+    // No read grant or current-grant observation gate here: an old, already
+    // admitted handle must remain probeable after revocation/renewal. Current
+    // code/owner and original grant are checked by the service on every call.
+    const body = { ...message.handle, ...(sending ? { text: message.text } : {}) };
+    const response = await fetch(api + (sending ? '/chat-send' : '/chat-receipt'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+    if (!response.ok) {
+      throw Error('Chat operation was not confirmed');
+    }
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > 4096) {
+      throw Error('Chat receipt exceeds the response limit');
+    }
+    const value = JSON.parse(text);
+    const receipt = value?.receipt;
+    if (receipt === null && !sending) {
+      reply(message.id, null, '', false);
+      return;
+    }
+    if (
+      !receipt ||
+      receipt.version !== message.handle.version ||
+      receipt.grantId !== message.handle.grantId ||
+      receipt.requestId !== message.handle.requestId ||
+      !['reserved', 'queued', 'running', 'completed', 'failed', 'cancelled', 'unknown'].includes(
+        receipt.state,
+      )
+    ) {
+      throw Error('Invalid chat receipt');
+    }
+    reply(message.id, receipt, '', false);
+  } catch (error) {
+    // Qt deliberately hides non-200 bodies/status. Even a timeout, malformed
+    // response or lost acknowledgement may follow admission. Never replay.
+    refuse(
+      prepare
+        ? String(error.message || error).slice(0, 200)
+        : 'Chat outcome is unconfirmed; retain the original handle and inspect its receipt. Do not automatically resend.',
+    );
+  } finally {
+    clearTimeout(timer);
+    liveActions--;
+  }
+}
+
+// Optional, text-only chat reads. Neither the frame nor its state/actions may
+// grant access, select a conversation/version, or choose the polling cursor.
+// The service authorizes every request; this observed flag only avoids useless
+// requests and withdraws local cached/in-flight delivery after a known revoke.
+let chatAllowed = false;
+let chatEpoch = 0;
+let chatWatching = false;
+let chatNeedsSnapshot = false;
+let chatSnapshot = null;
+let chatFlight = null;
+let lastChatRead = -Infinity;
+
+function publishChat(includeSnapshot = true, error = '') {
+  if (chatWatching) {
+    frame.contentWindow.postMessage(
+      {
+        type: 'chat-update',
+        available: chatAllowed,
+        snapshot: includeSnapshot && chatAllowed ? chatSnapshot : null,
+        error,
+      },
+      '*',
+    );
+  }
+}
+
+function withdrawChat(error = 'Chat reading is not currently permitted') {
+  chatEpoch++;
+  chatAllowed = false;
+  chatSnapshot = null;
+  if (chatFlight) {
+    for (const id of chatFlight.readers.splice(0)) {
+      reply(id, null, error, false);
+    }
+    chatFlight.abort.abort();
+  }
+  publishChat(false, error);
+}
+
+// Every authoritative state observation has the same read-delivery effects,
+// including explicit reads and send preparation (not just interval refresh).
+// Transport/status/parse failures withdraw old delivery. Sender quota/consent
+// refusals happen AFTER this helper and must not revoke independent reading.
+async function fetchState(options) {
+  try {
+    const response = await fetch(api + '/state', options);
+    const snapshot = await response.json();
+    if (!response.ok) {
+      throw Error(typeof snapshot?.error === 'string' ? snapshot.error : 'Widget is unavailable');
+    }
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw Error('Invalid application state');
+    }
+    observeChatAccess(snapshot);
+    return snapshot;
+  } catch (error) {
+    if (application) {
+      withdrawChat('Application connection is unavailable');
+    }
+    throw error;
+  }
+}
+
+function observeChatAccess(snapshot) {
+  if (!application) {
+    return;
+  }
+  const allowed = snapshot.version === application.version && snapshot.chatReadAllowed === true;
+  if (!allowed && chatAllowed) {
+    withdrawChat();
+  } else if (allowed && !chatAllowed && !document.hidden) {
+    chatEpoch++;
+    chatAllowed = true;
+    publishChat(false);
+  }
+}
+
+function readChat(id) {
+  const refuse = (error) => {
+    if (id !== null) {
+      reply(id, null, error, false);
+    }
+  };
+  if (!application || !api || !chatAllowed || document.hidden) {
+    refuse('Chat reading is not currently permitted');
+    return;
+  }
+  if (chatFlight) {
+    if (chatFlight.epoch !== chatEpoch || chatFlight.readers.length >= 8) {
+      refuse('Too many pending chat reads');
+    } else if (id !== null) {
+      chatFlight.readers.push(id);
+    }
+    return;
+  }
+  // Direct raw-frame calls cannot accelerate subscription polling. A recent
+  // complete window may satisfy them; an idle window is refreshed, not replayed.
+  if (performance.now() - lastChatRead < 400) {
+    if (id !== null && chatSnapshot) {
+      reply(id, chatSnapshot, '', false);
+    } else {
+      refuse('Chat reads are busy; wait before reading again');
+    }
+    return;
+  }
+  if (liveActions >= 8) {
+    refuse('Too many widget requests');
+    return;
+  }
+
+  const flight = {
+    epoch: chatEpoch,
+    readers: id === null ? [] : [id],
+    abort: new AbortController(),
+  };
+  chatFlight = flight;
+  lastChatRead = performance.now();
+  liveActions++;
+  const timer = setTimeout(() => flight.abort.abort(), 10000);
+  const body = { version: application.version };
+  if (chatSnapshot) {
+    body.after = chatSnapshot.revision;
+  }
+  void fetch(api + '/chat-read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: flight.abort.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw Error('Chat reading is unavailable; check the trusted permission control');
+      }
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > 65536) {
+        throw Error('Chat response exceeds the text limit');
+      }
+      const value = JSON.parse(text);
+      if (document.hidden && flight.epoch === chatEpoch) {
+        withdrawChat('Chat reading is paused while the application is hidden');
+      }
+      if (flight.epoch !== chatEpoch || !chatAllowed) {
+        return;
+      }
+      if (value.changed === true && Array.isArray(value.messages)) {
+        chatSnapshot = value;
+      } else if (
+        value.changed !== false ||
+        !chatSnapshot ||
+        value.revision !== chatSnapshot.revision
+      ) {
+        throw Error('Invalid chat snapshot');
+      }
+      // Changed results replace the full window, including removed rows. An
+      // unchanged result keeps the same window; subscribers need no duplicate.
+      if (value.changed || chatNeedsSnapshot) {
+        publishChat();
+        chatNeedsSnapshot = false;
+      }
+      for (const reader of flight.readers.splice(0)) {
+        reply(reader, chatSnapshot, '', false);
+      }
+    })
+    .catch((error) => {
+      if (flight.epoch === chatEpoch) {
+        withdrawChat(String(error.message || error).slice(0, 200));
+      }
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      liveActions--;
+      if (chatFlight === flight) {
+        chatFlight = null;
+      }
+    });
+}
+
+// Hiding freezes delivery too, not merely the poll timer. Permission is
+// re-observed on the next visible state refresh before any subsequent read.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    withdrawChat('Chat reading is paused while the application is hidden');
+  }
+});
+window.addEventListener('pagehide', () => withdrawChat('Application view closed'));
+
+// State reads arrive from authored code, which may post them directly rather
+// than through the frame API's own limit. They share one in-flight GET /state:
+// at most eight callers wait for it, and it counts once against the same
+// eight-request budget as actions and queries. A read that joins an in-flight
+// request receives that request's answer, which may be up to one round trip
+// old. Capacity is released when the request settles, successfully or not.
+const maximumStateReaders = 8;
+const stateReaders = [];
+let stateReadInFlight = false;
+
+function readState(id) {
+  if (!api) {
+    reply(id, { revision, data: currentProps });
+    return;
+  }
+  if (stateReaders.length >= maximumStateReaders) {
+    reply(id, null, 'Too many pending state reads');
+    return;
+  }
+  if (!stateReadInFlight && liveActions >= 8) {
+    reply(id, null, 'Too many widget requests');
+    return;
+  }
+  stateReaders.push(id);
+  if (stateReadInFlight) {
+    return;
+  }
+
+  stateReadInFlight = true;
+  liveActions++;
+  const settle = (value, error) => {
+    stateReadInFlight = false;
+    liveActions--;
+    for (const reader of stateReaders.splice(0)) {
+      reply(reader, value, error);
+    }
+  };
+  void fetchState()
+    .then((value) => ({ revision: value.revision, data: value.props }))
+    .then(
+      (value) => settle(value, ''),
+      (error) => settle(null, error.message),
+    );
+}
+
+// One bounded POST to the view's own capability URL. Mutations refresh the
+// displayed state before resolving, so the page sees its own committed change.
+function send(path, body, id, refreshAfter) {
+  liveActions++;
+  void fetch(api + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(async (response) => {
+      const value = await response.json();
+      if (!response.ok) {
+        throw Error(value.error);
+      }
+      if (refreshAfter) {
+        await refresh();
+      }
+      reply(id, value);
+    })
+    .catch((error) => reply(id, null, error.message))
+    .finally(() => {
+      liveActions--;
+    });
+}
 
 let refreshing = false;
 async function refresh() {
@@ -133,11 +590,13 @@ async function refresh() {
   }
   refreshing = true;
   try {
-    const response = await fetch(api + '/state');
-    if (!response.ok) {
-      throw Error('Widget is unavailable');
+    const snapshot = await fetchState();
+    if (application && snapshot.version !== application.version) {
+      // The application's code was replaced. Load the new document; the
+      // capability URL stays the same and state lives in the service.
+      location.reload();
+      return;
     }
-    const snapshot = await response.json();
     const sidebarScale = followedTextScale(snapshot.textScale);
     if (snapshot.revision !== revision) {
       if (sidebarScale !== null) {
@@ -177,8 +636,19 @@ function setTheme(value) {
   applyTheme(value);
 }
 
-window.widgetHost = { command, update, reply, setTheme, takeRequests: () => requests.splice(0) };
-void update(bootstrap.props, bootstrap.theme, revision)
+// The first mount/update with the bootstrap state. Its own outcome is kept:
+// a session application is published only if this very attempt succeeded
+// (src/widgets/renderer.ts render()); a later retry proves nothing about it.
+const initialUpdate = update(bootstrap.props, bootstrap.theme, revision);
+window.widgetHost = {
+  command,
+  update,
+  reply,
+  setTheme,
+  takeRequests: () => requests.splice(0),
+  initial: () => initialUpdate.then(() => true),
+};
+void initialUpdate
   .then(() => {
     window.widgetReady = true;
   })
@@ -190,8 +660,17 @@ if (api) {
     if (document.hidden) {
       return;
     }
-    void refresh().catch((error) => {
-      status.textContent = error.message;
-    });
+    void refresh()
+      .then(() => {
+        if (chatWatching && chatAllowed && !document.hidden) {
+          readChat(null);
+        }
+      })
+      .catch((error) => {
+        if (application) {
+          withdrawChat('Application connection is unavailable');
+        }
+        status.textContent = error.message;
+      });
   }, 400);
 }

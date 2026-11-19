@@ -144,8 +144,10 @@ test('real desktop draft routing keeps external source distinct and confirms con
   );
   desktop.send({ action: 'panel-state', id: '', composerFocused: false, draftHost: true });
   await desktop.reply('panel-state');
-  for (const outcome of ['conflict', 'inserted', 'appended']) {
-    const pending = f.cli([
+  // The listener applies each proposal to its draft map: inserted into an
+  // empty draft, a conflict when text is there, appended only when asked.
+  for (const outcome of ['inserted', 'conflict', 'appended']) {
+    const result = await f.cli([
       'draft',
       '--label',
       'Rowan',
@@ -155,17 +157,51 @@ test('real desktop draft routing keeps external source distinct and confirms con
       outcome,
       ...(outcome === 'appended' ? ['--append'] : []),
     ]);
-    await waitFor(() => desktop.messages.some((message) => message.type === 'agent-draft'));
-    const index = desktop.messages.findIndex((message) => message.type === 'agent-draft');
-    const draft = desktop.messages.splice(index, 1)[0] as any;
-    assert.deepEqual(draft.source, { kind: 'external', title: 'Rowan' });
-    assert.equal(draft.focus, false);
-    assert.equal(draft.ifDraftExists, outcome === 'appended' ? 'append' : 'reject');
-    desktop.send({ action: 'agent-draft-result', requestId: draft.requestId, outcome });
-    await desktop.reply('agent-draft-result');
-    const result = await pending;
     assert.equal(result.code, outcome === 'conflict' ? 4 : 0);
   }
+  const drafts = desktop.messages.filter((message) => message.type === 'draft') as any[];
+  assert.deepEqual(
+    drafts.map((draft) => [draft.text, draft.source]),
+    [
+      ['inserted', 'external (unverified) · Rowan'],
+      ['inserted\n\nappended', 'external (unverified) · Rowan'],
+    ],
+  );
+  // While this editor reports a send from that conversation awaiting its
+  // reply, agent drafts are refused (also with --append); afterwards the
+  // append works again.
+  desktop.send({
+    action: 'panel-state',
+    id: '',
+    composerFocused: false,
+    draftHost: true,
+    pendingSend: id,
+  });
+  await desktop.reply('panel-state');
+  const pending = await f.cli([
+    'draft',
+    '--label',
+    'Rowan',
+    '--id',
+    id,
+    '--text',
+    'during send',
+    '--append',
+  ]);
+  assert.equal(pending.code, 4);
+  desktop.send({ action: 'panel-state', id: '', composerFocused: false, draftHost: true });
+  await desktop.reply('panel-state');
+  const after = await f.cli([
+    'draft',
+    '--label',
+    'Rowan',
+    '--id',
+    id,
+    '--text',
+    'after send',
+    '--append',
+  ]);
+  assert.equal(after.code, 0);
   assert.equal(f.prompts.length, 1);
 });
 

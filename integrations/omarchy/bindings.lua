@@ -44,10 +44,19 @@ local function panel_or_window(action, fallback)
   hl.dispatch(fallback)
 end
 
--- Companion requests a modest ordinary window. Keep it floating initially and
--- preserve the foreground application's focus when a new conversation appears.
--- Users can still tile it through their usual window-manager command.
-hl.window_rule({ match = { class = "^companion$" }, float = true, center = true, no_initial_focus = true })
+-- Every Companion window keeps the foreground application's focus when it
+-- appears; Companion asks for activation itself when the person wants it.
+hl.window_rule({ match = { class = "^companion$" }, no_initial_focus = true })
+-- The main Companion Window (always titled exactly "Companion") requests a
+-- modest ordinary window: keep it floating and centred initially. Users can
+-- still tile it through their usual window-manager command. Conversation
+-- pop-out windows ("<conversation> — Companion") are not matched, so they
+-- enter the workspace's tiling layout like any other new window.
+hl.window_rule({
+  match = { class = "^companion$", title = "^Companion$" },
+  float = true,
+  center = true,
+})
 
 hl.unbind("SUPER + ALT + TAB")
 hl.bind("SUPER + ALT + TAB", function()

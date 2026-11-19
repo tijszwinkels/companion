@@ -26,9 +26,49 @@ Item {
   // Hosts supply their surface color; floating controls blend it opaque.
   property color background: selection
   readonly property color overlayColor: Qt.tint(Qt.rgba(background.r, background.g, background.b, 1), selection)
+  // Voice projection: controls of the conversation speech currently goes to
+  // (`sessionId` is empty when there is none). It decides voice hints only.
   property var agentActions: ({})
+  // This connection's per-conversation controls (session ID -> actions), or
+  // null when the host has no view projection from its listener yet.
+  property var viewAgentActions: null
   property var pendingChoice: null
-  readonly property bool actionsCurrent: session !== null && agentActions.sessionId === session.id
+  // Whether speech goes to this conversation right now.
+  readonly property bool voiceTarget: session !== null && agentActions.sessionId === session.id
+  // Choice and stop controls for this conversation, whichever view is the
+  // voice target. Without a view projection (older listener) only the voice
+  // target has controls, as before.
+  readonly property var ownActions: {
+    if (session === null) return null
+    if (viewAgentActions === null) return voiceTarget ? agentActions : null
+    return viewAgentActions[session.id] || null
+  }
+  readonly property string ownStopRunId: ownActions ? ownActions.stopRunId || "" : ""
+  // Own choices, each with its voice hint only when the voice projection has
+  // the same conversation, choice revision and index. A label is never shown
+  // as speakable from another conversation's or an older set's annotation.
+  readonly property var displayedChoices: {
+    const own = ownActions ? ownActions.choices || [] : []
+    const voiceChoices = voiceTarget ? agentActions.choices || [] : []
+    return own.map(choice => {
+      const voice = voiceChoices.find(entry => entry.sessionId === choice.sessionId
+        && entry.revision === choice.revision && entry.index === choice.index)
+      return Object.assign({}, choice, {
+        voiceAvailable: voice ? voice.voiceAvailable === true : false,
+        voiceReason: voice ? voice.voiceReason || "" : choice.voiceReason || ""
+      })
+    })
+  }
+  // Where speech goes, shown beside this conversation's controls. Empty while
+  // offline; the choices then say "Disconnected". Pausing stops listening for
+  // every conversation, so it is shown whichever conversation is the target.
+  readonly property string voiceStatus: {
+    if (!online) return ""
+    if (paused) return "Voice paused"
+    if (voiceTarget) return "Voice: this conversation"
+    if (agentActions.sessionId) return "Voice: another conversation"
+    return "Voice: no conversation"
+  }
   // The desktop host supplies the shortcut; other hosts can leave it unset.
   property string focusShortcut: ""
   property real unit: 1
@@ -47,6 +87,9 @@ Item {
   property string displayedId: ""
   property bool followEnd: true
   property var drafts: ({})
+  // Conversation id -> cursor position of a draft received from another view
+  // while it was not displayed here; applied once when it is displayed.
+  property var draftCursors: ({})
   // Continuous scrolling (see HistoryRows.mjs). Older rows loaded while the
   // reader scrolls are kept here, separate from the live recent window, and
   // never fed back into authoritative state. When `historyAttached`, they end
@@ -138,8 +181,72 @@ Item {
   readonly property bool canSend: online && session !== null && pendingSubmission === null
     && pendingChoice === null && !recordingBusy
     && composer.text.trim().length > 0 && composer.text.length <= maximumMessageLength
-  readonly property string composerFocusId: online && composerReachable && composer.activeFocus
+  readonly property string composerFocusId: online
+    && (htmlActive ? htmlComposerFocused : composerReachable && composer.activeFocus)
     && root.Window.window && root.Window.window.active ? displayedId : ""
+
+  // Trusted HTML session surface (integrations/session-apps/). A host with
+  // embedded Chromium sets `htmlSurface`; the conversation then shows the
+  // HTML chat, or the conversation's own session application, in place of
+  // the QML transcript and composer below. This item stays the model in both
+  // cases: the same rows, host-owned draft, pending send/choice, recording
+  // and the draft handover functions used by pop-out windows. The QML
+  // presentation remains the trusted recovery ("Classic view"), and is used
+  // automatically while the HTML surface is not loaded or has failed.
+  property bool htmlSurface: false
+  property bool classicView: false
+  readonly property bool htmlActive: htmlSurface && nativeWidgets && !classicView
+    && htmlLoader.status === Loader.Ready && htmlLoader.item !== null && htmlLoader.item.operational
+    && !htmlLoader.item.failed
+  // Reported by the trusted HTML chat only (never by a session application).
+  readonly property bool htmlComposerFocused: htmlActive && htmlLoader.item.composerFocused
+  // The HTML surface shows the conversation's session application (not its
+  // chat). Hosts give an application more room then (see PanelContent).
+  readonly property bool applicationShown: htmlActive && htmlLoader.item.mode === "app"
+  // Host-side draft changes (agent drafts, recording, a completed send,
+  // handover, tab switch) advance this. Edits typed into the HTML composer
+  // do not; see ChatState.draftEditAllowed().
+  property int draftRevision: 0
+  property bool applyingPageDraft: false
+  // The listener owns every conversation's draft (last write received wins).
+  // `sharedDrafts` is this UI's mirror of it (Client.serverDrafts): showing a
+  // conversation reads it. Each real edit is written back through
+  // `draftWritten`, naming the conversation it was typed for. Loading or
+  // showing a draft is not an edit and writes nothing (`loadingDraft`).
+  property var sharedDrafts: null
+  property bool loadingDraft: false
+  signal draftWritten(string id, string text, bool recording)
+  // Conversations whose shown text is not saved in the listener, with the
+  // reason (Client.unsavedDrafts). Save writes it again; Discard shows the
+  // listener's version. Such a conversation does not move to another view
+  // or close until one of them is chosen.
+  property var unsavedDrafts: ({})
+  readonly property string displayedUnsaved: root.unsavedDrafts[root.displayedId] || ""
+  // The shown conversation has input only the HTML editor holds (see
+  // unresolvedInput): it cannot be closed meanwhile.
+  readonly property bool displayedUnresolved: root.unresolvedInput !== null && root.unresolvedInput.sessionId === root.displayedId
+  signal draftSaveRequested(string id)
+  signal draftDiscardRequested(string id)
+  function recordingInto(id) { return root.ownRecording !== null && root.ownRecording.id === id }
+
+  // Input only this view's HTML chat editor holds, because the host could
+  // not take it (longer than the page may hand over, or typed while words
+  // were being recorded into the draft): {sessionId, length, documentId},
+  // or null. Metadata only, never the text; at most one per view, because
+  // the page keeps at most one such input. While it is set, that
+  // conversation does not move to or from a window and does not close
+  // (transferBlocker), so the only editor holding the text stays.
+  property var unresolvedInput: null
+  function setUnresolvedInput(id, length, documentId) {
+    if (typeof id !== "string" || id === "" || id.length > 256) return false
+    if (!Number.isInteger(length) || length < 0) return false
+    if (length === 0) {
+      if (root.unresolvedInput && root.unresolvedInput.sessionId === id) root.unresolvedInput = null
+      return true
+    }
+    root.unresolvedInput = {sessionId: id, length: length, documentId: String(documentId).slice(0, 64)}
+    return true
+  }
   signal toolPageRequested(var request)
   signal toolPageReceived(var message)
   signal stopRequested(string id)
@@ -427,10 +534,80 @@ Item {
   }
 
   function focusComposer() {
+    if (root.htmlActive) {
+      if (root.online && root.visible && root.session) htmlLoader.item.focusComposer()
+      return
+    }
     if (root.online && root.composerReachable && root.session) composer.forceActiveFocus(Qt.ShortcutFocusReason)
   }
 
-  function releaseComposerFocus() { composer.focus = false }
+  function releaseComposerFocus() {
+    if (root.htmlActive) htmlLoader.item.releaseComposerFocus()
+    composer.focus = false
+  }
+
+  // The displayed conversation's draft, for the HTML composer.
+  function pageDraft() {
+    return {sessionId: root.displayedId, text: composer.text, cursor: composer.cursorPosition,
+      revision: root.draftRevision}
+  }
+
+  // The HTML composer's cursor moved without an edit.
+  function setPageCursor(cursor) {
+    composer.cursorPosition = Math.max(0, Math.min(cursor, composer.length))
+  }
+
+  // Replace the displayed draft with text typed in the HTML composer. The
+  // caller (ChatBridge.qml) has already checked the session and revision.
+  // Runs synchronously, so no host-side change interleaves.
+  // A draft change the listener accepted from another editor (or an older
+  // UI state being corrected). Shown without writing it back (no echo); the
+  // cursor stays where it was, within the new text.
+  function serverDraft(id, text, source) {
+    if (typeof id !== "string" || typeof text !== "string") return
+    if (text === "") delete root.drafts[id]
+    else root.drafts[id] = text
+    if (root.displayedId === id && composer.text !== text) {
+      const cursor = composer.cursorPosition
+      root.loadingDraft = true
+      composer.text = text
+      root.loadingDraft = false
+      composer.cursorPosition = Math.min(cursor, composer.length)
+    }
+    // The listener's provenance: an agent's source, or none after the
+    // person edited it.
+    if (source && text !== "") root.draftSources = Object.assign({}, root.draftSources, {[id]: source})
+    else root.forgetDraftSource(id)
+  }
+
+  // An edit typed for a conversation this view no longer shows (it arrived
+  // after a switch). It still belongs to that conversation: the listener
+  // keeps it there; the shown conversation is untouched.
+  function writeDraftFor(id, text) {
+    if (typeof id !== "string" || id === "" || typeof text !== "string") return false
+    if (id === root.displayedId) {
+      root.replaceDraftFromPage(text, text.length)
+      return true
+    }
+    if (text === "") delete root.drafts[id]
+    else root.drafts[id] = text
+    root.draftWritten(id, text, root.recordingInto(id))
+    return true
+  }
+
+  function replaceDraftFromPage(text, cursor) {
+    root.applyingPageDraft = true
+    composer.text = text
+    composer.cursorPosition = Math.max(0, Math.min(cursor, composer.length))
+    root.applyingPageDraft = false
+  }
+
+  // A choice selected in the HTML chat: the same path as AgentChoices below.
+  function requestChoice(id, revision, index) {
+    root.inputError = ""
+    root.pendingChoice = {id: id, revision: revision, index: index}
+    root.choiceRequested(id, revision, index)
+  }
 
   function submit() {
     if (!root.canSend) return
@@ -449,7 +626,14 @@ Item {
         delete root.drafts[id]
         root.forgetDraftSource(id)
       }
-      if (root.displayedId === id && composer.text === text) composer.text = ""
+      // Clearing the shown text is not an edit: it writes nothing. The
+      // listener already cleared its draft if it still was the sent text,
+      // and the Client then shows whatever the listener holds (R3-1).
+      if (root.displayedId === id && composer.text === text) {
+        root.loadingDraft = true
+        composer.text = ""
+        root.loadingDraft = false
+      }
     }
   }
 
@@ -517,12 +701,20 @@ Item {
     if (!own || own.id !== request.id || own.recordingId === "" || own.recordingId !== request.recordingId) {
       return {outcome: "unavailable", reason: "This panel is not recording into that conversation."}
     }
+    // A listener that applies recorded words itself (`applied`) sends them as
+    // an ordinary draft change; the panel only acknowledges the chunk.
+    if (request.applied === true) {
+      return {outcome: "appended", length: typeof request.length === "number" ? request.length : 0}
+    }
     const displayed = root.displayedId === request.id
     const current = displayed ? composer.text : (root.drafts[request.id] || "")
     const separator = current === "" || /\s$/.test(current) ? "" : " "
     const addition = separator + request.text
     if (displayed) composer.insert(composer.length, addition)
-    else root.drafts[request.id] = current + addition
+    else {
+      root.drafts[request.id] = current + addition
+      root.draftWritten(request.id, current + addition, true)
+    }
     return {outcome: "appended", length: current.length + addition.length}
   }
 
@@ -589,8 +781,75 @@ Item {
       composer.cursorPosition = composer.length
     } else {
       root.drafts[id] = next
+      root.draftWritten(id, next, false)
     }
     return {outcome: outcome, reason: ""}
+  }
+
+  // Moving a conversation between this view and another one (the sidebar and
+  // a pop-out window). Exactly one view owns a conversation's composer at a
+  // time; the host calls these synchronously, so no keystroke can interleave.
+
+  // Why this view's composer for `id` cannot move right now, or "". Pending
+  // acknowledgements and the recording are correlated with this view, so
+  // they must settle before the composer leaves it.
+  function transferBlocker(id) {
+    if (root.pendingSubmission && root.pendingSubmission.id === id) {
+      return "A message from this conversation is still being sent. Try again once it is confirmed."
+    }
+    if (root.pendingChoice && root.pendingChoice.id === id) {
+      return "A choice in this conversation is still being confirmed. Try again once it is answered."
+    }
+    if (root.ownRecording && root.ownRecording.id === id) {
+      return "Recording into this conversation is still running. Stop it and wait for the text first."
+    }
+    if (root.unsavedDrafts[id] !== undefined) {
+      return "This conversation's text is not saved yet. Save or discard it first."
+    }
+    if (root.unresolvedInput && root.unresolvedInput.sessionId === id) {
+      return "This conversation has text (" + root.unresolvedInput.length
+        + " characters) that is only in its editor. Shorten, copy or discard it first."
+    }
+    return ""
+  }
+
+  // The unsent text owned here for `id`, with its agent provenance, the
+  // cursor (only meaningful while displayed) and any recording notice.
+  function exportDraft(id) {
+    const displayed = root.displayedId === id
+    return {
+      text: displayed ? composer.text : (root.drafts[id] || ""),
+      cursor: displayed ? composer.cursorPosition : -1,
+      source: root.draftSources[id],
+      notice: root.recordingNotices[id] || ""
+    }
+  }
+
+  // Take ownership of a draft exported by another view. Returns whether this
+  // view now holds exactly that text, so the caller clears the old owner only
+  // after a confirmed handover.
+  function importDraft(id, draft) {
+    if (!draft || typeof draft.text !== "string") return false
+    if (draft.source !== undefined) root.draftSources = Object.assign({}, root.draftSources, {[id]: draft.source})
+    else root.forgetDraftSource(id)
+    root.setRecordingNotice(id, draft.notice || "")
+    if (root.displayedId === id) {
+      composer.text = draft.text
+      composer.cursorPosition = draft.cursor >= 0 ? Math.min(draft.cursor, composer.length) : composer.length
+    } else {
+      root.drafts[id] = draft.text
+      if (draft.cursor >= 0) root.draftCursors[id] = draft.cursor
+    }
+    return root.exportDraft(id).text === draft.text
+  }
+
+  // Forget `id`'s draft here after another view confirmed it holds the text.
+  function clearDraft(id) {
+    delete root.drafts[id]
+    delete root.draftCursors[id]
+    root.forgetDraftSource(id)
+    root.setRecordingNotice(id, "")
+    if (root.displayedId === id) composer.text = ""
   }
 
   function choiceSubmitted(id, revision, index, error) {
@@ -705,6 +964,14 @@ Item {
 
   function rowData(row) {
     const message = row.message
+    const origin = message.origin
+    const appMessage = !!origin && origin.kind === "application-message"
+    const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/
+    const appVerified = appMessage && typeof origin.name === "string" && /^[a-z][a-z0-9-]{0,47}$/.test(origin.name)
+      && Number.isSafeInteger(origin.version) && origin.version > 0 && origin.depth === 1
+      && typeof origin.applicationId === "string" && uuid.test(origin.applicationId)
+      && typeof origin.receiptId === "string" && uuid.test(origin.receiptId)
+      && typeof origin.bundle === "string" && /^[0-9a-f]{64}$/.test(origin.bundle)
     return {rowKey: row.key, messageId: message.id, kind: message.kind, body: message.text,
       toolName: message.toolName, input: message.input, state: message.state,
       toolCount: message.toolGroup ? message.toolGroup.count : 0,
@@ -715,8 +982,16 @@ Item {
       screenshotNotSaved: message.screenshotSaved === false,
       fromWake: message.origin ? message.origin.kind === "scheduled-wake" : false,
       fromExternal: message.origin ? message.origin.kind === "external" : false,
+      // The person's own committed edits in this conversation's session
+      // application, delivered by the host as a turn; not another agent.
+      fromApplication: message.origin ? message.origin.kind === "application-event" : false,
+      fromAppMessage: appMessage,
       fromAgent: message.origin !== undefined && message.origin !== null,
-      originTitle: message.origin ? message.origin.title || "" : "",
+      // App labels derive only from host metadata, never a body prefix or an
+      // arbitrary title. Malformed app provenance stays explicitly non-human.
+      originTitle: appMessage ? (appVerified ? origin.name + " · v" + origin.version : "unverified application origin")
+        : message.origin ? message.origin.title || "" : "",
+      originReceiptId: appVerified ? origin.receiptId : "",
       // External origins carry unverified labels, never a linkable conversation.
       originSessionId: message.origin && message.origin.kind === "agent" ? message.origin.sessionId || "" : "",
       originGroupId: message.origin && message.origin.kind === "agent" ? message.origin.sourceGroupId || "" : "",
@@ -854,7 +1129,18 @@ Item {
       root.shownRows = []
       root.resetHistory()
       root.displayedId = id
-      composer.text = root.drafts[id] || ""
+      // Showing a conversation reads its draft; it never writes one.
+      // With the listener's mirror, a conversation it has no draft for is
+      // empty; a view's own older copy never comes back.
+      const shown = root.sharedDrafts ? (root.sharedDrafts[id] || "") : (root.drafts[id] || "")
+      root.loadingDraft = true
+      composer.text = shown
+      root.loadingDraft = false
+      // A draft handed over from another view keeps its cursor position.
+      if (root.draftCursors[id] !== undefined) {
+        composer.cursorPosition = Math.min(root.draftCursors[id], composer.length)
+        delete root.draftCursors[id]
+      }
       root.inputError = ""
     }
 
@@ -912,6 +1198,7 @@ Item {
   ListView {
     id: transcript
     objectName: "sessionTranscript"
+    visible: !root.htmlActive
     anchors.fill: parent
     anchors.bottomMargin: inputSection.height + 12 * root.unit
     clip: true
@@ -985,6 +1272,9 @@ Item {
       required property bool fromExternal
       required property bool fromAgent
       required property bool fromWake
+      required property bool fromApplication
+      required property bool fromAppMessage
+      required property string originReceiptId
       required property string originTitle
       required property string originSessionId
       required property string originGroupId
@@ -1061,7 +1351,7 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: bubble.kind === "tool" ? (bubble.expanded ? "▾ " : "▸ ") + (bubble.toolCount ? bubble.toolCount + " tool call" + (bubble.toolCount === 1 ? "" : "s") : bubble.toolName)
               + (bubble.toolUnavailable ? " · details unavailable" : bubble.state === "running" ? " · running" : bubble.state === "error" ? " · failed or stopped" : "")
-              : bubble.kind === "user" ? (bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
+              : bubble.kind === "user" ? (bubble.fromAppMessage ? "Application · " + bubble.originTitle + (bubble.originReceiptId ? " · receipt " + bubble.originReceiptId.slice(0, 8) : "") : bubble.fromApplication ? "Your edits in this conversation's app" : bubble.fromAgent ? (bubble.fromWake ? "Scheduled wake · " : bubble.fromExternal ? "External agent (unverified) · " : "Agent · ") + (bubble.originTitle || "another conversation") : "You")
                 + (bubble.state === "queued" ? " · queued" : bubble.state === "error" ? " · not sent" : "")
                 + (bubble.screenshot ? (bubble.screenshotUrl ? " · screenshot attached" : bubble.screenshotNotSaved ? " · screenshot not saved" : " · screenshot unavailable") : "") + bubble.fragmentLabel : "Pi" + bubble.fragmentLabel
             textFormat: Text.PlainText
@@ -1285,7 +1575,7 @@ Item {
       else if (action === "Refresh") root.refreshHistory()
       else if (action === "Load") root.loadOlder()
     }
-    visible: message !== "" && root.session !== null
+    visible: message !== "" && root.session !== null && !root.htmlActive
     // Sized from the text's natural width (not its laid-out width, which
     // depends on this size). Leaves room for the Jump to latest arrow.
     readonly property real actionSpace: statusAction.visible ? statusAction.implicitWidth + 8 * root.unit : 0
@@ -1333,7 +1623,7 @@ Item {
   Rectangle {
     id: latestArrow
     objectName: "jumpToLatest"
-    visible: root.session !== null && !root.atLatest
+    visible: root.session !== null && !root.atLatest && !root.htmlActive
     width: 32 * root.unit
     height: width
     x: transcript.x + transcript.width - width - 12 * root.unit
@@ -1368,15 +1658,18 @@ Item {
     id: inputSection
     anchors.bottom: parent.bottom
     width: parent.width
+    visible: !root.htmlActive
     spacing: 8 * root.unit
 
     AgentChoices {
       objectName: "agentChoices"
       width: parent.width
       maximumHeight: root.choiceHeightLimit
-      choices: root.actionsCurrent ? root.agentActions.choices || [] : []
-      sessionId: root.actionsCurrent ? root.session.id : ""
-      stopRunId: root.actionsCurrent ? root.agentActions.stopRunId || "" : ""
+      choices: root.displayedChoices
+      sessionId: root.ownActions ? root.session.id : ""
+      stopRunId: root.ownStopRunId
+      voiceTarget: root.voiceTarget
+      voiceStatus: root.voiceStatus
       online: root.online
       listening: !root.paused
       pending: root.pendingChoice !== null || root.pendingSubmission !== null
@@ -1386,11 +1679,7 @@ Item {
       selection: root.selection
       fontFamily: root.proseFontFamily
       unit: root.unit
-      onChoiceRequested: (id, revision, index) => {
-        root.inputError = ""
-        root.pendingChoice = {id: id, revision: revision, index: index}
-        root.choiceRequested(id, revision, index)
-      }
+      onChoiceRequested: (id, revision, index) => root.requestChoice(id, revision, index)
       onStopRequested: (id, runId) => root.stopRunRequested(id, runId)
     }
 
@@ -1403,7 +1692,7 @@ Item {
       TextArea {
         id: composer
         objectName: "sessionComposer"
-        enabled: root.composerReachable
+        enabled: root.composerReachable && !root.htmlActive
         width: composerScroll.availableWidth
         placeholderText: !root.composerFocusId && root.focusShortcut
           ? root.focusShortcut + " to focus"
@@ -1424,8 +1713,12 @@ Item {
           radius: 4 * root.unit
         }
         onTextChanged: {
+          if (!root.applyingPageDraft) root.draftRevision++
           if (root.displayedId) root.drafts[root.displayedId] = text
           if (text === "") root.forgetDraftSource(root.displayedId)
+          // An edit of the shown conversation (typing here or in the HTML
+          // chat, an agent draft, recorded words): the listener keeps it.
+          if (root.displayedId && !root.loadingDraft) root.draftWritten(root.displayedId, text, root.recordingInto(root.displayedId))
         }
         onSelectedTextChanged: if (selectedText !== "") root.clearMessageSelection()
         TapHandler { onPressedChanged: if (pressed) root.clearMessageSelection() }
@@ -1438,6 +1731,45 @@ Item {
         Keys.onReturnPressed: event => root.enterPressed(event)
         Keys.onEnterPressed: event => root.enterPressed(event)
         Accessible.name: "Message to the selected agent session"
+      }
+    }
+
+    // Text the listener has not saved (see unsavedDrafts).
+    Column {
+      objectName: "unsavedDraft"
+      width: parent.width
+      visible: root.displayedUnsaved !== ""
+      spacing: 4 * root.unit
+      Text {
+        width: parent.width
+        text: root.displayedUnsaved
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: "#ef5350"
+        font.family: root.fontFamily
+        font.pixelSize: 11 * root.unit
+      }
+      Row {
+        spacing: 8 * root.unit
+        PanelAction {
+          objectName: "unsavedDraftSave"
+          enabled: root.online
+          text: "Save"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.draftSaveRequested(root.displayedId)
+        }
+        PanelAction {
+          objectName: "unsavedDraftDiscard"
+          text: "Discard"
+          foreground: root.foreground
+          selection: root.selection
+          fontFamily: root.fontFamily
+          unit: root.unit
+          onTriggered: root.draftDiscardRequested(root.displayedId)
+        }
       }
     }
 
@@ -1516,7 +1848,7 @@ Item {
       }
       PanelAction {
         objectName: "stopSession"
-        visible: root.running && !(root.actionsCurrent && root.agentActions.stopRunId)
+        visible: root.running && root.ownStopRunId === ""
         enabled: root.online
         text: "Stop"
         foreground: root.foreground
@@ -1525,9 +1857,21 @@ Item {
         unit: root.unit
         onTriggered: root.stopRequested(root.session.id)
       }
+      // Back from the recovery view to the trusted HTML surface.
+      PanelAction {
+        objectName: "htmlViewSession"
+        visible: root.htmlSurface && root.nativeWidgets && root.classicView
+        text: "HTML view"
+        foreground: root.foreground
+        selection: root.selection
+        fontFamily: root.fontFamily
+        unit: root.unit
+        onTriggered: root.classicView = false
+      }
       PanelAction {
         objectName: "dismissSession"
-        enabled: root.online && root.session !== null && !root.recordingBusy
+        enabled: root.online && root.session !== null && !root.recordingBusy && root.displayedUnsaved === ""
+          && !root.displayedUnresolved
         text: "Close session"
         foreground: root.foreground
         selection: root.selection
@@ -1546,5 +1890,371 @@ Item {
         font.pixelSize: 10 * root.unit
       }
     }
+  }
+
+  // ---- Optional app-chat consent (trusted native UI only) -----------------
+  // This component is mounted and its command/reply signal wired by the HTML
+  // surface adapter. Until then it is inert; no app code or generic HTML
+  // composer bridge receives these methods. It never reads or changes a draft.
+  property bool appChatPermissionTransportReady: false
+  readonly property var appChatApplication: session && session.application ? session.application : null
+  readonly property var appChatAccess: appChatApplication && appChatApplication.chatAccess ? appChatApplication.chatAccess : null
+  readonly property bool appChatReadRequested: appChatAccess !== null && Array.isArray(appChatAccess.requested)
+    && appChatAccess.requested.indexOf("chat.read") >= 0
+  readonly property bool appChatSendRequested: appChatAccess !== null && Array.isArray(appChatAccess.requested)
+    && appChatAccess.requested.indexOf("chat.send") >= 0
+  readonly property var appChatSendAccess: appChatAccess && appChatAccess.send ? appChatAccess.send : null
+  readonly property string appChatIdentity: session && appChatApplication && appChatAccess
+    ? session.id + ":" + appChatApplication.id + ":" + appChatApplication.version + ":" + appChatAccess.revision : ""
+  property string appChatDisclosureIdentity: ""
+  readonly property bool appChatDisclosureOpen: appChatIdentity !== "" && appChatDisclosureIdentity === appChatIdentity
+  property string appChatSendDisclosureIdentity: ""
+  readonly property bool appChatSendDisclosureOpen: appChatIdentity !== "" && appChatSendDisclosureIdentity === appChatIdentity
+  property var appChatPermissionPending: null
+  property string appChatPermissionError: ""
+  // The controls are collapsed by default, so the application gets the room
+  // (#16): the HTML surface then shows `appChatPermissionSummary` and a
+  // Permissions button in its existing Chat/application row instead
+  // (SessionSurface.qml). The person expands them on demand; an open
+  // disclosure, a request awaiting confirmation or its error keeps them
+  // expanded. Showing another conversation collapses them again. Collapsing
+  // changes no permission and hides no state: the summary says what is
+  // allowed now.
+  property bool appChatPermissionExpanded: false
+  readonly property bool appChatPermissionOpen: root.appChatPermissionExpanded || root.appChatDisclosureOpen
+    || root.appChatSendDisclosureOpen || root.appChatPermissionPending !== null || root.appChatPermissionError !== ""
+  readonly property string appChatPermissionConversation: session ? session.id : ""
+  onAppChatPermissionConversationChanged: root.appChatPermissionExpanded = false
+  // The collapsed controls' status, short enough for the surface's
+  // Chat/application row: the same facts as the expanded status lines
+  // (reading on/off; sending on with remaining attempts, used up, off or
+  // unavailable; an active app message; disconnected), in fewer words.
+  readonly property string appChatPermissionSummary: {
+    const parts = []
+    if (root.appChatReadRequested) {
+      parts.push("Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "on" : "off"))
+    }
+    if (root.appChatSendRequested) {
+      const send = root.appChatSendAccess
+      parts.push(!send ? "sending unavailable"
+        : !send.allowed ? "sending off"
+        : send.remaining > 0 ? "sending on, " + send.remaining + "/5 left" : "sending used up")
+      if (send && send.busy) parts.push("app message active")
+    }
+    if (!root.online) parts.push("Disconnected")
+    return parts.join(" · ")
+  }
+  property int appChatPermissionTimeoutMilliseconds: 10000
+  readonly property bool appChatCanChange: root.visible && root.online && root.appChatPermissionTransportReady
+    && (root.appChatReadRequested || root.appChatSendRequested) && root.appChatIdentity !== "" && root.appChatPermissionPending === null
+  signal appChatPermissionRequested(var request)
+
+  // A different conversation, replacement, reopen or permission update cannot
+  // inherit an open confirmation or be changed by an earlier request's reply.
+  onAppChatIdentityChanged: {
+    root.appChatDisclosureIdentity = ""
+    root.appChatSendDisclosureIdentity = ""
+    root.appChatPermissionPending = null
+    root.appChatPermissionError = ""
+    appChatPermissionDeadline.stop()
+  }
+
+  function reviewAppChatAccess() {
+    if (!root.appChatCanChange || !root.appChatReadRequested) return false
+    root.appChatDisclosureIdentity = root.appChatIdentity
+    root.appChatSendDisclosureIdentity = ""
+    root.appChatPermissionError = ""
+    return true
+  }
+
+  function reviewAppChatSending() {
+    if (!root.appChatCanChange || !root.appChatSendRequested || !root.appChatSendAccess) return false
+    root.appChatSendDisclosureIdentity = root.appChatIdentity
+    root.appChatDisclosureIdentity = ""
+    root.appChatPermissionError = ""
+    return true
+  }
+
+  function requestAppChatRead(allowed) { return root.requestAppChatPermission("read", allowed) }
+  function requestAppChatSend(allowed) { return root.requestAppChatPermission("send", allowed) }
+
+  function requestAppChatPermission(kind, allowed) {
+    if (typeof allowed !== "boolean" || !root.appChatCanChange) return false
+    if (kind === "read") {
+      if (!root.appChatReadRequested || (allowed && !root.appChatDisclosureOpen)) return false
+    } else if (kind === "send") {
+      if (!root.appChatSendRequested || !root.appChatSendAccess || (allowed && !root.appChatSendDisclosureOpen)) return false
+    } else return false
+    // Each kind has its own exact-identity disclosure. Neither permits the
+    // other; renewals need a new review and revocations never need disclosure.
+    const request = {
+      action: "set-application-chat-" + kind,
+      requestId: "app-chat-" + kind + "-" + Date.now() + "-" + Math.random().toString(36).slice(2),
+      id: root.session.id,
+      applicationId: root.appChatApplication.id,
+      version: root.appChatApplication.version,
+      revision: root.appChatAccess.revision,
+      allowed: allowed
+    }
+    root.appChatPermissionPending = {requestId: request.requestId, action: request.action, identity: root.appChatIdentity}
+    root.appChatPermissionError = ""
+    appChatPermissionDeadline.restart()
+    root.appChatPermissionRequested(request)
+    return true
+  }
+
+  function receiveAppChatPermissionResult(message) {
+    const pending = root.appChatPermissionPending
+    if (!pending || !message || message.action !== pending.action
+      || message.requestId !== pending.requestId || pending.identity !== root.appChatIdentity
+      || (message.type !== "result" && message.type !== "error")) return false
+    appChatPermissionDeadline.stop()
+    root.appChatPermissionPending = null
+    // Never optimistically change the descriptor. Its next snapshot/patch is
+    // the authority, including when it arrives before this acknowledgement.
+    root.appChatDisclosureIdentity = ""
+    root.appChatSendDisclosureIdentity = ""
+    root.appChatPermissionError = message.type === "error"
+      ? String(message.message || "Permission was not changed.").slice(0, 500) : ""
+    return true
+  }
+
+  Timer {
+    id: appChatPermissionDeadline
+    interval: root.appChatPermissionTimeoutMilliseconds
+    onTriggered: {
+      if (!root.appChatPermissionPending) return
+      root.appChatPermissionPending = null
+      root.appChatDisclosureIdentity = ""
+      root.appChatSendDisclosureIdentity = ""
+      root.appChatPermissionError = "No confirmation received. Permission may have changed; check its current status before trying again."
+    }
+  }
+
+  component AppChatPermissionButton: Button {
+    id: permissionButton
+    property var scrollHost: null
+    onActiveFocusChanged: if (activeFocus && scrollHost) scrollHost.reveal(permissionButton)
+    width: parent ? Math.min(implicitWidth, parent.width) : implicitWidth
+    padding: 8 * root.unit
+    focusPolicy: Qt.StrongFocus
+    font.family: root.fontFamily
+    font.pixelSize: 12 * root.textScale
+    contentItem: Text {
+      text: permissionButton.text
+      font: permissionButton.font
+      color: root.foreground
+      textFormat: Text.PlainText
+      wrapMode: Text.Wrap
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+    }
+    background: Rectangle {
+      implicitWidth: 80 * root.unit
+      implicitHeight: 32 * root.unit
+      color: root.selection
+      opacity: permissionButton.enabled ? 1 : 0.45
+      border.color: permissionButton.activeFocus ? root.accent : "transparent"
+      border.width: permissionButton.activeFocus ? 2 : 0
+      radius: 3 * root.unit
+    }
+  }
+
+  readonly property Component appChatPermissionControl: Component {
+    Rectangle {
+      objectName: "appChatPermissionControl"
+      color: root.overlayColor
+      // Collapsed, the control takes no height at all; its summary is shown
+      // by the surface's existing row (see appChatPermissionExpanded).
+      visible: (root.appChatReadRequested || root.appChatSendRequested) && root.appChatPermissionOpen
+      // The disclosure scrolls instead of covering the trusted Chat/app bar
+      // or taking the whole available conversation height at large text scale.
+      implicitHeight: visible ? Math.min(appChatPermissionContent.implicitHeight + 16 * root.unit,
+        Math.max(0, root.height * 0.55)) : 0
+      clip: true
+      Flickable {
+        id: appChatPermissionScroll
+        objectName: "appChatPermissionScroll"
+        anchors.fill: parent
+        anchors.margins: 8 * root.unit
+        contentWidth: width
+        contentHeight: appChatPermissionContent.implicitHeight
+        function reveal(item) {
+          const point = item.mapToItem(contentItem, 0, 0)
+          const next = point.y < contentY ? point.y
+            : point.y + item.height > contentY + height ? point.y + item.height - height : contentY
+          contentY = Math.max(0, Math.min(next, contentHeight - height))
+        }
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar {}
+        Column {
+          id: appChatPermissionContent
+          width: parent.width
+          spacing: 6 * root.unit
+          Text {
+            objectName: "appChatPermissionStatus"
+            width: parent.width
+            text: (root.appChatApplication ? root.appChatApplication.name + " · v" + root.appChatApplication.version : "")
+              + (root.appChatReadRequested ? " — Chat reading " + (root.appChatAccess && root.appChatAccess.read ? "allowed" : "off") : "")
+              + (!root.online ? " · Disconnected" : "")
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.fontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Text {
+            objectName: "appChatPermissionDisclosure"
+            width: parent.width
+            visible: root.appChatDisclosureOpen
+            text: "Allow this app to read recent text from this conversation, including earlier messages and live replies? Drafts, tools and attachments are excluded.\n\n"
+              + "The app can copy text into its saved state or agent-visible actions. Revoking stops future reads but cannot erase copies. In-flight reads may finish. Access ends when app code changes, the conversation is reopened, or Companion restarts. Sending requires separate permission."
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.proseFontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Flow {
+            width: parent.width
+            visible: root.appChatReadRequested
+            spacing: 8 * root.unit
+            AppChatPermissionButton {
+              objectName: "appChatReviewRead"
+              scrollHost: appChatPermissionScroll
+              visible: !root.appChatDisclosureOpen && !(root.appChatAccess && root.appChatAccess.read)
+              enabled: root.appChatCanChange
+              text: "Review chat access"
+              onClicked: root.reviewAppChatAccess()
+            }
+            AppChatPermissionButton {
+              objectName: "appChatAllowRead"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatDisclosureOpen && !(root.appChatAccess && root.appChatAccess.read)
+              enabled: root.appChatCanChange
+              text: "Allow reading"
+              onClicked: root.requestAppChatRead(true)
+            }
+            AppChatPermissionButton {
+              objectName: "appChatDeclineRead"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatDisclosureOpen
+              enabled: root.appChatPermissionPending === null
+              text: "Not now"
+              onClicked: root.appChatDisclosureIdentity = ""
+            }
+            AppChatPermissionButton {
+              objectName: "appChatRevokeRead"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatAccess !== null && root.appChatAccess.read === true
+              enabled: root.appChatCanChange
+              text: "Revoke reading"
+              onClicked: root.requestAppChatRead(false)
+            }
+          }
+          Text {
+            objectName: "appChatSendStatus"
+            width: parent.width
+            visible: root.appChatSendRequested
+            text: "App sending " + (!root.appChatSendAccess ? "unavailable on this host"
+              : root.appChatSendAccess.allowed ? (root.appChatSendAccess.remaining > 0 ? "allowed" : "exhausted") + " · " + root.appChatSendAccess.remaining + " of 5 attempts remaining" : "off")
+              + (root.appChatSendAccess && root.appChatSendAccess.busy ? " · app message active" : "")
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.fontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Text {
+            objectName: "appChatSendDisclosure"
+            width: parent.width
+            visible: root.appChatSendDisclosureOpen
+            text: "Allow this exact app code to send up to 5 messages to this conversation's agent, without asking you for each message? These are labelled app messages, not authenticated human input or new authorization. Reading and drafts are not granted.\n\n"
+              + "One app message can be active at a time, with at least two seconds between admissions. Failed or uncertain attempts can consume quota; they are never retried automatically. Revoking or replacing code withdraws unstarted app messages, but already-running work may have effects and continues until finished or stopped. Use the conversation's Stop control to halt it; Stop also revokes sending.\n\n"
+              + "A new grant replaces the old quota and withdraws unstarted app messages. Existing application-edit notifications remain separate; this quota covers app chat sends only. Consent ends on code replacement, close/reopen or Companion restart. Merely hiding this view does not revoke backend consent."
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.proseFontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.foreground
+          }
+          Flow {
+            width: parent.width
+            visible: root.appChatSendRequested
+            spacing: 8 * root.unit
+            AppChatPermissionButton {
+              objectName: "appChatReviewSend"
+              scrollHost: appChatPermissionScroll
+              visible: !root.appChatSendDisclosureOpen
+              enabled: root.appChatCanChange && root.appChatSendAccess !== null
+              text: root.appChatSendAccess && root.appChatSendAccess.allowed ? "Review new sending grant" : "Review app sending"
+              onClicked: root.reviewAppChatSending()
+            }
+            AppChatPermissionButton {
+              objectName: "appChatAllowSend"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatSendDisclosureOpen
+              enabled: root.appChatCanChange && root.appChatSendAccess !== null
+              text: "Allow 5 app messages"
+              onClicked: root.requestAppChatSend(true)
+            }
+            AppChatPermissionButton {
+              objectName: "appChatDeclineSend"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatSendDisclosureOpen
+              enabled: root.appChatPermissionPending === null
+              text: "Not now"
+              onClicked: root.appChatSendDisclosureIdentity = ""
+            }
+            AppChatPermissionButton {
+              objectName: "appChatRevokeSend"
+              scrollHost: appChatPermissionScroll
+              visible: root.appChatSendAccess !== null && root.appChatSendAccess.allowed === true
+              enabled: root.appChatCanChange
+              text: "Revoke sending"
+              onClicked: root.requestAppChatSend(false)
+            }
+          }
+          Text {
+            objectName: "appChatPermissionFeedback"
+            width: parent.width
+            visible: text !== ""
+            text: root.appChatPermissionPending ? "Waiting for permission confirmation…" : root.appChatPermissionError
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: root.proseFontFamily
+            font.pixelSize: 12 * root.textScale
+            color: root.muted
+          }
+          // Back to the one-line status. Not offered while a disclosure is
+          // open or a change awaits its answer: those stay in view.
+          AppChatPermissionButton {
+            objectName: "appChatPermissionCollapse"
+            scrollHost: appChatPermissionScroll
+            visible: root.appChatPermissionExpanded && !root.appChatDisclosureOpen && !root.appChatSendDisclosureOpen
+              && root.appChatPermissionPending === null
+            text: "Hide permissions"
+            onClicked: {
+              root.appChatPermissionExpanded = false
+              root.appChatPermissionError = ""
+            }
+            Accessible.name: "Hide this application's chat permission controls"
+          }
+        }
+      }
+    }
+  }
+  // ---- End app-chat consent ------------------------------------------------
+
+  // Loaded only when a host enables it; the portable Quickshell panel never
+  // resolves this path or the WebEngine modules it imports.
+  Loader {
+    id: htmlLoader
+    objectName: "htmlSurfaceLoader"
+    anchors.fill: parent
+    active: root.htmlSurface && root.nativeWidgets
+    visible: root.htmlActive
+    source: active ? Qt.resolvedUrl("../session-apps/SessionSurface.qml") : ""
+    onLoaded: item.view = root
   }
 }

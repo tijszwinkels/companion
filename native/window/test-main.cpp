@@ -1,7 +1,9 @@
 #include "host.hpp"
 #include "rendering.hpp"
 #include "../widget-renderer/initialize.hpp"
+#include <QClipboard>
 #include <QGuiApplication>
+#include <QMimeData>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QQmlContext>
@@ -30,19 +32,47 @@ public:
     }
 };
 
+// Reads this test process's own clipboard as the native plain-text export
+// (the text/plain MIME bytes another application would receive), not the
+// QString a QML TextEdit would paste. Offscreen Qt keeps the clipboard in
+// this process; the desktop clipboard is never involved.
+class TestClipboard : public QObject {
+    Q_OBJECT
+public:
+    Q_INVOKABLE int plainTextBytes() const {
+        const QMimeData *data = QGuiApplication::clipboard()->mimeData();
+        return data ? int(data->data("text/plain").size()) : -1;
+    }
+    Q_INVOKABLE bool plainTextEquals(const QString &expected) const {
+        const QMimeData *data = QGuiApplication::clipboard()->mimeData();
+        return data && data->data("text/plain") == expected.toUtf8();
+    }
+    // The exported bytes, decoded as UTF-8, so a test can compare them with
+    // the source text it expects (a dropped character shows as a mismatch).
+    Q_INVOKABLE QString plainTextDecoded() const {
+        const QMimeData *data = QGuiApplication::clipboard()->mimeData();
+        return data ? QString::fromUtf8(data->data("text/plain")) : QString();
+    }
+};
+
 class Setup : public QObject {
     Q_OBJECT
     std::unique_ptr<WindowHost> host;
     TestScreens screens;
+    TestClipboard clipboard;
     WidgetRendering widgetRendering;
 public slots:
     void qmlEngineAvailable(QQmlEngine *engine) {
         host = std::make_unique<WindowHost>(nullptr, true);
         engine->rootContext()->setContextProperty("TestHost", host.get());
         engine->rootContext()->setContextProperty("TestScreens", &screens);
+        engine->rootContext()->setContextProperty("TestClipboard", &clipboard);
         engine->rootContext()->setContextProperty("CompanionRenderDiagnostics", qEnvironmentVariableIsSet("COMPANION_TEST_RENDER_DIAGNOSTICS"));
         widgetRendering.setMode(qEnvironmentVariable("COMPANION_TEST_WIDGET_RENDERING", widgetRendering.mode()));
         engine->rootContext()->setContextProperty("CompanionWidgetRendering", &widgetRendering);
+        // Existing suites exercise the classic QML view; HTML surface tests opt in.
+        engine->rootContext()->setContextProperty("CompanionSessionSurface",
+            qEnvironmentVariable("COMPANION_TEST_SESSION_SURFACE", "classic"));
     }
 };
 

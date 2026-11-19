@@ -261,6 +261,27 @@ test(
     );
     assert.match(await text(page, '.message.assistant .bubble'), /<img src=x/);
 
+    // Canonical app provenance is a plain-text label, not a phone sending capability.
+    run.emit({
+      ...chatMessage('app-origin', 'user', '<b>Synthetic app input</b>'),
+      origin: {
+        kind: 'application-message',
+        applicationId: '11111111-1111-4111-8111-111111111111',
+        name: 'synthetic-app',
+        version: 3,
+        bundle: 'a'.repeat(64),
+        receiptId: '22222222-2222-4222-8222-222222222222',
+        title: 'synthetic-app · v3',
+        depth: 1,
+      },
+    });
+    await page.waitFor(`document.querySelector('.message.user .from')`);
+    assert.equal(
+      await text(page, '.message.user .from'),
+      'Application · synthetic-app · v3 · receipt 22222222',
+    );
+    assert.equal(await page.evaluate(`document.querySelectorAll('.message.user b').length`), 0);
+
     // While running, the stop button is offered and works.
     await page.waitFor(`document.querySelector('.action.stop')`);
 
@@ -322,7 +343,7 @@ test('a refused send keeps the draft and explains why', { skip }, async (context
 });
 
 test(
-  'sixteen phone tabs stay reachable and a refused seventeenth keeps its draft',
+  '32 phone tabs stay reachable and a refused thirty-third keeps its draft',
   { skip },
   async (context) => {
     const { fixture, browser } = await setup(context, {
@@ -330,33 +351,33 @@ test(
         emit({ ...chatMessage('answer', 'assistant', 'Completed fixture'), state: 'done' });
       },
     });
-    for (let number = 1; number <= 16; number++) {
+    for (let number = 1; number <= 32; number++) {
       const id = fixture.sessions.start({ ...frame, utterance: `Fixture ${number}` }, signal());
       await waitFor(() => fixture.sessions.interaction(id).agentAcceptsFollowUp);
     }
 
     for (const width of [320, 390]) {
       const page = await pairedPhone(fixture, browser, width, 568);
-      await page.waitFor(`document.querySelectorAll('.session-tab').length === 16`);
-      await page.tap('.session-tab:nth-child(16)');
-      await page.waitFor(`document.querySelector('.session-tab:nth-child(16)[aria-current=page]')`);
+      await page.waitFor(`document.querySelectorAll('.session-tab').length === 32`);
+      await page.tap('.session-tab:nth-child(32)');
+      await page.waitFor(`document.querySelector('.session-tab:nth-child(32)[aria-current=page]')`);
       await page.waitFor(
-        `document.querySelector('.message.user')?.textContent.includes('Fixture 16')`,
+        `document.querySelector('.message.user')?.textContent.includes('Fixture 32')`,
       );
-      assert.ok((await horizontalOverflow(page)) <= 0, `sixteenth tab overflow at ${width}px`);
+      assert.ok((await horizontalOverflow(page)) <= 0, `thirty-second tab overflow at ${width}px`);
 
       await page.tap('.rail-activity');
       await page.tap('#ask-text');
-      await page.type('Keep this seventeenth question');
+      await page.type('Keep this thirty-third question');
       await page.tap('.ask .action.primary');
       await page.waitFor(
-        `document.querySelector('.ask .input-error')?.textContent.includes('16 tabs maximum')`,
+        `document.querySelector('.ask .input-error')?.textContent.includes('32 tabs maximum')`,
       );
       assert.equal(
         await page.evaluate(`document.querySelector('#ask-text').value`),
-        'Keep this seventeenth question',
+        'Keep this thirty-third question',
       );
-      assert.equal(fixture.sessions.snapshot().length, 16);
+      assert.equal(fixture.sessions.snapshot().length, 32);
       assert.deepEqual(page.errors, []);
       await page.close();
     }

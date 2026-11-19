@@ -7,6 +7,7 @@ import { UserSensorRouter, type Detector } from '../../src/core/router.ts';
 import type { TranscriptionCleanupRecord } from '../../src/core/transcription-cleanup/record.ts';
 import { TranscriptionCleanupSetting } from '../../src/core/transcription-cleanup/setting.ts';
 import { GoToSession } from '../../src/processors/go-to-session.ts';
+import { PopOutSession } from '../../src/processors/pop-out-session.ts';
 import { frame, processor, signal, testDetector } from '../helpers.ts';
 
 const interaction: InteractionContext = {
@@ -14,7 +15,7 @@ const interaction: InteractionContext = {
     clientId: 1,
     token: 'visible-page',
     orderRevision: 'unchanged',
-    ids: Array.from({ length: 16 }, (_, index) => `session-${index + 1}`),
+    ids: Array.from({ length: 32 }, (_, index) => `session-${index + 1}`),
   },
   agentSessionId: '',
   agentComposerFocused: false,
@@ -104,6 +105,24 @@ test('inferred navigation selects the one explicit number anywhere in the uttera
     ['session 6, please', 6],
     ['Switch to session six.', 6],
     ['okay - switch to session six', 6],
+    // Capacity 32: digits and spaced or hyphenated cardinal compounds.
+    ['switch to session 17', 17],
+    ['switch to session seventeen', 17],
+    ['switch to session twenty', 20],
+    ['switch to session twenty one', 21],
+    ['switch to session twenty-one', 21],
+    ['Switch to session Twenty-Nine.', 29],
+    ['go to tab thirty', 30],
+    ['session 31, please', 31],
+    ['show me session thirty one', 31],
+    ['go to session thirty two', 32],
+    ['go to session thirty-two', 32],
+    ['Go back to 32…', 32],
+    // Review R3 positive controls: ordinary words after the number.
+    ['please switch to session twenty-one, please', 21],
+    ['please switch to session twenty-one about the budget', 21],
+    ['switch to session twenty\u2011one', 21],
+    ['switch to session 21, so I can read it', 21],
   ] as const) {
     const run = setup();
     assert.equal(await run.route(utterance), 'GO_TO_SESSION', utterance);
@@ -127,12 +146,52 @@ test('inferred navigation skips missing, multiple, ordinal, homophone and malfor
     'switch to session',
     'switch to session 0',
     'switch to session zero',
-    'switch to session 17',
-    'switch to session seventeen',
-    'switch to session twenty',
     'switch to session sixty',
-    'switch to session twenty one',
-    'switch to session twenty-one',
+    // Capacity 32: beyond the range, two numbers, signed or ordinal compounds.
+    'switch to session 33',
+    'switch to session thirty-three',
+    'switch to session thirty three',
+    'switch to session forty',
+    'switch to session twenty or one',
+    'switch to session 32 or 2',
+    'switch to session twenty 1',
+    'switch to session twenty - one',
+    'switch to session minus twenty one',
+    'switch to session -twenty-one',
+    'switch to session twenty first',
+    'switch to session thirty-second',
+    'switch to session twenty one hundred',
+    'switch to session twenty-one.5',
+    // Review R2-F1: approximate, fractional or magnified numbers are not positions.
+    'switch to session twenty-something',
+    'switch to session thirty-something',
+    'switch to session twenty something',
+    'switch to session thirty odd',
+    'switch to session twenty-ish',
+    'switch to session six or so',
+    'switch to session 20-something',
+    'switch to session twenty-one-something',
+    'switch to session twenty-one and a quarter',
+    'switch to session six and a quarter',
+    'switch to session twenty trillion',
+    'switch to session two dozen',
+    // Review R3: qualifiers next to the number, across punctuation and dash forms.
+    'please switch to session twenty-one or so',
+    'please switch to session twenty-one, or so',
+    'please switch to session twenty-one or something',
+    'please switch to session twenty-one... or something',
+    'please switch to session about twenty-one',
+    'please switch to session, about, twenty-one',
+    'switch to session around 21',
+    'switch to session roughly thirty',
+    'switch to session 21, or 22',
+    'switch to session 21 or whichever',
+    'switch to session twenty\u2011something',
+    'switch to session twenty\u2013something',
+    'switch to session 20\u2014ish',
+    'switch to session twentyish',
+    'switch to session \u22126',
+    'switch to session \u2011six',
     'switch to session 1.5',
     'switch to session -3',
     'switch to session −3',
@@ -193,16 +252,16 @@ test('inferred navigation requires the number to exist in the captured order', a
   assert.deepEqual(run.selected, [2]);
   assert.deepEqual(run.outcomes, ['skipped', 'selected']);
 
-  // Stale clients may report more than the product limit; never go beyond 16.
+  // Stale clients may report more than the product limit; never go beyond 32.
   const oversized: InteractionContext = {
     ...interaction,
     agentNavigation: {
       ...interaction.agentNavigation!,
-      ids: Array.from({ length: 20 }, (_, index) => `session-${index + 1}`),
+      ids: Array.from({ length: 40 }, (_, index) => `session-${index + 1}`),
     },
   };
-  await run.route('switch to session 17', oversized);
-  await run.route('switch to session eighteen', oversized);
+  await run.route('switch to session 33', oversized);
+  await run.route('switch to session thirty-four', oversized);
   assert.deepEqual(run.selected, [2]);
 });
 
@@ -340,4 +399,52 @@ test('inferred preview reports the target without selecting it', async () => {
   );
   assert.deepEqual(outcomes, ['preview']);
   assert.deepEqual(logs, ['Would select session 6']);
+});
+
+test('R2-F1: inferred go-to and pop-out share the refusal of approximate numbers', async () => {
+  const navigation = { ...interaction.agentNavigation!, popoutHost: true };
+  const context: InteractionContext = { ...interaction, agentNavigation: navigation };
+  const selected: number[] = [];
+  const poppedOut: number[] = [];
+  const outcomes: string[] = [];
+  const activity: Activity = {
+    selectSession: (_context, index) => (selected.push(index), true),
+    popOutSession: (_context, index) => (poppedOut.push(index), true),
+    outcome: (_id, outcome) => outcomes.push(outcome),
+  };
+  const goTo = new GoToSession(() => {}, false, activity);
+  const popOut = new PopOutSession(() => {}, false, activity);
+  const input = (utterance: string): UserSensorFrame => ({
+    ...frame,
+    utterance,
+    interaction: context,
+  });
+
+  for (const utterance of [
+    'please switch to session twenty-something',
+    'please pop out session twenty-something',
+    'thirty-something, in its own window',
+    'session twenty-one and a quarter',
+    'session twenty trillion',
+    'please switch to session twenty-one, or so',
+    'please pop out session twenty-one, or so',
+    'session twenty-one or something',
+    'session about twenty-one',
+    'session twenty\u2011something',
+  ]) {
+    await goTo.process(input(utterance), signal(), 'inference');
+    await popOut.process(input(utterance), signal(), 'inference');
+  }
+  assert.deepEqual(selected, []);
+  assert.deepEqual(poppedOut, []);
+  assert.deepEqual(new Set(outcomes), new Set(['skipped']));
+
+  await goTo.process(input('switch to session twenty-one'), signal(), 'inference');
+  await popOut.process(input('please pop out session thirty two'), signal(), 'inference');
+  for (const utterance of ['session twenty-one, please', 'session twenty-one about the budget']) {
+    await goTo.process(input(utterance), signal(), 'inference');
+    await popOut.process(input(utterance), signal(), 'inference');
+  }
+  assert.deepEqual(selected, [20, 20, 20]);
+  assert.deepEqual(poppedOut, [31, 20, 20]);
 });

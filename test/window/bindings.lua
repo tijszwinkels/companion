@@ -3,14 +3,14 @@ local callbacks = {}
 local active = nil
 local layers = {}
 local dispatched = nil
-local window_rule = nil
+local window_rules = {}
 hl = {
   bind = function(key, callback) callbacks[key] = callback; return { unbind = function() end } end,
   unbind = function() end,
   get_active_window = function() return active end,
   get_layers = function() return layers end,
   dispatch = function(value) dispatched = value end,
-  window_rule = function(value) window_rule = value end,
+  window_rule = function(value) table.insert(window_rules, value) end,
   layer_rule = function() end,
   on = function() end,
   is_key_down = function() return false end,
@@ -21,8 +21,27 @@ hl = {
   },
 }
 dofile(arg[1])
-assert(window_rule.match.class == "^companion$")
-assert(window_rule.float and window_rule.center and window_rule.no_initial_focus)
+-- Every Companion window keeps the foreground application's focus; only the
+-- main Window floats. Pop-out windows (another title) are tiled normally.
+assert(#window_rules == 2)
+local focus_rule = window_rules[1]
+assert(focus_rule.match.class == "^companion$" and focus_rule.match.title == nil)
+assert(focus_rule.no_initial_focus and not focus_rule.float and not focus_rule.center)
+local float_rule = window_rules[2]
+assert(float_rule.match.class == "^companion$" and float_rule.match.title == "^Companion$")
+assert(float_rule.float and float_rule.center and float_rule.no_initial_focus == nil)
+-- Hyprland matches titles with RE2 regular expressions. This anchored,
+-- literal pattern means the same as a Lua pattern, so check it against the
+-- titles the host gives its windows: the main window, the sidebar surface and
+-- pop-outs, including one whose conversation is itself called "Companion".
+local function matches(pattern, title)
+  return string.find(title, pattern) ~= nil
+end
+assert(matches(float_rule.match.title, "Companion"))
+assert(not matches(float_rule.match.title, "Companion sidebar"))
+assert(not matches(float_rule.match.title, "Release notes — Companion"))
+assert(not matches(float_rule.match.title, "Companion — Companion"))
+assert(not matches(float_rule.match.title, "Conversation — Companion"))
 -- A normal Companion window belongs to the compositor, whether floating or
 -- tiled. Its content must follow the compositor's resize, including when an
 -- unrelated Companion layer is also mapped.

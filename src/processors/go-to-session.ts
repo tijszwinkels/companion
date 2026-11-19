@@ -5,16 +5,9 @@ import type { IntentMode, UserSensorRouter } from '../core/router.ts';
 import { voiceLabel } from '../core/voice-shortcut.ts';
 
 // Accept only complete cardinal labels, never a partial or ambiguous navigation request.
-const spokenNumbers = [
-  'one',
-  'two',
-  'three',
-  'four',
-  'five',
-  'six',
-  'seven',
-  'eight',
-  'nine',
+const unitWords = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+const smallNumbers = [
+  ...unitWords,
   'ten',
   'eleven',
   'twelve',
@@ -22,11 +15,93 @@ const spokenNumbers = [
   'fourteen',
   'fifteen',
   'sixteen',
+  'seventeen',
+  'eighteen',
+  'nineteen',
 ];
+const tensWords = ['twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
 
-// Inferred requests count every number they mention, so these only ever cause a skip.
+/**
+ * One English cardinal: a single word ("seven", "thirty") or a tens word and a
+ * unit joined by one space or hyphen ("twenty one", "thirty-two"). Callers
+ * apply the open-session range; larger values here are simply out of range.
+ */
+function cardinalValue(first: string, unit?: string): number | undefined {
+  const tens = tensWords.indexOf(first);
+  if (unit !== undefined) {
+    return tens >= 0 && unitWords.includes(unit)
+      ? (tens + 2) * 10 + unitWords.indexOf(unit) + 1
+      : undefined;
+  }
+  if (tens >= 0) return (tens + 2) * 10;
+  const small = smallNumbers.indexOf(first);
+  return small >= 0 ? small + 1 : undefined;
+}
+
+// Inferred requests count every number they mention, so these only ever cause a skip
+// (plurals such as "twentys" and words with no session position).
 const otherNumberWords =
-  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|hundred|thousand|million|billion|half|halves)s?$/u;
+  /^(?:zero|seventeen|eighteen|nineteen|(?:twen|thir|for|fif|six|seven|eigh|nine)ty|dozen|hundred|thousand|million|billion|trillion|half|halves|quarter)(?:s|ish)?$/u;
+// Words next to a number that make it approximate or one of several choices.
+// They are matched as the neighbouring word, so punctuation cannot hide them:
+// "about twenty-one", "twenty-one, or so", "twenty-one or something", "thirty odd".
+const approximateBefore = new Set([
+  'about',
+  'around',
+  'approximately',
+  'roughly',
+  'nearly',
+  'almost',
+  'circa',
+  'some',
+  'maybe',
+  'perhaps',
+  'over',
+  'under',
+]);
+const approximateAfter = new Set(['or', 'something', 'odd', 'ish', 'plus', 'thereabouts']);
+// A spoken sign or decimal marker right before a number, across any punctuation:
+// "minus six", "minus, twenty-one", "point... six".
+const markerBefore = new Set(['minus', 'negative', 'plus', 'point', 'dot']);
+// A number word with something attached ("fiveish", "twentyish", "sixes",
+// "twentyfive", "twenties") is a number, but never an exact position.
+const numberStems = [
+  ...smallNumbers,
+  ...tensWords,
+  'zero',
+  'dozen',
+  'hundred',
+  'thousand',
+  'million',
+  'billion',
+  'trillion',
+];
+const attachedSuffixes = new Set([
+  'ish',
+  's',
+  'es',
+  'th',
+  'ths',
+  'fold',
+  'something',
+  'odd',
+  'some',
+  ...smallNumbers,
+]);
+const tensForms = /^(?:twen|thir|for|fif|six|seven|eigh|nine)ti(?:es|eths?)$/u;
+function attachedNumber(word: string): boolean {
+  return (
+    tensForms.test(word) ||
+    numberStems.some(
+      (stem) => word.startsWith(stem) && attachedSuffixes.has(word.slice(stem.length)),
+    )
+  );
+}
+// Every dash ASR may write (hyphen, non-breaking hyphen, en/em dash, minus...)
+// reads as "-", so a sign, compound or attachment looks the same in all forms.
+const dashes = /[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]/gu;
+// The separator a spoken compound may use: one space or one hyphen.
+const compoundJoin = /^(?:\s+|-)$/u;
 const ordinalWords =
   /^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|(?:thir|four|fif|six|seven|eigh|nine)teenth|(?:twen|thir|for|fif|six|seven|eigh|nine)tieth|hundredth|thousandth|millionth)$/u;
 
@@ -35,38 +110,67 @@ const ordinalWords =
 const explicitOne = /(?:session|tab|conversation|chat|number)\s+$/u;
 
 /** Exact shortcut suffix: one complete numeral or cardinal label, nothing else. */
-function shortcutIndex(utterance: string): number {
-  const label = voiceLabel(utterance);
-  return /^(?:[1-9]|[1-9][0-9])$/u.test(label) ? Number(label) - 1 : spokenNumbers.indexOf(label);
+export function shortcutIndex(utterance: string): number {
+  const label = voiceLabel(utterance).replace(dashes, '-');
+  if (/^(?:[1-9]|[1-9][0-9])$/u.test(label)) return Number(label) - 1;
+  const words = /^([a-z]+)(?:[ -]([a-z]+))?$/u.exec(label);
+  const value = words ? cardinalValue(words[1], words[2]) : undefined;
+  return value === undefined ? -1 : value - 1;
 }
 
 /**
  * The model chose navigation but supplies no target. Accept exactly one explicit
- * number in the whole utterance; any second, ordinal, decimal, signed or
- * out-of-range number makes the request ambiguous, never a guess. Punctuation
+ * number in the whole utterance; any second, ordinal, decimal, signed,
+ * approximate or out-of-range number makes the request ambiguous, never a guess. Punctuation
  * separates words, so it cannot hide a mention or join two of them.
  */
-function inferredIndex(utterance: string): number {
-  const text = utterance.toLowerCase();
+export function inferredIndex(utterance: string): number {
+  const text = utterance.toLowerCase().replace(dashes, '-');
   const indexes: number[] = [];
 
-  for (const match of text.matchAll(/[\p{L}\p{N}]+/gu)) {
-    const word = match[0];
-    const before = text.slice(0, match.index);
-    const after = text.slice(match.index + word.length);
-    // A written or spoken sign ("-6", "- six", "minus six") or decimal/grouping
-    // part (".6", "point six", "6.5", "1,000", "6:30").
+  const words = [...text.matchAll(/[\p{L}\p{N}]+/gu)].map((match) => ({
+    word: match[0],
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+
+  for (let position = 0; position < words.length; position++) {
+    const { word, start } = words[position];
+    // "twenty one" and "twenty-one" are one number, so the unit is consumed here.
+    const next = words[position + 1];
+    const unit =
+      tensWords.includes(word) &&
+      next &&
+      unitWords.includes(next.word) &&
+      compoundJoin.test(text.slice(words[position].end, next.start))
+        ? next
+        : undefined;
+    const previous = words[position - 1]?.word ?? '';
+    if (unit) position++;
+    const following = words[position + 1]?.word ?? '';
+    const end = unit ? unit.end : words[position].end;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    // A written or spoken sign ("-6", "- six", "-, six", "minus, six") or
+    // decimal/grouping part (".6", "point six", "6.5", "1,000", "6:30").
+    // Approximate: attached to another word by a hyphen ("twenty-something",
+    // "6-ish", "3-4"), or next to a qualifier across any punctuation.
     const malformed =
-      /(?:[-+−]|\b(?:minus|negative|plus|point|dot))\s*$/u.test(before) ||
+      /[-+−][^\p{L}\p{N}]*$/u.test(before) ||
+      markerBefore.has(previous) ||
       /[.,:]$/u.test(before) ||
-      /^[.,:]\p{N}/u.test(after);
+      /^[.,:]\p{N}/u.test(after) ||
+      /^-[\p{L}\p{N}]/u.test(after) ||
+      approximateBefore.has(previous) ||
+      approximateAfter.has(following);
+    const value = cardinalValue(word, unit?.word);
 
     if (/\p{N}/u.test(word)) {
       indexes.push(!malformed && /^[1-9][0-9]?$/u.test(word) ? Number(word) - 1 : -1);
-    } else if (spokenNumbers.includes(word)) {
+    } else if (value !== undefined) {
       const explicit = word !== 'one' || explicitOne.test(before);
-      indexes.push(!malformed && explicit ? spokenNumbers.indexOf(word) : -1);
-    } else if (otherNumberWords.test(word) || ordinalWords.test(word)) {
+      indexes.push(!malformed && explicit ? value - 1 : -1);
+    } else if (otherNumberWords.test(word) || ordinalWords.test(word) || attachedNumber(word)) {
       indexes.push(-1);
     }
   }

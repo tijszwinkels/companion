@@ -7,7 +7,15 @@
  * integrations/window/WindowContent.qml). Phone adjustments: 44px touch
  * targets, a collapsible rail, safe-area insets and keyboard-aware sizing.
  * No external fonts or assets.
+ *
+ * Messages, Markdown, actions, choices and the controls row live in the
+ * page-neutral conversation stylesheet (../../chat-ui). It reads the custom
+ * properties defined on :root below. A CSS @import must
+ * come first, so those rules now precede this file's own; no earlier rule
+ * here competes with them, and the phone's computed styles are unchanged.
  */
+
+@import '../../chat-ui/conversation.css';
 
 :root {
   color-scheme: dark;
@@ -436,45 +444,6 @@ button {
     flex: 1 0 40dvh;
     min-height: 140px;
   }
-}
-
-/* ---- Desktop-style actions --------------------------------------------- */
-
-.action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: var(--tap);
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  font-size: 13px;
-}
-
-.action:active {
-  background: var(--selection);
-}
-
-.action.primary {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.action.danger {
-  color: var(--danger);
-}
-
-.action[disabled] {
-  opacity: 0.4;
-}
-
-.action.small {
-  min-height: var(--tap);
-  padding: 0 10px;
-  font-size: 12px;
 }
 
 .hint {
@@ -912,188 +881,6 @@ button {
   white-space: pre-line;
 }
 
-/* ---- Conversation -------------------------------------------------------- */
-
-.messages {
-  padding: 4px 0 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-family: var(--prose);
-  font-size: 15px;
-  line-height: 1.45;
-  color: var(--strong);
-}
-
-.message.user {
-  align-self: flex-end;
-  max-width: 90%;
-}
-
-.bubble {
-  overflow-wrap: anywhere;
-}
-
-.message.user .bubble {
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--user-bubble);
-  white-space: pre-wrap;
-}
-
-.message.user.queued .bubble {
-  opacity: 0.6;
-  border: 1px dashed var(--muted);
-}
-
-.message .from {
-  margin: 0 4px 3px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  text-align: right;
-}
-
-.message .from.external {
-  color: var(--shortcut);
-}
-
-.message .state-note {
-  margin: 3px 4px 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  text-align: right;
-}
-
-.message.assistant .bubble {
-  padding: 2px 0;
-}
-
-.message.assistant.error .bubble {
-  border-left: 2px solid var(--danger);
-  padding-left: 10px;
-}
-
-.message.notice {
-  align-self: center;
-  max-width: 92%;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  text-align: center;
-}
-
-.message.notice.error {
-  color: var(--danger);
-}
-
-.message-actions {
-  display: flex;
-  gap: 4px;
-  font-family: var(--mono);
-}
-
-.message-actions button {
-  min-height: var(--tap);
-  padding: 0 8px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.markdown > :first-child {
-  margin-top: 0;
-}
-
-.markdown > :last-child {
-  margin-bottom: 0;
-}
-
-.markdown p {
-  margin: 0.35em 0 0.7em;
-}
-
-.markdown h1,
-.markdown h2,
-.markdown h3,
-.markdown h4 {
-  margin: 1em 0 0.5em;
-  line-height: 1.25;
-  font-weight: 600;
-}
-
-.markdown h1 {
-  font-size: 1.35em;
-}
-
-.markdown h2 {
-  font-size: 1.2em;
-}
-
-.markdown h3,
-.markdown h4 {
-  font-size: 1.08em;
-}
-
-.markdown ul,
-.markdown ol {
-  padding-left: 1.3em;
-  margin: 0.4em 0 0.7em;
-}
-
-.markdown code {
-  font-family: var(--mono);
-  font-size: 0.86em;
-  background: var(--code-bg);
-  padding: 0.1em 0.35em;
-  border-radius: 4px;
-}
-
-.markdown pre {
-  background: var(--code-bg);
-  padding: 10px 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.markdown pre code {
-  background: none;
-  padding: 0;
-  font-size: inherit;
-}
-
-.markdown blockquote {
-  margin: 0.5em 0;
-  padding-left: 10px;
-  border-left: 2px solid var(--border);
-  color: var(--fg);
-}
-
-.markdown table {
-  display: block;
-  overflow-x: auto;
-  border-collapse: collapse;
-  font-size: 0.9em;
-}
-
-.markdown th,
-.markdown td {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-}
-
-.markdown th {
-  background: var(--code-bg);
-}
-
-.markdown a {
-  color: var(--accent);
-}
-
 .screenshot-thumb {
   display: block;
   margin: 0 0 6px auto;
@@ -1119,27 +906,6 @@ button {
   height: 100%;
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--muted);
-}
-
-.tool-group {
-  align-self: stretch;
-  border-radius: 6px;
-  background: rgba(169, 177, 214, 0.04);
-  font-family: var(--mono);
-}
-
-.tool-group > button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: var(--tap);
-  padding: 0 10px;
-  border: 0;
-  background: none;
-  text-align: left;
-  font-size: 12px;
   color: var(--muted);
 }
 
@@ -1180,20 +946,6 @@ button {
   margin-bottom: 6px;
 }
 
-.widget-card {
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px dashed var(--border);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.widget-card strong {
-  color: var(--strong);
-  font-weight: 400;
-}
-
 .input-section {
   flex: none;
   padding: 8px 0 0;
@@ -1209,31 +961,6 @@ button {
 
 .choices::-webkit-scrollbar {
   display: none;
-}
-
-.choice {
-  flex: none;
-  max-width: 75vw;
-  min-height: var(--tap);
-  padding: 6px 10px;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  background: rgba(122, 162, 247, 0.08);
-  color: var(--accent);
-  text-align: left;
-  font-size: 12px;
-}
-
-.choice small {
-  display: block;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.choice[disabled] {
-  opacity: 0.4;
 }
 
 .composer {
@@ -1261,22 +988,6 @@ button {
   margin-top: 4px;
   font-size: 11px;
   color: var(--danger);
-}
-
-.controls-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.controls-row .status-text {
-  flex: 1;
-  min-width: 80px;
-  text-align: right;
-  font-size: 11px;
-  color: var(--muted);
 }
 
 .model-picker {

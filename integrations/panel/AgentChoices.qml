@@ -11,6 +11,12 @@ Column {
   property bool online: true
   property bool listening: true
   property bool pending: false
+  // Whether speech goes to this conversation. Only then are labels shown as
+  // speakable; the choices stay clickable either way.
+  property bool voiceTarget: true
+  // Where speech goes ("Voice: this conversation", "Voice paused", ...), shown
+  // above the controls; empty hides it.
+  property string voiceStatus: ""
   required property color foreground
   required property color muted
   required property color accent
@@ -23,12 +29,26 @@ Column {
   signal choiceRequested(string id, string revision, int index)
   signal stopRequested(string id, string runId)
 
+  Text {
+    id: voiceTargetStatus
+    objectName: "voiceTargetStatus"
+    width: parent.width
+    visible: root.voiceStatus !== ""
+    text: root.voiceStatus
+    textFormat: Text.PlainText
+    elide: Text.ElideRight
+    color: root.voiceTarget && root.listening && root.online ? root.accent : root.muted
+    font.family: root.fontFamily
+    font.pixelSize: 11 * root.unit
+  }
+
   PanelAction {
     objectName: "stopVoiceChoice"
     visible: root.stopRunId !== ""
     enabled: root.online
-    text: "[stop]"
-    foreground: root.listening && root.online ? root.accent : root.muted
+    // Brackets mark a spoken label; only the voice target can be stopped by voice.
+    text: root.voiceTarget ? "[stop]" : "Stop"
+    foreground: root.voiceTarget && root.listening && root.online ? root.accent : root.muted
     selection: root.selection
     fontFamily: root.fontFamily
     unit: root.unit
@@ -38,7 +58,9 @@ Column {
   ScrollView {
     id: scroll
     width: parent.width
-    height: Math.min(options.implicitHeight, root.maximumHeight)
+    // The status line shares the host's height budget with the options.
+    height: Math.min(options.implicitHeight, Math.max(0, root.maximumHeight
+      - (voiceTargetStatus.visible ? voiceTargetStatus.implicitHeight + root.spacing : 0)))
     visible: root.choices.length > 0
     contentWidth: availableWidth
     clip: true
@@ -54,9 +76,13 @@ Column {
           required property var modelData
           objectName: "agentChoice-" + modelData.index
           readonly property bool selectable: root.online && !root.pending && modelData.available
-          readonly property bool voiceActive: root.online && root.listening && !root.pending && modelData.voiceAvailable
+          readonly property bool voiceActive: root.online && root.voiceTarget && root.listening && !root.pending && modelData.voiceAvailable
+          // A label is called speakable only with a matching voice annotation.
           readonly property string hint: !root.online ? "Disconnected" : modelData.voiceReason
-            || (!root.listening ? "Voice listening is paused" : "Say “" + modelData.label + "” to select")
+            || (!root.listening ? "Click to select; voice listening is paused"
+              : !root.voiceTarget ? "Click to select; voice goes elsewhere"
+              : !modelData.voiceAvailable ? "Click to select"
+              : "Say “" + modelData.label + "” to select")
           width: options.width
           height: Math.max(label.implicitHeight, description.implicitHeight, 20 * root.unit) + 12 * root.unit
           radius: 4 * root.unit

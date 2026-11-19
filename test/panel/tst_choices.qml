@@ -115,6 +115,138 @@ Item {
       compare(findChild(panel, "agentChoices").visible, false)
     }
 
+    // Per-view controls from `agent-view-actions`, as the listener sends them:
+    // own choices, no voice claims, unavailable reasons only when unavailable.
+    function viewActions() {
+      return {
+        first: {sessionId: "first", stopRunId: "", choices: [
+          {sessionId: "first", revision: "set-1", index: 0, label: "Tests", description: "Run the tests", available: true, voiceAvailable: false, voiceReason: ""},
+          {sessionId: "first", revision: "set-1", index: 1, label: "No", description: "", available: true, voiceAvailable: false, voiceReason: ""}
+        ]},
+        second: {sessionId: "second", stopRunId: "run-2", choices: [
+          {sessionId: "second", revision: "set-9", index: 0, label: "Later", description: "", available: false, voiceAvailable: false, voiceReason: "Available when the agent finishes"}
+        ]}
+      }
+    }
+    function voiceFor(id, revision) {
+      return {sessionId: id, stopRunId: "", choices: [
+        {sessionId: id, revision: revision, index: 0, label: "Tests", description: "Run the tests", available: true, voiceAvailable: true, voiceReason: ""}
+      ]}
+    }
+
+    function test_a_view_keeps_its_own_choices_when_voice_goes_elsewhere() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.viewAgentActions = viewActions()
+      // Speech goes to another conversation (for example an active window).
+      panel.agentActions = voiceFor("second", "set-9")
+      verify(waitForRendering(panel))
+      const choices = findChild(panel, "agentChoices")
+      compare(choices.visible, true)
+      const first = findChild(panel, "agentChoice-0")
+      compare(first.selectable, true)
+      compare(first.voiceActive, false)
+      compare(first.hint, "Click to select; voice goes elsewhere")
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice: another conversation")
+
+      // Clicking still submits this conversation's own stored identity.
+      let selected = null
+      panel.choiceRequested.connect(function(id, revision, index) { selected = {id: id, revision: revision, index: index} })
+      mouseClick(first, 20, 15)
+      compare(selected, {id: "first", revision: "set-1", index: 0})
+      panel.choiceSubmitted("first", "set-1", 0, "")
+
+      // Pausing stops listening everywhere: a non-target view says so too.
+      panel.paused = true
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice listening is paused")
+      compare(findChild(panel, "agentChoice-0").selectable, true)
+      panel.paused = false
+
+      // No voice target at all (none or ambiguous): still clickable.
+      panel.agentActions = ({})
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice: no conversation")
+      compare(findChild(panel, "agentChoice-0").selectable, true)
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice goes elsewhere")
+      panel.paused = true
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice listening is paused")
+      panel.paused = false
+
+      // An empty projection means this connection shows no conversation:
+      // nothing is displayed, even if voice names this conversation.
+      panel.viewAgentActions = ({})
+      panel.agentActions = voiceFor("first", "set-1")
+      compare(choices.visible, false)
+    }
+
+    function test_voice_hints_need_the_same_conversation_revision_and_index() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.viewAgentActions = viewActions()
+      panel.agentActions = voiceFor("first", "set-1")
+      verify(waitForRendering(panel))
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice: this conversation")
+      const first = findChild(panel, "agentChoice-0")
+      const second = findChild(panel, "agentChoice-1")
+      compare(first.voiceActive, true)
+      compare(first.hint, "Say “Tests” to select")
+      // The voice projection has no entry for index 1: not called speakable.
+      compare(second.voiceActive, false)
+      compare(second.hint, "Click to select")
+
+      // An older or newer voice set never annotates this view's choices.
+      panel.agentActions = voiceFor("first", "set-0")
+      compare(findChild(panel, "agentChoice-0").voiceActive, false)
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select")
+
+      // Paused listening is never shown as listening.
+      panel.agentActions = voiceFor("first", "set-1")
+      panel.paused = true
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      compare(findChild(panel, "agentChoice-0").voiceActive, false)
+      compare(findChild(panel, "agentChoice-0").selectable, true)
+      compare(findChild(panel, "agentChoice-0").hint, "Click to select; voice listening is paused")
+      panel.paused = false
+
+      // Offline: no status line; the choices say so themselves.
+      panel.online = false
+      compare(findChild(panel, "voiceTargetStatus").visible, false)
+      compare(findChild(panel, "agentChoice-0").hint, "Disconnected")
+    }
+
+    function test_a_non_target_view_keeps_its_own_run_stop_and_busy_reason() {
+      const panel = createTemporaryObject(panelComponent, parent)
+      panel.sessions = [{id: "first", title: "Choices", status: "completed", messages: [], error: ""},
+        {id: "second", title: "Other", status: "running", messages: [], error: ""}]
+      panel.viewAgentActions = viewActions()
+      panel.agentActions = voiceFor("first", "set-1")
+      panel.selectedSessionId = "second"
+      verify(waitForRendering(panel))
+      const later = findChild(panel, "agentChoice-0")
+      compare(later.selectable, false)
+      compare(later.hint, "Available when the agent finishes")
+      // An unavailable choice keeps its reason while paused.
+      panel.paused = true
+      compare(later.hint, "Available when the agent finishes")
+      compare(findChild(panel, "voiceTargetStatus").text, "Voice paused")
+      panel.paused = false
+      const stop = findChild(panel, "stopVoiceChoice")
+      compare(stop.visible, true)
+      // Not the voice target: the run-scoped stop is not highlighted as speakable.
+      compare(Qt.colorEqual(stop.foreground, panel.muted), true)
+      compare(findChild(panel, "stopSession").visible, false, "One stop control")
+      let stopped = null
+      panel.stopRunRequested.connect(function(id, runId) { stopped = {id: id, runId: runId} })
+      mouseClick(stop, 10, 10)
+      compare(stopped, {id: "second", runId: "run-2"})
+
+      // Its run ended: the ordinary conversation Stop returns if still running.
+      const ended = viewActions()
+      ended.second.stopRunId = ""
+      panel.viewAgentActions = ended
+      compare(findChild(panel, "stopVoiceChoice").visible, false)
+      compare(findChild(panel, "stopSession").visible, true)
+    }
+
     function test_eight_long_options_are_bounded_on_a_small_panel() {
       const panel = createTemporaryObject(panelComponent, parent)
       panel.width = 390

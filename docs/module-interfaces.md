@@ -41,7 +41,7 @@ processor. Registration does not deliver a message, and the router does not
 broadcast frames to every subscriber.
 
 The `GoToSession` processor reserves `go to session`. Its shortcut parses one
-exact numeral or cardinal number word from 1–16. It also has an LLM instruction,
+exact numeral or cardinal number (including “twenty-one”/“twenty one”) from 1–32. It also has an LLM instruction,
 offered only while navigation is captured. The router passes the route
 (`'shortcut'` or `'inference'`) as the third `process` argument; the inferred
 route takes the single explicit number from the whole utterance, and skips

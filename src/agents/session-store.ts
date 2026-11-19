@@ -234,8 +234,9 @@ export class SessionStore {
         restored.screenshotUrl = screenshotUrl;
       }
 
-      // Agent provenance must survive reopening; an invalid label is dropped
-      // rather than shown, and the text remains an ordinary saved message.
+      // Provenance survives reopening. Invalid legacy labels are dropped;
+      // malformed app-send provenance retains a non-human fallback marker,
+      // never silently becoming a human message. Canonical text stays intact.
       const origin = message.kind === 'user' ? parseOrigin(message.origin) : undefined;
       if (origin) {
         restored.origin = origin;

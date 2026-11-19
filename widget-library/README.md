@@ -7,6 +7,13 @@ answers, choices, session names and freeform follow-ups remain available.
 The initial library contains `todo`, `bar-chart`, `pipeline`, `comparison` and
 `webgl-cube`. The cube is a small working WebGL example, including a drag action.
 
+`task-list` and `task-board` are **session applications**: bundles with an
+`application` block and read-only `queries` that replace a conversation's chat
+view instead of appearing as a bubble. They share one state schema, so an agent
+can switch between them without losing tasks. Install one with
+`companion_app_apply`; see [session applications](../src/session-apps/README.md)
+for the manifest, browser API (`api.state`, `api.query`, `api.call`) and tools.
+
 ## Library location
 
 The listener discovers and publishes widgets from one **user widget library**
