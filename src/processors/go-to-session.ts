@@ -60,6 +60,43 @@ const approximateBefore = new Set([
   'under',
 ]);
 const approximateAfter = new Set(['or', 'something', 'odd', 'ish', 'plus', 'thereabouts']);
+// A spoken sign or decimal marker right before a number, across any punctuation:
+// "minus six", "minus, twenty-one", "point... six".
+const markerBefore = new Set(['minus', 'negative', 'plus', 'point', 'dot']);
+// A number word with something attached ("fiveish", "twentyish", "sixes",
+// "twentyfive", "twenties") is a number, but never an exact position.
+const numberStems = [
+  ...smallNumbers,
+  ...tensWords,
+  'zero',
+  'dozen',
+  'hundred',
+  'thousand',
+  'million',
+  'billion',
+  'trillion',
+];
+const attachedSuffixes = new Set([
+  'ish',
+  's',
+  'es',
+  'th',
+  'ths',
+  'fold',
+  'something',
+  'odd',
+  'some',
+  ...smallNumbers,
+]);
+const tensForms = /^(?:twen|thir|for|fif|six|seven|eigh|nine)ti(?:es|eths?)$/u;
+function attachedNumber(word: string): boolean {
+  return (
+    tensForms.test(word) ||
+    numberStems.some(
+      (stem) => word.startsWith(stem) && attachedSuffixes.has(word.slice(stem.length)),
+    )
+  );
+}
 // Every dash ASR may write (hyphen, non-breaking hyphen, en/em dash, minus...)
 // reads as "-", so a sign, compound or attachment looks the same in all forms.
 const dashes = /[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]/gu;
@@ -114,12 +151,13 @@ export function inferredIndex(utterance: string): number {
     const end = unit ? unit.end : words[position].end;
     const before = text.slice(0, start);
     const after = text.slice(end);
-    // A written or spoken sign ("-6", "- six", "minus six") or decimal/grouping
-    // part (".6", "point six", "6.5", "1,000", "6:30").
+    // A written or spoken sign ("-6", "- six", "-, six", "minus, six") or
+    // decimal/grouping part (".6", "point six", "6.5", "1,000", "6:30").
     // Approximate: attached to another word by a hyphen ("twenty-something",
     // "6-ish", "3-4"), or next to a qualifier across any punctuation.
     const malformed =
-      /(?:[-+−]|\b(?:minus|negative|plus|point|dot))\s*$/u.test(before) ||
+      /[-+−][^\p{L}\p{N}]*$/u.test(before) ||
+      markerBefore.has(previous) ||
       /[.,:]$/u.test(before) ||
       /^[.,:]\p{N}/u.test(after) ||
       /^-[\p{L}\p{N}]/u.test(after) ||
@@ -132,7 +170,7 @@ export function inferredIndex(utterance: string): number {
     } else if (value !== undefined) {
       const explicit = word !== 'one' || explicitOne.test(before);
       indexes.push(!malformed && explicit ? value - 1 : -1);
-    } else if (otherNumberWords.test(word) || ordinalWords.test(word)) {
+    } else if (otherNumberWords.test(word) || ordinalWords.test(word) || attachedNumber(word)) {
       indexes.push(-1);
     }
   }
