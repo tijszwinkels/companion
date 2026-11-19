@@ -264,8 +264,11 @@ the harness:
   failed, or its process exited. `lastTurnDurationMs` (session field) is then
   set to end minus start, whatever the outcome. Both changes are published
   at once, before the turn's final save is awaited, so a slow save cannot keep
-  a client counting; `agent-turn-completed` still follows the successful
-  save. The final save itself is not counted. The end includes the harness's
+  a client counting. The status and error clients see stay as they were
+  (`running`) until that bookkeeping is done, as before: the conversation is
+  still busy and queues new messages, and a failed save still turns the turn
+  into an error. `agent-turn-completed` still follows the successful save.
+  The final save itself is not counted. The end includes the harness's
   own bounded shutdown after the answer (Pi's final name read, Claude Code's
   natural exit, process cleanup; each bounded to a few seconds), because the
   turn only ends when the harness returns. A clock that was set back during the turn gives 0, not
@@ -285,7 +288,8 @@ the harness:
 - A placeholder turn that runs nothing (application edits already delivered, or
   an application send withdrawn before it started, including by Stop or close
   while it was still starting) removes `turnStartedAt` and keeps the previous
-  turn's duration.
+  turn's duration. An application send that fails while starting did start a
+  turn and is measured.
 - Conversations are independent: each conversation's fields change only with its
   own turns.
 
@@ -308,10 +312,11 @@ time. A time supplied by a backend is never trusted for a new row.
 Messages saved before this change have no `createdAt` and keep none; no time is
 invented for them, also not when they are updated later. Reopening repairs a
 saved transcript without saving it, so a repaired row must get the same time on
-every reopen: a missing timer notice takes its timer's creation time (when the
-notice first appeared while the tab was open), the timer service warning the
-time this listener first raised it, and a missing widget row (committed earlier
-at an unrecorded time) none. The store drops a damaged saved time or duration (anything but a
+every reopen: a missing timer notice takes its timer's creation time, the timer
+service warning the time this listener first raised it, and a missing widget
+row (committed earlier at an unrecorded time) none. Timer notices and the
+warning get those same times when they first appear in an open tab, so a
+notice has the same time live and after any restart. The store drops a damaged saved time or duration (anything but a
 non-negative safe integer) instead of refusing the conversation. Old archives
 are never rewritten for this; new fields are simply added on the next save.
 The session application chat-read projection (`session-apps/chat.ts`) does not

@@ -682,11 +682,16 @@ function holdSaves(sessions: AgentSessions) {
   let gate: ReturnType<typeof deferred<void>> | undefined;
   let waiting = 0;
 
+  let failure: Error | undefined;
+
   store.save = async (session) => {
     const current = gate;
     if (current) {
       waiting++;
       await current.promise;
+      if (failure) {
+        throw failure;
+      }
     }
     return save(session);
   };
@@ -695,49 +700,120 @@ function holdSaves(sessions: AgentSessions) {
     hold() {
       gate = deferred<void>();
       waiting = 0;
+      failure = undefined;
     },
     waiting: () => waiting,
-    release() {
+    /** Let the held saves continue, or fail them with `error`. */
+    release(error?: Error) {
       const current = gate;
       gate = undefined;
+      failure = error;
       current?.resolve();
     },
   };
 }
 
-test('the end of a turn is published before its final save finishes', async (context) => {
-  const clock = fakeClock();
-  const fixture = await harnessFixture(context, { wakeClock: clock.now });
-  const events = recordEvents(fixture.sessions);
-  const saves = holdSaves(fixture.sessions);
+for (const saveFails of [false, true]) {
+  const outcome = saveFails ? 'a failed' : 'a successful';
+  test(`the end of a turn is published before ${outcome} final save; its status after it`, async (context) => {
+    const clock = fakeClock();
+    const fixture = await harnessFixture(context, { wakeClock: clock.now });
+    const events = recordEvents(fixture.sessions);
+    const saves = holdSaves(fixture.sessions);
 
-  const id = fixture.sessions.start(frame, signal());
-  fixture.script(id, async () => {
-    clock.advance(900);
-    saves.hold();
+    const id = fixture.sessions.start(frame, signal());
+    fixture.script(id, async () => {
+      clock.advance(900);
+      saves.hold();
+    });
+    await waitFor(() => saves.waiting() === 1);
+
+    // The final save is pending. Clients already see that the turn ended
+    // and how long it took, but still the `running` status: the conversation
+    // is busy and queues new messages. The completion signal also waits.
+    // The save is released even when an assertion fails, so that cleanup
+    // cannot hang.
+    try {
+      const published = lastPublished(events, id);
+      assert.equal('turnStartedAt' in published, false);
+      assert.equal(published.lastTurnDurationMs, 900);
+      assert.equal(published.status, 'running');
+      assert.equal(fixture.view(id).status, 'running', 'snapshots agree');
+
+      const queued = fixture.sessions.followUp(id, 'Sent while saving', signal());
+      assert.equal(queued.outcome, 'queued');
+      assert.equal(lastPublished(events, id).status, 'running');
+      assert.equal(
+        events.some((event) => event.type === 'agent-turn-completed'),
+        false,
+      );
+    } finally {
+      saves.release(saveFails ? Error('Synthetic save failure') : undefined);
+    }
+    await fixture.sessions.idle();
+
+    const queuedRow = fixture.view(id).messages.find((row) => row.text === 'Sent while saving');
+    if (saveFails) {
+      // The failed save fails the turn and cancels the queued message.
+      assert.equal(fixture.view(id).status, 'error');
+      assert.match(fixture.view(id).error, /Synthetic save failure/);
+      assert.equal(queuedRow?.state, 'error');
+      assert.equal(fixture.runs.length, 1);
+      assert.equal(
+        events.some((event) => event.type === 'agent-turn-completed'),
+        false,
+      );
+    } else {
+      assert.equal(fixture.view(id).status, 'completed');
+      assert.equal(queuedRow?.state, 'done');
+      assert.equal(fixture.runs.length, 2);
+      assert.equal(
+        events.some((event) => event.type === 'agent-turn-completed'),
+        true,
+      );
+    }
+    assert.equal(fixture.view(id).turnStartedAt, undefined);
+    assert.equal(lastPublished(events, id).turnStartedAt, undefined);
   });
-  await waitFor(() => saves.waiting() === 1);
+}
 
-  // The save is still pending: clients already see the turn ended, but not
-  // the completion signal, which still waits for the save. The save is
-  // released even when an assertion fails, so that cleanup cannot hang.
-  try {
-    const published = lastPublished(events, id);
-    assert.equal('turnStartedAt' in published, false);
-    assert.equal(published.lastTurnDurationMs, 900);
-    assert.equal(
-      events.some((event) => event.type === 'agent-turn-completed'),
-      false,
-    );
-  } finally {
-    saves.release();
-  }
-  await fixture.sessions.idle();
-  assert.equal(
-    events.some((event) => event.type === 'agent-turn-completed'),
-    true,
-  );
-});
+/** An authored application's send, as its origin records it. */
+const applicationOrigin = {
+  kind: 'application-message' as const,
+  applicationId: '8b1c2d3e-4f5a-4b6c-8d7e-0123456789ab',
+  name: 'synthetic',
+  version: 1,
+  bundle: 'synthetic-bundle',
+  receiptId: '9c1d2e3f-4a5b-4c6d-8e7f-0123456789ab',
+  title: 'Synthetic application',
+  depth: 1 as const,
+};
+
+/**
+ * Stand in for the application service's send bookkeeping, so that an
+ * application send can be followed through a turn without authored code.
+ * Reaches into private fields on purpose. Counts sends admitted to the model.
+ */
+function replaceApplicationSends(sessions: AgentSessions) {
+  let began = 0;
+  const applications = (
+    sessions as unknown as {
+      widgets: { applications: { chatSendTurn: () => unknown } };
+    }
+  ).widgets.applications;
+
+  applications.chatSendTurn = () => {
+    return {
+      begin: () => {
+        began++;
+        return true;
+      },
+      finish: async () => {},
+    };
+  };
+
+  return { began: () => began };
+}
 
 test('an application send stopped before it began keeps the previous duration', async (context) => {
   const clock = fakeClock();
@@ -749,37 +825,12 @@ test('an application send stopped before it began keeps the previous duration', 
   await fixture.sessions.idle();
   assert.equal(fixture.view(id).lastTurnDurationMs, 800);
 
-  // A stand-in for an authorized application send; no authored code runs.
-  let began = 0;
-  const applications = (
-    fixture.sessions as unknown as {
-      widgets: { applications: { chatSendTurn: () => unknown } };
-    }
-  ).widgets.applications;
-  applications.chatSendTurn = () => {
-    return {
-      begin: () => {
-        began++;
-        return true;
-      },
-      finish: async () => {},
-    };
-  };
-  const origin = {
-    kind: 'application-message' as const,
-    applicationId: '8b1c2d3e-4f5a-4b6c-8d7e-0123456789ab',
-    name: 'synthetic',
-    version: 1,
-    bundle: 'synthetic-bundle',
-    receiptId: '9c1d2e3f-4a5b-4c6d-8e7f-0123456789ab',
-    title: 'Synthetic application',
-    depth: 1 as const,
-  };
+  const sends = replaceApplicationSends(fixture.sessions);
 
   // Stop while the send is still starting: the question's save is held.
   const saves = holdSaves(fixture.sessions);
   saves.hold();
-  fixture.sessions.followUp(id, 'From the application', signal(), origin);
+  fixture.sessions.followUp(id, 'From the application', signal(), applicationOrigin);
   let stopping: Promise<number> | undefined;
   try {
     await waitFor(() => saves.waiting() === 1);
@@ -791,10 +842,74 @@ test('an application send stopped before it began keeps the previous duration', 
   await stopping;
   await fixture.sessions.idle();
 
-  assert.equal(began, 0);
+  assert.equal(sends.began(), 0);
   assert.equal(fixture.runs.length, 1);
   assert.equal(fixture.view(id).turnStartedAt, undefined);
   assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+});
+
+test('an application send that fails while starting is measured like any turn', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(100);
+  });
+  await fixture.sessions.idle();
+  assert.equal(fixture.view(id).lastTurnDurationMs, 100);
+
+  replaceApplicationSends(fixture.sessions);
+
+  // The question's save fails: the admitted turn fails before the model.
+  const saves = holdSaves(fixture.sessions);
+  saves.hold();
+  fixture.sessions.followUp(id, 'From the application', signal(), applicationOrigin);
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    clock.advance(500);
+  } finally {
+    saves.release(Error('Synthetic save failure'));
+  }
+  await fixture.sessions.idle();
+
+  assert.equal(fixture.view(id).status, 'error');
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 500);
+});
+
+test('a timer notice has the same time live and after a restart, with a moving clock', async (context) => {
+  // Every reading of this clock is one millisecond later than the previous.
+  const clock = fakeClock();
+  const movingClock = () => clock.advance(1);
+  const fixture = await harnessFixture(context, {
+    configuration: { ...defaultAgentSettings, model: 'configured/one' },
+    wakeClock: movingClock,
+  });
+  const id = fixture.sessions.start(frame, signal(), 'coding', 'pi');
+  fixture.script(id, async (run) => {
+    await callTool(run, 'companion_wake_schedule', {
+      afterSeconds: 60,
+      label: 'Synthetic check',
+      message: 'Look again',
+    });
+  });
+  await fixture.sessions.idle();
+
+  const timer = fixture.sessions.wakes.list(id)[0];
+  const live = fixture.view(id).messages.find((message) => message.id === `wake:${timer.id}`);
+  assert.equal(live?.createdAt, timer.createdAt);
+
+  // A normal restart: close (saves), stop the listener, reopen elsewhere.
+  await fixture.sessions.remove(id);
+  await fixture.sessions.close();
+  const restarted = fixture.open();
+  await restarted.loadPrevious();
+  await restarted.reopen(id);
+  const reopened = fixture
+    .view(id, restarted)
+    .messages.find((message) => message.id === `wake:${timer.id}`);
+  assert.equal(reopened?.createdAt, timer.createdAt);
 });
 
 test('a recovered timer notice keeps the same time on every reopen and restart', async (context) => {

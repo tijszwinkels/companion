@@ -717,6 +717,9 @@ turn has finished, stopped or failed) and holds its start in epoch milliseconds
 on the listener's clock; `lastTurnDurationMs` is the last finished turn's
 duration in milliseconds, whatever its outcome. Show a running duration only
 while `turnStartedAt` is present; never keep counting after it disappears.
+Both change together when the turn's work ends; `status` follows a moment
+later, once the turn is saved, so it can briefly still be `running` without
+`turnStartedAt`.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
 `toolName`, `input`, `state` (`running`, `done`, or `error`), and a boolean
 `screenshot` attachment indicator. Optional `createdAt` is when the listener
