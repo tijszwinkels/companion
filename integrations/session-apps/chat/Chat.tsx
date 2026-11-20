@@ -299,21 +299,24 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
 
     // Whether the reader moved the transcript, whatever they used (wheel,
     // keys, scroll bar, a finger). Not when this component scrolled it
-    // itself, and not when the browser pulled it back to the end because the
-    // transcript grew or its content shrank (a resize): that moves toward the
-    // start and lands exactly at the end, which no reader's scroll does.
+    // itself, and not when the browser pulled it back because the transcript
+    // grew or its content shrank (a resize): the previous position is then
+    // beyond the new end, which no reader's scroll leaves behind.
     const pageMade = pageTop.current !== null && Math.abs(element.scrollTop - pageTop.current) <= 1;
     pageTop.current = null;
-    const clamped = element.scrollTop < lastTop.current && atEnd;
+    const maximumTop = element.scrollHeight - element.clientHeight;
+    const clamped = element.scrollTop < lastTop.current && lastTop.current - maximumTop > 0.5;
     lastTop.current = element.scrollTop;
     const readerMoved = !pageMade && !clamped;
 
     // Like the classic view, only the reader leaves the live end: a scroll
-    // within a second of their own input (each scroll while they drag or
-    // keep scrolling extends that). Other scroll events while following come
-    // from layout changes, e.g. the native view animating its height after a
-    // text scale change; they never stop following, the view stays at the end.
-    const byReader = performance.now() - readerScrolledAt.current < 1000;
+    // the reader moved, or one within a second of their own input (each
+    // scroll while they drag or keep scrolling extends that; a scroll bar
+    // held still for longer still moves the transcript as theirs). Other
+    // scroll events while following come from layout changes, e.g. the
+    // native view animating its height after a text scale change; they never
+    // stop following, the view stays at the end.
+    const byReader = readerMoved || performance.now() - readerScrolledAt.current < 1000;
     if (byReader) {
       readerInput();
       // The reader moved on their own: a pending jump no longer applies.

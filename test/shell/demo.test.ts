@@ -8,15 +8,20 @@ import test from 'node:test';
 
 /**
  * `npm run shell:demo` (integrations/shell/demo.ts) stopped with Ctrl+C
- * (SIGINT) deletes its temporary directory, also when the signal arrives
- * while the demo is still starting. The demo runs as its own process with
- * TMPDIR pointing at a directory of this test, so its temporary directory
- * can be watched and nothing outside the test is touched. Requires
- * `npm run shell:build` (the demo refuses to start without the built shell).
+ * deletes its temporary directory, also when Ctrl+C comes while the demo is
+ * still starting. Started exactly as a person would, through npm, in its own
+ * process group; Ctrl+C is SIGINT to that whole group, as a terminal sends
+ * it (npm, the tsx launcher and the demo all receive it). TMPDIR points at a
+ * directory of this test, so the demo's temporary directory can be watched
+ * and nothing outside the test is touched. Requires `npm run shell:build`
+ * (the demo refuses to start without the built shell).
  */
 
 const root = join(import.meta.dirname, '..', '..');
-const demo = join(root, 'integrations', 'shell', 'demo.ts');
+
+/** How long the demo may take to start, and to stop after Ctrl+C. */
+const startMilliseconds = 30_000;
+const stopMilliseconds = 20_000;
 
 async function prerequisites(): Promise<string | undefined> {
   try {
@@ -58,11 +63,13 @@ for (const moment of ['while it starts', 'after it started'] as const) {
     const parent = await mkdtemp(join(tmpdir(), 'companion-demo-test-'));
     context.after(() => rm(parent, { recursive: true, force: true }));
     const port = await freePort();
-    const child = spawn(process.execPath, ['--import', 'tsx', demo, '--port', String(port)], {
+    const child = spawn('npm', ['run', 'shell:demo', '--', '--port', String(port)], {
       cwd: root,
       env: { ...process.env, TMPDIR: parent },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    const group = child.pid!;
     let output = '';
     child.stdout.on('data', (chunk) => {
       output += chunk;
@@ -70,16 +77,19 @@ for (const moment of ['while it starts', 'after it started'] as const) {
     child.stderr.on('data', (chunk) => {
       output += chunk;
     });
-    const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    // Whatever happens below, nothing of the demo outlives the test.
     context.after(() => {
-      if (child.exitCode === null) {
-        child.kill('SIGKILL');
+      try {
+        process.kill(-group, 'SIGKILL');
+      } catch {
+        // The group has already exited.
       }
     });
 
     // The temporary directory exists from early in the startup; the banner
     // with the pairing code is printed once everything runs.
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + startMilliseconds;
     for (;;) {
       assert.ok(Date.now() < deadline, `the demo did not get going: ${output}`);
       if (moment === 'while it starts' && (await demoDirectories(parent)).length > 0) {
@@ -93,9 +103,26 @@ for (const moment of ['while it starts', 'after it started'] as const) {
     if (moment === 'while it starts') {
       assert.ok(!output.includes('Pairing code'), 'still starting when interrupted');
     }
-    child.kill('SIGINT');
-    await exited;
+    process.kill(-group, 'SIGINT');
 
-    assert.deepEqual(await demoDirectories(parent), [], output);
+    // Stopped within the bound, with its temporary directory deleted. (npm
+    // can exit before the demo has finished cleaning up, so the directory
+    // is watched rather than the exit alone.)
+    const stopDeadline = Date.now() + stopMilliseconds;
+    let left = await demoDirectories(parent);
+    while (left.length > 0 && Date.now() < stopDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      left = await demoDirectories(parent);
+    }
+    const stopped = await Promise.race([
+      exited.then(() => true),
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), Math.max(0, stopDeadline - Date.now()));
+        // Not kept waiting for once the demo has exited.
+        timer.unref();
+      }),
+    ]);
+    assert.ok(stopped, `the demo did not stop after Ctrl+C: ${output}`);
+    assert.deepEqual(left, [], output);
   });
 }

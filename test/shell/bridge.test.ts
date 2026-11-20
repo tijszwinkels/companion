@@ -904,3 +904,49 @@ test("the page's request for a newer page is never repeated after a failure", as
   assert.equal(pageRequests[5].direction, 'after');
   assert.equal(pageRequests[5].index, pageRequests[4].index);
 });
+
+test('a page that arrives reaches the page as rows before the status that ends loading', async () => {
+  const { store, bridge, messages } = harness();
+  // 1000 rows: the live window holds the newest 200, pages hold 200 each.
+  const rows = [];
+  for (let index = 0; index < 1000; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, {
+      ...full,
+      messages: live.messages,
+      history: live.history,
+    }),
+  });
+  await settle();
+
+  bridge.following(sessionA, false);
+  bridge.history(sessionA, 'older');
+  await settle();
+  assert.equal(lastStatus(messages).history?.pending, true);
+  const from = messages.length;
+  const request = store.pending.splice(0)[0];
+  const parameters = request.parameters as unknown as PageRequest;
+  request.resolve(
+    historyPage(full, 1, parameters.direction, {
+      index: parameters.index,
+      offset: parameters.offset,
+    }),
+  );
+  await settle();
+
+  // The first message after the answer that says loading ended comes after
+  // the rows message carrying the new rows (Row 600 is the new first row).
+  const after = messages.slice(from);
+  const settled = after.findIndex(
+    (message) => message.type === 'status' && message.status.history?.pending === false,
+  );
+  const newRows = after.findIndex(
+    (message) => message.type === 'rows' && message.order.some((key) => key.includes('row-600')),
+  );
+  assert.ok(settled >= 0, 'loading ended');
+  assert.ok(newRows >= 0 && newRows < settled, 'the rows came first');
+});

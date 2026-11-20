@@ -123,8 +123,11 @@ the browser and in the Qt host:
 > when the transcript grows.
 
 The page tells its own scrolls from the reader's by the scroll positions it
-set itself; the browser's pull-back is the one scroll that moves toward the
-start and lands exactly at the end. No input events are interpreted, so a
+set itself; the browser's pull-back is the one scroll whose previous position
+lies beyond the new end. The same distinction decides when the reader leaves
+the live end: a scroll they made leaves it even when they held the scroll bar
+still for more than a second first (previously only scrolls within a second of
+their input counted, and such a drag was pulled back to the end). No input events are interpreted, so a
 touch pan (which the browser reports as pointerdown, pointercancel and then
 scroll events only) counts like any other scroll. The bridge answers `newer`
 with the next page below the snapshot, or joins the live rows when the
@@ -145,9 +148,16 @@ reader's scroll leaves the transcript (near the top, in the middle, near the
 end) × the page state (live; detached with newer pages; detached at the
 newest page, whose next rows are the live window), 36 cases with the request
 the rule allows for each, and a second table of page-made scrolls at the end
-of a detached snapshot (a taller window, a narrower window with the mouse held
-still, a wider window, a downward wheel where nothing scrolls) followed by the
-reader's own small scroll there, which does ask.
+of a detached snapshot (a downward wheel where nothing scrolls, a narrower
+window with the mouse held still, a wider window, a taller window that pulls
+the view back to the end) followed by the reader's own 3-pixel scroll there,
+which does ask. Further tests cover a scroll bar held still for more than a
+second before dragging away from the live end (it leaves the end and asks for
+the previous page) and, in `bridge.test.ts`, that an arriving page reaches the
+page as rows before the status that ends loading: the page never sees a
+request settled while it still shows the previous rows, so a scroll that
+continues meanwhile (a key's smooth scrolling, a fling) cannot ask for the
+page after one it has not shown yet.
 
 ### Changes to the shared chat page
 
@@ -168,7 +178,9 @@ were made for the browser:
    classic view does.
 2. It pages by [the paging rule](#the-paging-rule): it asks for `newer` near
    the end of a detached snapshot, and asks for nothing (`older` included)
-   on scrolls it makes itself.
+   on scrolls it makes itself. A scroll the reader makes also leaves the live
+   end when they held the scroll bar still for more than a second before
+   dragging (it used to be pulled back to the end).
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -197,10 +209,25 @@ What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 
 This is a deliberate difference: the HTML chat now reads down through a
 detached snapshot like the classic view instead of stopping at its end.
-`ChatState.mjs` (row diffing) is unchanged. Trimming uses
-`SessionView.visibleKeys()`, which reads the hidden classic transcript, as
-it already does for older pages; the rows trimmed when newer pages load are
-the oldest ones, above the reader.
+`ChatState.mjs` (row diffing) is unchanged. Two consequences of the Qt host's
+existing model show up more now that newer pages load there:
+
+- Trimming spares the rows `SessionView.visibleKeys()` reports, and that
+  reads the hidden classic transcript, not the HTML page (as it already does
+  for older pages). If the hidden transcript happens to show rows that a
+  newer page would trim, `applyHistory()` refuses and the whole reply is
+  dropped: no new rows appear, nothing is retried, and the reader's next
+  scroll near the end asks again. Conversely, if the reader scrolls back up
+  while a newer page is in flight, rows they see can be trimmed; the page
+  can then no longer keep their row and shifts the view by the change in the
+  transcript's height instead, as it does when rows change without a row to
+  keep.
+- `TrustedChatView.qml` sends the status at once but coalesces rows for up to
+  30 ms, so the page can see "loading" end up to 30 ms before the new rows. A
+  scroll that continues in that window (a key's smooth scrolling, a fling)
+  can then ask for one more page; it loads below, and the reader's row stays
+  in place. The browser bridge sends an arrived page's rows first; the Qt
+  host's order is QML and not changed here.
 
 To check in the Qt host (not run here; it needs the Qt build): in the HTML
 chat of a conversation with more than about a thousand rows,
@@ -210,15 +237,21 @@ chat of a conversation with more than about a thousand rows,
    with Page Down, by dragging the scroll bar and, where available, by touch:
    each time the next newer page loads below without moving the reader's row,
    and reading on reaches the live rows (nothing skipped or duplicated);
-2. with the history request failing (gateway or listener refusing it), the
+2. while a newer page is in flight, scroll back up a little: the reader's
+   row should stay or move only by the trimmed height, and the page should
+   either load below or (if the hidden classic transcript protected old rows)
+   be dropped with the next scroll near the end asking again, never loop;
+3. with the history request failing (gateway or listener refusing it), the
    failure notice shows and scrolling at the end does not send the request
    again; Retry does;
-3. Jump to latest from a detached snapshot still shows the live rows and
+4. Jump to latest from a detached snapshot still shows the live rows and
    follows new ones;
-4. a live conversation shorter than two viewports that streams an answer
+5. a live conversation shorter than two viewports that streams an answer
    does not load older pages by itself; scrolling up to the top and "Load
    earlier messages" still do;
-5. the classic view (unchanged QML) still pages as before, and the existing
+6. at the live end, press the scroll bar, hold it still for two seconds and
+   drag up: the view leaves the end and stays where it was dragged;
+7. the classic view (unchanged QML) still pages as before, and the existing
    Qt suites (`npm run test:window`, `test/session-apps-ui/`) pass.
 
 ### Differences from the desktop chat

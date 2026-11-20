@@ -796,16 +796,6 @@ test(
         expected: 0,
       },
       {
-        name: 'within a second the window grows taller: the browser pulls the view back to the end',
-        act: () => resize(1280, 1000),
-        expected: 0,
-      },
-      {
-        name: "the window shrinks back: the page keeps the reader's row",
-        act: () => resize(1280, 800),
-        expected: 0,
-      },
-      {
         name: "narrower with the mouse held still in the transcript: rows grow taller and the page keeps the reader's row by scrolling toward the end",
         act: async () => {
           await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...pointer });
@@ -823,8 +813,18 @@ test(
         expected: 0,
       },
       {
-        name: 'the reader wheels up a little, still within one viewport of the end',
-        act: () => wheel(page, -150),
+        name: 'a much taller window: the browser pulls the view back to the end',
+        act: async () => {
+          await resize(1280, 1600);
+          await sleep(300);
+          const box = await transcriptGeometry(page);
+          assert.equal(box.scrollTop, box.scrollHeight - box.clientHeight, 'at the very end');
+        },
+        expected: 0,
+      },
+      {
+        name: 'the reader scrolls up by 3 pixels at the very end',
+        act: () => wheel(page, -3),
         expected: 1,
       },
     ];
@@ -857,6 +857,43 @@ test(
     } finally {
       releaseNewer();
     }
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'a scroll bar held still before dragging away from the live end still leaves it',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Held drag fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    // 401 rows: the live window holds History row 200–399, the previous
+    // page the question and History row 0–199.
+    for (let index = 0; index < 400; index++) {
+      fixture.runs[0].emit(chatMessage('held-' + index, 'assistant', 'History row ' + index));
+    }
+    fixture.runs[0].finish();
+    // Pages take 400 ms, so the drag is over before its page arrives (see
+    // the paging rule table).
+    const historyPage = fixture.sessions.historyPage.bind(fixture.sessions);
+    fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
+      await sleep(400);
+      return historyPage(request);
+    }) as unknown as typeof historyPage;
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Held drag fixture');
+    await page.waitFor(inView('History row 399'));
+    const from = sockets.sent.length;
+
+    // At the live end the reader presses the scroll bar, holds it still for
+    // more than a second, then drags it to the top: their own scrolling, so
+    // the view stays where they took it and the previous page is asked for.
+    await dragScrollBar(page, -100_000, 1200);
+    await waitFor(() => pageRequests(sockets, from).includes('before'), 5000);
+    await page.waitFor(shows('History row 199'));
+    assert.equal(await page.evaluate<boolean>(inView('History row 399')), false);
+    assert.deepEqual(pageRequests(sockets, from), ['before']);
     await assertNoViolations(page);
   },
 );
@@ -940,9 +977,11 @@ test(
       fixture.runs[0].emit(chatMessage('table-' + index, 'assistant', 'Paging row ' + index));
     }
     fixture.runs[0].finish();
-    // Pages take 400 ms, as over a real network: longer than the smooth
-    // scrolling of a key press, which the browser keeps animating toward its
-    // original target even after the page put the reader's row back.
+    // Pages take 400 ms, as over a real network, so that each input's own
+    // scrolling (a key's smooth scrolling, a drag) is over before its page
+    // arrives and one input is one scroll gesture. With instant pages a
+    // scroll bar drag that goes on toward the top after the page arrived
+    // moves the view up again and, by the rule, asks for the next page.
     const historyPage = fixture.sessions.historyPage.bind(fixture.sessions);
     fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
       await sleep(400);
