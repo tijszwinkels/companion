@@ -252,7 +252,7 @@ function readerScrolled(transcript: Element): void {
 
 render(
   <StoreContext.Provider value={store}>
-    <App chat={chat} />
+    <App chat={chat} bridge={bridge} />
   </StoreContext.Provider>,
   document.getElementById('app')!,
 );

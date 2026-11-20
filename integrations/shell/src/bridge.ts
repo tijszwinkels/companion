@@ -142,6 +142,8 @@ export class GatewayChatBridge implements NativeBridge {
   private pairing = 0;
   // Input only the page's editor holds (its length only), as in SessionView.
   private unresolved: { sessionId: string; length: number } | null = null;
+  // The conversation list, told when `unresolved` names another conversation.
+  private readonly heldInputListeners = new Set<() => void>();
 
   constructor(
     private readonly store: Store,
@@ -248,7 +250,7 @@ export class GatewayChatBridge implements NativeBridge {
     this.cursors.clear();
     this.errors.clear();
     this.pendingChoices.clear();
-    this.unresolved = null;
+    this.setUnresolved(null);
   }
 
   /** A draft that changed outside this page's edits advances its revision. */
@@ -645,7 +647,7 @@ export class GatewayChatBridge implements NativeBridge {
     // editor, which keeps the conversation from closing meanwhile.
     if (text.length > 4 * maximumMessageLength) {
       if (!this.unresolved || this.unresolved.sessionId === sessionId) {
-        this.unresolved = { sessionId: sessionId, length: text.length };
+        this.setUnresolved({ sessionId: sessionId, length: text.length });
       }
       this.answer(callback, { accepted: false, reason: 'too-long', unresolved: true });
       return;
@@ -796,6 +798,26 @@ export class GatewayChatBridge implements NativeBridge {
     this.answer(callback, { accepted: false });
   }
 
+  /**
+   * Requests are admitted now: connected, and this connection's snapshot
+   * has arrived. The conversation list reads it for closing, reordering and
+   * reopening, the same rule as the chat page's own actions.
+   */
+  get admitted(): boolean {
+    return this.online;
+  }
+
+  /**
+   * Whether the conversation list may close `sessionId` now: requests are
+   * admitted and the chat editor holds no input of that conversation that
+   * only it has (closing would leave that input without its conversation),
+   * the same refusals as the chat page's Close session.
+   */
+  canClose(sessionId: string): boolean {
+    const held = this.unresolved !== null && this.unresolved.sessionId === sessionId;
+    return this.online && !held;
+  }
+
   closeSession(sessionId: string, callback?: (answer: string) => void): void {
     const held = this.unresolved !== null && this.unresolved.sessionId === sessionId;
     if (!this.sameSession(sessionId) || !this.online || held) {
@@ -814,10 +836,37 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     if (length > 0) {
-      this.unresolved = { sessionId: sessionId, length: length };
+      this.setUnresolved({ sessionId: sessionId, length: length });
     } else if (this.unresolved && this.unresolved.sessionId === sessionId) {
-      this.unresolved = null;
+      this.setUnresolved(null);
     }
+  }
+
+  /**
+   * Record which conversation the editor holds input for, and tell the
+   * conversation list: whether it may close that conversation depends on it
+   * (`canClose`), and the phone Store does not change when it does.
+   */
+  private setUnresolved(unresolved: { sessionId: string; length: number } | null): void {
+    const before = this.unresolved?.sessionId ?? null;
+    this.unresolved = unresolved;
+    if ((unresolved?.sessionId ?? null) === before) {
+      return;
+    }
+    for (const listener of this.heldInputListeners) {
+      listener();
+    }
+  }
+
+  /**
+   * Call `listener` whenever the conversation whose input only the editor
+   * holds changes. Returns the function that stops it.
+   */
+  onHeldInputChange(listener: () => void): () => void {
+    this.heldInputListeners.add(listener);
+    return () => {
+      this.heldInputListeners.delete(listener);
+    };
   }
 
   saveDraft(_sessionId: string, callback?: (answer: string) => void): void {
