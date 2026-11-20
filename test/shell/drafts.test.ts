@@ -184,6 +184,35 @@ function refusedSince(client: PhoneClient, from: number): boolean {
     );
 }
 
+/**
+ * Type `text` at the end of the box while another connection floods the
+ * device's draft-edit allowance, then one more character at a time until
+ * one of the page's edits is refused (a flood that falls behind the
+ * allowance's refill can let one through). Each edit's answer is read
+ * from the frames the browser reports. Returns the box's text then.
+ */
+async function typeUntilRefused(
+  page: TestPage,
+  sockets: SocketLog,
+  frames: { sent: boolean; frame: Message }[],
+  text: string,
+): Promise<string> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const before = draftSets(sockets).length;
+    await typeAtEnd(page, attempt === 0 ? text : '.');
+    await waitFor(() => draftSets(sockets).length > before);
+    const edit = draftSets(sockets).at(-1)!;
+    await waitFor(() =>
+      frames.some(({ sent, frame }) => !sent && frame.requestId === edit.requestId),
+    );
+    const answer = frames.find(({ sent, frame }) => !sent && frame.requestId === edit.requestId)!;
+    if (answer.frame.type === 'error') {
+      return box(page);
+    }
+  }
+  throw Error('No edit was refused while flooding');
+}
+
 /** The text box's value. */
 function box(page: TestPage): Promise<string> {
   return page.evaluate<string>(`document.querySelector('.chat textarea')?.value ?? ''`);
@@ -501,7 +530,7 @@ test(
       floods.push(startFlood(flood, other));
       await waitFor(() => refusedSince(flood, 0));
 
-      await typeAtEnd(page, 'Refused while flooded');
+      const refusedText = await typeUntilRefused(page, sockets, frames, 'Refused while flooded');
       await page.waitFor(unsavedShown);
       assert.match(
         await page.evaluate<string>(
@@ -509,8 +538,8 @@ test(
         ),
         /Your text is not saved: Too many draft edits/,
       );
-      assert.equal(await box(page), 'Refused while flooded');
-      assert.notEqual(listenerDraft(fixture, id).text, 'Refused while flooded');
+      assert.equal(await box(page), refusedText);
+      assert.notEqual(listenerDraft(fixture, id).text, refusedText);
       // While it is not saved, the conversation cannot be closed from here.
       assert.equal(await page.evaluate(`${buttonExpression('Close session')}.disabled`), true);
 
@@ -540,24 +569,26 @@ test(
           await page.waitFor(unsavedShown);
         }
       }
-      await waitFor(() => listenerDraft(fixture, id).text === 'Refused while flooded');
+      await waitFor(() => listenerDraft(fixture, id).text === refusedText);
       await page.waitFor(`!${unsavedShown}`);
-      assert.equal(await box(page), 'Refused while flooded');
+      assert.equal(await box(page), refusedText);
       assert.equal(draftSets(sockets).length, savedBefore + saves, 'one edit per Save');
 
       // Refused again, then Discard: the listener's draft returns, nothing is written.
       const messagesBefore = flood.messages.length;
       floods.push(startFlood(flood, other));
       await waitFor(() => refusedSince(flood, messagesBefore));
-      await typeAtEnd(page, ', and more');
+      await typeUntilRefused(page, sockets, frames, ', and more');
       await page.waitFor(unsavedShown);
       await floods[1].stop();
       const discardBefore = draftSets(sockets).length;
       await clickButton(page, 'Discard');
-      await page.waitFor(boxShows('Refused while flooded'));
+      // The listener's draft: the saved text, or a later edit the flood let through.
+      const listenerText = listenerDraft(fixture, id).text;
+      assert.ok(listenerText.startsWith(refusedText));
+      await page.waitFor(boxShows(listenerText));
       await page.waitFor(`!${unsavedShown}`);
       assert.equal(draftSets(sockets).length, discardBefore);
-      assert.equal(listenerDraft(fixture, id).text, 'Refused while flooded');
     } finally {
       for (const running of floods) {
         await running.stop();
