@@ -223,15 +223,17 @@ export interface AgentSession {
   /**
    * Live-only: present exactly while a turn is running in this conversation,
    * from the moment its message is admitted (status `starting`) until the
-   * turn has finished, been stopped or failed. Milliseconds since the Unix
+   * turn has finished or failed, or until Stop (removed at once, even while
+   * the turn is still winding down). Milliseconds since the Unix
    * epoch on the listener's clock. Never saved, so no running time survives
    * a listener restart. See "Turn and message times" in the agents README.
    */
   turnStartedAt?: number;
   /**
    * How long the last finished turn took, in milliseconds: from its start
-   * (`turnStartedAt`) until the harness returned, whatever the outcome
-   * (completed, stopped or failed). Saved with the conversation. Absent
+   * (`turnStartedAt`) until the harness returned, or until Stop for a
+   * stopped turn, whatever the outcome (completed, stopped or failed).
+   * Saved with the conversation. Absent
    * before a turn has finished since Companion recorded it, and after
    * reopening a conversation whose last turn was cut off by a restart.
    */

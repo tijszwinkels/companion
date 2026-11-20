@@ -260,19 +260,37 @@ the harness:
   and the conversation enters `starting`: in `create` for the first question and
   in `prepareFollowUp` for every later one. It stays while the turn runs and is
   removed when the turn ends. Clients compute the running duration from it.
-- A turn ends when the harness's `run` returns or throws: answered, stopped,
-  failed, or its process exited. `lastTurnDurationMs` (session field) is then
-  set to end minus start, whatever the outcome. Both changes are published
-  at once, before the turn's final save is awaited, so a slow save cannot keep
-  a client counting. The status and error clients see stay as they were last
-  published (`starting` or `running`) until that bookkeeping is done: the conversation is
-  still busy and queues new messages, and a failed save still turns the turn
-  into an error. `agent-turn-completed` still follows the successful save.
-  The final save itself is not counted. The end includes the harness's
-  own bounded shutdown after the answer (Pi's final name read, Claude Code's
-  natural exit, process cleanup; each bounded to a few seconds), because the
-  turn only ends when the harness returns. A clock that was set back during the turn gives 0, not
-  a negative value.
+- A turn ends when the harness's `run` returns or throws (answered, failed,
+  or its process exited), or at the moment of Stop or listener shutdown.
+  When it ends, `turnStartedAt` is removed and `lastTurnDurationMs` (session
+  field) becomes end minus start, whatever the outcome. A clock that was set
+  back during the turn gives 0, not a negative value.
+
+  | Ends by      | While starting, slow first save | While running     | While the final save is pending |
+  | ------------ | ------------------------------- | ----------------- | ------------------------------- |
+  | Stop         | at Stop                         | at Stop           | already ended; unchanged        |
+  | Error        | when the error is observed      | when the harness  | already ended; unchanged        |
+  |              |                                 | returns the error |                                 |
+  | Process exit | not possible: no harness yet    | when the harness  | not possible: the harness has   |
+  |              |                                 | returns           | already returned                |
+
+  "At Stop": `stop` withdraws `turnStartedAt` at once and fixes the end,
+  even while the turn still waits for its first save or the harness is still
+  winding down after the cancellation; neither wait is counted. An error ends
+  the turn when it is observed: a slow first save that then fails was the
+  turn's failing work and is counted. Otherwise the end includes the
+  harness's own bounded shutdown after the answer (Pi's final name read,
+  Claude Code's natural exit, process cleanup; each bounded to a few
+  seconds), because the turn only ends when the harness returns.
+
+  The end of a turn is published before the turn's final save is awaited, so
+  a slow save cannot keep a client counting, and the final save is not
+  counted. The status and error clients see stay as they were last published
+  (`starting` or `running`) until that bookkeeping is done: the conversation
+  is still busy and queues new messages, and a failed save still turns the
+  turn into an error. `agent-turn-completed` still follows the successful
+  save.
+
 - Every admitted message is its own turn. A queued follow-up starts its
   measurement when it leaves the queue (when the previous turn has ended), not
   when it was queued; queuing never changes the running turn's start. A
@@ -281,7 +299,8 @@ the harness:
   belong to that one turn and one measurement. Process lifetime is never used:
   Pi and Claude Code are started per turn today, but a harness that kept its
   process alive between turns would be measured the same way.
-- Nothing running survives the end of a turn. `run` removes `turnStartedAt`;
+- Nothing running survives the end of a turn. `stop` and listener `close`
+  remove `turnStartedAt` at Stop; `run` removes it when the harness returns;
   `drain` removes it again when the conversation stops being busy (covering any
   exception between turns), as does a scheduled wake that cannot enter the
   conversation. Stopped queued messages never start a turn.

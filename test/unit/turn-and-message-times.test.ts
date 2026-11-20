@@ -345,6 +345,8 @@ test('nothing running remains after the real Pi or Claude Code process exits mid
       run.emit,
     );
   });
+  // One conversation at a time: both read the same injected clock.
+  await fixture.sessions.idle();
 
   const claudeId = fixture.sessions.start(frame, signal(), 'coding', 'claude-code');
   fixture.script(claudeId, async (run) => {
@@ -372,7 +374,9 @@ test('nothing running remains after the real Pi or Claude Code process exits mid
     assert.match(view.error, reason);
     assert.equal(view.turnStartedAt, undefined);
     assert.equal(lastPublished(events, id).turnStartedAt, undefined);
-    assert.equal(typeof view.lastTurnDurationMs, 'number');
+    // The harness ran 250 ms on the injected clock before its process
+    // exited; the real process cleanup does not move that clock.
+    assert.equal(view.lastTurnDurationMs, 250);
   }
 });
 
@@ -1113,4 +1117,157 @@ test('a widget row repaired after a failed close gets no invented time', async (
   const savedRow = saved.messages.find((message: AgentMessage) => message.id === rowId);
   assert.ok(savedRow);
   assert.equal('createdAt' in savedRow, false);
+});
+
+/*
+ * When a turn ends, case by case. Each row below is one test.
+ *
+ * | Ends by      | while starting, slow first save | while running        | while the final save is pending |
+ * | ------------ | ------------------------------- | -------------------- | ------------------------------- |
+ * | Stop         | at Stop                         | at Stop              | already ended; unchanged        |
+ * | Error        | when the error is observed      | when the harness     | already ended; unchanged        |
+ * |              | (the failing save is the work)  | returns the error    |                                 |
+ * | Process exit | not possible: no harness yet    | when the harness     | not possible: the harness has   |
+ * |              |                                 | returns              | already returned                |
+ *
+ * "At Stop" means the running time is withdrawn when Stop is called and the
+ * duration ends there; the save wait and the harness's cancellation cleanup
+ * that follow are not counted. Process exit while running is covered by
+ * "nothing running remains after the real Pi or Claude Code process exits
+ * mid-turn" above.
+ */
+
+test('Stop while starting with a slow first save ends the turn at Stop', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const events = recordEvents(fixture.sessions);
+  const saves = holdSaves(fixture.sessions);
+
+  saves.hold();
+  const id = fixture.sessions.start(frame, signal());
+  let stopping: Promise<number> | undefined;
+  try {
+    // The question's save, before the harness is launched, is held.
+    await waitFor(() => saves.waiting() === 1);
+    assert.equal(typeof lastPublished(events, id).turnStartedAt, 'number');
+
+    clock.advance(10);
+    stopping = fixture.sessions.stop(id);
+
+    // The running time is withdrawn at once, in events and snapshots.
+    assert.equal(lastPublished(events, id).turnStartedAt, undefined);
+    assert.equal(fixture.view(id).turnStartedAt, undefined);
+
+    // The slow save goes on for a minute after Stop.
+    clock.advance(60_000);
+  } finally {
+    saves.release();
+  }
+  await stopping;
+  await fixture.sessions.idle();
+
+  assert.equal(fixture.runs.length, 0, 'the harness was never launched');
+  assert.equal(fixture.view(id).status, 'cancelled');
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 10);
+});
+
+for (const harness of harnesses) {
+  test(`${harness}: Stop while running ends the turn at Stop, not after the cancellation cleanup`, async (context) => {
+    const clock = fakeClock();
+    const fixture = await harnessFixture(context, { configuration, wakeClock: clock.now });
+    const events = recordEvents(fixture.sessions);
+    const id = fixture.sessions.start(frame, signal(), 'coding', harness);
+    fixture.script(id, async (run) => {
+      try {
+        await stopped(run.signal);
+      } finally {
+        // The harness needs five seconds to wind down after the abort.
+        clock.advance(5_000);
+      }
+    });
+    await waitFor(() => fixture.runs.length === 1);
+
+    clock.advance(300);
+    const stopping = fixture.sessions.stop(id);
+    assert.equal(lastPublished(events, id).turnStartedAt, undefined);
+    await stopping;
+    await fixture.sessions.idle();
+
+    assert.equal(fixture.view(id).status, 'cancelled');
+    assert.equal(fixture.view(id).lastTurnDurationMs, 300);
+  });
+}
+
+test('Stop while the final save is pending keeps the duration the turn already has', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const saves = holdSaves(fixture.sessions);
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(900);
+    saves.hold();
+  });
+
+  let stopping: Promise<number> | undefined;
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    assert.equal(fixture.view(id).lastTurnDurationMs, 900);
+    clock.advance(60_000);
+    stopping = fixture.sessions.stop(id);
+    assert.equal(fixture.view(id).turnStartedAt, undefined);
+    assert.equal(fixture.view(id).lastTurnDurationMs, 900);
+  } finally {
+    saves.release();
+  }
+  await stopping;
+  await fixture.sessions.idle();
+
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 900);
+});
+
+test('an error while starting with a slow first save ends the turn when it is observed', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const saves = holdSaves(fixture.sessions);
+
+  saves.hold();
+  const id = fixture.sessions.start(frame, signal());
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    // The save works for a minute and then fails: that minute is the turn.
+    clock.advance(60_000);
+  } finally {
+    saves.release(Error('Synthetic save failure'));
+  }
+  await fixture.sessions.idle();
+
+  assert.equal(fixture.runs.length, 0);
+  assert.equal(fixture.view(id).status, 'error');
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 60_000);
+});
+
+test('an error while the final save is pending keeps the duration the turn already has', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const saves = holdSaves(fixture.sessions);
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(900);
+    saves.hold();
+  });
+
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    clock.advance(60_000);
+  } finally {
+    saves.release(Error('Synthetic save failure'));
+  }
+  await fixture.sessions.idle();
+
+  assert.equal(fixture.view(id).status, 'error');
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 900);
 });

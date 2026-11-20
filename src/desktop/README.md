@@ -713,7 +713,7 @@ complete chat state for reconnects. A session has `id`, `title`, `status`, `mode
 `completed`, `cancelled`, or `error`.
 Optional turn times (see [turn and message times](../agents/README.md#turn-and-message-times)):
 `turnStartedAt` is present exactly while a turn runs (from `starting` until the
-turn has finished, stopped or failed) and holds its start in epoch milliseconds
+turn has finished or failed, or until Stop, which removes it at once) and holds its start in epoch milliseconds
 on the listener's clock; `lastTurnDurationMs` is the last finished turn's
 duration in milliseconds, whatever its outcome. Show a running duration only
 while `turnStartedAt` is present; never keep counting after it disappears.
