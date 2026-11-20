@@ -151,6 +151,12 @@ interface RunningSession {
   applicationTimer?: ReturnType<typeof setTimeout>;
   /** An application-event placeholder message is waiting in `pending`. */
   applicationEventQueued?: boolean;
+  /**
+   * The current turn answers an application send that was withdrawn (its
+   * permission revoked or renewed) before it reached the model. Such a turn
+   * never ran and keeps the previous turn's duration. Reset for every turn.
+   */
+  currentSendWithdrawn?: boolean;
   /** The status and error that the latest `flush` published to clients. */
   publishedOutcome?: Pick<AgentSession, 'status' | 'error'>;
   /**
@@ -210,7 +216,7 @@ export class AgentSessions implements InspectableModule {
   readonly sessionTools: SessionToolService;
   readonly wakes: WakeScheduler;
   private wakeWarningText = '';
-  /** When this listener first raised a timer service warning (listener clock). */
+  /** When this listener raised its latest timer service warning (listener clock). */
   private wakeWarningAt?: number;
   private readonly wakePreparation = new Map<
     string,
@@ -376,6 +382,10 @@ export class AgentSessions implements InspectableModule {
     session.pending = session.pending.filter((message) => !withdrawn(message));
     for (const message of session.view.messages.filter(withdrawn)) {
       this.message(session, { ...message, state: 'error' });
+    }
+    const current = session.currentOrigin;
+    if (current?.kind === 'application-message' && ids.has(current.receiptId)) {
+      session.currentSendWithdrawn = true;
     }
     // A current pre-model wait is deliberately not aborted: its late gate will
     // skip it, then continue unrelated human input already in the FIFO.
@@ -638,11 +648,13 @@ export class AgentSessions implements InspectableModule {
 
   private wakeWarning(text: string): void {
     this.wakeWarningText = text.slice(0, 600);
-    this.wakeWarningAt ??= this.clock();
+    this.wakeWarningAt = this.clock();
     this.log('agent-wake', this.wakeWarningText);
     for (const session of this.sessions.values()) {
       try {
-        // The same time as when a reopen recovers this notice (see reopen).
+        // A tab without the warning yet gets it with this occurrence's time,
+        // the same time a reopen gives it (see reopen); a tab that already
+        // shows a warning keeps its row's first time.
         this.message(
           session,
           chatMessage('wake-service-warning', 'notice', this.wakeWarningText),
@@ -1562,6 +1574,7 @@ export class AgentSessions implements InspectableModule {
     this.message(session, { ...message, state: 'done' });
     session.depth = message.origin?.depth ?? 0;
     session.currentOrigin = message.origin;
+    session.currentSendWithdrawn = false;
     session.controller = new AbortController();
     session.busy = true;
     // Every admitted message starts its own turn and its own measurement,
@@ -1937,14 +1950,16 @@ export class AgentSessions implements InspectableModule {
       }
 
       // End the measurement. An application send withdrawn before it began
-      // (refused at the send gate, or stopped or closed while starting) never
-      // ran a model turn and keeps the previous turn's duration; one that
-      // failed while starting did run and is measured. A clock that was set
-      // back during the turn yields 0 rather than a negative duration.
+      // (refused at the send gate, its permission revoked or renewed, or
+      // stopped or closed while starting) never ran a model turn and keeps
+      // the previous turn's duration; one that failed while starting did run
+      // and is measured. A clock that was set back during the turn yields 0
+      // rather than a negative duration.
       delete session.view.turnStartedAt;
+      const withdrawnBeforeStart =
+        session.controller.signal.aborted || session.currentSendWithdrawn === true;
       const withdrawnApplicationSend =
-        appSendSkipped ||
-        (appSend !== undefined && !appSendBegan && session.controller.signal.aborted);
+        appSendSkipped || (appSend !== undefined && !appSendBegan && withdrawnBeforeStart);
       if (!withdrawnApplicationSend) {
         session.view.lastTurnDurationMs = Math.max(0, turnEndedAt - turnStartedAt);
       }

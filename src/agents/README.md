@@ -264,8 +264,8 @@ the harness:
   failed, or its process exited. `lastTurnDurationMs` (session field) is then
   set to end minus start, whatever the outcome. Both changes are published
   at once, before the turn's final save is awaited, so a slow save cannot keep
-  a client counting. The status and error clients see stay as they were
-  (`running`) until that bookkeeping is done, as before: the conversation is
+  a client counting. The status and error clients see stay as they were last
+  published (`starting` or `running`) until that bookkeeping is done: the conversation is
   still busy and queues new messages, and a failed save still turns the turn
   into an error. `agent-turn-completed` still follows the successful save.
   The final save itself is not counted. The end includes the harness's
@@ -313,10 +313,11 @@ Messages saved before this change have no `createdAt` and keep none; no time is
 invented for them, also not when they are updated later. Reopening repairs a
 saved transcript without saving it, so a repaired row must get the same time on
 every reopen: a missing timer notice takes its timer's creation time, the timer
-service warning the time this listener first raised it, and a missing widget
+service warning the time this listener last raised one, and a missing widget
 row (committed earlier at an unrecorded time) none. Timer notices and the
 warning get those same times when they first appear in an open tab, so a
-notice has the same time live and after any restart. The store drops a damaged saved time or duration (anything but a
+timer notice has the same time live and after any restart, and a warning row
+never predates the warning it shows. The store drops a damaged saved time or duration (anything but a
 non-negative safe integer) instead of refusing the conversation. Old archives
 are never rewritten for this; new fields are simply added on the next save.
 The session application chat-read projection (`session-apps/chat.ts`) does not

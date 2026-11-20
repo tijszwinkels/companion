@@ -912,6 +912,71 @@ test('a timer notice has the same time live and after a restart, with a moving c
   assert.equal(reopened?.createdAt, timer.createdAt);
 });
 
+test('an application send revoked before it began keeps the previous duration, even if starting fails', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(100);
+  });
+  await fixture.sessions.idle();
+  assert.equal(fixture.view(id).lastTurnDurationMs, 100);
+
+  const sends = replaceApplicationSends(fixture.sessions);
+  const saves = holdSaves(fixture.sessions);
+  saves.hold();
+  fixture.sessions.followUp(id, 'From the application', signal(), applicationOrigin);
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    clock.advance(500);
+    // The application service withdraws the send, as when its permission is
+    // revoked. Reaches into the private callback on purpose.
+    const withdraw = (
+      fixture.sessions as unknown as {
+        withdrawApplicationChat(owner: string, receipts: { receiptId: string }[]): void;
+      }
+    ).withdrawApplicationChat.bind(fixture.sessions);
+    withdraw(id, [{ receiptId: applicationOrigin.receiptId }]);
+  } finally {
+    saves.release(Error('Synthetic save failure'));
+  }
+  await fixture.sessions.idle();
+
+  assert.equal(sends.began(), 0);
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(fixture.view(id).status, 'error');
+  assert.equal(fixture.view(id).turnStartedAt, undefined);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 100);
+});
+
+test('a timer service warning row takes the time of the warning it first shows', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  // Reaches into the private warning path on purpose; no timer store fails.
+  const warn = (
+    fixture.sessions as unknown as { wakeWarning(text: string): void }
+  ).wakeWarning.bind(fixture.sessions);
+
+  warn('An earlier synthetic warning');
+  clock.advance(1_000);
+  const id = fixture.sessions.start(frame, signal());
+  await fixture.sessions.idle();
+
+  const warnedAt = clock.advance(1_000);
+  warn('A later synthetic warning');
+  const row = () => {
+    return fixture.view(id).messages.find((message) => message.id === 'wake-service-warning');
+  };
+  assert.equal(row()?.createdAt, warnedAt);
+  assert.ok(row()!.createdAt! > fixture.view(id).messages[0].createdAt!);
+
+  // A further warning updates the row's text but keeps its creation time.
+  clock.advance(1_000);
+  warn('A still later synthetic warning');
+  assert.equal(row()?.text, 'A still later synthetic warning');
+  assert.equal(row()?.createdAt, warnedAt);
+});
+
 test('a recovered timer notice keeps the same time on every reopen and restart', async (context) => {
   const clock = fakeClock();
   const fixture = await harnessFixture(context, {
