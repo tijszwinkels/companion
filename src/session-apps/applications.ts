@@ -382,7 +382,7 @@ export class SessionApplications {
     this.hooks.changed(owner, await this.descriptor(owner));
   }
 
-  // ---- Trusted desktop permission controls --------------------------------
+  // ---- Trusted permission controls (desktop and paired devices) -----------
 
   /**
    * A successful replacement creates a fresh, denied permission identity even
@@ -431,23 +431,25 @@ export class SessionApplications {
   }
 
   /**
-   * Trusted desktop ingress ONLY. Deliberately not dispatched by agent() or
+   * Trusted UI ingress ONLY. Deliberately not dispatched by agent() or
    * view(), and not an application action. The desktop transport must require
-   * a currently shown conversation and reject remote-role callers.
+   * a currently shown conversation: on the desktop, or on a paired device
+   * under its stricter rule for allowing (src/desktop/runtime.ts,
+   * `checkRemotePermissionChange`). `validateShown` repeats that check.
    */
-  setChatRead(owner: string, command: JsonObject, validateDesktop?: () => void) {
-    return this.setChatPermission(owner, command, 'chat.read', validateDesktop);
+  setChatRead(owner: string, command: JsonObject, validateShown?: () => void) {
+    return this.setChatPermission(owner, command, 'chat.read', validateShown);
   }
 
-  setChatSend(owner: string, command: JsonObject, validateDesktop?: () => void) {
-    return this.setChatPermission(owner, command, 'chat.send', validateDesktop);
+  setChatSend(owner: string, command: JsonObject, validateShown?: () => void) {
+    return this.setChatPermission(owner, command, 'chat.send', validateShown);
   }
 
   private async setChatPermission(
     owner: string,
     command: JsonObject,
     capability: 'chat.read' | 'chat.send',
-    validateDesktop?: () => void,
+    validateShown?: () => void,
   ): Promise<SessionApplicationChatAccess> {
     if (
       Object.keys(command).some(
@@ -469,7 +471,7 @@ export class SessionApplications {
       const entry = this.entries.get(owner)!;
       const grant = this.chatGrant(entry, record);
       // A queue wait must not outlive the trusted view that confirmed consent.
-      validateDesktop?.();
+      validateShown?.();
       if (
         command.applicationId !== record.id ||
         command.version !== record.version ||

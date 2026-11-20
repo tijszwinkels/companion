@@ -226,7 +226,7 @@ export class FrameOrigin {
     this.embedders = embeddingOrigins(options.gatewayOrigins);
     this.handles = new FrameHandles(
       options.origin,
-      Date.now,
+      () => performance.now(),
       options.graceMilliseconds ?? graceMilliseconds,
     );
   }

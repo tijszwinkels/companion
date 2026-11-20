@@ -453,8 +453,8 @@ export class DesktopServer {
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
-        // Panel reports, visibility withdrawals and draft edits are the
-        // exception: their handlers never wait, so each finishes in the
+        // Panel reports, visibility withdrawals, refused-report notices
+        // (`report-refused`) and draft edits are the exception: their handlers never wait, so each finishes in the
         // microtask right after this read (in arrival order, like every
         // request), and they neither need nor take a slot. A report therefore
         // never makes a following request in the same read look busy, the
@@ -462,7 +462,10 @@ export class DesktopServer {
         // phone's requests fill the slots, and keystrokes that arrive in one
         // read (or while another request runs) are all kept.
         const neverWaits =
-          action === 'panel-state' || action === 'withdraw-visibility' || action === 'draft-set';
+          action === 'panel-state' ||
+          action === 'withdraw-visibility' ||
+          action === 'report-refused' ||
+          action === 'draft-set';
         if (!neverWaits && ((control && controlsInFlight >= 16) || (!control && handling))) {
           this.send(connection, {
             type: 'error',

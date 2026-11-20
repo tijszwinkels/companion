@@ -49,6 +49,8 @@
 
 import { randomBytes } from 'node:crypto';
 
+import { DeviceRequestRate } from '../request-rate.ts';
+
 /** Handles live this long after a device's last connection closed. */
 export const graceMilliseconds = 30_000;
 
@@ -123,26 +125,38 @@ interface DeviceRecord {
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Capability → handle, for reuse across snapshots and events. */
   handles: Map<string, string>;
-  /** Token bucket for frame-origin requests. */
-  tokens: number;
-  tokensUpdatedAt: number;
 }
 
 export class FrameHandles {
   private readonly entries = new Map<string, HandleEntry>();
   private readonly devices = new Map<string, DeviceRecord>();
+  /**
+   * Each device's frame-origin request budget, one token bucket per device
+   * record: forgotten when the record ends, kept across a reconnect within
+   * the grace period.
+   */
+  private readonly requestRate: DeviceRequestRate;
 
   /**
    * @param frameOrigin  Public origin of the frame listener, e.g.
    *                     `https://desk.example.ts.net:8444`.
-   * @param now          Clock in milliseconds (tests may inject one).
+   * @param now          Refill clock of the request budget in milliseconds.
+   *                     Monotonic by default (`performance.now()`), so a
+   *                     wall-clock step never stalls or speeds up a device;
+   *                     a clock that goes back refills nothing (tests may
+   *                     inject one).
    * @param grace        Grace period in milliseconds (tests may shorten it).
    */
   constructor(
     private readonly frameOrigin: string,
-    private readonly now: () => number = Date.now,
+    now: () => number = () => performance.now(),
     private readonly grace: number = graceMilliseconds,
-  ) {}
+  ) {
+    this.requestRate = new DeviceRequestRate(now, {
+      burst: frameRequestBurst,
+      perSecond: frameRequestsPerSecond,
+    });
+  }
 
   /** Number of live handles, for tests and limits. */
   get size(): number {
@@ -162,8 +176,6 @@ export class FrameHandles {
         deviceId,
         connections: new Map(),
         handles: new Map(),
-        tokens: frameRequestBurst,
-        tokensUpdatedAt: this.now(),
       };
       this.devices.set(deviceId, record);
     }
@@ -236,21 +248,12 @@ export class FrameHandles {
    * caller answers 429 and changes nothing else (handles and connections stay).
    */
   takeRequest(deviceId: string): boolean {
-    const record = this.devices.get(deviceId);
-    if (!record) {
+    if (!this.devices.has(deviceId)) {
       return false;
     }
-
-    const now = this.now();
-    const refill = ((now - record.tokensUpdatedAt) / 1000) * frameRequestsPerSecond;
-    record.tokens = Math.min(frameRequestBurst, record.tokens + refill);
-    record.tokensUpdatedAt = now;
-
-    if (record.tokens < 1) {
-      return false;
-    }
-    record.tokens -= 1;
-    return true;
+    // A device starts with a full bucket (`frameRequestBurst`) and refills
+    // at `frameRequestsPerSecond` on the monotonic clock.
+    return this.requestRate.take(deviceId);
   }
 
   /**
@@ -329,6 +332,8 @@ export class FrameHandles {
     }
     record.handles.clear();
     this.devices.delete(deviceId);
+    // A device paired again later starts with a full budget, as before.
+    this.requestRate.forget(deviceId);
   }
 
   /** Remove every entry matching `ended`, from both indexes. */
