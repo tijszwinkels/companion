@@ -98,6 +98,34 @@ const cases: Array<{ name: string; options: Partial<FrameOriginOptions>; accepte
     options: { listen: { socketPath: 'frames.sock' }, origin: 'https://desk.example' },
     accepted: false,
   },
+  ...['0:0:0:0:0:0:0:0', '::ffff:0.0.0.0', '::'].map((host) => ({
+    name: `every interface spelled ${host}`,
+    options: { listen: { host, port: 8444 }, origin: 'https://desk.example', tls },
+    accepted: false,
+  })),
+  {
+    name: 'an app origin on the same host name, another port',
+    options: {
+      origin: 'https://desk.example.ts.net:8444',
+      appOrigins: ['https://desk.example.ts.net:9443'],
+    },
+    accepted: false,
+  },
+  {
+    name: 'a wildcard gateway origin',
+    options: { gatewayOrigins: ['https://*.example'], origin: 'https://frames.example' },
+    accepted: false,
+  },
+  {
+    name: 'a wildcard frame origin',
+    options: { origin: 'https://*.example' },
+    accepted: false,
+  },
+  {
+    name: 'an IPv6 loopback gateway origin',
+    options: { gatewayOrigins: ['http://[::1]:8787'], origin: 'http://[::1]:8788' },
+    accepted: true,
+  },
 ];
 
 for (const entry of cases) {

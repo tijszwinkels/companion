@@ -637,6 +637,43 @@ const cases: AdmissionCase[] = [
       rawGet(fixture, `/f/${views.widgetHandle}/state`, ['Expect: something-else']),
     status: 417,
   },
+  {
+    name: 'a repeated Tailscale identity field of any name',
+    request: (fixture, views) =>
+      rawGet(fixture, `/f/${views.widgetHandle}/state`, [
+        'Tailscale-User-Name: one',
+        'Tailscale-User-Name: two',
+      ]),
+    status: 400,
+  },
+  {
+    name: 'HTTP/1.1 without Host',
+    request: (fixture, views) =>
+      raw(
+        fixture.framePort,
+        `GET /f/${views.widgetHandle}/state HTTP/1.1\r\nConnection: close\r\n\r\n`,
+      ),
+    status: 421,
+  },
+  {
+    name: 'an expectation that only contains 100-continue',
+    request: (fixture, views) =>
+      raw(
+        fixture.framePort,
+        [
+          `POST /f/${views.widgetHandle}/action HTTP/1.1`,
+          `Host: 127.0.0.1:${fixture.framePort}`,
+          `Origin: ${fixture.frameOrigin}`,
+          'Content-Type: application/json',
+          'Content-Length: 2',
+          'Expect: 100-continue, something-else',
+          'Connection: close',
+          '',
+          '',
+        ].join('\r\n'),
+      ),
+    status: 417,
+  },
 ];
 
 test('frame request admission table', async (context) => {
@@ -928,4 +965,59 @@ test('a POST whose handle ends while its body arrives is not forwarded', async (
     .snapshot()[0]
     ?.messages.find((row) => row.widget?.id === widgetId);
   assert.equal(record?.widget?.revision, 1, 'the action never reached the listener');
+});
+
+/** Raw bytes in, the whole answer out (until the server closes). */
+async function rawExchange(port: number, text: string): Promise<string> {
+  const socket = createConnection(port, '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  let answer = '';
+  socket.setEncoding('latin1');
+  socket.on('data', (chunk) => (answer += chunk));
+  socket.on('error', () => {});
+  socket.write(text);
+  await new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  return answer;
+}
+
+test('requests the HTTP parser refuses still get the fixed refusal headers', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  for (const [name, text, status] of [
+    ['malformed request line', 'NOT HTTP AT ALL\r\n\r\n', 400],
+    [
+      'oversized headers',
+      `GET / HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\nX-Big: ${'x'.repeat(20_000)}\r\n\r\n`,
+      431,
+    ],
+    [
+      'conflicting body framing',
+      `POST / HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n`,
+      400,
+    ],
+  ] as const) {
+    const answer = await rawExchange(fixture.framePort, text);
+    assert.match(answer, new RegExp(`^HTTP/1\\.1 ${status} `), name);
+    assert.match(answer, /content-security-policy: frame-ancestors /i, name);
+    assert.match(answer, /"error":"Bad request"/, name);
+  }
+});
+
+test('peers that reset during an upgrade refusal do not stop the gateway', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const socket = createConnection(fixture.framePort, '127.0.0.1');
+    socket.on('error', () => {});
+    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+    socket.write(
+      `GET /f/${'a'.repeat(43)}/ HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\n` +
+        'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n',
+    );
+    socket.resetAndDestroy();
+  }
+  await delay(200);
+  const response = await fixture.frameRequest(`${fixture.frameOrigin}/f/${'a'.repeat(43)}/`);
+  assert.equal(response.status, 404);
+  assert.equal((await fetch(fixture.origin + '/api/unknown')).status, 404);
 });

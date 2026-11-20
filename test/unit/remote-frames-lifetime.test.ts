@@ -465,6 +465,27 @@ const cases: LifetimeCase[] = [
       assert.equal(handles.size, 0);
     },
   },
+  {
+    rule: '7',
+    name: 'a connection forgets views that ended, so its history stays within the bounds',
+    async run() {
+      const conversation = '00000000-0000-4000-8000-000000000004';
+      const handles = new FrameHandles('https://frames.example');
+      const device = handles.connect('device');
+      const view = (index: number) =>
+        `http://127.0.0.1:1234/view/${index.toString(16).padStart(64, '0')}`;
+      for (let index = 0; index < 50; index++) {
+        device.application(conversation, view(index));
+        handles.viewEnded(view(index).slice(-64));
+      }
+      assert.equal(handles.size, 0);
+      const histories = [...(handles as any).devices.get('device').connections.values()];
+      assert.deepEqual(
+        histories.map((history: Map<string, Set<string>>) => history.size),
+        [0],
+      );
+    },
+  },
 ];
 
 for (const entry of cases) {

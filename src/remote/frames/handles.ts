@@ -112,8 +112,13 @@ interface HandleEntry extends FrameTarget {
 
 interface DeviceRecord {
   deviceId: string;
-  /** Open phone connections of this device. */
-  connections: Set<FrameConnection>;
+  /**
+   * Open phone connections of this device, each with the view capabilities
+   * (by conversation) it was given handles for, in the order of its own
+   * event stream. Entries leave when the view ends, so this stays within
+   * the handle bounds.
+   */
+  connections: Map<FrameConnection, Map<string, Set<string>>>;
   /** Started when the last connection closed; ends the record. */
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Capability → handle, for reuse across snapshots and events. */
@@ -155,7 +160,7 @@ export class FrameHandles {
     if (!record) {
       record = {
         deviceId,
-        connections: new Set(),
+        connections: new Map(),
         handles: new Map(),
         tokens: frameRequestBurst,
         tokensUpdatedAt: this.now(),
@@ -194,7 +199,8 @@ export class FrameHandles {
         if (typeof conversationId !== 'string') {
           return;
         }
-        for (const capability of seen.get(conversationId) ?? []) {
+        // Copy first: viewEnded() also removes them from this history.
+        for (const capability of [...(seen.get(conversationId) ?? [])]) {
           this.viewEnded(capability);
         }
         seen.delete(conversationId);
@@ -207,7 +213,7 @@ export class FrameHandles {
         this.disconnect(owner, connection);
       },
     };
-    record.connections.add(connection);
+    record.connections.set(connection, seen);
     return connection;
   }
 
@@ -254,6 +260,18 @@ export class FrameHandles {
    */
   viewEnded(capability: string): void {
     this.endWhere((entry) => entry.capability === capability);
+    // Forget it in every connection's history too, so that history never
+    // outgrows the live handles.
+    for (const record of this.devices.values()) {
+      for (const seen of record.connections.values()) {
+        for (const [conversationId, views] of seen) {
+          views.delete(capability);
+          if (views.size === 0) {
+            seen.delete(conversationId);
+          }
+        }
+      }
+    }
   }
 
   /**

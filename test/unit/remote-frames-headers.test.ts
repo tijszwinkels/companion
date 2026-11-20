@@ -403,55 +403,6 @@ test('an upstream 404 ends the handle and answers like an unknown one', async (c
   assert.equal(upstream.seen.length, before);
 });
 
-test('a client that leaves cancels its upstream request before its slot is reused', async (context) => {
-  const upstream = await fakeUpstream();
-  context.after(() => upstream.close());
-  const fixture = await frameFixture({ widgetSocket: upstream.socketPath });
-  context.after(() => fixture.close());
-  const frameUrl = await widgetFrame(fixture);
-
-  const held: Array<{ request: IncomingMessage; response: ServerResponse; closed: boolean }> = [];
-  upstream.respond((request, response) => {
-    const entry = { request, response, closed: false };
-    response.once('close', () => (entry.closed = true));
-    held.push(entry);
-  });
-  const clients = Array.from({ length: 8 }, () => new AbortController());
-  const pending = clients.map((client) =>
-    fetch(frameUrl + 'state', { signal: client.signal }).catch(() => undefined),
-  );
-  const until = Date.now() + 3000;
-  while (held.length < 8) {
-    assert.ok(Date.now() < until);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  // The device's eight slots are busy.
-  const busy = await fixture.frameRequest(frameUrl + 'state');
-  assert.equal(busy.status, 503);
-  await busy.arrayBuffer();
-
-  // Every client leaves; each upstream request is cancelled, and only then
-  // are the slots free again.
-  for (const client of clients) {
-    client.abort();
-  }
-  await Promise.all(pending);
-  while (!held.every((entry) => entry.closed)) {
-    assert.ok(Date.now() < until + 3000);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  upstream.respond((_request, response) => json(response, 200));
-  const later = until + 6000;
-  let status = 0;
-  while (status !== 200) {
-    assert.ok(Date.now() < later, `status ${status}`);
-    const response = await fixture.frameRequest(frameUrl + 'state');
-    status = response.status;
-    await response.arrayBuffer();
-  }
-});
-
 test('a client that never finishes its request headers is closed after about 10 seconds', async (context) => {
   const fixture = await frameFixture();
   context.after(() => fixture.close());
@@ -464,4 +415,63 @@ test('a client that never finishes its request headers is closed after about 10 
   await new Promise<void>((resolve) => socket.once('close', () => resolve()));
   const elapsed = Date.now() - started;
   assert.ok(elapsed >= 9_000 && elapsed <= 12_500, `closed after ${elapsed} ms`);
+});
+
+test('a forwarded action keeps its slot until the listener finishes it, even if the client left', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  const frameUrl = await widgetFrame(fixture);
+
+  // Hold every widget reducer until released, as a slow widget would.
+  const renderer = (fixture.sessions as any).widgets.renderer;
+  const original = renderer.reduce.bind(renderer);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let entered = 0;
+  renderer.reduce = async (...args: unknown[]) => {
+    entered++;
+    await gate;
+    return original(...args);
+  };
+
+  const clients = Array.from({ length: 8 }, () => new AbortController());
+  const pending = clients.map((client, index) =>
+    fetch(frameUrl + 'action', {
+      method: 'POST',
+      signal: client.signal,
+      headers: { 'Content-Type': 'application/json', Origin: fixture.frameOrigin },
+      body: JSON.stringify({ action: 'increment', args: {}, requestId: `slow-${index}` }),
+    }).catch(() => undefined),
+  );
+  const until = Date.now() + 3000;
+  while (entered < 1 || (fixture.gateway.frames as any).forwarded < 8) {
+    assert.ok(Date.now() < until);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  // The tabs go away; the listener still has the work, so the slots stay.
+  for (const client of clients) {
+    client.abort();
+  }
+  await Promise.all(pending);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const busy = await fixture.frameRequest(frameUrl + 'state');
+  assert.equal(busy.status, 503);
+  await busy.arrayBuffer();
+
+  // The listener finishes every accepted action; then the slots come back.
+  release();
+  const later = Date.now() + 5000;
+  let status = 0;
+  while (status !== 200) {
+    assert.ok(Date.now() < later, `status ${status}`);
+    const response = await fixture.frameRequest(frameUrl + 'state');
+    status = response.status;
+    const value = (await response.json()) as Json;
+    if (status === 200) {
+      assert.equal(value.props.count, 8);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal((fixture.gateway.frames as any).forwarded, 0);
 });

@@ -117,7 +117,8 @@ export function admitFrameRequest(
 export const maximumHeaderFields = 64;
 
 /**
- * Fields whose repetition is never legitimate here. Node keeps only the
+ * Fields whose repetition is never legitimate here (plus every `Tailscale-*`
+ * field, checked by prefix). Node keeps only the
  * first `Host`, `Content-Type` or `Authorization` and joins others, so a
  * repeated one is refused instead of interpreted.
  */
@@ -131,8 +132,6 @@ const singletonFields = new Set([
   'upgrade',
   'expect',
   'x-forwarded-host',
-  'tailscale-funnel-request',
-  'tailscale-user-login',
 ]);
 
 /**
@@ -149,7 +148,8 @@ export function headerListRefusal(
   const seen = new Set<string>();
   for (let index = 0; index < rawHeaders.length; index += 2) {
     const name = rawHeaders[index].toLowerCase();
-    if (!singletonFields.has(name)) {
+    // Every Tailscale identity or Funnel field is a singleton as well.
+    if (!singletonFields.has(name) && !name.startsWith('tailscale-')) {
       continue;
     }
     if (seen.has(name)) {

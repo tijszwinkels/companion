@@ -249,7 +249,12 @@ listener side is [`src/widgets/socket.ts`](../widgets/socket.ts) and
   Tailscale Serve terminates; there `X-Forwarded-Host` replaces `Host`, as on
   the gateway's socket.
 - `--frame-origin` is exactly `scheme://host[:port]`, https or loopback http,
-  and must differ from every `--origin` and every `--app-origin`.
+  and must differ from every `--origin`. Its host name must differ from every
+  `--app-origin`'s (cookies ignore ports). With frames on, every gateway
+  origin and the frame origin must name a concrete host (no `*` or other
+  characters a Content-Security-Policy source would expand), and the frame
+  listener must bind a specific address (every spelling of "all interfaces",
+  such as `0:0:0:0:0:0:0:0` or `::ffff:0.0.0.0`, is refused).
 - The gateway reaches the widget service at `widgets.sock` next to the control
   socket (`$XDG_RUNTIME_DIR/companion/widgets.sock`).
 - Funnel requests are refused, and `--require-tailscale-login` is required, on
@@ -318,7 +323,9 @@ below, including refusals of upgrades and `CONNECT`.
 1. A `Tailscale-Funnel-Request` header, or a missing/wrong required Tailscale
    login: 403.
 2. `Host` (on a Unix socket: `X-Forwarded-Host`) other than the frame
-   origin's host: 421.
+   origin's host, or none: 421. Requests Node's parser cannot read
+   (malformed, oversized headers, conflicting framing, header deadline) get
+   400, 431 or 408 with the same refusal headers and body.
 3. An `Authorization` header, an `Upgrade` header, or any query string: 400.
    WebSocket upgrades and `CONNECT` are refused on the socket level.
 4. The request target must be exactly `/f/<handle>/` followed by one
@@ -328,8 +335,10 @@ below, including refusals of upgrades and `CONNECT`.
 5. A method other than the operation's: 405.
 6. An `Origin` other than the frame origin: 403. A POST without `Origin`: 403.
 7. POST: `Content-Type` other than `application/json` 415; no
-   `Content-Length` or any `Transfer-Encoding` 411; a length above the limit 413. GET with a body: 400. `Expect: 100-continue` is answered only after
-   every step here admitted the request; any other expectation: 417.
+   `Content-Length` or any `Transfer-Encoding` 411; a length above the
+   limit: 413. GET with a body: 400. `Expect: 100-continue` (exactly that
+   value) is answered only after every step here admitted the request; any
+   other expectation: 417.
 8. An unknown or ended handle, or one whose view does not implement the
    operation: 404 `Not found`, the same answer as step 4. Steps 3–7 never
    look at the handle.
@@ -365,11 +374,16 @@ never passed on or followed. A 404 ends the view's handles (rule 5) and is
 answered like an unknown handle. An unreachable listener: 503; no answer
 within 15 seconds: 504; other statuses pass through with their JSON body.
 
-Resources: at most 64 sockets on the frame listener, 10 seconds for request
-headers (enforced within a second), 30 seconds for a whole exchange including
-the client reading the answer. A forwarded request keeps its slot until the
-client has the answer or has gone and the upstream request has ended; a
-client that leaves cancels its upstream request. Frame requests use the
+Resources: at most 64 sockets on the frame listener, 10 seconds for a TLS
+handshake and for request headers (enforced within a second), 30 seconds for
+a whole exchange including the client reading the answer. A forwarded
+request keeps its slot until the client has the answer (or has gone) and the
+listener has answered. A client that leaves does not cancel the request: the
+widget service would complete an accepted action anyway, so its slot stays
+taken until the listener answers or the 15-second upstream timeout passes;
+beyond that, the listener's own queue of 16 operations per conversation
+bounds the work. A request already forwarded when its device is revoked still
+receives its answer. Frame requests use the
 widget service socket, not the control socket: they do not count against the
 gateway's phone connections or the listener's client slots. Requests for
 unknown handles are not budgeted (no device is known) but are answered

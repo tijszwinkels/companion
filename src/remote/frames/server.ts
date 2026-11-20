@@ -48,7 +48,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
-import { isIP } from 'node:net';
+import { isIP, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
 import { privateSocketHost } from '../../widgets/socket.ts';
@@ -103,6 +103,14 @@ function isLoopback(host: string): boolean {
   return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
+/** A DNS name, IPv4 address or bracketed IPv6 address: nothing a CSP source would expand. */
+function concreteHost(hostname: string): boolean {
+  if (/^\[[0-9a-f:.]+\]$/i.test(hostname)) {
+    return true;
+  }
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i.test(hostname);
+}
+
 /** Validate the frame options against the gateway's; throws a usage error. */
 export function checkFrameOptions(options: FrameOriginOptions): void {
   let parsed: URL;
@@ -121,8 +129,19 @@ export function checkFrameOptions(options: FrameOriginOptions): void {
   if (options.gatewayOrigins.includes(options.origin)) {
     throw Error('The frame origin must differ from every gateway origin (--origin)');
   }
-  if (options.appOrigins?.includes(options.origin)) {
-    throw Error('The frame origin must differ from every app origin (--app-origin)');
+  // Cookies ignore ports: an app's cookies would accompany frame requests if
+  // both shared a host name (the gateway itself sets none).
+  for (const appOrigin of options.appOrigins ?? []) {
+    if (new URL(appOrigin).hostname === parsed.hostname) {
+      throw Error("The frame origin must use a host name of its own, not an app's (--app-origin)");
+    }
+  }
+  // These origins are written into Content-Security-Policy sources, where
+  // `*` and other characters have a meaning; only concrete hosts are allowed.
+  for (const origin of [options.origin, ...options.gatewayOrigins]) {
+    if (!concreteHost(new URL(origin).hostname)) {
+      throw Error(`Frames need concrete host names in every origin: ${origin}`);
+    }
   }
 
   const listen = options.listen;
@@ -145,7 +164,15 @@ export function checkFrameOptions(options: FrameOriginOptions): void {
   if (!Number.isInteger(listen.port) || listen.port < 0 || listen.port > 65535) {
     throw Error('The frame port must be 0–65535');
   }
-  if (listen.host === '0.0.0.0' || listen.host === '::') {
+  // Normalize first: `0:0:0:0:0:0:0:0` and `::ffff:0.0.0.0` also mean every
+  // interface (same normalization as the gateway's own check).
+  const normalizedHost =
+    isIP(listen.host) === 6 ? new URL(`http://[${listen.host}]`).hostname : listen.host;
+  if (
+    normalizedHost === '0.0.0.0' ||
+    normalizedHost === '[::]' ||
+    normalizedHost === '[::ffff:0:0]'
+  ) {
     throw Error('Bind the frame origin to a specific address, not every interface');
   }
   if (options.tls && parsed.protocol !== 'https:') {
@@ -159,6 +186,10 @@ export function checkFrameOptions(options: FrameOriginOptions): void {
 export class FrameOrigin {
   readonly handles: FrameHandles;
   private server?: Server;
+  /** Aborted by close(): ends forwarded requests still waiting upstream. */
+  private readonly shutdown = new AbortController();
+  /** Every accepted socket, including TLS sockets still in their handshake. */
+  private readonly sockets = new Set<Socket>();
   private socketClaim?: UnixSocketClaim;
   private readonly frameHost: string;
   private forwarded = 0;
@@ -219,11 +250,23 @@ export class FrameOrigin {
     // Over TCP the frame origin uses TLS exactly when the gateway does, with
     // the same certificate. On a Unix socket Tailscale Serve terminates TLS.
     const listen = this.options.listen;
-    const serverOptions = { connectionsCheckingInterval: connectionsCheckingMilliseconds };
+    // requireHostHeader: false lets a request without Host reach handle(),
+    // which refuses it (421) with the usual headers instead of Node's bare 400.
+    const serverOptions = {
+      connectionsCheckingInterval: connectionsCheckingMilliseconds,
+      requireHostHeader: false,
+    };
     const server =
       listen.socketPath === undefined && this.options.tls
         ? createHttpsServer(
-            { ...serverOptions, cert: this.options.tls.cert, key: this.options.tls.key },
+            {
+              ...serverOptions,
+              cert: this.options.tls.cert,
+              key: this.options.tls.key,
+              // Node's default is 120 s; a socket in its handshake holds one
+              // of the 64 places, so it gets the same 10 s as request headers.
+              handshakeTimeout: headersTimeoutMilliseconds,
+            },
             handler,
           )
         : createHttpServer(serverOptions, handler);
@@ -234,9 +277,42 @@ export class FrameOrigin {
     server.requestTimeout = exchangeMilliseconds;
     server.keepAliveTimeout = keepAliveMilliseconds;
 
-    // `Expect: 100-continue` is answered only after admission (see handle());
-    // any other expectation is refused with the usual headers.
-    server.on('checkContinue', (request, response) => handler(request, response, true));
+    // Raw sockets, tracked from acceptance (before any TLS handshake), so
+    // close() can end those that never became HTTP connections.
+    server.on('connection', (socket: Socket) => {
+      this.sockets.add(socket);
+      socket.once('close', () => this.sockets.delete(socket));
+    });
+
+    // Requests Node's parser refuses (malformed, too large, header deadline)
+    // get the usual refusal headers and body where the socket can still
+    // take an answer.
+    server.on('clientError', (error: NodeJS.ErrnoException, socket: Duplex) => {
+      if (error.code === 'ECONNRESET' || !socket.writable) {
+        socket.destroy();
+        return;
+      }
+      const [status, reason] =
+        error.code === 'HPE_HEADER_OVERFLOW'
+          ? [431, 'Request Header Fields Too Large']
+          : error.code === 'ERR_HTTP_REQUEST_TIMEOUT'
+            ? [408, 'Request Timeout']
+            : [400, 'Bad Request'];
+      socket.once('error', () => socket.destroy());
+      socket.end(this.rawRefusal(status, reason, 'Bad request'), () => socket.destroy());
+    });
+
+    // `Expect: 100-continue` (exactly that) is answered only after admission
+    // (see handle()); any other expectation is refused with the usual headers.
+    // Node reports a value that merely contains the token as checkContinue.
+    server.on('checkContinue', (request, response) => {
+      const expectation = request.headers.expect?.trim().toLowerCase();
+      if (expectation !== '100-continue') {
+        this.refuse(response, 417, 'Expectation not supported');
+        return;
+      }
+      handler(request, response, true);
+    });
     server.on('checkExpectation', (_request, response) => {
       this.refuse(response, 417, 'Expectation not supported');
     });
@@ -244,6 +320,9 @@ export class FrameOrigin {
     // No WebSockets and no tunnels on this origin. The socket is ours once
     // either event fires; answer with the usual refusal and destroy it.
     const refuseSocket = (socket: Duplex) => {
+      // Node removed its own error listener when it handed the socket over;
+      // a peer resetting during the write must not crash the gateway.
+      socket.on('error', () => socket.destroy());
       socket.end(this.rawRefusal(400, 'Bad Request', 'Upgrades are not accepted here'), () =>
         socket.destroy(),
       );
@@ -275,8 +354,12 @@ export class FrameOrigin {
   /** Stop listening and end every handle (they live in memory only). */
   async close(): Promise<void> {
     this.handles.clear();
+    this.shutdown.abort();
     const server = this.server;
     this.server = undefined;
+    for (const socket of this.sockets) {
+      socket.destroy();
+    }
     if (server?.listening) {
       server.closeAllConnections();
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
@@ -307,11 +390,9 @@ export class FrameOrigin {
     // the connection went away.
     const deadline = setTimeout(() => response.destroy(), exchangeMilliseconds);
     let responseClosed = false;
-    const cancel = new AbortController();
     response.once('close', () => {
       responseClosed = true;
       clearTimeout(deadline);
-      cancel.abort();
     });
 
     // Before anything reads request.headers: a possibly truncated header
@@ -365,8 +446,12 @@ export class FrameOrigin {
 
     // The slot is held until BOTH the client has the whole answer (or is
     // gone) and the upstream request has settled: stalled readers count
-    // against the bound, and a closed tab cannot free a slot while its
-    // request still runs in the listener.
+    // against the bound, and a closed tab cannot free a slot while the
+    // listener still works on its request. A client that leaves does not
+    // cancel the upstream request: the widget service would carry on with an
+    // accepted action anyway, so the gateway waits for its answer (at most
+    // the upstream timeout; beyond that the listener's own per-conversation
+    // queue of 16 operations bounds the work).
     this.forwarded++;
     this.forwardedByDevice.set(target.deviceId, deviceForwarded + 1);
     let upstreamSettled = true;
@@ -416,7 +501,7 @@ export class FrameOrigin {
       path,
       body,
       admission.operation === '' ? maximumDocumentBytes : maximumJsonBytes,
-      cancel.signal,
+      this.shutdown.signal,
     );
     upstreamSettled = true;
     release();
@@ -480,7 +565,7 @@ export class FrameOrigin {
   ): Promise<UpstreamAnswer> {
     return new Promise((resolveAnswer) => {
       // Settles once the upstream exchange is over: answered, failed, timed
-      // out, or cancelled because the client left. Cancelling destroys the
+      // out, or cancelled because the gateway stops. Cancelling destroys the
       // upstream socket; the result is then settled when that socket closes.
       let settled = false;
       let pendingAnswer: UpstreamAnswer | undefined;
