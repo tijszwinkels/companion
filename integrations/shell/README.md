@@ -876,14 +876,15 @@ running` or `· failed or stopped`) and asks for nothing.
    answers are dropped.
 7. Losing the connection clears every open group's page and says
    "Disconnected. Reload after reconnecting."; after reconnecting (once the
-   new snapshot arrived) the group offers Try again, and loads only when the
+   new snapshot arrived) the group offers Try again, which asks for the page
+   that was on its way, had failed or was shown, and loads only when the
    reader asks.
 8. A tool row without stored calls (an old single tool message) opens to its
    own input and output, without a request.
 
-The listener answers pages only for groups in the conversation's live
-window (`AgentSessions.toolPage`); a group in an older page loaded while
-scrolling up gets its refusal, as on the desktop.
+A group in an older page loaded while scrolling up opens too: the listener
+looks its calls up in the conversation's whole transcript, as long as the
+lifetime and the group's revision are still the ones the page has.
 
 `test/shell/tool-details.test.ts` plays the rule's table through the real
 bridge with a stand-in Store: closed; opening; loaded one page; more pages
@@ -892,7 +893,8 @@ bridge with a stand-in Store: closed; opening; loaded one page; more pages
 opened while the turn still runs and more calls arrive; the conversation
 switched and back; closed and reopened under the same ID; disconnected while
 loading and back; plus closing an open group, a row without stored calls and
-the deadline (also on a later page, which Try again asks for again). `test/shell/details-browser.test.ts` opens a group in the real
+the deadline (also on a later page, which Try again asks for again, also
+after a reconnect). `test/shell/details-browser.test.ts` opens a group in the real
 page against the gateway and listener and pages through it.
 
 ### Screenshots
@@ -916,17 +918,20 @@ The rule:
 4. **Removed since the message was drawn** (the gateway answers 404): the
    viewer says "Companion no longer has this screenshot." and the row then
    shows "screenshot unavailable" without the control, for that
-   conversation lifetime. A 404 counts as removed only for a request made
-   and answered while requests are admitted: the gateway grants a
-   connection its screenshots with the snapshot it relays, so a request
-   before that (right after a gateway restart, for example) can be refused
-   for a screenshot that is still there; it is shown like a lost connection
-   (rule 6), with Try again.
+   conversation lifetime. The gateway grants a connection a screenshot when
+   it relays the screenshot's route on that connection, so a 404 counts as
+   removed only for a fetch asked and answered on the same connection after
+   its snapshot arrived, for a row of the live window (which that snapshot
+   relayed). Otherwise (asked before the snapshot, answered on a newer
+   connection, or a row of an older page kept from an earlier connection,
+   as after a gateway restart) it is shown like a lost connection (rule 6),
+   with Try again.
 5. **Fetch refused** (401, 403 or another refusal): "Companion did not allow
    this browser to load the screenshot.", no Try again.
 6. **Disconnected** (the gateway cannot be reached, or a server error): "Could
    not load the screenshot. Check the connection and try again." with Try
-   again.
+   again. An answer the browser cannot show as an image: "The screenshot
+   could not be shown.", with Try again.
 7. **Closed** by its × button, by Escape or by a click outside the image
    (beside it or on the backdrop), and by browser Back. Focus returns to
    where it was (View screenshot), or to the bar's heading when that control
@@ -965,8 +970,9 @@ The gateway's Content-Security-Policy is unchanged: `img-src 'self' blob:`
 already allows the image.
 
 `test/shell/screenshot-viewer.test.ts` plays the rule's table (kept; its
-address revoked once loaded; not kept; removed since drawn; a 404 before
-the connection was admitted; fetch refused; disconnected; closed; a second
+address revoked once loaded; not decodable; not kept; removed since drawn;
+a 404 before the connection was admitted, answered on a newer connection,
+or asked again once admitted; fetch refused; disconnected; closed; a second
 one opened) against the viewer's state and the row data, with the bridge's
 checks. `test/shell/details-browser.test.ts` opens a kept screenshot in the
 real page, closes it each of the three ways with focus back on View
@@ -1005,10 +1011,12 @@ The rule:
    conversation's own model (Claude Code) can still be chosen, as on the
    desktop.
 5. A choice sends `set-agent-model` for this conversation; one at a time
-   ("Changing the model…"). **The change is refused**: the listener's
+   ("Changing the model…"; the list keeps keyboard focus meanwhile and only
+   says it is unavailable). **The change is refused**: the listener's
    words, and the picker shows the conversation's model again. If the
    picker was closed meanwhile (or the reader moved on), the refusal is a
-   toast.
+   toast. An answer that arrives after signing out (or a new pairing) is
+   dropped.
 6. **Changed elsewhere** (the desktop, a phone): the conversation's next
    update shows it here, in the button and the picker.
 7. Nothing can be chosen while not connected (after reconnecting, once the
@@ -1018,7 +1026,7 @@ The rule:
    conversation lifetime: another conversation starts with it closed.
 9. Keyboard: the button opens and closes it (Enter, Space); Tab moves
    through its controls; the model list is a native select; Escape closes it
-   and returns focus to the button. A click outside closes it, and so does
+   wherever the focus is and returns focus to the button. A click outside closes it, and so does
    keyboard focus moving on to another control of the page. At 420 px it
    stays inside the window.
 
@@ -1032,6 +1040,13 @@ the listener, a refusal shown, Escape with focus back, a refusal arriving after
 the picker was closed (a toast), Tab out of the picker closing it, a change made
 elsewhere appearing, the settings screen and Previous sessions without a
 picker, and a Claude Code conversation's models and fixed effort.
+
+Known limit: the picker keeps its "change on its way" state while it is
+drawn. Leaving the conversation for the settings screen and coming back
+while a change is still on its way draws it anew, so a second choice can be
+sent then; the listener refuses it ("its model/effort is already being
+changed") and the picker shows that refusal. A change takes well under a
+second, so this needs a quick round trip to Settings.
 
 The same file checks the layout with an open tool group, the open picker and
 the viewer at 420, 1280 and 1600 px: no horizontal overflow, the picker and

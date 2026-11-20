@@ -380,9 +380,12 @@ test(
     await screenshot(page, 'model-picker-1280');
 
     // A turn is running: the change is for the next turn, and accepted.
+    // Chosen with the list focused, as by keyboard: it keeps the focus
+    // while the change is on its way.
     const choose = (model: string) =>
       page.evaluate(`(() => {
         const select = document.querySelector('#model-picker select');
+        select.focus();
         select.value = ${JSON.stringify(model)};
         select.dispatchEvent(new Event('change', { bubbles: true }));
       })()`);
@@ -406,6 +409,8 @@ test(
       'cloud/synthetic-large',
     );
 
+    // The list kept the focus through the change and its refusal.
+    assert.equal(await page.evaluate(`document.activeElement.id`), 'model-select');
     // Escape closes it; focus returns to the button.
     await press(page, 'Escape', 27);
     await page.waitFor(`!document.querySelector('#model-picker')`);

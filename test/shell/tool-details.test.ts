@@ -552,3 +552,27 @@ test('tool details: Try again after a later page timed out asks for that page', 
   assert.equal(retry.parameters.index, 0);
   assert.equal(retry.parameters.offset, 8192);
 });
+
+test('tool details: after a timeout and a reconnect, Try again still asks for that page', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = new Harness();
+  context.mock.timers.tick(100);
+  await microtasks();
+  h.act('toggle');
+  const first = h.toolRequests()[0];
+  first.resolve(page(first, 'a'.repeat(8192), { next: { index: 0, offset: 8192 } }));
+  await microtasks();
+  h.act('next');
+  context.mock.timers.tick(toolPageDeadlineMilliseconds);
+  // The relay then closes the connection; it comes back with a snapshot.
+  h.disconnect();
+  h.reconnect();
+  context.mock.timers.tick(100);
+  await microtasks();
+  assert.equal(h.tools()!.reload, 'Try again');
+  h.act('reload');
+  const retry = h.toolRequests()[2];
+  assert.equal(retry.parameters.index, 0);
+  assert.equal(retry.parameters.offset, 8192);
+  assert.equal(retry.parameters.callRevision, undefined);
+});

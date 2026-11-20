@@ -71,6 +71,7 @@ function ViewerBody(props: { state: ViewerState; viewer: ScreenshotViewerState }
         src={imageUrl}
         alt="Screenshot attached to this message"
         onLoad={() => viewer.imageLoaded(imageUrl)}
+        onError={() => viewer.imageFailed(imageUrl)}
       />
     );
   }

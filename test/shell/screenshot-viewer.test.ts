@@ -64,7 +64,7 @@ function request(gone: string[] = [], title = 'Trip', final = true): ScreenshotR
   return {
     path: route,
     title,
-    gone: () => {
+    attempt: () => () => {
       gone.push(route);
       return final;
     },
@@ -124,6 +124,27 @@ const cases: Case[] = [
       viewer.imageLoaded('blob:test/1');
       viewer.close();
       assert.deepEqual(urls.revoked, ['blob:test/1']);
+    },
+  },
+  {
+    name: 'fetched but not decodable: its blob: address revoked at once, Try again',
+    async run() {
+      const fetcher = new FakeFetch();
+      const urls = new FakeUrls();
+      const viewer = new ScreenshotViewerState(fetcher.fetch, urls);
+      viewer.open(request());
+      fetcher.answer(0).resolve(image);
+      await settled();
+      viewer.imageFailed('blob:test/1');
+      assert.deepEqual(urls.revoked, ['blob:test/1']);
+      assert.deepEqual(viewer.state, {
+        kind: 'failed',
+        title: 'Trip',
+        message: viewerTexts.undecodable,
+        canRetry: true,
+      });
+      viewer.retry();
+      assert.equal(fetcher.asked.length, 2);
     },
   },
   {
@@ -316,23 +337,51 @@ test('screenshot: the bridge opens only a kept screenshot of the shown conversat
   bridge.openScreenshot(conversation, 'missing');
   assert.equal(opened.length, 0);
 
-  // Asked before this connection's snapshot arrived: a 404 is not final.
+  /** The connection's snapshot (a new engine object): requests are admitted. */
+  const snapshot = () => {
+    store.state = { ...store.state, engine: { paused: false } };
+    for (const listener of listeners) {
+      listener();
+    }
+  };
+  /** The connection drops and a new one comes up (its snapshot still to come). */
+  const reconnect = () => {
+    store.state = {
+      ...store.state,
+      connection: { ...store.state.connection, status: 'reconnecting' },
+    };
+    for (const listener of listeners) {
+      listener();
+    }
+    store.state = { ...store.state, connection: { ...store.state.connection, status: 'online' } };
+    for (const listener of listeners) {
+      listener();
+    }
+  };
+
+  // Opened before this connection's snapshot arrived.
   bridge.openScreenshot(conversation, 'kept@0');
   assert.equal(opened.length, 1);
   assert.equal(opened[0].path, route);
   assert.equal(opened[0].title, 'Trip');
-  assert.equal(opened[0].gone(), false);
 
-  // The connection's snapshot (a new engine object): requests are admitted.
-  store.state = { ...store.state, engine: { paused: false } };
-  for (const listener of listeners) {
-    listener();
-  }
-  bridge.openScreenshot(conversation, 'kept@0');
-  assert.equal(opened.length, 2);
+  // A fetch asked before admission and answered (404) after it: not final.
+  const early = opened[0].attempt();
+  snapshot();
+  assert.equal(early(), false);
 
-  // Gone while admitted: final, and not opened again.
-  assert.equal(opened[1].gone(), true);
+  // Try again after admission (a new attempt) on the same connection: final.
+  const admitted = opened[0].attempt();
+  // A fetch asked while admitted whose 404 arrives on a newer connection: not final.
+  const beforeReconnect = opened[0].attempt();
+  reconnect();
+  assert.equal(beforeReconnect(), false);
+  snapshot();
+  assert.equal(admitted(), false, 'asked on the previous connection');
+  const current = opened[0].attempt();
+  assert.equal(current(), true);
+
+  // Gone: the row loses View screenshot and is not opened again.
   bridge.openScreenshot(conversation, 'kept@0');
-  assert.equal(opened.length, 2);
+  assert.equal(opened.length, 1);
 });

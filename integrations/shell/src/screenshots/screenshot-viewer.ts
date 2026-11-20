@@ -28,14 +28,15 @@ export interface ScreenshotRequest {
   /** The conversation's title, for the viewer's heading. */
   title: string;
   /**
-   * Called when the gateway answers that it does not have this screenshot
-   * (HTTP 404). Returns whether that is final: false when the answer may
-   * only mean that the gateway has not yet granted this connection its
-   * screenshots (asked before the connection's snapshot arrived, for
-   * example right after a gateway restart); the viewer then offers Try
-   * again.
+   * Called as each fetch of this screenshot starts. It returns the function
+   * the viewer calls if that fetch is answered with HTTP 404, which returns
+   * whether the 404 is final (the screenshot is gone). It is not when the
+   * answer may only mean that the gateway has not granted this connection
+   * the screenshot yet (asked before the connection's snapshot arrived, or
+   * for a row the current connection did not relay, for example after a
+   * gateway restart); the viewer then offers Try again.
    */
-  gone(): boolean;
+  attempt(): () => boolean;
 }
 
 export type ViewerState =
@@ -52,6 +53,7 @@ export const viewerTexts = {
   gone: 'Companion no longer has this screenshot.',
   refused: 'Companion did not allow this browser to load the screenshot.',
   unreachable: 'Could not load the screenshot. Check the connection and try again.',
+  undecodable: 'The screenshot could not be shown.',
 };
 
 /** Blob URLs, made and revoked through this (tests count them). */
@@ -105,6 +107,24 @@ export class ScreenshotViewerState {
     this.imageUrl = '';
   }
 
+  /**
+   * The image element could not decode what was fetched: its `blob:` address
+   * is revoked at once, and the viewer offers Try again.
+   */
+  imageFailed(imageUrl: string): void {
+    if (imageUrl === '' || imageUrl !== this.imageUrl || !this.request) {
+      return;
+    }
+    this.objectUrls.revoke(this.imageUrl);
+    this.imageUrl = '';
+    this.set({
+      kind: 'failed',
+      title: this.request.title,
+      message: viewerTexts.undecodable,
+      canRetry: true,
+    });
+  }
+
   /** Fetch the open screenshot again after a failure. */
   retry(): void {
     if (this.state.kind !== 'failed' || !this.state.canRetry || !this.request) {
@@ -128,6 +148,8 @@ export class ScreenshotViewerState {
     const controller = new AbortController();
     this.controller = controller;
     this.set({ kind: 'loading', title: request.title });
+    // Whether a 404 is final depends on this fetch's own moment.
+    const notFoundIsFinal = request.attempt();
 
     this.fetchImage(request.path, controller.signal).then(
       (blob) => {
@@ -145,7 +167,7 @@ export class ScreenshotViewerState {
         }
         this.controller = null;
         const notFound = failure instanceof ScreenshotRefused && failure.status === 404;
-        if (notFound && request.gone()) {
+        if (notFound && notFoundIsFinal()) {
           this.set({
             kind: 'failed',
             title: request.title,

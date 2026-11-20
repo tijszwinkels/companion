@@ -69,11 +69,20 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
     };
   }, []);
 
-  // A click outside the button and the picker closes it.
+  // A click outside the button and the picker closes it, and Escape closes
+  // it wherever the focus is (also when a control that had it became
+  // unavailable and the browser moved focus to the page itself).
   useEffect(() => {
     if (!open) {
       return;
     }
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) {
+        return;
+      }
+      event.preventDefault();
+      closeToButton();
+    };
     const pointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) {
@@ -85,8 +94,10 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
       setOpen(false);
     };
     document.addEventListener('pointerdown', pointerDown, true);
+    document.addEventListener('keydown', keyDown);
     return () => {
       document.removeEventListener('pointerdown', pointerDown, true);
+      document.removeEventListener('keydown', keyDown);
     };
   }, [open]);
 
@@ -109,14 +120,20 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
   }
 
   async function choose(model: string) {
-    if (!choice.enabled || model === choice.selected) {
+    if (changing || !choice.enabled || model === choice.selected) {
       return;
     }
     setChanging(true);
     setRefusal('');
+    // The pairing this change was asked in (its device credential): an
+    // answer after sign-out or a new pairing belongs to no one shown now.
+    const credential = store.connection.token;
     try {
       await store.request('set-agent-model', { id: session.id, model: model }, { quiet: true });
     } catch (failure) {
+      if (store.connection.token !== credential) {
+        return;
+      }
       let message = String(failure);
       if (failure instanceof Error) {
         message = failure.message;
@@ -144,14 +161,6 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
   return (
     <span
       class="model-control"
-      onKeyDown={(event) => {
-        // Escape closes the picker, from its button or from inside it.
-        if (event.key === 'Escape' && open) {
-          event.preventDefault();
-          event.stopPropagation();
-          closeToButton();
-        }
-      }}
       onFocusOut={(event) => {
         // Keyboard focus moved on to another control of the page (Tab past
         // the picker's last control): the picker closes, so it never stays
@@ -190,7 +199,11 @@ export function ModelPicker(props: { session: AgentSession; admitted: boolean })
             id="model-select"
             class="model-select"
             value={choice.selected}
-            disabled={!choice.enabled}
+            // While a change is on its way the list keeps keyboard focus
+            // (a disabled control would lose it) and only says it is
+            // unavailable; choose() takes nothing meanwhile.
+            disabled={!choice.enabled && !changing}
+            aria-disabled={changing ? 'true' : undefined}
             onChange={(event) => {
               const select = event.currentTarget;
               const model = select.value;

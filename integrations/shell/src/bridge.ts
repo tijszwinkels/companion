@@ -176,6 +176,9 @@ export class GatewayChatBridge implements NativeBridge {
   // engine states until its snapshot, so a new `engine` object after the
   // connection came up means the snapshot was applied.
   private connected = false;
+  // Counts authenticated connections, so an answer can tell whether it
+  // belongs to the connection it was asked on.
+  private connectionNumber = 0;
   private engineAtConnect: unknown = undefined;
   private snapshotSeen = false;
   private online = false;
@@ -328,6 +331,7 @@ export class GatewayChatBridge implements NativeBridge {
     const connected = state.connection.status === 'online';
     if (connected && !this.connected) {
       // A new authenticated connection: its snapshot is still to come.
+      this.connectionNumber++;
       this.engineAtConnect = state.engine;
       this.snapshotSeen = false;
     }
@@ -1246,23 +1250,41 @@ export class GatewayChatBridge implements NativeBridge {
     if (path === '' || this.goneScreenshots.has(gone)) {
       return;
     }
-    // The gateway grants a connection its screenshots with the snapshot it
-    // relays; a 404 is final only for a request made and answered while
-    // requests are admitted (after that snapshot), in the same lifetime.
-    const admittedWhenAsked = this.online;
-    const pairing = this.pairing;
+    // The gateway grants a connection a screenshot when it relays the
+    // screenshot's route on that connection. A 404 is therefore final only
+    // for a fetch asked and answered on the same admitted connection (after
+    // its snapshot, which relays the live window), for a row of the live
+    // window; a row of an older page kept from an earlier connection (a
+    // gateway restart) may not have been granted again. Decided per fetch.
     const request: ScreenshotRequest = {
       path: path,
       title: this.shownSession?.title || 'Screenshot',
-      gone: () => {
-        if (!admittedWhenAsked || !this.online || this.pairing !== pairing) {
-          return false;
-        }
-        if (this.lifetime(this.shownSession) === lifetime) {
+      attempt: () => {
+        const admittedWhenAsked = this.online;
+        const connection = this.connectionNumber;
+        const pairing = this.pairing;
+        return () => {
+          if (!admittedWhenAsked || !this.online) {
+            return false;
+          }
+          if (this.connectionNumber !== connection || this.pairing !== pairing) {
+            return false;
+          }
+          if (this.lifetime(this.shownSession) !== lifetime) {
+            return false;
+          }
+          const current = this.residentRow(key);
+          if (!current || current.live !== true) {
+            return false;
+          }
           this.goneScreenshots.add(gone);
-          this.scheduleRows();
-        }
-        return true;
+          // At once, so the row loses View screenshot before the reader can
+          // close the viewer (its focus then goes to the page heading).
+          this.cancelRowsTimer();
+          this.publishRows();
+          this.scheduleStatus();
+          return true;
+        };
       },
     };
     for (const listener of this.screenshotListeners) {

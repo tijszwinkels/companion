@@ -17,7 +17,8 @@
  *   new lifetime of the same one (another tool epoch) drop older answers.
  *   An answer is also checked against the conversation, lifetime and group
  *   it was asked for, as the desktop does.
- * - A failure (a refusal, a lost answer, the 10 s deadline) is shown with
+ * - A failure (a refusal, a lost answer, the 10 s deadline, a lost
+ *   connection) is shown with
  *   Try again, which asks again for the page that failed, as a fresh read
  *   of that position (without the call revision a continuation named: a
  *   call that changed meanwhile would otherwise be refused again and
@@ -174,8 +175,18 @@ export class ToolDetails {
       return;
     }
     for (const group of this.groups.values()) {
-      if (!group.legacy) {
-        this.invalidate(group, toolTexts.disconnected);
+      if (group.legacy) {
+        continue;
+      }
+      // Try again after reconnecting asks for the page that was on its way,
+      // failed, or shown: the page itself is cleared, not the reader's place.
+      let place: PagePosition | null = group.pendingPosition ?? group.failedPosition;
+      if (!place && group.loaded) {
+        place = { index: group.callIndex, offset: group.offset, callRevision: '' };
+      }
+      this.invalidate(group, toolTexts.disconnected);
+      if (place) {
+        group.failedPosition = retryPosition(place);
       }
     }
   }
