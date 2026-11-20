@@ -67,6 +67,7 @@ const rowsIntervalMilliseconds = 30;
 const classicUnavailable =
   'Tool details, widgets and the classic view are not available in the browser yet.';
 const applicationUnavailable = 'Session applications are not available in the browser yet.';
+const stopEnding = 'This turn is already ending.';
 const stopNotReady =
   "This conversation's controls have not arrived yet. Try Stop again in a moment.";
 
@@ -136,6 +137,11 @@ export class GatewayChatBridge implements NativeBridge {
   // lifetime it was made in, kept until it settles even when the page shows
   // another conversation meanwhile.
   private readonly pendingChoices = new Map<string, { lifetime: string }>();
+  // Conversation lifetimes (ID and tool epoch) that have named a run. In
+  // such a conversation a running turn without a run ID is one the listener
+  // is already ending (it withdraws the ID first), so the unscoped Stop is
+  // not offered: it could cancel a turn that started meanwhile.
+  private readonly namedRuns = new Set<string>();
   // Advances on sign-out or revocation. Answers to requests of an earlier
   // pairing are ignored, so they cannot bring back its notices.
   private pairing = 0;
@@ -195,6 +201,7 @@ export class GatewayChatBridge implements NativeBridge {
     if (session) {
       this.noticeDraftChange(session.id);
     }
+    this.noticeNamedRuns();
     if (switched && this.pageReady) {
       // The new conversation's rows and status go out together, so the page
       // never shows one conversation's title with another's transcript.
@@ -204,6 +211,15 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     this.scheduleStatus();
+  }
+
+  /** Remember every open conversation lifetime that has named a run. */
+  private noticeNamedRuns(): void {
+    for (const session of this.store.state.sessions.values()) {
+      if (typeof session.runId === 'string' && session.runId !== '') {
+        this.namedRuns.add(this.lifetime(session));
+      }
+    }
   }
 
   /** A conversation's identity for the page: its ID and tool epoch. */
@@ -247,6 +263,7 @@ export class GatewayChatBridge implements NativeBridge {
     this.cursors.clear();
     this.errors.clear();
     this.pendingChoices.clear();
+    this.namedRuns.clear();
     this.unresolved = null;
   }
 
@@ -781,11 +798,14 @@ export class GatewayChatBridge implements NativeBridge {
    * The conversation's own Stop, offered by the page only while it runs
    * without a run to scope a Stop to (`stopRunId` is empty: neither the
    * conversation nor the listener's controls name one). It is refused when
-   * a run is named by now (the page then shows the scoped Stop), and the
-   * unscoped `stop-agent` is admitted only after the listener reported this
-   * conversation's controls to this browser: before that, "no run ID" may
-   * only mean "not reported yet", and an unscoped Stop could cancel a queued
-   * turn that started meanwhile.
+   * a run is named by now (the page then shows the scoped Stop), and when
+   * this conversation has named runs before: the listener withdraws a run's
+   * ID as soon as it starts ending it, so a running turn without one is
+   * already stopping. The unscoped `stop-agent` (for listeners that name no
+   * runs) is admitted only after the listener reported this conversation's
+   * controls to this browser: before that, "no run ID" may only mean "not
+   * reported yet". Either way an unscoped Stop could otherwise cancel a turn
+   * that started meanwhile.
    */
   stop(sessionId: string, callback?: (answer: string) => void): void {
     const session = this.shownSession;
@@ -796,6 +816,11 @@ export class GatewayChatBridge implements NativeBridge {
       !this.running(session) ||
       this.stopRunId(sessionId) !== ''
     ) {
+      this.answer(callback, { accepted: false });
+      return;
+    }
+    if (this.namedRuns.has(this.lifetime(session))) {
+      this.setNotice(sessionId, stopEnding);
       this.answer(callback, { accepted: false });
       return;
     }

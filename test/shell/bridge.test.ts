@@ -358,9 +358,13 @@ test('Stop is scoped to the run the page shows, and unscoped only once controls 
   assert.equal(store.pending[0].action, 'stop-agent-run');
   assert.deepEqual(store.pending[0].parameters, { id: sessionA, runId: 'run-2' });
 
-  // A run without an ID: no Stop until the listener reported the controls,
-  // since "no run ID" may only mean "not reported yet".
-  const unnamed = session(sessionA, 'Question A', { status: 'running' });
+  // A conversation that never named a run (a listener without run IDs; here
+  // a new lifetime of the same ID): no Stop until the listener reported the
+  // controls, since "no run ID" may only mean "not reported yet".
+  const unnamed = session(sessionA, 'Question A', {
+    status: 'running',
+    toolEpoch: 'epoch-without-run-ids',
+  });
   store.update({ sessions: new Map(store.state.sessions).set(sessionA, unnamed) });
   await settle();
   assert.equal(lastStatus(messages).stopRunId, '');
@@ -371,6 +375,31 @@ test('Stop is scoped to the run the page shows, and unscoped only once controls 
   store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
   assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
   assert.equal(store.pending[1].action, 'stop-agent');
+});
+
+test('a turn whose run ID was withdrawn while it ends gets no unscoped Stop', async () => {
+  const { store, bridge, messages } = harness();
+  store.update({ actions: { sessionId: sessionA, stopRunId: 'run-1', choices: [] } });
+  const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
+  await settle();
+  assert.equal(lastStatus(messages).stopRunId, 'run-1');
+
+  // Stopping: the listener withdraws the run ID (and its controls) first and
+  // reports the conversation as running until the turn has ended.
+  const ending = session(sessionA, 'Question A', { status: 'running' });
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, ending),
+    actions: { sessionId: sessionA, stopRunId: '', choices: [] },
+  });
+  await settle();
+  const status = lastStatus(messages);
+  assert.equal(status.running, true);
+  assert.equal(status.stopRunId, '');
+  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
+  assert.equal(store.pending.length, 0);
+  await settle();
+  assert.match(lastStatus(messages).inputError ?? '', /already ending/);
 });
 
 test('notices and pending choices end with the conversation lifetime', async () => {
@@ -394,12 +423,14 @@ test('notices and pending choices end with the conversation lifetime', async () 
     },
   });
   await settle();
-  bridge.classicView();
   assert.deepEqual(await ask((answer) => bridge.choose(sessionA, 'choice-1', 0, answer)), {
     accepted: true,
   });
+  // A notice of this lifetime, shown before the conversation is reopened.
+  bridge.classicView();
   await settle();
   assert.equal(lastStatus(messages).pendingChoice, true);
+  assert.match(lastStatus(messages).inputError ?? '', /not available in the browser/);
 
   // Closed and reopened elsewhere under the same ID (a new tool epoch).
   const reopened = session(sessionA, 'Question A again', { toolEpoch: 'epoch-reopened' });

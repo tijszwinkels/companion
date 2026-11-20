@@ -659,8 +659,21 @@ test(
     // The listener may now answer the old connection's request; nobody gets it.
     release();
 
-    // Still at the very end, where nothing can scroll: a downward wheel is
-    // the reader asking for more, and the next page loads below.
+    // Scrolling up near the end asks for nothing newer: the reader is
+    // heading toward older rows.
+    await wheel(page, -150);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(newerRequests(), 1, 'an upward scroll requested no newer page');
+    // Back at the very end (moved there by the page, not the reader, so this
+    // requests nothing either), where nothing can scroll any further: a
+    // downward wheel is the reader asking for more, and the next page loads.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await page.evaluate(`(() => {
+      const transcript = document.querySelector('.transcript');
+      transcript.scrollTop = transcript.scrollHeight;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(newerRequests(), 1);
     assert.ok(await page.evaluate<boolean>(inView('History row 598')));
     await wheel(page, 300);
     await waitFor(() => newerRequests() === 2, 5000);

@@ -135,11 +135,22 @@ for (const type of ['pointerup', 'pointercancel']) {
   );
 }
 
+// The last scroll position seen per transcript element, to tell the
+// direction of the next scroll. Weak, so a replaced element is forgotten.
+const lastScrollTops = new WeakMap<Element, number>();
+
 document.addEventListener(
   'scroll',
   (event) => {
     const element = event.target;
     if (!(element instanceof Element) || !element.classList.contains('transcript')) {
+      return;
+    }
+    // Only movement toward the end asks for newer rows (SessionView's
+    // readerScrolled loads in the direction the reader is moving).
+    const previousTop = lastScrollTops.get(element) ?? element.scrollTop;
+    lastScrollTops.set(element, element.scrollTop);
+    if (element.scrollTop <= previousTop) {
       return;
     }
     const recentInput = performance.now() - readerInputAt <= readerInputWindowMilliseconds;

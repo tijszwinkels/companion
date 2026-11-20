@@ -55,8 +55,8 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   three pages resident, rows the reader can see are never trimmed, one request
   at a time with a 10 s deadline, failures only retried by the reader, empty
   pages not requested again. Below a detached snapshot (after loading more
-  than three pages up), the next newer page loads when the reader scrolls to
-  within one viewport of its end, observed by `src/main.tsx` like
+  than three pages up), the next newer page loads when the reader scrolls toward the end to within
+  one viewport of it, observed by `src/main.tsx` like
   SessionView's `readerScrolled` (a scroll while a pointer is held in the
   transcript, as when dragging its scroll bar, or within a second of wheel, key,
   pointer or touch input there; at the very end, where nothing scrolls, a
@@ -73,8 +73,11 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   scoped to a run (`status.stopRunId`): the run the conversation names, or
   else the one in the listener's controls report (which can lag behind). The
   page renders Stop with that run ID; `stop-agent-run` is admitted only while
-  it is still the current run, and the listener checks it again. Only a run
-  without an ID gets the unscoped `stop-agent`, and only after the listener
+  it is still the current run, and the listener checks it again. The listener
+  withdraws a run's ID as soon as it starts ending it, so in a conversation
+  that has named runs, a running turn without one is already stopping and
+  gets no Stop. Only a conversation that never names its runs (an older
+  listener) gets the unscoped `stop-agent`, and only after the listener
   reported this conversation's controls to this browser.
 - Notices and pending choices belong to one conversation lifetime (ID and
   tool epoch): a conversation closed and reopened under the same ID does not
