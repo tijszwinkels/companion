@@ -6,10 +6,11 @@
  * `{ "version": 1, "listWidth": <pixels>, "listShown": <boolean> }`. It
  * describes only the arrangement of this page, not the person or their
  * conversations, so it is not cleared on sign-out and is shared by the tabs
- * of this browser (each tab reads it when it loads).
+ * of this browser (each tab follows the last change, useListLayout.ts).
  *
- * Anything missing, unreadable or of another version gives the default: the
- * strip, shown (the agreed design's starting arrangement). A storage that
+ * Anything missing, unreadable, of another version or with a field of the
+ * wrong type gives the default: the strip, shown (the agreed design's
+ * starting arrangement). A storage that
  * cannot be read or written (disabled, full) keeps the layout for this page
  * only.
  */
@@ -60,15 +61,12 @@ export function readLayout(storage: LayoutStorage): ListLayout {
     return { ...defaultLayout };
   }
 
-  let listWidth = defaultLayout.listWidth;
-  if (typeof record.listWidth === 'number') {
-    listWidth = validListWidth(record.listWidth);
+  // Both fields or neither: a record with one unusable field is not
+  // trusted for the other either.
+  if (typeof record.listWidth !== 'number' || typeof record.listShown !== 'boolean') {
+    return { ...defaultLayout };
   }
-  let listShown = defaultLayout.listShown;
-  if (typeof record.listShown === 'boolean') {
-    listShown = record.listShown;
-  }
-  return { listWidth, listShown };
+  return { listWidth: validListWidth(record.listWidth), listShown: record.listShown };
 }
 
 /** Remember `layout`; a storage that refuses keeps it for this page only. */

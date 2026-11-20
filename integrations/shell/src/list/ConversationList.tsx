@@ -77,6 +77,15 @@ export function ConversationList(props: {
   // Latest pointer position of an active drag, in viewport coordinates.
   const pointer = useRef({ x: 0, y: 0 });
 
+  // Whether the editor holds input of a conversation changes the close
+  // buttons (`bridge.canClose`) without a phone Store change: re-render then.
+  const [, setHeldInputVersion] = useState(0);
+  useEffect(() => {
+    return props.bridge.onHeldInputChange(() => {
+      setHeldInputVersion((version) => version + 1);
+    });
+  }, [props.bridge]);
+
   /** Redraw the drag feedback; stop edge scrolling when no drag is active. */
   function refresh() {
     setDrag(gesture.current.view(orderRef.current));
@@ -221,6 +230,18 @@ export function ConversationList(props: {
       refresh();
     };
 
+    // The window lost focus or was hidden: the release may happen where the
+    // page cannot see it, so the gesture ends without a move.
+    const left = () => {
+      gesture.current.windowLeft();
+      refresh();
+    };
+    const visibility = () => {
+      if (document.visibilityState !== 'visible') {
+        left();
+      }
+    };
+
     // Escape cancels a drag; its release then selects nothing.
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && gesture.current.escape()) {
@@ -234,7 +255,11 @@ export function ConversationList(props: {
     window.addEventListener('pointerup', release);
     window.addEventListener('pointercancel', cancel);
     window.addEventListener('keydown', escape, true);
+    window.addEventListener('blur', left);
+    document.addEventListener('visibilitychange', visibility);
     return () => {
+      window.removeEventListener('blur', left);
+      document.removeEventListener('visibilitychange', visibility);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', release);
       window.removeEventListener('pointercancel', cancel);
@@ -310,8 +335,14 @@ export function ConversationList(props: {
         ref={scroller}
         aria-label="Open conversations"
         onClickCapture={clickCapture}
-        onLostPointerCapture={() => {
-          gesture.current.lostCapture();
+        onLostPointerCapture={(event) => {
+          // Only the list's own capture: when a drag starts, capture moves
+          // from the pressed entry (touch and pen capture implicitly) to the
+          // list, and the entry's loss bubbles up to here.
+          if (event.target !== event.currentTarget) {
+            return;
+          }
+          gesture.current.lostCapture(event.pointerId);
           refresh();
         }}
       >
@@ -357,6 +388,7 @@ function Entry(props: {
         class="entry-select"
         aria-current={entry.selected ? 'page' : undefined}
         aria-label={entryLabel(entry)}
+        aria-describedby={entry.lastLine ? lastLineId(entry) : undefined}
         title={entry.title}
         onClick={props.onSelect}
       >
@@ -366,9 +398,13 @@ function Entry(props: {
           {entry.emoji && <span class="entry-number">{entry.number}</span>}
           {entry.unread && <span class="entry-unread" />}
         </span>
+        {/* The title is in the accessible name; the last line is its
+            description (also in the strip, where it is not drawn). */}
         <span class="entry-text" aria-hidden="true">
           <span class="entry-title">{entry.caption}</span>
-          <span class="entry-last-line">{entry.lastLine}</span>
+          <span class="entry-last-line" id={lastLineId(entry)}>
+            {entry.lastLine}
+          </span>
         </span>
       </button>
       {/* Shown on hover or keyboard focus, like the rail's close button. */}
@@ -383,6 +419,11 @@ function Entry(props: {
       </button>
     </li>
   );
+}
+
+/** The element id of an entry's last line (its accessible description). */
+function lastLineId(entry: ListEntry): string {
+  return `last-line-${entry.id}`;
 }
 
 /** The Previous sessions entry at the bottom of the list. */

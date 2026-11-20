@@ -12,9 +12,10 @@
  * completed drag asks for exactly one move, naming the captured revision,
  * and only when it is released inside the list at a position that changes
  * the order, while the order, membership and connection are as they were.
- * Escape, a cancelled pointer, lost pointer capture, a release outside the
- * list, a changed order or membership, or the list becoming unavailable
- * (offline, waiting for the listener's snapshot) end it without a move. A
+ * Escape, a cancelled pointer, lost pointer capture, the window losing focus,
+ * a release outside the list, a changed order or membership, or the list
+ * becoming unavailable (offline, waiting for the listener's snapshot, no
+ * order revision) end it without a move. A
  * drag never also selects or closes: the click that follows the release of
  * any activated drag is swallowed. The list never reorders itself; it
  * always shows the listener's order.
@@ -35,6 +36,15 @@ export interface OrderState {
   revision: string;
   /** Requests are admitted: connected, after this connection's snapshot. */
   available: boolean;
+}
+
+/**
+ * Whether a move can be asked for under `order`: requests are admitted and
+ * the listener named an order revision (`move-agent` requires one; a
+ * listener that sends none cannot be reordered from here).
+ */
+function movable(order: OrderState): boolean {
+  return order.available && order.revision !== '';
 }
 
 /** One `move-agent` request. */
@@ -112,7 +122,7 @@ export class ReorderGesture {
     order: OrderState,
   ): void {
     this.press = null;
-    if (button !== primaryButton || !order.available || !order.ids.includes(id)) {
+    if (button !== primaryButton || !movable(order) || !order.ids.includes(id)) {
       return;
     }
     this.press = {
@@ -211,7 +221,7 @@ export class ReorderGesture {
       return { move: null, swallowClick: true };
     }
 
-    const unchanged = order.available && orderKey(order.ids, order.revision) === press.key;
+    const unchanged = movable(order) && orderKey(order.ids, order.revision) === press.key;
     const changesOrder = !isNoOp(order.ids, press.id, position.beforeId);
     let move: MoveRequest | null = null;
     if (unchanged && position.inside && changesOrder) {
@@ -230,11 +240,26 @@ export class ReorderGesture {
     return { move: null, swallowClick: press.active };
   }
 
-  /** The list lost pointer capture during a drag: it ends without a move. */
-  lostCapture(): void {
-    if (this.dragging) {
+  /**
+   * The list itself lost pointer capture of the gesture's pointer during a
+   * drag: it ends without a move. (Capture moving from the pressed entry to
+   * the list when the drag starts is not this: the list reports only its
+   * own loss, see ConversationList.tsx.)
+   */
+  lostCapture(pointerId: number): void {
+    if (this.dragging && this.press?.pointerId === pointerId) {
       this.cancel();
     }
+  }
+
+  /**
+   * The window lost focus or was hidden. The release may now happen where
+   * this page cannot see it, and the same pointer may press again elsewhere
+   * and come back with the button held; neither may continue this gesture.
+   * It ends without a move.
+   */
+  windowLeft(): void {
+    this.cancel();
   }
 
   /** Escape: returns true when it cancelled an active drag (then the key is consumed). */
@@ -255,7 +280,7 @@ export class ReorderGesture {
     if (!press || press.cancelled) {
       return;
     }
-    if (!order.available || orderKey(order.ids, order.revision) !== press.key) {
+    if (!movable(order) || orderKey(order.ids, order.revision) !== press.key) {
       this.cancel();
     }
   }

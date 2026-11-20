@@ -8,7 +8,8 @@
  * it was marked for selection here (`revealNextRestore`). A refused or
  * failed reopen is explained by the Store's toast and the entry stays
  * available. Reopening is offered only while requests are admitted
- * (`bridge.admitted`). Times are not shown in this slice.
+ * (`bridge.admitted`), and one at a time, since the Store has one selection
+ * mark. Times are not shown in this slice.
  */
 
 import { useState } from 'preact/hooks';
@@ -39,18 +40,28 @@ function PreviousRow(props: { session: PreviousSession; available: boolean }) {
   const [busy, setBusy] = useState(false);
   const title = props.session.title || 'Untitled';
 
+  // One reopen at a time, across rows and also after this page was left
+  // and shown again: the Store's selection mark names the conversation
+  // whose restore is still awaited, and two reopens would share it.
+  const anotherReopening = store.revealNextRestore !== '' && !busy;
+
   async function reopen() {
+    if (store.revealNextRestore !== '') {
+      return;
+    }
     setBusy(true);
     // The restored event arrives before the reply; mark it for selection.
     store.revealNextRestore = props.session.id;
     try {
       await store.request('reopen-agent', { id: props.session.id });
     } catch {
+      // The toast explains; the entry stays available for another try.
+    } finally {
+      // The Store clears the mark when the restored conversation arrives;
+      // after a failure, or a reply without it, nothing is awaited any more.
       if (store.revealNextRestore === props.session.id) {
         store.revealNextRestore = '';
       }
-      // The toast explains; the entry stays available for another try.
-    } finally {
       setBusy(false);
     }
   }
@@ -67,7 +78,7 @@ function PreviousRow(props: { session: PreviousSession; available: boolean }) {
       </span>
       <button
         class="bar-button"
-        disabled={!props.available || busy}
+        disabled={!props.available || busy || anotherReopening}
         aria-label={`Reopen ${title}`}
         onClick={reopen}
       >

@@ -40,9 +40,12 @@ The arrangement is the same at every window width, as in the agreed design:
 - **The list** shows the open conversations in the listener's order, then
   Previous sessions at the bottom. Each conversation has the native rail's
   icon (a leading emoji of the title, or "Q" and its number; with an emoji
-  the number is drawn beside it). At the strip's width a short name is
-  below the icon; as a full list the title and the conversation's last line
-  (one muted line) are next to it.
+  the number is drawn beside it). The emoji is the title's first character
+  as the reader sees it (one grapheme cluster), so "🧪Investigate" keeps
+  its first word in the title. At the strip's width a short name is below
+  the icon; as a full list the title and the conversation's last line (one
+  muted line) are next to it. Each entry is a button named by its number,
+  title and markers, with the last line as its description.
 - **The divider** between the list and the chat changes the list's width by
   dragging, or from the keyboard (it is a focusable separator named
   "Conversation list width").
@@ -57,15 +60,17 @@ The arrangement is the same at every window width, as in the agreed design:
   shows it with its own unsent text: drafts are kept per conversation in
   the phone Store, as in slice 1.
 - **Closing**: the × that appears on hover or keyboard focus asks for
-  `close-agent`; the conversation leaves the list when the listener reports
+  `close-agent` (while invisible it takes no input, so a first tap on that
+  corner of an entry selects instead of closing unseen); the conversation leaves the list when the listener reports
   it closed and appears under Previous sessions. Like the chat page's Close
   session it is offered only while requests are admitted (connected, after
   this connection's snapshot) and not while the chat editor holds input of
-  that conversation that only it has.
+  that conversation that only it has; the × follows changes of either.
 - **Previous sessions** shows the saved conversations the listener reports
   (`agent-history`), each with Reopen (`reopen-agent`); the reopened
-  conversation is selected, as on the phone. Times are not shown in this
-  slice.
+  conversation is selected, as on the phone. One reopen at a time: the
+  Store has one mark for the conversation to select when it is restored.
+  Times are not shown in this slice.
 - **Look**: only the current Companion's values: the chat page's default
   theme and PanelAction buttons (`../session-apps/chat/styles.css`) and the
   native rail's tabs (`../session-apps/rail/styles.css` at theme unit 1).
@@ -91,21 +96,26 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
    the 150 px full list), Left narrows by 20 px (under 150 px: the strip),
    Home gives the strip, End 420 px. Each key press is remembered.
 4. ☰ hides and shows the list (and the divider). Hiding keeps the width.
-5. The chat keeps at least 320 px. The list is shown at its remembered width
-   narrowed to the window's width minus 320 px; if that is under 150 px the
-   strip is shown. The window never changes what is remembered, so a wider
+5. The chat keeps at least 320 px next to the list and the divider (which
+   takes 1 px). The list is shown at its remembered width narrowed to the
+   window's width minus 321 px; if that is under 150 px the strip is shown. The window never changes what is remembered, so a wider
    window shows the chosen width again.
 6. Remembered in this browser's `localStorage` under
    `companion.shell.layout` as `{"version":1,"listWidth":…,"listShown":…}`.
    It describes only this page's arrangement, not the person or their
-   conversations, so it is not cleared on sign-out. Missing, unreadable or
-   another version gives the default: the strip, shown. A storage that
-   cannot be used keeps the layout for this page only.
+   conversations, so it is not cleared on sign-out. Missing, unreadable,
+   another version, or either field of the wrong type gives the default:
+   the strip, shown. A storage that cannot be used keeps the layout for this
+   page only.
+7. Tabs of the same browser share it: a tab follows a change another tab
+   writes, so the last change wins and a later change in one tab never
+   writes back an older width or hidden state.
 
 | Case                                       | Result                                             |
 | ------------------------------------------ | -------------------------------------------------- |
 | Initial (nothing remembered)               | Strip, shown                                       |
 | Remembered value invalid or other version  | Strip, shown                                       |
+| One field of the wrong type or missing     | Strip, shown                                       |
 | Divider dragged to 100 px                  | Strip, remembered on release                       |
 | Divider dragged to 120 px                  | Full list at 150 px                                |
 | Divider dragged to 300 px                  | Full list at 300 px                                |
@@ -113,8 +123,10 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
 | Right / Left / Home / End on the divider   | Per rule 3, each remembered                        |
 | ☰ pressed                                 | List and divider hidden; again: shown at its width |
 | Reload                                     | Width and hidden state as remembered               |
-| Window 420 px, full list 300 px remembered | Strip (420 − 320 < 150); 300 px again when wider   |
-| Window 600 px, full list 420 px remembered | Full list at 280 px                                |
+| Window 420 px, full list 300 px remembered | Strip (420 − 321 < 150); 300 px again when wider   |
+| Window 470 / 471 px, full list remembered  | Strip / full list at 150 px                        |
+| Window 600 px, full list 420 px remembered | Full list at 279 px                                |
+| Width changed in another tab, then ☰ here | This tab shows that width; ☰ keeps it             |
 | Sign-out and pairing again                 | Layout kept                                        |
 
 ### Reordering by dragging
@@ -124,8 +136,8 @@ functions (`../session-apps/RailOrder.mjs`: threshold, insertion target,
 no-op, order key), in `src/list/reorder-gesture.ts`:
 
 1. A press with the primary button on a conversation (not on its ×), while
-   requests are admitted, starts a gesture and captures the listener's order
-   revision and the open conversations.
+   requests are admitted and the listener has named an order revision,
+   starts a gesture and captures that revision and the open conversations.
 2. It becomes a drag once the pointer moved 6 px with the button held; a
    shorter press is an ordinary click that selects. A line shows where the
    conversation will go; the list scrolls near its top and bottom edges.
@@ -133,9 +145,13 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
    while the revision, the open conversations and the connection are as
    captured, asks for exactly one `move-agent` naming the captured revision.
 4. Anything else ends it without a move: release outside the list, a
-   position that changes nothing, Escape, a cancelled pointer, lost pointer
-   capture, a changed order or membership, or requests no longer admitted
-   (offline, or reconnected but before the new snapshot).
+   position that changes nothing, Escape, a cancelled pointer, the list
+   losing capture of the gesture's pointer, the window losing focus or being
+   hidden (the release, or a new press of the same pointer, may then happen
+   where the page cannot see it), a changed order or membership, or requests
+   no longer admitted (offline, or reconnected but before the new snapshot).
+   When the drag starts, capture moves from the pressed entry to the list;
+   that is not a loss.
 5. A drag never also selects or closes: the click after the release of any
    drag (completed or cancelled) is ignored; the next click is not.
 6. The press is followed from the window: a release anywhere ends it, a
@@ -158,6 +174,10 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
 | Escape during the drag, then release                | 0             | no            |
 | Pointer cancelled during the drag                   | 0             | no            |
 | Pointer capture lost during the drag, then release  | 0             | no            |
+| Capture of another pointer lost during the drag     | 1, captured   | no            |
+| Window loses focus during the drag, then release    | 0             | no            |
+| Window loses focus before the threshold, press back | 0             | yes           |
+| Press while the listener names no order revision    | 0             | yes           |
 | Order revision changed during the drag              | 0             | no            |
 | A conversation opened or closed during the drag     | 0             | no            |
 | Connection lost during the drag                     | 0             | no            |
@@ -184,7 +204,8 @@ remote role sends (`src/list/entries.ts`):
 | A turn completes in the shown conversation, page visible            | not set                                                                     |
 | A turn completes in the shown conversation, page hidden (other tab) | set                                                                         |
 | A turn is stopped or fails                                          | not set                                                                     |
-| A conversation started or reopened elsewhere arrives (not shown)    | set                                                                         |
+| A conversation this page has not seen arrives (started elsewhere)   | set                                                                         |
+| A conversation this page has seen is reopened elsewhere             | not set                                                                     |
 | A conversation reopened from this page's Previous sessions          | not set (it is selected)                                                    |
 | The first snapshot after loading the page or pairing                | set on every conversation whose latest turn completed, except the shown one |
 | The conversation is selected (also again while shown)               | cleared                                                                     |
@@ -361,9 +382,9 @@ dropped, and an uncertain send's notice kept next to other notices.
 
 `layout.test.ts` and `reorder-gesture.test.ts` check the list's pure rules in
 Node, each with the cases of its README table above: the remembered width and
-hidden state (initial, invalid, dragged, keys, narrow windows, reload) and the
-reorder gesture (every row of the reordering table, plus the drawn insertion
-line).
+hidden state (initial, invalid, dragged, keys, narrow windows, reload), the
+entries' icons, and the reorder gesture (every row of the reordering table,
+plus the drawn insertion line).
 
 `shell.test.ts` and `list.test.ts` run the built shell in headless Chromium at
 desktop sizes, on the phone tests' fixtures (real gateway, real listener
@@ -393,21 +414,26 @@ and as full list (keep them out of Git).
 point and beyond the maximum, the width remembered only on release, ☰ hiding
 the list with the chat then 860 px and centred, width and hidden state after
 reloads, a narrow window showing the strip without changing what is
-remembered; the divider's role, name, value and keys, and selecting, closing,
-Previous sessions and Reopen from the keyboard; strip and chat at 420 px
+remembered; a layout change in one tab followed by another, whose ☰ then
+keeps that width; the divider's role, name, value and keys, the entries'
+accessible description, and selecting, closing, Previous sessions and Reopen
+from the keyboard; strip and chat at 420 px
 without overflow and the centred 860 px column at 1600 px; each conversation's
 own unsent text across switches; the markers table's rows for completed,
-stopped and arriving turns, selecting and closing; close, Previous sessions and
-reopen; and dragging: one move with the captured revision followed by the
+stopped and arriving turns, a conversation reopened elsewhere, selecting and
+closing; the invisible × taking no input, close, Previous sessions and reopen; and dragging: one move with the captured revision followed by the
 listener's order, none after Escape, a release outside the list, an order
 changed at the listener during the drag or a lost connection, and a refused
 move leaving the list unchanged. Each test also checks that nothing went to
 another origin and that no Content-Security-Policy violation occurred.
 
 Not covered in the browser: a page hidden in a background tab (the markers
-table's hidden-page row is the Store's rule, used unchanged), a cancelled
-pointer and lost pointer capture (checked in `reorder-gesture.test.ts`), and
-edge scrolling of a long list during a drag.
+table's hidden-page row is the Store's rule, used unchanged); a cancelled
+pointer, lost pointer capture, the window losing focus and a missing order
+revision during a drag (checked in `reorder-gesture.test.ts`); a touch or pen
+drag; the × following input the editor holds (that needs over 16,000
+characters from an input method); and edge scrolling of a long list during a
+drag.
 
 Not tested: Safari, Firefox and Windows browsers, a real network or Tailscale,
 and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).

@@ -11,7 +11,7 @@
  *
  * The person's preference (`listWidth`) is one of those widths. The width
  * actually shown also depends on the window: the chat keeps at least
- * `chatMinimum` pixels, and a full list that no longer fits at its minimum
+ * `chatMinimum` pixels next to the list and the divider, and a full list that no longer fits at its minimum
  * becomes the strip. The window never changes the preference itself, so
  * widening the window again restores the list the person chose.
  *
@@ -30,6 +30,12 @@ export const listMaximum = 420;
 
 /** Width the chat keeps next to a full list. */
 export const chatMinimum = 320;
+
+/**
+ * Width the divider takes in the layout between list and chat (a 7 px
+ * handle with −3 px margins on both sides, styles.css `.list-divider`).
+ */
+export const dividerLayoutWidth = 1;
 
 /**
  * A divider released (or dragged) left of this point gives the strip; at or
@@ -66,7 +72,7 @@ export function shownListWidth(preference: number, windowWidth: number): number 
   if (valid === stripWidth) {
     return stripWidth;
   }
-  const room = windowWidth - chatMinimum;
+  const room = windowWidth - dividerLayoutWidth - chatMinimum;
   const width = Math.min(valid, room);
   if (width < fullListMinimum) {
     return stripWidth;

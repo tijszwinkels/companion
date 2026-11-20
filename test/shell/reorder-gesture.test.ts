@@ -42,7 +42,8 @@ type Step =
     }
   | { up: DropPosition; order?: OrderState; pointer?: number }
   | { cancel: true; pointer?: number }
-  | { lostCapture: true }
+  | { lostCapture: true; pointer?: number }
+  | { windowLeft: true }
   | { escape: true }
   | { orderChanged: OrderState };
 
@@ -85,7 +86,9 @@ function play(steps: Step[]): Outcome {
       const end = gesture.pointerCancel(step.pointer ?? 1);
       clickSelects = !end.swallowClick;
     } else if ('lostCapture' in step) {
-      gesture.lostCapture();
+      gesture.lostCapture(step.pointer ?? 1);
+    } else if ('windowLeft' in step) {
+      gesture.windowLeft();
     } else if ('escape' in step) {
       gesture.escape();
     } else {
@@ -164,6 +167,35 @@ const cases: { name: string; steps: Step[]; expected: Outcome }[] = [
     name: 'pointer capture lost during the drag, then release',
     steps: [...dragA, { lostCapture: true }, { up: inside('c') }],
     expected: { moves: [], clickSelects: false },
+  },
+  {
+    name: 'capture of another pointer lost during the drag',
+    steps: [...dragA, { lostCapture: true, pointer: 2 }, { up: inside('c') }],
+    expected: { moves: [moveAToC], clickSelects: false },
+  },
+  {
+    name: 'window lost focus during the drag, then a release',
+    steps: [...dragA, { windowLeft: true }, { up: inside('c') }],
+    expected: { moves: [], clickSelects: false },
+  },
+  {
+    name: 'window lost focus before the threshold; the press comes back with the button held',
+    steps: [
+      { down: 'a' },
+      { windowLeft: true },
+      { move: [10, 50], to: inside('') },
+      { up: inside('') },
+    ],
+    expected: { moves: [], clickSelects: true },
+  },
+  {
+    name: 'press without an order revision (the listener named none)',
+    steps: [
+      { down: 'a', order: order({ revision: '' }) },
+      { move: [10, 50], to: inside('c'), order: order({ revision: '' }) },
+      { up: inside('c'), order: order({ revision: '' }) },
+    ],
+    expected: { moves: [], clickSelects: true },
   },
   {
     name: 'order revision changed during the drag',

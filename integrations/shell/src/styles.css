@@ -462,11 +462,15 @@ body {
   cursor: pointer;
   opacity: 0;
   transition: opacity 140ms;
+  /* Invisible, it takes no input: a first tap on that corner of an entry
+     (touch has no hover) selects instead of closing unseen. */
+  pointer-events: none;
 }
 
 .conversation-entry:hover .entry-close,
 .conversation-entry:focus-within .entry-close {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .entry-close:hover:not(:disabled) {

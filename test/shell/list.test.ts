@@ -10,6 +10,7 @@ import {
   assertOwnOrigin,
   clickAt,
   clickButton,
+  desktopPage,
   entryExpression,
   horizontalOverflow,
   online,
@@ -290,7 +291,7 @@ test(
     assert.equal(await page.evaluate(listWidth), 78);
     assert.equal(await horizontalOverflow(page), 0);
     await resize(page, 600);
-    await page.waitFor(`${listWidth} === 280`);
+    await page.waitFor(`${listWidth} === 279`);
     await resize(page, 1280);
     await page.waitFor(`${listWidth} === 420`);
     assert.equal((await page.evaluate<{ listWidth: number }>(storedLayout)).listWidth, 420);
@@ -358,6 +359,15 @@ test('the divider and the list entries work from the keyboard', { skip }, async 
       `${step.press} remembered`,
     );
   }
+
+  // Each entry's last line is its accessible description, also in the strip.
+  assert.equal(
+    await page.evaluate(`(() => {
+      const select = ${entryExpression('Second keyboard')}.querySelector('.entry-select');
+      return document.getElementById(select.getAttribute('aria-describedby')).textContent;
+    })()`),
+    'Two.',
+  );
 
   // Entries are buttons in tab order: Enter on one selects it.
   await page.evaluate(
@@ -576,14 +586,22 @@ test('unread and working markers follow the README table', { skip }, async (cont
   assert.equal((await marks('Other conversation')).unread, false);
 
   // Closing an unread conversation clears its mark with it.
-  await fixture.sessions.remove(
-    await page.evaluate<string>(`${entryExpression('Arrived conversation')}.dataset.id`),
+  const arrivedId = await page.evaluate<string>(
+    `${entryExpression('Arrived conversation')}.dataset.id`,
   );
+  await fixture.sessions.remove(arrivedId);
   await page.waitFor(`!${entryExpression('Arrived conversation')}`);
   assert.equal(
     await page.evaluate(`document.querySelectorAll('.conversation-entry.unread').length`),
     0,
   );
+
+  // Reopened elsewhere, a conversation this page has seen before is not
+  // marked (no new completed turn, not a new arrival).
+  await fixture.sessions.reopen(arrivedId, false);
+  await page.waitFor(`Boolean(${entryExpression('Arrived conversation')})`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal((await marks('Arrived conversation')).unread, false);
 
   await assertCleanPage(fixture, page, sockets);
 });
@@ -601,6 +619,14 @@ test(
     answer(closed.run, 'a2', 'Closed.');
     const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
     await openConversation(page, 'Kept conversation');
+
+    // Not hovered or focused, the × is invisible and takes no input: a tap
+    // on that corner reaches the entry itself (touch has no hover).
+    const hiddenClose = await page.evaluate<string>(`(() => {
+      const rect = ${entryExpression('Closed conversation')}.querySelector('.entry-close').getBoundingClientRect();
+      return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2).className;
+    })()`);
+    assert.notEqual(hiddenClose, 'entry-close');
 
     // Hovering shows the ×; a click on it closes without selecting.
     const entry = await entryPoint(page, 'Closed conversation');
@@ -748,5 +774,42 @@ test(
     assert.deepEqual(moves(sockets, before), []);
 
     await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'a layout change in another tab is followed, so ☰ there keeps the width chosen here',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const conversation = await start(fixture, 'Two-tab layout');
+    answer(conversation.run, 'a1', 'Answer.');
+    const first = await pairedPage(fixture, browser, 1280, 800);
+    const second = await desktopPage(browser, 1280, 800, first.browserContextId);
+    await second.page.navigate(`${fixture.origin}/`);
+    await second.page.waitFor(online, 8000);
+    await second.page.waitFor(`${listWidth} === 78`);
+
+    // Widen the list in the first tab (End on the divider: 420 px).
+    await first.page.call('Page.bringToFront');
+    await first.page.evaluate(`document.querySelector('.list-divider').focus()`);
+    await key(first.page, 'End');
+    await first.page.waitFor(`${storedLayout}?.listWidth === 420`);
+
+    // The second tab follows; hiding the list there keeps that width.
+    await second.page.call('Page.bringToFront');
+    await second.page.waitFor(`${listWidth} === 420`);
+    await clickAt(second.page, await box(second.page, '.list-toggle'));
+    await second.page.waitFor(`${storedLayout}?.listShown === false`);
+    assert.deepEqual(await second.page.evaluate(storedLayout), {
+      version: 1,
+      listWidth: 420,
+      listShown: false,
+    });
+    await first.page.call('Page.bringToFront');
+    await first.page.waitFor(`!document.querySelector('.conversations')`);
+
+    await assertCleanPage(fixture, first.page, first.sockets);
+    await assertCleanPage(fixture, second.page, second.sockets);
   },
 );

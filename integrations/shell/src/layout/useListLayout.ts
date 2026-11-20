@@ -3,8 +3,9 @@
  * and the window width it is shown in, combined by the width rules
  * (list-width.ts).
  *
- * The preference is read once when the page loads and written whenever the
- * person changes it (divider released, divider key, ☰). While the divider
+ * The preference is read when the page loads and written whenever the
+ * person changes it (divider released, divider key, ☰); a change written by
+ * another tab of this browser is followed here too (the last change wins). While the divider
  * is being dragged the preference follows the pointer without being
  * written; the release writes it. The window width follows `resize`.
  */
@@ -17,7 +18,13 @@ import {
   widestShownListWidth,
   type ListAppearance,
 } from './list-width.ts';
-import { readLayout, writeLayout, type LayoutStorage, type ListLayout } from './stored-layout.ts';
+import {
+  layoutStorageKey,
+  readLayout,
+  writeLayout,
+  type LayoutStorage,
+  type ListLayout,
+} from './stored-layout.ts';
 
 export interface ListLayoutView {
   /** Whether the list is shown. */
@@ -70,6 +77,26 @@ export function useListLayout(): ListLayoutView {
     // The width can change between the first render and this effect.
     resized();
     return () => window.removeEventListener('resize', resized);
+  }, []);
+
+  // Another tab of this browser changed the layout: follow it, so a later
+  // change here (☰, say) does not write this tab's older width back over
+  // the one chosen there. The `storage` event reaches only the other tabs.
+  useEffect(() => {
+    const changedElsewhere = (event: StorageEvent) => {
+      if (event.key !== layoutStorageKey) {
+        return;
+      }
+      const storage = pageStorage();
+      if (!storage) {
+        return;
+      }
+      const next = readLayout(storage);
+      latest.current = next;
+      setLayout(next);
+    };
+    window.addEventListener('storage', changedElsewhere);
+    return () => window.removeEventListener('storage', changedElsewhere);
   }, []);
 
   function change(next: ListLayout, remember: boolean) {

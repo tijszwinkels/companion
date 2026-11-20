@@ -58,6 +58,21 @@ test('remembered layout: initial, invalid and other versions give the strip, sho
       expected: { listWidth: 78, listShown: true },
     },
     {
+      name: 'a wrong width type with a valid hidden state',
+      stored: JSON.stringify({ version: 1, listWidth: 'bad', listShown: false }),
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
+      name: 'a valid width with a wrong hidden-state type',
+      stored: JSON.stringify({ version: 1, listWidth: 300, listShown: 'no' }),
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
+      name: 'a missing field',
+      stored: JSON.stringify({ version: 1, listWidth: 300 }),
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
       name: 'wrong field types',
       stored: JSON.stringify({ version: 1, listWidth: '300', listShown: 'no' }),
       expected: { listWidth: 78, listShown: true },
@@ -146,13 +161,13 @@ test('divider keys: one step at a time, the strip below the full list, Home and 
   }
 });
 
-test('narrow windows: the chat keeps 320 px; a full list that does not fit is the strip', () => {
+test('narrow windows: the chat keeps 320 px beside list and divider; a full list that does not fit is the strip', () => {
   const cases: { window: number; preference: number; width: number; look: ListAppearance }[] = [
     { window: 420, preference: 300, width: 78, look: 'strip' },
     { window: 420, preference: 78, width: 78, look: 'strip' },
-    { window: 469, preference: 300, width: 78, look: 'strip' },
-    { window: 470, preference: 300, width: 150, look: 'full' },
-    { window: 600, preference: 420, width: 280, look: 'full' },
+    { window: 470, preference: 300, width: 78, look: 'strip' },
+    { window: 471, preference: 300, width: 150, look: 'full' },
+    { window: 600, preference: 420, width: 279, look: 'full' },
     { window: 760, preference: 420, width: 420, look: 'full' },
     { window: 1280, preference: 300, width: 300, look: 'full' },
     { window: 300, preference: 78, width: 78, look: 'strip' },
@@ -182,5 +197,32 @@ test('written layouts are read back (reload), including the hidden state', () =>
     writeLayout(storage, layout);
     assert.deepEqual(readLayout(storage), layout);
     assert.deepEqual(JSON.parse(storage.items.get(layoutStorageKey)!), { version: 1, ...layout });
+  }
+});
+
+test('icons: a leading emoji (one grapheme) is the icon, else "Q" and the number', async () => {
+  const { badgeOf } = await import('../../integrations/shell/src/list/entries.ts');
+  const cases: { title: string; glyph: string; caption: string; emoji: boolean }[] = [
+    { title: '🗺️ Route planner', glyph: '🗺️', caption: 'Route planner', emoji: true },
+    {
+      title: '🧪Investigate the regression',
+      glyph: '🧪',
+      caption: 'Investigate the regression',
+      emoji: true,
+    },
+    { title: '🇳🇱 Dutch holidays', glyph: '🇳🇱', caption: 'Dutch holidays', emoji: true },
+    { title: '👩‍💻 Pairing notes', glyph: '👩‍💻', caption: 'Pairing notes', emoji: true },
+    { title: '1️⃣ First step', glyph: '1️⃣', caption: 'First step', emoji: true },
+    { title: '🐛', glyph: '🐛', caption: '', emoji: true },
+    { title: 'Invoice export', glyph: 'Q3', caption: 'Invoice export', emoji: false },
+    { title: '  Padded title ', glyph: 'Q3', caption: 'Padded title', emoji: false },
+    { title: '1 plain number', glyph: 'Q3', caption: '1 plain number', emoji: false },
+  ];
+  for (const testCase of cases) {
+    assert.deepEqual(
+      badgeOf(testCase.title, 3),
+      { glyph: testCase.glyph, caption: testCase.caption, emoji: testCase.emoji },
+      testCase.title,
+    );
   }
 });
