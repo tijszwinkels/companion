@@ -133,9 +133,16 @@ test('simultaneous first loads only ever see a complete configuration file', asy
       for (let load = 0; load < loadsPerRound; load++) {
         loads.push(loadAgentConfiguration(directory));
       }
-      const results = await Promise.allSettled(loads);
 
-      const done = await watchResult;
+      // Wait for the watcher and the loads together: a failed watcher is then
+      // observed at once (no unhandled rejection) and reported only after
+      // every load has settled, before the directory is removed.
+      const [watchOutcome, ...results] = await Promise.allSettled([watchResult, ...loads]);
+      if (watchOutcome.status === 'rejected') {
+        throw watchOutcome.reason;
+      }
+
+      const done = watchOutcome.value as WatcherMessage;
       assert.equal(done.type, 'done');
 
       for (const result of results) {

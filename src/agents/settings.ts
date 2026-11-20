@@ -187,9 +187,12 @@ async function createConfigurationFileIfMissing(directory: string, path: string)
 
       // Flush before publishing, so a crash cannot leave an empty published file.
       await file.sync();
-    } finally {
-      await file.close();
+    } catch (error) {
+      // Keep the write or flush error; closing is only a courtesy here.
+      await file.close().catch(() => {});
+      throw error;
     }
+    await file.close();
 
     try {
       await link(temporary, path);
