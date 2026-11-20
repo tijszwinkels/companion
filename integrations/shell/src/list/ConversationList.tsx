@@ -389,6 +389,10 @@ export function ConversationList(props: {
       style={{ width: `${props.width}px` }}
       aria-label="Conversations"
     >
+      {/* Read before an entry's running time in its description. */}
+      <span id={runningLabelId} hidden>
+        running for
+      </span>
       <ActivityListEntry
         listening={listeningView(state)}
         shown={props.activityShown}
@@ -458,19 +462,29 @@ function Entry(props: {
     classes.push('dragged');
   }
 
-  // The running time; its text is not in the accessible name (the entry is
-  // named "working", and a name that changed every second would be read
-  // out again and again).
+  // The running time: not in the accessible name (a name that changed every
+  // second would be read out again and again), but in the description
+  // ("running for 2:16"), read when the reader comes to the entry.
   let timer = null;
+  const descriptions: string[] = [];
+  if (entry.lastLine) {
+    descriptions.push(lastLineId(entry));
+  }
   if (props.runningSince !== undefined) {
     timer = (
       <TurnTimer
         ticker={props.ticker}
         startedAt={props.runningSince}
         className="entry-timer"
+        id={timerId(entry)}
         hidden={true}
       />
     );
+    descriptions.push(runningLabelId, timerId(entry));
+  }
+  let describedBy: string | undefined;
+  if (descriptions.length > 0) {
+    describedBy = descriptions.join(' ');
   }
 
   return (
@@ -479,7 +493,7 @@ function Entry(props: {
         class="entry-select"
         aria-current={props.selected ? 'page' : undefined}
         aria-label={entryLabel(entry)}
-        aria-describedby={entry.lastLine ? lastLineId(entry) : undefined}
+        aria-describedby={describedBy}
         title={entry.title}
         onClick={props.onSelect}
       >
@@ -520,6 +534,14 @@ function Entry(props: {
 function lastLineId(entry: ListEntry): string {
   return `last-line-${entry.id}`;
 }
+
+/** The element id of an entry's running time (in its description). */
+function timerId(entry: ListEntry): string {
+  return `turn-timer-${entry.id}`;
+}
+
+/** The id of the hidden words before a running time in a description. */
+const runningLabelId = 'turn-running-label';
 
 /** The Previous sessions entry at the bottom of the list. */
 function PreviousEntry(props: { count: number; shown: boolean; onShow: () => void }) {

@@ -159,6 +159,23 @@ export async function drawRows(
   chatDirectory: string,
   rows: ChatRow[],
 ): Promise<string> {
+  return (await drawRowsWithTimes(browser, chatDirectory, rows)).html;
+}
+
+/**
+ * Where each drawn row's message time is, in the DOM: `heading` when it is
+ * the last element of the row's own heading (the `.heading` directly in the
+ * row's `.panel`), `elsewhere` when there is one anywhere else (or more
+ * than one), `none` without one.
+ */
+export type TimePlace = 'heading' | 'elsewhere' | 'none';
+
+/** `drawRows`, and the place of each row's message time. */
+export async function drawRowsWithTimes(
+  browser: TestBrowser,
+  chatDirectory: string,
+  rows: ChatRow[],
+): Promise<{ html: string; times: TimePlace[] }> {
   const script = await pageScript(chatDirectory);
   const { targetId } = await browser.call('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await browser.call('Target.attachToTarget', { targetId, flatten: true });
@@ -186,19 +203,33 @@ export async function drawRows(
     await evaluate(`document.body.innerHTML = '<div id="chat"></div>';
       window.__chatRows = ${JSON.stringify(rows)};`);
     await evaluate(script);
-    const html = await evaluate(`new Promise((resolve) => {
+    const drawn = (await evaluate(`new Promise((resolve) => {
       const started = Date.now();
+      const place = (row) => {
+        const times = row.querySelectorAll('.message-time');
+        if (times.length === 0) {
+          return 'none';
+        }
+        const heading = row.querySelector(':scope > .panel > .heading');
+        if (times.length === 1 && heading && heading.lastElementChild === times[0]) {
+          return 'heading';
+        }
+        return 'elsewhere';
+      };
       const check = () => {
         const rows = document.querySelectorAll('.rows > .message');
         if (rows.length === window.__chatRows.length || Date.now() - started > 5000) {
-          resolve([...rows].map((element) => element.outerHTML).join('\\n'));
+          resolve({
+            html: [...rows].map((element) => element.outerHTML).join('\\n'),
+            times: [...rows].map(place),
+          });
           return;
         }
         setTimeout(check, 20);
       };
       check();
-    })`);
-    return String(html) + '\n';
+    })`)) as { html: string; times: TimePlace[] };
+    return { html: drawn.html + '\n', times: drawn.times };
   } finally {
     await browser.call('Target.closeTarget', { targetId });
   }

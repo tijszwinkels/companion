@@ -540,6 +540,12 @@ test('message timestamps: each row of the README table', () => {
       now: at(2026, 11, 20, 16),
       shown: '',
     },
+    {
+      name: 'beyond what a date can hold',
+      createdAt: Number.MAX_SAFE_INTEGER,
+      now: at(2026, 11, 20, 16),
+      shown: '',
+    },
   ];
 
   for (const testCase of cases) {
@@ -972,6 +978,14 @@ test('the wait for the next day ends exactly at the next local midnight', () => 
     },
     {
       // Amsterdam's summer time starts at 02:00 that night: midnight is as usual.
+      // St. John's clocks went from 00:01 back to 23:01 that night (2010):
+      // the first midnight, 30 s away, is the one that counts.
+      name: "St. John's, a midnight that comes twice",
+      now: Date.UTC(2010, 10, 7, 2, 29, 30),
+      calendar: zoneCalendar('America/St_Johns'),
+      wait: 30 * second,
+    },
+    {
       name: 'Amsterdam, the evening before summer time',
       now: Date.UTC(2026, 2, 28, 22, 59),
       calendar: amsterdam,
@@ -1027,4 +1041,20 @@ test('switching Turn timers or Last turn duration sends no rows', async (context
   harness.settings.set('messageTimestamps', false);
   await settle();
   assert.equal(rowsMessages(), before + 1);
+});
+
+test('a state message on a new date sends the times again, also with an unchanged offset', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const harness = bridgeHarness(context, Date.UTC(2026, 10, 20, 23, 10));
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, '14:02');
+
+  // An hour later on both clocks (the day's timeout has not run: a
+  // computer that slept), a state message with the same offset arrives.
+  harness.setNow(Date.UTC(2026, 10, 21, 0, 10));
+  harness.store.update({ engine: { paused: false, listenerTime: Date.UTC(2026, 10, 21, 0, 10) } });
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, 'Yesterday 14:02');
 });

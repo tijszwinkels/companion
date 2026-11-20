@@ -129,7 +129,12 @@ export function messageTimeText(
   if (typeof createdAt !== 'number' || !Number.isFinite(createdAt) || createdAt < 0) {
     return '';
   }
-  const written = calendar(createdAt - offset);
+  // A moment a JavaScript date can hold (±8.64e15 ms), else no time.
+  const readerMoment = createdAt - offset;
+  if (Math.abs(readerMoment) > 8.64e15) {
+    return '';
+  }
+  const written = calendar(readerMoment);
   const today = calendar(readerNow);
   const clock = `${twoDigits(written.hour)}:${twoDigits(written.minute)}`;
 
@@ -150,27 +155,30 @@ export function messageTimeText(
  * Milliseconds from `readerNow` until the next calendar day starts in the
  * calendar's time zone (when "today" becomes "yesterday"), at least 1.
  *
- * Found on the calendar itself, not by counting the wall clock's minutes,
- * so a daylight saving change around midnight (a skipped or repeated hour)
- * is no error: the first whole minute after `readerNow` that falls on
- * another date, by a binary search over the next 26 hours (time zones
- * differ from UTC by whole minutes, so days start on whole minutes).
+ * Found on the calendar itself, not only by counting the wall clock's
+ * minutes, so a daylight saving change around midnight (a skipped or a
+ * repeated hour) is no error: the wall clock gives an estimate (the
+ * minutes left in today), and the first whole minute after `readerNow` on
+ * another date is looked for in order, from an hour and a minute before
+ * that estimate to as long after it (a change moves midnight by at most an
+ * hour). Time zones differ from UTC by whole minutes, so days start on
+ * whole minutes. Should none be found there, the estimate is used; the
+ * caller checks again after waiting.
  */
 export function untilNextDay(readerNow: number, calendar: LocalCalendar = browserCalendar): number {
   const minute = 60 * 1000;
   const today = calendar(readerNow);
-  const sameDate = (moment: number) => sameDay(calendar(moment), today);
+  const nowMinute = Math.floor(readerNow / minute);
 
-  // Minute numbers since the epoch: `low` is on today's date, `high` is not.
-  let low = Math.floor(readerNow / minute);
-  let high = low + 26 * 60;
-  while (high - low > 1) {
-    const middle = Math.floor((low + high) / 2);
-    if (sameDate(middle * minute)) {
-      low = middle;
-    } else {
-      high = middle;
+  const minutesLeft = (23 - today.hour) * 60 + (59 - today.minute);
+  const estimate = nowMinute + minutesLeft + 1;
+  const first = Math.max(nowMinute + 1, estimate - 61);
+  const last = estimate + 61;
+
+  for (let candidate = first; candidate <= last; candidate++) {
+    if (!sameDay(calendar(candidate * minute), today)) {
+      return Math.max(1, candidate * minute - readerNow);
     }
   }
-  return Math.max(1, high * minute - readerNow);
+  return Math.max(1, estimate * minute - readerNow);
 }

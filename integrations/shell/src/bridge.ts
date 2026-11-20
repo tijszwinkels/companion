@@ -145,6 +145,10 @@ export class GatewayChatBridge implements NativeBridge {
   // times may have changed (a new offset or day): an unchanged result is
   // then not sent.
   private onlyTimesChanged = false;
+  // The reader's calendar date the published times were formatted on
+  // ('' before the first), so any Store change noticed on another date
+  // (a timeout that came late, a computer that slept) sends them again.
+  private timesDate = '';
 
   // The shown conversation and its resident rows.
   private shownSession: AgentSession | null = null;
@@ -254,6 +258,7 @@ export class GatewayChatBridge implements NativeBridge {
       this.forgetPrivateState();
     }
     this.followConnection();
+    this.noticeNewDay();
 
     let session: AgentSession | null = null;
     if (state.selected) {
@@ -423,6 +428,32 @@ export class GatewayChatBridge implements NativeBridge {
     }, wait);
   }
 
+  /** The reader's calendar date now, as a key ('' without message times). */
+  private readerDate(): string {
+    const times = this.times;
+    if (!times) {
+      return '';
+    }
+    const today = (times.calendar ?? browserCalendar)(times.clock.readerNow());
+    return `${today.year}-${today.month}-${today.day}`;
+  }
+
+  /**
+   * A Store change on another calendar date than the published times':
+   * they are formatted again, and the wait for the next day taken again.
+   */
+  private noticeNewDay(): void {
+    const times = this.times;
+    if (!times || !this.pageReady || !times.settings.values.messageTimestamps) {
+      return;
+    }
+    if (this.timesDate === '' || this.readerDate() === this.timesDate) {
+      return;
+    }
+    this.scheduleTimeRows();
+    this.waitForNextDay();
+  }
+
   /** The time on a message's heading line, or '' for none (../times/message-time.ts). */
   private messageTime(createdAt: unknown): string {
     const times = this.times;
@@ -441,6 +472,7 @@ export class GatewayChatBridge implements NativeBridge {
     if (!this.pageReady) {
       return;
     }
+    this.timesDate = this.readerDate();
     const rows = this.resident
       .rows()
       .map((row) => pageRow(row, this.messageTime(row.message.createdAt)));

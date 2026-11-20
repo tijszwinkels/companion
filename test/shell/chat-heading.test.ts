@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { chromiumPath, TestBrowser } from '../mobile/browser.ts';
-import { drawRows, referenceRows } from './chat-rows-page.ts';
+import { drawRows, drawRowsWithTimes, referenceRows } from './chat-rows-page.ts';
 
 /**
  * The shared chat page's one change for message times (`ChatRow.time`,
@@ -66,9 +66,15 @@ test(
       ...row,
       time: `Yesterday 16:${String(10 + index).padStart(2, '0')}`,
     }));
-    const drawn = await drawRows(browser, chatDirectory, timed);
+    const { html: drawn, times: places } = await drawRowsWithTimes(browser, chatDirectory, timed);
 
     assert.equal(withoutTimes(drawn), reference);
+
+    // In the DOM: each time is the last element of its row's own heading.
+    assert.deepEqual(
+      places,
+      timed.map((row) => (row.kind === 'tool' ? 'none' : 'heading')),
+    );
 
     // One row element per line; a row's own HTML can contain line breaks
     // (rendered Markdown), so lines are split where a row element starts.

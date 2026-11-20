@@ -19,7 +19,9 @@ export function TurnTimer(props: {
   /** The running turn's start, epoch milliseconds on the listener's clock. */
   startedAt: number;
   className: string;
-  /** Hidden from assistive technology where the time is already in a label. */
+  /** The element's id, for an `aria-describedby` that reads the time. */
+  id?: string;
+  /** Hidden from assistive technology where it is read as a description. */
   hidden?: boolean;
 }) {
   const element = useRef<HTMLSpanElement>(null);
@@ -42,6 +44,7 @@ export function TurnTimer(props: {
   return (
     <span
       ref={element}
+      id={props.id}
       class={props.className}
       title="How long this turn has been running"
       aria-hidden={props.hidden ? 'true' : undefined}

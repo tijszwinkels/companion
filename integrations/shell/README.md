@@ -735,7 +735,11 @@ Rule (`src/times/turn-times.ts`, `src/times/listener-clock.ts`):
    `status` decides: `working…` while `starting` or `running`, else `ready`.
    (The list's turning ring follows `status`, as before.)
 5. The list shows rule 1's time on each conversation that has one:
-   right-aligned in the full list, under the name in the strip.
+   right-aligned in the full list, under the name in the strip. In a full
+   list too narrow for the title (at least 48 px) and the time side by side,
+   the time goes on a line of its own, still right-aligned. It is not part
+   of the entry's accessible name (which would change every second), but of
+   its description: the last line, then "running for 2:16".
 6. Times are `m:ss` under an hour and `h:mm:ss` from an hour, whole seconds
    rounded down, in tabular digits; a negative time is `0:00`.
 7. The times advance every second without drawing the page again
@@ -775,7 +779,9 @@ Rule (`src/times/message-time.ts`):
 1. A message with `createdAt` shows when it was written, right-aligned on
    its heading line ("You", "Pi"); a message without shows nothing (no time
    is invented), and none shows while the Message timestamps switch is off.
-   Tool groups have no heading line of their own and show none.
+   Tool groups have no heading line of their own and show none. A
+   `createdAt` that is not a number, negative, or beyond what a date can
+   hold shows none either.
 2. The time is the reader's: `createdAt - offset`, in this browser's time
    zone (the listener's zone plays no part), compared with this browser's
    today.
@@ -789,11 +795,15 @@ Rule (`src/times/message-time.ts`):
    [changes to the shared chat page](#changes-to-the-shared-chat-page)) and
    sends the rows again (only those that changed) when the switch changes,
    when the offset changes and when a new day starts here. The moment the
-   next day starts is found on the calendar itself (the first minute on
-   another date), so a daylight saving change around midnight does not move
-   it; it is taken again with each new offset (this browser's clock may
+   next day starts is found on the calendar itself (the first minute after
+   now on another date, looked for in order around the wall clock's
+   midnight), so a daylight saving change around midnight (a skipped or a
+   repeated hour) does not move it; it is taken again with each new offset (this browser's clock may
    have been corrected), and checked at least every hour. The other two
-   Display switches do not send the rows again. A publication made only for the times is not sent
+   Display switches do not send the rows again. Any change the page hears
+   of on another date than the shown times were made on (a timeout that
+   came late, a computer that slept) sends them again too. A publication
+   made only for the times is not sent
    when no row's text changed, so the offset's millisecond changes with
    every state message do not draw the chat again.
 
@@ -811,6 +821,7 @@ Rule (`src/times/message-time.ts`):
 | The same moment, reader in Tokyo, listener in Amsterdam         | (Tokyo)              | Tokyo's time       |
 | 28 Mar 2026 12:00, Amsterdam (the day before summer time)       | 29 Mar 2026 12:00    | `Yesterday 12:00`  |
 | No `createdAt` (saved by an older version)                      | any                  | nothing            |
+| `Number.MAX_SAFE_INTEGER` (beyond a date)                       | any                  | nothing            |
 | Message timestamps off                                          | any                  | nothing (no field) |
 | A streaming answer updated ten times                            | any                  | its first time     |
 
@@ -839,8 +850,10 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   choices → `choose-agent`, Stop → `stop-agent-run` (see the Stop rule below), Close
   session → `close-agent`, history → `agent-history-page`. These are all in
   the gateway's remote allowlist (`src/remote/protocol.ts`); besides them
-  only the phone Store's own `panel-state` selection report and the
-  Activity column's requests (see [Activity](#activity)) leave the page. The
+  only the phone Store's own `panel-state` selection report, the
+  Activity column's requests (see [Activity](#activity)) and the settings
+  screen's `toggle-sounds` and `set-intent-enabled` (see
+  [listening switches](#listening-switches)) leave the page. The
   Store reads this run's Activity history (`activity-history`), as on the
   phone.
 - A send names the draft revision its text is based on and is refused when
@@ -1232,8 +1245,8 @@ host's), a streaming answer keeping its time, a new offset sending the
 changed rows again and one that changes no time sending nothing, midnight
 passing (from 30 seconds before it) and a corrected clock moving the wait
 for it, the moment the next day starts (also in Nuuk the night its clocks
-skip the hour before midnight, through the bridge too), and the other two
-switches sending no rows; and the Listening switches' availability and
+skip the hour before midnight, through the bridge too), a state message on a new date with an unchanged offset, the other two
+switches sending no rows, the midnight that came twice in St. John's (2010); and the Listening switches' availability and
 notes (also for the historical payload with only `enabled`, and a partial
 one). `markers.test.ts`
 has the rows of an answer completed behind the settings screen and of a
@@ -1242,7 +1255,8 @@ conversation selected underneath it.
 headless Chromium and compares the HTML with `fixtures/chat-rows-reference.txt`,
 drawn by the base revision's `Chat.tsx` before `ChatRow.time` existed
 (`chat-rows-page.ts` says how to draw it again), and checks that with `time`
-each "You" and "Pi" heading ends with it and nothing else changes.
+each "You" and "Pi" heading ends with it and nothing else changes (in
+the DOM: the time is the last element of the row's own heading).
 
 `settings.test.ts` covers them in the browser with a controlled listener
 clock and a shifted page clock in another time zone: running turns counting
@@ -1269,9 +1283,12 @@ meanwhile), kept when another conversation is chosen; the reader's scroll positi
 after Settings and back, with no history request; at 420 px the Settings
 entry hiding the Activity column that lay over the chat, and the switches
 reachable by keyboard; the conversation underneath closed elsewhere leaving
-the settings screen with its focused switch and scroll position; and at 375
+the settings screen with its focused switch and scroll position; at 375
 and 360 px the bars of Previous sessions and the empty view with no button
-over the title. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
+over the title; the full list at 150 px with a ten-hour time on its own
+line under a title that keeps its room, and the entry's description ending
+in "running for" and the time; at 1600 px the text box itself as wide as
+the chat and each message's gutter opposite its sender. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 settings screen, running timers (strip and full list), timestamps and all
 switches off at 420, 1280 and 1600 px.
 

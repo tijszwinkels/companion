@@ -654,7 +654,8 @@ body {
 }
 
 .conversations.full .entry-text {
-  flex: 1;
+  flex: 1 1 48px;
+  min-width: 48px;
 }
 
 .conversations.full .entry-title {
@@ -668,9 +669,16 @@ body {
   font-size: 11.5px;
 }
 
-/* The running time, right-aligned next to the title and the last line. */
+/* The running time, right-aligned next to the title and the last line; in
+   a narrow full list where it would leave the title under 48 px, on a line
+   of its own, still right-aligned. */
+.conversations.full .entry-select {
+  flex-wrap: wrap;
+}
+
 .conversations.full .entry-timer {
   flex: none;
+  margin-left: auto;
   font-size: 11.5px;
 }
 

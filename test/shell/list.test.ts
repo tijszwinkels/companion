@@ -504,7 +504,7 @@ test(
     assert.equal(column.x, main.x);
     const message = await box(page, '.message.assistant .panel');
     assert.ok(message.width > column.width - 32 - 40, `message ${message.width} px`);
-    const editor = await box(page, '.composer');
+    const editor = await box(page, '.composer textarea');
     assert.ok(editor.width >= column.width - 32 - 1, `text box ${editor.width} px`);
 
     await assertCleanPage(fixture, page, sockets);

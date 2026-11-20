@@ -237,9 +237,14 @@ function storedDisplay(page: TestPage): Promise<Record<string, string | null>> {
  * a page whose clock differs by `browserAhead`: the offset is only known up
  * to the delivery delay, so near a minute's end either minute is right.
  */
-function expectedTimes(createdAt: number, browserAhead: number): string[] {
+async function expectedTimes(
+  page: TestPage,
+  createdAt: number,
+  browserAhead: number,
+): Promise<string[]> {
   const calendar = zoneCalendar(pageZone);
-  const readerNow = Date.now() + browserAhead;
+  // "Today" is the page's, on its controlled clock (which tests move on).
+  const readerNow = await page.evaluate<number>(`Date.now()`);
   const texts = new Set<string>();
   for (const error of [-2 * second, 0, 2 * second]) {
     texts.add(messageTimeText(createdAt, -browserAhead + error, readerNow, calendar));
@@ -411,7 +416,7 @@ test(
     await page.waitFor(`document.querySelector('.rows .message-time')`);
     const times = await messageTimes(page);
     assert.ok(
-      expectedTimes(question.createdAt, browserAhead).includes(times[0]),
+      (await expectedTimes(page, question.createdAt, browserAhead)).includes(times[0]),
       `${times[0]} for ${new Date(question.createdAt).toISOString()}`,
     );
 
@@ -862,8 +867,21 @@ test(
     assert.equal(column.width, main.width);
     const message = await box(page, '.message.assistant .panel');
     assert.ok(message.width > column.width - 32 - 40, `message ${message.width} px`);
-    const editor = await box(page, '.composer');
+    const editor = await box(page, '.composer textarea');
     assert.ok(editor.width >= column.width - 32 - 1, `text box ${editor.width} px`);
+    // Messages keep their gutter opposite the sender: an answer's on the
+    // right, the reader's own message's on the left.
+    const gutters = await page.evaluate<Record<string, { left: number; right: number }>>(`(() => {
+      const gaps = (selector) => {
+        const message = document.querySelector(selector);
+        const outer = message.getBoundingClientRect();
+        const panel = message.querySelector('.panel').getBoundingClientRect();
+        return { left: panel.left - outer.left, right: outer.right - panel.right };
+      };
+      return { answer: gaps('.message.assistant'), question: gaps('.message.user') };
+    })()`);
+    assert.ok(gutters.answer.left < 1 && gutters.answer.right >= 20, JSON.stringify(gutters));
+    assert.ok(gutters.question.left >= 15 && gutters.question.right <= 12, JSON.stringify(gutters));
     // The time is at the right end of the heading line.
     await page.waitFor(`document.querySelector('.message.assistant .heading .message-time')`);
     const heading = await box(page, '.message.assistant .heading');
@@ -1164,6 +1182,71 @@ test(
       }
       await page.evaluate(`history.back()`);
     }
+
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'in the narrowest full list a long running time goes under the title, which keeps its room; the time is in the entry’s description',
+  { skip },
+  async (context) => {
+    const { fixture, browser, listener } = await setupWithClock(context);
+    listener.shift = -(10 * hour + 5 * minute);
+    await start(fixture, '🧪 Route planner');
+    listener.shift = 0;
+    const { page, sockets } = await pairedClockPage(fixture, browser, 1280);
+
+    // The full list at its narrowest, 150 px.
+    await page.evaluate(`document.querySelector('.list-divider').focus()`);
+    await key(page, 'End');
+    await page.waitFor(`document.querySelector('.conversations.full')`);
+    await page.evaluate(
+      `localStorage.setItem('companion.shell.layout.listWidth', '{"version":1,"value":150}')`,
+    );
+    await page.navigate(`${fixture.origin}/`);
+    await page.waitFor(online, 8000);
+    await page.waitFor(`document.querySelector('.conversations.full')`);
+    assert.equal(
+      await page.evaluate(`document.querySelector('.conversations').getBoundingClientRect().width`),
+      150,
+    );
+    await page.waitFor(entryTimerMatches('Route planner', /^10:05:\d\d$/));
+
+    const title = await page.evaluate<Box>(`(() => {
+      const rect = ${entryExpression('Route planner')}.querySelector('.entry-title').getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
+    })()`);
+    const timer = await page.evaluate<Box>(`(() => {
+      const rect = ${entryExpression('Route planner')}.querySelector('.entry-timer').getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
+    })()`);
+    const entry = await page.evaluate<Box>(`(() => {
+      const rect = ${entryExpression('Route planner')}.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
+    })()`);
+    assert.ok(title.width >= 47, `title ${title.width} px`);
+    assert.ok(timer.top >= title.top + title.height - 1, 'the time is on a line below the title');
+    assert.ok(
+      timer.right <= entry.right && entry.right - timer.right <= 12,
+      'right-aligned in the entry',
+    );
+    await screenshot(page, 'list-150-long-timer');
+
+    // The accessible description: the last line, then "running for" and
+    // the time, read when the reader comes to the entry.
+    const description = await page.evaluate<string>(`(() => {
+      const select = ${entryExpression('Route planner')}.querySelector('.entry-select');
+      return select.getAttribute('aria-describedby').split(' ')
+        .map((id) => document.getElementById(id).textContent).join(' ');
+    })()`);
+    assert.match(description, /running for 10:05:\d\d$/);
+    assert.equal(
+      await page.evaluate(
+        `${entryExpression('Route planner')}.querySelector('.entry-select').getAttribute('aria-label')`,
+      ),
+      '1. 🧪 Route planner, working',
+    );
 
     await assertCleanPage(fixture, page, sockets);
   },
