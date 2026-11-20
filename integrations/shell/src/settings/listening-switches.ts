@@ -17,8 +17,11 @@
  * - no request of the same switch awaits its answer;
  * - for Sound feedback: the listener is not in preview mode;
  * - for intents and shortcuts: the intent is toggleable and the listener
- *   reports independent switches (`inferenceEnabled` on every intent). An
- *   older listener that does not is shown read-only with the phone's note.
+ *   reports independent switches (`inferenceEnabled` and `shortcutEnabled`,
+ *   both booleans, on every intent). An older listener that does not is
+ *   shown read-only with the phone's note; a mode it reports no value for
+ *   shows the intent's combined `enabled` value (what such a listener
+ *   applies to both).
  *
  * Nothing is shown as changed before the listener says so.
  */
@@ -68,15 +71,33 @@ export function intentSwitchKey(name: string, mode: IntentMode): string {
 
 /** Whether the listener reports independent intent and shortcut switches. */
 export function independentSwitches(intents: readonly Intent[]): boolean {
-  return intents.every((intent) => intent.inferenceEnabled !== undefined);
+  return intents.every(
+    (intent) =>
+      typeof intent.inferenceEnabled === 'boolean' && typeof intent.shortcutEnabled === 'boolean',
+  );
+}
+
+/**
+ * Whether a mode of an intent is on, as the listener reports it: the
+ * mode's own value, or for an older listener without one the intent's
+ * combined `enabled`.
+ */
+function modeEnabled(intent: Intent, mode: IntentMode): boolean {
+  let value: unknown = intent.shortcutEnabled;
+  if (mode === 'inference') {
+    value = intent.inferenceEnabled;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  return intent.enabled === true;
 }
 
 /** The phone's state words for an intent or shortcut. */
 function routeState(intent: Intent, mode: IntentMode): string {
-  let enabled = intent.shortcutEnabled;
+  const enabled = modeEnabled(intent, mode);
   let available = intent.prefixAvailable;
   if (mode === 'inference') {
-    enabled = intent.inferenceEnabled;
     available = intent.inferenceAvailable;
   }
   if (!enabled) {
@@ -154,11 +175,10 @@ export function listeningView(
     }
     for (const mode of modes) {
       const key = intentSwitchKey(intent.name, mode);
-      let checked = intent.shortcutEnabled === true;
+      const checked = modeEnabled(intent, mode);
       let description = `Shortcut · ${routeState(intent, mode)} · ${prefixesText(intent)}`;
       let name = `${intent.label} shortcut`;
       if (mode === 'inference') {
-        checked = intent.inferenceEnabled === true;
         description = `Intent · ${routeState(intent, mode)}`;
         name = `${intent.label} intent`;
       }

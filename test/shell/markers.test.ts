@@ -125,7 +125,10 @@ function marks(store: InstanceType<typeof Store>): Record<string, string> {
 
 test('markers: each row of the README table, in one sequence against the real Store', () => {
   page.visibilityState = 'visible';
-  const store = new Store({ activity: false });
+  // The shell's settings screen covers the selected conversation while
+  // `settingsShown` (the Store's `selectionShown` option, as main.tsx sets it).
+  let settingsShown = false;
+  const store = new Store({ activity: false, selectionShown: () => !settingsShown });
   internals(store).online();
 
   // First snapshot after loading: every conversation whose latest turn
@@ -151,6 +154,15 @@ test('markers: each row of the README table, in one sequence against the real St
   page.visibilityState = 'visible';
   store.open('a');
   assert.deepEqual(marks(store), { a: '', b: 'W' }, 'selected again');
+
+  // The settings screen covers the selected conversation: a completed turn
+  // there is set; going back (the gear opens the shown conversation) clears.
+  settingsShown = true;
+  update(store, session('a', 'completed', 'a4'));
+  assert.deepEqual(marks(store), { a: 'U', b: 'W' }, 'covered by the settings screen');
+  settingsShown = false;
+  store.open('a');
+  assert.deepEqual(marks(store), { a: '', b: 'W' }, 'back from the settings screen');
 
   // A turn completes in a conversation that is not shown: set, no longer working.
   update(store, session('b', 'completed', 'b1'));

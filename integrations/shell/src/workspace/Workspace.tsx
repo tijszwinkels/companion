@@ -17,8 +17,10 @@
  *   the Store selects, from the bar's gear or the list's Settings entry,
  *   until the gear is pressed again, the reader chooses a conversation or
  *   Previous sessions in the list, or goes Back or Forward in the browser.
- *   It is this page's own view, not a Store page: the selection underneath
- *   stays (also when it changes meanwhile), and the list marks Settings.
+ *   It is this page's own view (../settings/settings-view.ts), not a Store
+ *   page: the selection underneath stays (also when it changes meanwhile),
+ *   and the list marks Settings. A conversation's chat stays drawn under
+ *   it (covered and inert), so going back finds the reader's place.
  * - The Activity column (../activity/ActivityColumn.tsx), hidden at first,
  *   shown and hidden by the ☰ at the bar's right end (the column's own ☰
  *   while shown) and by the list's Activity entry; its width and shown
@@ -61,6 +63,7 @@ import { useListLayout } from '../layout/useListLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
 import { SettingsScreen } from '../settings/SettingsScreen.tsx';
 import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
+import type { SettingsView } from '../settings/settings-view.ts';
 import type { PageTimes } from '../times/page-times.ts';
 import { BarState } from './BarState.tsx';
 import { ChatBar } from './ChatBar.tsx';
@@ -81,20 +84,36 @@ interface SettingsBar {
   onToggle: () => void;
 }
 
-export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge; times: PageTimes }) {
+export function Workspace(props: {
+  chat: ChatStore;
+  bridge: GatewayChatBridge;
+  times: PageTimes;
+  settingsView: SettingsView;
+}) {
+  const store = useStore();
   const state = useAppState();
   const display = useDisplaySettings(props.times.settings);
 
-  // The settings screen, shown in place of the chat. Browser Back and
-  // Forward change what the Store shows, and leave the settings screen too.
-  const [settingsShown, setSettingsShown] = useState(false);
+  // The settings screen, shown in place of the chat (drawn again when it is
+  // shown or left). Browser Back and Forward change what the Store shows,
+  // and leave the settings screen too.
+  const settingsView = props.settingsView;
+  const [settingsShown, setSettingsShownState] = useState(settingsView.shown);
   useEffect(() => {
+    const unsubscribe = settingsView.subscribe(() => {
+      setSettingsShownState(settingsView.shown);
+    });
+    // It can change between the first render and this subscription.
+    setSettingsShownState(settingsView.shown);
     const navigated = () => {
-      setSettingsShown(false);
+      settingsView.setShown(false);
     };
     window.addEventListener('popstate', navigated);
-    return () => window.removeEventListener('popstate', navigated);
-  }, []);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('popstate', navigated);
+    };
+  }, [settingsView]);
 
   const activity = useActivityLayout();
   const windowWidth = activity.windowWidth;
@@ -212,6 +231,35 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge; t
     activity.setShown(false);
   }
 
+  /**
+   * The list's Settings entry. In a narrow window the shown Activity column
+   * covers the main area, where the settings screen is drawn: it is hidden
+   * (as its ☰ would), so the settings screen can be seen and reached.
+   */
+  function showSettingsFromList() {
+    settingsView.setShown(true);
+    if (activity.shown && overlay) {
+      activity.setShown(false);
+    }
+  }
+
+  /**
+   * The gear: shows the settings screen, or leaves it. Leaving shows the
+   * conversation underneath again, which counts as choosing it: its unread
+   * mark (an answer completed behind the settings screen) is cleared
+   * (`Store.open` of the shown page changes no browser history).
+   */
+  function toggleSettingsFromBar() {
+    if (!settingsView.shown) {
+      settingsView.setShown(true);
+      return;
+    }
+    settingsView.setShown(false);
+    if (state.selected && !state.showingPrevious) {
+      store.open(state.selected);
+    }
+  }
+
   let selected: AgentSession | undefined;
   if (state.selected) {
     selected = state.sessions.get(state.selected);
@@ -240,8 +288,8 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge; t
             newActivity={newActivity}
             onToggleActivity={activity.toggleShown}
             settingsShown={settingsShown}
-            onShowSettings={() => setSettingsShown(true)}
-            onLeaveSettings={() => setSettingsShown(false)}
+            onShowSettings={showSettingsFromList}
+            onLeaveSettings={() => settingsView.setShown(false)}
             display={display}
             ticker={props.times.ticker}
           />
@@ -279,7 +327,7 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge; t
           }}
           settings={{
             shown: settingsShown,
-            onToggle: () => setSettingsShown(!settingsShown),
+            onToggle: toggleSettingsFromBar,
           }}
           times={props.times}
           requests={requests}
@@ -357,43 +405,59 @@ function MainArea(props: {
     onToggleSettings: props.settings.onToggle,
   };
 
-  if (props.settings.shown) {
+  const settingsScreen = (
+    <div class="page-column">
+      <HeldInput chat={props.chat} />
+      <SettingsScreen
+        settings={props.times.settings}
+        admitted={() => props.bridge.admitted}
+        requests={props.requests}
+      />
+    </div>
+  );
+
+  if (selected) {
+    // The chat stays drawn while the settings screen covers it (inert and
+    // hidden from assistive technology meanwhile), so its scroll position,
+    // its following of the live end and its editor survive the round trip.
+    let bar = (
+      <ChatBar
+        title={selected.title || 'Untitled'}
+        state={
+          <BarState
+            session={selected}
+            admitted={props.bridge.admitted}
+            settings={display}
+            ticker={props.times.ticker}
+          />
+        }
+        {...barControls}
+      />
+    );
+    if (props.settings.shown) {
+      bar = <ChatBar title="Settings" state={null} {...barControls} />;
+    }
     return (
       <>
-        <ChatBar title="Settings" state={null} {...barControls} />
-        <div class="page-column">
-          <HeldInput chat={props.chat} />
-          <SettingsScreen
-            settings={props.times.settings}
-            admitted={() => props.bridge.admitted}
-            requests={props.requests}
-          />
+        {bar}
+        <div class="main-body">
+          <div class="chat-column" inert={props.settings.shown}>
+            {/* A new chat view for each conversation lifetime: the same ID
+                reopened elsewhere (a new tool epoch) starts at its live end
+                with a fresh editor, like a different conversation. */}
+            <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
+          </div>
+          {props.settings.shown && <div class="settings-layer">{settingsScreen}</div>}
         </div>
       </>
     );
   }
 
-  if (selected) {
+  if (props.settings.shown) {
     return (
       <>
-        <ChatBar
-          title={selected.title || 'Untitled'}
-          state={
-            <BarState
-              session={selected}
-              admitted={props.bridge.admitted}
-              settings={display}
-              ticker={props.times.ticker}
-            />
-          }
-          {...barControls}
-        />
-        <div class="chat-column">
-          {/* A new chat view for each conversation lifetime: the same ID
-              reopened elsewhere (a new tool epoch) starts at its live end
-              with a fresh editor, like a different conversation. */}
-          <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
-        </div>
+        <ChatBar title="Settings" state={null} {...barControls} />
+        {settingsScreen}
       </>
     );
   }

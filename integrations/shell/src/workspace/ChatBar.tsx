@@ -62,10 +62,15 @@ export function ChatBar(props: {
       >
         ☰
       </button>
-      <h1 class="chat-bar-title" title={props.title}>
-        {props.title}
-      </h1>
-      {props.state ? <span class="chat-bar-state">{props.state}</span> : null}
+      {/* Title and state share the room between the buttons; where the
+          state does not fit beside the title (a narrow window), it goes on
+          a second line instead of pushing the buttons out. */}
+      <div class="chat-bar-heading">
+        <h1 class="chat-bar-title" title={props.title}>
+          {props.title}
+        </h1>
+        {props.state ? <span class="chat-bar-state">{props.state}</span> : null}
+      </div>
       {props.children}
       <button
         class="bar-button settings-toggle"

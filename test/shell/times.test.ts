@@ -192,10 +192,25 @@ test('turn timers: each row of the README table', () => {
       list: '',
     },
     {
-      name: 'status still running a moment after the end',
+      name: 'status still running a moment after the end, with its duration',
       session: { status: 'running', lastTurnDurationMs: 42 * second },
       admitted: true,
+      bar: 'ready · last turn 0:42',
+      list: '',
+    },
+    {
+      name: 'status running without either time (older listener)',
+      session: { status: 'running' },
+      admitted: true,
       bar: 'working…',
+      list: '',
+    },
+    {
+      name: 'status running a moment after the end, last turn duration off',
+      session: { status: 'running', lastTurnDurationMs: 42 * second },
+      admitted: true,
+      settings: { lastTurnDuration: false },
+      bar: 'ready',
       list: '',
     },
     {
@@ -719,8 +734,12 @@ function conversation(messages: AgentSession['messages']): AgentSession {
  * clock (UTC). The listener clock is subscribed before the bridge, as in
  * main.tsx.
  */
-function bridgeHarness(context: { after(callback: () => void): void }, storage = memoryStorage()) {
-  let now = Date.UTC(2026, 10, 20, 16, 0);
+function bridgeHarness(
+  context: { after(callback: () => void): void },
+  startAt = Date.UTC(2026, 10, 20, 16, 0),
+  storage = memoryStorage(),
+) {
+  let now = startAt;
   const store = new FakeStore();
   const clock = new ListenerClock(() => now);
   store.subscribe(() => clock.observe(store.state.engine as never));
@@ -843,29 +862,82 @@ test('a streaming answer keeps its time; a new offset changes the text', async (
   assert.equal(harness.rows().get('q1')!.time, '13:59');
 });
 
-test('when a new day starts here, today’s times become “Yesterday”', async (context) => {
+/** Deliveries to the page are microtasks: let them run. */
+async function flushDeliveries(): Promise<void> {
+  for (let round = 0; round < 5; round++) {
+    await Promise.resolve();
+  }
+}
+
+test('when a new day starts here, today’s times become “Yesterday” at midnight', async (context) => {
   // Every timeout of the bridge runs on the test's clock from the start, so
-  // the wait for the next day is run without waiting.
+  // the wait for the next day is run without waiting. The reader starts 30
+  // seconds before midnight (UTC, the harness's calendar).
   context.mock.timers.enable({ apis: ['setTimeout'] });
-  const harness = bridgeHarness(context);
-  const flush = async () => {
-    // Deliveries to the page are microtasks.
-    for (let round = 0; round < 5; round++) {
-      await Promise.resolve();
-    }
-  };
+  const harness = bridgeHarness(context, Date.UTC(2026, 10, 20, 23, 59, 30));
   context.mock.timers.tick(50);
-  await flush();
+  await flushDeliveries();
   assert.equal(harness.rows().get('q1')!.time, '14:02');
 
-  // Midnight passes: the bridge's wait for the next local day ends (at
-  // most an hour at a time) and the rows go out again.
-  // (The test's timeouts do not run timeouts they set themselves within
-  // the same tick, hence two ticks: the day's wait, then the rows' 30 ms.)
-  harness.setNow(Date.UTC(2026, 10, 21, 0, 0, 5));
-  context.mock.timers.tick(60 * 60 * 1000);
+  // Midnight passes: the bridge's wait for the next day ends then (not up
+  // to an hour later) and the rows go out again. (The test's timeouts do
+  // not run timeouts they set themselves within the same tick, hence two
+  // ticks: the day's wait, then the rows' 30 ms.)
+  harness.setNow(Date.UTC(2026, 10, 21, 0, 0, 0, 30));
+  context.mock.timers.tick(30 * second - 50);
   context.mock.timers.tick(50);
-  await flush();
+  await flushDeliveries();
   assert.equal(harness.rows().get('q1')!.time, 'Yesterday 14:02');
   assert.equal(harness.rows().get('a1')!.time, 'Yesterday 14:02');
+});
+
+test('a corrected clock moves the wait for the next day', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  // At 23:00 the next day is an hour away.
+  const harness = bridgeHarness(context, Date.UTC(2026, 10, 20, 23, 0));
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, '14:02');
+
+  // This browser's clock is corrected to 23:59; the next state message
+  // (the listener's clock still says 23:00) gives the new offset, -59 min.
+  harness.setNow(Date.UTC(2026, 10, 20, 23, 59));
+  harness.store.update({ engine: { paused: false, listenerTime: Date.UTC(2026, 10, 20, 23, 0) } });
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, '15:01');
+
+  // One minute later it is the next day here: the rows say so then.
+  harness.setNow(Date.UTC(2026, 10, 21, 0, 0, 1));
+  context.mock.timers.tick(60 * second);
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, 'Yesterday 15:01');
+});
+
+test('a new offset that changes no time sends no rows', async (context) => {
+  const harness = bridgeHarness(context);
+  await settle();
+  const rowsMessages = () => harness.messages.filter((message) => message.type === 'rows').length;
+  const before = rowsMessages();
+
+  // State messages whose offset differs by milliseconds (the listener's
+  // clock a little behind, so the question written at 14:02:00 stays in
+  // its minute): every time is the same text, so the page gets nothing to
+  // draw.
+  for (let jitter = 1; jitter <= 5; jitter++) {
+    harness.store.update({
+      engine: { paused: false, listenerTime: Date.UTC(2026, 10, 20, 16, 0) - jitter },
+    });
+    await settle();
+  }
+  assert.equal(rowsMessages(), before);
+
+  // One that changes a minute does send the changed rows.
+  harness.store.update({
+    engine: { paused: false, listenerTime: Date.UTC(2026, 10, 20, 16, 1) },
+  });
+  await settle();
+  assert.equal(rowsMessages(), before + 1);
+  assert.equal(harness.rows().get('q1')!.time, '14:01');
 });

@@ -8,9 +8,11 @@
  * - `turnStartedAt`: present exactly while a turn runs; its start in epoch
  *   milliseconds on the listener's clock;
  * - `lastTurnDurationMs`: how long the last finished turn took;
- * - `status`: `starting` and `running` mean the agent works on a turn
- *   (`status` can still say `running` a moment after the turn's times
- *   ended, while the listener saves it).
+ * - `status`: `starting` and `running` mean the agent works on a turn.
+ *   A listener that publishes turn times ends a turn by removing
+ *   `turnStartedAt` and setting `lastTurnDurationMs` together; `status`
+ *   follows a moment later, once the turn is saved, so it can still say
+ *   `running` then. An older listener publishes neither field.
  *
  * And from this page: whether requests are admitted (connected, and this
  * connection's snapshot arrived: the conversation's state is known now) and
@@ -21,16 +23,20 @@
  *    Turn timers switch is on and the state is known. Offline, or
  *    reconnected before the new snapshot, the last known start is not
  *    counted as if live: the turn may have ended meanwhile.
- * 2. The bar shows `working · m:ss` then; otherwise, while the agent works
- *    (status, or a `turnStartedAt` not counted by rule 1), `working…`.
- * 3. With no running turn, the bar shows `ready · last turn m:ss` while the
- *    conversation has `lastTurnDurationMs` and the Last turn duration
- *    switch is on; otherwise `ready`. A finished turn's duration is a
- *    stored value, not a running count, so it is shown whatever the
- *    connection.
- * 4. The list shows the running time of rule 1 on each conversation, and
+ * 2. The bar shows `working · m:ss` then; with a `turnStartedAt` not
+ *    counted by rule 1, `working…`.
+ * 3. Without `turnStartedAt`, a conversation with `lastTurnDurationMs` has
+ *    no running turn (its listener publishes turn times, and the last one
+ *    ended, also while `status` still says `running` during its save): the
+ *    bar shows `ready · last turn m:ss` while the Last turn duration switch
+ *    is on, else `ready`. A finished turn's duration is a stored value, not
+ *    a running count, so it is shown whatever the connection.
+ * 4. Without either field (an older listener, or a conversation whose turns
+ *    never reached the model), `status` decides: `working…` while it is
+ *    `starting` or `running`, else `ready`.
+ * 5. The list shows the running time of rule 1 on each conversation, and
  *    nothing else.
- * 5. Times are `m:ss` under one hour and `h:mm:ss` from one hour, whole
+ * 6. Times are `m:ss` under one hour and `h:mm:ss` from one hour, whole
  *    seconds rounded down; a negative time (clocks that disagree by more
  *    than the delivery delay) is 0:00.
  */
@@ -85,7 +91,7 @@ export function runningTurnStart(
   return session.turnStartedAt;
 }
 
-/** The bar's state for the shown conversation (rules 1 to 3). */
+/** The bar's state for the shown conversation (rules 1 to 4). */
 export function barState(
   session: Pick<AgentSession, 'status' | 'turnStartedAt' | 'lastTurnDurationMs'>,
   admitted: boolean,
@@ -96,16 +102,25 @@ export function barState(
     return { kind: 'timer', startedAt };
   }
 
-  const working =
-    session.status === 'starting' ||
-    session.status === 'running' ||
-    validTime(session.turnStartedAt);
-  if (working) {
+  // Rule 2: a running turn that is not counted.
+  if (validTime(session.turnStartedAt)) {
     return { kind: 'text', text: 'working…' };
   }
 
-  if (settings.lastTurnDuration && validTime(session.lastTurnDurationMs)) {
-    return { kind: 'text', text: `ready · last turn ${elapsedText(session.lastTurnDurationMs)}` };
+  // Rule 3: the last turn ended.
+  if (validTime(session.lastTurnDurationMs)) {
+    if (settings.lastTurnDuration) {
+      return {
+        kind: 'text',
+        text: `ready · last turn ${elapsedText(session.lastTurnDurationMs)}`,
+      };
+    }
+    return { kind: 'text', text: 'ready' };
+  }
+
+  // Rule 4: no turn times; the status decides.
+  if (session.status === 'starting' || session.status === 'running') {
+    return { kind: 'text', text: 'working…' };
   }
   return { kind: 'text', text: 'ready' };
 }

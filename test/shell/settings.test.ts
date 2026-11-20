@@ -352,15 +352,34 @@ test(
     await screenshot(page, 'timers-1280-strip');
 
     // Time passes (65 s on both clocks): every time advances, without the
-    // page being drawn again (the bar's element stays the same one).
-    await page.evaluate(`window.__barState = document.querySelector('.chat-bar-state')`);
+    // page being drawn again: every change to the document while the times
+    // advance is the text of a timer (recorded from the whole document).
+    await page.evaluate(`(() => {
+      window.__otherChanges = [];
+      window.__timerChanges = 0;
+      const inTimer = (node) => {
+        const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        return Boolean(element?.closest('.turn-timer, .entry-timer'));
+      };
+      window.__mutations = new MutationObserver((records) => {
+        for (const record of records) {
+          if (inTimer(record.target)) {
+            window.__timerChanges++;
+          } else {
+            window.__otherChanges.push(record.type + ' ' + (record.target.className || record.target.nodeName));
+          }
+        }
+      });
+      window.__mutations.observe(document.documentElement, {
+        subtree: true, childList: true, attributes: true, characterData: true,
+      });
+    })()`);
     await advance(listener, page, 65 * second);
     await page.waitFor(barMatches(/^working · 2:01:0\d$/), 3000);
     await page.waitFor(entryTimerMatches('Short run', /^6:0\d$/), 3000);
-    assert.equal(
-      await page.evaluate(`window.__barState === document.querySelector('.chat-bar-state')`),
-      true,
-    );
+    await page.evaluate(`window.__mutations.disconnect()`);
+    assert.ok((await page.evaluate<number>(`window.__timerChanges`)) >= 3);
+    assert.deepEqual(await page.evaluate(`window.__otherChanges`), []);
 
     // The full list: the time right-aligned beside the title.
     await page.evaluate(`document.querySelector('.list-divider').focus()`);
@@ -856,6 +875,178 @@ test(
     assert.ok((await box(page, '.page-column')).width <= 860);
 
     short.run.finish();
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+// ---- The settings screen over a conversation ---------------------------------------
+
+test(
+  'an answer completed behind the settings screen is marked unread; going back clears it',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setupWithClock(context);
+    const first = await start(fixture, '🗺️ First conversation');
+    const second_ = await start(fixture, '🐛 Second conversation');
+    answer(second_.run, 'b1', 'Second answer.');
+    const { page, sockets } = await pairedClockPage(fixture, browser, 1280);
+    const unread = (title: string) => `${entryExpression(title)}.classList.contains('unread')`;
+
+    // The first conversation is selected, then covered by Settings.
+    await openConversation(page, 'Second conversation');
+    await openConversation(page, 'First conversation');
+    await clickElement(page, gear);
+    await page.waitFor(settingsShown);
+
+    // Its answer completes meanwhile: marked unread, with the toast.
+    answer(first.run, 'a1', 'First answer.');
+    await page.waitFor(unread('First conversation'));
+    await page.waitFor(
+      `[...document.querySelectorAll('.toast')].some((toast) => toast.textContent.includes('answer ready'))`,
+    );
+
+    // Back with the gear: it is shown, and the mark goes.
+    await clickElement(page, gear);
+    await page.waitFor(`!(${unread('First conversation')})`);
+
+    // Covered again; another answer; then the reader chooses the other
+    // conversation: the first one's answer is still unseen.
+    await clickElement(page, gear);
+    await page.waitFor(settingsShown);
+    const runsBefore = fixture.runs.length;
+    fixture.sessions.followUp(first.id, 'And one more', signal());
+    await waitFor(() => fixture.runs.length > runsBefore);
+    answer(fixture.runs.at(-1)!, 'a2', 'Second answer of the first.');
+    await page.waitFor(unread('First conversation'));
+    await openConversation(page, 'Second conversation');
+    assert.equal(await page.evaluate(unread('First conversation')), true);
+    await openConversation(page, 'First conversation');
+    await page.waitFor(`!(${unread('First conversation')})`);
+
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'going to Settings and back keeps the reader’s place in the conversation without loading anything',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setupWithClock(context);
+    const conversation = await start(fixture, '🧾 Long transcript');
+    for (let index = 0; index < 40; index++) {
+      conversation.run.emit({
+        ...chatMessage(`paragraph-${index}`, 'assistant', `Paragraph ${index}. `.repeat(12)),
+        state: 'done',
+      });
+    }
+    conversation.run.finish();
+    const { page, sockets } = await pairedClockPage(fixture, browser, 1280);
+    await openConversation(page, 'Long transcript');
+    await page.waitFor(`document.querySelectorAll('.rows > .message').length >= 40`);
+
+    // The reader scrolls up with the wheel, away from the live end.
+    const transcript = await box(page, '.transcript');
+    for (let step = 0; step < 3; step++) {
+      await page.call('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: transcript.left + transcript.width / 2,
+        y: transcript.top + transcript.height / 2,
+        deltaX: 0,
+        deltaY: -400,
+      });
+    }
+    await page.waitFor(
+      `(() => { const t = document.querySelector('.transcript'); return t.scrollHeight - t.scrollTop - t.clientHeight > 600; })()`,
+    );
+    // Let any smooth scrolling come to rest: the same position over 300 ms.
+    const before = await page.evaluate<number>(`new Promise((resolve) => {
+      const transcript = document.querySelector('.transcript');
+      let last = -1;
+      const check = () => {
+        if (transcript.scrollTop === last) {
+          resolve(last);
+          return;
+        }
+        last = transcript.scrollTop;
+        setTimeout(check, 300);
+      };
+      check();
+    })`);
+    const sentBefore = sockets.sent.length;
+
+    await clickElement(page, gear);
+    await page.waitFor(settingsShown);
+    // The chat is covered and inert meanwhile.
+    assert.equal(await page.evaluate(`document.querySelector('.chat-column').inert`), true);
+    await clickElement(page, gear);
+    await page.waitFor(`!(${settingsShown})`);
+
+    assert.equal(
+      await page.evaluate<number>(`document.querySelector('.transcript').scrollTop`),
+      before,
+    );
+    assert.equal(requestActions(sockets, sentBefore).includes('agent-history-page'), false);
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'in a narrow window the Settings entry hides the Activity column over the chat and the screen is reachable',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setupWithClock(context);
+    const conversation = await start(fixture, '🗺️ Route planner');
+    answer(conversation.run, 'a1', 'An answer.');
+    const { page, sockets } = await pairedClockPage(fixture, browser, 420);
+    await openConversation(page, 'Route planner');
+
+    // Activity over the chat (the main area is inert).
+    await clickElement(page, `document.querySelector('.activity-toggle')`);
+    await page.waitFor(`document.querySelector('.activity-column')`);
+    assert.equal(await page.evaluate(`document.querySelector('.workspace-main').inert`), true);
+
+    // The list's Settings entry: Activity goes, the settings screen shows.
+    await clickElement(page, settingsEntry);
+    await page.waitFor(settingsShown);
+    await page.waitFor(`!document.querySelector('.activity-column')`);
+    assert.equal(await page.evaluate(`document.querySelector('.workspace-main').inert`), false);
+    await tabTo(page, switchExpression('Turn timers'), 60);
+    await key(page, ' ');
+    await page.waitFor(
+      `${switchExpression('Turn timers')}.getAttribute('aria-checked') === 'false'`,
+    );
+    assert.equal(await horizontalOverflow(page), 0);
+
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'at 375 px a long last duration goes under the title; the title and all bar buttons stay in the window',
+  { skip },
+  async (context) => {
+    const { fixture, browser, listener } = await setupWithClock(context);
+    listener.shift = -(hour + 2 * minute + 3 * second);
+    const conversation = await start(fixture, '🧾 A conversation with a long title');
+    listener.shift = 0;
+    answer(conversation.run, 'a1', 'An answer after an hour.');
+    const { page, sockets } = await pairedClockPage(fixture, browser, 375);
+    await openConversation(page, 'A conversation with a long title');
+    await page.waitFor(barMatches(/^ready · last turn 1:02:0\d$/));
+
+    assert.equal(await horizontalOverflow(page), 0);
+    const title = await box(page, '.chat-bar-title');
+    const state = await box(page, '.chat-bar-state');
+    assert.ok(title.width >= 64, `title ${title.width} px`);
+    assert.ok(state.right <= 375, 'the state is in the window');
+    assert.ok(state.top >= title.top + title.height - 1, 'the state is under the title');
+    for (const selector of ['.list-toggle', '.settings-toggle', '.activity-toggle']) {
+      const button = await box(page, selector);
+      assert.ok(button.left >= 0 && button.right <= 375, `${selector} in the window`);
+      assert.ok(button.width >= 33, `${selector} keeps its size`);
+    }
+    await screenshot(page, 'bar-375');
+
     await assertCleanPage(fixture, page, sockets);
   },
 );

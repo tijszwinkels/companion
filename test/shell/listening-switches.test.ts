@@ -117,9 +117,49 @@ test('listening switches: each row of the README table', () => {
   assert.deepEqual(olderView.notes, [olderListenerNote]);
   assert.deepEqual(olderView.switches, [
     'Sound feedback: on, available',
-    'Note intent: off, unavailable',
+    // No value for the intent mode: the combined `enabled` (on).
+    'Note intent: on, unavailable',
     'Note shortcut: on, unavailable',
   ]);
+
+  // The historical shape: only the combined `enabled` (no mode values).
+  // Both switches show it, read-only.
+  const historical = engine({
+    intents: [
+      intent('note', {
+        enabled: true,
+        inferenceEnabled: undefined as unknown as boolean,
+        shortcutEnabled: undefined as unknown as boolean,
+      }),
+      intent('mute', {
+        enabled: false,
+        inferenceEnabled: undefined as unknown as boolean,
+        shortcutEnabled: undefined as unknown as boolean,
+      }),
+    ],
+  });
+  const historicalView = listeningView(historical, true, nothingPending);
+  assert.deepEqual(summary(historicalView).switches, [
+    'Sound feedback: on, available',
+    'Note intent: on, unavailable',
+    'Note shortcut: on, unavailable',
+    'Mute intent: off, unavailable',
+    'Mute shortcut: off, unavailable',
+  ]);
+  assert.deepEqual(historicalView.notes, [olderListenerNote]);
+  assert.equal(historicalView.switches[2].description, 'Shortcut · On · note …');
+
+  // A report with the intent's value but not the shortcut's: read-only too.
+  const partial = engine({
+    intents: [intent('note', { enabled: true, shortcutEnabled: undefined as unknown as boolean })],
+  });
+  const partialView = summary(listeningView(partial, true, nothingPending));
+  assert.deepEqual(partialView.switches, [
+    'Sound feedback: on, available',
+    'Note intent: on, unavailable',
+    'Note shortcut: on, unavailable',
+  ]);
+  assert.deepEqual(partialView.notes, [olderListenerNote]);
 
   // An intent that is not toggleable: that one unavailable, "Always on".
   const fixed = listeningView(

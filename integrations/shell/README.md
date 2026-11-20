@@ -70,7 +70,10 @@ The arrangement is the same at every window width, as in the agreed design:
   [turn timers](#turn-timers-and-the-last-turn-duration)). On Previous
   sessions, or with nothing selected, the bar has Sign out instead of a
   state. At its right end are the gear that shows the
-  [settings screen](#the-settings-screen) and the Activity ☰.
+  [settings screen](#the-settings-screen) and the Activity ☰. Where the
+  state does not fit beside the title (a narrow window), it goes on a second
+  line under the title; the title keeps at least 64 px and the buttons stay
+  in the window.
 - **The chat** is the unchanged chat page, using the whole width of the area
   between the list and the Activity column (a design change of 2026-11-20:
   the earlier centred column of at most 860 px is gone, for every
@@ -258,6 +261,7 @@ remote role sends (`src/list/entries.ts`):
 | A turn completes in a conversation that is not shown                                                            | set                                                                         |
 | A turn completes in the shown conversation, page visible                                                        | not set                                                                     |
 | A turn completes in the shown conversation, page hidden (other tab)                                             | set                                                                         |
+| A turn completes in the selected conversation while the settings screen covers it                               | set                                                                         |
 | A turn is stopped or fails                                                                                      | not set                                                                     |
 | A conversation this page has not seen arrives in an event (started elsewhere)                                   | set                                                                         |
 | A conversation this page has seen is reopened elsewhere                                                         | not set                                                                     |
@@ -607,11 +611,16 @@ on.
 1. It is reached by the **gear** in the bar above the chat (left of the
    Activity ☰; at the bar's right end while the Activity column is shown,
    which then has that ☰) and by the **Settings** entry at the bottom of the
-   conversation list, below Previous sessions.
+   conversation list, below Previous sessions. In a narrow window, where the
+   shown Activity column lies over the main area, the Settings entry also
+   hides the column (as its ☰ would), so the settings screen can be seen
+   and reached.
 2. It takes the place of the chat (or Previous sessions, or the empty view);
    the bar's title says "Settings" and the bar shows no state. The gear is
    pressed (`aria-pressed`), and the list marks Settings as shown instead of
-   a conversation.
+   a conversation. A conversation's chat stays drawn under it, covered and
+   inert, so going back finds it as it was: the same scroll position (or
+   still following the live end), the same text in the editor.
 3. It is left by the gear again, by choosing a conversation (also the one
    underneath) or Previous sessions in the list, and by the browser's Back
    and Forward. Nothing else leaves it: it is this page's own view, not one
@@ -619,7 +628,12 @@ on.
    is, also when it changes meanwhile (a conversation started from Activity
    is selected underneath and shown when the settings screen is left; the
    conversation underneath closed elsewhere shows the empty view then).
-4. Text only the chat editor holds is offered there as on Previous sessions
+4. The conversation underneath is **not shown** while the settings screen
+   covers it: an answer completed meanwhile gets the "answer not seen" mark
+   and the toast, as for a conversation that is not selected (the Store's
+   `selectionShown` option, off on the phone). Going back to it with the
+   gear shows it, which clears the mark, as choosing it does.
+5. Text only the chat editor holds is offered there as on Previous sessions
    (Copy, Discard).
 
 It has two sections. **Display**: three switches with one line each, the
@@ -670,21 +684,24 @@ awaits its answer, for Sound feedback while the listener is not in preview
 mode, and for an intent or shortcut while it is toggleable and the listener
 reports independent intent and shortcut switches. Sound feedback sends
 `toggle-sounds`; an intent or shortcut `set-intent-enabled` with its name,
-mode and the opposite of the value the Store has at the press. A refusal
+mode and the opposite of the value the Store has at the press. Independent
+switches means `inferenceEnabled` and `shortcutEnabled` are booleans on every
+intent; an older listener reports only `enabled`, which then shows for both
+(read-only). A refusal
 shows the Store's error toast. An unavailable switch stays focusable
 (`aria-disabled`, dimmed), so focus is never lost while an answer is on its
 way.
 
-| State                                           | Sound feedback | Intent and shortcut switches | Note shown                                           |
-| ----------------------------------------------- | -------------- | ---------------------------- | ---------------------------------------------------- |
-| Connected, after the snapshot                   | available      | available                    | —                                                    |
-| Before the first snapshot of the pairing        | not shown      | not shown                    | "…shown once it is connected."                       |
-| Offline, or reconnected before the new snapshot | unavailable    | unavailable                  | "Shown as Companion last reported them…"             |
-| Listener in preview mode                        | unavailable    | available                    | "Preview mode: sound feedback cannot be changed."    |
-| Older listener without independent switches     | available      | unavailable (read-only)      | "Restart Companion to load independent intent and …" |
-| An intent that is not toggleable                | —              | that one unavailable         | its line says "Always on"                            |
-| A request of this switch awaits its answer      | unavailable    | that one unavailable         | —                                                    |
-| Changed on the computer or another client       | follows        | follows                      | —                                                    |
+| State                                           | Sound feedback | Intent and shortcut switches   | Note shown                                           |
+| ----------------------------------------------- | -------------- | ------------------------------ | ---------------------------------------------------- |
+| Connected, after the snapshot                   | available      | available                      | —                                                    |
+| Before the first snapshot of the pairing        | not shown      | not shown                      | "…shown once it is connected."                       |
+| Offline, or reconnected before the new snapshot | unavailable    | unavailable                    | "Shown as Companion last reported them…"             |
+| Listener in preview mode                        | unavailable    | available                      | "Preview mode: sound feedback cannot be changed."    |
+| Older listener without independent switches     | available      | its `enabled` value, read-only | "Restart Companion to load independent intent and …" |
+| An intent that is not toggleable                | —              | that one unavailable           | its line says "Always on"                            |
+| A request of this switch awaits its answer      | unavailable    | that one unavailable           | —                                                    |
+| Changed on the computer or another client       | follows        | follows                        | —                                                    |
 
 ### Turn timers and the last turn duration
 
@@ -699,13 +716,17 @@ Rule (`src/times/turn-times.ts`, `src/times/listener-clock.ts`):
    `offset = listenerTime - Date.now()` taken when each state message
    arrives (0 without `listenerTime`, an older listener). So the listener's
    clock may be ahead of or behind the browser's.
-3. The bar shows `working · m:ss` then; while the agent works without a
-   counted start (status `starting` or `running`, or a start not counted by
-   rule 1) `working…`.
-4. With no running turn, the bar shows `ready · last turn m:ss` while the
-   conversation has `lastTurnDurationMs` and the Last turn duration switch
-   is on, else `ready`. The duration is a stored value, not a count, so it
-   is shown whatever the connection.
+3. The bar shows `working · m:ss` then, and `working…` with a start not
+   counted by rule 1.
+4. Without `turnStartedAt`, a conversation with `lastTurnDurationMs` has no
+   running turn: the bar shows `ready · last turn m:ss` while the Last turn
+   duration switch is on, else `ready`. That holds also in the moment after
+   a turn ended in which `status` still says `running` (the listener removes
+   the start and sets the duration together, and its status follows once
+   the turn is saved). The duration is a stored value, not a count, so it is
+   shown whatever the connection. Without either field (an older listener)
+   `status` decides: `working…` while `starting` or `running`, else `ready`.
+   (The list's turning ring follows `status`, as before.)
 5. The list shows rule 1's time on each conversation that has one:
    right-aligned in the full list, under the name in the strip.
 6. Times are `m:ss` under an hour and `h:mm:ss` from an hour, whole seconds
@@ -715,29 +736,30 @@ Rule (`src/times/turn-times.ts`, `src/times/listener-clock.ts`):
    the next moment one of them reaches a whole second; only the timers'
    text changes. A new offset writes them at once.
 
-| Case                                                               | Bar                      | List         |
-| ------------------------------------------------------------------ | ------------------------ | ------------ |
-| No turn, no duration                                               | `ready`                  | —            |
-| Turn starting (`starting`, started just now)                       | `working · 0:00`         | `0:00`       |
-| Running for 2 min 16 s                                             | `working · 2:16`         | `2:16`       |
-| One second later                                                   | `working · 2:17`         | `2:17`       |
-| Ended, with a duration of 42 s                                     | `ready · last turn 0:42` | —            |
-| Ended without a duration (nothing reached the model)               | `ready`                  | —            |
-| Status still `running` a moment after the end (no `turnStartedAt`) | `working…`               | —            |
-| Reopened after a listener restart (stopped, no times)              | `ready`                  | —            |
-| Offline, last known running                                        | `working…`               | —            |
-| Reconnected, before the new snapshot                               | `working…`               | —            |
-| After the new snapshot, still running                              | `working · ` the time    | the time     |
-| After the new snapshot, ended while offline                        | `ready · last turn m:ss` | —            |
-| Listener's clock 5 min ahead of the browser's, running 2:16        | `working · 2:16`         | `2:16`       |
-| Listener's clock 5 min behind the browser's, running 2:16          | `working · 2:16`         | `2:16`       |
-| No `listenerTime` (older listener), same clocks, running 2:16      | `working · 2:16`         | `2:16`       |
-| Start later than the listener's now (clocks disagree)              | `working · 0:00`         | `0:00`       |
-| Running 59:59, then one second later                               | `59:59`, `1:00:00`       | the same     |
-| Running 10 h 5 min 3 s                                             | `working · 10:05:03`     | `10:05:03`   |
-| Turn timers off, running                                           | `working…`               | —            |
-| Last turn duration off, ended with a duration                      | `ready`                  | —            |
-| Two conversations running                                          | the shown one's          | each its own |
+| Case                                                             | Bar                      | List         |
+| ---------------------------------------------------------------- | ------------------------ | ------------ |
+| No turn, no duration                                             | `ready`                  | —            |
+| Turn starting (`starting`, started just now)                     | `working · 0:00`         | `0:00`       |
+| Running for 2 min 16 s                                           | `working · 2:16`         | `2:16`       |
+| One second later                                                 | `working · 2:17`         | `2:17`       |
+| Ended, with a duration of 42 s                                   | `ready · last turn 0:42` | —            |
+| Ended without a duration (nothing reached the model)             | `ready`                  | —            |
+| Status still `running` a moment after the end, with its duration | `ready · last turn 0:42` | —            |
+| Status `running` without either time (older listener)            | `working…`               | —            |
+| Reopened after a listener restart (stopped, no times)            | `ready`                  | —            |
+| Offline, last known running                                      | `working…`               | —            |
+| Reconnected, before the new snapshot                             | `working…`               | —            |
+| After the new snapshot, still running                            | `working · ` the time    | the time     |
+| After the new snapshot, ended while offline                      | `ready · last turn m:ss` | —            |
+| Listener's clock 5 min ahead of the browser's, running 2:16      | `working · 2:16`         | `2:16`       |
+| Listener's clock 5 min behind the browser's, running 2:16        | `working · 2:16`         | `2:16`       |
+| No `listenerTime` (older listener), same clocks, running 2:16    | `working · 2:16`         | `2:16`       |
+| Start later than the listener's now (clocks disagree)            | `working · 0:00`         | `0:00`       |
+| Running 59:59, then one second later                             | `59:59`, `1:00:00`       | the same     |
+| Running 10 h 5 min 3 s                                           | `working · 10:05:03`     | `10:05:03`   |
+| Turn timers off, running                                         | `working…`               | —            |
+| Last turn duration off, ended with a duration                    | `ready`                  | —            |
+| Two conversations running                                        | the shown one's          | each its own |
 
 ### Message timestamps
 
@@ -759,7 +781,11 @@ Rule (`src/times/message-time.ts`):
 5. The bridge puts the text into the chat page's rows (`ChatRow.time`, see
    [changes to the shared chat page](#changes-to-the-shared-chat-page)) and
    sends the rows again (only those that changed) when the switch changes,
-   when the offset changes and when a new day starts here.
+   when the offset changes and when a new day starts here. The wait for the
+   next day is taken again with each new offset (this browser's clock may
+   have been corrected). A publication made only for the times is not sent
+   when no row's text changed, so the offset's millisecond changes with
+   every state message do not draw the chat again.
 
 | Message written (reader's clock)                                | Reader's now         | Shown              |
 | --------------------------------------------------------------- | -------------------- | ------------------ |
@@ -1192,8 +1218,12 @@ year, midnight, the listener's clock ahead, Tokyo and Amsterdam, a daylight
 saving day, no or invalid `createdAt`), the Display switches' storage (each
 switch, reload, two tabs, refused and unusable storage, invalid entries), the
 bridge's rows with and without `time` (switched off they are exactly the Qt
-host's), a streaming answer keeping its time, a new offset and a new day
-sending the rows again; and the Listening switches' availability and notes.
+host's), a streaming answer keeping its time, a new offset sending the
+changed rows again and one that changes no time sending nothing, midnight
+passing (from 30 seconds before it) and a corrected clock moving the wait
+for it; and the Listening switches' availability and notes (also for the
+historical payload with only `enabled`, and a partial one). `markers.test.ts`
+has the row of an answer completed behind the settings screen.
 `chat-heading.test.ts` draws every kind of row with the shared chat page in
 headless Chromium and compares the HTML with `fixtures/chat-rows-reference.txt`,
 drawn by the base revision's `Chat.tsx` before `ChatRow.time` existed
@@ -1203,7 +1233,8 @@ each "You" and "Pi" heading ends with it and nothing else changes.
 `settings.test.ts` covers them in the browser with a controlled listener
 clock and a shifted page clock in another time zone: running turns counting
 in the bar and the list (strip, under the name; full list, right-aligned),
-advancing when both clocks move on without the bar being drawn again, the
+advancing when both clocks move on while nothing in the document changes
+but the timers' text (a mutation observer), the
 listener's clock behind the browser's, two conversations, a message's time
 in the reader's zone and clock, the last turn's duration when a turn ends;
 offline the last known start not counted and, after a gateway restart and
@@ -1217,7 +1248,13 @@ that refuses writes; the sound, intent and shortcut switches sending
 makes, focus kept on a switch while its answer is on its way, unavailable
 and sending nothing offline; 420 and 1600 px without overflow, at 1600 px the
 messages and the text box as wide as the chat area and the time at the
-heading's right. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
+heading's right; at 375 px a long last duration under the title with the
+title and every bar button in the window; an answer completed behind the
+settings screen marked unread (and announced), cleared by going back, kept
+when another conversation is chosen; the reader's scroll position the same
+after Settings and back, with no history request; at 420 px the Settings
+entry hiding the Activity column that lay over the chat, and the switches
+reachable by keyboard. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 settings screen, running timers (strip and full list), timestamps and all
 switches off at 420, 1280 and 1600 px.
 

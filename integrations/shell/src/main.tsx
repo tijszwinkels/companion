@@ -22,6 +22,7 @@ import { App } from './App.tsx';
 import { GatewayChatBridge, type TranscriptView } from './bridge.ts';
 import type { LayoutStorage } from './layout/stored-layout.ts';
 import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
+import { SettingsView } from './settings/settings-view.ts';
 import './styles.css';
 import { ListenerClock } from './times/listener-clock.ts';
 import type { PageTimes } from './times/page-times.ts';
@@ -65,11 +66,18 @@ const transcriptView: TranscriptView = {
   },
 };
 
+// Whether the settings screen covers the chat (settings/settings-view.ts).
+const settingsView = new SettingsView();
+
 // The Store reads this listener run's Activity history for the Activity
 // column (the phone panel's default), and after each reconnect from the
 // start, so changes made elsewhere while offline (deletions, labels) are not
-// missed.
-const store = new Store({ rereadActivityAfterReconnect: true });
+// missed. The selected conversation is not shown while the settings screen
+// covers it, so an answer completed then is marked unread.
+const store = new Store({
+  rereadActivityAfterReconnect: true,
+  selectionShown: () => !settingsView.shown,
+});
 
 // The listener's clock offset is taken from each state message as the
 // Store applies it. Subscribed first, so the bridge and the page already
@@ -108,6 +116,13 @@ store.subscribe(() => {
   }
 });
 
+// Signed out: the next pairing starts with its conversation, not Settings.
+store.subscribe(() => {
+  if (store.state.connection.status === 'unpaired') {
+    settingsView.setShown(false);
+  }
+});
+
 /**
  * Another tab of this browser signed out, was revoked or paired again: the
  * stored device credential changed. This tab's Store still holds the previous
@@ -132,7 +147,7 @@ window.addEventListener('storage', (event) => {
 
 render(
   <StoreContext.Provider value={store}>
-    <App chat={chat} bridge={bridge} times={times} />
+    <App chat={chat} bridge={bridge} times={times} settingsView={settingsView} />
   </StoreContext.Provider>,
   document.getElementById('app')!,
 );

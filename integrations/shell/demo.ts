@@ -19,8 +19,8 @@
  * "yesterday" and continued today, so its messages show both kinds of
  * time; the flaky-test conversation's turn keeps running, so its timer
  * counts in the bar and the list; the others show how long their last turn
- * took. (The listener's clock is shifted back by a day and two hours for
- * that first turn only; see `demoClock`.)
+ * took. (The listener's clock is set to noon of the previous calendar day,
+ * in this computer's time zone, for that first turn only; see `demoClock`.)
  *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
@@ -263,10 +263,13 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
 
   /**
    * The listener's clock for the demo's conversations: real time, except
-   * while the first conversation's first turn runs, when it is a day and
-   * two hours earlier, so that turn's messages were written "yesterday".
+   * while the first conversation's first turn runs, when it is noon of the
+   * previous calendar day (whatever the hour now), so that turn's messages
+   * were written "yesterday" in this computer's time zone.
    */
-  let demoClockShift = -26 * 60 * 60 * 1000;
+  const today = new Date();
+  const yesterdayNoon = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1, 12);
+  let demoClockShift = yesterdayNoon.getTime() - Date.now();
   const demoClock = () => Date.now() + demoClockShift;
 
   sessions = new AgentSessions(

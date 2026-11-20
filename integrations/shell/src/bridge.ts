@@ -43,7 +43,10 @@
  * rows are sent again (only those whose text changed, by the usual diff)
  * when the switch changes, when the listener clock's offset changes and
  * when a new calendar day starts here ("14:02" becomes "Yesterday 14:02").
- * With the switch off, or without `times`, rows are exactly the Qt host's.
+ * A publication made only for the times is not sent when no row's text
+ * changed (the offset moves by milliseconds with every state message), so
+ * the page is not drawn again for nothing. With the switch off, or without
+ * `times`, rows are exactly the Qt host's.
  */
 
 import type { AgentSession } from '../../../src/agents/types.ts';
@@ -138,6 +141,10 @@ export class GatewayChatBridge implements NativeBridge {
   private statusQueued = false;
   // Waits for the next calendar day while message times are shown.
   private dayTimer: ReturnType<typeof setTimeout> | undefined;
+  // The rows waiting to be published were scheduled only because message
+  // times may have changed (a new offset or day): an unchanged result is
+  // then not sent.
+  private onlyTimesChanged = false;
 
   // The shown conversation and its resident rows.
   private shownSession: AgentSession | null = null;
@@ -203,6 +210,7 @@ export class GatewayChatBridge implements NativeBridge {
           // meanwhile (a key's smooth scrolling, a fling) would ask for the
           // page after the one it has not shown yet.
           this.cancelRowsTimer();
+          this.onlyTimesChanged = false;
           this.publishRows();
         } else {
           this.scheduleRows();
@@ -217,9 +225,12 @@ export class GatewayChatBridge implements NativeBridge {
         this.scheduleRows();
         this.waitForNextDay();
       });
+      // A new offset can mean this browser's clock was corrected: the times
+      // and the moment the day changes are taken again.
       times.clock.subscribe(() => {
         if (times.settings.values.messageTimestamps) {
-          this.scheduleRows();
+          this.scheduleTimeRows();
+          this.waitForNextDay();
         }
       });
     }
@@ -346,7 +357,18 @@ export class GatewayChatBridge implements NativeBridge {
     }
   }
 
-  private scheduleRows(): void {
+  /** Rows again because only message times may have changed. */
+  private scheduleTimeRows(): void {
+    if (!this.rowsDirty) {
+      this.onlyTimesChanged = true;
+    }
+    this.scheduleRows(true);
+  }
+
+  private scheduleRows(onlyTimes = false): void {
+    if (!onlyTimes) {
+      this.onlyTimesChanged = false;
+    }
     this.rowsDirty = true;
     if (this.rowsTimer !== undefined) {
       return;
@@ -384,10 +406,11 @@ export class GatewayChatBridge implements NativeBridge {
     if (!times || !this.pageReady || !times.settings.values.messageTimestamps) {
       return;
     }
-    const wait = Math.min(untilNextDay(times.clock.readerNow()), longestDayWait);
+    const calendar = times.calendar ?? browserCalendar;
+    const wait = Math.min(untilNextDay(times.clock.readerNow(), calendar), longestDayWait);
     this.dayTimer = setTimeout(() => {
       this.dayTimer = undefined;
-      this.scheduleRows();
+      this.scheduleTimeRows();
       this.waitForNextDay();
     }, wait);
   }
@@ -414,6 +437,14 @@ export class GatewayChatBridge implements NativeBridge {
       .rows()
       .map((row) => pageRow(row, this.messageTime(row.message.createdAt)));
     const diff = diffRows(this.sentRows, rows, this.fullRows);
+    const onlyTimes = this.onlyTimesChanged;
+    this.onlyTimesChanged = false;
+    if (onlyTimes && !this.fullRows && diff.changed.length === 0) {
+      // Only times could have changed, and none did (the order cannot
+      // change without another reason to publish).
+      this.rowsDirty = false;
+      return;
+    }
     this.sentRows = diff.sent;
     this.sentOrder = diff.order;
     const sessionId = this.shownSession ? this.shownSession.id : '';
