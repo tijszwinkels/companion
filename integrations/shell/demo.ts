@@ -15,6 +15,12 @@
  * and a new synthetic entry is heard every 40 seconds (six in all), so the
  * new-activity marker can be seen while the Activity column is hidden.
  *
+ * Tool details, screenshots and models: the bug-fix conversation's turn
+ * made two tool calls (open the group in the chat; a long output pages);
+ * the city-trip question kept its synthetic screenshot (View screenshot);
+ * the other conversations' screenshots were not kept. The bar's model
+ * picker lists two Pi models (one pinned; Show all models lists both).
+ *
  * Turn and message times: one conversation (the invoice export) was asked
  * "yesterday" and continued today, so its messages show both kinds of
  * time; the flaky-test conversation's turn keeps running, so its timer
@@ -49,6 +55,7 @@ import { DesktopRuntime } from '../../src/desktop/runtime.ts';
 import { CaptureStoragePolicy, notAdmitted } from '../../src/capture-storage/policy.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
+import { syntheticWindowPng } from './synthetic-window.ts';
 
 const { values } = parseArgs({
   options: {
@@ -187,25 +194,40 @@ try {
   );
 
   /**
-   * A spoken request with a synthetic screenshot. The shell does not show
-   * screenshots yet, so its message is labelled "screenshot unavailable".
+   * A spoken request with a synthetic screenshot. Conversations keep it only
+   * when `keep` is set (the city trip): the others were "not saved", as
+   * with capture storage off.
    */
-  function frame(utterance: string, application = 'org.example.Editor'): UserSensorFrame {
+  function frame(
+    utterance: string,
+    application = 'org.example.Editor',
+    keep = false,
+  ): UserSensorFrame {
     const frameId = nextFrameId;
     nextFrameId++;
-    return {
+    const result: UserSensorFrame = {
       id: frameId,
       observedAt: Date.now(),
       utterance: utterance,
       screenshot: {
-        png: syntheticPng,
-        width: 1,
-        height: 1,
+        png: keep ? windowPng : syntheticPng,
+        width: keep ? windowWidth : 1,
+        height: keep ? windowHeight : 1,
         capturedAt: Date.now(),
         window: { address: '0xdemo', app: application, title: 'Synthetic window' },
       },
     };
+    if (!keep) {
+      result.storage = notAdmitted;
+    }
+    return result;
   }
+
+  // A synthetic window for the kept screenshot: a title bar and lines of
+  // "text" on a dark background, drawn here (no file, no capture).
+  const windowWidth = 640;
+  const windowHeight = 400;
+  const windowPng = syntheticWindowPng(windowWidth, windowHeight);
 
   // ---- Scripted agent backend -------------------------------------------------
 
@@ -281,6 +303,12 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
         ],
         ['bash', '{"command":"npm test -- list"}', 'not ok 1 - first() of empty list\n# fail 1\n'],
       ];
+      // A long output, so the details page through it (8,192 characters a page).
+      const log: string[] = [];
+      for (let line = 1; line <= 400; line++) {
+        log.push(`ok ${line} - synthetic check number ${line}`);
+      }
+      calls.push(['bash', '{"command":"npm test -- --verbose"}', log.join('\n') + '\n']);
       for (const [name, input, output] of calls) {
         const id = randomUUID();
         const running: AgentMessage = { ...chatMessage(id, 'tool', ''), toolName: name, input };
@@ -343,8 +371,9 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     directory,
     undefined,
     undefined,
-    // The default (as before this clock was added): nothing saved.
-    new CaptureStoragePolicy(),
+    // On, so the one conversation that keeps its screenshot (see frame())
+    // can; the others' frames are not admitted.
+    CaptureStoragePolicy.enabledForTesting(),
     demoClock,
   );
 
@@ -545,7 +574,7 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     controller.signal,
   );
   const trip = sessions.start(
-    frame('🗺️ Plan a two-day city trip for me'),
+    frame('🗺️ Plan a two-day city trip for me', 'org.mozilla.firefox', true),
     controller.signal,
     'quickQuestion',
   );

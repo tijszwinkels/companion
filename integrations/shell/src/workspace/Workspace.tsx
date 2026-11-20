@@ -62,6 +62,7 @@ import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width
 import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
+import { ModelPicker } from '../models/ModelPicker.tsx';
 import { SettingsScreen } from '../settings/SettingsScreen.tsx';
 import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
 import type { SettingsView } from '../settings/settings-view.ts';
@@ -434,6 +435,9 @@ function MainArea(props: {
     // The chat stays drawn while the settings screen covers it (inert and
     // hidden from assistive technology meanwhile), so its scroll position,
     // its following of the live end and its editor survive the round trip.
+    // The picker belongs to one conversation lifetime (its ID and tool
+    // epoch): another one starts with it closed.
+    const lifetime = selected.id + ' ' + (selected.toolEpoch ?? '');
     bar = (
       <ChatBar
         title={selected.title || 'Untitled'}
@@ -445,6 +449,7 @@ function MainArea(props: {
             ticker={props.times.ticker}
           />
         }
+        model={<ModelPicker key={lifetime} session={selected} admitted={props.bridge.admitted} />}
         {...barControls}
       />
     );

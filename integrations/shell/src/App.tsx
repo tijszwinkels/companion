@@ -1,7 +1,8 @@
 /**
  * The browser shell around the trusted chat page: pairing, the connection
  * banner and toasts, and once paired the workspace (workspace/Workspace.tsx:
- * the conversation list, the bar above the chat and the chat). The
+ * the conversation list, the bar above the chat and the chat), and the
+ * screenshot viewer over it (screenshots/ScreenshotViewer.tsx). The
  * conversation itself is the desktop chat page (`Chat` from
  * integrations/session-apps/chat/Chat.tsx), rendered unchanged with the
  * gateway bridge (bridge.ts).
@@ -22,6 +23,8 @@ import { useAppState, useStore } from '../../mobile/src/hooks.ts';
 import type { AppState } from '../../mobile/src/store.ts';
 import type { GatewayChatBridge } from './bridge.ts';
 import type { ActivityOverlay } from './layout/activity-overlay.ts';
+import { ScreenshotViewer } from './screenshots/ScreenshotViewer.tsx';
+import type { ScreenshotViewerState } from './screenshots/screenshot-viewer.ts';
 import type { SettingsView } from './settings/settings-view.ts';
 import type { PageTimes } from './times/page-times.ts';
 import { Workspace } from './workspace/Workspace.tsx';
@@ -32,6 +35,7 @@ export function App(props: {
   times: PageTimes;
   settingsView: SettingsView;
   activityOverlay: ActivityOverlay;
+  viewer: ScreenshotViewerState;
 }) {
   const state = useAppState();
 
@@ -60,6 +64,7 @@ export function App(props: {
           activityOverlay={props.activityOverlay}
         />
         <Toasts />
+        <ScreenshotViewer viewer={props.viewer} />
       </div>
       {limited && <LimitPage />}
     </div>

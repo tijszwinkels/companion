@@ -212,6 +212,11 @@ export function assertOwnOrigin(fixture: Fixture, page: TestPage, sockets: Socke
     if (url === 'about:blank' || url.startsWith('data:')) {
       continue;
     }
+    // A blob: URL of this origin is in-memory data the page made itself
+    // (the screenshot viewer's image), not a request to any server.
+    if (url.startsWith(`blob:${fixture.origin}/`)) {
+      continue;
+    }
     assert.ok(url.startsWith(fixture.origin + '/'), `request to another origin: ${url}`);
   }
   const socketOrigin = fixture.origin.replace(/^http/, 'ws') + '/';
