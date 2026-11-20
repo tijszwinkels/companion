@@ -860,15 +860,19 @@ not yet).
    after the change, so they win at the listener; once they are answered the
    box shows the listener's latest draft), or while the box holds unsaved
    text (rule 4). A change that carries this page's own `editId` is its own
-   echo: it settles that edit and is never applied a second time. Showing,
+   echo: it is never applied a second time (the edit is settled by its
+   answer, rule 3). Showing,
    switching or reopening a conversation writes nothing; each conversation
    keeps its own draft, and an edit typed just before a switch goes to the
    conversation it was typed in.
 3. **Writing.** Every change of the text (typing, a paste, Clear) is one
    `draft-set` with a new `editId`. Per conversation at most one edit is in
-   flight; text typed meanwhile waits, and newer text replaces waiting text,
-   so fast typing never queues stale edits and the listener ends with the
-   final text. A draft edit is never sent again by itself.
+   flight, from sending until its answer arrives; text typed meanwhile
+   waits, and newer text replaces waiting text, so fast typing never queues
+   stale edits and the listener ends with the final text. A draft edit is
+   never sent again by itself. A new edit replaces unsaved text's Save and
+   Discard while it is written (if it fails, its own reason marks the text
+   again).
 4. **Unsaved text.** Text the listener has not confirmed stays in the box
    with the chat page's existing line "… not saved … Save · Discard"
    (`draftUnsaved`): typed while not connected ("Companion is not
@@ -895,13 +899,16 @@ not yet).
    waits for its answer, `panel-state` reports `pendingSend` for that
    conversation (reported before `send-agent` leaves, withdrawn when its
    answer, or its loss, arrives), so the listener refuses agent proposals
-   for it meanwhile. The listener clears the draft after accepting the send
+   for it meanwhile. The send leaves only after the edits that were on their
+   way or waiting when it was pressed are answered, so the listener has the
+   sent text as its draft first (text typed after pressing Send does not
+   delay it). The listener clears the draft after accepting the send
    if the draft still equals the sent text, and every editor follows; this
    page never writes an empty draft for a send. If the box still shows the
    sent text (for example unsaved text that differed from the listener's),
    it then shows the listener's draft; anything typed meanwhile stays.
 7. **In the list.** A conversation that has unsent text and is not the one
-   shown carries a ✎ on its icon in the strip, and in the full list its
+   shown (also the selected one while the settings screen covers it) carries a ✎ on its icon in the strip, and in the full list its
    second line reads "Draft: …" instead of its last message (also for the
    person's own unsent text); its accessible name ends in "unsent draft".
 8. **Migration.** Drafts this browser kept in `localStorage` (the phone
@@ -926,7 +933,10 @@ not yet).
 10. **Lifetime.** Drafts live in the listener's memory: a listener restart
     loses them (known and accepted, as on the desktop). The listener keeps
     drafts of closed conversations, so a reopened conversation shows its
-    draft again. Signing out forgets everything of the previous pairing.
+    draft again; text this page had not had confirmed for a conversation
+    closed elsewhere stays kept in this browser and is shown, unsaved, when
+    the conversation is reopened. Signing out forgets everything of the
+    previous pairing.
 
 ### Cases
 
@@ -1316,6 +1326,10 @@ Known limits:
 - A listener restart loses drafts (memory only, as on the desktop); the
   browser then shows the new listener's empty drafts, and its own unsaved
   text stays unsaved.
+- Text emptied while not connected (an offline Clear) stays empty and
+  unsaved across a reconnect, but not across a reload of the page: this
+  browser keeps no empty text, so after a reload the listener's draft is
+  shown again (no typed text is lost).
 
 The gateway also limits a message to 4,000 characters (the desktop allows
 8,000), so `maximumMessageLength` is 4,000. Copy uses the browser clipboard.
@@ -1561,13 +1575,9 @@ column hidden and shown at 420, 760, 1280 and 1600 px.
 Connection in Node, through a stand-in socket and a stand-in gateway and
 listener that follow the drafts protocol (`drafts-listener-stand-in.ts`):
 snapshots, changes from elsewhere while this page is idle or typing, its own
-echo with newer text typed since, sends from here and elsewhere, a
-conversation closed and reopened, switching; one edit, fast typing with
-answers held back, refused, unanswered at a reconnect (also when the
-listener had applied it), offline typing, Save, Discard, two tabs; agent
+echo with newer text typed since, sends from here (also while their text is still being written, and with text typed after pressing Send) and elsewhere, a conversation closed and reopened, switching; one edit, fast typing with answers held back, refused, unanswered at a reconnect (also when the listener had applied it), offline typing, an offline Clear, typing after a refusal, Save, Discard, two tabs; agent
 proposals for the shown and another conversation, while a send waits,
-Clear, editing and sending; local drafts offered or not, a reload with
-unsaved text, a gateway without drafts, and switching between the two
+Clear, editing and sending; the selected conversation's draft listed under the settings screen; local drafts offered or not, a reload with unsaved text (also after its conversation was closed elsewhere), a gateway without drafts, and switching between the two
 modes after reconnects. `bridge.test.ts` checks what the page gets
 (`draftUnsaved`, `draft.source` and `clearable`, Save and Discard for the
 shown conversation only, Close refused while text is unsaved).
@@ -1577,8 +1587,7 @@ and listener: text typed in one page reaching a second page of the same
 device and a desktop-role client on the listener's control socket, and the
 other way round, with a send clearing it everywhere and `pendingSend`
 reported around it; fast typing ending with exactly the final text at the
-listener, each edit leaving only after the previous one's answer (read from
-the frames the browser reports); an edit refused while another connection
+listener, each edit leaving only after the previous one's answer (read from the frames the browser reports), and a message sent with Enter right after typing it leaving only after its last edit, so the box and the listener's draft end empty; an edit refused while another connection
 of the same device uses up the draft-edit allowance, kept with Save and
 Discard and saved or discarded without losing text; an agent proposal with
 its note, Clear, editing and sending, and one for another conversation
@@ -1591,7 +1600,7 @@ gateway ignored it) local drafts exactly as before, with no `draft-set`, no
 list at 420, 1280 and 1600 px without overflow. With
 `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves those screens.
 `chat-composer.test.ts` draws the chat page's text box area in every draft
-state with and without `clearable` and compares it with
+state with and without `clearable` (and none while the editor holds input only it has) and compares it with
 `fixtures/chat-composer-reference.txt`, drawn by the base revision's
 `Chat.tsx` (`chat-composer-page.ts` says how to draw it again).
 

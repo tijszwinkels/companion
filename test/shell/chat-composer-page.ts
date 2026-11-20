@@ -149,6 +149,11 @@ async function pageScript(chatDirectory: string): Promise<string> {
     });
     const store = new ChatStore();
     store.attach(bridge);
+    // Input only the editor holds (an input method's text past what the
+    // host takes), when a case asks for it.
+    if (window.__chatHeld) {
+      store.setUnresolved({ sessionId: 'session', text: window.__chatHeld });
+    }
     render(<Chat store={store} />, document.getElementById('chat'));
   `;
   const result = await build({
@@ -174,16 +179,23 @@ export async function drawComposers(
   browser: TestBrowser,
   chatDirectory: string,
   statuses: { name: string; status: ChatStatus }[],
+  /** Input only the editor holds, for every status (none by default). */
+  held = '',
 ): Promise<string> {
   const script = await pageScript(chatDirectory);
   let output = '';
   for (const { name, status } of statuses) {
-    output += `## ${name}\n${await drawComposer(browser, script, status)}\n`;
+    output += `## ${name}\n${await drawComposer(browser, script, status, held)}\n`;
   }
   return output;
 }
 
-async function drawComposer(browser: TestBrowser, script: string, status: ChatStatus) {
+async function drawComposer(
+  browser: TestBrowser,
+  script: string,
+  status: ChatStatus,
+  held: string,
+) {
   const { targetId } = await browser.call('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await browser.call('Target.attachToTarget', { targetId, flatten: true });
   const call = (method: string, params: Record<string, unknown> = {}) =>
@@ -208,16 +220,18 @@ async function drawComposer(browser: TestBrowser, script: string, status: ChatSt
       mobile: false,
     });
     await evaluate(`document.body.innerHTML = '<div id="chat"></div>';
-      window.__chatStatus = ${JSON.stringify(status)};`);
+      window.__chatStatus = ${JSON.stringify(status)};
+      window.__chatHeld = ${JSON.stringify(held)};`);
     await evaluate(script);
     // Drawn once the status arrived and the page rendered it (the editor
-    // shows the draft's text).
+    // shows the draft's text, or the input it holds).
     return (await evaluate(`new Promise((resolve, reject) => {
       const started = Date.now();
       const check = () => {
         const composer = document.querySelector('.composer');
         const area = composer && composer.querySelector('textarea');
-        if (window.__statusSent && area && area.value === window.__chatStatus.draft.text) {
+        const expected = window.__chatHeld || window.__chatStatus.draft.text;
+        if (window.__statusSent && area && area.value === expected) {
           requestAnimationFrame(() => resolve(composer.outerHTML));
           return;
         }

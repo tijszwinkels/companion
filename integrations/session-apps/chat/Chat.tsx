@@ -1296,8 +1296,9 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         <div class="note">
           Drafted by agent · {draft.source} — review before sending
           {/* Only when the host offers it (`draft.clearable`); otherwise the
-              note is exactly as before. */}
-          {draft.clearable === true && !readOnly && (
+              note is exactly as before. Not while this editor holds input
+              the host does not have: Clear would release its only copy. */}
+          {draft.clearable === true && !readOnly && unsynced === null && (
             <button class="link" onClick={clearDraft}>
               Clear
             </button>

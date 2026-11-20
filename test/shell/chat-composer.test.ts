@@ -18,7 +18,9 @@ import { drawComposers, referenceStatuses } from './chat-composer-page.ts';
  *   Chat.tsx (see chat-composer-page.ts). The Qt host never sends the
  *   field, so its output is unchanged;
  * - with it, the agent's note ends with one Clear link wherever the note is
- *   shown and the editor accepts input, and nothing else changes.
+ *   shown and the editor accepts input, and nothing else changes; never
+ *   while the editor holds input the host does not have (Clear would
+ *   release its only copy).
  */
 
 const chatDirectory = join(import.meta.dirname, '..', '..', 'integrations', 'session-apps', 'chat');
@@ -88,5 +90,25 @@ test(
       );
       assert.equal(block.split(clearLink).length, 2, `${name}: one Clear`);
     }
+  },
+);
+
+test(
+  'with draft.clearable no Clear while the editor holds input only it has',
+  { skip },
+  async (context) => {
+    const browser = new TestBrowser();
+    await browser.start();
+    context.after(() => browser.close());
+
+    const agentDrafts = referenceStatuses
+      .filter(({ status }) => status.draft!.source !== '')
+      .map(({ name, status }) => ({
+        name,
+        status: { ...status, draft: { ...status.draft!, clearable: true } },
+      }));
+    const drawn = await drawComposers(browser, chatDirectory, agentDrafts, 'x'.repeat(40));
+    assert.equal(drawn.includes(clearLink), false);
+    assert.ok(drawn.includes('Drafted by agent · Planner — review before sending</div>'));
   },
 );

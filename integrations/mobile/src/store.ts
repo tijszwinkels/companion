@@ -332,9 +332,10 @@ export class Store {
     if (this.listenerDrafts === undefined) {
       return;
     }
-    const leftListener = this.listenerDrafts.reportAccepted();
-    if (leftListener) {
-      // The shown texts are now local drafts: kept and saved as before.
+    const becameLocal = this.listenerDrafts.reportAccepted();
+    if (becameLocal) {
+      // The shown texts are now local drafts: kept, pruned and saved as
+      // before (pruning waited until the mode was known, see pruneDrafts).
       this.pruneDrafts(new Set(this.state.sessions.keys()));
     }
   }
@@ -479,6 +480,12 @@ export class Store {
     this.update({ sends: new Map(this.state.sends).set(id, sending) });
     this.reportPendingSend(id);
     try {
+      // Listener drafts: the edit carrying this text reaches the listener
+      // first, so a send never overtakes it (the listener clears only a
+      // draft that equals the sent text).
+      if (id !== 'new' && this.listenerDrafts !== undefined) {
+        await this.listenerDrafts.written(id);
+      }
       const result =
         id === 'new'
           ? await this.request('start-agent', { text, profile }, { quiet: true })
@@ -556,11 +563,16 @@ export class Store {
 
   /**
    * Only open conversations and the new-conversation composer retain drafts.
-   * With listener drafts the listener keeps every conversation's draft (also
-   * of closed ones, which may be reopened), so only sends are pruned.
+   * With the `listenerDrafts` option they are pruned only once a connection
+   * has shown that drafts are local: the listener keeps every conversation's
+   * draft (also of closed ones, which may be reopened), and until the mode
+   * is known a draft of a conversation closed elsewhere may be text the
+   * listener never received, kept here so that it is offered, not lost.
+   * Sends are always pruned.
    */
   private pruneDrafts(active: Set<string>): void {
-    if (!this.draftsShared) {
+    const local = this.listenerDrafts === undefined || this.listenerDrafts.mode === 'local';
+    if (local) {
       for (const id of this.drafts.keys()) {
         if (id !== 'new' && !active.has(id)) {
           this.drafts.delete(id);

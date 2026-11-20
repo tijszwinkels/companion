@@ -193,12 +193,33 @@ test('messages are numbered without gaps and ready() resends everything in full'
   assert.equal(again[1].type, 'status');
 });
 
+/**
+ * The page's latest status once it satisfies `check`: waits for the state
+ * the test means instead of a fixed pause (bounded, so a missing status fails).
+ */
+async function statusWhere(
+  messages: HostMessage[],
+  check: (status: ChatStatus) => boolean,
+): Promise<ChatStatus> {
+  const until = Date.now() + 2000;
+  for (;;) {
+    const statuses = messages.filter((message) => message.type === 'status');
+    const latest = statuses[statuses.length - 1];
+    if (latest && latest.type === 'status' && check(latest.status)) {
+      return latest.status;
+    }
+    if (Date.now() > until) {
+      throw Error('The expected status never reached the page');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 test('listener drafts reach the page: unsaved text, the agent source with Clear, Save, Discard and Close', async () => {
   const { store, bridge, messages } = harness();
-  await settle();
 
   // Without listener drafts (the Store reports none) the status is as before.
-  let status = lastStatus(messages);
+  let status = await statusWhere(messages, (candidate) => candidate.sessionId === sessionA);
   assert.equal(status.draftUnsaved, '');
   assert.equal(status.draft!.source, '');
   assert.equal('clearable' in status.draft!, false, 'no Clear without an agent source');
@@ -206,9 +227,7 @@ test('listener drafts reach the page: unsaved text, the agent source with Clear,
   // An agent's unedited proposal: its source, and Clear.
   store.sources.set(sessionA, 'Planner');
   store.update({});
-  await settle();
-  status = lastStatus(messages);
-  assert.equal(status.draft!.source, 'Planner');
+  status = await statusWhere(messages, (candidate) => candidate.draft!.source === 'Planner');
   assert.equal(status.draft!.clearable, true);
 
   // Unsaved text: its reason; Close is refused (page and list) until it is
@@ -216,9 +235,9 @@ test('listener drafts reach the page: unsaved text, the agent source with Clear,
   store.sources.delete(sessionA);
   store.unsaved.set(sessionA, 'Companion is not connected; your text is not saved yet.');
   store.update({});
-  await settle();
-  status = lastStatus(messages);
+  status = await statusWhere(messages, (candidate) => candidate.draftUnsaved !== '');
   assert.equal(status.draftUnsaved, 'Companion is not connected; your text is not saved yet.');
+  assert.equal(status.draft!.source, '');
   assert.equal('clearable' in status.draft!, false);
   assert.equal(bridge.canClose(sessionA), false);
   assert.equal(bridge.canClose(sessionB), true);

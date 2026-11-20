@@ -232,6 +232,50 @@ test('draft text shown: each row of the README table', async (context) => {
       },
     },
     {
+      row: 'A send from here while its text is still being written',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        // Typed faster than the answers: "hell" on its way, "hello" waiting.
+        listener.holdActions.add('draft-set');
+        tab.type('a', 'hell');
+        tab.type('a', 'hello');
+        const sending = tab.store.sendDraft('a');
+        await settle();
+        assert.equal(
+          tab.link.requests.some((frame) => frame.action === 'send-agent'),
+          false,
+          'the send waits for the edit carrying its text',
+        );
+        listener.release();
+        await sending;
+        await settle();
+        const order = tab.link.requests
+          .filter((frame) => frame.action === 'draft-set' || frame.action === 'send-agent')
+          .map((frame) => `${frame.action}:${frame.text}`);
+        assert.deepEqual(order, ['draft-set:hell', 'draft-set:hello', 'send-agent:hello']);
+        assert.equal(listener.text('a'), '', 'the listener cleared the equal draft');
+        assert.equal(tab.shown('a'), '');
+
+        // Text typed after pressing Send does not hold the send back, and stays.
+        listener.holdActions.add('draft-set');
+        tab.type('a', 'next');
+        const second = tab.store.sendDraft('a');
+        tab.type('a', 'next one');
+        await settle();
+        listener.releaseNext();
+        await settle();
+        listener.release();
+        await second;
+        await settle();
+        const sends = tab.link.requests.filter((frame) => frame.action === 'send-agent');
+        assert.equal(sends[sends.length - 1].text, 'next');
+        assert.equal(listener.text('a'), 'next one', 'newer text is not cleared');
+        assert.equal(tab.shown('a'), 'next one');
+      },
+    },
+    {
       row: 'A send from elsewhere of the same text',
       async play() {
         const listener = freshListener();
@@ -400,6 +444,52 @@ test('writing: each row of the README table', async (context) => {
         assert.equal(tab.unsaved('a'), notConnectedReason, 'still not saved');
         assert.equal(tab.unsaved('b'), '', 'the listener has exactly that text');
         assert.deepEqual(tab.edits(), [], 'nothing written by itself');
+      },
+    },
+    {
+      row: 'Offline Clear, then reconnect',
+      async play() {
+        const listener = freshListener();
+        listener.desktopEdit('a', 'Old text');
+        const tab = await openTab(listener, context);
+        tab.drop();
+        await settle();
+        tab.type('a', '');
+        assert.equal(tab.unsaved('a'), notConnectedReason);
+        await tab.reconnect();
+        assert.equal(tab.shown('a'), '', 'the Clear is kept');
+        assert.equal(tab.unsaved('a'), notConnectedReason);
+        assert.deepEqual(tab.edits(), []);
+        assert.equal(tab.store.discardUnsavedDraft('a'), true);
+        assert.equal(tab.shown('a'), 'Old text');
+      },
+    },
+    {
+      row: 'Typing after a refusal',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        listener.refuseEdits = 'refused';
+        tab.type('a', 'First');
+        await settle();
+        assert.notEqual(tab.unsaved('a'), '');
+        listener.refuseEdits = '';
+        listener.holdActions.add('draft-set');
+        tab.type('a', 'First, then more');
+        // While the new edit is written, Save and Discard of the old state are gone.
+        assert.equal(tab.unsaved('a'), '');
+        assert.equal(tab.store.discardUnsavedDraft('a'), false);
+        assert.equal(tab.store.saveUnsavedDraft('a'), false);
+        listener.release();
+        await settle();
+        assert.equal(listener.text('a'), 'First, then more');
+        assert.equal(tab.shown('a'), 'First, then more');
+        assert.deepEqual(tab.edits(), ['First', 'First, then more']);
+        // Refused again: marked again by its own reason.
+        listener.refuseEdits = 'refused again';
+        tab.type('a', 'Third');
+        await settle();
+        assert.equal(tab.unsaved('a'), 'Your text is not saved: refused again');
       },
     },
     {
@@ -572,6 +662,21 @@ test('agent drafts: each row of the README table', async (context) => {
   }
 });
 
+// ---- The list under the settings screen --------------------------------------------
+
+test('list: the selected conversation covered by the settings screen lists its draft', async (context) => {
+  const listener = freshListener();
+  listener.desktopEdit('a', 'Draft of a');
+  const tab = await openTab(listener, context);
+  tab.store.open('a');
+  const store = tab.store;
+  const draftOf = (id: string) => (store.draftsShared ? store.draft(id) : '');
+  const shown = listEntries(store.state, draftOf, false).find((entry) => entry.id === 'a')!;
+  assert.equal(shown.draft, '', 'not while it is shown');
+  const covered = listEntries(store.state, draftOf, true).find((entry) => entry.id === 'a')!;
+  assert.equal(covered.draft, 'Draft of a', 'listed while the settings screen covers it');
+});
+
 // ---- Migration and fallback --------------------------------------------------------
 
 test('migration and fallback: each row of the README table', async (context) => {
@@ -661,6 +766,39 @@ test('migration and fallback: each row of the README table', async (context) => 
         assert.deepEqual(reloaded.edits(), [], 'never written by itself');
         assert.equal(reloaded.store.discardUnsavedDraft('a'), true);
         assert.deepEqual(localDrafts(), { b: 'Still on its way' }, 'kept while unsaved');
+      },
+    },
+    {
+      row: 'A page reloaded after its conversation was closed elsewhere',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.drop();
+        await settle();
+        tab.type('a', 'Typed offline in a');
+        // Closed on another device meanwhile.
+        const closed = listener.sessions.find((entry) => entry.id === 'a')!;
+        listener.sessions = listener.sessions.filter((entry) => entry.id !== 'a');
+        await tab.reconnect();
+        assert.equal(tab.store.state.sessions.has('a'), false);
+        assert.deepEqual(localDrafts(), { a: 'Typed offline in a' });
+
+        // Reloaded: kept, not pruned before the mode is known.
+        tab.link.socket.drop();
+        const reloaded = await openTab(listener, context);
+        assert.deepEqual(localDrafts(), { a: 'Typed offline in a' });
+        assert.equal(reloaded.unsaved('a'), keptLocallyReason);
+        // Reopened: shown, unsaved.
+        listener.sessions = [...listener.sessions, closed];
+        reloaded.link.socket.deliver({
+          type: 'engine',
+          message: { type: 'agent-restored', session: closed },
+        });
+        await settle();
+        reloaded.store.open('a');
+        assert.equal(reloaded.shown('a'), 'Typed offline in a');
+        assert.equal(reloaded.unsaved('a'), keptLocallyReason);
+        assert.deepEqual(reloaded.edits(), []);
       },
     },
     {

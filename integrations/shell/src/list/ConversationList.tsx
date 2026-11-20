@@ -92,8 +92,14 @@ export function ConversationList(props: {
   const store = useStore();
   const state = useAppState();
   // Unsent text is listed only while drafts are shared with the listener;
-  // with drafts kept in this browser the list is as before.
-  const entries = listEntries(state, (id) => (store.draftsShared ? store.draft(id) : ''));
+  // with drafts kept in this browser the list is as before. Under the
+  // settings screen the selected conversation is not shown, so its unsent
+  // text is listed too (as its row is not marked shown).
+  const entries = listEntries(
+    state,
+    (id) => (store.draftsShared ? store.draft(id) : ''),
+    props.settingsShown,
+  );
   const available = props.bridge.admitted;
 
   const order: OrderState = {

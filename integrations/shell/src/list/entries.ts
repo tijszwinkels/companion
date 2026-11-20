@@ -117,9 +117,15 @@ export function draftLine(text: string): string {
 /**
  * The open conversations in the listener's order, as the list shows them.
  * `draftOf` gives a conversation's unsent text for the list ('' for none);
- * without it no entry shows a draft.
+ * without it no entry shows a draft. `selectionCovered`: the selected
+ * conversation is not shown (the settings screen covers it), so its unsent
+ * text is listed like any other's.
  */
-export function listEntries(state: AppState, draftOf?: (id: string) => string): ListEntry[] {
+export function listEntries(
+  state: AppState,
+  draftOf?: (id: string) => string,
+  selectionCovered = false,
+): ListEntry[] {
   const entries: ListEntry[] = [];
   for (const id of state.order) {
     const session = state.sessions.get(id);
@@ -131,7 +137,7 @@ export function listEntries(state: AppState, draftOf?: (id: string) => string): 
     const { glyph, caption, emoji } = badgeOf(title, number);
     const selected = state.selected === id && !state.showingPrevious;
     let draft = '';
-    if (draftOf && !selected) {
+    if (draftOf && !(selected && !selectionCovered)) {
       draft = draftLine(draftOf(id));
     }
     entries.push({
