@@ -932,6 +932,17 @@ export class DesktopRuntime {
     try {
       await this.server.start();
 
+      // The phone gateway reaches widget views through a private socket next
+      // to the control socket (src/widgets/socket.ts). The desktop does not
+      // need it, so a failure is reported and the listener carries on.
+      try {
+        await this.options.agents?.serveWidgetsPrivately(
+          join(dirname(this.options.socket), 'widgets.sock'),
+        );
+      } catch (error) {
+        this.log('desktop', `Widget socket unavailable: ${String(error)}`);
+      }
+
       // Custom databases used by isolated runs/tests must never import personal
       // history. Only the default destination adopts the former XDG location.
       if (this.options.database === join(homedir(), 'companion', 'utterances.sqlite')) {

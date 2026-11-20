@@ -46,13 +46,15 @@ import {
 import { createServer as createHttpsServer } from 'node:https';
 import type { Server } from 'node:http';
 import { isIP } from 'node:net';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { AppProxy } from '../apps/proxy.ts';
 import { AppRegistry } from '../apps/registry.ts';
 import { DeviceStore, type PairedDevice } from './devices.ts';
+import { frameSourceDirective } from './frames/headers.ts';
+import { FrameOrigin, type FrameListenOptions } from './frames/server.ts';
 import {
   maximumClientMessageBytes,
   maximumConnectionsPerDevice,
@@ -115,6 +117,22 @@ export interface GatewayServiceOptions {
   heartbeatMilliseconds?: number;
   /** Optional phone access to registered local apps; off when omitted. */
   apps?: GatewayAppOptions;
+  /** Optional frame origin for widget and application pages; off when omitted. */
+  frames?: GatewayFrameOptions;
+}
+
+/**
+ * The second listener that serves widget and application pages to paired
+ * browsers on their own origin (src/remote/frames/server.ts).
+ */
+export interface GatewayFrameOptions {
+  listen: FrameListenOptions;
+  /** Public origin of that listener, exactly scheme://host[:port]. */
+  origin: string;
+  /** Widget service socket; default `widgets.sock` next to the control socket. */
+  widgetSocket?: string;
+  /** Tests may shorten the 30-second grace period after a device's last connection. */
+  graceMilliseconds?: number;
 }
 
 export type GatewayOptions = GatewayListenOptions & GatewayServiceOptions;
@@ -282,6 +300,8 @@ export class Gateway {
   private readonly alive = new Map<WebSocket, boolean>();
   /** Serves local apps on their own origins; undefined when not configured. */
   readonly apps?: AppProxy;
+  /** Serves widget and application frames; undefined when not configured. */
+  readonly frames?: FrameOrigin;
 
   constructor(private readonly options: GatewayOptions) {
     checkGatewayOptions(options);
@@ -303,6 +323,21 @@ export class Gateway {
         },
         log: options.log,
         sweepMilliseconds: options.revocationCheckMilliseconds,
+      });
+    }
+
+    if (options.frames) {
+      this.frames = new FrameOrigin({
+        listen: options.frames.listen,
+        origin: options.frames.origin,
+        gatewayOrigins: options.origins,
+        appOrigins: options.apps?.origins.map(([, origin]) => origin),
+        widgetSocket:
+          options.frames.widgetSocket ?? join(dirname(options.controlSocket), 'widgets.sock'),
+        tls: options.tls,
+        requireTailscaleLogin: options.requireTailscaleLogin,
+        log: options.log,
+        graceMilliseconds: options.frames.graceMilliseconds,
       });
     }
   }
@@ -352,6 +387,7 @@ export class Gateway {
     // gateway never started. Release what was started, then report the
     // original error.
     try {
+      await this.frames?.start();
       await this.startServer();
     } catch (error) {
       await this.releaseFailedStart();
@@ -373,6 +409,7 @@ export class Gateway {
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
     await this.releaseSocketClaim();
+    await this.frames?.close();
 
     // The app proxy's close() waits for its connections to end, and a local
     // peer can hold one open. Do not let that keep the startup error from
@@ -505,6 +542,7 @@ export class Gateway {
     }
     await this.releaseSocketClaim();
 
+    await this.frames?.close();
     await this.apps?.close();
     await this.releaseStateClaim();
   }
@@ -564,6 +602,7 @@ export class Gateway {
         "base-uri 'none'",
         "form-action 'none'",
         "frame-ancestors 'none'",
+        ...(this.frames ? [frameSourceDirective(this.frames.origin)] : []),
       ].join('; '),
     );
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -999,6 +1038,11 @@ export class Gateway {
       JSON.stringify({ type: 'authenticated', deviceId: device.id, deviceName: device.name }),
     );
 
+    // Frame handles live while any connection of this device is open (and a
+    // grace period after); this connection ends when its phone socket closes.
+    const frames = this.frames?.connect(device.id);
+    phone.once('close', () => frames?.close());
+
     const relay = new Relay(phone, {
       controlSocket: this.options.controlSocket,
       sessionsDirectory: this.options.sessionsDirectory,
@@ -1014,6 +1058,7 @@ export class Gateway {
         }
         allowed.add(sessionId);
       },
+      frames,
       onClosed: () => {
         this.relays.delete(relay);
         // The rate bucket lives as long as one of the device's connections.
@@ -1039,6 +1084,7 @@ export class Gateway {
       for (const relay of this.relays.keys()) {
         relay.terminate(closeCodes.engineUnavailable, 'Device authorization is unavailable');
       }
+      this.frames?.handles.retainDevices(new Set());
       return;
     }
 
@@ -1047,6 +1093,7 @@ export class Gateway {
         relay.terminate(closeCodes.revoked, 'Device revoked');
       }
     }
+    this.frames?.handles.retainDevices(current);
     this.receipts.prune(current);
     for (const deviceId of this.screenshots.keys()) {
       if (!current.has(deviceId)) {

@@ -1,0 +1,183 @@
+/**
+ * Request admission for the frame origin: which requests may become a
+ * request to the widget service, decided from the request line and headers
+ * alone, before any handle is looked up.
+ *
+ * Input:  method, raw request target and headers of one HTTP request that
+ *         already passed the Tailscale and Host checks (./server.ts).
+ * Output: the handle and operation to forward, with the body limit, or a
+ *         refusal (status and fixed message).
+ *
+ * Rules (src/remote/README.md, "Widget and application frames"):
+ * - The target must be exactly `/f/<43 base64url characters>/<operation>`
+ *   with an operation from src/widgets/frame-operations.ts (empty for the
+ *   document). No query string at all (a query could carry a token or a
+ *   viewport the desktop-only operations read), no percent-encoding, no
+ *   dot segments, no second slash, no absolute-form target. Anything else is
+ *   the same 404 as an unknown handle.
+ * - The method must be the operation's method; HEAD and OPTIONS are refused.
+ * - `Authorization` is refused: no credential is ever accepted, or needed,
+ *   on this origin. An `Upgrade` header is refused (no WebSockets).
+ * - `Origin`, when sent, must be exactly the frame origin. A POST must send
+ *   it: the frame page sends it with every fetch, and a page on any other
+ *   origin cannot make the browser send ours.
+ * - POST bodies: `Content-Type: application/json`, a `Content-Length` no
+ *   larger than the widget service's own limit for that operation, and no
+ *   `Transfer-Encoding`. GET requests carry no body.
+ *
+ * Because none of these steps looks at the handle, a refused request reveals
+ * nothing about whether a handle exists.
+ */
+
+import type { IncomingHttpHeaders } from 'node:http';
+
+import { frameOperation, type FrameOperation } from '../../widgets/frame-operations.ts';
+
+export type Admission =
+  | {
+      ok: true;
+      handle: string;
+      /** Path segment after the handle; empty for the view document. */
+      operation: string;
+      definition: FrameOperation;
+      /** Declared body length in bytes; 0 for GET. */
+      bodyBytes: number;
+    }
+  | { ok: false; status: number; error: string };
+
+/** `/f/<handle>/` or `/f/<handle>/<operation>`, with a 256-bit base64url handle. */
+const frameTarget = /^\/f\/([A-Za-z0-9_-]{43})\/([a-z-]*)$/;
+
+/** The answer for every path that is not a frame, and for unknown handles. */
+export const notFound = { status: 404, error: 'Not found' } as const;
+
+export function admitFrameRequest(
+  method: string | undefined,
+  target: string | undefined,
+  headers: IncomingHttpHeaders,
+  frameOrigin: string,
+): Admission {
+  if (headers.authorization !== undefined) {
+    return refuse(400, 'Credentials are not accepted here');
+  }
+  if (headers.upgrade !== undefined) {
+    return refuse(400, 'Upgrades are not accepted here');
+  }
+  // Node reports expectations only for HTTP/1.1; check every version here.
+  const expectation = headers.expect;
+  if (expectation !== undefined && expectation.trim().toLowerCase() !== '100-continue') {
+    return refuse(417, 'Expectation not supported');
+  }
+  if (typeof target !== 'string' || target.includes('?')) {
+    return refuse(400, 'Query strings are not accepted here');
+  }
+
+  const match = frameTarget.exec(target);
+  const definition = match ? frameOperation(match[2]) : undefined;
+  if (!match || !definition) {
+    return { ok: false, ...notFound };
+  }
+
+  if (method !== definition.method) {
+    return refuse(405, 'Method not allowed');
+  }
+
+  const origin = headers.origin;
+  if (origin !== undefined && origin !== frameOrigin) {
+    return refuse(403, 'Origin not allowed');
+  }
+
+  if (definition.method === 'GET') {
+    if (headers['transfer-encoding'] !== undefined || !emptyLength(headers['content-length'])) {
+      return refuse(400, 'Unexpected request body');
+    }
+    return { ok: true, handle: match[1], operation: match[2], definition, bodyBytes: 0 };
+  }
+
+  if (origin === undefined) {
+    return refuse(403, 'Origin required');
+  }
+  const contentType = headers['content-type']?.split(';')[0].trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    return refuse(415, 'Expected JSON');
+  }
+  if (headers['transfer-encoding'] !== undefined) {
+    return refuse(411, 'A Content-Length is required');
+  }
+  const length = declaredLength(headers['content-length']);
+  if (length === undefined) {
+    return refuse(411, 'A Content-Length is required');
+  }
+  if (length > definition.requestBytes) {
+    return refuse(413, 'Request body too large');
+  }
+  return { ok: true, handle: match[1], operation: match[2], definition, bodyBytes: length };
+}
+
+/**
+ * Fields Node keeps at most this many of; a request with this many or more
+ * may have lost some (the parser drops the rest), so security headers such
+ * as the Funnel marker could be missing. It is refused before any check.
+ */
+export const maximumHeaderFields = 64;
+
+/**
+ * Fields whose repetition is never legitimate here (plus every `Tailscale-*`
+ * field, checked by prefix). Node keeps only the
+ * first `Host`, `Content-Type` or `Authorization` and joins others, so a
+ * repeated one is refused instead of interpreted.
+ */
+const singletonFields = new Set([
+  'host',
+  'origin',
+  'content-type',
+  'content-length',
+  'transfer-encoding',
+  'authorization',
+  'upgrade',
+  'expect',
+  'x-forwarded-host',
+]);
+
+/**
+ * Check the raw header list before anything reads `request.headers`:
+ * undefined when it is complete and has no repeated singleton field,
+ * otherwise the refusal.
+ */
+export function headerListRefusal(
+  rawHeaders: readonly string[],
+): { status: number; error: string } | undefined {
+  if (rawHeaders.length / 2 >= maximumHeaderFields) {
+    return { status: 431, error: 'Too many header fields' };
+  }
+  const seen = new Set<string>();
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    const name = rawHeaders[index].toLowerCase();
+    // Every Tailscale identity or Funnel field is a singleton as well.
+    if (!singletonFields.has(name) && !name.startsWith('tailscale-')) {
+      continue;
+    }
+    if (seen.has(name)) {
+      return { status: 400, error: 'Repeated header field' };
+    }
+    seen.add(name);
+  }
+  return undefined;
+}
+
+function refuse(status: number, error: string): Admission {
+  return { ok: false, status, error };
+}
+
+/** Absent or exactly zero. */
+function emptyLength(value: string | undefined): boolean {
+  return value === undefined || value === '0';
+}
+
+/** A plain decimal byte count, or undefined (absent, repeated or malformed). */
+function declaredLength(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d{1,9}$/.test(value)) {
+    return undefined;
+  }
+  return Number(value);
+}

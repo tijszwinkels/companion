@@ -20,6 +20,7 @@ import {
   isLoopbackHost,
   loopbackOrigins,
   type GatewayAppOptions,
+  type GatewayFrameOptions,
   type GatewayListenOptions,
 } from './gateway.ts';
 import {
@@ -99,6 +100,12 @@ serve     Run the phone gateway until interrupted.
                         Each app needs its own host name, distinct from this gateway's.
                         Only apps with \`companion-app phone ID on\` are offered.
   --apps-directory PATH App registry (default ~/companion/apps).
+  --frames-listen HOST:PORT | unix:PATH
+                        Serve widget and application pages to paired browsers from a
+                        second listener (off unless given). TCP uses the gateway's
+                        TLS certificate; plain HTTP only on loopback.
+  --frame-origin URL    Public origin of that listener, exactly scheme://host[:port];
+                        must differ from every --origin. Required with --frames-listen.
 
 pair      Print a one-time pairing code (10 minutes, 5 attempts).
 devices   List paired devices as JSON.
@@ -135,6 +142,8 @@ async function main(): Promise<number> {
       'apps-listen': { type: 'string' },
       'app-origin': { type: 'string', multiple: true },
       'apps-directory': { type: 'string' },
+      'frames-listen': { type: 'string' },
+      'frame-origin': { type: 'string' },
       'state-directory': { type: 'string' },
     },
   });
@@ -239,6 +248,20 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  let frames: GatewayFrameOptions | undefined;
+  if (values['frames-listen'] !== undefined || values['frame-origin'] !== undefined) {
+    if (values['frames-listen'] === undefined || values['frame-origin'] === undefined) {
+      console.error('--frames-listen and --frame-origin must be given together');
+      return 2;
+    }
+    const framesListen = frameListenOption(values['frames-listen']);
+    if (typeof framesListen === 'string') {
+      console.error(framesListen);
+      return 2;
+    }
+    frames = { listen: framesListen, origin: values['frame-origin'] };
+  }
+
   const gateway = new Gateway({
     ...listenAddress,
     origins,
@@ -249,6 +272,7 @@ async function main(): Promise<number> {
       values['sessions-directory'] ?? join(homedir(), 'companion', 'agents', '.companion-sessions'),
     appDirectory: values['app-directory'] ?? join(checkout, 'integrations', 'mobile', 'dist'),
     apps,
+    frames,
     log: (message) => console.error(`[remote] ${message}`),
   });
 
@@ -270,6 +294,9 @@ async function main(): Promise<number> {
     for (const [id, origin] of apps.origins) {
       console.error(`[remote]   ${id}: ${origin}`);
     }
+  }
+  if (gateway.frames) {
+    console.error(`[remote] Widget frames: ${gateway.frames.origin} on ${gateway.frames.address}`);
   }
   console.error('[remote] Pair a phone with: companion-remote pair');
 
@@ -350,6 +377,24 @@ async function listenOptions(values: {
     };
     return { host, port, tls };
   }
+  return { host, port };
+}
+
+/**
+ * Parse --frames-listen: `unix:/absolute/path`, or HOST:PORT with a literal
+ * IPv4 address, `localhost` or a bracketed IPv6 address. Returns a usage
+ * error message instead when it does not parse; the gateway checks the rest.
+ */
+function frameListenOption(value: string): GatewayFrameOptions['listen'] | string {
+  if (value.startsWith('unix:')) {
+    return { socketPath: value.slice('unix:'.length) };
+  }
+  const match = /^(\[[0-9a-fA-F:.]+\]|[0-9.]+|localhost):(\d{1,5})$/.exec(value);
+  const port = Number(match?.[2]);
+  if (!match || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return '--frames-listen must be HOST:PORT (e.g. 127.0.0.1:8788) or unix:/absolute/path';
+  }
+  const host = match[1].startsWith('[') ? match[1].slice(1, -1) : match[1];
   return { host, port };
 }
 
