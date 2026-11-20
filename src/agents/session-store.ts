@@ -75,6 +75,61 @@ export class SessionStore {
     }
   }
 
+  /**
+   * Resolve once every save of conversation `id` started so far has
+   * finished, successfully or not. Reading the archive after this sees the
+   * newest saved state (reopening waits here, so a write queued while the
+   * conversation was closing is not overtaken).
+   */
+  async settled(id: string): Promise<void> {
+    const pending = this.writes.get(id);
+    if (pending) {
+      await pending.catch(() => {});
+    }
+  }
+
+  /**
+   * Change only the saved `unread` field of conversation `id`, leaving the
+   * rest of its archive exactly as the last full save wrote it. Unlike
+   * `save`, this never captures the live conversation, so it cannot store a
+   * turn's status or error before that turn's own final save has settled
+   * them. Serialized with every other write of the conversation, in call
+   * order. Without an archive yet there is nothing to change: the first
+   * full save includes the live mark.
+   */
+  async saveUnread(id: string, unread: boolean): Promise<void> {
+    const path = this.path(id, 'json');
+    const previous = this.writes.get(id) ?? Promise.resolve();
+    const write = previous
+      .catch(() => {})
+      .then(async () => {
+        let content: string;
+        try {
+          content = await readFile(path, 'utf8');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return;
+          }
+          throw error;
+        }
+
+        const saved: unknown = JSON.parse(content);
+        if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+          throw Error('Invalid saved conversation');
+        }
+        (saved as Record<string, unknown>).unread = unread;
+        await this.replace(path, JSON.stringify(saved) + '\n');
+      });
+    this.writes.set(id, write);
+    try {
+      await write;
+    } finally {
+      if (this.writes.get(id) === write) {
+        this.writes.delete(id);
+      }
+    }
+  }
+
   async save(session: AgentSession): Promise<void> {
     // Capture one coherent view before yielding to filesystem operations. URLs
     // are derived when reading; the saved file cannot redirect image loading.
@@ -340,6 +395,9 @@ export class SessionStore {
       error: session.error,
       updatedAt: session.updatedAt,
       ...lastTurnDurationMs,
+      // Only an explicit saved `true` is unread. Older archives have no
+      // field and a damaged value is not a mark: both load as read.
+      unread: session.unread === true,
       messages,
     };
   }

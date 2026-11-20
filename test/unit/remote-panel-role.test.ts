@@ -169,6 +169,7 @@ test('remote selection never changes the desktop selection or speech routing', a
   assert.equal(afterSelection.agentComposerFocused, true);
 
   // Even a remote report that claims focus/navigation/draft fields is ignored.
+  // (Its `visible` only affects the shared unread mark.)
   remote.send({
     action: 'panel-state',
     id: second.id,
@@ -250,6 +251,39 @@ test('remote choices and stop apply only to the remote panel’s own selection',
     requestId: 's1',
   });
   assert.equal((await remote.reply('stop-agent-run', 's1')).result, 'stopped');
+});
+
+test('a closed conversation is no longer a remote panel’s selection after it reopens', async (context) => {
+  const { remote, start, complete, declareRemote, sessions } = await fixture(context);
+  const phoneTab = await start('Phone conversation');
+  await complete(phoneTab.run);
+  await declareRemote();
+
+  remote.send({ action: 'panel-state', id: phoneTab.id, visible: true, requestId: 'p' });
+  await remote.reply('panel-state', 'p');
+  const shown = await waitForActions(remote, (value) => value.sessionId === phoneTab.id);
+  assert.equal(shown.choices.length, 2);
+
+  // Closed elsewhere and reopened: the stale report neither shows nor
+  // controls it. Its controls stay empty until the panel reports it again.
+  await sessions.remove(phoneTab.id);
+  await waitForActions(remote, (value) => value.sessionId === '');
+  await sessions.reopen(phoneTab.id, false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const reopened = await waitForActions(remote, () => true);
+  assert.equal(reopened.sessionId, '');
+  remote.send({
+    action: 'choose-agent',
+    id: phoneTab.id,
+    revision: shown.choices[0].revision,
+    index: 0,
+    requestId: 'stale',
+  });
+  assert.equal((await remote.reply('choose-agent', 'stale')).type, 'error');
+
+  remote.send({ action: 'panel-state', id: phoneTab.id, visible: true, requestId: 'again' });
+  await remote.reply('panel-state', 'again');
+  await waitForActions(remote, (value) => value.sessionId === phoneTab.id);
 });
 
 test('desktop-only actions are refused for remote panels', async (context) => {
