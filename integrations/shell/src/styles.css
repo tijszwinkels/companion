@@ -195,11 +195,14 @@ body {
   cursor: pointer;
 }
 
-.bar-button:hover:not(:disabled) {
+.bar-button:hover:not(:disabled):not([aria-disabled='true']) {
   color: var(--accent);
 }
 
-.bar-button:disabled {
+/* Unavailable: disabled, or (in the Activity column, which keeps such
+   buttons focusable, see activity/ActionButton.tsx) aria-disabled. */
+.bar-button:disabled,
+.bar-button[aria-disabled='true'] {
   opacity: 0.45;
   cursor: default;
 }
@@ -867,6 +870,11 @@ body {
   background: transparent;
 }
 
+.activity-scroll h3:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .activity-scroll h3 {
   display: flex;
   align-items: center;
@@ -921,12 +929,13 @@ body {
   color: var(--muted);
 }
 
-.activity-mic:hover:not(:disabled) {
+.activity-mic:hover:not([aria-disabled='true']) {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.activity-mic:disabled {
+.activity-mic[aria-disabled='true'] {
   opacity: 0.45;
+  cursor: default;
 }
 
 .activity-listening.speaking .activity-mic {
@@ -1088,13 +1097,14 @@ body {
   line-height: 1;
 }
 
-.activity-delete:hover:not(:disabled) {
+.activity-delete:hover:not([aria-disabled='true']) {
   background: var(--selection);
   color: #f17f90;
 }
 
-.activity-delete:disabled {
+.activity-delete[aria-disabled='true'] {
   opacity: 0.4;
+  cursor: default;
 }
 
 .activity-choice,

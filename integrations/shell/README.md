@@ -285,8 +285,9 @@ listening controls, in a column on the right of the chat:
   own, and the conversation shown in the chat stays shown. Keyboard focus
   follows: showing the column with the bar's ☰ moves focus to the column's
   ☰, hiding it with the column's ☰ moves focus back to the bar's ☰. When
-  another tab shows or hides the column while one of these ☰ has focus
-  here, focus moves the same way instead of being lost with the button.
+  another tab shows or hides the column while the bar's ☰, or anything in
+  the column, has focus here, focus moves the same way instead of being
+  lost with what went away.
 - **The Activity entry** carries the microphone (struck through while
   listening is paused or Companion is not running) and, in the full list,
   the listening state as its last line (`Listening`, `Paused`, `Paused for
@@ -342,32 +343,32 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
    own entry; a storage that refuses writes keeps the page's values; not
    cleared on sign-out; other tabs follow each entry they see written.
 
-| Case                                                 | Result                                                      |
-| ---------------------------------------------------- | ----------------------------------------------------------- |
-| Initial (nothing remembered)                         | Hidden; 320 px when shown                                   |
-| Both entries invalid or of another version           | Hidden; 320 px when shown                                   |
-| Only the width invalid; column shown                 | Shown at 320 px                                             |
-| Only the shown state invalid; 400 px                 | Hidden; 400 px when shown                                   |
-| Remembered width 100 / 900 (out of range)            | 240 / 520 px                                                |
-| ☰ in the bar, then ☰ in the column                 | Shown, then hidden; each remembered; the width kept         |
-| The Activity entry pressed twice                     | Shown, then hidden (the same entry as ☰)                   |
-| Divider dragged to 300 px from the right edge        | 300 px, remembered on release                               |
-| Divider dragged to 100 / 900 px from the right edge  | 240 / 520 px                                                |
-| Press on the divider without moving                  | Nothing changes or is written                               |
-| Left / Right / Home / End on the divider             | +20 / −20 / 240 / 520 px, each remembered                   |
-| Reload                                               | Width and shown state as remembered                         |
-| Storage refuses writes; 400 px, ☰                   | 400 px, shown, for this page                                |
-| Window 1600 px, strip, column 320 px                 | Side by side; chat area 1200 px, its column 860 px, centred |
-| Window 1000 px, full list 420, column 520 remembered | Column 520 px; full list 158 px; chat 320 px                |
-| Window 700 px, strip, column 520 remembered          | Column 300 px (700 − 321 − 79); chat 320 px                 |
-| Window 640 px, strip, column shown                   | Column 240 px beside the chat                               |
-| Window 639 / 420 px, column shown                    | Over the chat, right of the list; no divider; no overflow   |
-| Window 420 px, column shown, Tab                     | Moves through list and column, never into the covered chat  |
-| Focus in the chat, the window narrows under 640 px   | Focus moves to the column's ☰                              |
-| Focus on a ☰, another tab shows or hides the column | Focus moves to the other ☰; focus elsewhere stays          |
-| Window 420 px, list hidden, column shown             | Over the whole window width                                 |
-| Width or shown state changed in another tab          | This tab follows that entry                                 |
-| Sign-out and pairing again                           | Layout kept                                                 |
+| Case                                                          | Result                                                      |
+| ------------------------------------------------------------- | ----------------------------------------------------------- |
+| Initial (nothing remembered)                                  | Hidden; 320 px when shown                                   |
+| Both entries invalid or of another version                    | Hidden; 320 px when shown                                   |
+| Only the width invalid; column shown                          | Shown at 320 px                                             |
+| Only the shown state invalid; 400 px                          | Hidden; 400 px when shown                                   |
+| Remembered width 100 / 900 (out of range)                     | 240 / 520 px                                                |
+| ☰ in the bar, then ☰ in the column                          | Shown, then hidden; each remembered; the width kept         |
+| The Activity entry pressed twice                              | Shown, then hidden (the same entry as ☰)                   |
+| Divider dragged to 300 px from the right edge                 | 300 px, remembered on release                               |
+| Divider dragged to 100 / 900 px from the right edge           | 240 / 520 px                                                |
+| Press on the divider without moving                           | Nothing changes or is written                               |
+| Left / Right / Home / End on the divider                      | +20 / −20 / 240 / 520 px, each remembered                   |
+| Reload                                                        | Width and shown state as remembered                         |
+| Storage refuses writes; 400 px, ☰                            | 400 px, shown, for this page                                |
+| Window 1600 px, strip, column 320 px                          | Side by side; chat area 1200 px, its column 860 px, centred |
+| Window 1000 px, full list 420, column 520 remembered          | Column 520 px; full list 158 px; chat 320 px                |
+| Window 700 px, strip, column 520 remembered                   | Column 300 px (700 − 321 − 79); chat 320 px                 |
+| Window 640 px, strip, column shown                            | Column 240 px beside the chat                               |
+| Window 639 / 420 px, column shown                             | Over the chat, right of the list; no divider; no overflow   |
+| Window 420 px, column shown, Tab                              | Moves through list and column, never into the covered chat  |
+| Focus in the chat, the window narrows under 640 px            | Focus moves to the column's ☰                              |
+| Focus on a ☰ or in the column, another tab shows or hides it | Focus moves to the other ☰; focus elsewhere stays          |
+| Window 420 px, list hidden, column shown                      | Over the whole window width                                 |
+| Width or shown state changed in another tab                   | This tab follows that entry                                 |
+| Sign-out and pairing again                                    | Layout kept                                                 |
 
 ### The new-activity marker
 
@@ -434,8 +435,9 @@ running`, and below it while listening `Hearing speech`, `Processing N…`
   the remote role).
 - **Start a conversation**: a text box (at most 4,000 characters, as the
   gateway allows), a choice between a coding conversation and a quick
-  question, and Start (`start-agent`). It uses the phone Store's draft and
-  send rules: the text is kept in this browser until the start is answered,
+  question, and Start (`start-agent`). The text and the choice are kept
+  while the column is hidden. It uses the phone Store's draft and send
+  rules: the text is kept in this browser until the start is answered,
   a second Start cannot send it again, and a failure keeps the text with
   the explanation. The conversation opens in the background on the
   desktop; here it appears in the list and is **selected** once listed,
@@ -467,6 +469,16 @@ was drawn for, requests admitted, the action still allowed) and otherwise
 sends nothing. A refused request shows the Store's error toast and leaves the
 entry as the listener reports it; nothing is shown as done before the
 listener says so. Copy is local and always enabled when there is text.
+
+Keyboard focus is never dropped by the column: an action that is not
+available (offline, its request awaiting the answer) keeps its button
+focusable, marked unavailable (`aria-disabled`) and drawn dimmed, instead of
+disabled, which in Chromium moves focus to the page; focus on a button of an
+entry that goes away (deleted here or elsewhere, or with its run) moves to
+the entry that takes its place, else the one above, else the History
+heading; picking the actual intent closes the choice and returns focus to
+Incorrect; Retry, once the reading works again, hands focus to the History
+heading.
 
 - **Copy** puts the recognised text on the clipboard ("Copied", or "The
   browser did not allow copying").
@@ -524,7 +536,11 @@ text, and no start awaiting its answer. A request of an entry still
 awaiting its answer keeps that entry's requests disabled also when the
 column is hidden and shown again.
 
-Known limits: `toggle-pause` is the remote role's only listening action and
+Known limits: a request whose answer arrives between the column's drawing
+and its effects is not timed in the browser; the column has no subscription
+of its own (the workspace follows the requests for the whole pairing), so
+there is nothing for that answer to miss. `toggle-pause` is the remote
+role's only listening action and
 it toggles, so a Pause pressed at the moment listening was paused elsewhere
 resumes it (the button shows the listener's state again at once). The whole
 run's history is drawn (it is read in pages, not shown in pages). The
@@ -796,8 +812,14 @@ another entry's request goes out; the recognised intent not offered as the
 actual intent; the handlers of an entry
 deleted by another client sending nothing when clicked afterwards; at
 420 px Tab never reaching the covered chat, and focus moved out of it when
-the window narrows; focus on a ☰ moving to the other when a second tab
-shows or hides the column; keyboard operation and accessible names; the gateway's unchanged policy, no
+the window narrows; focus on a ☰ or in the column's text box moving to the
+other ☰ when a second tab shows or hides the column; focus kept on Correct
+and Start while their requests await the answer, on the next entry after a
+deletion confirmed with the keyboard, and on Incorrect after picking the
+actual intent; the Coding / Quick question choice and the text kept across
+hiding the column; an Incorrect press handler drawn before another client
+chose the actual intent sending nothing (invoked through Preact's listener
+table); keyboard operation and accessible names; the gateway's unchanged policy, no
 policy violation and no request to another origin; never the unscoped
 `stop-agent`. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 column hidden and shown at 420, 760, 1280 and 1600 px.
@@ -839,6 +861,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/activity/listening.ts`          | The listening state's wording                                                 |
 | `src/activity/requests.ts`           | Activity requests awaiting their answer, per entry                            |
 | `src/activity/select-started.ts`     | Selecting a started conversation unless what is shown changed meanwhile       |
+| `src/activity/ActionButton.tsx`      | Buttons that stay focusable while unavailable (`aria-disabled`)               |
 | `src/bridge.ts`                      | `NativeBridge` over the gateway: rows/status messages, request mapping        |
 | `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
 | `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |

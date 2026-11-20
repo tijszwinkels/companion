@@ -31,7 +31,11 @@ import type { AgentSession } from '../../../../src/agents/types.ts';
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import { Chat } from '../../../session-apps/chat/Chat.tsx';
 import type { ChatStore } from '../../../session-apps/chat/store.ts';
-import { ActivityColumn, activityColumnId } from '../activity/ActivityColumn.tsx';
+import {
+  ActivityColumn,
+  activityColumnId,
+  type StartProfile,
+} from '../activity/ActivityColumn.tsx';
 import { NewActivity } from '../activity/new-activity.ts';
 import { ActivityRequests } from '../activity/requests.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
@@ -82,6 +86,9 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
   marker.current.observe(state, activity.shown);
   const newActivity = marker.current.count;
   const [requests] = useState(() => new ActivityRequests());
+  // The kind of conversation Start asks for, kept while the column is
+  // hidden (its text is the Store's draft, kept too).
+  const [startProfile, setStartProfile] = useState<StartProfile>('coding');
 
   // A request's start or end changes what the entries offer without a Store
   // change: re-render then. Subscribed here, for the whole pairing, rather
@@ -125,7 +132,8 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
     focusAfterToggle.current = 'column';
   }
 
-  function columnButtonLostFocus() {
+  /** Focus was inside the column when another tab hid it: to the bar's ☰. */
+  function columnLostFocus() {
     focusAfterToggle.current = 'bar';
   }
 
@@ -244,7 +252,9 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
           requests={requests}
           onHide={hideFromColumn}
           hideButton={columnActivityButton}
-          onFocusLost={columnButtonLostFocus}
+          onFocusLost={columnLostFocus}
+          startProfile={startProfile}
+          onStartProfile={setStartProfile}
         />
       )}
     </div>

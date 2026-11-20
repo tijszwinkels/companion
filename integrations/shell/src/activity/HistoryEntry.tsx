@@ -10,9 +10,11 @@
  * the Store's current entry and listener state (the entry still in the run
  * it was drawn for, requests admitted, the action still allowed), and goes
  * through `ActivityRequests`, so an entry never has two requests on their
- * way. A refused request shows the
- * Store's error toast; the entry keeps showing what the listener reports
- * (labels are never shown as set before the listener says so).
+ * way. A refused request shows the Store's error toast; the entry keeps
+ * showing what the listener reports (labels are never shown as set before
+ * the listener says so). Unavailable actions stay focusable
+ * (ActionButton.tsx), and focus that would go away with a closing choice or
+ * with the entry itself is moved to a neighbour.
  */
 
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -30,6 +32,8 @@ import {
   incorrectSendsLabel,
   type EntryActions,
 } from './entry-actions.ts';
+import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
+import { ActionButton } from './ActionButton.tsx';
 import type { ActivityRequests } from './requests.ts';
 
 /** How long "Copied" (or the refusal) stays next to Copy. */
@@ -43,6 +47,8 @@ export function HistoryEntry(props: {
   labels: Map<string, string>;
   bridge: GatewayChatBridge;
   requests: ActivityRequests;
+  /** Keyboard focus was inside this entry when it went away (deleted, a new run). */
+  onFocusLost: () => void;
 }) {
   const store = useStore();
   const { entry } = props;
@@ -51,8 +57,14 @@ export function HistoryEntry(props: {
   const [copyFeedback, setCopyFeedback] = useState('');
   const cancelButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
+  const incorrectButton = useRef<HTMLButtonElement>(null);
+  const item = useRef<HTMLLIElement>(null);
   // Whether closing the confirmation should give focus back to ×.
   const restoreFocus = useRef(false);
+
+  // Focus inside the entry when it goes away is handed to the history list,
+  // which moves it to the entry that takes its place.
+  useFocusHandOff(item, props.onFocusLost);
 
   const facts = entryFacts(entry);
   const actions = entryActions(
@@ -105,6 +117,9 @@ export function HistoryEntry(props: {
   }
 
   async function copy() {
+    if (!actions.copy) {
+      return;
+    }
     const copied = await copyText(entry.utterance);
     if (copied) {
       setCopyFeedback('Copied');
@@ -152,6 +167,8 @@ export function HistoryEntry(props: {
 
   function labelActual(intent: IntentState) {
     setChoosing(false);
+    // The choice goes away; keyboard focus returns to Incorrect.
+    incorrectButton.current?.focus();
     void send(
       (actions, current) => actions.label && intent.name !== current.intent,
       () =>
@@ -173,7 +190,10 @@ export function HistoryEntry(props: {
       (actions) => actions.deleteEnabled,
       async () => {
         await store.request('delete-history', { id: entry.id });
-        // The entry leaves the column when the listener reports it deleted.
+        // The entry leaves the column when the listener reports it deleted
+        // (usually before this answer). Until then focus goes back to ×, so
+        // it is not lost with the confirmation.
+        restoreFocus.current = true;
         setConfirming(false);
       },
     );
@@ -193,6 +213,13 @@ export function HistoryEntry(props: {
     }
   }
 
+  function askDelete() {
+    if (!actions.deleteEnabled || confirming) {
+      return;
+    }
+    setConfirming(true);
+  }
+
   const classes = ['activity-entry'];
   if (entry.correct === true) {
     classes.push('correct');
@@ -201,7 +228,7 @@ export function HistoryEntry(props: {
   }
 
   return (
-    <li class={classes.join(' ')} data-id={entry.id}>
+    <li ref={item} class={classes.join(' ')} data-id={entry.id}>
       <article class="activity-panel" aria-label={`Heard at ${time}`}>
         <div class="activity-heading">
           <span class="activity-heading-text">
@@ -211,16 +238,16 @@ export function HistoryEntry(props: {
             {entry.application && <span class="activity-pill">{entry.application}</span>}
           </span>
           {actions.deleteOffered && (
-            <button
-              ref={deleteButton}
+            <ActionButton
+              buttonRef={deleteButton}
               class="activity-delete"
-              disabled={!actions.deleteEnabled || confirming}
-              aria-label="Delete utterance, screenshot and audio"
+              available={actions.deleteEnabled && !confirming}
+              label="Delete utterance, screenshot and audio"
               title="Delete utterance, screenshot and audio"
-              onClick={() => setConfirming(true)}
+              onPress={askDelete}
             >
               ×
-            </button>
+            </ActionButton>
           )}
         </div>
 
@@ -241,29 +268,30 @@ export function HistoryEntry(props: {
         {label && <p class="activity-label">{label}</p>}
 
         <div class="activity-actions">
-          <button class="bar-button" disabled={!actions.copy} onClick={() => void copy()}>
+          <ActionButton class="bar-button" available={actions.copy} onPress={() => void copy()}>
             Copy
-          </button>
-          <button class="bar-button" disabled={!actions.startSession} onClick={startSession}>
+          </ActionButton>
+          <ActionButton class="bar-button" available={actions.startSession} onPress={startSession}>
             New coding session
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
             class="bar-button"
-            aria-pressed={entry.correct === true}
-            disabled={!actions.label}
-            onClick={labelCorrect}
+            pressed={entry.correct === true}
+            available={actions.label}
+            onPress={labelCorrect}
           >
             Correct
-          </button>
-          <button
+          </ActionButton>
+          <ActionButton
+            buttonRef={incorrectButton}
             class="bar-button"
-            aria-pressed={entry.correct === false}
-            aria-expanded={choosing}
-            disabled={!actions.label}
-            onClick={labelIncorrect}
+            pressed={entry.correct === false}
+            expanded={choosing}
+            available={actions.label}
+            onPress={labelIncorrect}
           >
             Incorrect
-          </button>
+          </ActionButton>
           {copyFeedback && (
             <span class="activity-feedback" role="status">
               {copyFeedback}
@@ -273,23 +301,13 @@ export function HistoryEntry(props: {
         {actions.labelReason && <p class="activity-hint">{actions.labelReason}</p>}
 
         {choosing && actions.labelReason === '' && (
-          <div class="activity-choice" role="group" aria-label="What should it have been?">
-            <p class="activity-hint">What should it have been?</p>
-            <div class="activity-actions">
-              {actualIntentChoices(entry, props.intents).map((intent) => (
-                <button
-                  key={intent.name}
-                  class="bar-button"
-                  aria-pressed={entry.actualIntent === intent.name}
-                  aria-label={`Correct intent to ${intent.label}`}
-                  disabled={!actions.label}
-                  onClick={() => labelActual(intent)}
-                >
-                  {intent.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <IntentChoice
+            intents={actualIntentChoices(entry, props.intents)}
+            actualIntent={entry.actualIntent}
+            available={actions.label}
+            onChoose={labelActual}
+            onFocusLost={() => incorrectButton.current?.focus()}
+          />
         )}
 
         {confirming && (
@@ -301,17 +319,53 @@ export function HistoryEntry(props: {
               <button ref={cancelButton} class="bar-button" onClick={cancelDelete}>
                 Cancel
               </button>
-              <button
+              <ActionButton
                 class="bar-button danger"
-                disabled={!actions.deleteEnabled}
-                onClick={confirmDelete}
+                available={actions.deleteEnabled}
+                onPress={confirmDelete}
               >
                 Delete permanently
-              </button>
+              </ActionButton>
             </div>
           </div>
         )}
       </article>
     </li>
+  );
+}
+
+/**
+ * "What should it have been?": the intents to choose as the actual intent.
+ * If it goes away while one of them has focus (labeling no longer
+ * possible), focus goes back to Incorrect (`onFocusLost`).
+ */
+function IntentChoice(props: {
+  intents: IntentState[];
+  actualIntent: string | null;
+  available: boolean;
+  onChoose: (intent: IntentState) => void;
+  onFocusLost: () => void;
+}) {
+  const element = useRef<HTMLDivElement>(null);
+  useFocusHandOff(element, props.onFocusLost);
+
+  return (
+    <div ref={element} class="activity-choice" role="group" aria-label="What should it have been?">
+      <p class="activity-hint">What should it have been?</p>
+      <div class="activity-actions">
+        {props.intents.map((intent) => (
+          <ActionButton
+            key={intent.name}
+            class="bar-button"
+            pressed={props.actualIntent === intent.name}
+            label={`Correct intent to ${intent.label}`}
+            available={props.available}
+            onPress={() => props.onChoose(intent)}
+          >
+            {intent.label}
+          </ActionButton>
+        ))}
+      </div>
+    </div>
   );
 }

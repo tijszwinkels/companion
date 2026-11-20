@@ -168,7 +168,7 @@ async function box(page: TestPage, selector: string): Promise<Box> {
 
 async function clickSelector(page: TestPage, selector: string): Promise<void> {
   await page.waitFor(
-    `document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`,
+    `document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled && document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-disabled') !== 'true'`,
   );
   await clickAt(page, await box(page, selector));
 }
@@ -657,7 +657,9 @@ test(
 
     // A coding conversation: Start is offered only with text.
     assert.equal(
-      await page.evaluate(`document.querySelector('.activity-start-button').disabled`),
+      await page.evaluate(
+        `document.querySelector('.activity-start-button').getAttribute('aria-disabled') === 'true'`,
+      ),
       true,
     );
     await clickSelector(page, '#activity-start-text');
@@ -700,18 +702,45 @@ test(
       ['coding', 'quickQuestion'],
     );
 
+    // The chosen kind is kept while the column is hidden, like the text.
+    await page.evaluate(`document.querySelector('#activity-start-text').focus()`);
+    await page.type('Kept across hiding');
+    await clickSelector(page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`document.querySelector('#activity-start-text')`);
+    assert.equal(
+      await page.evaluate(
+        `[...document.querySelectorAll('.activity-choice-group button')].find((button) => button.getAttribute('aria-pressed') === 'true').textContent`,
+      ),
+      'Quick question',
+    );
+    assert.equal(
+      await page.evaluate(`document.querySelector('#activity-start-text').value`),
+      'Kept across hiding',
+    );
+    await clickSelector(page, '.activity-start-button');
+    await waitFor(() => fixture.runs.length === 4);
+    const third = sockets.sent.filter(
+      (message) => message.type === 'request' && message.action === 'start-agent',
+    )[2];
+    assert.equal(third.profile, 'quickQuestion');
+    assert.equal(third.text, 'Kept across hiding');
+
     // Offline the box keeps its text and Start is not offered.
     await page.evaluate(`document.querySelector('#activity-start-text').focus()`);
     await page.type('Kept while offline');
     await fixture.gateway.close();
     await page.waitFor(`!document.querySelector('.shell[data-connection="online"]')`, 8000);
     assert.equal(
-      await page.evaluate(`document.querySelector('.activity-start-button').disabled`),
+      await page.evaluate(
+        `document.querySelector('.activity-start-button').getAttribute('aria-disabled') === 'true'`,
+      ),
       true,
     );
     assert.equal(
       await page.evaluate(
-        `document.querySelector('button[aria-label="Pause listening"]').disabled`,
+        `document.querySelector('button[aria-label="Pause listening"]').getAttribute('aria-disabled') === 'true'`,
       ),
       true,
     );
@@ -808,6 +837,8 @@ test(
     await page.waitFor(
       `${entryExpression('Synthetic entry to label')}.querySelector('.activity-label')?.textContent === 'Labelled incorrect → Quick question'`,
     );
+    // The choice went away; focus is back on Incorrect.
+    assert.equal(await page.evaluate(`document.activeElement?.textContent`), 'Incorrect');
     const labels = sockets.sent
       .filter((message) => message.type === 'request' && message.action === 'label-history')
       .map((message) => [message.correct, message.actualIntent ?? null]);
@@ -849,11 +880,20 @@ test(
     );
     assert.ok(!requestActions(sockets).includes('delete-history'));
     await clickSelector(page, deleteSelector);
-    await clickSelector(
-      page,
-      await entryButton(page, 'Synthetic entry to delete', 'Delete permanently'),
+    // Confirmed with the keyboard: focus moves to the entry that takes its
+    // place instead of being lost with it.
+    await page.evaluate(
+      `document.querySelector('${await entryButton(page, 'Synthetic entry to delete', 'Delete permanently')}').focus()`,
     );
+    await key(page, 'Enter');
     await page.waitFor(`!${entryExpression('Synthetic entry to delete')}`);
+    await page.waitFor(`document.activeElement?.closest('.activity-entry') !== null`);
+    assert.equal(
+      await page.evaluate(
+        `document.activeElement.closest('.activity-entry').querySelector('.activity-utterance').textContent`,
+      ),
+      'Synthetic entry to label',
+    );
     assert.equal(requestActions(sockets).filter((action) => action === 'delete-history').length, 1);
     assert.equal(
       fixture.desktop.database
@@ -871,10 +911,10 @@ test(
       const entry = ${entryExpression('Synthetic entry to label')};
       const button = (label) => [...entry.querySelectorAll('button')].find((candidate) => candidate.textContent.trim() === label || candidate.getAttribute('aria-label') === label);
       return {
-        copy: button('Copy').disabled,
-        session: button('New coding session').disabled,
-        correct: button('Correct').disabled,
-        remove: button('Delete utterance, screenshot and audio').disabled,
+        copy: button('Copy').getAttribute('aria-disabled') === 'true',
+        session: button('New coding session').getAttribute('aria-disabled') === 'true',
+        correct: button('Correct').getAttribute('aria-disabled') === 'true',
+        remove: button('Delete utterance, screenshot and audio').getAttribute('aria-disabled') === 'true',
       };
     })()`);
     assert.deepEqual(offline, { copy: false, session: true, correct: true, remove: true });
@@ -908,7 +948,9 @@ test(
     const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
     await clickSelector(page, barToggle);
     const correct = await entryButton(page, 'Synthetic entry refused', 'Correct');
-    await page.waitFor(`!document.querySelector('${correct}').disabled`);
+    await page.waitFor(
+      `document.querySelector('${correct}').getAttribute('aria-disabled') !== 'true'`,
+    );
 
     // The saved screenshot disappears after the entry was drawn: the click
     // still reaches the listener, which refuses the label.
@@ -917,7 +959,9 @@ test(
     await page.waitFor(`document.querySelector('.toast.error')`);
     // The listener's correction arrives: labeling and a session are no
     // longer offered, and no label is shown.
-    await page.waitFor(`document.querySelector('${correct}').disabled`);
+    await page.waitFor(
+      `document.querySelector('${correct}').getAttribute('aria-disabled') === 'true'`,
+    );
     assert.equal(
       await page.evaluate(
         `${entryExpression('Synthetic entry refused')}.querySelector('.activity-label')`,
@@ -961,11 +1005,18 @@ test(
     // neither a new conversation nor a session from an entry is offered,
     // and the typed text stays.
     const newSession = await entryButton(page, 'Synthetic entry in preview', 'New coding session');
-    assert.equal(await page.evaluate(`document.querySelector('${newSession}').disabled`), true);
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('${newSession}').getAttribute('aria-disabled') === 'true'`,
+      ),
+      true,
+    );
     await clickSelector(page, '#activity-start-text');
     await page.type('Kept in preview mode');
     assert.equal(
-      await page.evaluate(`document.querySelector('.activity-start-button').disabled`),
+      await page.evaluate(
+        `document.querySelector('.activity-start-button').getAttribute('aria-disabled') === 'true'`,
+      ),
       true,
     );
     assert.match(
@@ -1013,16 +1064,17 @@ test(
     await page.waitFor(`document.querySelectorAll('.activity-entry').length === 3`);
     const sessionRequests = () =>
       requestActions(sockets).filter((action) => action === 'start-history-agent').length;
+    // Unavailable buttons stay focusable, marked aria-disabled (ActionButton.tsx).
     const disabled = async (utterance: string, label: string) =>
       page.evaluate<boolean>(
-        `document.querySelector('${await entryButton(page, utterance, label)}').disabled`,
+        `document.querySelector('${await entryButton(page, utterance, label)}').getAttribute('aria-disabled') === 'true'`,
       );
 
     // A's request is on its way: A's requests are disabled, B's are not.
     await clickSelector(page, await entryButton(page, 'Synthetic entry A', 'New coding session'));
     await waitFor(() => sessionRequests() === 1);
     await page.waitFor(
-      `document.querySelector('${await entryButton(page, 'Synthetic entry A', 'Correct')}').disabled`,
+      `document.querySelector('${await entryButton(page, 'Synthetic entry A', 'Correct')}').getAttribute('aria-disabled') === 'true'`,
     );
     assert.equal(await disabled('Synthetic entry A', 'New coding session'), true);
     assert.equal(await disabled('Synthetic entry A', 'Copy'), false);
@@ -1057,7 +1109,7 @@ test(
     await clickSelector(page, barToggle);
     await page.waitFor(`document.querySelectorAll('.activity-entry').length === 3`);
     await page.waitFor(
-      `!document.querySelector('${await entryButton(page, 'Synthetic entry A', 'New coding session')}').disabled`,
+      `document.querySelector('${await entryButton(page, 'Synthetic entry A', 'New coding session')}').getAttribute('aria-disabled') !== 'true'`,
     );
     assert.equal(sessionRequests(), 1);
 
@@ -1169,6 +1221,17 @@ test(
       `document.activeElement?.classList.contains('activity-toggle') && document.activeElement.closest('.chat-bar') !== null`,
     );
 
+    // Focus in the column's text box when the other tab hides the column:
+    // it moves to the bar's ☰ too.
+    await clickSelector(second.page, barToggle);
+    await page.waitFor(`document.querySelector('${column}')`);
+    await page.evaluate(`document.querySelector('#activity-start-text').focus()`);
+    await clickSelector(second.page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await page.waitFor(
+      `document.activeElement?.classList.contains('activity-toggle') && document.activeElement.closest('.chat-bar') !== null`,
+    );
+
     // Focus elsewhere (the list) is left where it is.
     await page.evaluate(`document.querySelector('${listEntry}').focus()`);
     await clickSelector(second.page, barToggle);
@@ -1177,6 +1240,65 @@ test(
       await page.evaluate(`document.activeElement?.classList.contains('activity-list-entry')`),
     );
     await second.page.close();
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'a stale Incorrect press does not erase an actual intent chosen elsewhere',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    await registerIntents(fixture);
+    await heard(fixture, 'Synthetic entry labelled elsewhere');
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await clickSelector(page, barToggle);
+    const incorrect = await entryButton(page, 'Synthetic entry labelled elsewhere', 'Incorrect');
+    await page.waitFor(
+      `document.querySelector('${incorrect}').getAttribute('aria-disabled') !== 'true'`,
+    );
+
+    // Keep the press handler this button had while the entry was not
+    // labelled. Preact keeps an element's handlers in its listener table
+    // (`element.l`, key "click" + capture flag); a press that arrives
+    // between the Store's update and the next drawing runs this handler.
+    assert.equal(
+      await page.evaluate(
+        `typeof (window.__staleIncorrect = document.querySelector('${incorrect}').l?.clickfalse)`,
+      ),
+      'function',
+      'Preact keeps its handlers in element.l',
+    );
+
+    // Another client labels it incorrect → Quick question.
+    const { token } = await fixture.pair('Second synthetic client');
+    const other = await fixture.phone(token);
+    await other.engine('state');
+    const row = fixture.desktop.database
+      .prepare("SELECT id FROM utterances WHERE transcript = 'Synthetic entry labelled elsewhere'")
+      .get() as { id: string };
+    other.send({
+      requestId: 'label-elsewhere',
+      action: 'label-history',
+      id: row.id,
+      correct: false,
+      actualIntent: 'QUICK_QUESTION',
+    });
+    assert.equal((await other.reply('label-elsewhere')).type, 'result');
+    await page.waitFor(
+      `${entryExpression('Synthetic entry labelled elsewhere')}.querySelector('.activity-label')?.textContent === 'Labelled incorrect → Quick question'`,
+    );
+
+    // The old handler runs: it decides by the entry as the Store has it now,
+    // so it only opens the choice and sends nothing.
+    const sentBefore = sockets.sent.length;
+    await page.evaluate(`window.__staleIncorrect(new MouseEvent('click'))`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(!requestActions(sockets, sentBefore).includes('label-history'));
+    const stored = fixture.desktop.database
+      .prepare('SELECT correct, actual_intent FROM intent_feedback WHERE id = ?')
+      .get(row.id) as { correct: number; actual_intent: string };
+    assert.deepEqual({ ...stored }, { correct: 0, actual_intent: 'QUICK_QUESTION' });
     await assertCleanPage(fixture, page, sockets);
   },
 );
@@ -1264,6 +1386,20 @@ test('keyboard operation and accessible names', { skip }, async (context) => {
   await key(page, ' ');
   await page.waitFor(
     `${entryExpression('Synthetic entry for the keyboard')}.querySelector('.activity-label')?.textContent === 'Labelled correct'`,
+  );
+  // Focus stayed on Correct while its request awaited the answer (the
+  // button is marked unavailable then, not disabled, which would drop focus).
+  assert.equal(await page.evaluate(`document.activeElement?.textContent`), 'Correct');
+
+  // The same for Start: pressed with Enter, focus stays on it.
+  await page.evaluate(`document.querySelector('#activity-start-text').focus()`);
+  await page.type('Synthetic keyboard start');
+  await page.evaluate(`document.querySelector('.activity-start-button').focus()`);
+  await key(page, 'Enter');
+  await waitFor(() => fixture.runs.length === 2);
+  await page.waitFor(`document.querySelector('#activity-start-text').value === ''`);
+  assert.ok(
+    await page.evaluate(`document.activeElement?.classList.contains('activity-start-button')`),
   );
 
   // The list's Activity entry by keyboard hides the column; focus stays on it.
