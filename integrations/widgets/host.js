@@ -37,8 +37,8 @@ frame.title = bootstrap.title;
 // `data:` script because the inner document also inherits this page's
 // policy, which allows no inline scripts. Both routes, both hosts.
 const withoutWebRtc =
-  '<script src="data:text/javascript;base64,' +
-  btoa(
+  '<script src="data:text/javascript,' +
+  encodeURIComponent(
     "for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection', 'WebTransport']) Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });",
   ) +
   '"></script>';
