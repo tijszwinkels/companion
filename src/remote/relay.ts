@@ -50,12 +50,11 @@ const roleMilliseconds = 5000;
 const requestMilliseconds = 15_000;
 const maximumPendingRequests = 32;
 
+/** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
+const withdrawalRequestId = 'withdraw';
+
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
-
-/** Token bucket for phone requests: short bursts, steady 10 per second. */
-const requestBurst = 30;
-const requestsPerSecond = 10;
 
 const screenshotName = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.png$/;
 
@@ -73,6 +72,11 @@ export interface RelayOptions {
   sessionsDirectory: string;
   deviceId: string;
   receipts: ReceiptBook;
+  /**
+   * Take one request token from this device's shared rate limit (see
+   * request-rate.ts); false means refuse the message.
+   */
+  takeToken(): boolean;
   /** Negotiated by the gateway, never forwarded as a desktop panel request. */
   incrementalSessions?: boolean;
   /** Remember that this device may fetch a session's screenshot. */
@@ -98,9 +102,13 @@ export class Relay {
   private readonly roleTimer: ReturnType<typeof setTimeout>;
   private terminated = false;
   private phoneOpen = true;
+  /**
+   * `wanted`: the phone left while requests still drain and the withdrawal
+   * of its page's visibility waits for role confirmation; `sent`: written
+   * upstream. See withdrawVisibility.
+   */
+  private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
   private drainTimer?: ReturnType<typeof setTimeout>;
-  private tokens = requestBurst;
-  private tokensUpdatedAt = Date.now();
 
   constructor(
     private readonly phone: WebSocket,
@@ -273,24 +281,28 @@ export class Relay {
 
   private sendRequest(upstreamId: string, request: RemoteRequest): void {
     const { type: _type, requestId: _requestId, ...fields } = request;
+    // A report that waited for role confirmation while the phone left (or
+    // started closing) describes a page nobody sees any more: keep its
+    // selection and order, but never let it count as visible.
+    if (request.action === 'panel-state' && !this.phoneIsOpen()) {
+      this.writeUpstream({ ...fields, visible: false, requestId: upstreamId });
+      return;
+    }
     this.writeUpstream({ ...fields, requestId: upstreamId });
   }
 
+  /** The device's rate limit is shared by all its connections. */
   private takeToken(): boolean {
-    const now = Date.now();
-    const refill = ((now - this.tokensUpdatedAt) / 1000) * requestsPerSecond;
-    this.tokens = Math.min(requestBurst, this.tokens + refill);
-    this.tokensUpdatedAt = now;
+    return this.options.takeToken();
+  }
 
-    if (this.tokens < 1) {
-      return false;
-    }
-    this.tokens -= 1;
-    return true;
+  /** False from the moment the phone's socket starts closing. */
+  private phoneIsOpen(): boolean {
+    return this.phoneOpen && this.phone.readyState === this.phone.OPEN;
   }
 
   private sendPhone(message: GatewayMessage, replaceable = false): void {
-    if (!this.phoneOpen || this.phone.readyState !== this.phone.OPEN) {
+    if (!this.phoneIsOpen()) {
       return;
     }
 
@@ -312,6 +324,30 @@ export class Relay {
 
     // Let executing requests answer so their receipts hold real outcomes.
     this.drainTimer = setTimeout(() => this.upstream.destroy(), drainMilliseconds);
+
+    // The upstream stays open while it drains, but nobody sees the page any
+    // more: it must not keep reading conversations (the unread mark).
+    this.withdrawal = 'wanted';
+    this.withdrawVisibility();
+  }
+
+  /**
+   * Tell the listener that this phone's page is no longer visible, with the
+   * remote-only `withdraw-visibility` action: the connection stops showing
+   * any conversation for the unread mark, while its selection stays so
+   * draining requests that act on it still answer. It names no conversation
+   * and is idempotent, so it can neither fail nor select anything. Sent
+   * only after the role is confirmed and after every queued request. The
+   * listener admits it even while this connection's other requests fill
+   * its slots (src/desktop/server.ts). Its reply is not relayed to anyone.
+   */
+  private withdrawVisibility(): void {
+    if (this.withdrawal !== 'wanted' || !this.ready || this.upstream.destroyed) {
+      return;
+    }
+
+    this.withdrawal = 'sent';
+    this.writeUpstream({ action: 'withdraw-visibility', requestId: withdrawalRequestId });
   }
 
   // ---- Listener side ------------------------------------------------------
@@ -357,6 +393,11 @@ export class Relay {
 
     if (isReply && message.requestId === 'role') {
       this.roleAnswered(message);
+      return;
+    }
+
+    if (isReply && message.requestId === withdrawalRequestId) {
+      // Nobody waits for this reply: the phone has left.
       return;
     }
 
@@ -433,6 +474,10 @@ export class Relay {
         this.sendRequest(upstreamId, pending.request);
       }
     }
+
+    // A phone that left during role negotiation: withdraw after its queued
+    // reports, which the listener handles in order.
+    this.withdrawVisibility();
   }
 
   private replyFor(request: RemoteRequest, message: Record<string, unknown>): Reply {

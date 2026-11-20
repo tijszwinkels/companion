@@ -720,6 +720,8 @@ while `turnStartedAt` is present; never keep counting after it disappears.
 Both change together when the turn's work ends; `status` follows a moment
 later, once the turn is saved, so it can briefly still be `running` without
 `turnStartedAt`.
+`unread` (boolean) is the listener's shared unread mark, the same for every
+client; see [unread mark](#unread-mark). Older listeners omit it.
 Each message has `id`, `kind` (`user`, `assistant`, `tool`, or `notice`), `text`,
 `toolName`, `input`, `state` (`running`, `done`, or `error`), and a boolean
 `screenshot` attachment indicator. Optional `createdAt` is when the listener
@@ -1528,6 +1530,84 @@ and preserves the existing no-focus/explicit-focus behavior. Internal sources
 and turn leases keep their current shape and semantics. Update the listener and
 shared UI together to display the explicit external attribution.
 
+### Unread mark
+
+Each conversation has one unread mark, `unread`, kept by the listener and the
+same for every connected client, desktop or remote. It is part of the
+conversation everywhere a conversation is sent: `sessions` in state snapshots,
+`agent-session` and `agent-restored` events, and `previousSessions` /
+`agent-history`. It is saved with the conversation, so it survives a reload, a
+reconnect and a listener restart. A saved conversation without the field (or
+with anything but `true`) loads as `unread: false`. Clients that do not know the
+field ignore it; the current panel, window and phone keep their own read marks
+until they adopt this one.
+
+**Shown on a visible page.** At any moment a conversation counts as shown when
+at least one connection shows it on a visible page:
+
+- **Desktop main view.** The desktop selection (the conversation in the latest
+  desktop `panel-state` with a non-empty `id`) while the connection that
+  reported it says `visible: true` in its latest report. With one panel this is
+  the visible navigation owner's selected conversation. Panels report an empty
+  `id` while hidden, on Activity, Previous sessions or the built-in browser, and
+  a pop-out host while its selection is popped out (the compact rail is shown
+  only then): the main view then shows no conversation.
+- **Desktop pop-out window.** Every conversation in the `popouts` list of a
+  desktop connection whose latest report says `visible: true`. `popouts` lists
+  visible windows only; the window need not be active or focused. The compact
+  rail itself shows no conversation: a popped-out selection is shown by its
+  window.
+- **Remote connection.** The connection's own selection (`id` of its latest
+  `panel-state`) while that report says `visible: true`. A report without
+  `visible` counts as not visible, so a client that never reports it never
+  reads a conversation. See [remote panels](#remote-panels).
+
+Composer or keyboard focus is never required. A desktop report without
+`visible` (older adapters) counts as hidden. A connection that reported as a
+desktop panel can no longer declare the remote role. When a remote client leaves
+while its requests still drain, the gateway sends `withdraw-visibility` for its
+connection at once (see [remote panels](#remote-panels)).
+Only open conversations count: closing a conversation drops every report of it
+(a remote connection's selection is cleared too, also for its controls), so
+after it is reopened a connection has to report it again to show or control it.
+
+**Setting.** When a turn completes successfully, exactly when the listener emits
+`agent-turn-completed` (after the turn's successful save), and no connection
+shows the conversation at that moment, the listener sets `unread: true`. A
+connection that hides or shows the conversation while that save runs therefore
+counts as it is when the save has finished. The mark arrives in the same
+`agent-session` update as the completed status and is saved right after.
+
+Saving a changed mark rewrites only the `unread` field of the saved
+conversation, never the rest of the live conversation, so it cannot store a
+turn's status before that turn's own save has settled it.
+
+**Clearing.** The listener sets `unread: false` and saves it when a connection
+shows the conversation on a visible page: at the moment it selects it while
+visible, and at the moment it reports becoming visible with it selected (or
+opens or reports a visible pop-out window of it). Reports are the only way a
+conversation becomes shown, so the listener checks after every `panel-state`,
+desktop or remote.
+
+Decisions:
+
+| Situation                                                        | Mark                                                                                                                                                                    |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Turn completes successfully, shown on a visible page             | unchanged (read)                                                                                                                                                        |
+| Turn completes successfully, not shown (also: no client)         | set                                                                                                                                                                     |
+| Turn ends in an error (harness error, failed save, tool storage) | unchanged: an earlier unread answer stays unread, an error never sets it                                                                                                |
+| Turn is stopped, or the listener shuts down during it            | unchanged                                                                                                                                                               |
+| Turn started by another agent, a session application or a timer  | same rule as a person's turn: only the outcome and who shows it count                                                                                                   |
+| Several turns in a row (a queued successor, a follow-up)         | each successful turn applies the rule on its own; a set mark stays until the conversation is shown                                                                      |
+| Client disconnects, reconnects or reloads                        | unchanged; the client's first snapshot carries it and its first visible report may clear it                                                                             |
+| Conversation closed                                              | unchanged and saved; `previousSessions` carries it. A mark cleared while the close saves is saved again before the tab goes (a failed save keeps the tab)               |
+| Conversation reopened from Previous sessions                     | restored as saved, after any save still queued from the close; cleared once a connection shows it (a desktop reopen reveals it, which clears it when the panel reports) |
+| Listener restart                                                 | every conversation comes back under Previous sessions with its saved mark                                                                                               |
+
+A mark that cannot be saved stays live and is saved with the conversation's next
+save; the failure is logged. `test/unit/listener-unread.test.ts` holds the rule
+table: turn outcome × who shows the conversation × what happens next.
+
 ### Remote panels
 
 A socket client that relays another device's panel, such as the phone gateway in
@@ -1540,9 +1620,12 @@ Existing clients never send it and keep their current behavior.
 For a remote connection:
 
 - `panel-state` records only which conversation **that connection** shows (`id`,
-  empty for other pages). Focus, `visible`, `navigationToken` and `draftHost` are
-  ignored. It never changes the desktop's selected conversation, speech routing,
-  `go to session` navigation, keyboard delivery guards or draft hosting.
+  empty for other pages) and whether its page is visible (`visible`, a boolean;
+  absent means not visible; anything else is refused). The visible selection
+  clears and prevents the [unread mark](#unread-mark). Focus, `navigationToken`
+  and `draftHost` are ignored. It never changes the desktop's selected
+  conversation, speech routing, `go to session` navigation, keyboard delivery
+  guards or draft hosting.
 - `choose-agent`, `stop-agent-run`, `agent-tool-page` and `agent-history-page` check that connection's
   own selection instead of the desktop selection. The desktop cannot act on a
   conversation merely because a phone shows it, and vice versa.
@@ -1554,6 +1637,12 @@ For a remote connection:
   `agent-draft-result` are refused: they act on the desktop's focused window,
   keyboard, media or composer drafts. So are `coding-defaults` and
   `set-coding-defaults`, which only the desktop Activity page shows.
+- `{"action":"withdraw-visibility"}` (remote connections only; desktop
+  connections are refused) makes the connection show no conversation for the
+  [unread mark](#unread-mark) and keeps its selection. The gateway sends it when
+  its client has left while that client's requests still drain. It names no
+  conversation and is idempotent, so it cannot be refused for a remote
+  connection; the result is `visibility-withdrawn`.
 - `send-agent` text keeps 1–4000 characters, matching the phone protocol.
 - `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
   starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
@@ -1566,6 +1655,17 @@ For a remote connection:
 
 Every result/error envelope now echoes a string `requestId` of at most 128
 characters when the request carried one, for correlation of concurrent replies.
+
+The listener serves at most 16 socket clients at once, remote and desktop
+together; a 17th connection is closed before it receives anything. Each
+connection may have 16 control requests in flight; more are refused with
+"Previous request is still running". `panel-state` and `withdraw-visibility` are
+always admitted and take no slot: their handlers never wait, so each finishes
+right after the read that delivered it, in arrival order. A batch of reports
+therefore never makes a following request look busy, and a gateway withdrawing
+a departed client's visibility never waits for that client's slow requests. The gateway
+uses at most 8 of them (see [its limits](../remote/README.md#security-model)),
+which leaves 8 for desktop panels, observers and tools.
 The Unix socket remains the only listener transport; network access, pairing and
 authentication belong to the separate gateway process.
 

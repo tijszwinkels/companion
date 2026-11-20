@@ -240,6 +240,15 @@ export interface AgentSession {
    */
   lastTurnDurationMs?: number;
   /**
+   * The listener's shared unread mark: true after a turn completed
+   * successfully while no connection showed this conversation on a visible
+   * page, until a connection shows it visibly. Saved with the conversation;
+   * a saved conversation without the field loads as false. Live and
+   * previous conversations from this listener always carry it; absent only
+   * from older listeners. See "Unread mark" in src/desktop/README.md.
+   */
+  unread?: boolean;
+  /**
    * Live-only: an agent tool opened this tab without requesting focus. Clients
    * add it to the rail without selecting it or revealing the panel.
    */
