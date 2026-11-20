@@ -10,6 +10,16 @@
  *
  * The store is framework-free. Components subscribe and re-render on change;
  * every change replaces the top-level state object so identity checks work.
+ *
+ * Unread marks: a conversation's marker is the listener's shared mark (its
+ * `unread` field, src/desktop/README.md "Unread mark") whenever the latest
+ * version of that conversation this page received carries the field, true
+ * or false. A listener with the shared mark sends it with every conversation
+ * in every snapshot and event. A conversation without it (an older
+ * listener) is marked by this Store's own rule instead (`ownUnread`). The
+ * Store tells the listener which conversation it shows and whether the
+ * reader can see it (`panel-state` with `visible`, see `reportSelection`);
+ * that is what clears the shared mark, on every device.
  */
 
 import type {
@@ -64,7 +74,10 @@ export interface AppState {
    */
   selected: string;
   showingPrevious: boolean;
-  /** Conversations whose turn completed while they were not being viewed. */
+  /**
+   * Conversations marked unread: the listener's mark of each conversation
+   * that carries one, else this Store's own rule (see the module comment).
+   */
   unread: Set<string>;
   models?: ModelCatalog;
   modelsError: string;
@@ -111,11 +124,14 @@ export interface StoreOptions {
   /**
    * Whether the selected conversation is shown to the reader now, besides
    * the page being visible. Absent (the phone panel) it always is. The
-   * browser shell's settings screen covers the selected conversation: a turn
-   * completed meanwhile is then marked unread and announced, as for a
-   * conversation that is not selected, and selecting a conversation then
-   * (a started one, underneath the settings screen) keeps its mark until it
-   * is shown.
+   * browser shell's settings screen and, in a narrow window, its Activity
+   * column cover the selected conversation. Meanwhile this page reports it
+   * as not visible to the listener (so the listener's mark is neither
+   * cleared nor kept from being set), a completed turn is announced as for a
+   * conversation that is not selected, and the Store's own rule (an older
+   * listener) marks it unread; selecting a conversation then (a started
+   * one, underneath the settings screen) keeps its own mark until it is
+   * shown. Call `selectionShownChanged` whenever the answer changes.
    */
   selectionShown?: () => boolean;
 }
@@ -133,6 +149,20 @@ export class Store {
   private readonly completedTurns = new Map<string, string>();
   /** Conversations seen in any snapshot or event; new arrivals are marked unread. */
   private readonly seen = new Set<string>();
+  /**
+   * The Store's own unread rule, used only for conversations that carry no
+   * listener mark (an older listener): conversations whose turn completed
+   * while they were not being viewed. See the module comment.
+   */
+  private ownUnread = new Set<string>();
+  /**
+   * The selection report this connection last sent (`panel-state`), or
+   * undefined when none was sent on it yet or the listener dropped it.
+   * A report equal to it is not sent again.
+   */
+  private lastReport?: { id: string; visible: boolean };
+  /** A deferred check for a selection that became visible (see `visibilityChanged`). */
+  private visibleCheck?: ReturnType<typeof setTimeout>;
   private receivedSnapshot = false;
   /** Set just before this phone asks to reopen a conversation. */
   revealNextRestore = '';
@@ -181,6 +211,8 @@ export class Store {
     );
     this.navigation = new Navigation((page) => this.applyPage(page));
     this.state = { ...this.state, connection: this.connection.state };
+    // The page's visibility is half of what this page reports as visible.
+    document.addEventListener('visibilitychange', () => this.visibilityChanged());
     if (this.connection.paired) {
       this.loadDrafts();
     } else {
@@ -246,17 +278,20 @@ export class Store {
   private applyPage(page: PhonePage): void {
     this.pageRevision += 1;
     const id = this.state.sessions.has(page.selected) ? page.selected : '';
-    const unread = new Set(this.state.unread);
-    // Selecting shows the conversation, which clears its mark; unless it is
-    // selected where the reader does not see it (see `selectionShown`).
+    const ownUnread = new Set(this.ownUnread);
+    // Selecting shows the conversation, which clears its own mark; unless it
+    // is selected where the reader does not see it (see `selectionShown`).
+    // The listener's mark is cleared by the listener when this page reports
+    // the selection as visible.
     if (this.selectionShown()) {
-      unread.delete(id);
+      ownUnread.delete(id);
     }
+    this.ownUnread = ownUnread;
     this.update({
       selected: id,
       showingPrevious: this.connection.paired && page.showingPrevious,
       actions: id === this.state.selected ? this.state.actions : undefined,
-      unread,
+      unread: this.unreadMarks(this.state.sessions),
     });
     this.reportSelection();
   }
@@ -270,21 +305,85 @@ export class Store {
   }
 
   /**
-   * Tell the listener which conversation this phone shows. It only scopes this
-   * phone's choice/stop/tool-page controls; the desktop selection is untouched.
+   * Tell the listener which conversation this page shows, and whether the
+   * reader can see it (`visible`). The selection scopes this page's
+   * choice/stop/tool-page controls (the desktop selection is untouched);
+   * `visible` decides the shared unread mark: while it is true the
+   * conversation counts as read on every device.
+   *
+   * `visible` is true only while the page is visible
+   * (`document.visibilityState`), a conversation is selected and it is shown
+   * to the reader (`selectionShown`: not covered in the browser shell). The
+   * report is sent after this connection's first snapshot and then whenever
+   * the selection or `visible` changes, never twice the same on one
+   * connection.
    */
   private reportSelection(): void {
-    if (this.state.connection.status !== 'online') {
+    if (this.state.connection.status !== 'online' || !this.receivedSnapshot) {
       return;
     }
+
     const id = this.state.sessions.has(this.state.selected) ? this.state.selected : '';
-    void this.request('panel-state', { id }, { quiet: true }).catch(() => {});
+    const visible = id !== '' && this.selectionVisible();
+    const last = this.lastReport;
+    if (last && last.id === id && last.visible === visible) {
+      return;
+    }
+
+    const report = { id, visible };
+    this.lastReport = report;
+    void this.request('panel-state', report, { quiet: true }).catch(() => {
+      // Not delivered (connection lost, or refused): the next change is
+      // reported in full. A reconnect reports after its snapshot anyway.
+      if (this.lastReport === report) {
+        this.lastReport = undefined;
+      }
+    });
+  }
+
+  /**
+   * The page's visibility or `selectionShown` may have changed; report the
+   * selection again if what the reader sees changed.
+   *
+   * Becoming hidden is reported at once, so a turn that completes right
+   * after is not counted as seen. Becoming visible is checked once the
+   * current event has finished (a zero-delay timer): a change that hides a
+   * cover often arrives together with a change of selection (browser Back
+   * from the browser shell's settings screen goes to another conversation),
+   * and the conversation that was only underneath the cover must not be
+   * reported as seen in between. Several changes in a row are checked once.
+   */
+  private visibilityChanged(): void {
+    const id = this.state.sessions.has(this.state.selected) ? this.state.selected : '';
+    const visible = id !== '' && this.selectionVisible();
+    if (!visible) {
+      this.reportSelection();
+      return;
+    }
+    if (this.visibleCheck !== undefined) {
+      return;
+    }
+    this.visibleCheck = setTimeout(() => {
+      this.visibleCheck = undefined;
+      this.reportSelection();
+    }, 0);
+  }
+
+  /**
+   * The answer of `selectionShown` may have changed (the browser shell's
+   * settings screen or narrow Activity column came or went). Reports the
+   * selection again when needed; calling it without a change sends nothing.
+   */
+  selectionShownChanged(): void {
+    this.visibilityChanged();
   }
 
   private online(): void {
     // Wait for this connection's authoritative snapshot before reporting a
     // selection: the old conversation may have been closed while offline.
+    // Nothing was reported on this connection yet.
     this.receivedSnapshot = false;
+    this.lastReport = undefined;
   }
 
   private connectionChanged(connection: ConnectionState): void {
@@ -300,6 +399,8 @@ export class Store {
     this.draftRevisions.clear();
     this.completedTurns.clear();
     this.seen.clear();
+    this.ownUnread = new Set();
+    this.lastReport = undefined;
     this.receivedSnapshot = false;
     this.revealNextRestore = '';
     this.navigation.reset();
@@ -560,6 +661,13 @@ export class Store {
       map.set(session.id, session);
     }
 
+    // A reported conversation that is no longer open was dropped by the
+    // listener with its close: shown again after a reopen, it is reported
+    // again (as in removeSession).
+    if (this.lastReport && this.lastReport.id !== '' && !map.has(this.lastReport.id)) {
+      this.lastReport = undefined;
+    }
+
     let selected = this.state.selected;
     if (selected && !map.has(selected)) {
       this.toast(
@@ -575,7 +683,7 @@ export class Store {
     }
     const firstSnapshot = !this.receivedSnapshot;
     this.receivedSnapshot = true;
-    const unread = this.observeCompletions(sessions, selected);
+    this.ownUnread = this.observeCompletions(sessions, selected);
 
     // A new listener run starts a new Activity history.
     let activity = this.state.activity;
@@ -599,7 +707,7 @@ export class Store {
       previous: previousSessions ?? [],
       selected,
       activity,
-      unread,
+      unread: this.unreadMarks(map),
       actions: firstSnapshot ? undefined : this.state.actions,
     });
 
@@ -652,20 +760,24 @@ export class Store {
     this.seen.add(update.id);
     const reveal = this.receivedSnapshot && complete && revealRestored;
 
-    let unread = this.observeCompletions([session], reveal ? update.id : this.state.selected);
+    let ownUnread = this.observeCompletions([session], reveal ? update.id : this.state.selected);
     if (newlySeen && !reveal && update.id !== this.state.selected) {
-      unread = new Set(unread).add(update.id);
+      ownUnread = new Set(ownUnread).add(update.id);
     }
-    this.update({ sessions, order, unread });
+    this.ownUnread = ownUnread;
+    this.update({ sessions, order, unread: this.unreadMarks(sessions) });
 
     if (reveal) {
       this.open(update.id);
     }
   }
 
-  /** Mark conversations unread when a new turn completed out of view. */
+  /**
+   * The Store's own rule (`ownUnread`): mark conversations unread when a new
+   * turn completed out of view. Returns the new set; the caller stores it.
+   */
   private observeCompletions(sessions: AgentSession[], viewed: string): Set<string> {
-    let unread = this.state.unread;
+    let unread = this.ownUnread;
     for (const session of sessions) {
       const turn = session.completedTurnId;
       if (!turn || this.completedTurns.get(session.id) === turn) {
@@ -689,10 +801,16 @@ export class Store {
       sessions,
       order: this.state.order.filter((candidate) => candidate !== id),
     };
-    const unread = new Set(this.state.unread);
-    unread.delete(id);
-    change.unread = unread;
+    const ownUnread = new Set(this.ownUnread);
+    ownUnread.delete(id);
+    this.ownUnread = ownUnread;
+    change.unread = this.unreadMarks(sessions);
     this.completedTurns.delete(id);
+    // Closing drops every report of the conversation at the listener: shown
+    // again after a reopen, it has to be reported again.
+    if (this.lastReport?.id === id) {
+      this.lastReport = undefined;
+    }
     if (this.state.selected === id) {
       change.selected = '';
       change.actions = undefined;
@@ -700,6 +818,32 @@ export class Store {
     }
     this.update(change);
     this.pruneDrafts(new Set(sessions.keys()));
+  }
+
+  /**
+   * The unread markers of the open conversations: the listener's mark of
+   * each conversation that carries one (`unread`, true or false), else the
+   * Store's own rule (`ownUnread`). See the module comment.
+   */
+  private unreadMarks(sessions: Map<string, AgentSession>): Set<string> {
+    const marks = new Set<string>();
+    for (const [id, session] of sessions) {
+      let marked = this.ownUnread.has(id);
+      if (typeof session.unread === 'boolean') {
+        marked = session.unread;
+      }
+      if (marked) {
+        marks.add(id);
+      }
+    }
+
+    // Unchanged marks keep the current set, so whoever compares it by
+    // identity sees no change (as before the listener's mark).
+    const current = this.state.unread;
+    if (marks.size === current.size && [...marks].every((id) => current.has(id))) {
+      return current;
+    }
+    return marks;
   }
 
   /** Whether the reader sees the selected conversation now: the page is visible and shows it. */

@@ -106,6 +106,34 @@ function continueStartup(): void {
   }
 }
 
+/**
+ * Mark each of these conversations read once its turn has completed, as if
+ * a device had shown it then, so the demo starts with only the remaining
+ * finished conversation unread (the listener's shared mark,
+ * src/desktop/README.md "Unread mark"). Waits at most 60 seconds, checking
+ * every 100 ms; stops when the demo stops.
+ */
+async function markReadWhenDone(
+  agentSessions: AgentSessions,
+  ids: string[],
+  signal: AbortSignal,
+): Promise<void> {
+  const waiting = new Set(ids);
+  for (let waited = 0; waited < 60_000 && waiting.size > 0; waited += 100) {
+    if (signal.aborted) {
+      return;
+    }
+    for (const session of agentSessions.snapshot()) {
+      const done = session.status === 'completed' && session.turnStartedAt === undefined;
+      if (waiting.has(session.id) && done && session.unread === true) {
+        agentSessions.markRead(session.id);
+        waiting.delete(session.id);
+      }
+    }
+    await delay(100);
+  }
+}
+
 directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
 const controller = new AbortController();
 
@@ -471,9 +499,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
 
   // Several conversations for the list: coding questions, a quick question
   // and one whose turn keeps running (see scriptedRun). Their answers
-  // complete before the browser pairs, so the browser shows them unread at
-  // first (the phone Store's rule for a fresh page); opening one marks it
-  // read.
+  // complete before the browser pairs, so the listener marks them unread
+  // (no page shows them). All but the city trip are then marked read, as if
+  // read on another device before (see `markReadWhenDone`), so the browser
+  // shows one unread conversation, also after a reload; opening it marks it
+  // read on every page.
   //
   // The invoice export is asked "yesterday" (the shifted clock) and, once
   // that turn has ended, continued today, so it shows both kinds of time.
@@ -490,10 +520,18 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   continueStartup();
   sessions.followUp(invoice, 'Thanks. Is anything left to do today?', controller.signal);
 
-  sessions.start(frame('🐛 Why does the list test fail? Please fix the bug.'), controller.signal);
+  const bug = sessions.start(
+    frame('🐛 Why does the list test fail? Please fix the bug.'),
+    controller.signal,
+  );
   sessions.start(frame('🗺️ Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
-  sessions.start(frame('Notification rules: summarise them'), controller.signal, 'quickQuestion');
+  const rules = sessions.start(
+    frame('Notification rules: summarise them'),
+    controller.signal,
+    'quickQuestion',
+  );
+  void markReadWhenDone(sessions, [invoice, bug, rules], controller.signal);
 
   // ---- Gateway --------------------------------------------------------------------
 

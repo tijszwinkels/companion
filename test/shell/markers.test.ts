@@ -4,22 +4,37 @@ import test from 'node:test';
 import type { AgentSession } from '../../src/agents/types.ts';
 
 /**
- * The conversation list's markers (working, answer not seen), checked with
- * the rows of the README's "Markers" table (integrations/shell/README.md)
- * against the real phone Store, unchanged, fed the events the remote role
- * sends, and read through the list's own derivation (`listEntries`). The
- * browser suite (list.test.ts) checks the same rows that a browser can
- * time through the real gateway; this one also covers the orderings it
- * cannot: a hidden page, and snapshots after reconnecting.
+ * The conversation list's markers (working, answer not seen) and the page's
+ * visible report, checked with the rows of the README's three tables
+ * (integrations/shell/README.md, "Markers": marker source, visible report,
+ * fallback for an older listener) against the real phone Store, unchanged,
+ * fed the events the remote role sends, and read through the list's own
+ * derivation (`listEntries`). The browser suites (list.test.ts,
+ * shared-unread.test.ts) check what a browser can time through the real
+ * gateway and listener; this one also covers the orderings they cannot:
+ * snapshots after reconnecting, a refused report, a cover and a selection
+ * changing in one event.
  *
  * The Store runs in Node with stand-ins for the few browser objects it
- * touches (history, storage, visibility); no network is used.
+ * touches (history, storage, visibility and its event); no network is used.
+ * The Connection's `request` is replaced to record the `panel-state`
+ * reports the Store sends.
  */
 
 // ---- Browser stand-ins, before the Store is loaded ---------------------------------
 
 const memory = new Map<string, string>();
 const page = { visibilityState: 'visible' as 'visible' | 'hidden' };
+/** The Stores' `visibilitychange` listeners (the Connection's too). */
+const visibilityListeners: (() => void)[] = [];
+
+/** The page becomes hidden or visible: the browser's event, as a tab switch fires it. */
+function setVisibility(state: 'visible' | 'hidden'): void {
+  page.visibilityState = state;
+  for (const listener of visibilityListeners) {
+    listener();
+  }
+}
 
 Object.assign(globalThis, {
   window: {
@@ -37,7 +52,11 @@ Object.assign(globalThis, {
     },
   },
   document: {
-    addEventListener() {},
+    addEventListener(type: string, listener: () => void) {
+      if (type === 'visibilitychange') {
+        visibilityListeners.push(listener);
+      }
+    },
     get visibilityState() {
       return page.visibilityState;
     },
@@ -56,6 +75,7 @@ const { listEntries } = await import('../../integrations/shell/src/list/entries.
 
 type Status = AgentSession['status'];
 
+/** A conversation as an older listener sends it: without `unread`. */
 function session(id: string, status: Status, completedTurnId?: string): AgentSession {
   return {
     id,
@@ -69,11 +89,65 @@ function session(id: string, status: Status, completedTurnId?: string): AgentSes
   } as AgentSession;
 }
 
+/** A conversation as a listener with the shared mark sends it: always with `unread`. */
+function marked(
+  id: string,
+  status: Status,
+  unread: boolean,
+  completedTurnId?: string,
+): AgentSession {
+  return { ...session(id, status, completedTurnId), unread };
+}
+
 /** The Store's private event entry points, as the Connection calls them. */
 interface StoreInternals {
   apply(event: unknown): void;
   online(): void;
   connectionChanged(state: unknown): void;
+}
+
+/** One `panel-state` report as the Store sent it. */
+interface Report {
+  id: string;
+  visible?: boolean;
+}
+
+/**
+ * Make the Store's connection "online" and record its `panel-state` reports
+ * (nothing is sent anywhere). `refuseNext` makes the next request fail, as
+ * a refusal by the gateway would.
+ */
+function recordReports(store: InstanceType<typeof Store>) {
+  const reports: Report[] = [];
+  const control = { refuseNext: false };
+  const connection = store.connection as unknown as {
+    request(action: string, parameters: Record<string, unknown>): Promise<unknown>;
+  };
+  connection.request = async (action, parameters) => {
+    if (control.refuseNext) {
+      control.refuseNext = false;
+      throw Error('Too many requests');
+    }
+    if (action === 'panel-state') {
+      reports.push({ ...(parameters as unknown as Report) });
+    }
+    return {};
+  };
+  internals(store).connectionChanged({
+    status: 'online',
+    message: '',
+    retryAt: 0,
+    deviceName: 'Browser',
+  });
+  return { reports, control };
+}
+
+/** Let a rejected request's handler and the Store's deferred visible check run. */
+async function settle(context: { mock: { timers: { tick(milliseconds: number): void } } }) {
+  await Promise.resolve();
+  await Promise.resolve();
+  context.mock.timers.tick(0);
+  await Promise.resolve();
 }
 
 function internals(store: InstanceType<typeof Store>): StoreInternals {
@@ -123,7 +197,8 @@ function marks(store: InstanceType<typeof Store>): Record<string, string> {
 
 // ---- The table --------------------------------------------------------------------
 
-test('markers: each row of the README table, in one sequence against the real Store', () => {
+test('fallback for an older listener: each row of its table, in one sequence', () => {
+  // Conversations without `unread` (`session()`): the Store's own rule.
   page.visibilityState = 'visible';
   // The shell's settings screen covers the selected conversation while
   // `settingsShown` (the Store's `selectionShown` option, as main.tsx sets it).
@@ -243,4 +318,290 @@ test('markers: each row of the README table, in one sequence against the real St
     deviceName: '',
   });
   assert.equal(store.state.unread.size, 0, 'sign-out');
+});
+
+// ---- Marker source ------------------------------------------------------------------
+
+test('marker source: the listener’s mark wherever a conversation carries it', () => {
+  page.visibilityState = 'visible';
+  const store = new Store({ activity: false });
+  const { reports } = recordReports(store);
+  internals(store).online();
+
+  // Listener sends `unread: true` / `false`: shown / not shown, whatever the
+  // page's own rule says (a first snapshot would mark both completed ones).
+  snapshot(store, [
+    marked('a', 'completed', false, 'a1'),
+    marked('b', 'completed', true, 'b1'),
+    marked('c', 'running', false),
+  ]);
+  assert.deepEqual(marks(store), { a: '', b: 'U', c: 'W' }, 'as the listener sends it');
+
+  // Showing a conversation does not clear its mark by itself: the page
+  // reports it as visible and the listener clears it.
+  store.open('b');
+  assert.deepEqual(reports.at(-1), { id: 'b', visible: true });
+  assert.equal(marks(store).b, 'U', 'still marked until the listener says otherwise');
+  update(store, marked('b', 'completed', false, 'b1'));
+  assert.equal(marks(store).b, '', 'cleared by the listener');
+
+  // A turn completes while another conversation is shown: the listener sets
+  // the mark; the page's own toast announces it.
+  update(store, marked('a', 'completed', true, 'a2'));
+  internals(store).apply({ type: 'agent-turn-completed', id: 'a' });
+  assert.equal(marks(store).a, 'U', 'not shown: marked');
+  assert.ok(store.state.toasts.some((toast) => toast.text === 'Conversation a — answer ready'));
+
+  // A turn completes in the shown conversation, page visible: not marked,
+  // no toast.
+  const toasts = store.state.toasts.length;
+  update(store, marked('b', 'completed', false, 'b2'));
+  internals(store).apply({ type: 'agent-turn-completed', id: 'b' });
+  assert.equal(marks(store).b, '', 'shown: not marked');
+  assert.equal(store.state.toasts.length, toasts, 'no toast');
+
+  // Read on another device: the listener's update clears it here.
+  update(store, marked('a', 'completed', false, 'a2'));
+  assert.equal(marks(store).a, '', 'read elsewhere');
+
+  // A conversation started elsewhere, still running: not marked (the own
+  // rule would mark a new arrival).
+  update(store, marked('d', 'running', false));
+  assert.equal(marks(store).d, 'W', 'started elsewhere');
+
+  // Reopened elsewhere: the saved mark, until a device shows it.
+  internals(store).apply({ type: 'agent-removed', id: 'a' });
+  internals(store).apply({ type: 'agent-restored', session: marked('a', 'completed', true, 'a3') });
+  assert.equal(marks(store).a, 'U', 'reopened elsewhere with its saved mark');
+
+  // Reopened from this page's Previous sessions: selected (and reported
+  // visible); the saved mark shows until the listener clears it.
+  internals(store).apply({ type: 'agent-removed', id: 'c' });
+  store.revealNextRestore = 'c';
+  internals(store).apply({ type: 'agent-restored', session: marked('c', 'completed', true, 'c1') });
+  assert.equal(store.state.selected, 'c');
+  assert.deepEqual(reports.at(-1), { id: 'c', visible: true }, 'reported as shown');
+  update(store, marked('c', 'completed', false, 'c1'));
+  assert.equal(marks(store).c, '', 'reopened here: cleared by the listener');
+
+  // Reconnect: as the reconnect snapshot sends it, also for changes made
+  // while offline (a read elsewhere, a turn completed meanwhile).
+  internals(store).online();
+  snapshot(store, [
+    marked('a', 'completed', false, 'a3'),
+    marked('b', 'completed', true, 'b3'),
+    marked('c', 'completed', false, 'c1'),
+    marked('d', 'completed', true, 'd1'),
+  ]);
+  assert.deepEqual(marks(store), { a: '', b: 'U', c: '', d: 'U' }, 'reconnect');
+
+  // Reload: a new page (a new Store) shows what the listener sends; an
+  // answer completed before stays marked until shown.
+  const reloaded = new Store({ activity: false });
+  recordReports(reloaded);
+  internals(reloaded).online();
+  snapshot(reloaded, [marked('a', 'completed', false, 'a3'), marked('b', 'completed', true, 'b3')]);
+  assert.deepEqual(marks(reloaded), { a: '', b: 'U' }, 'reload');
+});
+
+test('marker source: told apart per conversation, by the field alone', () => {
+  page.visibilityState = 'visible';
+  const store = new Store({ activity: false });
+  recordReports(store);
+  internals(store).online();
+
+  // An older listener (no field): the own rule marks the completed one on
+  // the first snapshot; one that carries the field is the listener's.
+  snapshot(store, [session('old', 'completed', 'o1'), marked('new', 'completed', false, 'n1')]);
+  assert.deepEqual(marks(store), { old: 'U', new: '' });
+
+  // The field arrives later for the old one: from then on it is the
+  // listener's mark; without it again, the own rule's.
+  update(store, marked('old', 'completed', false, 'o1'));
+  assert.equal(marks(store).old, '', 'listener says read');
+  update(store, session('old', 'completed', 'o1'));
+  assert.equal(marks(store).old, 'U', 'own rule again: its unseen answer');
+});
+
+// ---- Visible report -----------------------------------------------------------------
+
+test('visible report: each row of the README table', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  page.visibilityState = 'visible';
+
+  // The shell's covers, as main.tsx wires them: the settings screen and the
+  // Activity column over the chat in a narrow window.
+  let settingsShown = false;
+  let overlay = false;
+  const store = new Store({
+    activity: false,
+    selectionShown: () => !settingsShown && !overlay,
+  });
+  const { reports, control } = recordReports(store);
+  const covers = (change: () => void) => {
+    change();
+    store.selectionShownChanged();
+  };
+  /** The reports sent since the last call. */
+  let seen = 0;
+  const sent = () => {
+    const fresh = reports.slice(seen);
+    seen = reports.length;
+    return fresh;
+  };
+
+  const conversations = [
+    marked('a', 'completed', false, 'a1'),
+    marked('b', 'completed', false, 'b1'),
+    marked('c', 'running', false),
+  ];
+
+  // visible | none | first snapshot after connecting → {"", false}
+  internals(store).online();
+  snapshot(store, conversations);
+  assert.deepEqual(sent(), [{ id: '', visible: false }], 'first snapshot');
+
+  // visible | none | tab hidden, then visible again → nothing
+  setVisibility('hidden');
+  setVisibility('visible');
+  await settle(context);
+  assert.deepEqual(sent(), [], 'nothing selected: visibility changes nothing');
+
+  // visible | none | select A → {A, true} at once
+  store.open('a');
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'select A');
+
+  // visible | A, shown | select A again → nothing
+  store.open('a');
+  await settle(context);
+  assert.deepEqual(sent(), [], 'select A again');
+
+  // visible | A, shown | select B → {B, true} at once
+  store.open('b');
+  assert.deepEqual(sent(), [{ id: 'b', visible: true }], 'select B');
+  store.open('a');
+  sent();
+
+  // visible | A, shown | the gear shows the settings screen → {A, false} at once
+  covers(() => (settingsShown = true));
+  assert.deepEqual(sent(), [{ id: 'a', visible: false }], 'settings over A');
+
+  // visible | A, behind the settings screen | the gear again → {A, true}
+  // after the click (Workspace: settings hidden, then the shown page opened)
+  covers(() => (settingsShown = false));
+  store.open('a');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'back with the gear');
+
+  // visible | A, behind the settings screen | browser Back to B → {B, true}
+  // only. The settings screen hears popstate first (main.tsx), the Store's
+  // navigation second, in one event.
+  covers(() => (settingsShown = true));
+  sent();
+  covers(() => (settingsShown = false));
+  store.open('b');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'b', visible: true }], 'Back to B: never A visible');
+
+  // visible | A, behind the settings screen | B chosen in the list → {B, true}
+  // only (the list leaves the settings screen, then opens B).
+  store.open('a');
+  covers(() => (settingsShown = true));
+  sent();
+  covers(() => (settingsShown = false));
+  store.open('b');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'b', visible: true }], 'B from the list: never A visible');
+
+  // visible | A, behind the settings screen | a started conversation C is
+  // selected underneath → {C, false}
+  store.open('a');
+  covers(() => (settingsShown = true));
+  sent();
+  store.open('c');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'c', visible: false }], 'C underneath the settings screen');
+  covers(() => (settingsShown = false));
+  store.open('a');
+  await settle(context);
+  sent();
+
+  // visible | A, shown, narrow window | the Activity column is shown over it
+  // → {A, false} at once; hidden again → {A, true}
+  covers(() => (overlay = true));
+  assert.deepEqual(sent(), [{ id: 'a', visible: false }], 'narrow column over A');
+  covers(() => (overlay = false));
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'column hidden');
+
+  // visible | A, shown, column beside it (wide) | window narrowed under
+  // 640 px, then widened → {A, false}, then {A, true}. (The workspace turns
+  // the window width into `overlay`; it tells the Store only on a change.)
+  covers(() => (overlay = true));
+  covers(() => (overlay = false));
+  await settle(context);
+  assert.deepEqual(
+    sent(),
+    [
+      { id: 'a', visible: false },
+      { id: 'a', visible: true },
+    ],
+    'narrowed and widened',
+  );
+
+  // visible | A, shown, column hidden or beside it | window resized without
+  // changing the cover, a divider dragged → nothing (no change is told; a
+  // check without a change sends nothing either)
+  for (let step = 0; step < 20; step++) {
+    store.selectionShownChanged();
+  }
+  await settle(context);
+  assert.deepEqual(sent(), [], 'no change, no report');
+
+  // visible | A, shown | tab hidden, then visible again → {A, false} at
+  // once, then {A, true}
+  setVisibility('hidden');
+  assert.deepEqual(sent(), [{ id: 'a', visible: false }], 'hidden');
+  setVisibility('visible');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'visible again');
+
+  // hidden | A | a reconnect → {A, false} after the new snapshot
+  setVisibility('hidden');
+  sent();
+  internals(store).online();
+  assert.deepEqual(sent(), [], 'nothing before the snapshot');
+  snapshot(store, conversations);
+  assert.deepEqual(sent(), [{ id: 'a', visible: false }], 'reconnect while hidden');
+  setVisibility('visible');
+  await settle(context);
+  sent();
+
+  // visible | A, shown | a reconnect → {A, true} after the new snapshot
+  internals(store).online();
+  snapshot(store, conversations);
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'reconnect while visible');
+
+  // visible | A, shown | A closed elsewhere, reopened and selected again →
+  // {A, true} again (the listener dropped its report with the close)
+  internals(store).apply({ type: 'agent-removed', id: 'a' });
+  internals(store).apply({
+    type: 'agent-restored',
+    session: marked('a', 'completed', false, 'a1'),
+  });
+  sent();
+  store.open('a');
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'reopened and shown');
+
+  // visible | A, shown, the report was refused | a check without a change →
+  // {A, true} again
+  store.open('b');
+  sent();
+  control.refuseNext = true;
+  store.open('a');
+  await settle(context);
+  assert.deepEqual(sent(), [], 'refused: nothing recorded');
+  store.selectionShownChanged();
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'sent again after the refusal');
 });

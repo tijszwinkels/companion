@@ -6,6 +6,9 @@
  * - Connect, authenticate with the first message, and reconnect with backoff
  *   after network loss, sleep or an unavailable listener.
  * - Correlate requests with replies by request ID.
+ * - Show the limit page instead of retrying when the gateway refuses the
+ *   connection over a named connection limit (close code 4429 with the
+ *   reason `device` or `total`); only the reader's Retry connects again.
  *
  * Deliberate non-behavior: a request that was sent but not answered before the
  * connection dropped is reported as *uncertain* and is never resent. The user
@@ -16,13 +19,20 @@
 import type {
   EngineEvent,
   GatewayMessage,
+  OverloadedReason,
   RemoteAction,
   RemoteActionParameters,
 } from '../../../src/remote/protocol.ts';
 import { mutatingActions } from '../../../src/remote/protocol.ts';
 
 export type ConnectionStatus =
-  'unpaired' | 'connecting' | 'online' | 'reconnecting' | 'engine-unavailable' | 'offline';
+  | 'unpaired'
+  | 'connecting'
+  | 'online'
+  | 'reconnecting'
+  | 'engine-unavailable'
+  | 'offline'
+  | 'limited';
 
 export interface ConnectionState {
   status: ConnectionStatus;
@@ -31,7 +41,25 @@ export interface ConnectionState {
   /** Epoch milliseconds of the next automatic attempt, when waiting. */
   retryAt: number;
   deviceName: string;
+  /**
+   * Only while `status` is `limited`: which connection limit the gateway
+   * named when it refused this page (close code 4429). See `limitMessages`.
+   */
+  limit?: OverloadedReason;
 }
+
+/**
+ * What the limit page says for each limit the gateway names (close code 4429
+ * with the reason `device` or `total`, src/remote/README.md "Limits"). It
+ * names no other device. A refusal without one of these reasons (an older
+ * gateway) keeps the earlier behaviour: retry with backoff.
+ */
+export const limitMessages: Record<OverloadedReason, string> = {
+  device:
+    'This browser already has four Companion tabs connected. Close one you do not need, then Retry.',
+  total:
+    'Companion already has eight browsers and phones connected. Close one you do not need, then Retry.',
+};
 
 export interface DeviceCredential {
   token: string;
@@ -270,6 +298,10 @@ export class Connection {
       ...change,
       deviceName: this.credential?.deviceName ?? '',
     };
+    // The named limit belongs to the limit page only.
+    if (this.state.status !== 'limited') {
+      delete this.state.limit;
+    }
     this.onState(this.state);
   }
 
@@ -421,6 +453,21 @@ export class Connection {
     }
 
     if (code === closeCodes.overloaded) {
+      if (reason === 'device' || reason === 'total') {
+        // A named limit: say which, and wait for the reader's Retry. An
+        // automatic retry would only be refused again while the other
+        // connections stay open, and open connections are never closed to
+        // make room.
+        clearTimeout(this.retryTimer);
+        this.attempt = 0;
+        this.setState({
+          status: 'limited',
+          message: limitMessages[reason],
+          retryAt: 0,
+          limit: reason,
+        });
+        return;
+      }
       this.scheduleRetry('reconnecting', 'Too many phones are connected. Retrying…');
       return;
     }
@@ -490,6 +537,11 @@ export class Connection {
   private networkLost(): void {
     clearTimeout(this.retryTimer);
     this.retireSocket();
+    if (this.state.status === 'limited') {
+      // The limit page stays: going offline and online again must not
+      // reconnect by itself (see retryAfterLimit).
+      return;
+    }
     if (this.credential) {
       this.setState({ status: 'offline', message: 'This phone is offline.', retryAt: 0 });
     }
@@ -508,9 +560,30 @@ export class Connection {
     this.retryTimer = setTimeout(() => this.open(), delay);
   }
 
-  /** Try immediately (user tap, network back, app foregrounded). */
+  /**
+   * The limit page's Retry: one new attempt. Refused again, the page shows
+   * the limit again; nothing retries by itself meanwhile. The status leaves
+   * `limited` first, so an attempt that finds the network down shows
+   * "offline" (and reconnects when the network returns) instead of the
+   * limit page.
+   */
+  retryAfterLimit(): void {
+    if (!this.credential || this.stopped || this.state.status !== 'limited') {
+      return;
+    }
+    this.setState({ status: 'connecting', message: 'Connecting to Companion…', retryAt: 0 });
+    this.open();
+  }
+
+  /**
+   * Try immediately (user tap, network back, app foregrounded). Never while
+   * the limit page is shown: only its Retry (`retryAfterLimit`) connects then.
+   */
   connectNow(): void {
     if (!this.credential || this.stopped) {
+      return;
+    }
+    if (this.state.status === 'limited') {
       return;
     }
     if (this.socket?.readyState === WebSocket.OPEN && this.state.status === 'online') {

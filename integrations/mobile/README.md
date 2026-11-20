@@ -65,17 +65,17 @@ and validation limits.
 
 ## Structure
 
-| File                           | Responsibility                                                     |
-| ------------------------------ | ------------------------------------------------------------------ |
-| `src/connection.ts`            | WebSocket, authentication, backoff, request correlation, no resend |
-| `src/store.ts`                 | Protocol state: snapshots, incremental messages, Activity paging   |
-| `src/markdown.ts`              | The desktop panel's vendored markdown-it, same safety settings     |
-| `src/components/*.tsx`         | Screens: pairing, rail, Previous, conversation, Activity, settings |
-| `src/styles.css`               | Desktop dark theme, safe areas, touch sizes, keyboard-aware layout |
-| `../chat-ui/`                  | Conversation styles and icons, in a page-neutral place             |
-| `build.ts`                     | esbuild bundle (Preact) plus static files                          |
-| `demo.ts`                      | Synthetic end-to-end demo                                          |
-| `../../src/remote/protocol.ts` | Typed wire contract shared with the gateway                        |
+| File                           | Responsibility                                                                                        |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `src/connection.ts`            | WebSocket, authentication, backoff, request correlation, no resend; limit refusals                    |
+| `src/store.ts`                 | Protocol state: snapshots, incremental messages, Activity paging; unread marks and the visible report |
+| `src/markdown.ts`              | The desktop panel's vendored markdown-it, same safety settings                                        |
+| `src/components/*.tsx`         | Screens: pairing, rail, Previous, conversation, Activity, settings                                    |
+| `src/styles.css`               | Desktop dark theme, safe areas, touch sizes, keyboard-aware layout                                    |
+| `../chat-ui/`                  | Conversation styles and icons, in a page-neutral place                                                |
+| `build.ts`                     | esbuild bundle (Preact) plus static files                                                             |
+| `demo.ts`                      | Synthetic end-to-end demo                                                                             |
+| `../../src/remote/protocol.ts` | Typed wire contract shared with the gateway                                                           |
 
 Stack: Preact (≈10 KB) and esbuild, both pinned dev dependencies; the bundle is
 self-contained static files. `npm run check` typechecks the app with its own
@@ -95,6 +95,11 @@ sign-out/revocation clearing, browser Back, modal focus/Escape, Claude models
 with fixed effort, rail reorder/close/reopen and a short 390×400 viewport.
 `test/mobile/apps.test.ts` pairs, lists a synthetic local app and opens it in a new
 tab on its own origin without opener access or the panel's storage.
+`test/mobile/limit-and-unread.test.ts` checks the listener's unread mark on
+the phone (kept after a reload, cleared by another tab showing it) and the
+limit page (the fifth tab, Retry after a tab closed, the ninth connection);
+the rule tables are played in Node in `test/shell/markers.test.ts` and
+`test/shell/limit-page.test.ts`.
 
 Not tested by this suite: physical iOS Safari, the on-screen keyboard, actual safe-area insets,
 a real phone on Tailscale, or long-running battery/network behavior.
@@ -139,6 +144,52 @@ An application heartbeat also detects silently dead OPEN sockets within about
 35 seconds while browser timers run, including a final five-second probe. New
 mutations are refused while that probe waits for a reply. Background timer suspension is recovered
 on foregrounding; this is not a promise of background connectivity on iOS.
+
+## Unread marks and the visible report
+
+The rail's unread markers (the dot and the menu button's count) are the
+listener's shared unread mark, the same on every device: set when a turn
+completes successfully while no device shows that conversation on a visible
+page, cleared when one does, saved with the conversation, so they survive a
+reload and a reconnect. The rules are the browser shell's, because the two
+share the Store (`src/store.ts`): see
+[marker source and visible report](../shell/README.md#marker-source). In
+short:
+
+- A conversation's marker is its `unread` field whenever the conversation
+  as last received carries it; without it (an older listener) the Store's
+  own rule marks it, as before (completed turns this page has not seen since
+  it loaded).
+- The phone reports `panel-state` `{id, visible}`: `visible` is true while
+  the page is visible and a conversation page is the one on screen (the
+  selected conversation). Activity and Previous sessions report no
+  conversation. A sheet (settings, apps) over the conversation page does not
+  count as covering it. The report is sent after each connection's first
+  snapshot and again whenever the selection or `visible` changes, never
+  twice the same.
+- The "… — answer ready" toast stays the phone's own, as before.
+
+What changed for the phone: before, every finished conversation showed as
+unread after a reload, and reading one on the computer or another device
+did not clear it here; now the mark follows the listener. A conversation
+started elsewhere is no longer marked when it arrives, only when a turn
+completes unseen. A page in a background tab no longer reports its
+conversation as shown.
+
+## The limit page
+
+The gateway admits at most 4 connections per paired device and 8 in all.
+Refused over one of them (close code 4429 with the reason `device` or
+`total`), the phone shows the limit page instead of retrying: "This browser
+already has four Companion tabs connected. Close one you do not need, then
+Retry." or "Companion already has eight browsers and phones connected. Close
+one you do not need, then Retry.", with a Retry button. Nothing reconnects
+by itself while it is shown (no timer, not when the app is foregrounded or
+the network returns); no other tab or phone is closed. A refusal without one
+of these reasons (an older gateway) keeps the earlier behaviour, a retry
+with backoff. The full rule and its table are the browser shell's
+([the limit page](../shell/README.md#the-limit-page)); the code is shared
+(`src/connection.ts`, `src/components/LimitPage.tsx`).
 
 ## Navigation and accessibility
 

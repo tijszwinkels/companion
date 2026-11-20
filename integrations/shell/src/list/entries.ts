@@ -8,10 +8,10 @@
  *   the rail and on the phone (see `badgeOf`);
  * - working: the conversation's status is `starting` or `running` (the
  *   turning ring), as in the rail and on the phone;
- * - unread: the Store's `unread` set (the green dot and tint). The Store
- *   sets it when a turn completes out of view or when a conversation
- *   arrives from elsewhere, and clears it when this page selects or loses
- *   the conversation; see the README's "Markers";
+ * - unread: the Store's `unread` set (the green dot and tint): the
+ *   listener's shared unread mark of each conversation, or the Store's own
+ *   rule for a conversation without one (an older listener); see the
+ *   README's "Markers";
  * - last line: the latest user or assistant text as one plain line
  *   (`lastText`, `plainPreview`).
  */
