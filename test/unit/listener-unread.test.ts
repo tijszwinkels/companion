@@ -805,20 +805,103 @@ test('unread: a phone that leaves while its requests drain no longer shows anyth
   assert.equal((await phone.reply('shown')).type, 'result');
   assert.deepEqual(remoteVisibleSelections(listener), [id]);
 
-  // A request the listener holds open keeps the relay draining after the
-  // phone leaves; the page is gone, so it must stop counting as visible.
-  phone.send({ action: 'agent-models', requestId: 'held' });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Requests the listener holds open keep the relay draining after the
+  // phone leaves, here enough to fill every request slot of the connection.
+  // The page is gone, so it must stop counting as visible at once anyway.
+  for (let index = 0; index < 16; index++) {
+    phone.send({ action: 'agent-models', requestId: `held-${index}` });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
   phone.socket.terminate();
   await phone.closed;
   await waitFor(() => remoteVisibleSelections(listener).every((selection) => selection === ''));
   assert.equal(remoteVisibleSelections(listener).length, 1, 'still draining');
 
+  // The turn ends before any held request is released.
   await endTurn(sessions, run, id, 'success');
   assert.equal(unreadOf(sessions, id), true);
+  assert.equal(remoteVisibleSelections(listener).length, 1, 'still draining');
 });
 
-test('unread: a report during a close is saved before a reopen reads the archive', async (context) => {
+/**
+ * Hold each archive write of `sessions` until the test settles it, in call
+ * order: `release()` writes it, `fail()` makes that write fail.
+ */
+function holdArchiveWrites(sessions: AgentSessions) {
+  const store = (sessions as unknown as { store: { replace: (...args: unknown[]) => unknown } })
+    .store;
+  const original = store.replace.bind(store);
+  const gates: { release(): void; fail(): void }[] = [];
+  store.replace = async (...args: unknown[]) => {
+    let release!: () => void;
+    let fail!: () => void;
+    const outcome = new Promise<boolean>((resolve) => {
+      release = () => resolve(true);
+      fail = () => resolve(false);
+    });
+    gates.push({ release, fail });
+    if (!(await outcome)) {
+      throw Error('Synthetic write failure');
+    }
+    return original(...args);
+  };
+  return {
+    gates,
+    restore() {
+      store.replace = original;
+    },
+  };
+}
+
+for (const clearingSave of ['succeeds', 'fails'] as const) {
+  test(`unread: a mark cleared during a close is what the close saves (the clearing save ${clearingSave})`, async (context) => {
+    const { directory, token } = await setupCase();
+    const runs: Run[] = [];
+    let listener = await startListener(directory, runs);
+    context.after(async () => {
+      await listener.close();
+      await rm(directory, { recursive: true, force: true });
+    });
+    let sessions = listener.sessions;
+    const { id, run } = await startTurn(sessions, runs, 'Closed while being read');
+    await endTurn(sessions, run, id, 'success');
+    assert.equal(unreadOf(sessions, id), true);
+    const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+    const writes = holdArchiveWrites(sessions);
+
+    // The close's own save (unread still true) waits ...
+    const closing = sessions.remove(id);
+    await waitFor(() => writes.gates.length === 1);
+    // ... while the phone shows the closing conversation: it is read, and a
+    // background save of that is queued behind the close's save.
+    await phone.report(id, true);
+    assert.equal(unreadOf(sessions, id), false);
+    writes.gates[0].release();
+    await waitFor(() => writes.gates.length === 2);
+    if (clearingSave === 'fails') {
+      writes.gates[1].fail();
+    } else {
+      writes.gates[1].release();
+    }
+
+    // The close saves once more, because the mark changed during its save.
+    await waitFor(() => writes.gates.length === 3);
+    writes.gates[2].release();
+    await closing;
+    writes.restore();
+    assert.equal(sessions.previousSnapshot().find((entry) => entry.id === id)?.unread, false);
+
+    // Reopening, and a restart, both find the read mark.
+    await sessions.reopen(id, false);
+    assert.equal(unreadOf(sessions, id), false);
+    await listener.close();
+    listener = await startListener(directory, runs);
+    sessions = listener.sessions;
+    assert.equal(sessions.previousSnapshot().find((entry) => entry.id === id)?.unread, false);
+  });
+}
+
+test('unread: a close whose final save fails keeps the tab and its live mark', async (context) => {
   const { directory, token } = await setupCase();
   const runs: Run[] = [];
   const listener = await startListener(directory, runs);
@@ -827,47 +910,87 @@ test('unread: a report during a close is saved before a reopen reads the archive
     await rm(directory, { recursive: true, force: true });
   });
   const sessions = listener.sessions;
-  const { id, run } = await startTurn(sessions, runs, 'Closed and reopened at once');
+  const { id, run } = await startTurn(sessions, runs, 'Close fails');
+  await endTurn(sessions, run, id, 'success');
+  const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+  const writes = holdArchiveWrites(sessions);
+
+  const closing = sessions.remove(id);
+  await waitFor(() => writes.gates.length === 1);
+  await phone.report(id, true);
+  writes.gates[0].release();
+  await waitFor(() => writes.gates.length === 2);
+  writes.gates[1].release();
+  await waitFor(() => writes.gates.length === 3);
+  writes.gates[2].fail();
+  await assert.rejects(closing, /Synthetic write failure/);
+  writes.restore();
+
+  // Still open, still read; a retried close saves it.
+  assert.equal(unreadOf(sessions, id), false);
+  await sessions.remove(id);
+  await sessions.reopen(id, false);
+  assert.equal(unreadOf(sessions, id), false);
+});
+
+test('unread: a turn that ends with no connection at all leaves it unread', async (context) => {
+  const { directory, token } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  context.after(async () => {
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
+  const { id, run } = await startTurn(sessions, runs, 'Everyone left');
+
+  // A visible desktop panel and a visible phone show it, then every
+  // connection closes, including the fixture's own passive one.
+  const desktop = await connect(listener, { kind: 'desktop', visible: true }, token);
+  await desktop.report(id, true);
+  const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+  await phone.report(id, true);
+  await desktop.close();
+  await phone.close();
+  listener.desktop.client.destroy();
+  await waitFor(() => remoteVisibleSelections(listener).length === 0);
+
   await endTurn(sessions, run, id, 'success');
   assert.equal(unreadOf(sessions, id), true);
-  const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+});
 
-  // Hold each archive write until the test releases it, in call order.
-  const store = (sessions as unknown as { store: { replace: (...args: unknown[]) => unknown } })
-    .store;
-  const original = store.replace.bind(store);
-  const gates: { release(): void; promise: Promise<void> }[] = [];
-  store.replace = async (...args: unknown[]) => {
-    let release!: () => void;
-    const promise = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    gates.push({ release, promise });
-    await promise;
-    return original(...args);
-  };
+test('unread: the desktop selection counts while its own panel is visible, whoever owns navigation', async (context) => {
+  const { directory, token } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  context.after(async () => {
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
 
-  // The close's own save (unread still true) waits ...
-  const closing = sessions.remove(id);
-  await waitFor(() => gates.length === 1);
-  // ... while the phone shows the closing conversation: cleared, and a
-  // second save is queued behind the first.
-  await phone.report(id, true);
-  assert.equal(unreadOf(sessions, id), false);
+  // Panel A shows X and is visible; panel B, also visible, shows Activity
+  // and owns voice navigation (its report is the newer one).
+  const shown = await startTurn(sessions, runs, 'Shown on panel A');
+  const panelA = await connect(listener, { kind: 'desktop', visible: true }, token);
+  await panelA.report(shown.id, true);
+  const panelB = await connect(listener, { kind: 'desktop', visible: true }, token);
+  await panelB.report('', true);
+  await endTurn(sessions, shown.run, shown.id, 'success');
+  assert.equal(unreadOf(sessions, shown.id), false, 'panel A shows it');
 
-  gates[0].release();
-  await closing;
-  assert.equal(sessions.previousSnapshot().find((entry) => entry.id === id)?.unread, false);
+  // Panel A hidden, B still on Activity: nobody shows the next turn.
+  await panelA.report(shown.id, false);
+  sessions.followUp(shown.id, 'Hidden now', signal());
+  await waitFor(() => runs.at(-1) !== shown.run);
+  await endTurn(sessions, runs.at(-1)!, shown.id, 'success');
+  assert.equal(unreadOf(sessions, shown.id), true, 'nobody shows it');
 
-  // Reopen while the clearing save still waits: it must not read the older
-  // archive.
-  const reopening = sessions.reopen(id, false);
-  await waitFor(() => gates.length === 2);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  gates[1].release();
-  await reopening;
-  store.replace = original;
-  assert.equal(unreadOf(sessions, id), false);
+  // B's Activity report does not read it; A becoming visible does.
+  await panelB.report('', true);
+  assert.equal(unreadOf(sessions, shown.id), true);
+  await panelA.report(shown.id, true);
+  assert.equal(unreadOf(sessions, shown.id), false);
 });
 
 /** A raw listener connection that sends requests and waits for their replies. */

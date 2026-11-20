@@ -179,8 +179,8 @@ interface RemoteClient {
   /**
    * The selection while this panel's latest report said `visible: true`,
    * else empty. Only this counts as showing a conversation for the unread
-   * mark. A closed conversation is forgotten here (not in `selection`), so a
-   * stale report never shows the conversation after it is reopened.
+   * mark. A closed conversation is forgotten here and in `selection`, so a
+   * stale report neither shows nor controls it after it is reopened.
    */
   visibleSelection: string;
   /** Last actions sent to this client, to avoid resending unchanged controls. */

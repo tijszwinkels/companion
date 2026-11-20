@@ -111,8 +111,8 @@ export class Relay {
   private reportedSelection = false;
   /**
    * `wanted`: the phone left while it may still count as showing a
-   * conversation and the withdrawal is not yet sent; `sent`: written
-   * upstream. See withdrawVisibility.
+   * conversation and the withdrawal waits for role confirmation; `sent`:
+   * written upstream. See withdrawVisibility.
    */
   private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
   private drainTimer?: ReturnType<typeof setTimeout>;
@@ -292,6 +292,13 @@ export class Relay {
 
   private sendRequest(upstreamId: string, request: RemoteRequest): void {
     const { type: _type, requestId: _requestId, ...fields } = request;
+    // A report that waited for role confirmation while the phone left
+    // describes a page nobody sees any more: keep its selection and order,
+    // but never let it count as visible.
+    if (request.action === 'panel-state' && !this.phoneOpen) {
+      this.writeUpstream({ ...fields, visible: false, requestId: upstreamId });
+      return;
+    }
     this.writeUpstream({ ...fields, requestId: upstreamId });
   }
 
@@ -335,12 +342,11 @@ export class Relay {
   /**
    * Tell the listener that this phone's page is no longer visible, keeping
    * its selection so draining requests that act on it still answer. Sent
-   * only after the role is confirmed and after every queued request (one of
-   * them may be a visible report), as an ordinary remote `panel-state` with
-   * `visible: false`. Its reply is not relayed to anyone. If the listener
-   * refuses it (too many requests still running, or the selection closed
-   * meanwhile), it is sent again after the next reply; the listener drops
-   * the whole connection when the drain ends in any case.
+   * only after the role is confirmed and after every queued request, as an
+   * ordinary remote `panel-state` with `visible: false`. The listener admits
+   * a panel report even while this connection's other requests fill its
+   * slots (src/desktop/server.ts), so the withdrawal takes effect at once.
+   * Its reply is not relayed to anyone.
    */
   private withdrawVisibility(): void {
     if (this.withdrawal !== 'wanted' || !this.ready || this.upstream.destroyed) {
@@ -403,12 +409,13 @@ export class Relay {
     }
 
     if (isReply && message.requestId === withdrawalRequestId) {
-      // Refused only while too many requests run, or when the selection was
-      // closed meanwhile. Retry with an empty selection, which is always
-      // valid (a closed conversation is not shown anyway).
-      if (message.type === 'error') {
+      // Refused when the selection was closed meanwhile (then it is not
+      // shown anyway). Repeat at once with an empty selection, which is
+      // always valid, so nothing stale is left visible.
+      if (message.type === 'error' && this.acceptedSelection !== '') {
         this.acceptedSelection = '';
         this.withdrawal = 'wanted';
+        this.withdrawVisibility();
       }
       return;
     }
@@ -424,8 +431,6 @@ export class Relay {
         this.acceptedSelection = pending.request.id;
       }
       pending.finish(this.replyFor(pending.request, message));
-      // A request finished, so a refused withdrawal may fit now.
-      this.withdrawVisibility();
       this.drainedIfDone();
       return;
     }

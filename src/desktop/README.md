@@ -1595,7 +1595,7 @@ Decisions:
 | Turn started by another agent, a session application or a timer  | same rule as a person's turn: only the outcome and who shows it count                                                                                                   |
 | Several turns in a row (a queued successor, a follow-up)         | each successful turn applies the rule on its own; a set mark stays until the conversation is shown                                                                      |
 | Client disconnects, reconnects or reloads                        | unchanged; the client's first snapshot carries it and its first visible report may clear it                                                                             |
-| Conversation closed                                              | unchanged and saved; `previousSessions` carries it                                                                                                                      |
+| Conversation closed                                              | unchanged and saved; `previousSessions` carries it. A mark cleared while the close saves is saved again before the tab goes (a failed save keeps the tab)               |
 | Conversation reopened from Previous sessions                     | restored as saved, after any save still queued from the close; cleared once a connection shows it (a desktop reopen reveals it, which clears it when the panel reports) |
 | Listener restart                                                 | every conversation comes back under Previous sessions with its saved mark                                                                                               |
 
@@ -1646,7 +1646,11 @@ Every result/error envelope now echoes a string `requestId` of at most 128
 characters when the request carried one, for correlation of concurrent replies.
 
 The listener serves at most 16 socket clients at once, remote and desktop
-together; a 17th connection is closed before it receives anything. The gateway
+together; a 17th connection is closed before it receives anything. Each
+connection may have 16 control requests in flight; more are refused with
+"Previous request is still running". `panel-state` is always admitted: its
+handler never waits, so it cannot queue up, and a gateway withdrawing a departed
+client's visibility must not wait for that client's slow requests. The gateway
 uses at most 8 of them (see [its limits](../remote/README.md#security-model)),
 which leaves 8 for desktop panels, observers and tools.
 The Unix socket remains the only listener transport; network access, pairing and

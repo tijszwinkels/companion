@@ -442,7 +442,12 @@ export class DesktopServer {
 
         // Listening/sound controls run independently of slow keyboard delivery.
         // Bound both paths so a client cannot build an unbounded promise queue.
-        if ((control && controlsInFlight >= 16) || (!control && handling)) {
+        // A panel report is the exception: its handler never waits, so it
+        // cannot queue up, and it is admitted even while other requests fill
+        // the slots. The gateway relies on this to withdraw a departed
+        // phone's visibility while that phone's requests still drain.
+        const neverWaits = action === 'panel-state';
+        if (!neverWaits && ((control && controlsInFlight >= 16) || (!control && handling))) {
           this.send(connection, {
             type: 'error',
             action,

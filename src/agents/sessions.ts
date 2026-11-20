@@ -2520,7 +2520,15 @@ export class AgentSessions implements InspectableModule {
       const cancelledTimers = await this.stop(id);
       await this.widgets.deactivate(id);
       // Do not discard the visible tab if saving fails. Closing can be retried.
-      await this.store.save(session.view);
+      // A connection may still show (and so read) the conversation while
+      // this save runs. The archive must hold the latest mark before the tab
+      // goes: save again until no change happened during the save, so a
+      // failed background save of that change cannot leave the older mark.
+      let savedUnread: boolean | undefined;
+      do {
+        savedUnread = session.view.unread;
+        await this.store.save(session.view);
+      } while (session.view.unread !== savedUnread);
       const { messages: _messages, ...summary } = session.view;
       this.previous.set(id, summary);
       this.sessions.delete(id);
@@ -2574,10 +2582,8 @@ export class AgentSessions implements InspectableModule {
     }
     this.restoring.add(id);
     try {
-      // A save queued while the conversation was closing (for example its
-      // unread mark cleared by a report during the close's own save) must
-      // land before the archive is read, or reopening would restore the
-      // older state.
+      // Any save still queued for this conversation lands before the
+      // archive is read, so reopening never restores an older state.
       await this.store.settled(id);
       const view = await this.store.read(id);
       if (this.closed) {

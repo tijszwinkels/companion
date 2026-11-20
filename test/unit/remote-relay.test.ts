@@ -234,7 +234,7 @@ test('an authenticated heartbeat replies without forwarding a listener request',
   assert.equal(upstreamRequests, 1, 'only the role declaration reaches the listener');
 });
 
-test('a phone that leaves while the role is pending is withdrawn after its queued report', async (context) => {
+test('a phone that leaves while the role is pending never reports a visible page', async (context) => {
   const received: Record<string, unknown>[] = [];
   let listener: Socket | undefined;
   const setup = await fixture(context, (socket, request) => {
@@ -259,8 +259,14 @@ test('a phone that leaves while the role is pending is withdrawn after its queue
   roleAccepted(listener!);
   await waitFor(() => received.length === 3);
   assert.equal(received[0].action, 'client-role');
-  assert.equal(received[1].action, 'panel-state');
-  assert.equal(received[1].visible, true);
+  // The queued report keeps its selection and place, but the page is gone:
+  // it must not read anything the listener finished meanwhile.
+  assert.deepEqual(received[1], {
+    action: 'panel-state',
+    id: '00000000-0000-4000-8000-000000000001',
+    visible: false,
+    requestId: received[1].requestId,
+  });
   // Its report was never answered, so no selection is known: withdraw with
   // an empty one, after the queued report.
   assert.deepEqual(received[2], {
@@ -271,7 +277,7 @@ test('a phone that leaves while the role is pending is withdrawn after its queue
   });
 });
 
-test('a refused visibility withdrawal is sent again after the next reply', async (context) => {
+test('a refused visibility withdrawal is repeated at once with an empty selection', async (context) => {
   const conversation = '00000000-0000-4000-8000-000000000002';
   const received: Record<string, unknown>[] = [];
   let listener: Socket | undefined;
@@ -309,14 +315,11 @@ test('a refused visibility withdrawal is sent again after the next reply', async
     requestId: 'withdraw-visibility',
   });
 
-  // Refused (for example too many requests running): retried after the next
-  // reply, with an empty selection, which is always valid.
+  // Refused (its selection was closed meanwhile): repeated at once with an
+  // empty selection, which is always valid, while the held request drains.
   listener!.write(
-    JSON.stringify({ type: 'error', requestId: 'withdraw-visibility', message: 'Busy' }) + '\n',
+    JSON.stringify({ type: 'error', requestId: 'withdraw-visibility', message: 'Closed' }) + '\n',
   );
-  await delay(30);
-  const held = received.find((request) => request.action === 'toggle-pause')!;
-  listener!.write(JSON.stringify({ type: 'result', requestId: held.requestId, result: {} }) + '\n');
   await waitFor(
     () => received.filter((request) => request.requestId === 'withdraw-visibility').length === 2,
   );
