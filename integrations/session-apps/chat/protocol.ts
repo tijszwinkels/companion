@@ -133,6 +133,12 @@ export interface ChatStatus {
   };
   focusShortcut?: string;
   application?: { name: string; version: number } | null;
+  /**
+   * Whether the host offers the classic view (the Classic view button).
+   * Optional: absent means offered, as before; only a host without a
+   * classic view (the browser shell) sends `false`.
+   */
+  classicView?: boolean;
   theme?: {
     foreground: string;
     background: string;

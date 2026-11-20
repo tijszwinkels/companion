@@ -388,6 +388,12 @@ test(
     // The bar of the shown conversation.
     await openConversation(page, 'Long run');
     await page.waitFor(barMatches(/^working · 2:00:\d\d$/));
+    // Showing a conversation is complete once the listener's actions for it
+    // have arrived (its answer to the page's `panel-state`) and the chat
+    // draws its per-run Stop. On a busy machine they can arrive after the
+    // bar's time; the observer below must not start before, or it records
+    // that drawing as a change the timers made.
+    await page.waitFor(`document.querySelector('.chat .controls .stop')`, 5000);
     await screenshot(page, 'timers-1280-strip');
 
     // Time passes (65 s on both clocks): every time advances, without the

@@ -29,9 +29,10 @@
  *   listener-owned or agent-proposed draft, so `draftUnsaved` is always
  *   empty and Save/Discard have nothing to do.
  * - Recording, voice target, focus shortcut, session applications, widgets
- *   and the classic view are not available. Recording and applications are
- *   hidden through `status`; the page's Classic view button and widget cards
- *   show a notice in `inputError` instead.
+ *   and the classic view are not available. Recording, applications and the
+ *   Classic view button are hidden through `status` (`classicView: false`);
+ *   widget cards, whose link would open the classic view, show a notice in
+ *   `inputError` instead.
  * - Tool details open in place in the page (`ChatRow.tools`, an optional
  *   field the Qt host does not send), by the desktop classic view's rules
  *   (./tools/tool-details.ts).
@@ -667,6 +668,8 @@ export class GatewayChatBridge implements NativeBridge {
       history: this.resident.status(),
       focusShortcut: '',
       application: null,
+      // There is no classic view in the browser: the page hides its button.
+      classicView: false,
     };
   }
 

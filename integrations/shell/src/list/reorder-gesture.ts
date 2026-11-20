@@ -43,7 +43,7 @@ export interface OrderState {
  * the listener named an order revision (`move-agent` requires one; a
  * listener that sends none cannot be reordered from here).
  */
-function movable(order: OrderState): boolean {
+export function movable(order: OrderState): boolean {
   return order.available && order.revision !== '';
 }
 

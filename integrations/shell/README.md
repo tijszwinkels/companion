@@ -12,8 +12,8 @@ A paired browser can:
 2. show the open conversations in a list on the left, as a narrow strip or a
    full list, and switch between them (see
    [conversation list and layout](#conversation-list-and-layout)); close
-   them, reorder them by dragging, and reopen saved ones from Previous
-   sessions;
+   them, reorder them by dragging, by keyboard or with their ⋯ menu (also
+   by touch), and reopen saved ones from Previous sessions;
 3. show the selected conversation with the **desktop chat page**
    (`../session-apps/chat/Chat.tsx`, shared with the Qt host; see
    [changes to the shared chat page](#changes-to-the-shared-chat-page)):
@@ -89,6 +89,10 @@ The arrangement is the same at every window width, as in the agreed design:
 - **Selecting** a conversation (click, or Enter/Space on the focused entry)
   shows it with its own unsent text: drafts are kept per conversation in
   the phone Store, as in slice 1.
+- **The ⋯ menu** on each entry (always shown, also in the strip) offers
+  Move up, Move down and Close session, by mouse, touch and keyboard; and
+  Alt+Shift+Up and Alt+Shift+Down move a focused entry (see
+  [moving by key and by the ⋯ menu](#moving-by-key-and-by-the--menu)).
 - **Closing**: the × that appears on hover or keyboard focus asks for
   `close-agent` (while invisible it takes no input, so a first tap on that
   corner of an entry selects instead of closing unseen); the conversation leaves the list when the listener reports
@@ -194,8 +198,11 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
    position that changes nothing, Escape, a cancelled pointer, the list
    losing capture of the gesture's pointer, the window losing focus or being
    hidden (the release, or a new press of the same pointer, may then happen
-   where the page cannot see it), a changed order or membership, or requests
-   no longer admitted (offline, or reconnected but before the new snapshot).
+   where the page cannot see it), a changed order or membership, requests
+   no longer admitted (offline, or reconnected but before the new snapshot),
+   or another move awaiting its answer (one move at a time, see
+   [moving by key and by the ⋯ menu](#moving-by-key-and-by-the--menu),
+   rule 4; such a move also keeps a press from starting a gesture).
    When the drag starts, capture moves from the pressed entry to the list;
    that is not a loss.
 5. A drag never also selects or closes: the click after the release of any
@@ -208,10 +215,10 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
    the Store's error toast.
 8. Inside the list means the list is what the pointer is over (a hit test):
    not the divider overlapping its edge, nor a toast above it.
-9. Reordering is a mouse and pen gesture for desktop browsers. A touch
-   press never starts it: on a touchscreen a swipe scrolls the list and a
-   tap selects. Touch reordering would need a gesture of its own (the phone
-   panel has Move up and Move down) and is not part of this slice.
+9. Reordering by dragging is a mouse and pen gesture for desktop browsers.
+   A touch press never starts it: on a touchscreen a swipe scrolls the list
+   and a tap selects. By touch, the entry's ⋯ menu has Move up and Move
+   down (below); there is no touch drag.
 
 | Case                                                                     | Move requests | Click selects |
 | ------------------------------------------------------------------------ | ------------- | ------------- |
@@ -242,6 +249,101 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
 | Movement without the button held (release missed)                        | 0             | —             |
 | New press after a cancelled drag; its click                              | per new press | yes           |
 | Move refused by the listener                                             | 1 (refused)   | no; unchanged |
+| Press or drag while a move (by key or menu) awaits its answer            | 0             | yes / no      |
+
+### Moving by key and by the ⋯ menu
+
+Rule (`src/list/move-steps.ts`, `src/list/EntryMenu.tsx`,
+`src/list/entry-focus.ts`):
+
+1. With a conversation's entry focused (its select button, its ⋯ or its
+   ×), **Alt+Shift+Up** moves it one place up and **Alt+Shift+Down** one
+   place down, the desktop's keys. **Move up** and **Move down** in its ⋯
+   menu do the same.
+2. A move is one `move-agent` naming the conversation, the conversation it
+   goes before (`""` for the end) and the listener's current order
+   revision: exactly the request a drag sends, through the list's one move
+   path.
+3. It is possible under the drag's condition (requests admitted, an order
+   revision named) and not at the ends: the first conversation has no Move
+   up, the last no Move down, a single conversation neither. There the keys
+   do nothing and the menu shows the item unavailable.
+4. **One move at a time**, for the drag, the keys and the menu alike: a move
+   is pending from the moment it is sent until the listener refuses it (or
+   the request fails or is lost), or, accepted, until the list shows
+   another order revision (the listener publishes the new order before it
+   answers, so this normally ends with the answer). Meanwhile nothing else
+   is sent: the keys do nothing, Move up and Move down are unavailable, a
+   press does not start a drag and a drag in progress ends without a move.
+   The list is marked busy (`aria-busy`) meanwhile.
+5. The list never reorders itself: it shows the listener's order. A move
+   the listener refuses (the order changed elsewhere before it arrived)
+   leaves the list as the listener has it, and the Store's error toast says
+   so ("Session order changed; try moving the tab again").
+6. Focus stays on the moved entry: on its select button after a key, on its
+   ⋯ after the menu. (Redrawing in the new order can make the browser drop
+   the focus of an entry it moves; the list puts it back, and only then.)
+7. When the conversation whose control or menu had focus leaves the list
+   (closed here or elsewhere, also while its menu is open), focus goes to
+   the entry now at its place, else the last entry, else Previous sessions.
+
+The ⋯ menu:
+
+1. Every entry, in the strip and in the full list, has a ⋯ button, always
+   shown because touch has no hover: at the strip's top-left corner (the ×
+   has the top-right one) and at the full list's bottom-right corner. It is
+   named "Actions for" and the title, with `aria-haspopup="menu"` and
+   `aria-expanded`.
+2. A click, a tap, or Enter or Space on the focused ⋯ opens the menu, with
+   focus on its first item; ⋯ again closes it. One menu is open at a time.
+3. Its items are Move up, Move down and **Close session** (`close-agent`,
+   offered as the × is: while requests are admitted and the editor holds no
+   input of that conversation that only it has). An unavailable item stays
+   focusable, marked `aria-disabled` and dimmed, and does nothing.
+4. Keyboard: Up and Down (wrapping), Home and End move through the items;
+   Enter or Space chooses.
+5. It closes on a choice and on Escape (focus returns to its ⋯), on Tab
+   (focus goes on from its ⋯), on a click or tap outside (focus goes where
+   the press puts it; a press on nothing focusable returns it to the ⋯), on
+   opening another entry's menu, on focus moving to another control, on the
+   list changing between the strip and the full list (focus that was in the
+   menu returns to the ⋯), and when its conversation leaves the list
+   (focus by rule 7 above).
+6. It is drawn over the page next to its ⋯ (below it, or above where there
+   is no room), inside the window and above the Activity column, so the
+   strip does not clip it.
+7. The × and dragging stay as they were. A press on ⋯ never starts a drag
+   and never selects the conversation.
+
+| Case (A, B, C in this order; by key or by menu; strip or full list) | Move requests              | Order after                  | Focus after                                                   |
+| ------------------------------------------------------------------- | -------------------------- | ---------------------------- | ------------------------------------------------------------- |
+| First (A) up                                                        | 0                          | A B C; Move up unavailable   | A: its select (key), its ⋯ (menu)                             |
+| First (A) down                                                      | 1: A before C              | B A C                        | A, the same                                                   |
+| Middle (B) up                                                       | 1: B before A              | B A C                        | B                                                             |
+| Middle (B) down                                                     | 1: B before `""` (the end) | A C B                        | B                                                             |
+| Last (C) up                                                         | 1: C before B              | A C B                        | C                                                             |
+| Last (C) down                                                       | 0                          | A B C; Move down unavailable | C                                                             |
+| A move while another awaits its answer (key, menu or drag)          | 0 more                     | as the listener answers      | unchanged                                                     |
+| Refused: the order changed elsewhere before it arrived              | 1 (refused; error toast)   | the listener's               | unchanged; the next move is sent                              |
+| One conversation                                                    | 0                          | unchanged; both unavailable  | unchanged                                                     |
+| The entry closed elsewhere while its menu is open                   | 0                          | without it                   | the entry at its place, else the last, else Previous sessions |
+| Not admitted (offline, before the snapshot) or no order revision    | 0                          | unchanged; both unavailable  | unchanged                                                     |
+
+| Menu case                                     | Menu                           | Focus after                                |
+| --------------------------------------------- | ------------------------------ | ------------------------------------------ |
+| Click on ⋯                                    | open                           | its first item                             |
+| Tap on ⋯                                      | open                           | its first item                             |
+| Enter or Space on the focused ⋯               | open                           | its first item                             |
+| ⋯ pressed again                               | closed                         | the ⋯                                      |
+| Escape                                        | closed                         | the ⋯                                      |
+| A choice (Move up or Move down)               | closed; one move               | the ⋯ of the moved entry                   |
+| An unavailable item chosen                    | open; nothing sent             | the item                                   |
+| Tab                                           | closed                         | the control after the ⋯ (its ×)            |
+| Click or tap outside on nothing focusable     | closed                         | the ⋯                                      |
+| Click outside on a control (the text box)     | closed                         | that control                               |
+| Another entry's ⋯                             | that one open, this one closed | its first item                             |
+| The list becomes the strip (or the full list) | closed                         | the ⋯, if focus was in the menu            |
+| Close session from the menu                   | closed; one `close-agent`      | the ⋯; once closed, the entry at its place |
 
 ### Markers
 
@@ -1217,7 +1319,7 @@ page after one it has not shown yet.
 
 ### Changes to the shared chat page
 
-`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Four changes
+`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Five changes
 were made for the browser:
 
 1. Its transcript does not count the end of a **detached** history snapshot
@@ -1259,6 +1361,14 @@ were made for the browser:
    view. The Qt host sends neither, so nothing changes there
    (`chat-heading.test.ts` again compares with the reference drawn before
    the change). The shell's stylesheet styles the details.
+5. The status may carry one optional field, `classicView` (`protocol.ts`):
+   `false` hides the composer's Classic view button, as the browser has no
+   classic view (the bridge sends it). Absent (or `true`) the page draws
+   exactly what it drew before: the Qt host never sends it
+   (`chat-heading.test.ts` compares the composer, for several statuses, with
+   `fixtures/chat-composer-reference.txt`, drawn by the base revision's
+   `Chat.tsx`; with `false` only the button is gone). `bridge.classicView()`
+   stays: a widget card's link still calls it and gets the notice.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -1346,17 +1456,19 @@ chat of a conversation with more than about a thousand rows,
 Shown as unavailable through the existing `status` fields, not by changing
 the chat page:
 
-| Desktop feature                                | In the browser                                                                                          |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Recording into the text box                    | `recording.available: false` (no Record button)                                                         |
-| Listener-owned and agent-proposed drafts       | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty        |
-| Classic view, widgets                          | The page's Classic view button and widget cards show "not available in the browser yet" in `inputError` |
-| Tool details                                   | In place, as in the classic view (see [tool details](#tool-details))                                    |
-| Session applications                           | `application: null`                                                                                     |
-| Screenshots                                    | View screenshot opens the viewer (see [screenshots](#screenshots)); no zoom                             |
-| Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                      |
-| Model picker                                   | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker                      |
-| Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                           |
+| Desktop feature                           | In the browser                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Recording into the text box               | `recording.available: false` (no Record button)                                                  |
+| Listener-owned and agent-proposed drafts  | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty |
+| Classic view                              | No Classic view button (`classicView: false`)                                                    |
+| Widgets                                   | Widget cards show "not available in the browser yet" in `inputError`                             |
+| Tool details                              | In place, as in the classic view (see [tool details](#tool-details))                             |
+| Session applications                      | `application: null`                                                                              |
+| Screenshots                               | View screenshot opens the viewer (see [screenshots](#screenshots)); no zoom                      |
+| Voice target, voice hints, focus shortcut | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked               |
+| Model picker                              | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker               |
+| Pop-out windows, Alt+number               | Not in the browser                                                                               |
+| Alt+Shift+Up/Down                         | Move a focused list entry, as the ⋯ menu does (see the list)                                     |
 
 Known limit: two tabs of the same browser under the same pairing each keep
 the phone Store's draft map and save it whole, so a draft typed in one tab can
@@ -1425,7 +1537,12 @@ Node, each with the cases of its README table above: the remembered width and
 hidden state (initial, invalid, dragged, keys, narrow windows, reload), the
 entries' icons (also without `Intl.Segmenter`), changes from two tabs, and the
 reorder gesture (every row of the reordering table, plus the drawn insertion
-line). `markers.test.ts` plays every row of the markers table against the
+line). `move-steps.test.ts` has the moving table's request side (first,
+middle and last × up and down, one conversation, not admitted, no
+revision, a conversation no longer listed), checks each step against the
+listener's own insertion, the keys (Alt+Shift+Up/Down and what is not), and
+the one-move-at-a-time rule as sequences (accepted before or after the new
+order arrives, refused, lost, a reset). `markers.test.ts` plays every row of the markers table against the
 real phone Store in Node (with stand-ins for history, storage and page
 visibility), read through the list's own derivation.
 
@@ -1475,6 +1592,26 @@ list or over the divider at its edge, an order
 changed at the listener during the drag or a lost connection, and a refused
 move leaving the list unchanged. Each test also checks that nothing went to
 another origin and that no Content-Security-Policy violation occurred.
+
+`list-menu.test.ts` plays the two tables of
+[moving by key and by the ⋯ menu](#moving-by-key-and-by-the--menu) in the
+browser: first, middle and last × up and down × by key and by menu, in the
+strip and in the full list (24 cases), each with the request, the order at
+the listener and in a second page, and focus; no Classic view button in the
+chat; a move held pending (by a wrapper around the page's `WebSocket.send`)
+while further keys and the menu send nothing; a move refused because the
+order changed elsewhere, with the toast; the entry closed elsewhere while
+its menu is open (also the last); one conversation. Then the menu table:
+opened by click, Enter and Space, its names and roles, arrow keys, Home and
+End, closed by Escape, a choice, Tab, a click outside on text and on the
+text box, another entry's menu, the list becoming the strip, and Close
+session from the menu. At 420 px with touch emulation: a tap opens it, Move
+up by tap, a tap outside closes it, a tap on the entry still selects; at 420
+and 1600 px no overflow, the menu inside the window. Nothing in it waits a
+fixed time: a move is sent within its key or click handler, so the page's
+count of sends says at once whether one went out. With
+`COMPANION_SHELL_SCREENSHOTS` it saves an open menu in the strip at 420 and
+1280 px and in the full list at 1280 px.
 
 `times.test.ts` and `listening-switches.test.ts` check the rules of
 [Settings, turn timers and message times](#settings-turn-timers-and-message-times)
@@ -1604,7 +1741,10 @@ column hidden and shown at 420, 760, 1280 and 1600 px.
 Not covered in the browser: a page hidden in a background tab and reconnect
 snapshots (the markers table's rows for them are in `markers.test.ts`); a cancelled
 pointer, lost pointer capture, the window losing focus and a missing order
-revision during a drag (checked in `reorder-gesture.test.ts`); a pen drag,
+revision during a drag (checked in `reorder-gesture.test.ts`); moving by key
+or menu while not admitted or without an order revision, and a drag while a
+move awaits its answer (both by the same `movable` condition, checked in
+`move-steps.test.ts` and `reorder-gesture.test.ts`); a pen drag,
 and touch on real touch hardware (a synthetic touch swipe is covered); the × following input the editor holds (that needs over 16,000
 characters from an input method); and edge scrolling of a long list during a
 drag.
@@ -1626,6 +1766,9 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/list/ConversationList.tsx`        | The conversation list: entries, markers, close, drag wiring, Previous entry   |
 | `src/list/entries.ts`                  | What each entry shows, from the Store (number, icon, markers, last line)      |
 | `src/list/reorder-gesture.ts`          | The reorder gesture's rules, without DOM access                               |
+| `src/list/move-steps.ts`               | Moving one place by key or menu; one move at a time, without DOM access       |
+| `src/list/EntryMenu.tsx`               | An entry's ⋯ menu: drawing, placing, keyboard, closing                        |
+| `src/list/entry-focus.ts`              | Focus kept on an entry when the list draws it in a new order or it goes       |
 | `src/layout/list-width.ts`             | Width rules: strip, full list, snapping, keyboard, narrow windows             |
 | `src/layout/stored-layout.ts`          | The remembered width and hidden state in `localStorage`                       |
 | `src/layout/useListLayout.ts`          | The layout of this page: preference, window width, remembering                |
