@@ -422,8 +422,9 @@ test('the divider and the list entries work from the keyboard', { skip }, async 
     'page',
   );
 
-  // Space on the other entry selects it too; Tab then reaches its close
-  // button, which is shown while focused, and Enter closes it.
+  // Space on the other entry selects it too; Tab then reaches its ⋯ button
+  // and next its close button, which is shown while focused, and Enter
+  // closes it.
   await page.evaluate(
     `${entryExpression('First keyboard')}.querySelector('.entry-select').focus()`,
   );
@@ -433,6 +434,11 @@ test('the divider and the list entries work from the keyboard', { skip }, async 
   );
   await page.evaluate(
     `${entryExpression('First keyboard')}.querySelector('.entry-select').focus()`,
+  );
+  await key(page, 'Tab');
+  assert.equal(
+    await page.evaluate(`document.activeElement.getAttribute('aria-label')`),
+    'Actions for First keyboard conversation',
   );
   await key(page, 'Tab');
   assert.equal(

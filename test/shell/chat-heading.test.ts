@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { chromiumPath, TestBrowser } from '../mobile/browser.ts';
-import { drawRows, drawRowsWithTimes, referenceRows } from './chat-rows-page.ts';
+import {
+  drawComposers,
+  drawRows,
+  drawRowsWithTimes,
+  referenceComposerStatuses,
+  referenceRows,
+} from './chat-rows-page.ts';
 
 /**
  * The shared chat page's one change for message times (`ChatRow.time`,
@@ -22,6 +28,7 @@ import { drawRows, drawRowsWithTimes, referenceRows } from './chat-rows-page.ts'
 
 const chatDirectory = join(import.meta.dirname, '..', '..', 'integrations', 'session-apps', 'chat');
 const referencePath = join(import.meta.dirname, 'fixtures', 'chat-rows-reference.txt');
+const composerReferencePath = join(import.meta.dirname, 'fixtures', 'chat-composer-reference.txt');
 
 let skip: string | undefined;
 try {
@@ -173,6 +180,51 @@ test(
         assert.match(line, /▸ /);
         assert.doesNotMatch(line, /tool-details/);
       }
+    }
+  },
+);
+
+/**
+ * The page's change for hosts without a classic view (`ChatStatus.classicView`,
+ * integrations/shell/README.md, "Changes to the shared chat page"):
+ *
+ * - without the field the composer (editor and action row) is exactly what
+ *   it was: drawn by the current Chat.tsx for several statuses, it equals
+ *   fixtures/chat-composer-reference.txt, drawn by the base revision's
+ *   Chat.tsx before the field existed (see chat-rows-page.ts). The Qt host
+ *   never sends the field, so its page is unchanged; `true` is the same;
+ * - with `false` the Classic view button is gone and nothing else changes.
+ */
+test(
+  'without classicView the composer is exactly as before; with false only Classic view is gone',
+  { skip },
+  async (context) => {
+    const browser = new TestBrowser();
+    await browser.start();
+    context.after(() => browser.close());
+
+    const reference = await readFile(composerReferencePath, 'utf8');
+    const referenceLines = reference.trimEnd().split('\n');
+    assert.equal(referenceLines.length, referenceComposerStatuses.length);
+
+    // Absent: as before.
+    assert.equal(await drawComposers(browser, chatDirectory, referenceComposerStatuses), reference);
+
+    // True: as before.
+    const offered = referenceComposerStatuses.map((status) => ({ ...status, classicView: true }));
+    assert.equal(await drawComposers(browser, chatDirectory, offered), reference);
+
+    // False: each composer is the reference without its Classic view button.
+    const classicButton =
+      '<button title="Classic Companion view (tool details and widgets)" class="panel-action">Classic view</button>';
+    const hidden = referenceComposerStatuses.map((status) => ({ ...status, classicView: false }));
+    const drawnLines = (await drawComposers(browser, chatDirectory, hidden)).trimEnd().split('\n');
+    assert.equal(drawnLines.length, referenceLines.length);
+    for (let index = 0; index < referenceLines.length; index++) {
+      const line = referenceLines[index];
+      assert.equal(line.split(classicButton).length, 2, `reference ${index} has one button`);
+      assert.equal(drawnLines[index], line.replace(classicButton, ''), `composer ${index}`);
+      assert.doesNotMatch(drawnLines[index], /Classic view/);
     }
   },
 );

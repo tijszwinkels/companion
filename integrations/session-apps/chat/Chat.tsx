@@ -1440,13 +1440,15 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
             {status.application.name}
           </button>
         )}
-        <button
-          class="panel-action"
-          onClick={() => bridge.classicView()}
-          title="Classic Companion view (tool details and widgets)"
-        >
-          Classic view
-        </button>
+        {status.classicView !== false && (
+          <button
+            class="panel-action"
+            onClick={() => bridge.classicView()}
+            title="Classic Companion view (tool details and widgets)"
+          >
+            Classic view
+          </button>
+        )}
         <button
           class="panel-action"
           disabled={

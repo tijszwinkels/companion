@@ -372,11 +372,9 @@ test(
     fixture.runs.at(-1)!.finish();
     await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
 
-    // The classic view is not offered here: its button explains that.
-    await clickButton(page, 'Classic view');
-    await page.waitFor(
-      `document.querySelector('.composer').textContent.includes('not available in the browser')`,
-    );
+    // The classic view is not offered here: the page draws no Classic view
+    // button (the bridge's status says so); Close session is still there.
+    assert.equal(await page.evaluate(`Boolean(${buttonExpression('Classic view')})`), false);
 
     // Close the conversation: it leaves the listener and the list.
     await clickButton(page, 'Close session');
