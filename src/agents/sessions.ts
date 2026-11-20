@@ -96,6 +96,12 @@ interface RunningSession {
   view: AgentSession;
   controller: AbortController;
   done: Promise<void>;
+  /**
+   * The save of the unread mark the last turn set, started by `run` and
+   * awaited by `drain` only after the turn's application delivery outcome
+   * is recorded (see run()). Never rejects.
+   */
+  unreadSave?: Promise<void>;
   changed: Map<string, AgentMessage>;
   historyRevision?: number;
   displayed?: Map<string, AgentMessage>;
@@ -1736,6 +1742,9 @@ export class AgentSessions implements InspectableModule {
         } else {
           await this.run(session, delivery.prompt, resume, frameId, messageId);
           await this.finishApplicationDelivery(session, delivery.batchId);
+          // The unread mark's save started at the completion (see run()).
+          await session.unreadSave;
+          session.unreadSave = undefined;
         }
         if (
           this.closed ||
@@ -2157,12 +2166,13 @@ export class AgentSessions implements InspectableModule {
         }
       }
       // The turn's own save above ran before the mark existed. Save once
-      // more so a reload or restart finds it. Not awaited: the turn's
-      // remaining bookkeeping (the application delivery outcome in drain)
-      // must follow its completion at once, before a close or Stop could
-      // abort the conversation. Shutdown waits for this save.
+      // more so a reload or restart finds it. Not awaited here: the
+      // application delivery outcome (drain, right after run) must be decided
+      // at the completion, before a close or Stop during this write could
+      // abort the conversation. drain awaits it right after that, so the
+      // turn's `done` still covers the save.
       if (markedUnread) {
-        void this.saveUnread(session);
+        session.unreadSave = this.saveUnread(session);
       }
     }
   }
@@ -2994,9 +3004,6 @@ export class AgentSessions implements InspectableModule {
 
   async idle(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((session) => session.done));
-    // A turn no longer waits for the save of the unread mark it set; being
-    // idle includes those saves (and any started by reports meanwhile).
-    await Promise.all([...this.unreadWrites]);
   }
 
   async close(): Promise<void> {

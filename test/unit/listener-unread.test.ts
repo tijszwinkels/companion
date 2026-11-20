@@ -1162,7 +1162,7 @@ test('unread: panel reports never take request slots from what follows them', as
   connection.close();
 });
 
-test("unread: the turn's bookkeeping does not wait for the mark's save", async (context) => {
+test("unread: the turn's delivery outcome does not wait for the mark's save", async (context) => {
   const { directory } = await setupCase();
   const runs: Run[] = [];
   const listener = await startListener(directory, runs);
@@ -1205,13 +1205,15 @@ test("unread: the turn's bookkeeping does not wait for the mark's save", async (
   writes.gates[0].release();
   await waitFor(() => writes.gates.length === 2);
 
-  // The turn has finished its bookkeeping while the mark's save waits ...
-  await turnEnded(sessions, id);
+  // The delivery outcome is decided while the mark's save still waits ...
+  await waitFor(() => abortedAtDelivery.length === 1);
   assert.deepEqual(abortedAtDelivery, [false]);
   assert.equal(unreadOf(sessions, id), true);
 
-  // ... so closing now cannot turn the successful turn into a stopped one.
+  // ... so closing during that write cannot turn the successful turn into a
+  // stopped one. The turn's end still waits for the save.
   const closing = sessions.remove(id);
+  await new Promise((resolve) => setTimeout(resolve, 30));
   writes.gates[1].release();
   writes.restore();
   await closing;
