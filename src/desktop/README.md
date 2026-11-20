@@ -1563,9 +1563,13 @@ at least one connection shows it on a visible page:
   reads a conversation. See [remote panels](#remote-panels).
 
 Composer or keyboard focus is never required. A desktop report without
-`visible` (older adapters) counts as hidden. Only open conversations count:
-closing a conversation drops every report of it, so after it is reopened a
-connection has to report it again to show it.
+`visible` (older adapters) counts as hidden. A connection that reported as a
+desktop panel can no longer declare the remote role. When a remote client leaves
+while its requests still drain, the gateway reports `visible: false` for its
+connection at once (see [the gateway](../remote/README.md#requests-receipts-and-reconnection)).
+Only open conversations count: closing a conversation drops every report of it
+(a remote connection's selection is cleared too, also for its controls), so
+after it is reopened a connection has to report it again to show or control it.
 
 **Setting.** When a turn completes successfully, exactly when the listener emits
 `agent-turn-completed` (after the turn's successful save), and no connection
@@ -1582,18 +1586,18 @@ desktop or remote.
 
 Decisions:
 
-| Situation                                                        | Mark                                                                                                                        |
-| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Turn completes successfully, shown on a visible page             | unchanged (read)                                                                                                            |
-| Turn completes successfully, not shown (also: no client)         | set                                                                                                                         |
-| Turn ends in an error (harness error, failed save, tool storage) | unchanged: an earlier unread answer stays unread, an error never sets it                                                    |
-| Turn is stopped, or the listener shuts down during it            | unchanged                                                                                                                   |
-| Turn started by another agent, a session application or a timer  | same rule as a person's turn: only the outcome and who shows it count                                                       |
-| Several turns in a row (a queued successor, a follow-up)         | each successful turn applies the rule on its own; a set mark stays until the conversation is shown                          |
-| Client disconnects, reconnects or reloads                        | unchanged; the client's first snapshot carries it and its first visible report may clear it                                 |
-| Conversation closed                                              | unchanged and saved; `previousSessions` carries it                                                                          |
-| Conversation reopened from Previous sessions                     | restored as saved; cleared once a connection shows it (a desktop reopen reveals it, which clears it when the panel reports) |
-| Listener restart                                                 | every conversation comes back under Previous sessions with its saved mark                                                   |
+| Situation                                                        | Mark                                                                                                                                                                    |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Turn completes successfully, shown on a visible page             | unchanged (read)                                                                                                                                                        |
+| Turn completes successfully, not shown (also: no client)         | set                                                                                                                                                                     |
+| Turn ends in an error (harness error, failed save, tool storage) | unchanged: an earlier unread answer stays unread, an error never sets it                                                                                                |
+| Turn is stopped, or the listener shuts down during it            | unchanged                                                                                                                                                               |
+| Turn started by another agent, a session application or a timer  | same rule as a person's turn: only the outcome and who shows it count                                                                                                   |
+| Several turns in a row (a queued successor, a follow-up)         | each successful turn applies the rule on its own; a set mark stays until the conversation is shown                                                                      |
+| Client disconnects, reconnects or reloads                        | unchanged; the client's first snapshot carries it and its first visible report may clear it                                                                             |
+| Conversation closed                                              | unchanged and saved; `previousSessions` carries it                                                                                                                      |
+| Conversation reopened from Previous sessions                     | restored as saved, after any save still queued from the close; cleared once a connection shows it (a desktop reopen reveals it, which clears it when the panel reports) |
+| Listener restart                                                 | every conversation comes back under Previous sessions with its saved mark                                                                                               |
 
 A mark that cannot be saved stays live and is saved with the conversation's next
 save; the failure is logged. `test/unit/listener-unread.test.ts` holds the rule

@@ -271,7 +271,13 @@ selection change and whenever the page's visibility changes. A report without it
 counts as not visible, so an older app never clears unread marks and never marks
 a conversation read. Every conversation carries the listener's shared
 [unread mark](../desktop/README.md#unread-mark), `unread`, which the gateway
-relays unchanged; a visible selection clears it for every device. Only the
+relays unchanged; a visible selection clears it for every device. When the
+client leaves while its requests still drain, the gateway sends the listener
+`{"action":"panel-state","id":<last accepted id>,"visible":false}` on its behalf
+(after any request still waiting for role confirmation), so a page nobody sees
+any more does not keep reading conversations. Its selection stays for the
+draining requests; a refused withdrawal is sent again with an empty `id` after
+the next reply. Only the
 declared remote event set is forwarded, and initial snapshots stay at the gateway
 until the listener confirms the remote role. Reopen and Activity-based starts
 open in the background on the desktop, just like typed phone starts. Activity-based

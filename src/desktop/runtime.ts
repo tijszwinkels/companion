@@ -450,9 +450,13 @@ export class DesktopRuntime {
       // reports so; an utterance captured for it must not stay current.
       if (event.type === 'agent-removed') {
         this.removeFromNativeViews(event.id);
-        // A remote panel that still reports the closed conversation does not
-        // show it once it is reopened; it has to report it again.
+        // A remote panel that still reports the closed conversation neither
+        // shows it nor controls it once it is reopened; it has to report it
+        // again (its controls are republished below).
         for (const remote of this.remoteClients.values()) {
+          if (remote.selection === event.id) {
+            remote.selection = '';
+          }
           if (remote.visibleSelection === event.id) {
             remote.visibleSelection = '';
           }
@@ -2053,7 +2057,11 @@ export class DesktopRuntime {
         this.navigation?.clientId === clientId ||
         this.draftHosts.has(clientId) ||
         this.browserHosts.has(clientId) ||
-        this.mediaClients.has(clientId)
+        this.mediaClients.has(clientId) ||
+        // Any accepted desktop panel report, which may also have recorded
+        // pop-out windows and page visibility that only a desktop
+        // disconnect clears.
+        this.viewActionKeys.has(clientId)
       ) {
         throw Error('Declare the remote role before reporting desktop panel state');
       }

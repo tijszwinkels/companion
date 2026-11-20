@@ -75,6 +75,19 @@ export class SessionStore {
     }
   }
 
+  /**
+   * Resolve once every save of conversation `id` started so far has
+   * finished, successfully or not. Reading the archive after this sees the
+   * newest saved state (reopening waits here, so a write queued while the
+   * conversation was closing is not overtaken).
+   */
+  async settled(id: string): Promise<void> {
+    const pending = this.writes.get(id);
+    if (pending) {
+      await pending.catch(() => {});
+    }
+  }
+
   async save(session: AgentSession): Promise<void> {
     // Capture one coherent view before yielding to filesystem operations. URLs
     // are derived when reading; the saved file cannot redirect image loading.

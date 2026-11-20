@@ -50,6 +50,9 @@ const roleMilliseconds = 5000;
 const requestMilliseconds = 15_000;
 const maximumPendingRequests = 32;
 
+/** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
+const withdrawalRequestId = 'withdraw-visibility';
+
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
 
@@ -99,6 +102,19 @@ export class Relay {
   private readonly roleTimer: ReturnType<typeof setTimeout>;
   private terminated = false;
   private phoneOpen = true;
+  /**
+   * The conversation of the latest `panel-state` the listener accepted from
+   * this phone, and whether this phone ever sent one. Used only to withdraw
+   * the page's visibility when the phone leaves (withdrawVisibility).
+   */
+  private acceptedSelection = '';
+  private reportedSelection = false;
+  /**
+   * `wanted`: the phone left while it may still count as showing a
+   * conversation and the withdrawal is not yet sent; `sent`: written
+   * upstream. See withdrawVisibility.
+   */
+  private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
   private drainTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
@@ -254,6 +270,10 @@ export class Relay {
       return;
     }
 
+    if (request.action === 'panel-state') {
+      this.reportedSelection = true;
+    }
+
     const upstreamId = `r${++this.nextUpstreamId}`;
     // Do not merely expire a receipt: the underlying operation may still run.
     // Closing upstream settles every outstanding mutation as uncertain instead.
@@ -303,6 +323,37 @@ export class Relay {
 
     // Let executing requests answer so their receipts hold real outcomes.
     this.drainTimer = setTimeout(() => this.upstream.destroy(), drainMilliseconds);
+
+    // The upstream stays open while it drains, but nobody sees the page any
+    // more: it must not keep reading conversations (the unread mark).
+    if (this.reportedSelection) {
+      this.withdrawal = 'wanted';
+      this.withdrawVisibility();
+    }
+  }
+
+  /**
+   * Tell the listener that this phone's page is no longer visible, keeping
+   * its selection so draining requests that act on it still answer. Sent
+   * only after the role is confirmed and after every queued request (one of
+   * them may be a visible report), as an ordinary remote `panel-state` with
+   * `visible: false`. Its reply is not relayed to anyone. If the listener
+   * refuses it (too many requests still running, or the selection closed
+   * meanwhile), it is sent again after the next reply; the listener drops
+   * the whole connection when the drain ends in any case.
+   */
+  private withdrawVisibility(): void {
+    if (this.withdrawal !== 'wanted' || !this.ready || this.upstream.destroyed) {
+      return;
+    }
+
+    this.withdrawal = 'sent';
+    this.writeUpstream({
+      action: 'panel-state',
+      id: this.acceptedSelection,
+      visible: false,
+      requestId: withdrawalRequestId,
+    });
   }
 
   // ---- Listener side ------------------------------------------------------
@@ -351,6 +402,17 @@ export class Relay {
       return;
     }
 
+    if (isReply && message.requestId === withdrawalRequestId) {
+      // Refused only while too many requests run, or when the selection was
+      // closed meanwhile. Retry with an empty selection, which is always
+      // valid (a closed conversation is not shown anyway).
+      if (message.type === 'error') {
+        this.acceptedSelection = '';
+        this.withdrawal = 'wanted';
+      }
+      return;
+    }
+
     if (isReply && typeof message.requestId === 'string') {
       const pending = this.pending.get(message.requestId);
       if (!pending) {
@@ -358,7 +420,12 @@ export class Relay {
       }
       this.pending.delete(message.requestId);
       clearTimeout(pending.timer);
+      if (pending.request.action === 'panel-state' && message.type === 'result') {
+        this.acceptedSelection = pending.request.id;
+      }
       pending.finish(this.replyFor(pending.request, message));
+      // A request finished, so a refused withdrawal may fit now.
+      this.withdrawVisibility();
       this.drainedIfDone();
       return;
     }
@@ -424,6 +491,10 @@ export class Relay {
         this.sendRequest(upstreamId, pending.request);
       }
     }
+
+    // A phone that left during role negotiation: withdraw after its queued
+    // reports, which the listener handles in order.
+    this.withdrawVisibility();
   }
 
   private replyFor(request: RemoteRequest, message: Record<string, unknown>): Reply {

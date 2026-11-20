@@ -7,7 +7,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { AgentSessions } from '../../src/agents/sessions.ts';
-import type { AgentBackend, AgentMessageOrigin, AgentSession } from '../../src/agents/types.ts';
+import type {
+  AgentBackend,
+  AgentMessageOrigin,
+  AgentModelCatalog,
+  AgentSession,
+} from '../../src/agents/types.ts';
+import { parseRemoteRequest } from '../../src/remote/protocol.ts';
 import { DeviceStore } from '../../src/remote/devices.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { desktopFixture, stopped, waitFor } from '../desktop-fixture.ts';
@@ -150,13 +156,19 @@ interface Run {
 type Message = Record<string, any>;
 
 /** A listener (runtime + sessions) and a gateway on one session directory. */
-async function startListener(directory: string, runs: Run[]) {
+async function startListener(
+  directory: string,
+  runs: Run[],
+  models?: () => Promise<AgentModelCatalog>,
+) {
   const sessions = new AgentSessions(
     {
       pi: {
         id: 'unread-fixture',
         label: 'Unread fixture',
         dependencies: {},
+        // Only used to hold an `agent-models` request open (a draining phone).
+        ...(models ? { models: async () => models() } : {}),
         async run(request, runSignal) {
           let finish!: () => void;
           let fail!: (error: Error) => void;
@@ -222,6 +234,22 @@ function latestUnread(messages: Message[], id: string): boolean | undefined {
     }
   }
   return undefined;
+}
+
+/** The first `agent-session` update of `id` that shows the turn's outcome. */
+function firstOutcomeUpdate(
+  messages: Message[],
+  id: string,
+  outcome: Outcome,
+): AgentSession | undefined {
+  const status = { success: 'completed', error: 'error', cancelled: 'cancelled' }[outcome];
+  const update = messages.find(
+    (message) =>
+      message.type === 'agent-session' &&
+      message.session.id === id &&
+      message.session.status === status,
+  );
+  return update?.session;
 }
 
 /** `unread` of `id` in a client's first state message (its connect snapshot). */
@@ -425,7 +453,10 @@ for (const outcome of outcomes) {
         const mark = expectedAtCompletion(outcome, column.viewers, next);
         assert.equal(unreadOf(sessions, id), mark, 'listener mark when the turn ends');
         for (const client of clients) {
-          // Every client, desktop or remote, received the mark.
+          // Every client, desktop or remote, received the mark, in the very
+          // update that first shows the turn's outcome (not a later one).
+          await waitFor(() => firstOutcomeUpdate(client.messages(), id, outcome) !== undefined);
+          assert.equal(firstOutcomeUpdate(client.messages(), id, outcome)!.unread, mark);
           await waitFor(() => latestUnread(client.messages(), id) === mark);
         }
 
@@ -682,14 +713,165 @@ test('unread: visible must be a boolean, at the gateway and at the listener', as
   const phone = await connectPhone(listener.url, token, listener.origin, true);
   await phone.engine('state');
   for (const visible of ['yes', 1, null]) {
+    // The gateway refuses it itself; it never reaches the listener, whose
+    // message for the same mistake is different.
+    const parsed = parseRemoteRequest({
+      type: 'request',
+      requestId: 'direct',
+      action: 'panel-state',
+      id,
+      visible,
+    });
+    assert.deepEqual(parsed, {
+      ok: false,
+      requestId: 'direct',
+      message: 'Invalid field: visible',
+    });
+
     const requestId = `bad-${String(visible)}`;
     phone.send({ action: 'panel-state', requestId, id, visible });
     const reply = await phone.reply(requestId);
     assert.equal(reply.type, 'error');
-    assert.match((reply as { message: string }).message, /visible/);
+    assert.equal((reply as { message: string }).message, 'Invalid field: visible');
+  }
+  // Booleans and absence pass, with nothing else added.
+  for (const visible of [true, false, undefined]) {
+    const parsed = parseRemoteRequest({
+      type: 'request',
+      requestId: 'direct',
+      action: 'panel-state',
+      id,
+      ...(visible === undefined ? {} : { visible }),
+    });
+    assert.ok(parsed.ok);
+    assert.deepEqual(parsed.request, {
+      type: 'request',
+      requestId: 'direct',
+      action: 'panel-state',
+      id,
+      ...(visible === undefined ? {} : { visible }),
+    });
   }
 
   // A remote-role connection that bypasses the gateway is refused too.
+  const connection = await rawConnection(listener);
+  const role = await connection.request({
+    action: 'client-role',
+    role: 'remote',
+    requestId: 'role',
+  });
+  assert.equal(role.result, 'role-recorded');
+  const reply = await connection.request({
+    action: 'panel-state',
+    requestId: 'bad',
+    id,
+    visible: 'yes',
+  });
+  assert.equal(reply.type, 'error');
+  assert.equal(reply.message, 'Error: Expected visible to be true or false');
+  connection.close();
+});
+
+/** The runtime's remote clients, read to see when a report has been applied. */
+function remoteVisibleSelections(listener: Listener): string[] {
+  const runtime = listener.desktop.runtime as unknown as {
+    remoteClients: Map<number, { visibleSelection: string }>;
+  };
+  return [...runtime.remoteClients.values()].map((remote) => remote.visibleSelection);
+}
+
+test('unread: a phone that leaves while its requests drain no longer shows anything', async (context) => {
+  const { directory, token } = await setupCase();
+  const runs: Run[] = [];
+  let releaseModels!: () => void;
+  const modelsHeld = new Promise<void>((resolve) => {
+    releaseModels = resolve;
+  });
+  const listener = await startListener(directory, runs, async () => {
+    await modelsHeld;
+    return { models: ['local/qwen-synthetic'], thinkingLevels: {} };
+  });
+  context.after(async () => {
+    releaseModels();
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
+  const { id, run } = await startTurn(sessions, runs, 'Shown on the phone');
+
+  const phone = await connectPhone(listener.url, token, listener.origin, true);
+  await phone.engine('state');
+  phone.send({ action: 'panel-state', requestId: 'shown', id, visible: true });
+  assert.equal((await phone.reply('shown')).type, 'result');
+  assert.deepEqual(remoteVisibleSelections(listener), [id]);
+
+  // A request the listener holds open keeps the relay draining after the
+  // phone leaves; the page is gone, so it must stop counting as visible.
+  phone.send({ action: 'agent-models', requestId: 'held' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  phone.socket.terminate();
+  await phone.closed;
+  await waitFor(() => remoteVisibleSelections(listener).every((selection) => selection === ''));
+  assert.equal(remoteVisibleSelections(listener).length, 1, 'still draining');
+
+  await endTurn(sessions, run, id, 'success');
+  assert.equal(unreadOf(sessions, id), true);
+});
+
+test('unread: a report during a close is saved before a reopen reads the archive', async (context) => {
+  const { directory, token } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  context.after(async () => {
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const sessions = listener.sessions;
+  const { id, run } = await startTurn(sessions, runs, 'Closed and reopened at once');
+  await endTurn(sessions, run, id, 'success');
+  assert.equal(unreadOf(sessions, id), true);
+  const phone = await connect(listener, { kind: 'remote', visible: true }, token);
+
+  // Hold each archive write until the test releases it, in call order.
+  const store = (sessions as unknown as { store: { replace: (...args: unknown[]) => unknown } })
+    .store;
+  const original = store.replace.bind(store);
+  const gates: { release(): void; promise: Promise<void> }[] = [];
+  store.replace = async (...args: unknown[]) => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    gates.push({ release, promise });
+    await promise;
+    return original(...args);
+  };
+
+  // The close's own save (unread still true) waits ...
+  const closing = sessions.remove(id);
+  await waitFor(() => gates.length === 1);
+  // ... while the phone shows the closing conversation: cleared, and a
+  // second save is queued behind the first.
+  await phone.report(id, true);
+  assert.equal(unreadOf(sessions, id), false);
+
+  gates[0].release();
+  await closing;
+  assert.equal(sessions.previousSnapshot().find((entry) => entry.id === id)?.unread, false);
+
+  // Reopen while the clearing save still waits: it must not read the older
+  // archive.
+  const reopening = sessions.reopen(id, false);
+  await waitFor(() => gates.length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  gates[1].release();
+  await reopening;
+  store.replace = original;
+  assert.equal(unreadOf(sessions, id), false);
+});
+
+/** A raw listener connection that sends requests and waits for their replies. */
+async function rawConnection(listener: Listener) {
   const socket = createConnection(listener.desktop.socketPath);
   const lines: Message[] = [];
   let buffered = '';
@@ -702,14 +884,52 @@ test('unread: visible must be a boolean, at the gateway and at the listener', as
       buffered = buffered.slice(newline + 1);
     }
   });
+  socket.on('error', () => {});
   await once(socket, 'connect');
-  socket.write(JSON.stringify({ action: 'client-role', role: 'remote', requestId: 'role' }) + '\n');
-  socket.write(
-    JSON.stringify({ action: 'panel-state', requestId: 'bad', id, visible: 'yes' }) + '\n',
-  );
-  await waitFor(() => lines.some((line) => line.requestId === 'bad'));
-  const reply = lines.find((line) => line.requestId === 'bad')!;
-  assert.equal(reply.type, 'error');
-  assert.match(reply.message, /visible/);
-  socket.destroy();
+
+  return {
+    async request(request: Record<string, unknown>): Promise<Message> {
+      socket.write(JSON.stringify(request) + '\n');
+      await waitFor(() => lines.some((line) => line.requestId === request.requestId));
+      return lines.find((line) => line.requestId === request.requestId)!;
+    },
+    close() {
+      socket.destroy();
+    },
+  };
+}
+
+test('unread: a connection that reported as a desktop panel cannot become remote', async (context) => {
+  const { directory } = await setupCase();
+  const runs: Run[] = [];
+  const listener = await startListener(directory, runs);
+  context.after(async () => {
+    await listener.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { id } = await startTurn(listener.sessions, runs, 'Popped out');
+
+  // A visible pop-out window only: no selection, navigation or drafts.
+  const connection = await rawConnection(listener);
+  const report = await connection.request({
+    action: 'panel-state',
+    requestId: 'popout',
+    id: '',
+    composerFocused: false,
+    visible: true,
+    popoutHost: true,
+    rail: 'compact',
+    popouts: [{ id, active: false, composerFocused: false }],
+  });
+  assert.equal(report.result, 'panel-recorded');
+
+  // Its desktop visibility and window would outlive a remote disconnect.
+  const role = await connection.request({
+    action: 'client-role',
+    role: 'remote',
+    requestId: 'late-role',
+  });
+  assert.equal(role.type, 'error');
+  assert.match(role.message, /Declare the remote role before/);
+  connection.close();
 });

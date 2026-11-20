@@ -233,3 +233,97 @@ test('an authenticated heartbeat replies without forwarding a listener request',
   await waitFor(() => phone.messages.some((message) => message.type === 'pong'));
   assert.equal(upstreamRequests, 1, 'only the role declaration reaches the listener');
 });
+
+test('a phone that leaves while the role is pending is withdrawn after its queued report', async (context) => {
+  const received: Record<string, unknown>[] = [];
+  let listener: Socket | undefined;
+  const setup = await fixture(context, (socket, request) => {
+    listener = socket;
+    received.push(request);
+  });
+  const phone = await setup.phone();
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+  await waitFor(() => received.length === 1);
+
+  // Queued behind the role; the phone leaves before the listener confirms.
+  phone.send({
+    action: 'panel-state',
+    requestId: 'shown',
+    id: '00000000-0000-4000-8000-000000000001',
+    visible: true,
+  });
+  await delay(30);
+  phone.socket.terminate();
+  await phone.closed;
+
+  roleAccepted(listener!);
+  await waitFor(() => received.length === 3);
+  assert.equal(received[0].action, 'client-role');
+  assert.equal(received[1].action, 'panel-state');
+  assert.equal(received[1].visible, true);
+  // Its report was never answered, so no selection is known: withdraw with
+  // an empty one, after the queued report.
+  assert.deepEqual(received[2], {
+    action: 'panel-state',
+    id: '',
+    visible: false,
+    requestId: 'withdraw-visibility',
+  });
+});
+
+test('a refused visibility withdrawal is sent again after the next reply', async (context) => {
+  const conversation = '00000000-0000-4000-8000-000000000002';
+  const received: Record<string, unknown>[] = [];
+  let listener: Socket | undefined;
+  const setup = await fixture(context, (socket, request) => {
+    listener = socket;
+    received.push(request);
+    if (request.action === 'client-role') {
+      roleAccepted(socket);
+    }
+    if (request.action === 'panel-state' && request.requestId !== 'withdraw-visibility') {
+      socket.write(
+        JSON.stringify({ type: 'result', requestId: request.requestId, result: 'panel-recorded' }) +
+          '\n',
+      );
+    }
+  });
+  const phone = await setup.phone();
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+  phone.send({ action: 'panel-state', requestId: 'shown', id: conversation, visible: true });
+  await phone.reply('shown');
+
+  // A request the listener holds keeps the relay draining after the phone leaves.
+  phone.send({ action: 'toggle-pause', requestId: 'held' });
+  await waitFor(() => received.some((request) => request.action === 'toggle-pause'));
+  phone.socket.terminate();
+  await phone.closed;
+
+  await waitFor(() => received.some((request) => request.requestId === 'withdraw-visibility'));
+  const first = received.find((request) => request.requestId === 'withdraw-visibility');
+  // The accepted selection keeps draining requests valid; only visibility goes.
+  assert.deepEqual(first, {
+    action: 'panel-state',
+    id: conversation,
+    visible: false,
+    requestId: 'withdraw-visibility',
+  });
+
+  // Refused (for example too many requests running): retried after the next
+  // reply, with an empty selection, which is always valid.
+  listener!.write(
+    JSON.stringify({ type: 'error', requestId: 'withdraw-visibility', message: 'Busy' }) + '\n',
+  );
+  await delay(30);
+  const held = received.find((request) => request.action === 'toggle-pause')!;
+  listener!.write(JSON.stringify({ type: 'result', requestId: held.requestId, result: {} }) + '\n');
+  await waitFor(
+    () => received.filter((request) => request.requestId === 'withdraw-visibility').length === 2,
+  );
+  assert.deepEqual(received.filter((request) => request.requestId === 'withdraw-visibility')[1], {
+    action: 'panel-state',
+    id: '',
+    visible: false,
+    requestId: 'withdraw-visibility',
+  });
+});

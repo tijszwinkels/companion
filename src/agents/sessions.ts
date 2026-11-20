@@ -2574,6 +2574,11 @@ export class AgentSessions implements InspectableModule {
     }
     this.restoring.add(id);
     try {
+      // A save queued while the conversation was closing (for example its
+      // unread mark cleared by a report during the close's own save) must
+      // land before the archive is read, or reopening would restore the
+      // older state.
+      await this.store.settled(id);
       const view = await this.store.read(id);
       if (this.closed) {
         throw new SessionToolError('rejected', 'Agent sessions are shutting down');
