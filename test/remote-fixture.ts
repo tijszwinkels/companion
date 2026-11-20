@@ -49,6 +49,8 @@ export async function remoteFixture(
     gateway?: Partial<GatewayServiceOptions>;
     /** The listener's capture-storage policy; on (as before) by default. */
     captureStorage?: CaptureStoragePolicy;
+    /** Run the listener in preview mode (it then advertises no history deletion). */
+    preview?: boolean;
     /** The listener's wall clock (wakes, turn and message times); real by default. */
     clock?: () => number;
     /** Replaces the synthetic model catalogue, e.g. to hold `agent-models` open. */
@@ -110,6 +112,7 @@ export async function remoteFixture(
 
   const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions, {
     captureStorage,
+    preview: options.preview,
   });
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;

@@ -1,12 +1,15 @@
 /**
- * The list layout this browser remembers: the list's preferred width and
- * whether it is shown.
+ * The layout this browser remembers: the conversation list's preferred
+ * width and whether it is shown, and the same two for the Activity column.
  *
- * Kept in `localStorage` as two independent entries, each JSON
+ * Kept in `localStorage` as four independent entries, each JSON
  * `{ "version": 1, "value": … }`:
  *
- * - `companion.shell.layout.listWidth`: the preferred width in pixels;
- * - `companion.shell.layout.listShown`: whether the list is shown.
+ * - `companion.shell.layout.listWidth`: the list's preferred width in pixels;
+ * - `companion.shell.layout.listShown`: whether the list is shown;
+ * - `companion.shell.layout.activityWidth`: the Activity column's preferred
+ *   width in pixels;
+ * - `companion.shell.layout.activityShown`: whether the column is shown.
  *
  * They describe only the arrangement of this page, not the person or their
  * conversations, so they are not cleared on sign-out. Each change writes
@@ -15,17 +18,21 @@
  * value it did not change (useListLayout.ts follows the other tabs).
  *
  * An entry that is missing, unreadable, of another version or of the wrong
- * type gives that entry's default: the strip, shown (the agreed design's
- * starting arrangement). A storage that cannot be read or written
+ * type gives that entry's default: the list as the strip, shown, and the
+ * Activity column 320 px wide, hidden (the agreed design's starting
+ * arrangement). A storage that cannot be read or written
  * (disabled, full) keeps the layout for this page only.
  */
 
+import { activityDefaultWidth, validActivityWidth } from './activity-width.ts';
 import { stripWidth, validListWidth } from './list-width.ts';
 
 /** The entries' common prefix, for recognising them in `storage` events. */
 export const layoutStoragePrefix = 'companion.shell.layout.';
 export const listWidthKey = `${layoutStoragePrefix}listWidth`;
 export const listShownKey = `${layoutStoragePrefix}listShown`;
+export const activityWidthKey = `${layoutStoragePrefix}activityWidth`;
+export const activityShownKey = `${layoutStoragePrefix}activityShown`;
 
 export interface ListLayout {
   /** Preferred width in CSS pixels: the strip's, or a full list's (see list-width.ts). */
@@ -35,6 +42,18 @@ export interface ListLayout {
 }
 
 export const defaultLayout: ListLayout = { listWidth: stripWidth, listShown: true };
+
+export interface ActivityLayout {
+  /** Preferred width of the Activity column in CSS pixels (see activity-width.ts). */
+  activityWidth: number;
+  /** Whether the column is shown (☰ and the list's Activity entry hide and show it). */
+  activityShown: boolean;
+}
+
+export const defaultActivityLayout: ActivityLayout = {
+  activityWidth: activityDefaultWidth,
+  activityShown: false,
+};
 
 /** The parts of `Storage` used here, so tests can pass a stand-in. */
 export interface LayoutStorage {
@@ -101,4 +120,28 @@ export function writeListWidth(storage: LayoutStorage, width: number): void {
 /** Remember whether the list is shown (and only that). */
 export function writeListShown(storage: LayoutStorage, shown: boolean): void {
   writeEntry(storage, listShownKey, shown);
+}
+
+/** The remembered Activity layout; each entry that is missing or not valid gives its default. */
+export function readActivityLayout(storage: LayoutStorage): ActivityLayout {
+  const layout = { ...defaultActivityLayout };
+  const width = readEntry(storage, activityWidthKey);
+  if (typeof width === 'number') {
+    layout.activityWidth = validActivityWidth(width);
+  }
+  const shown = readEntry(storage, activityShownKey);
+  if (typeof shown === 'boolean') {
+    layout.activityShown = shown;
+  }
+  return layout;
+}
+
+/** Remember the Activity column's preferred width (and only it). */
+export function writeActivityWidth(storage: LayoutStorage, width: number): void {
+  writeEntry(storage, activityWidthKey, validActivityWidth(width));
+}
+
+/** Remember whether the Activity column is shown (and only that). */
+export function writeActivityShown(storage: LayoutStorage, shown: boolean): void {
+  writeEntry(storage, activityShownKey, shown);
 }
