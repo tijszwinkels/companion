@@ -4,8 +4,13 @@ import { widgetTools } from '../../src/agents/widget-tools.ts';
 import { frame, signal } from '../helpers.ts';
 import { remoteFixture, waitFor } from '../remote-fixture.ts';
 
-/** A temporary loopback gateway, not the user's held phone service. */
-test('phone snapshots and patches omit application chat permission controls and their epochs', async (context) => {
+/**
+ * A temporary loopback gateway, not the user's held phone service. Phones
+ * receive the permission state so that they can show and change it, but
+ * never the send grant's ID or the view capability
+ * (src/remote/README.md, "Application chat access").
+ */
+test('phone snapshots and patches carry application chat permissions without the grant ID or view capability', async (context) => {
   const fixture = await remoteFixture();
   context.after(() => fixture.close());
   fixture.sessions.start(frame, signal());
@@ -25,12 +30,17 @@ test('phone snapshots and patches omit application chat permission controls and 
   const application = fixture.sessions.snapshot()[0].application!;
   assert.ok(application.chatAccess?.revision);
   const epoch = application.chatAccess.revision;
+  const grantId = application.chatAccess.send!.grantId;
   const capability = application.viewUrl!.slice(-64);
+  const { send, ...withoutSend } = application.chatAccess;
+  const { grantId: _grantId, ...sendWithoutGrant } = send!;
+  const remoteAccess = { ...withoutSend, send: sendWithoutGrant };
 
   const { token } = await fixture.pair();
   const phone = await fixture.phone(token);
   const snapshot = await phone.engine('state');
-  assert.equal(snapshot.sessions[0].application.chatAccess, undefined);
+  assert.deepEqual(snapshot.sessions[0].application.chatAccess, remoteAccess);
+  assert.equal(snapshot.sessions[0].application.chatAccess.revision, epoch);
   assert.equal(snapshot.sessions[0].application.viewUrl, undefined);
 
   const response = await fetch(application.viewUrl + '/action', {
@@ -48,8 +58,9 @@ test('phone snapshots and patches omit application chat permission controls and 
     'agent-session',
     (message) => message.session.application?.revision === 2,
   );
-  assert.equal(patch.session.application.chatAccess, undefined);
+  assert.deepEqual(patch.session.application.chatAccess, remoteAccess);
   assert.equal(patch.session.application.viewUrl, undefined);
-  assert.ok(!JSON.stringify(phone.messages).includes(epoch));
+  assert.ok(!JSON.stringify(phone.messages).includes('grantId'));
+  assert.ok(!JSON.stringify(phone.messages).includes(grantId));
   assert.ok(!JSON.stringify(phone.messages).includes(capability));
 });

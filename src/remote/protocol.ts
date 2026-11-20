@@ -135,6 +135,55 @@ export interface RemoteActionParameters {
     index: number;
     offset: number;
   };
+  /**
+   * Allow or stop the conversation's session application reading recent chat
+   * text (`…-read`) or sending chat messages (`…-send`). The fields are the
+   * ones the desktop sends: the application's `id` and code `version` and the
+   * permission `revision` from the `chatAccess` this client was shown, and
+   * `allowed`. The listener allows it only for the conversation this
+   * connection shows: allowing needs it selected on a visible page, stopping
+   * only selected (src/desktop/README.md, "Application chat access from a
+   * paired device"). The result is the new `RemoteApplicationChatAccess`.
+   */
+  'set-application-chat-read': ApplicationChatPermissionChange;
+  'set-application-chat-send': ApplicationChatPermissionChange;
+}
+
+/** Fields of `set-application-chat-read` and `set-application-chat-send`. */
+export interface ApplicationChatPermissionChange {
+  /** The conversation. */
+  id: string;
+  /** The session application's ID (`application.id`). */
+  applicationId: string;
+  /** The application's code version (`application.version`). */
+  version: number;
+  /** `application.chatAccess.revision` as this client last received it. */
+  revision: string;
+  allowed: boolean;
+}
+
+/**
+ * A session application's chat permission state as a remote client receives
+ * it: `application.chatAccess` in sessions, and the result of
+ * `set-application-chat-read` / `set-application-chat-send`. The gateway
+ * rebuilds it field by field from the listener's state (see chat-access.ts);
+ * the listener's `send.grantId` never reaches a remote client.
+ */
+export interface RemoteApplicationChatAccess {
+  /** What the application's code asks for: `chat.read`, `chat.send` or both. */
+  requested: ('chat.read' | 'chat.send')[];
+  /** The application may read recent chat text. */
+  read: boolean;
+  /** Absent from older listeners; absence never means sending is allowed. */
+  send?: {
+    allowed: boolean;
+    /** Messages the current grant may still send (0 when not allowed). */
+    remaining: number;
+    /** One of its messages is waiting or running. */
+    busy: boolean;
+  };
+  /** Changes with every permission change; a change must name the current one. */
+  revision: string;
 }
 
 export type RemoteAction = keyof RemoteActionParameters;
@@ -174,6 +223,10 @@ export const mutatingActions: ReadonlySet<RemoteAction> = new Set<RemoteAction>(
   'set-agent-model',
   'set-agent-thinking',
   'move-agent',
+  // A repeat after a reconnect gets the first request's real outcome. Run
+  // again, it would only be refused (the permission revision has changed).
+  'set-application-chat-read',
+  'set-application-chat-send',
 ]);
 
 /** First message on a new socket. The token never travels in a URL. */
@@ -371,6 +424,8 @@ const nonEmptyText = (maximum: number): FieldCheck => {
   return (value) => typeof value === 'string' && value.length > 0 && value.length <= maximum;
 };
 const sessionId: FieldCheck = (value) => typeof value === 'string' && sessionIdPattern.test(value);
+/** Application IDs and permission revisions are lowercase UUIDs like conversation IDs. */
+const uuid: FieldCheck = sessionId;
 const optionalSessionId: FieldCheck = (value) => value === '' || sessionId(value);
 const boolean: FieldCheck = (value) => typeof value === 'boolean';
 const count: FieldCheck = (value) => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -453,7 +508,20 @@ const shapes: Record<RemoteAction, ActionShape> = {
   'draft-set': {
     required: { id: sessionId, text: text(draftTextLimit), editId: nonEmptyText(100) },
   },
+  'set-application-chat-read': { required: applicationChatPermissionFields() },
+  'set-application-chat-send': { required: applicationChatPermissionFields() },
 };
+
+/** Exactly the fields the desktop sends for an application chat permission. */
+function applicationChatPermissionFields(): Record<string, FieldCheck> {
+  return {
+    id: sessionId,
+    applicationId: uuid,
+    version: count,
+    revision: uuid,
+    allowed: boolean,
+  };
+}
 
 /**
  * What a draft host may send beyond `shapes`. A connection that did not ask

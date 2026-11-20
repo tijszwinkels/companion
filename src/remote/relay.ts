@@ -33,6 +33,7 @@ import {
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
 import { PhoneOutput } from './outbound.ts';
 import { draftEditBurst } from './request-rate.ts';
+import { remoteChatAccess } from './chat-access.ts';
 import type { RelayFrames } from './frames/handles.ts';
 
 /** WebSocket close codes the phone app understands. */
@@ -586,6 +587,17 @@ export class Relay {
       ) {
         this.rewriteSession(message.result as { id?: unknown; messages?: unknown });
       }
+      if (
+        request.action === 'set-application-chat-read' ||
+        request.action === 'set-application-chat-send'
+      ) {
+        return {
+          type: 'result',
+          requestId: request.requestId,
+          action: request.action,
+          result: this.permissionResult(message.result),
+        };
+      }
       return {
         type: 'result',
         requestId: request.requestId,
@@ -599,6 +611,19 @@ export class Relay {
       action: request.action,
       message: String(message.message ?? 'Request failed').slice(0, 600),
     };
+  }
+
+  /**
+   * The result of an accepted permission change: `"preview"` in preview mode,
+   * otherwise the new permission state as for sessions (chat-access.ts), or
+   * null if the listener's answer is malformed. The change itself was made;
+   * the client learns its state from the session event that follows.
+   */
+  private permissionResult(result: unknown): unknown {
+    if (result === 'preview') {
+      return result;
+    }
+    return remoteChatAccess(result) ?? null;
   }
 
   private drainedIfDone(): void {
@@ -681,9 +706,18 @@ export class Relay {
       if (application && typeof application === 'object') {
         const applicationFrame = this.options.frames?.application(value.id, application.viewUrl);
         delete application.viewUrl;
-        delete application.chatAccess;
         if (applicationFrame) {
           application.frameUrl = applicationFrame;
+        }
+
+        // The permission state, rebuilt field by field without the send
+        // grant's ID (chat-access.ts), so a client can show and change it.
+        // Malformed state is not sent at all.
+        const chatAccess = remoteChatAccess(application.chatAccess);
+        if (chatAccess) {
+          application.chatAccess = chatAccess;
+        } else {
+          delete application.chatAccess;
         }
       }
       this.rewriteSession(value);

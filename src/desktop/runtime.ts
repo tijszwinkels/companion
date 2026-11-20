@@ -138,15 +138,14 @@ function presentResult(request: Record<string, unknown>): AgentPresentOutcome {
  * answers, the capture-storage switch and the defaults for new sessions. A
  * remote panel (such as the phone gateway) cannot observe or own any of
  * these, so the listener refuses them for remote connections. (`draft-set`
- * is checked where it is handled: a remote draft host may write drafts.)
+ * is checked where it is handled: a remote draft host may write drafts.
+ * `set-application-chat-read`/`-send` have their own rule for remote
+ * connections, see `checkRemotePermissionChange`.)
  */
 const desktopOnlyActions = new Set([
   'paste',
   // Capture storage is a desktop privacy setting; v1 has no remote control.
   'set-capture-storage',
-  // Application conversation access is granted only in trusted desktop UI.
-  'set-application-chat-read',
-  'set-application-chat-send',
   // Only the desktop Activity page shows the defaults for new sessions.
   'coding-defaults',
   'set-coding-defaults',
@@ -865,6 +864,28 @@ export class DesktopRuntime {
   private markShownConversationsRead(): void {
     for (const id of this.visiblyShownConversations()) {
       this.options.agents?.markRead(id);
+    }
+  }
+
+  /**
+   * The rule for a remote connection changing an application's chat
+   * permission for conversation `id`; throws when it may not:
+   * - allowing (`allowing`) needs this connection's own selection to be `id`
+   *   and its latest report to have said `visible: true` (`visibleSelection`);
+   * - stopping needs only its selection to be `id`, visible or not, so that
+   *   turning access off is never harder than turning it on.
+   * A connection whose visibility was withdrawn (its client left) can allow
+   * nothing. The record is looked up on every call: a connection that has
+   * gone, or a conversation that closed (which clears the selection), fails.
+   * The messages say what the person can do and name no other device.
+   */
+  private checkRemotePermissionChange(clientId: number, id: string, allowing: boolean): void {
+    const remote = this.remoteClients.get(clientId);
+    if (!remote || id === '' || remote.selection !== id) {
+      throw Error('Open this conversation on this device first');
+    }
+    if (allowing && remote.visibleSelection !== id) {
+      throw Error('Show this conversation on this device first');
     }
   }
 
@@ -2219,12 +2240,29 @@ export class DesktopRuntime {
         throw Error('Expected a conversation');
       }
       const id = request.id;
-      const validateDesktop = () => {
-        if (!this.showsConversation(clientId, id) || this.remoteClients.has(clientId)) {
-          throw Error('This conversation is no longer selected on the desktop');
-        }
-      };
-      validateDesktop();
+
+      // Who may change the permission (src/desktop/README.md, "Application
+      // chat access from a paired device"). The check runs now and again when
+      // the change leaves the application's queue, so a selection or
+      // visibility that changed while it waited counts. A desktop connection
+      // keeps exactly its previous rule; a remote connection has its own.
+      let validateShown: () => void;
+      if (remote) {
+        // Anything but an explicit `false` asks to allow, so it needs the
+        // stricter check (the application service refuses non-booleans).
+        const allowing = request.allowed !== false;
+        validateShown = () => {
+          this.checkRemotePermissionChange(clientId, id, allowing);
+        };
+      } else {
+        validateShown = () => {
+          if (!this.showsConversation(clientId, id) || this.remoteClients.has(clientId)) {
+            throw Error('This conversation is no longer selected on the desktop');
+          }
+        };
+      }
+      validateShown();
+
       if (this.options.preview) {
         return 'preview';
       }
@@ -2240,7 +2278,7 @@ export class DesktopRuntime {
           revision: request.revision,
           allowed: request.allowed,
         },
-        validateDesktop,
+        validateShown,
       );
     }
 
