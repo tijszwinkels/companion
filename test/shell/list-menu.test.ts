@@ -421,6 +421,21 @@ test(
     assert.equal((await moveSends(page)).length, 1, 'the unavailable item sends nothing');
     await key(page, 'Escape');
     await page.waitFor(`!${openMenu}`);
+    // Hiding and showing the list keeps the pending move: still busy, and
+    // a key sends nothing.
+    await clickElement(page, `document.querySelector('.list-toggle')`);
+    await page.waitFor(`!document.querySelector('.conversations')`);
+    await clickElement(page, `document.querySelector('.list-toggle')`);
+    await page.waitFor(showsOrder(titles));
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('.conversation-scroll').getAttribute('aria-busy')`,
+      ),
+      'true',
+    );
+    await page.evaluate(`${selectOf('Alpha')}.focus()`);
+    await key(page, 'ArrowDown', alt | shift);
+    assert.equal((await moveSends(page)).length, 1, 'nothing after hiding and showing');
     // Released: the one move arrives and the list follows the listener.
     assert.equal(
       await page.evaluate(
@@ -631,6 +646,85 @@ test(
     await page.waitFor(`!${openMenu}`);
     await waitFocused(page, `${entryExpression('Charlie')}.querySelector('.entry-close')`);
 
+    // A press on the open menu's ⋯ released elsewhere (no click): focus is
+    // on the ⋯ and the menu still open; Escape there closes it.
+    await clickElement(page, menuButtonOf('Charlie'));
+    await page.waitFor(openMenu);
+    const opener = await center(page, menuButtonOf('Charlie'));
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: opener.x, y: opener.y });
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: opener.x,
+      y: opener.y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: opener.x + 300,
+      y: opener.y + 200,
+      button: 'left',
+      buttons: 1,
+    });
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: opener.x + 300,
+      y: opener.y + 200,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+    await waitFocused(page, menuButtonOf('Charlie'));
+    assert.ok(await page.evaluate(`Boolean(${openMenu})`), 'still open');
+    await key(page, 'Escape');
+    await page.waitFor(`!${openMenu}`);
+    await waitFocused(page, menuButtonOf('Charlie'));
+
+    // A press outside can start a text selection: dragging across the
+    // answer closes the menu and selects its text.
+    await clickElement(page, menuButtonOf('Charlie'));
+    await page.waitFor(openMenu);
+    // From the right end of the answer's text line, outside the menu, to
+    // the start of its text.
+    const line = await page.evaluate<{ from: number; to: number; y: number }>(`(() => {
+      const panel = [...document.querySelectorAll('.rows .message')].at(-1).querySelector('.panel');
+      const paragraph = panel.querySelector('.bubble p');
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      const text = range.getBoundingClientRect();
+      const box = panel.getBoundingClientRect();
+      return { from: box.right - 30, to: text.left + 1, y: text.top + text.height / 2 };
+    })()`);
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: line.from, y: line.y });
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: line.from,
+      y: line.y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await page.waitFor(`!${openMenu}`);
+    for (let step = 1; step <= 6; step++) {
+      await page.call('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: line.from + ((line.to - line.from) * step) / 6,
+        y: line.y,
+        button: 'left',
+        buttons: 1,
+      });
+    }
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: line.to,
+      y: line.y,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+    assert.match(await page.evaluate<string>(`getSelection().toString()`), /answer\./);
+
     // Opening another entry's menu closes the first: one menu, the other's.
     await clickElement(page, menuButtonOf('Charlie'));
     await page.waitFor(openMenu);
@@ -734,6 +828,42 @@ test(
     await tapElement(page, `document.querySelector('.chat-bar-title')`);
     await page.waitFor(`!${openMenu}`);
     assert.equal((await moveSends(page)).length, 1);
+
+    // A short window where the list scrolls: scrolled so that the open
+    // menu's ⋯ leaves the window, the menu stays inside it.
+    await page.call('Emulation.setDeviceMetricsOverride', {
+      width: 420,
+      height: 360,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.waitFor(`innerHeight === 360`);
+    await page.waitFor(
+      `document.querySelector('.conversation-scroll').scrollHeight > document.querySelector('.conversation-scroll').clientHeight`,
+    );
+    const firstTitle = (await shownOrder(page))[0];
+    await page.evaluate(`document.querySelector('.conversation-scroll').scrollTop = 0`);
+    await tapElement(page, menuButtonOf(firstTitle));
+    await page.waitFor(openMenu);
+    await page.evaluate(
+      `document.querySelector('.conversation-scroll').scrollTop = document.querySelector('.conversation-scroll').scrollHeight`,
+    );
+    await page.waitFor(
+      `${menuButtonOf(firstTitle)}.getBoundingClientRect().bottom < 0 || ${menuButtonOf(firstTitle)}.getBoundingClientRect().bottom < document.querySelector('.conversation-scroll').getBoundingClientRect().top`,
+    );
+    await page.waitFor(`(() => {
+      const box = document.querySelector('.entry-menu').getBoundingClientRect();
+      return box.top >= 0 && box.bottom <= innerHeight;
+    })()`);
+    await key(page, 'Escape');
+    await page.waitFor(`!${openMenu}`);
+    await page.call('Emulation.setDeviceMetricsOverride', {
+      width: 420,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.waitFor(`innerHeight === 800`);
 
     // A tap on the entry still selects it (the menu is a button of its own).
     await tapElement(page, selectOf('Charlie'));

@@ -581,10 +581,10 @@ body {
 }
 
 /* The ⋯ button: always shown, as touch has no hover. In the strip at the
-   entry's top-left corner (the × has the top-right one), in the full list
-   at its bottom-right corner, below the running time. */
+   entry's top-left corner (the × has the top-right one); in the full list
+   a column of its own at the entry's right, so the title, the last line
+   and the running time (also on a line of its own) end before it. */
 .entry-menu-button {
-  position: absolute;
   width: 20px;
   height: 20px;
   padding: 0;
@@ -600,18 +600,24 @@ body {
 }
 
 .conversations.strip .entry-menu-button {
+  position: absolute;
   top: 0;
   left: 0;
 }
 
-.conversations.full .entry-menu-button {
-  right: 2px;
-  bottom: 2px;
+.conversations.full .conversation-entry {
+  display: flex;
+  align-items: center;
 }
 
-/* The last line ends before the ⋯ button. */
-.conversations.full .entry-last-line {
-  margin-right: 14px;
+.conversations.full .entry-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.conversations.full .entry-menu-button {
+  flex: none;
+  margin-right: 4px;
 }
 
 .entry-menu-button:hover,

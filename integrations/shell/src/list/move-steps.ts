@@ -92,13 +92,30 @@ export function stepKey(event: {
 
 /**
  * The one move awaiting its answer, by the pending rule above. One object
- * per list; it holds no timers.
+ * per page connection (ConversationList.tsx keeps it per bridge, so a list
+ * hidden and shown again finds it); it holds no timers. Whoever draws the
+ * list subscribes (`onChange`) to draw again when a move starts or ends.
  */
 export class PendingMove {
   /** The revision the pending move named, or null when none is pending. */
   private revision: string | null = null;
   /** The listener accepted it; it ends once the order moves past `revision`. */
   private accepted = false;
+  private readonly listeners = new Set<() => void>();
+
+  /** Call `listener` whenever a move starts or ends; returns the unsubscribe. */
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private changed(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
 
   get pending(): boolean {
     return this.revision !== null;
@@ -108,6 +125,7 @@ export class PendingMove {
   sent(revision: string): void {
     this.revision = revision;
     this.accepted = false;
+    this.changed();
   }
 
   /**
@@ -120,6 +138,7 @@ export class PendingMove {
     }
     if (!accepted) {
       this.revision = null;
+      this.changed();
       return true;
     }
     this.accepted = true;
@@ -139,6 +158,7 @@ export class PendingMove {
     }
     this.revision = null;
     this.accepted = false;
+    this.changed();
     return true;
   }
 
@@ -146,5 +166,6 @@ export class PendingMove {
   reset(): void {
     this.revision = null;
     this.accepted = false;
+    this.changed();
   }
 }

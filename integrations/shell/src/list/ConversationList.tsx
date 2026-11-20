@@ -105,15 +105,22 @@ export function ConversationList(props: {
   // One move at a time (move-steps.ts): an accepted move ends once the list
   // shows another order revision, which is checked on every drawing. While
   // one is pending the order counts as unavailable to every way of moving,
-  // so the drag, the keys and the menu send nothing meanwhile.
-  const pendingMove = useRef(new PendingMove());
+  // so the drag, the keys and the menu send nothing meanwhile. It belongs to
+  // the bridge, not to this drawing of the list, so hiding and showing the
+  // list does not forget it.
+  const pendingMove = pendingMoveOf(props.bridge);
   const [, setPendingVersion] = useState(0);
-  pendingMove.current.orderShown(state.orderRevision);
+  useEffect(() => {
+    return pendingMove.onChange(() => {
+      setPendingVersion((version) => version + 1);
+    });
+  }, [pendingMove]);
+  pendingMove.orderShown(state.orderRevision);
 
   const order: OrderState = {
     ids: entries.map((entry) => entry.id),
     revision: state.orderRevision,
-    available: available && !pendingMove.current.pending,
+    available: available && !pendingMove.pending,
   };
 
   const gesture = useRef(new ReorderGesture());
@@ -224,17 +231,16 @@ export function ConversationList(props: {
    * while another move is pending.
    */
   function requestMove(move: MoveRequest) {
-    const pending = pendingMove.current;
+    const pending = pendingMove;
     if (pending.pending) {
       return;
     }
+    // Starting and ending it draws the list again (its onChange), also a
+    // list drawn anew meanwhile (hidden and shown).
     pending.sent(move.revision);
-    setPendingVersion((version) => version + 1);
 
     const settle = (accepted: boolean) => {
-      if (pending.answered(accepted, store.state.orderRevision)) {
-        setPendingVersion((version) => version + 1);
-      }
+      pending.answered(accepted, store.state.orderRevision);
     };
     // A refused move (the order changed meanwhile) is explained by the
     // Store's toast; the list keeps showing the listener's order.
@@ -254,8 +260,26 @@ export function ConversationList(props: {
     }
   }
 
-  /** Alt+Shift+Up and Alt+Shift+Down on an entry's select, ⋯ or × button. */
+  /**
+   * Alt+Shift+Up and Alt+Shift+Down on an entry's select, ⋯ or × button.
+   * Escape and Tab on the ⋯ of an open menu (focus can be there while the
+   * menu is open: a press on ⋯ released elsewhere) close it as in the menu.
+   */
   function entryKeyDown(event: KeyboardEvent, id: string) {
+    const onMenuButton = (event.target as HTMLElement).classList.contains('entry-menu-button');
+    if (menuEntryId === id && onMenuButton) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu(true);
+        return;
+      }
+      if (event.key === 'Tab') {
+        // Focus is on the ⋯ already; the Tab goes on from there.
+        closeMenu(false);
+        return;
+      }
+    }
+
     const direction = stepKey(event);
     if (direction === null) {
       return;
@@ -431,9 +455,9 @@ export function ConversationList(props: {
     };
   }, []);
 
-  // A changed order or membership, or the list becoming unavailable, ends a
-  // gesture started under the old state.
-  const orderSignature = `${available}|${order.revision}|${order.ids.join(',')}`;
+  // A changed order or membership, or the list becoming unavailable (also by
+  // a move awaiting its answer), ends a gesture started under the old state.
+  const orderSignature = `${order.available}|${order.revision}|${order.ids.join(',')}`;
   useEffect(() => {
     gesture.current.orderChanged(orderRef.current);
     refresh();
@@ -564,7 +588,7 @@ export function ConversationList(props: {
         ref={scroller}
         aria-label="Open conversations"
         // Busy while a move awaits its answer: the order is about to change.
-        aria-busy={pendingMove.current.pending ? 'true' : undefined}
+        aria-busy={pendingMove.pending ? 'true' : undefined}
         onClickCapture={clickCapture}
         onLostPointerCapture={(event) => {
           // Only the list's own capture: when a drag starts, capture moves
@@ -716,6 +740,21 @@ function Entry(props: {
       </button>
     </li>
   );
+}
+
+/**
+ * The one move awaiting its answer, per bridge (one bridge per page and
+ * pairing), so it outlives a list that is hidden and shown again.
+ */
+const pendingMoves = new WeakMap<GatewayChatBridge, PendingMove>();
+
+function pendingMoveOf(bridge: GatewayChatBridge): PendingMove {
+  let pending = pendingMoves.get(bridge);
+  if (!pending) {
+    pending = new PendingMove();
+    pendingMoves.set(bridge, pending);
+  }
+  return pending;
 }
 
 /** The element id of an entry's ⋯ button. */

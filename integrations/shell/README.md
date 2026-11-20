@@ -275,13 +275,15 @@ Rule (`src/list/move-steps.ts`, `src/list/EntryMenu.tsx`,
    answers, so this normally ends with the answer). Meanwhile nothing else
    is sent: the keys do nothing, Move up and Move down are unavailable, a
    press does not start a drag and a drag in progress ends without a move.
-   The list is marked busy (`aria-busy`) meanwhile.
+   The list is marked busy (`aria-busy`) meanwhile. The pending move
+   belongs to the page's connection, not to the drawn list: hiding and
+   showing the list keeps it.
 5. The list never reorders itself: it shows the listener's order. A move
    the listener refuses (the order changed elsewhere before it arrived)
    leaves the list as the listener has it, and the Store's error toast says
    so ("Session order changed; try moving the tab again").
-6. Focus stays on the moved entry: on its select button after a key, on its
-   ⋯ after the menu. (Redrawing in the new order can make the browser drop
+6. Focus stays on the moved entry: on the control that had it after a key
+   (its select button, its ⋯ or its ×), on its ⋯ after the menu. (Redrawing in the new order can make the browser drop
    the focus of an entry it moves; the list puts it back, and only then.)
 7. When the conversation whose control or menu had focus leaves the list
    (closed here or elsewhere, also while its menu is open), focus goes to
@@ -291,7 +293,8 @@ The ⋯ menu:
 
 1. Every entry, in the strip and in the full list, has a ⋯ button, always
    shown because touch has no hover: at the strip's top-left corner (the ×
-   has the top-right one) and at the full list's bottom-right corner. It is
+   has the top-right one) and in the full list as a column of its own at
+   the entry's right, beside the title, last line and running time. It is
    named "Actions for" and the title, with `aria-haspopup="menu"` and
    `aria-expanded`.
 2. A click, a tap, or Enter or Space on the focused ⋯ opens the menu, with
@@ -302,16 +305,19 @@ The ⋯ menu:
    focusable, marked `aria-disabled` and dimmed, and does nothing.
 4. Keyboard: Up and Down (wrapping), Home and End move through the items;
    Enter or Space chooses.
-5. It closes on a choice and on Escape (focus returns to its ⋯), on Tab
-   (focus goes on from its ⋯), on a click or tap outside (focus goes where
-   the press puts it; a press on nothing focusable returns it to the ⋯), on
+5. It closes on a choice and on Escape (focus returns to its ⋯; also with
+   focus on the ⋯ itself), on Tab (focus goes on from its ⋯), on a click
+   or tap outside (focus goes where the press puts it; a click on nothing
+   focusable returns it to the ⋯, and a press there can still start a text
+   selection), on
    opening another entry's menu, on focus moving to another control, on the
    list changing between the strip and the full list (focus that was in the
    menu returns to the ⋯), and when its conversation leaves the list
    (focus by rule 7 above).
 6. It is drawn over the page next to its ⋯ (below it, or above where there
    is no room), inside the window and above the Activity column, so the
-   strip does not clip it.
+   strip does not clip it. Scrolling the list moves it with its ⋯, but
+   never out of the window.
 7. The × and dragging stay as they were. A press on ⋯ never starts a drag
    and never selects the conversation.
 
@@ -341,6 +347,8 @@ The ⋯ menu:
 | Tab                                           | closed                         | the control after the ⋯ (its ×)            |
 | Click or tap outside on nothing focusable     | closed                         | the ⋯                                      |
 | Click outside on a control (the text box)     | closed                         | that control                               |
+| A press outside dragged over text             | closed; the text selected      | the ⋯ if the press ends in a click         |
+| ⋯ pressed, released elsewhere; Escape         | closed                         | the ⋯                                      |
 | Another entry's ⋯                             | that one open, this one closed | its first item                             |
 | The list becomes the strip (or the full list) | closed                         | the ⋯, if focus was in the menu            |
 | Close session from the menu                   | closed; one `close-agent`      | the ⋯; once closed, the entry at its place |
@@ -1604,10 +1612,13 @@ order changed elsewhere, with the toast; the entry closed elsewhere while
 its menu is open (also the last); one conversation. Then the menu table:
 opened by click, Enter and Space, its names and roles, arrow keys, Home and
 End, closed by Escape, a choice, Tab, a click outside on text and on the
-text box, another entry's menu, the list becoming the strip, and Close
-session from the menu. At 420 px with touch emulation: a tap opens it, Move
-up by tap, a tap outside closes it, a tap on the entry still selects; at 420
-and 1600 px no overflow, the menu inside the window. Nothing in it waits a
+text box, a press outside that selects text, Escape on its ⋯ after a press
+released elsewhere, another entry's menu, the list becoming the strip, and
+Close session from the menu. The pending move survives hiding and showing
+the list. At 420 px with touch emulation: a tap opens it, Move
+up by tap, a tap outside closes it, the list scrolled until the open menu's
+⋯ leaves a short window keeps the menu inside it, a tap on the entry still
+selects; at 420 and 1600 px no overflow, the menu inside the window. Nothing in it waits a
 fixed time: a move is sent within its key or click handler, so the page's
 count of sends says at once whether one went out. With
 `COMPANION_SHELL_SCREENSHOTS` it saves an open menu in the strip at 420 and
