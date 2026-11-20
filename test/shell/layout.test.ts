@@ -1,0 +1,186 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  appearanceOf,
+  shownListWidth,
+  stripWidth,
+  widthFromKey,
+  widthFromPointer,
+  type ListAppearance,
+} from '../../integrations/shell/src/layout/list-width.ts';
+import {
+  layoutStorageKey,
+  readLayout,
+  writeLayout,
+  type LayoutStorage,
+  type ListLayout,
+} from '../../integrations/shell/src/layout/stored-layout.ts';
+
+/**
+ * The conversation list's width rules and remembered layout, checked with
+ * the cases of the README's "Remembered width and hidden state" table
+ * (integrations/shell/README.md), derived from its rules 1–6. The browser
+ * suite (shell.test.ts) checks the same rules through the real divider,
+ * ☰ button and reloads.
+ */
+
+/** A window wide enough for every list width. */
+const wideWindow = 1600;
+
+/** An in-memory stand-in for localStorage. */
+function memoryStorage(initial: Record<string, string> = {}): LayoutStorage & {
+  items: Map<string, string>;
+} {
+  const items = new Map(Object.entries(initial));
+  return {
+    items,
+    getItem: (key) => items.get(key) ?? null,
+    setItem: (key, value) => {
+      items.set(key, value);
+    },
+  };
+}
+
+function shown(layout: ListLayout, windowWidth: number): { width: number; look: ListAppearance } {
+  const width = shownListWidth(layout.listWidth, windowWidth);
+  return { width, look: appearanceOf(width) };
+}
+
+test('remembered layout: initial, invalid and other versions give the strip, shown', () => {
+  const cases: { name: string; stored: string | null; expected: ListLayout }[] = [
+    { name: 'nothing remembered', stored: null, expected: { listWidth: 78, listShown: true } },
+    { name: 'not JSON', stored: '{', expected: { listWidth: 78, listShown: true } },
+    { name: 'not an object', stored: '42', expected: { listWidth: 78, listShown: true } },
+    {
+      name: 'another version',
+      stored: JSON.stringify({ version: 2, listWidth: 300, listShown: false }),
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
+      name: 'wrong field types',
+      stored: JSON.stringify({ version: 1, listWidth: '300', listShown: 'no' }),
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
+      name: 'a width between the appearances snaps (rule 1)',
+      stored: JSON.stringify({ version: 1, listWidth: 130, listShown: true }),
+      expected: { listWidth: 150, listShown: true },
+    },
+    {
+      name: 'a width beyond the maximum',
+      stored: JSON.stringify({ version: 1, listWidth: 900, listShown: false }),
+      expected: { listWidth: 420, listShown: false },
+    },
+    {
+      name: 'a valid full list, hidden',
+      stored: JSON.stringify({ version: 1, listWidth: 300, listShown: false }),
+      expected: { listWidth: 300, listShown: false },
+    },
+  ];
+  for (const testCase of cases) {
+    const initial: Record<string, string> = {};
+    if (testCase.stored !== null) {
+      initial[layoutStorageKey] = testCase.stored;
+    }
+    assert.deepEqual(readLayout(memoryStorage(initial)), testCase.expected, testCase.name);
+  }
+
+  // Storage that throws (disabled): the default, and writing does not throw.
+  const broken: LayoutStorage = {
+    getItem: () => {
+      throw Error('disabled');
+    },
+    setItem: () => {
+      throw Error('disabled');
+    },
+  };
+  assert.deepEqual(readLayout(broken), { listWidth: 78, listShown: true });
+  writeLayout(broken, { listWidth: 300, listShown: false });
+});
+
+test('divider dragged: strip left of the snap point, else a full list within its range', () => {
+  const cases: { pointer: number; width: number; look: ListAppearance }[] = [
+    { pointer: 40, width: 78, look: 'strip' },
+    { pointer: 100, width: 78, look: 'strip' },
+    { pointer: 113, width: 78, look: 'strip' },
+    { pointer: 114, width: 150, look: 'full' },
+    { pointer: 120, width: 150, look: 'full' },
+    { pointer: 300, width: 300, look: 'full' },
+    { pointer: 420, width: 420, look: 'full' },
+    { pointer: 600, width: 420, look: 'full' },
+    { pointer: Number.NaN, width: 78, look: 'strip' },
+  ];
+  for (const testCase of cases) {
+    const preference = widthFromPointer(testCase.pointer);
+    const result = shown({ listWidth: preference, listShown: true }, wideWindow);
+    assert.deepEqual(
+      result,
+      { width: testCase.width, look: testCase.look },
+      `${testCase.pointer} px`,
+    );
+  }
+});
+
+test('divider keys: one step at a time, the strip below the full list, Home and End', () => {
+  const cases: { key: string; from: number; to: number | null }[] = [
+    { key: 'ArrowRight', from: 78, to: 150 },
+    { key: 'ArrowRight', from: 150, to: 170 },
+    { key: 'ArrowRight', from: 410, to: 420 },
+    { key: 'ArrowRight', from: 420, to: 420 },
+    { key: 'ArrowLeft', from: 300, to: 280 },
+    { key: 'ArrowLeft', from: 169, to: 78 },
+    { key: 'ArrowLeft', from: 150, to: 78 },
+    { key: 'ArrowLeft', from: 78, to: 78 },
+    { key: 'Home', from: 300, to: 78 },
+    { key: 'End', from: 78, to: 420 },
+    { key: 'Enter', from: 300, to: null },
+    { key: 'ArrowUp', from: 300, to: null },
+  ];
+  for (const testCase of cases) {
+    assert.equal(
+      widthFromKey(testCase.key, testCase.from),
+      testCase.to,
+      `${testCase.key} from ${testCase.from}`,
+    );
+  }
+});
+
+test('narrow windows: the chat keeps 320 px; a full list that does not fit is the strip', () => {
+  const cases: { window: number; preference: number; width: number; look: ListAppearance }[] = [
+    { window: 420, preference: 300, width: 78, look: 'strip' },
+    { window: 420, preference: 78, width: 78, look: 'strip' },
+    { window: 469, preference: 300, width: 78, look: 'strip' },
+    { window: 470, preference: 300, width: 150, look: 'full' },
+    { window: 600, preference: 420, width: 280, look: 'full' },
+    { window: 760, preference: 420, width: 420, look: 'full' },
+    { window: 1280, preference: 300, width: 300, look: 'full' },
+    { window: 300, preference: 78, width: 78, look: 'strip' },
+  ];
+  for (const testCase of cases) {
+    const result = shown({ listWidth: testCase.preference, listShown: true }, testCase.window);
+    assert.deepEqual(
+      result,
+      { width: testCase.width, look: testCase.look },
+      `${testCase.preference} px in a ${testCase.window} px window`,
+    );
+  }
+  // The window never changes the preference: a wider window shows it again.
+  assert.equal(shownListWidth(300, 420), stripWidth);
+  assert.equal(shownListWidth(300, 1280), 300);
+});
+
+test('written layouts are read back (reload), including the hidden state', () => {
+  const storage = memoryStorage();
+  const cases: ListLayout[] = [
+    { listWidth: 78, listShown: true },
+    { listWidth: 300, listShown: true },
+    { listWidth: 300, listShown: false },
+    { listWidth: 420, listShown: false },
+  ];
+  for (const layout of cases) {
+    writeLayout(storage, layout);
+    assert.deepEqual(readLayout(storage), layout);
+    assert.deepEqual(JSON.parse(storage.items.get(layoutStorageKey)!), { version: 1, ...layout });
+  }
+});

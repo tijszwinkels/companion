@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -7,8 +7,25 @@ import { parseChoices } from '../../src/agents/choices.ts';
 import { chatMessage } from '../../src/agents/types.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { frame, signal } from '../helpers.ts';
-import { TestBrowser, TestPage, chromiumPath } from '../mobile/browser.ts';
-import { remoteFixture, waitFor } from '../remote-fixture.ts';
+import type { TestPage } from '../mobile/browser.ts';
+import { waitFor } from '../remote-fixture.ts';
+import {
+  appDirectory,
+  assertNoViolations,
+  assertOwnOrigin,
+  buttonExpression,
+  click,
+  clickButton,
+  desktopPage,
+  horizontalOverflow,
+  online,
+  openConversation,
+  pairedPage,
+  requestActions,
+  setup,
+  skip,
+  text,
+} from './page.ts';
 
 /**
  * The built browser shell (integrations/shell/dist) in headless Chromium at
@@ -24,143 +41,6 @@ import { remoteFixture, waitFor } from '../remote-fixture.ts';
  * network, and the Qt host itself (test:window, session-apps-ui).
  */
 
-const appDirectory = join(import.meta.dirname, '..', '..', 'integrations', 'shell', 'dist');
-
-async function prerequisites(): Promise<string | undefined> {
-  try {
-    await access(join(appDirectory, 'index.html'));
-  } catch {
-    return 'browser shell not built (npm run shell:build)';
-  }
-  try {
-    await access(chromiumPath);
-  } catch {
-    return 'Chromium not installed';
-  }
-  return undefined;
-}
-
-const skip = await prerequisites();
-
-type Fixture = Awaited<ReturnType<typeof remoteFixture>>;
-
-/** WebSocket traffic of one page, recorded through the DevTools protocol. */
-interface SocketLog {
-  /** Every WebSocket URL the page opened. */
-  urls: string[];
-  /** Every frame the page sent, parsed, in order. */
-  sent: Record<string, unknown>[];
-}
-
-async function setup(context: { after(callback: () => Promise<void>): void }) {
-  const fixture = await remoteFixture({ appDirectory });
-  const browser = new TestBrowser();
-  await browser.start();
-  context.after(async () => {
-    await browser.close();
-    await fixture.close();
-  });
-  return { fixture, browser };
-}
-
-/**
- * A fresh desktop page (own browser context, so its own storage and pairing)
- * that records WebSocket traffic and Content-Security-Policy violations.
- */
-async function desktopPage(
-  browser: TestBrowser,
-  width: number,
-  height = 800,
-  sharedContext = '',
-): Promise<{ page: TestPage; sockets: SocketLog; browserContextId: string }> {
-  // Another tab of an existing context shares its storage (and pairing).
-  let browserContextId = sharedContext;
-  if (!browserContextId) {
-    const created = await browser.call('Target.createBrowserContext');
-    browserContextId = String(created.browserContextId);
-  }
-  const { targetId } = await browser.call('Target.createTarget', {
-    url: 'about:blank',
-    browserContextId,
-  });
-  const { sessionId } = await browser.call('Target.attachToTarget', { targetId, flatten: true });
-  const page = new TestPage(browser, targetId, sessionId);
-  await page.call('Page.enable');
-  await page.call('Runtime.enable');
-  await page.call('Emulation.setDeviceMetricsOverride', {
-    width,
-    height,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  // Recorded by the page itself: violations would mean the shell needs a
-  // weaker policy than the gateway serves.
-  await page.call('Page.addScriptToEvaluateOnNewDocument', {
-    source: `window.__violations = [];
-      document.addEventListener('securitypolicyviolation', (event) => {
-        window.__violations.push(event.violatedDirective + ' ' + event.blockedURI);
-      });`,
-  });
-  page.watchConsole();
-
-  const sockets: SocketLog = { urls: [], sent: [] };
-  browser.on((message) => {
-    if (message.sessionId !== sessionId) {
-      return;
-    }
-    if (message.method === 'Network.webSocketCreated') {
-      sockets.urls.push(String(message.params.url));
-    }
-    if (message.method === 'Network.webSocketFrameSent') {
-      try {
-        sockets.sent.push(JSON.parse(String(message.params.response.payloadData)));
-      } catch {
-        sockets.sent.push({ unparsed: true });
-      }
-    }
-  });
-  return { page, sockets, browserContextId };
-}
-
-/** Click the centre of an element with the mouse, as a desktop user would. */
-async function clickAt(page: TestPage, point: { x: number; y: number }): Promise<void> {
-  const base = { x: point.x, y: point.y, button: 'left', clickCount: 1 };
-  await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-  await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
-  await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
-}
-
-async function click(page: TestPage, selector: string): Promise<void> {
-  const point = await page.evaluate<{ x: number; y: number } | null>(`(() => {
-    const element = document.querySelector(${JSON.stringify(selector)});
-    if (!element) return null;
-    element.scrollIntoView({ block: 'nearest' });
-    const rect = element.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  })()`);
-  if (!point) {
-    throw Error(`No element for ${selector}`);
-  }
-  await clickAt(page, point);
-}
-
-/** The enabled button whose text is exactly `label`, clicked with the mouse. */
-async function clickButton(page: TestPage, label: string): Promise<void> {
-  const expression = buttonExpression(label);
-  await page.waitFor(`${expression} && !${expression}.disabled`);
-  const point = await page.evaluate<{ x: number; y: number }>(`(() => {
-    const element = ${expression};
-    element.scrollIntoView({ block: 'nearest' });
-    const rect = element.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  })()`);
-  await clickAt(page, point);
-}
-
-function buttonExpression(label: string): string {
-  return `[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === ${JSON.stringify(label)})`;
-}
-
 /** Scroll the transcript with the mouse wheel (the chat follows only the reader's scrolling). */
 async function wheel(page: TestPage, deltaY: number): Promise<void> {
   const point = await page.evaluate<{ x: number; y: number }>(`(() => {
@@ -174,12 +54,6 @@ async function wheel(page: TestPage, deltaY: number): Promise<void> {
     deltaX: 0,
     deltaY: deltaY,
   });
-}
-
-function text(page: TestPage, selector: string): Promise<string> {
-  return page.evaluate<string>(
-    `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ''`,
-  );
 }
 
 function transcriptText(page: TestPage): Promise<string> {
@@ -219,69 +93,6 @@ async function scrollUntil(page: TestPage, deltaY: number, expression: string) {
   await page.waitFor(expression, 5000);
 }
 
-function horizontalOverflow(page: TestPage): Promise<number> {
-  return page.evaluate<number>(
-    `document.documentElement.scrollWidth - document.documentElement.clientWidth`,
-  );
-}
-
-/** Pair through the real UI with a code from the device store. */
-async function pairedPage(fixture: Fixture, browser: TestBrowser, width = 1280, height = 800) {
-  const { page, sockets, browserContextId } = await desktopPage(browser, width, height);
-  await page.navigate(`${fixture.origin}/`);
-  await page.waitFor(`document.querySelector('#code')`);
-  const { code } = await fixture.devices.createPairingCode();
-  await click(page, '#code');
-  await page.type(code);
-  await click(page, 'button[type=submit]');
-  await page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
-  return { page, sockets, browserContextId };
-}
-
-/** Open the conversation titled (or containing) `title` from the list. */
-async function openConversation(page: TestPage, title = ''): Promise<void> {
-  await page.waitFor(
-    `[...document.querySelectorAll('.conversation')].some((item) => item.textContent.includes(${JSON.stringify(title)}))`,
-  );
-  const point = await page.evaluate<{ x: number; y: number }>(`(() => {
-    const item = [...document.querySelectorAll('.conversation')].find((entry) => entry.textContent.includes(${JSON.stringify(title)}));
-    const rect = item.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  })()`);
-  await clickAt(page, point);
-  await page.waitFor(`document.querySelector('.chat textarea')`);
-}
-
-/** No request and no socket went anywhere but the gateway's own origin. */
-function assertOwnOrigin(fixture: Fixture, page: TestPage, sockets: SocketLog): void {
-  for (const url of page.requests) {
-    if (url === 'about:blank' || url.startsWith('data:')) {
-      continue;
-    }
-    assert.ok(url.startsWith(fixture.origin + '/'), `request to another origin: ${url}`);
-  }
-  const socketOrigin = fixture.origin.replace(/^http/, 'ws') + '/';
-  for (const url of sockets.urls) {
-    assert.ok(url.startsWith(socketOrigin), `socket to another origin: ${url}`);
-  }
-}
-
-async function assertNoViolations(page: TestPage): Promise<void> {
-  assert.deepEqual(await page.evaluate(`window.__violations`), []);
-  assert.deepEqual(page.errors, []);
-}
-
-/** Requests (not auth or ping frames) the page sent, by action. */
-function requestActions(sockets: SocketLog, from = 0): string[] {
-  const actions: string[] = [];
-  for (const sent of sockets.sent.slice(from)) {
-    if (sent.type === 'request') {
-      actions.push(String(sent.action));
-    }
-  }
-  return actions;
-}
-
 test(
   'pairs, lists open conversations and shows one under the gateway CSP',
   { skip },
@@ -310,9 +121,9 @@ test(
     await waitFor(() => fixture.runs.length === 2);
 
     const { page, sockets } = await pairedPage(fixture, browser);
-    await page.waitFor(`document.querySelectorAll('.conversation').length === 2`);
-    assert.match(await text(page, '.conversation-list'), /First synthetic question/);
-    assert.match(await text(page, '.conversation-list'), /Second synthetic question/);
+    await page.waitFor(`document.querySelectorAll('.conversation-entry').length === 2`);
+    assert.match(await text(page, '.conversations'), /First synthetic question/);
+    assert.match(await text(page, '.conversations'), /Second synthetic question/);
 
     await openConversation(page, 'Second synthetic question');
     await page.waitFor(`document.querySelector('.message.user')`);
@@ -323,11 +134,9 @@ test(
     assert.match(await text(page, '.message.user .heading'), /screenshot unavailable/);
     // Out of scope controls are hidden through the status fields.
     assert.equal(await page.evaluate(`Boolean(${buttonExpression('Record')})`), false);
-    assert.match(await text(page, '.shell-title'), /Second synthetic question/);
+    assert.match(await text(page, '.chat-bar-title'), /Second synthetic question/);
 
-    // Back to the list and into the other conversation.
-    await click(page, 'button.back');
-    await page.waitFor(`document.querySelectorAll('.conversation').length === 2`);
+    // Straight into the other conversation from the list.
     await openConversation(page, 'First synthetic question');
     await page.waitFor(
       `document.querySelector('.transcript').textContent.includes('First synthetic question')`,
@@ -444,7 +253,9 @@ test(
     // Close the conversation: it leaves the listener and the list.
     await clickButton(page, 'Close session');
     await waitFor(() => !fixture.sessions.snapshot().some((session) => session.id === id), 5000);
-    await page.waitFor(`document.querySelector('.list-empty')`);
+    await page.waitFor(
+      `document.querySelector('.conversation-none') && document.querySelector('.workspace-empty')`,
+    );
 
     const actions = requestActions(sockets);
     for (const action of ['send-agent', 'choose-agent', 'close-agent']) {
@@ -807,7 +618,8 @@ test(
     await openConversation(page, 'Sign-out fixture');
     await click(page, '.chat textarea');
     await page.type('Private synthetic draft');
-    await click(page, 'button.back');
+    // Sign out is in the bar of the pages without a conversation.
+    await click(page, '.previous-entry');
     await clickButton(page, 'Sign out');
     await page.waitFor(`document.querySelector('#code')`);
 
@@ -815,7 +627,7 @@ test(
     await click(page, '#code');
     await page.type(code);
     await click(page, 'button[type=submit]');
-    await page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await page.waitFor(online, 8000);
     await openConversation(page, 'Sign-out fixture');
     assert.equal(await page.evaluate(`document.querySelector('.chat textarea').value`), '');
     assert.doesNotMatch(await text(page, '.chat'), /Private synthetic draft|only in this editor/);
@@ -839,7 +651,7 @@ test(
     // A second tab in the same browser profile is paired through storage.
     const second = await desktopPage(browser, 1280, 800, first.browserContextId);
     await second.page.navigate(`${fixture.origin}/`);
-    await second.page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await second.page.waitFor(online, 8000);
     await openConversation(second.page, 'Two-tab fixture');
     await click(second.page, '.chat textarea');
     await second.page.type('Draft of the previous pairing');
@@ -859,9 +671,9 @@ test(
     await click(first.page, '#code');
     await first.page.type(code);
     await click(first.page, 'button[type=submit]');
-    await first.page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await first.page.waitFor(online, 8000);
     await second.page.call('Page.bringToFront');
-    await second.page.waitFor(`document.querySelector('.connection-state.online')`, 8000);
+    await second.page.waitFor(online, 8000);
     for (const tab of [first.page, second.page]) {
       await tab.call('Page.bringToFront');
       await openConversation(tab, 'Two-tab fixture');
@@ -877,7 +689,7 @@ test(
 );
 
 test(
-  'screenshots of a synthetic conversation at 420 px and 1280 px',
+  'screenshots of synthetic conversations at 420, 760, 1280 and 1600 px, strip and full list',
   {
     skip:
       skip ??
@@ -887,10 +699,21 @@ test(
     const directory = process.env.COMPANION_SHELL_SCREENSHOTS!;
     await mkdir(directory, { recursive: true });
     const { fixture, browser } = await setup(context);
-    fixture.sessions.start({ ...frame, utterance: 'Plan a two-day synthetic city trip' }, signal());
-    fixture.sessions.start({ ...frame, utterance: 'Why does the list test fail?' }, signal());
-    await waitFor(() => fixture.runs.length === 2);
-    const run = fixture.runs[1];
+    // Synthetic conversations: one keeps working, the others answered.
+    const titles = [
+      '🗺️ Plan a two-day synthetic city trip',
+      '🐛 Why does the list test fail?',
+      '🧾 Invoice export',
+      '📊 Sales dashboard',
+      'Notification rules',
+    ];
+    for (const title of titles) {
+      fixture.sessions.start({ ...frame, utterance: title }, signal());
+    }
+    await waitFor(() => fixture.runs.length === titles.length);
+    const runFor = (fragment: string) =>
+      fixture.runs.find((candidate) => candidate.request.prompt.text.includes(fragment))!;
+    const run = runFor('list test');
     run.emit({
       ...chatMessage('t1', 'tool', 'export function first(items) {}'),
       toolName: 'read',
@@ -907,16 +730,45 @@ test(
     });
     run.publish(parseChoices(['[Yes] - Apply the guard', '[No] - Leave it']));
     run.finish();
+    const lastLines: Record<string, string> = {
+      Invoice: 'The nightly export now writes one file per month.',
+      Sales: 'Which chart should come first?',
+      Notification: 'Quiet hours are respected for all channels.',
+    };
+    for (const [fragment, line] of Object.entries(lastLines)) {
+      const answered = runFor(fragment);
+      answered.emit({ ...chatMessage(`a-${fragment}`, 'assistant', line), state: 'done' });
+      answered.finish();
+    }
 
-    for (const width of [420, 1280]) {
-      const { page } = await pairedPage(fixture, browser, width, 800);
-      await page.waitFor(`document.querySelectorAll('.conversation').length === 2`);
-      await writeFile(join(directory, `shell-list-${width}.png`), await page.screenshot());
-      await openConversation(page, 'Why does the list test fail?');
-      await page.waitFor(`document.querySelector('.choice:not([disabled])')`, 5000);
-      await writeFile(join(directory, `shell-chat-${width}.png`), await page.screenshot());
-      assert.equal(await horizontalOverflow(page), 0);
-      await page.close();
+    const layouts = [
+      { name: 'strip', listWidth: 78 },
+      { name: 'list', listWidth: 290 },
+    ];
+    for (const layout of layouts) {
+      for (const width of [420, 760, 1280, 1600]) {
+        const { page } = await pairedPage(fixture, browser, width, 800);
+        await page.evaluate(
+          `localStorage.setItem('companion.shell.layout', JSON.stringify({ version: 1, listWidth: ${layout.listWidth}, listShown: true }))`,
+        );
+        await page.navigate(`${fixture.origin}/`);
+        await page.waitFor(online, 8000);
+        await page.waitFor(`document.querySelectorAll('.conversation-entry').length === 5`);
+        await openConversation(page, 'Why does the list test fail?');
+        await page.waitFor(`document.querySelector('.choice:not([disabled])')`, 5000);
+        // One answer not seen yet: open the others once, except Sales dashboard.
+        await openConversation(page, 'Invoice export');
+        await openConversation(page, 'Notification rules');
+        await openConversation(page, 'Why does the list test fail?');
+        await page.waitFor(`document.querySelector('.choice:not([disabled])')`, 5000);
+        await page.evaluate(`document.activeElement?.blur()`);
+        await writeFile(
+          join(directory, `shell-${layout.name}-${width}.png`),
+          await page.screenshot(),
+        );
+        assert.equal(await horizontalOverflow(page), 0);
+        await page.close();
+      }
     }
   },
 );

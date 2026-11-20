@@ -1,149 +1,42 @@
 /**
- * The browser shell around the trusted chat page: pairing, a plain list of
- * open conversations, the connection banner and toasts. The conversation
- * itself is the desktop chat page (`Chat` from integrations/session-apps/
- * chat/Chat.tsx), rendered unchanged with the gateway bridge (bridge.ts).
+ * The browser shell around the trusted chat page: pairing, the connection
+ * banner and toasts, and once paired the workspace (workspace/Workspace.tsx:
+ * the conversation list, the bar above the chat and the chat). The
+ * conversation itself is the desktop chat page (`Chat` from
+ * integrations/session-apps/chat/Chat.tsx), rendered unchanged with the
+ * gateway bridge (bridge.ts).
  *
  * State comes from the phone panel's Store: pairing and reconnection,
  * conversations and their order, the selected conversation (with browser
  * Back/Forward through its Navigation), unread marks and toasts.
  */
 
-import { useEffect, useState } from 'preact/hooks';
+import { useState } from 'preact/hooks';
 
-import { Chat } from '../../session-apps/chat/Chat.tsx';
 import type { ChatStore } from '../../session-apps/chat/store.ts';
 import { useAppState, useStore } from '../../mobile/src/hooks.ts';
-import { lastText, plainPreview, type AppState } from '../../mobile/src/store.ts';
-import type { AgentSession } from '../../../src/agents/types.ts';
+import type { AppState } from '../../mobile/src/store.ts';
+import type { GatewayChatBridge } from './bridge.ts';
+import { Workspace } from './workspace/Workspace.tsx';
 
-export function App(props: { chat: ChatStore }) {
+export function App(props: { chat: ChatStore; bridge: GatewayChatBridge }) {
   const state = useAppState();
 
   if (state.connection.status === 'unpaired') {
     return (
-      <div class="shell">
+      <div class="shell" data-connection="unpaired">
         <Pairing />
       </div>
     );
   }
 
-  const selected = state.selected ? state.sessions.get(state.selected) : undefined;
-
+  // `data-connection` lets tests and styles see the connection state; the
+  // banner tells the reader when it is not online.
   return (
-    <div class="shell">
-      <Header selected={selected} />
+    <div class="shell" data-connection={state.connection.status}>
       <ConnectionBanner />
-      <main class="shell-main">
-        {selected ? (
-          <div class="chat-host">
-            {/* A new chat view for each conversation lifetime: the same ID
-                reopened elsewhere (a new tool epoch) starts at its live end
-                with a fresh editor, like a different conversation. */}
-            <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
-          </div>
-        ) : (
-          <>
-            <HeldInput chat={props.chat} />
-            <ConversationList />
-          </>
-        )}
-      </main>
+      <Workspace chat={props.chat} bridge={props.bridge} />
       <Toasts />
-    </div>
-  );
-}
-
-/** Title bar: Back to the list while a conversation is shown, and sign-out. */
-function Header(props: { selected: AgentSession | undefined }) {
-  const store = useStore();
-  const state = useAppState();
-  const { selected } = props;
-
-  let title = 'Conversations';
-  if (selected) {
-    title = selected.title || 'Untitled';
-  }
-
-  return (
-    <header class="shell-header">
-      {selected && (
-        <button
-          class="shell-button back"
-          aria-label="All conversations"
-          onClick={() => store.showActivity()}
-        >
-          ‹ All
-        </button>
-      )}
-      <h1 class="shell-title">{title}</h1>
-      <span class={`connection-state ${state.connection.status}`}>{connectionLabel(state)}</span>
-      {!selected && (
-        <button class="shell-button" onClick={() => store.connection.forget()}>
-          Sign out
-        </button>
-      )}
-    </header>
-  );
-}
-
-/**
- * Text only the chat editor holds (an input the bridge could not take, see
- * ChatStore.unresolved), shown on the list so it stays reachable when its
- * conversation is not shown, for example after it was closed elsewhere: its
- * length, Copy and Discard, as the chat page's own "No conversation" view
- * offers. The text itself is never shown or sent anywhere.
- */
-function HeldInput(props: { chat: ChatStore }) {
-  const { chat } = props;
-  const [held, setHeld] = useState(chat.unresolved());
-  const [feedback, setFeedback] = useState('');
-
-  useEffect(() => {
-    const unsubscribe = chat.subscribe(() => setHeld(chat.unresolved()));
-    // It can change between the first render and this effect.
-    setHeld(chat.unresolved());
-    return unsubscribe;
-  }, [chat]);
-
-  if (!held) {
-    return null;
-  }
-
-  function copy() {
-    const bridge = chat.native;
-    if (!bridge || !held) {
-      return;
-    }
-    setFeedback('Copying…');
-    bridge.copyText(held.text, (json) => {
-      let accepted = false;
-      try {
-        accepted = (JSON.parse(json) as { accepted: boolean }).accepted === true;
-      } catch {
-        accepted = false;
-      }
-      if (accepted) {
-        setFeedback('Copied.');
-      } else {
-        setFeedback('The browser did not allow copying.');
-      }
-    });
-  }
-
-  return (
-    <div class="held-input" role="status">
-      <span>
-        Text ({held.text.length} characters) typed in a conversation is only in this page. Copy it
-        or discard it.
-      </span>
-      <button class="shell-button" onClick={copy}>
-        Copy
-      </button>
-      <button class="shell-button" onClick={() => chat.setUnresolved(null)}>
-        Discard
-      </button>
-      {feedback && <span class="held-feedback">{feedback}</span>}
     </div>
   );
 }
@@ -189,61 +82,6 @@ function ConnectionBanner() {
       </button>
     </div>
   );
-}
-
-/** The open conversations in the listener's order; one click shows one. */
-function ConversationList() {
-  const store = useStore();
-  const state = useAppState();
-  const sessions: AgentSession[] = [];
-  for (const id of state.order) {
-    const session = state.sessions.get(id);
-    if (session) {
-      sessions.push(session);
-    }
-  }
-
-  if (sessions.length === 0) {
-    let message = 'No open conversations. Start one on the computer.';
-    if (state.connection.status !== 'online' && !state.engine) {
-      message = 'Waiting for Companion…';
-    }
-    return <p class="list-empty">{message}</p>;
-  }
-
-  return (
-    <ul class="conversation-list" aria-label="Open conversations">
-      {sessions.map((session) => {
-        const unread = state.unread.has(session.id);
-        return (
-          <li key={session.id}>
-            <button class="conversation" onClick={() => store.open(session.id)}>
-              <span class="conversation-title">
-                {unread && <span class="unread" aria-hidden="true" />}
-                {unread && <span class="visually-hidden">Unread: </span>}
-                {session.title || 'Untitled'}
-              </span>
-              <span class="conversation-state">{sessionState(session)}</span>
-              <span class="conversation-preview">{plainPreview(lastText(session))}</span>
-            </button>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function sessionState(session: AgentSession): string {
-  if (session.status === 'starting' || session.status === 'running') {
-    return 'Answering…';
-  }
-  if (session.status === 'error') {
-    return 'Failed';
-  }
-  if (session.status === 'cancelled') {
-    return 'Stopped';
-  }
-  return 'Done';
 }
 
 function Toasts() {

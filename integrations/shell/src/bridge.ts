@@ -796,6 +796,26 @@ export class GatewayChatBridge implements NativeBridge {
     this.answer(callback, { accepted: false });
   }
 
+  /**
+   * Requests are admitted now: connected, and this connection's snapshot
+   * has arrived. The conversation list reads it for closing, reordering and
+   * reopening, the same rule as the chat page's own actions.
+   */
+  get admitted(): boolean {
+    return this.online;
+  }
+
+  /**
+   * Whether the conversation list may close `sessionId` now: requests are
+   * admitted and the chat editor holds no input of that conversation that
+   * only it has (closing would leave that input without its conversation),
+   * the same refusals as the chat page's Close session.
+   */
+  canClose(sessionId: string): boolean {
+    const held = this.unresolved !== null && this.unresolved.sessionId === sessionId;
+    return this.online && !held;
+  }
+
   closeSession(sessionId: string, callback?: (answer: string) => void): void {
     const held = this.unresolved !== null && this.unresolved.sessionId === sessionId;
     if (!this.sameSession(sessionId) || !this.online || held) {

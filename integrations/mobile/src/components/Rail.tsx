@@ -83,9 +83,10 @@ export function Rail() {
 /**
  * Leading emoji becomes the glyph and is removed from the caption; other
  * titles show "Q<number>". Grapheme segmentation keeps flags, skin tones
- * and ZWJ sequences intact.
+ * and ZWJ sequences intact. Also used by the browser shell's conversation
+ * list (integrations/shell/src/list/entries.ts).
  */
-function tabGlyph(
+export function tabGlyph(
   title: string,
   number: number,
 ): { glyph: string; caption: string; emoji: boolean } {
