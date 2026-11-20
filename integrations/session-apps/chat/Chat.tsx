@@ -131,14 +131,15 @@ export interface ScrollPosition {
  * the view back into a scroll range that shrank (the transcript grew taller
  * or its content shrank), not anyone scrolling: the range shrank below the
  * previous position and the view landed at the new end. Positions may be
- * fractional; landing within one pixel of the end counts.
+ * fractional, and `maximumTop` is from whole-pixel sizes, so the end is
+ * anywhere less than one pixel from it.
  */
 export function pulledBack(previous: ScrollPosition, current: ScrollPosition): boolean {
   return (
     current.maximumTop < previous.maximumTop &&
     previous.top > current.maximumTop &&
     current.top < previous.top &&
-    Math.abs(current.top - current.maximumTop) <= 1
+    Math.abs(current.top - current.maximumTop) < 1
   );
 }
 
@@ -166,22 +167,33 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     readerInput();
   }
 
-  // The press ends wherever the pointer is released or the browser cancels
-  // it (a touch pan, which then scrolls). Its end counts as the reader's
-  // input, so the pan or momentum that follows is theirs however long the
-  // finger rested first. The listeners belong to this component.
+  // The press ends wherever the pointer is released. A finger stays down
+  // when the browser cancels its pointer to pan, so touch ends with the last
+  // finger lifted. The end counts as the reader's input, so momentum that
+  // follows is theirs. The listeners belong to this component.
   useEffect(() => {
-    function released() {
+    // (By event type: desktop browsers without touch support may not
+    // define TouchEvent at all.)
+    function released(event: Event) {
+      if (event.type.startsWith('pointer') && (event as PointerEvent).pointerType === 'touch') {
+        return;
+      }
+      if (event.type.startsWith('touch') && (event as TouchEvent).touches.length > 0) {
+        return;
+      }
       if (pointerHeld.current) {
         readerInput();
       }
       pointerHeld.current = false;
     }
-    document.addEventListener('pointerup', released, true);
-    document.addEventListener('pointercancel', released, true);
+    const types = ['pointerup', 'pointercancel', 'touchend', 'touchcancel'];
+    for (const type of types) {
+      document.addEventListener(type, released, true);
+    }
     return () => {
-      document.removeEventListener('pointerup', released, true);
-      document.removeEventListener('pointercancel', released, true);
+      for (const type of types) {
+        document.removeEventListener(type, released, true);
+      }
     };
   }, []);
   const history = status.history;

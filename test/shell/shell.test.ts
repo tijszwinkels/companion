@@ -737,6 +737,101 @@ test(
     await sleep(500);
     assert.equal(await page.evaluate<boolean>(inView('History row 399')), false, 'left the end');
     assert.ok(await page.evaluate<boolean>(`Boolean(document.querySelector('button.latest'))`));
+
+    // One gesture, the finger never lifted: it pans down to the live end,
+    // rests there for more than a second, then pans back up. The pan back
+    // is still the reader's and leaves the end again.
+    await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    const box = await transcriptGeometry(page);
+    const x = box.left + 40;
+    let y = box.top + box.clientHeight - 40;
+    async function moveFinger(distance: number): Promise<void> {
+      const steps = Math.ceil(Math.abs(distance) / 20);
+      for (let step = 0; step < steps; step++) {
+        y -= distance / steps;
+        await page.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+        await sleep(16);
+      }
+    }
+    const toEnd = box.scrollHeight - box.clientHeight - box.scrollTop;
+    assert.ok(toEnd < box.clientHeight - 140, `near the end: ${toEnd}`);
+    await page.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await moveFinger(toEnd + 100);
+    await page.waitFor(inView('History row 399'));
+    await sleep(1200);
+    await moveFinger(-400);
+    await sleep(500);
+    const leftAgain = !(await page.evaluate<boolean>(inView('History row 399')));
+    await page.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.call('Emulation.setTouchEmulationEnabled', { enabled: false });
+    assert.ok(leftAgain, 'left the end after resting there mid-gesture');
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'a detached snapshot shorter than two viewports pages the way the reader scrolls',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Short snapshot fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    // 1051 rows: the live window holds History row 850–1049.
+    for (let index = 0; index < 1050; index++) {
+      fixture.runs[0].emit(chatMessage('short-' + index, 'assistant', 'History row ' + index));
+    }
+    fixture.runs[0].finish();
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Short snapshot fixture');
+    await page.waitFor(shows('History row 1049'));
+
+    // Four older pages by wheeling up at an ordinary size: History row
+    // 50–649 resident, detached, older rows above and newer pages below.
+    for (let loaded = 0; loaded < 4; loaded++) {
+      const before = pageRequests(sockets).length;
+      for (let attempt = 0; attempt < 60 && pageRequests(sockets).length === before; attempt++) {
+        await wheel(page, -100_000);
+        await sleep(150);
+      }
+      await page.waitFor(
+        `!document.querySelector('.history-notice')?.textContent.includes('Loading')`,
+      );
+      await sleep(100);
+    }
+    assert.deepEqual(pageRequests(sockets), ['before', 'before', 'before', 'before']);
+    await page.waitFor(`${shows('History row 50')} && !${shows('History row 650')}`);
+
+    // Then the window grows so tall that the whole snapshot is shorter than
+    // two viewports: everywhere in it both edges are within one viewport.
+    await page.call('Emulation.setDeviceMetricsOverride', {
+      width: 1280,
+      height: 32_000,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await sleep(500);
+    const box = await transcriptGeometry(page);
+    assert.ok(box.scrollHeight > box.clientHeight, 'the snapshot still scrolls');
+    assert.ok(box.scrollHeight < 2 * box.clientHeight, 'both edges are always near');
+    assert.deepEqual(pageRequests(sockets).length, 4, 'growing the window asked for nothing');
+
+    // Toward the end: the next newer page; toward the start: the previous one.
+    let from = sockets.sent.length;
+    await wheel(page, 200);
+    await waitFor(() => pageRequests(sockets, from).length > 0, 5000);
+    await sleep(300);
+    assert.deepEqual(pageRequests(sockets, from), ['after']);
+    await page.waitFor(shows('History row 650'));
+    await page.waitFor(
+      `!document.querySelector('.history-notice')?.textContent.includes('Loading')`,
+    );
+
+    await sleep(300);
+    from = sockets.sent.length;
+    await wheel(page, -200);
+    await waitFor(() => pageRequests(sockets, from).length > 0, 5000);
+    await sleep(300);
+    assert.deepEqual(pageRequests(sockets, from), ['before']);
     await assertNoViolations(page);
   },
 );

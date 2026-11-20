@@ -990,6 +990,18 @@ const pullBackCases: {
     pulledBack: false,
   },
   {
+    name: 'the range shrinks and the reader lands 1 px before its new end',
+    previous: { top: 900, maximumTop: 900 },
+    current: { top: 799, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'pulled back to a fractional end just under the whole-pixel one',
+    previous: { top: 900, maximumTop: 900 },
+    current: { top: 799.6, maximumTop: 800 },
+    pulledBack: true,
+  },
+  {
     name: 'the range shrinks and the reader lands 3 px before its new end',
     previous: { top: 900, maximumTop: 900 },
     current: { top: 797, maximumTop: 800 },
@@ -1097,13 +1109,18 @@ test('a page refused because it would trim visible rows leaves queued rows to th
   const request = store.pending.splice(0)[0];
   const parameters = request.parameters as unknown as PageRequest;
 
-  // A row streams in, then the third page arrives and is refused.
+  // The newest row's text grows (as an answer streams), then the third page
+  // arrives and is refused.
   const latest = store.state.sessions.get(sessionA)!;
-  const streamed = {
-    ...latest,
-    messages: [...latest.messages, chatMessage('new', 'assistant', 'New')],
-  };
-  store.update({ sessions: new Map(store.state.sessions).set(sessionA, streamed) });
+  const grown = latest.messages.map((message) => {
+    if (message.id === 'row-999') {
+      return { ...message, text: 'Row 999, streamed further' };
+    }
+    return message;
+  });
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, { ...latest, messages: grown }),
+  });
   const from = messages.length;
   request.resolve(
     historyPage(full, 1, parameters.direction, {
@@ -1119,11 +1136,17 @@ test('a page refused because it would trim visible rows leaves queued rows to th
   );
   await settle();
   const sent = messages.slice(from).filter((message) => message.type === 'rows');
-  // The streamed change goes out with the 30 ms timer; the refused page's
+  // The streamed text goes out with the 30 ms timer; the refused page's
   // rows (Row 200–399) never do.
   assert.equal(sent.length, 1);
+  const delivered = sent[0];
+  assert.ok(delivered.type === 'rows');
+  assert.deepEqual(
+    delivered.changed.map((row) => row.text),
+    ['Row 999, streamed further'],
+  );
   assert.equal(
-    sent[0].type === 'rows' && sent[0].order.some((key) => key.includes('row-399')),
+    delivered.order.some((key) => key.includes('row-399')),
     false,
   );
 });
