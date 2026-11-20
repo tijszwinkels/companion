@@ -1044,9 +1044,9 @@ picker, and a Claude Code conversation's models and fixed effort.
 Known limit: the picker keeps its "change on its way" state while it is
 drawn. Leaving the conversation for the settings screen and coming back
 while a change is still on its way draws it anew, so a second choice can be
-sent then; the listener refuses it ("its model/effort is already being
-changed") and the picker shows that refusal. A change takes well under a
-second, so this needs a quick round trip to Settings.
+sent then. If the two changes overlap at the listener, it refuses the
+second ("its model/effort is already being changed") before changing
+anything, and the picker shows that refusal.
 
 The same file checks the layout with an open tool group, the open picker and
 the viewer at 420, 1280 and 1600 px: no horizontal overflow, the picker and

@@ -372,7 +372,9 @@ test(
     // Opened by keyboard: focus the button, Enter.
     await page.evaluate(`document.querySelector('.model-button').focus()`);
     await press(page, 'Enter', 13);
-    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await page.waitFor(
+      `document.querySelector('#model-picker select:not([disabled]):not([aria-disabled="true"])')`,
+    );
     await page.waitFor(`document.querySelectorAll('#model-picker option').length === 2`);
     assert.match(await text(page, '#model-picker'), /This session · next turn model/);
     await clickButton(page, 'Show all models');
@@ -400,7 +402,9 @@ test(
     );
 
     // Refused by the listener: its words, and the conversation's model stays.
-    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await page.waitFor(
+      `document.querySelector('#model-picker select:not([disabled]):not([aria-disabled="true"])')`,
+    );
     await choose('ghost/model');
     await page.waitFor(`document.querySelector('#model-picker [role=alert]')`);
     assert.match(await text(page, '#model-picker [role=alert]'), /available configured Pi model/);
@@ -418,7 +422,9 @@ test(
 
     // Closed while a choice is on its way: its refusal is still told (a toast).
     await press(page, 'Enter', 13);
-    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await page.waitFor(
+      `document.querySelector('#model-picker select:not([disabled]):not([aria-disabled="true"])')`,
+    );
     await choose('ghost/model');
     await waitFor(() => catalogueReads === 4);
     await press(page, 'Escape', 27);
@@ -430,7 +436,9 @@ test(
 
     // Keyboard focus leaving the open picker (Tab past its last control) closes it.
     await press(page, 'Enter', 13);
-    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await page.waitFor(
+      `document.querySelector('#model-picker select:not([disabled]):not([aria-disabled="true"])')`,
+    );
     await page.evaluate(
       `document.querySelector('[aria-label="Refresh available Pi models"]').focus()`,
     );
@@ -487,7 +495,9 @@ test(
     const { page } = await pairedPage(fixture, browser, 1280, 800);
     await openConversation(page, 'Claude fixture');
     await click(page, '.model-button');
-    await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+    await page.waitFor(
+      `document.querySelector('#model-picker select:not([disabled]):not([aria-disabled="true"])')`,
+    );
     assert.match(await text(page, '#model-picker'), /next turn Claude model/);
     assert.match(await text(page, '#model-picker'), /Effort · high · fixed/);
     const listed = await page.evaluate<string[]>(
@@ -546,7 +556,9 @@ for (const width of [420, 1280, 1600]) {
       await screenshot(page, `tool-group-${width}`);
 
       await click(page, '.model-button');
-      await page.waitFor(`document.querySelector('#model-picker select:not([disabled])')`);
+      await page.waitFor(
+        `document.querySelector('#model-picker select:not([disabled]):not([aria-disabled="true"])')`,
+      );
       assert.equal(await horizontalOverflow(page), 0);
       const panel = await page.evaluate<{ left: number; right: number }>(`(() => {
         const rect = document.querySelector('#model-picker').getBoundingClientRect();
