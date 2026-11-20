@@ -434,46 +434,52 @@ test('a forwarded action keeps its slot until the listener finishes it, even if 
     return original(...args);
   };
 
-  const clients = Array.from({ length: 8 }, () => new AbortController());
-  const pending = clients.map((client, index) =>
-    fetch(frameUrl + 'action', {
-      method: 'POST',
-      signal: client.signal,
-      headers: { 'Content-Type': 'application/json', Origin: fixture.frameOrigin },
-      body: JSON.stringify({ action: 'increment', args: {}, requestId: `slow-${index}` }),
-    }).catch(() => undefined),
-  );
-  const until = Date.now() + 3000;
-  while (entered < 1 || (fixture.gateway.frames as any).forwarded < 8) {
-    assert.ok(Date.now() < until);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  // The tabs go away; the listener still has the work, so the slots stay.
-  for (const client of clients) {
-    client.abort();
-  }
-  await Promise.all(pending);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const busy = await fixture.frameRequest(frameUrl + 'state');
-  assert.equal(busy.status, 503);
-  await busy.arrayBuffer();
-
-  // The listener finishes every accepted action; then the slots come back.
-  // (A single free slot already admits a state request, so wait for all.)
-  release();
-  const later = Date.now() + 5000;
-  let count = 0;
-  while (count !== 8 || (fixture.gateway.frames as any).forwarded !== 0) {
-    assert.ok(Date.now() < later, `count ${count}`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const response = await fixture.frameRequest(frameUrl + 'state');
-    const value = (await response.json()) as Json;
-    if (response.status === 200) {
-      count = value.props.count;
+  // Release the reducers whatever happens: a failed assertion must not leave
+  // them held, or the fixture's teardown would wait for them forever.
+  try {
+    const clients = Array.from({ length: 8 }, () => new AbortController());
+    const pending = clients.map((client, index) =>
+      fetch(frameUrl + 'action', {
+        method: 'POST',
+        signal: client.signal,
+        headers: { 'Content-Type': 'application/json', Origin: fixture.frameOrigin },
+        body: JSON.stringify({ action: 'increment', args: {}, requestId: `slow-${index}` }),
+      }).catch(() => undefined),
+    );
+    const until = Date.now() + 3000;
+    while (entered < 1 || (fixture.gateway.frames as any).forwarded < 8) {
+      assert.ok(Date.now() < until);
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
+
+    // The tabs go away; the listener still has the work, so the slots stay.
+    for (const client of clients) {
+      client.abort();
+    }
+    await Promise.all(pending);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const busy = await fixture.frameRequest(frameUrl + 'state');
+    assert.equal(busy.status, 503);
+    await busy.arrayBuffer();
+
+    // The listener finishes every accepted action; then the slots come back.
+    // (A single free slot already admits a state request, so wait for all.)
+    release();
+    const later = Date.now() + 5000;
+    let count = 0;
+    while (count !== 8 || (fixture.gateway.frames as any).forwarded !== 0) {
+      assert.ok(Date.now() < later, `count ${count}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const response = await fixture.frameRequest(frameUrl + 'state');
+      const value = (await response.json()) as Json;
+      if (response.status === 200) {
+        count = value.props.count;
+      }
+    }
+    assert.equal((fixture.gateway.frames as any).forwarded, 0);
+  } finally {
+    release();
   }
-  assert.equal((fixture.gateway.frames as any).forwarded, 0);
 });
 
 test('pipelined answers whose connection closes still give their slots back', async (context) => {
@@ -496,10 +502,12 @@ test('pipelined answers whose connection closes still give their slots back', as
   const line = `GET /f/${handle}/state HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\n\r\n`;
   socket.write(line + line);
   const until = Date.now() + 3000;
-  while ((fixture.gateway.frames as any).forwarded < 1) {
+  // Both requests are admitted and held upstream: two slots are taken.
+  while (held.length < 2 || (fixture.gateway.frames as any).forwarded < 2) {
     assert.ok(Date.now() < until);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  assert.equal((fixture.gateway.frames as any).forwarded, 2);
   socket.destroy();
   await new Promise((resolve) => setTimeout(resolve, 100));
 

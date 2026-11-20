@@ -89,6 +89,8 @@ export interface FrameOriginOptions {
 
 const maximumSockets = 64;
 const headersTimeoutMilliseconds = 10_000;
+/** A raw refusal written outside handle() gets this long before the socket is destroyed. */
+const rawRefusalMilliseconds = 5000;
 /** How often Node enforces the header deadline (its default is 30 s). */
 const connectionsCheckingMilliseconds = 1000;
 const exchangeMilliseconds = 30_000;
@@ -328,33 +330,25 @@ export class FrameOrigin {
           : error.code === 'ERR_HTTP_REQUEST_TIMEOUT'
             ? [408, 'Request Timeout']
             : [400, 'Bad Request'];
-      socket.once('error', () => socket.destroy());
-      socket.end(this.rawRefusal(status, reason, 'Bad request'), () => socket.destroy());
+      this.endWithRefusal(socket, this.rawRefusal(status, reason, 'Bad request'));
     });
 
-    // `Expect: 100-continue` (exactly that) is answered only after admission
-    // (see handle()); any other expectation is refused with the usual headers.
-    // Node reports a value that merely contains the token as checkContinue.
+    // Every expectation goes through handle(), so its deadline and checks
+    // apply: admission refuses anything but exactly `100-continue` (417), and
+    // only an admitted request gets the interim 100 answer. Node reports a
+    // value that merely contains the token as checkContinue.
     server.on('checkContinue', (request, response) => {
       const expectation = request.headers.expect?.trim().toLowerCase();
-      if (expectation !== '100-continue') {
-        this.refuse(response, 417, 'Expectation not supported');
-        return;
-      }
-      handler(request, response, true);
+      handler(request, response, expectation === '100-continue');
     });
-    server.on('checkExpectation', (_request, response) => {
-      this.refuse(response, 417, 'Expectation not supported');
-    });
+    server.on('checkExpectation', (request, response) => handler(request, response, false));
 
     // No WebSockets and no tunnels on this origin. The socket is ours once
     // either event fires; answer with the usual refusal and destroy it.
     const refuseSocket = (socket: Duplex) => {
-      // Node removed its own error listener when it handed the socket over;
-      // a peer resetting during the write must not crash the gateway.
-      socket.on('error', () => socket.destroy());
-      socket.end(this.rawRefusal(400, 'Bad Request', 'Upgrades are not accepted here'), () =>
-        socket.destroy(),
+      this.endWithRefusal(
+        socket,
+        this.rawRefusal(400, 'Bad Request', 'Upgrades are not accepted here'),
       );
     };
     server.on('upgrade', (_request, socket) => refuseSocket(socket));
@@ -682,6 +676,22 @@ export class FrameOrigin {
       });
       upstream.end(body);
     });
+  }
+
+  /**
+   * Write a raw refusal and close the connection (it says `Connection:
+   * close`). A client that does not read it cannot keep the socket: it is
+   * destroyed when the write finishes or after `rawRefusalMilliseconds`,
+   * whichever comes first. Errors are absorbed: Node removed its own error
+   * listener from upgrade and CONNECT sockets, and a peer reset during the
+   * write must not crash the gateway.
+   */
+  private endWithRefusal(socket: Duplex, refusal: string): void {
+    socket.on('error', () => socket.destroy());
+    const deadline = setTimeout(() => socket.destroy(), rawRefusalMilliseconds);
+    deadline.unref();
+    socket.once('close', () => clearTimeout(deadline));
+    socket.end(refusal, () => socket.destroy());
   }
 
   /** The same refusal as refuse(), as raw bytes for a socket outside HTTP handling. */

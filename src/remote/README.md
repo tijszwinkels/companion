@@ -408,6 +408,25 @@ unknown handles are not budgeted (no device is known) but are answered
 without touching the listener; restrict who can reach the port as for the
 gateway.
 
+Refusals written outside the request path (Node parser errors, upgrades,
+`CONNECT`) say `Connection: close`, and the socket is destroyed when the write
+finishes or after 5 seconds, whichever is first. Unsupported expectations go
+through the request path like any request (header checks, 417, the 30-second
+deadline). Known limit: such a raw refusal on a connection that pipelines
+requests can reach the client before the answer to an earlier request on the
+same connection, which is then lost (an admitted action may still be carried
+out). Browsers do not pipeline; this is accepted rather than tracked.
+
+**Connection limits.** The gateway's limits (4 connections per device, 8 in
+total, draining relays counted; see [Security model](#security-model)) and its
+per-device WebSocket request bucket do not apply to frame requests, and frame
+requests never use up either: they arrive on another listener and have their
+own per-device budget. A device's handles follow its open phone connections,
+up to all four: closing three keeps them without a grace period; the 30-second
+grace period starts when the last one closes. A relay that is still draining
+after its phone closed does not keep handles alive (its browser is gone);
+the grace period outlasts the 15-second drain.
+
 ### Rules: headers
 
 - Every frame-origin response, forwarded or refused, carries

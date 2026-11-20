@@ -492,6 +492,38 @@ const cases: LifetimeCase[] = [
       );
     },
   },
+  {
+    rule: '4',
+    name: 'four connections of one device (its limit): handles live until the last one closes',
+    grace: shortGrace,
+    async run(fixture) {
+      const { id, widgetId } = await setUp(fixture);
+      const { token } = await fixture.pair();
+      const phones: PhoneClient[] = [];
+      const frames = [];
+      for (let index = 0; index < 4; index++) {
+        const phone = await fixture.phone(token);
+        phones.push(phone);
+        frames.push(await framesFrom(phone, id, widgetId));
+      }
+      assert.equal(new Set(frames.map((entry) => entry.widget)).size, 1);
+
+      // Three of four close: no grace period starts.
+      for (const phone of phones.slice(0, 3)) {
+        phone.socket.close();
+        await phone.closed;
+      }
+      await delay(shortGrace * 2);
+      assert.equal(await status(fixture, frames[0].widget), 200);
+
+      // The last one closes: the grace period starts and then they end.
+      phones[3].socket.close();
+      await phones[3].closed;
+      assert.equal(await status(fixture, frames[0].widget), 200);
+      await delay(shortGrace + 200);
+      assert.equal(await status(fixture, frames[0].widget), 404);
+    },
+  },
 ];
 
 for (const entry of cases) {

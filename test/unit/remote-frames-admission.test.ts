@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { createConnection } from 'node:net';
+import { Duplex } from 'node:stream';
 import test from 'node:test';
 
 import { frameFixture } from '../frame-fixture.ts';
@@ -839,30 +840,92 @@ test('over the per-device budget: 429, and the connection and handles stay', asy
   assert.equal((await phone.reply('still-allowed')).type, 'result');
 });
 
-test('frame requests do not use phone connection slots', async (context) => {
-  const fixture = await frameFixture();
-  context.after(() => fixture.close());
+/**
+ * How frames meet the gateway's connection limits (protocol.ts: 4 per device,
+ * 8 in total, draining relays counted) and its per-device WebSocket request
+ * bucket: frame requests never count against either, and neither stops them.
+ */
+interface LimitCase {
+  name: string;
+  /** Fill something up with phones of these devices; returns the refused phone's close. */
+  run(fixture: Fixture, frameUrl: string, token: string): Promise<void>;
+}
 
-  const { run } = await fixture.conversation();
-  await fixture.publishCounter(run);
-  const { token } = await fixture.pair();
-  const phones = [await fixture.phone(token), await fixture.phone(token)];
-  const snapshot = await phones[0].engine('state', (message) =>
-    message.sessions?.some((session: Json) => session.messages.some((row: Json) => row.widget)),
-  );
-  const frameUrl = snapshot.sessions[0].messages.find((row: Json) => row.widget).widget
-    .frameUrl as string;
-  await phones[1].engine('state');
-
-  // Both phone slots are taken; frames still answer, many at once.
+/** All eight frame requests at once must answer 200. */
+async function framesStillAnswer(fixture: Fixture, frameUrl: string): Promise<void> {
   const statuses = await Promise.all(
-    Array.from({ length: 8 }, async () => (await fixture.frameRequest(frameUrl + 'state')).status),
+    Array.from({ length: 8 }, async () => {
+      const response = await fixture.frameRequest(frameUrl + 'state');
+      await response.arrayBuffer();
+      return response.status;
+    }),
   );
   assert.deepEqual(statuses, Array(8).fill(200));
-  // And a third phone is still refused for capacity, not because of frames.
-  const third = await fixture.phone(token);
-  assert.equal((await third.closed).code, 4429);
-});
+}
+
+const limitCases: LimitCase[] = [
+  {
+    name: 'a device at its limit of 4 connections: frames answer, a 5th connection is refused',
+    async run(fixture, frameUrl, token) {
+      for (let index = 1; index < 4; index++) {
+        await (await fixture.phone(token)).engine('state');
+      }
+      await framesStillAnswer(fixture, frameUrl);
+      const fifth = await fixture.phone(token);
+      assert.deepEqual(await fifth.closed, { code: 4429, reason: 'device' });
+      await framesStillAnswer(fixture, frameUrl);
+    },
+  },
+  {
+    name: 'the gateway at its total of 8 connections: frames answer, a 9th is refused',
+    async run(fixture, frameUrl, token) {
+      for (let index = 1; index < 4; index++) {
+        await (await fixture.phone(token)).engine('state');
+      }
+      const other = await fixture.pair('Other device');
+      for (let index = 0; index < 4; index++) {
+        await (await fixture.phone(other.token)).engine('state');
+      }
+      await framesStillAnswer(fixture, frameUrl);
+      const third = await fixture.pair('Third device');
+      const ninth = await fixture.phone(third.token);
+      assert.deepEqual(await ninth.closed, { code: 4429, reason: 'total' });
+      await framesStillAnswer(fixture, frameUrl);
+    },
+  },
+  {
+    name: 'the WebSocket request bucket spent: frames still answer (separate budgets)',
+    async run(fixture, frameUrl, token) {
+      const phone = await fixture.phone(token);
+      await phone.engine('state');
+      // Pings share the device's WebSocket bucket (burst 30).
+      for (let index = 0; index < 60; index++) {
+        phone.socket.send(JSON.stringify({ type: 'ping' }));
+      }
+      await delay(100);
+      const pongs = phone.messages.filter((message) => message.type === 'pong').length;
+      assert.ok(pongs <= 31, `pongs ${pongs}`);
+      await framesStillAnswer(fixture, frameUrl);
+    },
+  },
+];
+
+for (const entry of limitCases) {
+  test(`frames and connection limits: ${entry.name}`, async (context) => {
+    const fixture = await frameFixture();
+    context.after(() => fixture.close());
+    const { run } = await fixture.conversation();
+    await fixture.publishCounter(run);
+    const { token } = await fixture.pair();
+    const first = await fixture.phone(token);
+    const snapshot = await first.engine('state', (message) =>
+      message.sessions?.some((session: Json) => session.messages.some((row: Json) => row.widget)),
+    );
+    const frameUrl = snapshot.sessions[0].messages.find((row: Json) => row.widget).widget
+      .frameUrl as string;
+    await entry.run(fixture, frameUrl, token);
+  });
+}
 
 /** Send a POST's headers with `Expect: 100-continue` and report what comes back first. */
 async function expectContinue(fixture: Fixture, views: Views, origin: string): Promise<string> {
@@ -1029,4 +1092,50 @@ test('peers that reset during an upgrade refusal do not stop the gateway', async
   const response = await fixture.frameRequest(`${fixture.frameOrigin}/f/${'a'.repeat(43)}/`);
   assert.equal(response.status, 404);
   assert.equal((await fetch(fixture.origin + '/api/unknown')).status, 404);
+});
+
+test('expectation refusals go through the request path, with its checks and deadline', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  const head = (extra: string[]) =>
+    [
+      `POST /f/${'a'.repeat(43)}/action HTTP/1.1`,
+      `Host: 127.0.0.1:${fixture.framePort}`,
+      `Origin: ${fixture.frameOrigin}`,
+      'Content-Type: application/json',
+      'Content-Length: 2',
+      ...extra,
+      'Connection: close',
+      '',
+      '',
+    ].join('\r\n');
+
+  // A refusal from the shared path carries the fixed headers and body.
+  for (const expectation of ['something-else', '100-continue, something-else']) {
+    const answer = await rawExchange(fixture.framePort, head([`Expect: ${expectation}`]));
+    assert.match(answer, /^HTTP\/1\.1 417 /, expectation);
+    assert.match(answer, /content-security-policy: frame-ancestors /i, expectation);
+    assert.match(answer, /"error":"Expectation not supported"/, expectation);
+  }
+  // The header-list checks run first, as for every request.
+  const repeated = await rawExchange(
+    fixture.framePort,
+    head(['Expect: something-else', 'Host: evil.example']),
+  );
+  assert.match(repeated, /^HTTP\/1\.1 400 /);
+  assert.match(repeated, /"error":"Repeated header field"/);
+});
+
+test('a raw refusal cannot hold its socket when the client never reads it', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  // A socket whose writes never complete, as with a client that stopped
+  // reading and a full send buffer.
+  const socket = new Duplex({ write() {}, read() {} });
+  const started = Date.now();
+  (fixture.gateway.frames as any).endWithRefusal(socket, 'HTTP/1.1 400 Bad Request\r\n\r\n');
+  await new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  const elapsed = Date.now() - started;
+  assert.ok(socket.destroyed);
+  assert.ok(elapsed >= 4_500 && elapsed <= 7_000, `destroyed after ${elapsed} ms`);
 });

@@ -1,5 +1,5 @@
 {
-  "recordedOn": "ba2840e",
+  "recordedOn": "3b7b115",
   "http": [
     {
       "request": "GET /",
@@ -279,6 +279,7 @@
       "turnStartedAt": "<number>",
       "runId": "<uuid>",
       "acceptsFollowUp": false,
+      "unread": false,
       "history": {
         "start": {
           "index": 0,
@@ -343,6 +344,7 @@
         "turnStartedAt": "<number>",
         "runId": "<uuid>",
         "acceptsFollowUp": false,
+        "unread": false,
         "history": {
           "start": {
             "index": 0,
