@@ -597,7 +597,10 @@ export class SessionApplications {
 
   /**
    * Requests to an application view capability. The service already checked
-   * Host/Origin and that the conversation is open.
+   * Host/Origin and that the conversation is open. `documentApi` replaces the
+   * view address in the served document (the widget service's private socket
+   * route, which must not reveal the capability); by default it is the
+   * loopback view address.
    */
   async view(
     owner: string,
@@ -605,6 +608,7 @@ export class SessionApplications {
     operation: string | undefined,
     method: string,
     body: () => Promise<JsonObject>,
+    documentApi?: string,
   ): Promise<ApplicationViewResult> {
     const entry = await this.load(owner);
     const record = entry.record;
@@ -619,7 +623,7 @@ export class SessionApplications {
         bundle,
         { props: record.data, revision: record.revision, name: record.name },
         defaultViewport,
-        viewUrl,
+        documentApi ?? viewUrl,
         { version: record.version },
       );
       return { kind: 'document', html };

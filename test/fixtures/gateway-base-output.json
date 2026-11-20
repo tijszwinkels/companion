@@ -1,0 +1,431 @@
+{
+  "recordedOn": "ba2840e",
+  "http": [
+    {
+      "request": "GET /",
+      "status": 200,
+      "headers": [
+        ["cache-control", "no-cache"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "text/html; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "<!doctype html><title>App</title>"
+    },
+    {
+      "request": "GET /app.js",
+      "status": 200,
+      "headers": [
+        ["cache-control", "no-cache"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "text/javascript; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "console.log(1);\n"
+    },
+    {
+      "request": "GET /missing.js",
+      "status": 404,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Not found\"}"
+    },
+    {
+      "request": "GET /f/<handle>/",
+      "status": 404,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Not found\"}"
+    },
+    {
+      "request": "GET /f/<handle>/state",
+      "status": 404,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Not found\"}"
+    },
+    {
+      "request": "GET /api/pair",
+      "status": 405,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Method not allowed\"}"
+    },
+    {
+      "request": "POST /api/pair without Origin",
+      "status": 403,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Origin not allowed\"}"
+    },
+    {
+      "request": "GET /api/apps without token",
+      "status": 401,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Not paired\"}"
+    },
+    {
+      "request": "GET /api/screenshots/x without token",
+      "status": 401,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Not paired\"}"
+    },
+    {
+      "request": "GET /api/unknown",
+      "status": 404,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Not found\"}"
+    },
+    {
+      "request": "DELETE /",
+      "status": 405,
+      "headers": [
+        ["cache-control", "no-store"],
+        ["connection", "keep-alive"],
+        [
+          "content-security-policy",
+          "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ],
+        ["content-type", "application/json; charset=utf-8"],
+        ["cross-origin-resource-policy", "same-origin"],
+        ["keep-alive", "timeout=5"],
+        ["permissions-policy", "camera=(), microphone=(), geolocation=()"],
+        ["referrer-policy", "no-referrer"],
+        ["transfer-encoding", "chunked"],
+        ["x-content-type-options", "nosniff"],
+        ["x-frame-options", "DENY"]
+      ],
+      "body": "{\"error\":\"Method not allowed\"}"
+    }
+  ],
+  "relay": {
+    "snapshot": {
+      "id": "<uuid>",
+      "title": "Hello world",
+      "status": "running",
+      "toolEpoch": "<uuid>",
+      "model": "openai-codex/gpt-6-astra",
+      "profile": "coding",
+      "error": "",
+      "messages": [
+        {
+          "id": "user",
+          "kind": "user",
+          "text": "Hello world",
+          "toolName": "",
+          "input": "",
+          "state": "done",
+          "screenshot": true,
+          "createdAt": "<number>",
+          "screenshotUrl": "api/screenshots/<uuid>"
+        },
+        {
+          "id": "widget:<uuid>",
+          "kind": "assistant",
+          "text": "Clicks: 0",
+          "toolName": "",
+          "input": "",
+          "state": "done",
+          "screenshot": false,
+          "widget": {
+            "id": "<uuid>",
+            "name": "counter",
+            "revision": 1,
+            "presentation": {
+              "placement": "inline",
+              "heightPercent": 25,
+              "replaceActivity": true
+            }
+          },
+          "createdAt": "<number>"
+        }
+      ],
+      "updatedAt": "<number>",
+      "turnStartedAt": "<number>",
+      "runId": "<uuid>",
+      "acceptsFollowUp": false,
+      "history": {
+        "start": {
+          "index": 0,
+          "offset": 0
+        },
+        "end": {
+          "index": 2,
+          "offset": 0
+        },
+        "total": 2,
+        "revision": 4,
+        "ids": ["user", "widget:<uuid>"]
+      },
+      "pinnedMessage": null,
+      "application": {
+        "id": "<uuid>",
+        "name": "notes",
+        "version": 1,
+        "revision": 1,
+        "text": "Notes: 0",
+        "eventMode": "next-input",
+        "eventStatus": {
+          "state": "idle",
+          "undelivered": 0,
+          "failed": 0
+        }
+      }
+    },
+    "event": {
+      "type": "agent-session",
+      "session": {
+        "id": "<uuid>",
+        "title": "Hello world",
+        "status": "running",
+        "toolEpoch": "<uuid>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [
+          {
+            "id": "widget:<uuid>",
+            "kind": "assistant",
+            "text": "Clicks: 1",
+            "toolName": "",
+            "input": "",
+            "state": "done",
+            "screenshot": false,
+            "widget": {
+              "id": "<uuid>",
+              "name": "counter",
+              "revision": 2,
+              "presentation": {
+                "placement": "inline",
+                "heightPercent": 25,
+                "replaceActivity": true
+              }
+            },
+            "createdAt": "<number>"
+          }
+        ],
+        "updatedAt": "<number>",
+        "turnStartedAt": "<number>",
+        "runId": "<uuid>",
+        "acceptsFollowUp": false,
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": 6,
+          "ids": ["user", "widget:<uuid>"]
+        },
+        "pinnedMessage": null,
+        "application": {
+          "id": "<uuid>",
+          "name": "notes",
+          "version": 1,
+          "revision": 1,
+          "text": "Notes: 0",
+          "eventMode": "next-input",
+          "eventStatus": {
+            "state": "idle",
+            "undelivered": 0,
+            "failed": 0
+          }
+        }
+      }
+    },
+    "historyPage": {
+      "type": "result",
+      "requestId": "page",
+      "action": "agent-history-page",
+      "result": {
+        "id": "<uuid>",
+        "epoch": "<uuid>",
+        "messages": [
+          {
+            "id": "user",
+            "kind": "user",
+            "text": "Hello world",
+            "toolName": "",
+            "input": "",
+            "state": "done",
+            "screenshot": true,
+            "createdAt": "<number>",
+            "screenshotUrl": "api/screenshots/<uuid>"
+          },
+          {
+            "id": "widget:<uuid>",
+            "kind": "assistant",
+            "text": "Clicks: 1",
+            "toolName": "",
+            "input": "",
+            "state": "done",
+            "screenshot": false,
+            "widget": {
+              "id": "<uuid>",
+              "name": "counter",
+              "revision": 2,
+              "presentation": {
+                "placement": "inline",
+                "heightPercent": 25,
+                "replaceActivity": true
+              }
+            },
+            "createdAt": "<number>"
+          }
+        ],
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": 6,
+          "ids": ["user", "widget:<uuid>"]
+        }
+      }
+    }
+  }
+}

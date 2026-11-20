@@ -28,6 +28,19 @@ import {
 } from '../session-apps/applications.ts';
 import { SessionApplicationError } from '../session-apps/errors.ts';
 import { applicationSendLimits } from '../session-apps/sending.ts';
+import { frameOperation, viewRequestBytes } from './frame-operations.ts';
+import {
+  listenOnPrivateSocket,
+  privateSocketDocumentApi,
+  privateSocketHost,
+  type PrivateSocket,
+} from './socket.ts';
+
+/**
+ * Which listener a view request arrived on: the desktop's loopback port, or
+ * the private Unix socket used by the phone gateway (see socket.ts).
+ */
+type ViewRoute = 'loopback' | 'socket';
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 interface Lease {
@@ -77,6 +90,7 @@ export class WidgetService {
     }
   >();
   private server?: Server;
+  private privateSocket?: Promise<PrivateSocket>;
   private starting?: Promise<string>;
   private origin = '';
   private closed = false;
@@ -110,19 +124,9 @@ export class WidgetService {
       return Promise.reject(Error('Widget service is closed'));
     }
     this.starting ??= new Promise((resolve, reject) => {
-      this.server = createServer((request, response) => {
-        void this.receive(request, response).catch((error) => {
-          if (!response.headersSent) {
-            this.json(
-              response,
-              { error: error instanceof Error ? error.message : 'Widget request failed' },
-              error instanceof SessionApplicationError ? error.status : 400,
-            );
-          } else {
-            response.destroy();
-          }
-        });
-      });
+      this.server = createServer((request, response) =>
+        this.respond(request, response, 'loopback'),
+      );
       this.server.once('error', reject);
       this.server.unref();
       this.server.listen(0, '127.0.0.1', () => {
@@ -136,6 +140,43 @@ export class WidgetService {
       });
     });
     return this.starting;
+  }
+
+  /** Answer one view request; errors become a JSON error, as on every route. */
+  private respond(request: IncomingMessage, response: ServerResponse, route: ViewRoute): void {
+    void this.receive(request, response, route).catch((error) => {
+      if (!response.headersSent) {
+        this.json(
+          response,
+          { error: error instanceof Error ? error.message : 'Widget request failed' },
+          error instanceof SessionApplicationError ? error.status : 400,
+        );
+      } else {
+        response.destroy();
+      }
+    });
+  }
+
+  /**
+   * Also serve views on a private Unix socket, for the phone gateway (see
+   * socket.ts). Called once by the listener after its control socket is bound.
+   */
+  async listenPrivately(socketPath: string): Promise<void> {
+    if (this.closed) {
+      throw Error('Widget service is closed');
+    }
+    if (this.privateSocket) {
+      throw Error('The widget service already listens on a private socket');
+    }
+    this.privateSocket = listenOnPrivateSocket(socketPath, (request, response) =>
+      this.respond(request, response, 'socket'),
+    );
+    try {
+      await this.privateSocket;
+    } catch (error) {
+      this.privateSocket = undefined;
+      throw error;
+    }
   }
 
   async lease(owner: string, signal: AbortSignal): Promise<WidgetLease> {
@@ -548,7 +589,7 @@ export class WidgetService {
     response.end(boundedJson(value, 256 * 1024));
   }
 
-  private async body(request: IncomingMessage, limit = 160 * 1024): Promise<JsonObject> {
+  private async body(request: IncomingMessage, limit = viewRequestBytes): Promise<JsonObject> {
     if (
       request.method !== 'POST' ||
       request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json'
@@ -603,17 +644,27 @@ export class WidgetService {
     return result;
   }
 
-  private async receive(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (
-      this.closed ||
-      request.headers.host !== this.origin.slice(7) ||
-      (request.headers.origin && request.headers.origin !== this.origin)
-    ) {
+  private async receive(
+    request: IncomingMessage,
+    response: ServerResponse,
+    route: ViewRoute,
+  ): Promise<void> {
+    // Loopback: the exact host and, if any, origin of this port. Private
+    // socket: the fixed host and no origin at all (socket.ts).
+    const admitted =
+      route === 'socket'
+        ? request.headers.host === privateSocketHost && request.headers.origin === undefined
+        : request.headers.host === this.origin.slice(7) &&
+          !(request.headers.origin && request.headers.origin !== this.origin);
+    if (this.closed || !admitted) {
       this.json(response, { error: 'Widget origin rejected' }, 403);
       return;
     }
-    const url = new URL(request.url ?? '', this.origin);
-    if (url.pathname === '/agent') {
+    const url = new URL(
+      request.url ?? '',
+      route === 'socket' ? 'http://' + privateSocketHost : this.origin,
+    );
+    if (url.pathname === '/agent' && route === 'loopback') {
       const token = request.headers.authorization?.replace(/^Bearer /, '');
       const lease = token ? this.leases.get(token) : undefined;
       if (!lease) {
@@ -647,12 +698,14 @@ export class WidgetService {
       /^\/view\/([0-9a-f]{64})(?:\/(state|action|query|chat-read|chat-send|chat-receipt|frame|layout|input|present|popout|viewport))?$/.exec(
         url.pathname,
       );
-    const applicationOwner = match ? this.applications.ownerOf(match[1]) : undefined;
-    if (match && applicationOwner) {
-      await this.applicationView(applicationOwner, match[1], match[2], request, response);
+    // The private socket serves only the frame operations (frame-operations.ts).
+    const routed = match && (route === 'loopback' || frameOperation(match[2] ?? '') !== undefined);
+    const applicationOwner = routed ? this.applications.ownerOf(match[1]) : undefined;
+    if (routed && applicationOwner) {
+      await this.applicationView(applicationOwner, match[1], match[2], request, response, route);
       return;
     }
-    const id = match ? this.capabilities.get(match[1]) : undefined;
+    const id = routed ? this.capabilities.get(match[1]) : undefined;
     if (!match || !id) {
       this.json(response, { error: 'Unknown widget view' }, 404);
       return;
@@ -670,7 +723,8 @@ export class WidgetService {
         'Referrer-Policy': 'no-referrer',
         'X-Frame-Options': 'DENY',
       });
-      response.end(await widgetDocument(bundle, record, defaultViewport, viewUrl));
+      const api = route === 'socket' ? privateSocketDocumentApi : viewUrl;
+      response.end(await widgetDocument(bundle, record, defaultViewport, api));
     } else if (request.method === 'GET' && action === 'state') {
       // A Chromium pop-out has no Companion host to theme it. It follows the
       // text scale of the sidebar view instead, as reported by the latest
@@ -764,6 +818,7 @@ export class WidgetService {
     operation: string | undefined,
     request: IncomingMessage,
     response: ServerResponse,
+    route: ViewRoute,
   ): Promise<void> {
     this.check(owner);
     const result = await this.applications.view(
@@ -782,6 +837,7 @@ export class WidgetService {
         this.check(owner);
         return body;
       },
+      route === 'socket' ? privateSocketDocumentApi : undefined,
     );
     if (result.kind === 'document') {
       response.writeHead(200, {
@@ -838,6 +894,8 @@ export class WidgetService {
     this.nativeViewports.clear();
     this.owners.clear();
     await Promise.allSettled(this.queues.values());
+    const privateSocket = await this.privateSocket?.catch(() => undefined);
+    await privateSocket?.close();
     if (this.server) {
       this.server.closeAllConnections();
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));

@@ -2898,6 +2898,15 @@ export class AgentSessions implements InspectableModule {
     await Promise.all([...this.sessions.values()].map((session) => session.done));
   }
 
+  /**
+   * Serve widget and application views on a private Unix socket as well, for
+   * the phone gateway (src/widgets/socket.ts). The listener calls this once
+   * after binding its control socket.
+   */
+  serveWidgetsPrivately(socketPath: string): Promise<void> {
+    return this.widgets.listenPrivately(socketPath);
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     // First of all, as in `stop`: every running turn ends at the same moment
