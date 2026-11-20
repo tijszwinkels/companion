@@ -101,7 +101,10 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
    position, within 150 and 420 px. The width follows the pointer while
    dragging and is remembered once, when the drag ends (released, cancelled
    or capture lost: the width reached is kept). A press on the divider that
-   does not move changes and remembers nothing.
+   does not move changes and remembers nothing. While a drag is active, a
+   press of another pointer on the divider (a second finger, say) is
+   ignored: the dragging pointer keeps the drag, and the width it reaches is
+   remembered when it is released.
 3. Keyboard on the focused divider: Right widens by 20 px (from the strip:
    the 150 px full list), Left narrows by 20 px (under 150 px: the strip),
    Home gives the strip, End 420 px. Each key press is remembered.
@@ -125,27 +128,28 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
    each change writes only its own entry, changes of different entries in
    two tabs never undo each other, in whatever order they happen.
 
-| Case                                        | Result                                             |
-| ------------------------------------------- | -------------------------------------------------- |
-| Initial (nothing remembered)                | Strip, shown                                       |
-| Both entries invalid or of another version  | Strip, shown                                       |
-| Only the width invalid; list hidden         | Strip, hidden                                      |
-| Only the hidden state invalid; 300 px       | Full list at 300 px, shown                         |
-| Press on the divider without moving         | Nothing changes or is written                      |
-| Storage refuses writes; 300 px, ☰, ☰      | Full list at 300 px for this page                  |
-| Divider dragged to 100 px                   | Strip, remembered on release                       |
-| Divider dragged to 120 px                   | Full list at 150 px                                |
-| Divider dragged to 300 px                   | Full list at 300 px                                |
-| Divider dragged to 600 px                   | Full list at 420 px                                |
-| Right / Left / Home / End on the divider    | Per rule 3, each remembered                        |
-| ☰ pressed                                  | List and divider hidden; again: shown at its width |
-| Reload                                      | Width and hidden state as remembered               |
-| Window 420 px, full list 300 px remembered  | Strip (420 − 321 < 150); 300 px again when wider   |
-| Window 470 / 471 px, full list remembered   | Strip / full list at 150 px                        |
-| Window 600 px, full list 420 px remembered  | Full list at 279 px                                |
-| Width changed in another tab, then ☰ here  | This tab shows that width; ☰ keeps it             |
-| Width and ☰ in two tabs at the same moment | Both kept                                          |
-| Sign-out and pairing again                  | Layout kept                                        |
+| Case                                                                          | Result                                             |
+| ----------------------------------------------------------------------------- | -------------------------------------------------- |
+| Initial (nothing remembered)                                                  | Strip, shown                                       |
+| Both entries invalid or of another version                                    | Strip, shown                                       |
+| Only the width invalid; list hidden                                           | Strip, hidden                                      |
+| Only the hidden state invalid; 300 px                                         | Full list at 300 px, shown                         |
+| Press on the divider without moving                                           | Nothing changes or is written                      |
+| Storage refuses writes; 300 px, ☰, ☰                                        | Full list at 300 px for this page                  |
+| Divider dragged to 100 px                                                     | Strip, remembered on release                       |
+| Divider dragged to 120 px                                                     | Full list at 150 px                                |
+| Divider dragged to 300 px                                                     | Full list at 300 px                                |
+| Divider dragged to 600 px                                                     | Full list at 420 px                                |
+| Divider dragged to 300 px; a second pointer presses it; the first is released | Full list at 300 px, remembered once               |
+| Right / Left / Home / End on the divider                                      | Per rule 3, each remembered                        |
+| ☰ pressed                                                                    | List and divider hidden; again: shown at its width |
+| Reload                                                                        | Width and hidden state as remembered               |
+| Window 420 px, full list 300 px remembered                                    | Strip (420 − 321 < 150); 300 px again when wider   |
+| Window 470 / 471 px, full list remembered                                     | Strip / full list at 150 px                        |
+| Window 600 px, full list 420 px remembered                                    | Full list at 279 px                                |
+| Width changed in another tab, then ☰ here                                    | This tab shows that width; ☰ keeps it             |
+| Width and ☰ in two tabs at the same moment                                   | Both kept                                          |
+| Sign-out and pairing again                                                    | Layout kept                                        |
 
 ### Reordering by dragging
 
@@ -318,8 +322,9 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
    cancelled or capture lost: the width reached is kept, also when the
    divider goes away during the drag because the window narrows or another
    tab hides the column); a press that does not move changes and remembers
-   nothing. (The list's divider is the same component and keeps its width
-   the same way.)
+   nothing; a press of another pointer during a drag is ignored, as on the
+   list's divider. (The list's divider is the same component and keeps its
+   width the same way.)
 3. Keyboard on the focused divider (a separator named "Activity width"):
    Left widens the column by 20 px, Right narrows it by 20 px, Home gives
    240 px, End 520 px. Each key press is remembered.
@@ -346,36 +351,37 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
    own entry; a storage that refuses writes keeps the page's values; not
    cleared on sign-out; other tabs follow each entry they see written.
 
-| Case                                                                         | Result                                                      |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Initial (nothing remembered)                                                 | Hidden; 320 px when shown                                   |
-| Both entries invalid or of another version                                   | Hidden; 320 px when shown                                   |
-| Only the width invalid; column shown                                         | Shown at 320 px                                             |
-| Only the shown state invalid; 400 px                                         | Hidden; 400 px when shown                                   |
-| Remembered width 100 / 900 (out of range)                                    | 240 / 520 px                                                |
-| ☰ in the bar, then ☰ in the column                                         | Shown, then hidden; each remembered; the width kept         |
-| The Activity entry pressed twice                                             | Shown, then hidden (the same entry as ☰)                   |
-| Divider dragged to 300 px from the right edge                                | 300 px, remembered on release                               |
-| Divider dragged to 100 / 900 px from the right edge                          | 240 / 520 px                                                |
-| Press on the divider without moving                                          | Nothing changes or is written                               |
-| Left / Right / Home / End on the divider                                     | +20 / −20 / 240 / 520 px, each remembered                   |
-| Reload                                                                       | Width and shown state as remembered                         |
-| Storage refuses writes; 400 px, ☰                                           | 400 px, shown, for this page                                |
-| Window 1600 px, strip, column 320 px                                         | Side by side; chat area 1200 px, its column 860 px, centred |
-| Window 1000 px, full list 420, column 520 remembered                         | Column 520 px; full list 158 px; chat 320 px                |
-| Window 700 px, strip, column 520 remembered                                  | Column 300 px (700 − 321 − 79); chat 320 px                 |
-| Window 640 px, strip, column shown                                           | Column 240 px beside the chat                               |
-| Window 639 / 420 px, column shown                                            | Over the chat, right of the list; no divider; no overflow   |
-| Window 420 px, column shown, Tab                                             | Moves through list and column, never into the covered chat  |
-| Window 420 px, column shown, an error toast                                  | The toast and its Dismiss are drawn above the column        |
-| Divider dragged to 400 px, the column hidden from another tab before release | 400 px remembered                                           |
-| Focus in the chat, the window narrows under 640 px                           | Focus moves to the column's ☰                              |
-| Focus on a ☰ or in the column, another tab shows or hides it                | Focus moves to the other ☰; focus elsewhere stays          |
-| Focus on the divider, the window narrows under 640 px                        | Focus moves to the column's ☰ (the divider is gone)        |
-| Focus on the divider, another tab hides the column                           | Focus moves to the bar's ☰                                 |
-| Window 420 px, list hidden, column shown                                     | Over the whole window width                                 |
-| Width or shown state changed in another tab                                  | This tab follows that entry                                 |
-| Sign-out and pairing again                                                   | Layout kept                                                 |
+| Case                                                                          | Result                                                      |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Initial (nothing remembered)                                                  | Hidden; 320 px when shown                                   |
+| Both entries invalid or of another version                                    | Hidden; 320 px when shown                                   |
+| Only the width invalid; column shown                                          | Shown at 320 px                                             |
+| Only the shown state invalid; 400 px                                          | Hidden; 400 px when shown                                   |
+| Remembered width 100 / 900 (out of range)                                     | 240 / 520 px                                                |
+| ☰ in the bar, then ☰ in the column                                          | Shown, then hidden; each remembered; the width kept         |
+| The Activity entry pressed twice                                              | Shown, then hidden (the same entry as ☰)                   |
+| Divider dragged to 300 px from the right edge                                 | 300 px, remembered on release                               |
+| Divider dragged to 100 / 900 px from the right edge                           | 240 / 520 px                                                |
+| Press on the divider without moving                                           | Nothing changes or is written                               |
+| Left / Right / Home / End on the divider                                      | +20 / −20 / 240 / 520 px, each remembered                   |
+| Reload                                                                        | Width and shown state as remembered                         |
+| Storage refuses writes; 400 px, ☰                                            | 400 px, shown, for this page                                |
+| Window 1600 px, strip, column 320 px                                          | Side by side; chat area 1200 px, its column 860 px, centred |
+| Window 1000 px, full list 420, column 520 remembered                          | Column 520 px; full list 158 px; chat 320 px                |
+| Window 700 px, strip, column 520 remembered                                   | Column 300 px (700 − 321 − 79); chat 320 px                 |
+| Window 640 px, strip, column shown                                            | Column 240 px beside the chat                               |
+| Window 639 / 420 px, column shown                                             | Over the chat, right of the list; no divider; no overflow   |
+| Window 420 px, column shown, Tab                                              | Moves through list and column, never into the covered chat  |
+| Window 420 px, column shown, an error toast                                   | The toast and its Dismiss are drawn above the column        |
+| Divider dragged to 400 px, the column hidden from another tab before release  | 400 px remembered                                           |
+| Divider dragged to 400 px; a second pointer presses it; the first is released | 400 px, remembered once                                     |
+| Focus in the chat, the window narrows under 640 px                            | Focus moves to the column's ☰                              |
+| Focus on a ☰ or in the column, another tab shows or hides it                 | Focus moves to the other ☰; focus elsewhere stays          |
+| Focus on the divider, the window narrows under 640 px                         | Focus moves to the column's ☰ (the divider is gone)        |
+| Focus on the divider, another tab hides the column                            | Focus moves to the bar's ☰                                 |
+| Window 420 px, list hidden, column shown                                      | Over the whole window width                                 |
+| Width or shown state changed in another tab                                   | This tab follows that entry                                 |
+| Sign-out and pairing again                                                    | Layout kept                                                 |
 
 ### The new-activity marker
 
@@ -524,7 +530,7 @@ heading.
   column when the listener reports it deleted; a refusal keeps the
   confirmation with both buttons available again (the toast explains). The
   confirmation stays open until Cancel, the deletion or the entry going
-  away, also while the column is hidden: a refusal that arrives while it is
+  away (then it is forgotten), also while the column is hidden: a refusal that arrives while it is
   hidden shows it again with the confirmation open. Toasts are drawn above
   the column, also where it lies over the chat.
 
@@ -978,7 +984,8 @@ snapshot, its reading abandoned and started over so an offline deletion is
 applied; a new listener run,
 a failed first reading, sign-out; and the phone's default reading only what
 is new), which actions each entry offers, when Incorrect sends and which
-actual intents are offered, and one pending request per entry, and
+actual intents are offered, and one pending request per entry, open
+delete confirmations forgotten when their entry leaves the history, and
 selecting a started conversation (listed before or after the answer,
 another selection or a selection undone meanwhile, the shown conversation
 closed elsewhere through the Store's `sendDraft`, the phone's default
@@ -1017,7 +1024,8 @@ unavailable (also after hiding and showing), and a refused one keeping the
 confirmation, also when refused while the column is hidden or after it was
 shown again; the error toast's Dismiss reachable above the column at
 420 px; a divider drag ended by another tab hiding the column remembering
-the width reached; focus on the divider moving to the column's ☰ when the window
+the width reached; a second pointer tapping the list's or the Activity divider
+during a mouse drag ignored, the width reached remembered once on release; focus on the divider moving to the column's ☰ when the window
 narrows and to the bar's ☰ when another tab hides the column; the Coding / Quick question choice and the text kept across
 hiding the column; an Incorrect press handler drawn before another client
 chose the actual intent sending nothing (invoked through Preact's listener

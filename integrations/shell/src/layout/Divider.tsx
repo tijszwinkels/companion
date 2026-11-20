@@ -88,6 +88,12 @@ export function Divider(props: {
     if (event.button !== 0) {
       return;
     }
+    // A drag is active: a press of another pointer (a second finger) is
+    // ignored, so the dragging pointer keeps the drag and its width is
+    // remembered when it is released.
+    if (dragPointer.current !== null) {
+      return;
+    }
     // No text selection and no focus change from this press; the pointer
     // is captured, so the drag continues over the chat.
     event.preventDefault();

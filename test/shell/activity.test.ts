@@ -1315,22 +1315,42 @@ test(
     await heard(fixture, 'Synthetic entry refused while hidden');
     await heard(fixture, 'Synthetic entry refused after reopening');
 
-    // Each deletion at the listener waits until the test decides it: done
-    // or refused.
+    // Each deletion at the listener waits on its own hold, created by the
+    // test for that entry before Delete permanently is pressed, until the
+    // test decides it: done or refused. A deletion without a hold fails, so
+    // a decision can never reach another entry's deletion.
+    type Outcome = 'delete' | 'refuse';
+    const holds = new Map<string, Promise<Outcome>>();
     const runtime = fixture.desktop.runtime as unknown as {
       history: { delete(id: string): Promise<void> };
     };
     const deleteRecord = runtime.history.delete.bind(runtime.history);
-    let decide: (outcome: 'delete' | 'refuse') => void = () => {};
     runtime.history.delete = async (id: string) => {
-      const outcome = await new Promise<'delete' | 'refuse'>((resolve) => {
-        decide = resolve;
-      });
-      if (outcome === 'refuse') {
+      const hold = holds.get(id);
+      if (!hold) {
+        throw Error(`No hold prepared for the deletion of ${id}`);
+      }
+      holds.delete(id);
+      if ((await hold) === 'refuse') {
         throw Error('Synthetic refusal');
       }
       return deleteRecord(id);
     };
+
+    /** The hold for the entry heard as `utterance`; its `decide` settles that deletion only. */
+    function holdDeletion(utterance: string): { decide(outcome: Outcome): void } {
+      const row = fixture.desktop.database
+        .prepare('SELECT id FROM utterances WHERE transcript = ?')
+        .get(utterance) as { id: string };
+      let decide: (outcome: Outcome) => void = () => {};
+      holds.set(
+        row.id,
+        new Promise<Outcome>((resolve) => {
+          decide = resolve;
+        }),
+      );
+      return { decide: (outcome) => decide(outcome) };
+    }
 
     const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
     await clickSelector(page, barToggle);
@@ -1341,12 +1361,15 @@ test(
         `document.querySelector('${await entryButton(page, utterance, label)}').getAttribute('aria-disabled')`,
       );
     const pressDelete = async (utterance: string) => {
+      // The hold exists before the request can reach the listener.
+      const hold = holdDeletion(utterance);
       await clickSelector(
         page,
         await entryButton(page, utterance, 'Delete utterance, screenshot and audio'),
       );
       await clickSelector(page, await entryButton(page, utterance, 'Delete permanently'));
       await page.waitFor(`${confirmText(utterance)}.includes('Deleting…')`);
+      return hold;
     };
     const hideAndShow = async (between: () => Promise<void> = async () => {}) => {
       await clickSelector(page, columnToggle);
@@ -1364,7 +1387,7 @@ test(
 
     // On its way: Cancel is unavailable and pressing it changes nothing.
     const slow = 'Synthetic entry deleted slowly';
-    await pressDelete(slow);
+    const slowDeletion = await pressDelete(slow);
     assert.equal(await buttonState(slow, 'Cancel'), 'true');
     await clickAt(page, await box(page, await entryButton(page, slow, 'Cancel')));
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1376,14 +1399,14 @@ test(
     assert.equal(requestActions(sockets).filter((action) => action === 'delete-history').length, 1);
 
     // The listener deletes it: the entry leaves the column.
-    decide('delete');
+    slowDeletion.decide('delete');
     await page.waitFor(`!${entryExpression(slow)}`);
 
     // Refused with the column shown: the confirmation stays, both buttons
     // available again.
     const refused = 'Synthetic entry refused deletion';
-    await pressDelete(refused);
-    decide('refuse');
+    const refusedDeletion = await pressDelete(refused);
+    refusedDeletion.decide('refuse');
     await page.waitFor(`document.querySelector('.toast.error')`);
     await page.waitFor(`!${confirmText(refused)}.includes('Deleting…')`);
     assert.equal(await buttonState(refused, 'Delete permanently'), null);
@@ -1410,9 +1433,9 @@ test(
     // Refused while the column is hidden: shown again with the
     // confirmation open, both buttons available.
     const whileHidden = 'Synthetic entry refused while hidden';
-    await pressDelete(whileHidden);
+    const whileHiddenDeletion = await pressDelete(whileHidden);
     await hideAndShow(async () => {
-      decide('refuse');
+      whileHiddenDeletion.decide('refuse');
       await page.waitFor(`document.querySelector('.toast.error')`);
     });
     await page.waitFor(`${confirmText(whileHidden)}.includes('Delete this utterance')`);
@@ -1422,10 +1445,10 @@ test(
 
     // Refused after the column was shown again: the same.
     const afterReopening = 'Synthetic entry refused after reopening';
-    await pressDelete(afterReopening);
+    const afterReopeningDeletion = await pressDelete(afterReopening);
     await hideAndShow();
     await page.waitFor(`${confirmText(afterReopening)}.includes('Deleting…')`);
-    decide('refuse');
+    afterReopeningDeletion.decide('refuse');
     await page.waitFor(`${confirmText(afterReopening)}.includes('Delete this utterance')`);
     assert.equal(await buttonState(afterReopening, 'Delete permanently'), null);
     assert.equal(await buttonState(afterReopening, 'Cancel'), null);
@@ -1528,6 +1551,122 @@ test(
       `document.activeElement?.classList.contains('activity-toggle') && document.activeElement.closest('.chat-bar') !== null`,
     );
     await second.page.close();
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+/**
+ * Drag the divider matching `selector` with the mouse to `toX` and hold the
+ * button; meanwhile a second pointer (a touch) taps the divider where it is
+ * now; then release the mouse. Returns what storage held for `key` while
+ * the mouse still held the drag after the tap, what it held after the
+ * release, and how many times `key` was written.
+ */
+async function dragWithSecondPointer(
+  page: TestPage,
+  selector: string,
+  toX: number,
+  key: string,
+): Promise<{ afterTap: unknown; afterRelease: unknown; writes: number }> {
+  await page.evaluate(`(() => {
+    window.__writes = 0;
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (name, value) {
+      if (name === ${JSON.stringify(key)}) window.__writes++;
+      return setItem.call(this, name, value);
+    };
+  })()`);
+  const stored = () =>
+    page.evaluate(`JSON.parse(localStorage.getItem(${JSON.stringify(key)}))?.value`);
+  const y = 300;
+  const start = await box(page, selector);
+  await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: start.x, y });
+  await page.call('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: start.x,
+    y,
+    button: 'left',
+    buttons: 1,
+    clickCount: 1,
+  });
+  const steps = 6;
+  for (let step = 1; step <= steps; step++) {
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: start.x + ((toX - start.x) * step) / steps,
+      y,
+      button: 'left',
+      buttons: 1,
+    });
+  }
+
+  // A second pointer taps the divider (on its line) while the drag holds.
+  await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const now = await box(page, selector);
+  const tap = { x: now.left + 3, y: y + 200 };
+  const target = await page.evaluate<boolean>(
+    `document.elementFromPoint(${tap.x}, ${tap.y})?.matches(${JSON.stringify(selector)}) === true`,
+  );
+  assert.ok(target, 'the second pointer presses the divider');
+  await page.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [tap] });
+  await page.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.call('Emulation.setTouchEmulationEnabled', { enabled: false });
+  const afterTap = await stored();
+
+  // The dragging pointer is released where it is.
+  await page.call('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: toX,
+    y,
+    button: 'left',
+    buttons: 0,
+    clickCount: 1,
+  });
+  const afterRelease = await stored();
+  const writes = await page.evaluate<number>(`window.__writes`);
+  return { afterTap, afterRelease, writes };
+}
+
+test(
+  'a second pointer pressing a divider during a drag is ignored (list and Activity)',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`${columnWidth} === 320`);
+
+    // The Activity divider: dragged to 400 px from the right edge.
+    const activity = await dragWithSecondPointer(
+      page,
+      '.activity-divider',
+      1280 - 400,
+      'companion.shell.layout.activityWidth',
+    );
+    // The tap neither ended the drag nor wrote anything; the release
+    // remembered the width reached, once.
+    assert.deepEqual(activity, { afterTap: undefined, afterRelease: 400, writes: 1 });
+    await page.waitFor(`${columnWidth} === 400`);
+
+    // The list's divider (the same component): dragged to 300 px.
+    const list = await dragWithSecondPointer(
+      page,
+      '.list-divider:not(.activity-divider)',
+      300,
+      'companion.shell.layout.listWidth',
+    );
+    assert.deepEqual(list, { afterTap: undefined, afterRelease: 300, writes: 1 });
+    await page.waitFor(
+      `document.querySelector('.conversations').getBoundingClientRect().width === 300`,
+    );
+
+    // Both survive a reload.
+    await page.navigate(`${fixture.origin}/`);
+    await page.waitFor(online, 8000);
+    await page.waitFor(`${columnWidth} === 400`);
+    await page.waitFor(
+      `document.querySelector('.conversations').getBoundingClientRect().width === 300`,
+    );
     await assertCleanPage(fixture, page, sockets);
   },
 );

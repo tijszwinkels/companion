@@ -330,3 +330,28 @@ test('Incorrect and the actual intent: by the entry as the Store has it at the c
     ['QUICK_QUESTION', 'SEND_TEXT_TO_APPLICATION'],
   );
 });
+
+test('open delete confirmations are kept while their entry exists, then forgotten', () => {
+  const requests = new ActivityRequests();
+  requests.setConfirming('A', true);
+  requests.setConfirming('B', true);
+
+  // Both entries are in the history: kept (also while the column is hidden).
+  requests.forgetConfirmations(
+    new Map([
+      ['A', 1],
+      ['B', 2],
+    ]),
+  );
+  assert.equal(requests.isConfirming('A'), true);
+  assert.equal(requests.isConfirming('B'), true);
+
+  // B was deleted elsewhere: forgotten; A stays.
+  requests.forgetConfirmations(new Map([['A', 1]]));
+  assert.equal(requests.isConfirming('A'), true);
+  assert.equal(requests.isConfirming('B'), false);
+
+  // A new listener run (no entries of the old one): all forgotten.
+  requests.forgetConfirmations(new Map());
+  assert.equal(requests.isConfirming('A'), false);
+});

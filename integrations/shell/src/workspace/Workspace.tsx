@@ -86,6 +86,8 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
   marker.current.observe(state, activity.shown);
   const newActivity = marker.current.count;
   const [requests] = useState(() => new ActivityRequests());
+  // Confirmations of entries that left the history are not kept.
+  requests.forgetConfirmations(state.activity.entries);
   // The kind of conversation Start asks for, kept while the column is
   // hidden (its text is the Store's draft, kept too).
   const [startProfile, setStartProfile] = useState<StartProfile>('coding');

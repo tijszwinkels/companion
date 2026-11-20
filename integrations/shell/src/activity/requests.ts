@@ -22,8 +22,8 @@ export class ActivityRequests {
   /**
    * Entries whose delete confirmation is open. Kept here, for the pairing,
    * so it survives the column being hidden and shown (and a refusal that
-   * arrives meanwhile); closed by Cancel or a completed deletion. An entry
-   * that goes away is no longer drawn, so its key is simply never shown.
+   * arrives meanwhile); closed by Cancel or a completed deletion, and
+   * forgotten when its entry leaves the run's history (forgetConfirmations).
    */
   private readonly confirmations = new Set<string>();
 
@@ -35,6 +35,20 @@ export class ActivityRequests {
   /** Whether the delete confirmation of entry `key` is open. */
   isConfirming(key: string): boolean {
     return this.confirmations.has(key);
+  }
+
+  /**
+   * Forget the open confirmations of entries no longer in `entries` (deleted
+   * here or elsewhere, or gone with their run; such an entry never comes
+   * back). Silent: those entries are not drawn, so nothing changes on screen,
+   * and the workspace may call this while drawing.
+   */
+  forgetConfirmations(entries: ReadonlyMap<string, unknown>): void {
+    for (const key of [...this.confirmations]) {
+      if (!entries.has(key)) {
+        this.confirmations.delete(key);
+      }
+    }
   }
 
   setConfirming(key: string, open: boolean): void {
