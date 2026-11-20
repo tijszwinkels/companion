@@ -261,27 +261,40 @@ the harness:
   in `prepareFollowUp` for every later one. It stays while the turn runs and is
   removed when the turn ends. Clients compute the running duration from it.
 - A turn ends when the harness's `run` returns or throws (answered, failed,
-  or its process exited), or at the moment of Stop or listener shutdown.
-  When it ends, `turnStartedAt` is removed and `lastTurnDurationMs` (session
-  field) becomes end minus start, whatever the outcome. A clock that was set
-  back during the turn gives 0, not a negative value.
+  or its process exited), or earlier: at the moment of Stop, listener
+  shutdown, a withdrawal of the turn's own application send, or an error the
+  listener itself finds (tool storage). There is one path for every end,
+  `endTurnNow`: it records the end and the duration (`lastTurnDurationMs`,
+  end minus start), removes `turnStartedAt` and publishes both together, before
+  anything else (timer cancellation, saves, the harness's cancellation
+  cleanup) can take time or publish. The first end of a turn stands. A clock
+  that was set back during the turn gives 0, not a negative value. Turns in
+  which nothing reached the model keep the previous duration: a placeholder
+  with nothing to deliver, an application send refused at its gate, a wake
+  that could not enter, and an application send withdrawn, stopped or closed
+  before it was admitted to the model.
 
-  | Ends by      | While starting, slow first save | While running     | While the final save is pending |
-  | ------------ | ------------------------------- | ----------------- | ------------------------------- |
-  | Stop         | at Stop                         | at Stop           | already ended; unchanged        |
-  | Error        | when the error is observed      | when the harness  | already ended; unchanged        |
-  |              |                                 | returns the error |                                 |
-  | Process exit | not possible: no harness yet    | when the harness  | not possible: the harness has   |
-  |              |                                 | returns           | already returned                |
+  | Ends by               | While starting, slow first save | While running      | While the final save is pending |
+  | --------------------- | ------------------------------- | ------------------ | ------------------------------- |
+  | Stop                  | at Stop                         | at Stop            | already ended; unchanged        |
+  | Listener shutdown     | at shutdown                     | at shutdown        | already ended; unchanged        |
+  | Send withdrawn by the | at the withdrawal; keeps the    | not possible: only | not possible                    |
+  | application service   | previous duration               | unstarted sends    |                                 |
+  | Error in the harness  | when the error is observed      | when the harness   | already ended; unchanged        |
+  |                       |                                 | returns the error  |                                 |
+  | Error the listener    | not possible: no tool output    | at the error       | already ended; unchanged        |
+  | finds (tool storage)  | before the harness runs         |                    |                                 |
+  | Process exit          | not possible: no harness yet    | when the harness   | not possible: the harness has   |
+  |                       |                                 | returns            | already returned                |
 
-  "At Stop": `stop` withdraws `turnStartedAt` at once and fixes the end,
-  even while the turn still waits for its first save or the harness is still
-  winding down after the cancellation; neither wait is counted. An error ends
-  the turn when it is observed: a slow first save that then fails was the
-  turn's failing work and is counted. Otherwise the end includes the
-  harness's own bounded shutdown after the answer (Pi's final name read,
-  Claude Code's natural exit, process cleanup; each bounded to a few
-  seconds), because the turn only ends when the harness returns.
+  "At Stop" and "at shutdown": the turn ends even while it still waits for its
+  first save or the harness is still winding down after the cancellation;
+  neither wait is counted. An error in the harness ends the turn when it is
+  observed: a slow first save that then fails was the turn's failing work and
+  is counted. Otherwise the end includes the harness's own bounded shutdown
+  after the answer (Pi's final name read, Claude Code's natural exit, process
+  cleanup; each bounded to a few seconds), because the turn only ends when the
+  harness returns.
 
   The end of a turn is published before the turn's final save is awaited, so
   a slow save cannot keep a client counting, and the final save is not
@@ -299,17 +312,13 @@ the harness:
   belong to that one turn and one measurement. Process lifetime is never used:
   Pi and Claude Code are started per turn today, but a harness that kept its
   process alive between turns would be measured the same way.
-- Nothing running survives the end of a turn. `stop` and listener `close`
-  remove `turnStartedAt` at Stop; `run` removes it when the harness returns;
-  `drain` removes it again when the conversation stops being busy (covering any
-  exception between turns), as does a scheduled wake that cannot enter the
-  conversation. Stopped queued messages never start a turn.
-- A placeholder turn that runs nothing (application edits already delivered, or
-  an application send withdrawn before it started, including by Stop or close
-  while it was still starting) removes `turnStartedAt` and keeps the previous
-  turn's duration. A send withdrawn by the application service removes
-  `turnStartedAt` at once, even while the turn is still starting. An
-  application send that fails while starting did start a turn and is measured.
+- Nothing running survives the end of a turn. `endTurnNow` is the only place
+  that removes `turnStartedAt`. Besides the early ends above, `run` calls it
+  when the harness returns, the placeholder and wake paths call it when
+  nothing ran, and `drain` calls it again when the conversation stops being
+  busy (covering any exception between turns). Stopped queued messages never
+  start a turn. An application send that fails while starting did start a
+  turn and is measured.
 - Conversations are independent: each conversation's fields change only with its
   own turns.
 

@@ -1120,21 +1120,29 @@ test('a widget row repaired after a failed close gets no invented time', async (
 });
 
 /*
- * When a turn ends, case by case. Each row below is one test.
+ * When a turn ends, case by case. Each cell is covered by a test.
  *
- * | Ends by      | while starting, slow first save | while running        | while the final save is pending |
- * | ------------ | ------------------------------- | -------------------- | ------------------------------- |
- * | Stop         | at Stop                         | at Stop              | already ended; unchanged        |
- * | Error        | when the error is observed      | when the harness     | already ended; unchanged        |
- * |              | (the failing save is the work)  | returns the error    |                                 |
- * | Process exit | not possible: no harness yet    | when the harness     | not possible: the harness has   |
- * |              |                                 | returns              | already returned                |
+ * | Ends by                | while starting, slow first save | while running         | while the final save is pending |
+ * | ---------------------- | ------------------------------- | --------------------- | ------------------------------- |
+ * | Stop                   | at Stop                         | at Stop               | already ended; unchanged        |
+ * | Listener shutdown      | at shutdown                     | at shutdown           | already ended; unchanged        |
+ * | Send withdrawn by the  | at the withdrawal; keeps the    | not possible: only    | not possible                    |
+ * | application service    | previous duration               | unstarted sends       |                                 |
+ * | Error in the harness   | when the error is observed      | when the harness      | already ended; unchanged        |
+ * |                        | (the failing save is the work)  | returns the error     |                                 |
+ * | Error the listener     | not possible: no tool output    | at the error          | already ended; unchanged        |
+ * | finds (tool storage)   | before the harness runs         |                       |                                 |
+ * | Process exit           | not possible: no harness yet    | when the harness      | not possible: the harness has   |
+ * |                        |                                 | returns               | already returned                |
  *
- * "At Stop" means the running time is withdrawn when Stop is called and the
- * duration ends there; the save wait and the harness's cancellation cleanup
- * that follow are not counted. Process exit while running is covered by
- * "nothing running remains after the real Pi or Claude Code process exits
- * mid-turn" above.
+ * Every early end goes through one path (endTurnNow): it removes the
+ * running time and sets the duration together and publishes them, before
+ * anything else (timer cancellation, saves, the harness's cleanup) can take
+ * time or publish. Covered elsewhere in this file: withdrawal ("an
+ * application send revoked before it began …"), harness errors ("nothing
+ * running remains after Stop or an error", "an error …" below) and process
+ * exit ("nothing running remains after the real Pi or Claude Code process
+ * exits mid-turn").
  */
 
 test('Stop while starting with a slow first save ends the turn at Stop', async (context) => {
@@ -1143,8 +1151,16 @@ test('Stop while starting with a slow first save ends the turn at Stop', async (
   const events = recordEvents(fixture.sessions);
   const saves = holdSaves(fixture.sessions);
 
-  saves.hold();
+  // A previous turn of 800 ms, so that a stale duration would show.
   const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(800);
+  });
+  await fixture.sessions.idle();
+  assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+
+  saves.hold();
+  fixture.sessions.followUp(id, 'Stopped while starting', signal());
   let stopping: Promise<number> | undefined;
   try {
     // The question's save, before the harness is launched, is held.
@@ -1154,9 +1170,12 @@ test('Stop while starting with a slow first save ends the turn at Stop', async (
     clock.advance(10);
     stopping = fixture.sessions.stop(id);
 
-    // The running time is withdrawn at once, in events and snapshots.
+    // The running time is withdrawn and the new duration published at
+    // once, together, in events and snapshots.
     assert.equal(lastPublished(events, id).turnStartedAt, undefined);
+    assert.equal(lastPublished(events, id).lastTurnDurationMs, 10);
     assert.equal(fixture.view(id).turnStartedAt, undefined);
+    assert.equal(fixture.view(id).lastTurnDurationMs, 10);
 
     // The slow save goes on for a minute after Stop.
     clock.advance(60_000);
@@ -1166,7 +1185,7 @@ test('Stop while starting with a slow first save ends the turn at Stop', async (
   await stopping;
   await fixture.sessions.idle();
 
-  assert.equal(fixture.runs.length, 0, 'the harness was never launched');
+  assert.equal(fixture.runs.length, 1, 'the stopped turn never launched the harness');
   assert.equal(fixture.view(id).status, 'cancelled');
   assert.equal(fixture.view(id).turnStartedAt, undefined);
   assert.equal(fixture.view(id).lastTurnDurationMs, 10);
@@ -1271,3 +1290,99 @@ test('an error while the final save is pending keeps the duration the turn alrea
   assert.equal(fixture.view(id).turnStartedAt, undefined);
   assert.equal(fixture.view(id).lastTurnDurationMs, 900);
 });
+
+test('Stop ends the turn before it cancels the conversation’s timers', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const events = recordEvents(fixture.sessions);
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, (run) => stopped(run.signal));
+  await waitFor(() => fixture.runs.length === 1);
+
+  // Timer cancellation is storage work that takes 500 ms here. Whatever is
+  // published meanwhile must already show the turn as ended.
+  const wakes = fixture.sessions.wakes;
+  const cancelOwner = wakes.cancelOwner.bind(wakes);
+  let runningDuringCancellation: number | undefined = -1;
+  wakes.cancelOwner = (owner, reason) => {
+    runningDuringCancellation = lastPublished(events, id).turnStartedAt;
+    clock.advance(500);
+    return cancelOwner(owner, reason);
+  };
+
+  clock.advance(20);
+  await fixture.sessions.stop(id);
+  await fixture.sessions.idle();
+
+  assert.equal(runningDuringCancellation, undefined);
+  assert.equal(fixture.view(id).status, 'cancelled');
+  assert.equal(fixture.view(id).lastTurnDurationMs, 20);
+});
+
+test('listener shutdown publishes the end of a turn at once, also while starting', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const events = recordEvents(fixture.sessions);
+  const saves = holdSaves(fixture.sessions);
+
+  saves.hold();
+  const id = fixture.sessions.start(frame, signal());
+  let closing: Promise<void> | undefined;
+  try {
+    await waitFor(() => saves.waiting() === 1);
+    clock.advance(30);
+    closing = fixture.sessions.close();
+
+    // Connected clients see the end and the duration before shutdown waits.
+    const published = lastPublished(events, id);
+    assert.equal(published.turnStartedAt, undefined);
+    assert.equal(published.lastTurnDurationMs, 30);
+    clock.advance(60_000);
+  } finally {
+    saves.release();
+  }
+  await closing;
+  assert.equal(fixture.view(id).lastTurnDurationMs, 30);
+});
+
+for (const harness of harnesses) {
+  test(`${harness}: a tool-storage error ends the turn when the listener finds it`, async (context) => {
+    const clock = fakeClock();
+    const fixture = await harnessFixture(context, { configuration, wakeClock: clock.now });
+    const events = recordEvents(fixture.sessions);
+    // Reaches into the private tool store on purpose to make one write fail.
+    const tools = (fixture.sessions as unknown as { store: SessionStore }).store.tools;
+    const put = tools.put.bind(tools);
+
+    const id = fixture.sessions.start(frame, signal(), 'coding', harness);
+    fixture.script(id, async (run) => {
+      const call = { ...chatMessage('call', 'tool', ''), toolName: 'bash', input: 'ls' };
+      run.emit({ ...call, state: 'running' });
+
+      // The next, coalesced partial result cannot be stored.
+      tools.put = () => {
+        throw Error('Synthetic tool storage failure');
+      };
+      clock.advance(20);
+      run.emit({ ...call, text: 'partial', state: 'running' });
+      try {
+        await stopped(run.signal);
+      } finally {
+        // The harness then needs a minute to wind down after the abort.
+        clock.advance(60_000);
+      }
+    });
+
+    await waitFor(() => lastPublished(events, id).status === 'error');
+    const published = lastPublished(events, id);
+    assert.equal(published.turnStartedAt, undefined);
+    assert.equal(published.lastTurnDurationMs, 20);
+    await fixture.sessions.idle();
+    tools.put = put;
+
+    assert.equal(fixture.view(id).status, 'error');
+    assert.match(fixture.view(id).error, /Synthetic tool storage failure/);
+    assert.equal(fixture.view(id).turnStartedAt, undefined);
+    assert.equal(fixture.view(id).lastTurnDurationMs, 20);
+  });
+}

@@ -162,10 +162,8 @@ interface RunningSession {
   /**
    * The current or last turn's measurement, in listener-clock milliseconds.
    * `startedAt` is set when the turn's message is admitted (published as
-   * `turnStartedAt`). `endedAt` is set only when Stop or listener shutdown
-   * ends the turn before the harness returned: the turn's work ends at that
-   * moment, and waiting for a slow save or for the harness's cancellation
-   * cleanup is not turn time. See `endTurnMeasurement`.
+   * `turnStartedAt`); `endedAt` when the turn ends. Only `endTurnNow` ends
+   * a turn, and the first end stands.
    */
   turnMeasurement?: { startedAt: number; endedAt?: number };
   /** The status and error that the latest `flush` published to clients. */
@@ -196,6 +194,17 @@ interface PreparedTurn {
     exportTitle: (title: NativeTitleExport) => void,
   ): Promise<void>;
 }
+
+/**
+ * How a turn ends, for `AgentSessions.endTurnNow`:
+ * - `finished`: the harness returned (answered, failed or exited), or the
+ *   listener itself found an error that fails the turn (tool storage).
+ * - `cancelled`: Stop, listener shutdown, or the application service
+ *   withdrawing the turn's own send.
+ * - `ran-nothing`: nothing reached the model: a placeholder with nothing to
+ *   deliver, a send refused at its gate, or a wake that could not enter.
+ */
+type TurnEnd = 'finished' | 'cancelled' | 'ran-nothing';
 
 const maxPendingFollowUps = 8;
 const runningCapacityReason = `${MAX_RUNNING_AGENT_SESSIONS} questions are already running; stop one or wait for an answer`;
@@ -404,7 +413,8 @@ export class AgentSessions implements InspectableModule {
       !session.currentSendBegan
     ) {
       session.currentSendWithdrawn = true;
-      delete session.view.turnStartedAt;
+      // Published by the flush below.
+      this.endTurnNow(session, 'cancelled', false);
     }
     // A current pre-model wait is deliberately not aborted: its late gate will
     // skip it, then continue unrelated human input already in the FIFO.
@@ -888,7 +898,7 @@ export class AgentSessions implements InspectableModule {
     } catch (error) {
       session.wake = undefined;
       session.busy = false;
-      delete session.view.turnStartedAt;
+      this.endTurnNow(session, 'ran-nothing', false);
       session.view.status = 'error';
       session.view.error = 'Scheduled wake could not enter the conversation';
       this.wakes.transitionAttempt(claimed, 'failed', String(error));
@@ -1651,7 +1661,7 @@ export class AgentSessions implements InspectableModule {
           // Nothing ran, so the previous turn's duration stays the last one.
           session.view.status = 'completed';
           delete session.view.runId;
-          delete session.view.turnStartedAt;
+          this.endTurnNow(session, 'ran-nothing', false);
         } else {
           await this.run(session, delivery.prompt, resume, frameId, messageId);
           await this.finishApplicationDelivery(session, delivery.batchId);
@@ -1687,7 +1697,7 @@ export class AgentSessions implements InspectableModule {
       // `run` ends every turn it ran. This also covers a turn that ended
       // before `run` could (an exception in between), so that no running
       // time is ever published for a conversation that is no longer busy.
-      delete session.view.turnStartedAt;
+      this.endTurnNow(session, 'finished', false);
       session.heldOutcome = undefined;
       session.view.acceptsFollowUp = !session.closing && !this.closed;
       this.flush(session);
@@ -1738,17 +1748,14 @@ export class AgentSessions implements InspectableModule {
         ? this.widgets.applications.chatSendTurn(session.view.id, session.currentOrigin.receiptId)
         : undefined;
     let appSendSkipped = false;
-    // Whether this application send was admitted to the model. Stop or close
-    // can withdraw it before that point; then no model turn ever ran.
-    let appSendBegan = false;
     const wake = session.wake;
     session.wake = undefined;
     const turnId = wake?.turnId ?? randomUUID();
-    // Set when this turn's message was admitted (create or prepareFollowUp).
-    // Retries and several executable attempts inside the backend's `run`
-    // belong to this one turn and this one measurement. Stop may already
-    // have ended it (and withdrawn `turnStartedAt`) before this point.
-    const measurement = session.turnMeasurement ?? { startedAt: this.clock() };
+    // The measurement was started when this turn's message was admitted
+    // (create or prepareFollowUp). Retries and several executable attempts
+    // inside the backend's `run` belong to this one turn and measurement.
+    // Stop may already have ended it before this point.
+    session.turnMeasurement ??= { startedAt: this.clock() };
     // Callbacks belong to this invocation, even if a faulty backend retains one.
     let acceptingUpdates = true;
     let resumeBlocked = false;
@@ -1831,7 +1838,8 @@ export class AgentSessions implements InspectableModule {
           session.view.status = 'completed';
           return;
         }
-        appSendBegan = true;
+        // Admitted to the model; before this, Stop or a withdrawal means that
+        // no model turn ran (see endTurnNow).
         session.currentSendBegan = true;
       }
       if (wake) {
@@ -1925,11 +1933,16 @@ export class AgentSessions implements InspectableModule {
       }
     } finally {
       // The harness has returned (answered, stopped, failed or exited): the
-      // turn's work ends here, unless Stop or shutdown already ended it.
-      // Persistence below is bookkeeping, not turn time. Nothing awaits
-      // between here and the removal of `turnStartedAt` below, so a Stop
-      // after this point cannot change the measurement.
-      const turnEndedAt = measurement.endedAt ?? this.clock();
+      // turn's work ends here, unless Stop, shutdown, a withdrawal or a
+      // listener error already ended it, which then stands. Persistence
+      // below is bookkeeping, not turn time.
+      let turnEnd: TurnEnd = 'finished';
+      if (appSendSkipped) {
+        turnEnd = 'ran-nothing';
+      } else if (session.controller.signal.aborted || session.currentSendWithdrawn === true) {
+        turnEnd = 'cancelled';
+      }
+      this.endTurnNow(session, turnEnd, false);
       acceptingUpdates = false;
       this.flushTools(session);
       if (session.toolError) {
@@ -1975,21 +1988,6 @@ export class AgentSessions implements InspectableModule {
           session.view.messages[index] = finished;
           session.changed.set(finished.id, finished);
         }
-      }
-
-      // End the measurement. An application send withdrawn before it began
-      // (refused at the send gate, its permission revoked or renewed, or
-      // stopped or closed while starting) never ran a model turn and keeps
-      // the previous turn's duration; one that failed while starting did run
-      // and is measured. A clock that was set back during the turn yields 0
-      // rather than a negative duration.
-      delete session.view.turnStartedAt;
-      const withdrawnBeforeStart =
-        session.controller.signal.aborted || session.currentSendWithdrawn === true;
-      const withdrawnApplicationSend =
-        appSendSkipped || (appSend !== undefined && !appSendBegan && withdrawnBeforeStart);
-      if (!withdrawnApplicationSend) {
-        session.view.lastTurnDurationMs = Math.max(0, turnEndedAt - measurement.startedAt);
       }
 
       // Publish the end of the turn before awaiting the final save, so that
@@ -2279,6 +2277,9 @@ export class AgentSessions implements InspectableModule {
       session.toolError = `Could not save tool details: ${String(error)}`;
       session.view.status = 'error';
       session.view.error = session.toolError;
+      // The turn has failed now, not when the harness finishes cancelling.
+      // Every caller of flushTools publishes right after it returns.
+      this.endTurnNow(session, 'finished', false);
       session.controller.abort();
       this.log('agent-history', session.toolError);
     }
@@ -2320,6 +2321,9 @@ export class AgentSessions implements InspectableModule {
     if (!session) {
       throw Error('Question session not found');
     }
+    // First of all: the turn ends at Stop, before any timer cancellation or
+    // storage work below can publish or take time.
+    this.endTurnNow(session, 'cancelled', true);
     this.widgets.applications.revokeChatSend(id);
     session.controller.abort();
     session.closeAfterTurn = false;
@@ -2334,7 +2338,6 @@ export class AgentSessions implements InspectableModule {
       delete session.view.choices;
       delete session.view.runId;
       this.cancelPending(session);
-      this.endTurnMeasurement(session);
       this.flush(session);
     }
     await session.done;
@@ -2342,20 +2345,47 @@ export class AgentSessions implements InspectableModule {
   }
 
   /**
-   * Stop or listener shutdown ends a running turn's measurement now: the
-   * published running time disappears at once, and the duration ends here,
-   * even if the turn is still waiting for its first save or the harness is
-   * still cleaning up after the cancellation. A turn whose running time is
-   * already gone (its harness returned, or its application send was
-   * withdrawn) keeps the end it has. The caller publishes the change.
+   * The single place where a turn ends. It records the end and, unless
+   * nothing reached the model, the duration (`lastTurnDurationMs`), removes
+   * the published running time (`turnStartedAt`) and, with `publish`,
+   * publishes both together. Callers that publish right afterwards pass
+   * `publish: false`.
+   *
+   * Called as soon as the turn is known to be over: first thing in Stop and
+   * listener shutdown, when the application service withdraws the turn's
+   * own send, when the listener fails the turn (tool storage), and in
+   * `run`'s finally when the harness returns. The first end stands; later
+   * calls for the same turn change nothing. So a slow save, the harness's
+   * cancellation cleanup or the final save are never turn time.
+   *
+   * Keeps the previous turn's duration (nothing reached the model) for
+   * `ran-nothing`, and for `cancelled` when the turn is an application send
+   * that had not been admitted to the model yet.
    */
-  private endTurnMeasurement(session: RunningSession): void {
+  private endTurnNow(session: RunningSession, how: TurnEnd, publish: boolean): void {
     const measurement = session.turnMeasurement;
-    if (session.view.turnStartedAt === undefined || !measurement) {
+    if (!measurement || measurement.endedAt !== undefined) {
       return;
     }
-    measurement.endedAt ??= this.clock();
+
+    const endedAt = this.clock();
+    measurement.endedAt = endedAt;
     delete session.view.turnStartedAt;
+
+    const unsentApplicationMessage =
+      session.currentOrigin?.kind === 'application-message' && session.currentSendBegan !== true;
+    let measured = how !== 'ran-nothing';
+    if (how === 'cancelled' && unsentApplicationMessage) {
+      measured = false;
+    }
+    if (measured) {
+      // A clock that was set back during the turn gives 0, not a negative value.
+      session.view.lastTurnDurationMs = Math.max(0, endedAt - measurement.startedAt);
+    }
+
+    if (publish) {
+      this.flush(session);
+    }
   }
 
   async remove(id: string): Promise<number> {
@@ -2838,6 +2868,9 @@ export class AgentSessions implements InspectableModule {
   async close(): Promise<void> {
     this.closed = true;
     for (const session of this.sessions.values()) {
+      // First of all, as in `stop`: connected clients must not keep counting
+      // while shutdown waits for the turn to wind down.
+      this.endTurnNow(session, 'cancelled', true);
       this.widgets.applications.revokeChatSend(session.view.id, 'closed');
       session.controller.abort();
       clearTimeout(session.applicationTimer);
@@ -2846,7 +2879,6 @@ export class AgentSessions implements InspectableModule {
       delete session.view.runId;
       session.view.acceptsFollowUp = false;
       this.cancelPending(session);
-      this.endTurnMeasurement(session);
     }
     await this.idle();
     // After idle(): every drain has ended, so the final `idle` reports are sent.
