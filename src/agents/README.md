@@ -576,7 +576,7 @@ Summaries contain `id`, `title`, `status`, `profile`, `harness` (`pi` or
 | `expired`                 | The calling turn ended; its lease is gone.                                                                                                              |
 | `rejected`                | An existing lifecycle limit: 32 tabs, 10 running agents, 8 queued messages, or a stopping/closing tab.                                                  |
 | `conflict`                | Draft refused: the user has unsent text there (kept unchanged), a send from it is pending, or the combined text would exceed the composer's 8000 chars. |
-| `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft-capable panel is connected.                                                                        |
+| `unavailable` / `offline` | Draft refused: the panel lacks that tab, or no draft host (desktop panel or opted-in remote client) is connected.                                       |
 | `unconfirmed`             | The panel did not confirm within 5 s or disconnected; the draft may exist. Do not resend.                                                               |
 
 **Attribution.** A sent or starting message is stored as a `user`-kind bubble
@@ -609,9 +609,10 @@ follow-ups: they never interrupt a running turn, never overtake earlier queued
 messages, and are cancelled with the rest of the queue by Stop or a failed turn.
 The existing limits of eight queued messages and ten running agents apply.
 Agent, external and wake messages keep 1–4000 characters
-(`MAX_RELAYED_MESSAGE_LENGTH`). Only the person at the desktop composer or
-Activity text input may send up to 8000 (`MAX_DIRECT_USER_MESSAGE_LENGTH`, in
-`message-limits.ts`); `followUp` tells them apart by the message's origin.
+(`MAX_RELAYED_MESSAGE_LENGTH`). The person at the desktop composer or Activity
+text input, or at a remote panel's composer (`send-agent` through the gateway),
+may send up to 8000 (`MAX_DIRECT_USER_MESSAGE_LENGTH`, in `message-limits.ts`);
+`followUp` tells them apart by the message's origin.
 Each queued turn gets a fresh lease and inherits its own message's depth.
 
 **Loops and duplicates.** Depth is 0 for a human-originated turn and origin
@@ -622,14 +623,16 @@ receipt: repeating a call returns the first reply without acting again. Identica
 text to the same destination is refused for the rest of that turn, including
 after an `unconfirmed` draft. A definite refusal releases that content for retry.
 
-**Drafts.** Only a UI owns unsent composer text, so the listener forwards a draft
-to exactly one draft-capable panel and waits for its answer (see the
-[desktop protocol](../desktop/README.md#agent-drafts)). The panel inserts text
-only into an empty composer, or appends below existing text when asked. It
-reports a conflict while that composer's own send is awaiting confirmation. The
-composer shows **Drafted by agent · title — review before sending** until the
-text is cleared or sent. Drafts in hidden tabs wait in that tab. The user's own
-text is never replaced, and nothing is submitted.
+**Drafts.** The listener owns every conversation's unsent text and applies a
+proposal to it in one step (see the
+[desktop protocol](../desktop/README.md#agent-drafts)): text is inserted only
+into an empty draft, or appended below existing text when asked. It is a
+conflict while a draft host reports that conversation's own send as awaiting
+confirmation. Every draft host, desktop panels and remote clients that asked
+for drafts ([gateway](../remote/README.md#drafts)), shows **Drafted by agent ·
+title — review before sending** until the text is cleared or sent; `focus`
+moves only a desktop panel. The user's own text is never replaced, and
+nothing is submitted.
 
 **Closing.** `companion_session_close` saves the tab to Previous sessions exactly
 like the close button, with outcome `closed`; a saved ID returns `already-closed`.
@@ -652,9 +655,7 @@ confirmed insertion. Sends never change focus; completion shows the unread dot.
 Limitations: the tools cannot read another conversation's transcript; a
 receiving agent answers in its own tab or, if asked, sends a reply back. There
 is no empty-conversation-with-draft mode: a new conversation always starts with
-its first message. The draft host is the panel owning visible navigation, or
-the most recent draft-capable panel report, so two simultaneously open panels
-do not share drafts. `openInBackground` is a live flag; a restarted UI instance
+its first message. `openInBackground` is a live flag; a restarted UI instance
 that sees a background tab for the first time applies it too.
 
 **Update the listener and UI together.** Only drafts are negotiated

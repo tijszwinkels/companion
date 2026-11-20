@@ -24,8 +24,34 @@ export type {
   IntentState,
 };
 
-/** Largest WebSocket message the gateway accepts from a phone, in bytes. */
-export const maximumClientMessageBytes = 32 * 1024;
+/**
+ * Largest WebSocket message the gateway accepts from an authenticated client,
+ * in bytes. A `draft-set` of 16,000 UTF-16 units (`draftTextLimit`) may be
+ * written with six JSON characters per unit (`\u0001`), 96,000 bytes plus its
+ * other fields, so 128 KiB holds the largest draft with room to spare.
+ */
+export const maximumClientMessageBytes = 128 * 1024;
+
+/**
+ * Largest WebSocket message a socket may send before it is authenticated and
+ * admitted, in bytes: the bound every message had before drafts. It also
+ * holds while a refused socket is still closing, so an unauthenticated socket
+ * never makes the gateway hold more than before (see message-limit.ts).
+ */
+export const maximumUnauthenticatedMessageBytes = 32 * 1024;
+
+/**
+ * Longest draft a remote draft host may write, in UTF-16 units: the
+ * listener's editing bound (`draftEditLimit` in src/desktop/draft-store.ts).
+ */
+export const draftTextLimit = 16_000;
+
+/**
+ * Longest follow-up a remote client may send, in UTF-16 units: the desktop
+ * composer's bound (`MAX_DIRECT_USER_MESSAGE_LENGTH` in
+ * src/agents/message-limits.ts).
+ */
+export const sendTextLimit = 8000;
 
 /**
  * Authenticated connections the gateway relays at once, in total and per
@@ -53,13 +79,26 @@ const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
  * Parameter shapes for every action a phone may send. Anything absent here is
  * refused before reaching the listener, including desktop-only actions such as
  * paste, submit-utterance, media-playback, composer-focus and draft replies.
+ * `draft-set` and `panel-state`'s `pendingSend` exist only for a connection
+ * that authenticated with `drafts: true` (a draft host, see AuthMessage);
+ * every other connection is refused them exactly as before they existed.
  */
 export interface RemoteActionParameters {
   /**
    * `visible`: the page showing `id` is visible (for example not a background
    * tab). Absent counts as not visible, so the conversation is not read.
+   * `pendingSend` (draft hosts only): the conversation whose `send-agent`
+   * this page is still waiting for, or empty; agents cannot propose a draft
+   * for it meanwhile. Each report replaces the previous one.
    */
-  'panel-state': { id: string; visible?: boolean };
+  'panel-state': { id: string; visible?: boolean; pendingSend?: string };
+  /**
+   * Draft hosts only: replace a conversation's unsent text. `editId` is the
+   * client's own ID for this edit; it comes back only to this connection in
+   * the `draft` event of this change. The last edit the listener receives
+   * wins. Never repeated by the gateway and kept in no receipt.
+   */
+  'draft-set': { id: string; text: string; editId: string };
   'toggle-pause': Record<string, never>;
   'toggle-sounds': Record<string, never>;
   'set-intent-enabled': { name: string; mode: 'inference' | 'shortcut'; enabled: boolean };
@@ -113,6 +152,10 @@ export type RemoteRequest = {
  * device, so a request repeated after a reconnect is answered from the receipt
  * instead of being executed twice. Toggles make this essential: replaying
  * `toggle-pause` would silently undo the user's first tap.
+ *
+ * `draft-set` changes state too but deliberately has no receipt: a client
+ * never resends a draft edit (replaying an old edit over newer text would be
+ * wrong), and one receipt per keystroke would fill the receipt book.
  */
 export const mutatingActions: ReadonlySet<RemoteAction> = new Set<RemoteAction>([
   'toggle-pause',
@@ -139,6 +182,12 @@ export interface AuthMessage {
   token: string;
   /** Retain conversations from ordered agent events after the connect snapshot. */
   incrementalSessions?: true;
+  /**
+   * Make this connection a draft host: it receives `draft-snapshot` and
+   * `draft` events and may send `draft-set` and `pendingSend`. Without it the
+   * connection behaves exactly as before drafts were offered remotely.
+   */
+  drafts?: true;
 }
 
 /** Messages the gateway sends to the phone. */
@@ -178,7 +227,36 @@ export type EngineEvent =
   | { type: 'agent-turn-completed'; id: string; turnId: string }
   | { type: 'remote-agent-actions'; actions: AgentActions }
   | { type: 'activity-entry'; sessionId: string; entry: ActivityHistoryEntry }
-  | { type: 'history-deleted'; id: string; sessionId: string; removed?: ActivityHistoryRemoval };
+  | { type: 'history-deleted'; id: string; sessionId: string; removed?: ActivityHistoryRemoval }
+  | ({ type: 'draft-snapshot' } & DraftSnapshot)
+  | ({ type: 'draft' } & DraftChange);
+
+/**
+ * One conversation's unsent text as the listener holds it. `source` is empty
+ * for text a person wrote; for an agent's proposal it names the proposer as
+ * the desktop shows it ("external (unverified) · …" for external sessions).
+ * `sequence` orders what is displayed; it is never used to refuse an edit.
+ */
+export interface DraftEntry {
+  id: string;
+  text: string;
+  source: string;
+  sequence: number;
+}
+
+/** Every nonempty draft, sent once when a connection becomes a draft host. */
+export interface DraftSnapshot {
+  sequence: number;
+  drafts: DraftEntry[];
+}
+
+/**
+ * One accepted draft change; empty `text` means the draft was cleared. `editId`
+ * is present only on the connection that wrote the change.
+ */
+export interface DraftChange extends DraftEntry {
+  editId?: string;
+}
 
 export interface EngineState {
   protocol: number;
@@ -244,8 +322,11 @@ export const desktopOnlyEvents: ReadonlySet<string> = new Set([
   'agent-actions',
   // Controls for the conversations one desktop connection shows.
   'agent-view-actions',
-  // Composer drafts belong to desktop panels, which must acknowledge them.
+  // Superseded agent-draft requests that desktop panels had to acknowledge.
+  // Agents' drafts now reach draft hosts as ordinary `draft` events.
   'agent-draft',
+  // An agent's draft with `focus` moves only the desktop panel.
+  'agent-draft-focus',
   // Spoken "go to session N" navigation for the desktop panel.
   'agent-select',
   // Pop-out conversation windows are native desktop windows.
@@ -268,6 +349,13 @@ export const remoteEvents: ReadonlySet<string> = new Set([
   'activity-entry',
   'history-deleted',
 ]);
+
+/**
+ * Listener draft events, relayed only to a connection that authenticated
+ * with `drafts: true`. The listener sends them only to draft hosts anyway;
+ * this keeps the boundary in the gateway too.
+ */
+export const draftEvents: ReadonlySet<string> = new Set(['draft-snapshot', 'draft']);
 
 // ---------------------------------------------------------------------------
 // Validation. Each action lists its exact fields and their types. Unknown
@@ -319,7 +407,8 @@ const shapes: Record<RemoteAction, ActionShape> = {
   'send-agent': {
     required: {
       id: sessionId,
-      text: (value) => typeof value === 'string' && value.trim() !== '' && value.length <= 4000,
+      text: (value) =>
+        typeof value === 'string' && value.trim() !== '' && value.length <= sendTextLimit,
     },
   },
   'stop-agent': { required: { id: sessionId } },
@@ -361,7 +450,32 @@ const shapes: Record<RemoteAction, ActionShape> = {
     },
     optional: { callRevision: nonEmptyText(36) },
   },
+  'draft-set': {
+    required: { id: sessionId, text: text(draftTextLimit), editId: nonEmptyText(100) },
+  },
 };
+
+/**
+ * What a draft host may send beyond `shapes`. A connection that did not ask
+ * for drafts is validated against `shapes` alone, where `draft-set` is
+ * missing and `pendingSend` is an unknown field, exactly as before.
+ */
+const draftHostShapes: Partial<Record<RemoteAction, ActionShape>> = {
+  'panel-state': {
+    required: { id: optionalSessionId },
+    optional: { visible: boolean, pendingSend: optionalSessionId },
+  },
+  'draft-set': shapes['draft-set'],
+};
+
+/** Actions only a draft host may send. */
+const draftHostOnlyActions: ReadonlySet<RemoteAction> = new Set<RemoteAction>(['draft-set']);
+
+/** What one connection negotiated when it authenticated. */
+export interface RemoteCapabilities {
+  /** The connection authenticated with `drafts: true`. */
+  drafts: boolean;
+}
 
 export function isRemoteAction(value: unknown): value is RemoteAction {
   return typeof value === 'string' && Object.hasOwn(shapes, value);
@@ -373,10 +487,12 @@ export function validRequestId(value: unknown): value is string {
 
 /**
  * Parse one phone message into a request, or explain why it is refused.
- * The returned request contains only the declared fields.
+ * The returned request contains only the declared fields. `capabilities`
+ * are the connection's own (default: not a draft host).
  */
 export function parseRemoteRequest(
   value: unknown,
+  capabilities: RemoteCapabilities = { drafts: false },
 ): { ok: true; request: RemoteRequest } | { ok: false; requestId?: string; message: string } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, message: 'Expected a JSON object' };
@@ -394,8 +510,16 @@ export function parseRemoteRequest(
   if (!isRemoteAction(fields.action)) {
     return { ok: false, requestId, message: 'This action is not available remotely' };
   }
+  // The same answer as for an unknown action, so a connection that did not
+  // ask for drafts sees no difference from before they existed.
+  if (draftHostOnlyActions.has(fields.action) && !capabilities.drafts) {
+    return { ok: false, requestId, message: 'This action is not available remotely' };
+  }
 
-  const shape = shapes[fields.action];
+  let shape = shapes[fields.action];
+  if (capabilities.drafts) {
+    shape = draftHostShapes[fields.action] ?? shape;
+  }
   const request: Record<string, unknown> = {
     type: 'request',
     requestId,

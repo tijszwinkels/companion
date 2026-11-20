@@ -31,10 +31,7 @@ import {
 } from './native-views.ts';
 import { SoundFeedback, outcomeSound } from './sounds.ts';
 import { MAX_OPEN_AGENT_SESSIONS } from '../agents/session-limit.ts';
-import {
-  MAX_DIRECT_USER_MESSAGE_LENGTH,
-  MAX_RELAYED_MESSAGE_LENGTH,
-} from '../agents/message-limits.ts';
+import { MAX_DIRECT_USER_MESSAGE_LENGTH } from '../agents/message-limits.ts';
 import type { AgentSessions } from '../agents/sessions.ts';
 import type { UserSensorRouter } from '../core/router.ts';
 import type { SensorPipeline } from '../core/pipeline.ts';
@@ -137,10 +134,11 @@ function presentResult(request: Record<string, unknown>): AgentPresentOutcome {
 
 /**
  * Actions that act on the desktop itself: the compositor's focused window,
- * keyboard delivery, media playback reports, composer focus, composer
- * drafts, the capture-storage switch and the defaults for new sessions. A
+ * keyboard delivery, media playback reports, composer focus, agent-draft
+ * answers, the capture-storage switch and the defaults for new sessions. A
  * remote panel (such as the phone gateway) cannot observe or own any of
- * these, so the listener refuses them for remote connections.
+ * these, so the listener refuses them for remote connections. (`draft-set`
+ * is checked where it is handled: a remote draft host may write drafts.)
  */
 const desktopOnlyActions = new Set([
   'paste',
@@ -156,8 +154,6 @@ const desktopOnlyActions = new Set([
   'media-playback',
   'composer-focus',
   'agent-draft-result',
-  // Unsent text-box drafts belong to the desktop's trusted editors only.
-  'draft-set',
   'agent-browser-open-result',
   // Pop-out windows are native desktop windows.
   'agent-present-result',
@@ -171,7 +167,9 @@ const desktopOnlyActions = new Set([
  * A remote panel observes and controls conversations without becoming the
  * desktop's selected conversation. Its selection is private to its connection,
  * so looking at a chat on the phone never redirects desktop dictation, voice
- * navigation, keyboard focus guards or agent drafts.
+ * navigation, keyboard focus guards or an agent draft's `focus`. A remote
+ * panel may still be a draft host (see `draftHosts`): it then reads and
+ * writes the same drafts as desktop editors.
  */
 interface RemoteClient {
   /** Conversation shown by this remote panel, or empty for other pages. */
@@ -294,16 +292,20 @@ export class DesktopRuntime {
     routingRevision: number;
     actions: AgentActions;
   };
-  // Panels that hold composer drafts, by client, with the sequence of their
-  // latest panel report. The most recently active panel receives a draft.
+  // Draft hosts: connections whose latest panel report said `draftHost: true`,
+  // with that report's sequence. Desktop editors and remote panels (a
+  // gateway connection whose client asked for drafts) alike read and write
+  // drafts; only a desktop host is ever asked to show a conversation
+  // (`desktopDraftClient`).
   private readonly draftHosts = new Map<number, number>();
   // The authoritative unsent text of every conversation's text box (last
-  // received write wins). Read and written only by trusted desktop editors,
-  // the draft hosts; never sent to remote panels or applications.
+  // received write wins). Read and written only by the draft hosts: trusted
+  // desktop editors and remote panels whose client asked for drafts; never
+  // sent to other remote panels or to applications.
   private readonly drafts = new DraftStore((id) => this.knownConversation(id));
-  // Per desktop editor: the conversation whose send awaits its reply there
-  // (reported in panel-state). Agent drafts for it are refused meanwhile, as
-  // the editor itself did when it owned drafts.
+  // Per draft host, desktop or remote: the conversation whose send awaits
+  // its reply there (reported in panel-state). Agent drafts for it are
+  // refused meanwhile, as the editor itself did when it owned drafts.
   private readonly pendingDraftSends = new Map<number, string>();
   private draftReportSequence = 0;
   // Connections that declared the remote role, keyed by server client ID.
@@ -383,8 +385,11 @@ export class DesktopRuntime {
       (snapshotOptions) => this.snapshot(snapshotOptions),
       (request, clientId) => this.handle(request, clientId),
       (clientId) => {
-        // A remote panel never owned desktop routing state; only forget it.
+        // A remote panel never owned desktop routing state; only forget it,
+        // and the draft hosting and pending send it may have reported.
         if (this.remoteClients.delete(clientId)) {
+          this.draftHosts.delete(clientId);
+          this.pendingDraftSends.delete(clientId);
           return;
         }
         this.viewActionKeys.delete(clientId);
@@ -1751,13 +1756,14 @@ export class DesktopRuntime {
     if (!agents || typeof id !== 'string' || id === '') {
       return false;
     }
-    return agents.has(id) || agents.previousSnapshot().some((entry) => entry.id === id);
+    return agents.has(id) || agents.hasSaved(id);
   }
 
   /**
-   * Every trusted desktop editor learns each accepted draft change. The
-   * editor that wrote it gets its own edit ID back, so it does not apply its
-   * own edit a second time (no echo). Remote panels never receive drafts.
+   * Every draft host, desktop or remote, learns each accepted draft change.
+   * The editor that wrote it gets its own edit ID back, so it does not apply
+   * its own edit a second time (no echo). Remote panels that are not draft
+   * hosts never receive drafts.
    */
   private publishDraft(change: DraftChange): void {
     for (const clientId of this.draftHosts.keys()) {
@@ -1774,11 +1780,61 @@ export class DesktopRuntime {
   }
 
   /**
-   * Prefer the panel that currently owns visible navigation; otherwise the
-   * draft-capable panel that reported most recently. Each UI instance keeps its
-   * own drafts, so exactly one panel is asked and must answer.
+   * Record that `clientId`'s latest panel report declared it a draft host.
+   * A newly attached host reads every draft once (`draft-snapshot`), then
+   * every change (`publishDraft`). Reading never writes: the snapshot
+   * changes nothing in the map.
    */
-  private draftClient(): number | undefined {
+  private attachDraftHost(clientId: number): void {
+    const attached = this.draftHosts.has(clientId);
+    this.draftHosts.set(clientId, ++this.draftReportSequence);
+    if (attached) {
+      return;
+    }
+
+    this.server.publishTo(clientId, {
+      type: 'draft-snapshot',
+      sequence: this.drafts.latestSequence(),
+      drafts: this.drafts.snapshot().map((change) => ({
+        id: change.sessionId,
+        text: change.text,
+        source: change.source,
+        sequence: change.sequence,
+      })),
+    });
+  }
+
+  /**
+   * A remote panel's report, already validated: `draftHost` true makes (or
+   * keeps) it a draft host, anything else ends that, as for a desktop
+   * editor. The gateway adds `draftHost: true` to every report of a
+   * connection whose client asked for drafts and to no other, so for a
+   * gateway connection this holds from its first report to its disconnect.
+   * `pendingSend` counts only for a draft host: a panel without the draft
+   * has no send of it to wait for.
+   */
+  private updateRemoteDraftHost(clientId: number, draftHost: boolean, pendingSend: unknown): void {
+    if (!draftHost) {
+      this.draftHosts.delete(clientId);
+      this.pendingDraftSends.delete(clientId);
+      return;
+    }
+
+    this.attachDraftHost(clientId);
+    if (typeof pendingSend === 'string' && pendingSend !== '') {
+      this.pendingDraftSends.set(clientId, pendingSend.slice(0, 200));
+    } else {
+      this.pendingDraftSends.delete(clientId);
+    }
+  }
+
+  /**
+   * The desktop draft host asked to show a conversation for an agent draft
+   * with `focus`: the panel that currently owns visible navigation, otherwise
+   * the desktop draft host that reported most recently. Remote draft hosts
+   * are never chosen: an agent's `focus` moves only the desktop.
+   */
+  private desktopDraftClient(): number | undefined {
     const visible = this.navigation?.clientId;
     if (visible !== undefined && this.draftHosts.has(visible)) {
       return visible;
@@ -1786,6 +1842,9 @@ export class DesktopRuntime {
     let newest: number | undefined;
     let newestSequence = -1;
     for (const [clientId, sequence] of this.draftHosts) {
+      if (this.remoteClients.has(clientId)) {
+        continue;
+      }
       if (sequence > newestSequence) {
         newest = clientId;
         newestSequence = sequence;
@@ -1798,17 +1857,17 @@ export class DesktopRuntime {
    * An agent's proposed draft, applied to the listener's draft map in one
    * step: it never overwrites text the person wrote, and appends below it
    * only when asked (DraftStore.propose). Every desktop editor then shows it
-   * as an ordinary draft change, with the agent's provenance. With `focus`,
-   * the panel that owns navigation is asked to show the conversation.
-   * Without a connected desktop editor nobody could review it: `offline`,
-   * nothing is stored.
+   * as an ordinary draft change, with the agent's provenance; so does every
+   * remote draft host. With `focus`, the desktop panel that owns navigation
+   * is asked to show the conversation (never a remote one). Without any
+   * connected draft host, desktop or remote, nobody could review it:
+   * `offline`, nothing is stored.
    */
   private requestDraft(
     request: AgentDraftRequest,
     signal: AbortSignal,
   ): Promise<AgentDraftOutcome> {
-    const clientId = this.draftClient();
-    if (clientId === undefined || signal.aborted) {
+    if (this.draftHosts.size === 0 || signal.aborted) {
       return Promise.resolve({ outcome: 'offline', reason: '' });
     }
 
@@ -1835,8 +1894,11 @@ export class DesktopRuntime {
       return Promise.resolve({ outcome: 'conflict', reason: result.reason });
     }
 
-    if (request.focus) {
-      this.server.publishTo(clientId, { type: 'agent-draft-focus', id: request.sessionId });
+    // Only a desktop panel is moved; with only remote draft hosts connected
+    // the draft is stored and shown there, and nothing changes selection.
+    const focusClient = this.desktopDraftClient();
+    if (request.focus && focusClient !== undefined) {
+      this.server.publishTo(focusClient, { type: 'agent-draft-focus', id: request.sessionId });
     }
     return Promise.resolve({ outcome: result.outcome, reason: '' });
   }
@@ -1878,8 +1940,8 @@ export class DesktopRuntime {
     const clientId = this.browserClient();
     if (clientId === undefined) {
       // A connected panel without a browser (Quickshell, an older UI) is not
-      // the same as no panel at all.
-      if (this.draftHosts.size > 0) {
+      // the same as no panel at all. Remote draft hosts are not desktop panels.
+      if (this.desktopDraftClient() !== undefined) {
         return Promise.resolve({
           outcome: 'unsupported',
           reason: 'The connected Companion panel has no built-in browser.',
@@ -1974,7 +2036,8 @@ export class DesktopRuntime {
     }
     const clientId = this.presentClient();
     if (clientId === undefined) {
-      if (this.draftHosts.size > 0) {
+      // Remote draft hosts are not desktop panels: without one it is offline.
+      if (this.desktopDraftClient() !== undefined) {
         return Promise.resolve({
           outcome: 'unsupported',
           reason: 'The connected Companion panel cannot open conversation windows.',
@@ -2096,6 +2159,12 @@ export class DesktopRuntime {
         throw Error('Only remote panels can withdraw their visibility');
       }
       remote.visibleSelection = '';
+      // Nobody sees its drafts any more either: it stops being a draft host,
+      // so agent proposals no longer count it as a reviewer, and its pending
+      // send no longer blocks them. Requests it sent before this one were
+      // handled first (in order), so an admitted send has already cleared.
+      this.draftHosts.delete(clientId);
+      this.pendingDraftSends.delete(clientId);
       return 'visibility-withdrawn';
     }
 
@@ -2522,9 +2591,9 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'panel-state' && remote) {
-      // Remote panels report which conversation they show and whether their
-      // page is visible. Focus, navigation and draft fields describe the
-      // desktop and are ignored.
+      // Remote panels report which conversation they show, whether their
+      // page is visible and, as draft hosts, a send they are waiting for.
+      // Focus and navigation fields describe the desktop and are ignored.
       if (
         typeof request.id !== 'string' ||
         (request.id !== '' && !this.options.agents?.has(request.id))
@@ -2533,6 +2602,12 @@ export class DesktopRuntime {
       }
       if (request.visible !== undefined && typeof request.visible !== 'boolean') {
         throw Error('Expected visible to be true or false');
+      }
+      if (request.draftHost !== undefined && typeof request.draftHost !== 'boolean') {
+        throw Error('Expected draftHost to be true or false');
+      }
+      if (request.pendingSend !== undefined && typeof request.pendingSend !== 'string') {
+        throw Error('Expected pendingSend to be a conversation id or empty');
       }
       // Pop-out windows are desktop windows; a remote panel cannot claim any.
       if (
@@ -2546,6 +2621,7 @@ export class DesktopRuntime {
       // Every report is complete: one without `visible` (an older phone app)
       // counts as not visible, so it never reads a conversation.
       remote.visibleSelection = request.visible === true ? request.id : '';
+      this.updateRemoteDraftHost(clientId, request.draftHost === true, request.pendingSend);
       this.publishRemoteAgentActions(clientId);
       this.markShownConversationsRead();
       return 'panel-recorded';
@@ -2599,22 +2675,7 @@ export class DesktopRuntime {
       }
       // Only UIs that implement agent-draft advertise it; older ones omit it.
       if (request.draftHost === true) {
-        const attached = this.draftHosts.has(clientId);
-        this.draftHosts.set(clientId, ++this.draftReportSequence);
-        // A newly attached editor reads every draft once. Reading never
-        // writes: the snapshot changes nothing in the map.
-        if (!attached) {
-          this.server.publishTo(clientId, {
-            type: 'draft-snapshot',
-            sequence: this.drafts.latestSequence(),
-            drafts: this.drafts.snapshot().map((change) => ({
-              id: change.sessionId,
-              text: change.text,
-              source: change.source,
-              sequence: change.sequence,
-            })),
-          });
-        }
+        this.attachDraftHost(clientId);
       } else {
         this.draftHosts.delete(clientId);
       }
@@ -2774,8 +2835,13 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'draft-set') {
-      // Only a trusted desktop editor that declared itself a draft host may
-      // write. The edit names its conversation; the last one received wins.
+      // Only a draft host may write: a desktop editor, or a remote panel
+      // whose reports declare it one. The edit names its conversation; the
+      // last one received wins. Other remote panels hear the same refusal as
+      // before remote draft hosts existed.
+      if (remote && !this.draftHosts.has(clientId)) {
+        throw Error('This action is only available on the desktop');
+      }
       if (!this.draftHosts.has(clientId)) {
         throw Error('Only a desktop editor can change drafts');
       }
@@ -2790,8 +2856,10 @@ export class DesktopRuntime {
       }
       // Recorded words may pass the editing bound (up to the storage
       // ceiling), but only from the panel recording into that conversation.
+      // A remote panel can never record, so it never owns the dictation.
       const status = this.dictation?.status;
       const recording =
+        !remote &&
         request.recording === true &&
         status !== undefined &&
         status.sessionId === request.id &&
@@ -2812,15 +2880,22 @@ export class DesktopRuntime {
       ) {
         throw Error('Expected an agent session id and follow-up text');
       }
-      // The desktop composer may send longer messages; remote panels keep
-      // their protocol's bound. `followUp` checks the desktop bound itself.
-      if (remote && (!request.text.trim() || request.text.length > MAX_RELAYED_MESSAGE_LENGTH)) {
-        throw Error(`A follow-up requires 1–${MAX_RELAYED_MESSAGE_LENGTH} characters`);
+      // Remote panels may send as much as the desktop composer (8,000
+      // characters, `MAX_DIRECT_USER_MESSAGE_LENGTH`); `followUp` checks
+      // that bound itself. The phone protocol checks it before relaying.
+      if (
+        remote &&
+        (!request.text.trim() || request.text.length > MAX_DIRECT_USER_MESSAGE_LENGTH)
+      ) {
+        throw Error(`A follow-up requires 1–${MAX_DIRECT_USER_MESSAGE_LENGTH} characters`);
       }
       this.options.agents.followUp(request.id, request.text, this.signal);
-      // A desktop send came from the conversation's draft: clear it, but
-      // only if it is still exactly the sent text (typing since then stays).
-      if (!remote) {
+      // A send from a draft host (a desktop editor, or a remote panel that
+      // hosts drafts) came from the conversation's draft: clear it, but only
+      // if it is still exactly the sent text (typing since then stays).
+      // Other desktop clients clear too, as before; other remote panels
+      // never had the draft, so their sends leave it alone.
+      if (!remote || this.draftHosts.has(clientId)) {
         this.drafts.clearIfEqual(request.id, request.text);
       }
       return 'submitted';

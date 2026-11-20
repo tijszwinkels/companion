@@ -23,6 +23,7 @@ import { basename, dirname, resolve } from 'node:path';
 import type { WebSocket } from 'ws';
 
 import {
+  draftEvents,
   remoteEvents,
   mutatingActions,
   parseRemoteRequest,
@@ -31,6 +32,7 @@ import {
 } from './protocol.ts';
 import { requestFingerprint, type ReceiptBook } from './receipts.ts';
 import { PhoneOutput } from './outbound.ts';
+import { draftEditBurst } from './request-rate.ts';
 import type { RelayFrames } from './frames/handles.ts';
 
 /** WebSocket close codes the phone app understands. */
@@ -50,6 +52,19 @@ const drainMilliseconds = 15_000;
 const roleMilliseconds = 5000;
 const requestMilliseconds = 15_000;
 const maximumPendingRequests = 32;
+
+/**
+ * Draft edits waiting for the listener's answer, per connection, counted
+ * apart from the 32 other requests. Keystrokes that a stalled network
+ * delivers all at once arrive together; the device's draft-edit burst (120)
+ * must fit, or ordinary typing would be refused as unfinished requests. The
+ * listener answers each edit at once (it never waits), so they are held only
+ * for that round trip; each holds at most 16,000 UTF-16 units of text.
+ */
+const maximumPendingDraftEdits = draftEditBurst;
+
+/** The answer to a draft edit refused by its rate or the pending bound. */
+const draftEditRefusal = 'Too many draft edits; this edit was not saved';
 
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
 const withdrawalRequestId = 'withdraw';
@@ -78,8 +93,18 @@ export interface RelayOptions {
    * request-rate.ts); false means refuse the message.
    */
   takeToken(): boolean;
+  /**
+   * Take one token from this device's separate draft-edit rate limit, for a
+   * `draft-set`; false means refuse that edit. Only called for draft hosts.
+   */
+  takeDraftToken(): boolean;
   /** Negotiated by the gateway, never forwarded as a desktop panel request. */
   incrementalSessions?: boolean;
+  /**
+   * The client authenticated with `drafts: true`: this connection is a draft
+   * host. See `drafts` in the Relay class.
+   */
+  drafts?: boolean;
   /** Remember that this device may fetch a session's screenshot. */
   allowScreenshot(deviceId: string, sessionId: string): void;
   /** Frame addresses for this device's views; absent when no frame origin is configured. */
@@ -112,11 +137,20 @@ export class Relay {
    */
   private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
   private drainTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Whether this connection is a draft host (the client asked with
+   * `drafts: true`). Only then are `draft-set` and `pendingSend` accepted,
+   * `draftHost: true` added to every `panel-state` forwarded to the listener,
+   * and the listener's `draft-snapshot` and `draft` events relayed. Fixed for
+   * the connection's lifetime.
+   */
+  private readonly drafts: boolean;
 
   constructor(
     private readonly phone: WebSocket,
     private readonly options: RelayOptions,
   ) {
+    this.drafts = options.drafts === true;
     this.output = new PhoneOutput(phone, () => {
       this.options.log('Closing a phone connection that stopped reading');
       this.terminate(closeCodes.slowConsumer, 'Connection too slow');
@@ -130,7 +164,8 @@ export class Relay {
 
     this.upstream.on('connect', () => {
       // Declare the role before anything else so this connection can never
-      // become the desktop's selection, navigation owner or draft host.
+      // become the desktop's selection or navigation owner. It becomes a
+      // draft host only through its panel reports (sendRequest).
       this.writeUpstream({ action: 'client-role', role: 'remote', requestId: 'role' });
     });
     this.upstream.on('data', (chunk: string) => this.upstreamData(chunk));
@@ -182,9 +217,27 @@ export class Relay {
       return;
     }
 
-    const parsed = parseRemoteRequest(value);
+    const parsed = parseRemoteRequest(value, { drafts: this.drafts });
     if (!parsed.ok) {
       this.sendPhone({ type: 'error', requestId: parsed.requestId, message: parsed.message });
+      return;
+    }
+
+    // Draft edits arrive once per keystroke. They draw from their own
+    // per-device bucket, so typing never uses up the request bucket. A
+    // refused edit is answered (the client shows it as not saved) and never
+    // closes the connection.
+    if (parsed.request.action === 'draft-set') {
+      if (!this.options.takeDraftToken()) {
+        this.sendPhone({
+          type: 'error',
+          requestId: parsed.request.requestId,
+          action: parsed.request.action,
+          message: draftEditRefusal,
+        });
+        return;
+      }
+      this.accept(parsed.request);
       return;
     }
 
@@ -256,12 +309,21 @@ export class Relay {
   }
 
   private forward(request: RemoteRequest, finish: (reply: Reply) => void): void {
-    if (this.pending.size >= maximumPendingRequests) {
+    const isDraftEdit = request.action === 'draft-set';
+    const pendingDraftEdits = this.pendingDraftEdits();
+    const full = isDraftEdit
+      ? pendingDraftEdits >= maximumPendingDraftEdits
+      : this.pending.size - pendingDraftEdits >= maximumPendingRequests;
+    if (full) {
+      // A refused draft edit is reported like one refused by its rate, so
+      // the client shows it as not saved.
       finish({
         type: 'error',
         requestId: request.requestId,
         action: request.action,
-        message: 'Too many unfinished requests; wait for earlier ones',
+        message: isDraftEdit
+          ? draftEditRefusal
+          : 'Too many unfinished requests; wait for earlier ones',
       });
       return;
     }
@@ -282,16 +344,34 @@ export class Relay {
     }
   }
 
+  /** How many of the pending requests are draft edits. */
+  private pendingDraftEdits(): number {
+    let count = 0;
+    for (const pending of this.pending.values()) {
+      if (pending.request.action === 'draft-set') {
+        count++;
+      }
+    }
+    return count;
+  }
+
   private sendRequest(upstreamId: string, request: RemoteRequest): void {
     const { type: _type, requestId: _requestId, ...fields } = request;
+
+    // The listener knows a remote draft host by `draftHost: true` in each of
+    // its panel reports, as it knows a desktop editor. The client cannot
+    // send this field (protocol.ts); the gateway adds it to every report of
+    // a connection that asked for drafts, and to no other.
+    const draftHost = request.action === 'panel-state' && this.drafts ? { draftHost: true } : {};
+
     // A report that waited for role confirmation while the phone left (or
     // started closing) describes a page nobody sees any more: keep its
     // selection and order, but never let it count as visible.
     if (request.action === 'panel-state' && !this.phoneIsOpen()) {
-      this.writeUpstream({ ...fields, visible: false, requestId: upstreamId });
+      this.writeUpstream({ ...fields, ...draftHost, visible: false, requestId: upstreamId });
       return;
     }
-    this.writeUpstream({ ...fields, requestId: upstreamId });
+    this.writeUpstream({ ...fields, ...draftHost, requestId: upstreamId });
   }
 
   /** The device's rate limit is shared by all its connections. */
@@ -329,8 +409,11 @@ export class Relay {
     this.drainTimer = setTimeout(() => this.upstream.destroy(), drainMilliseconds);
 
     // The upstream stays open while it drains, but nobody sees the page any
-    // more: it must not keep reading conversations (the unread mark).
-    this.withdrawal = 'wanted';
+    // more: it must not keep reading conversations (the unread mark). It may
+    // already have been withdrawn when the role was confirmed while closing.
+    if (this.withdrawal === 'none') {
+      this.withdrawal = 'wanted';
+    }
     this.withdrawVisibility();
   }
 
@@ -416,7 +499,12 @@ export class Relay {
       return;
     }
 
-    if (isReply || typeof message.type !== 'string' || !remoteEvents.has(message.type)) {
+    if (isReply || typeof message.type !== 'string') {
+      return;
+    }
+    const relayed =
+      remoteEvents.has(message.type) || (this.drafts && draftEvents.has(message.type));
+    if (!relayed) {
       return;
     }
 
@@ -478,8 +566,14 @@ export class Relay {
       }
     }
 
-    // A phone that left during role negotiation: withdraw after its queued
-    // reports, which the listener handles in order.
+    // A phone that left during role negotiation, or whose socket is already
+    // closing: withdraw after its queued reports, edits and sends, which the
+    // listener handles in order. Its forwarded reports said `visible: false`
+    // but may still have declared it a draft host with a pending send; the
+    // withdrawal ends both without waiting for the `close` event.
+    if (!this.phoneIsOpen() && this.withdrawal === 'none') {
+      this.withdrawal = 'wanted';
+    }
     this.withdrawVisibility();
   }
 

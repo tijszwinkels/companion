@@ -957,8 +957,8 @@ Stop, Close, and orderly shutdown. A hard crash can lose unsaved current output.
 No retention limit or legacy Pi-session import is applied.
 
 Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups from a
-desktop panel are bounded to 8000 characters (4000 from a remote panel, as from
-agents) and queue while that session is answering, with at most eight
+desktop or remote panel are bounded to 8000 characters (4000 from agents) and
+queue while that session is answering, with at most eight
 pending messages. Submission starts or queues a new turn in the same Pi session,
 without another screenshot. Message IDs
 are unique across turns, so a later answer cannot overwrite an earlier bubble.
@@ -1140,9 +1140,12 @@ rule is simple: **the last write the listener receives wins**. There is no
 base revision, merge or refusal because an edit started from older text, and
 a delayed edit can therefore overwrite one made elsewhere.
 
-Only trusted desktop editors take part: clients that add `draftHost: true` to
-their `panel-state` report. When a client first reports it, the listener
-sends every nonempty draft once (`draft-snapshot`). Reading never writes.
+Only draft hosts take part: trusted desktop editors that add `draftHost: true`
+to their `panel-state` report, and [remote panels](#remote-panels) whose
+reports carry it (the gateway adds it for a client that asked for drafts). A
+report without it ends draft hosting for that connection. When a client first
+reports it, the listener sends every nonempty draft once (`draft-snapshot`).
+Reading never writes.
 
 ```json
 {
@@ -1165,7 +1168,12 @@ An edit names the conversation it was typed for and an editor-chosen edit ID:
 
 The answer is `{"accepted":true,"sequence":13}` or `{"accepted":false,"reason":"..."}`
 for an unknown conversation or text longer than may be edited (16,000 UTF-16
-units, twice the 8,000-unit Send limit). A refused write changes nothing; the
+units, twice the 8,000-unit Send limit). A connection that is not a draft host
+is refused (desktop: "Only a desktop editor can change drafts"; remote: "This
+action is only available on the desktop", as before remote draft hosts).
+`draft-set` never waits and takes no request slot (see [remote
+panels](#remote-panels)), so keystrokes arriving together are all applied in
+order. A refused write changes nothing; the
 UI keeps the text on screen and says it is not saved. Recorded words may grow a
 draft up to 64,000 units (`"recording":true`, accepted only from the panel
 recording into that conversation), so a long final dictation chunk is kept
@@ -1202,10 +1210,11 @@ refused whole. The owning panel still receives `recording-append`, now with
 dictation controller uses the listener's real draft length (recording stops
 once it reaches 8,000).
 
-A desktop `send-agent` clears the draft after the listener accepted the send,
-but only if the draft still equals exactly the sent text: anything typed or
-recorded meanwhile stays. Remote panels (the phone) can neither read nor write
-drafts. Drafts never start a turn and are not saved to transcripts, the
+A desktop `send-agent`, or one from a remote draft host, clears the draft after
+the listener accepted the send, but only if the draft still equals exactly the
+sent text: anything typed or recorded meanwhile stays. A send from a remote
+panel that is not a draft host leaves the draft alone; such panels can neither
+read nor write drafts. Drafts never start a turn and are not saved to transcripts, the
 utterance database or logs. They survive views being destroyed and
 conversations being closed and reopened while the listener runs; they are not
 written to disk, so a listener restart loses them. Empty drafts are removed;
@@ -1219,14 +1228,16 @@ draft map, in one step (`DraftStore.propose`): `inserted` into an empty draft,
 blank line), and otherwise `conflict` with the text left unchanged (also when
 the result would exceed 16,000 units). Every desktop editor then shows it as an
 ordinary `draft` change whose `source` is shown as **Drafted by agent · source
-— review before sending** until the person edits it. With `focus: true` the
-client owning navigation receives `{"type":"agent-draft-focus","id":"..."}`
-and shows that conversation; otherwise selection and focus do not change. No
-connected draft host means `offline` and nothing is stored. While a desktop
-editor reports a send from that conversation awaiting its reply
-(`"pendingSend": "<id>"` in `panel-state`, sent before `send-agent`), proposals
-for it are a `conflict`, as when the editor owned drafts; recording does not
-block them. Drafts never
+— review before sending** until the person edits it; remote draft hosts get the
+same change and `source`. With `focus: true` the desktop client owning
+navigation (otherwise the desktop draft host that reported most recently)
+receives `{"type":"agent-draft-focus","id":"..."}` and shows that conversation;
+otherwise selection and focus do not change. A remote draft host is never
+asked to focus. No connected draft host, desktop or remote, means `offline` and
+nothing is stored. While a draft host, desktop or remote, reports a send from
+that conversation awaiting its reply (`"pendingSend": "<id>"` in
+`panel-state`, sent before `send-agent`), proposals for it are a `conflict`,
+as when the editor owned drafts; recording does not block them. Drafts never
 submit text, start a turn or reorder a queue. `agent-draft-result` answers are
 no longer used and are refused as expired.
 
@@ -1619,13 +1630,23 @@ Existing clients never send it and keep their current behavior.
 
 For a remote connection:
 
-- `panel-state` records only which conversation **that connection** shows (`id`,
+- `panel-state` records which conversation **that connection** shows (`id`,
   empty for other pages) and whether its page is visible (`visible`, a boolean;
   absent means not visible; anything else is refused). The visible selection
-  clears and prevents the [unread mark](#unread-mark). Focus, `navigationToken`
-  and `draftHost` are ignored. It never changes the desktop's selected
-  conversation, speech routing, `go to session` navigation, keyboard delivery
-  guards or draft hosting.
+  clears and prevents the [unread mark](#unread-mark). Focus and
+  `navigationToken` are ignored. It never changes the desktop's selected
+  conversation, speech routing, `go to session` navigation or keyboard delivery
+  guards.
+- `draftHost` (a boolean) in a remote report makes that connection a
+  [draft host](#text-box-drafts-listener-owned-last-write-wins) while its
+  reports carry `true`, exactly like a desktop editor: it receives
+  `draft-snapshot` and `draft`, may send `draft-set`, and its accepted
+  `send-agent` clears an equal draft. `pendingSend` (a string) counts only in
+  a draft host's report and has the desktop meaning. A remote draft host never
+  receives `agent-draft-focus`, never owns navigation and never records, so
+  `"recording": true` never lifts its editing bound. The gateway adds
+  `draftHost: true` only for a client that asked for drafts
+  ([its rules](../remote/README.md#drafts)).
 - `choose-agent`, `stop-agent-run`, `agent-tool-page` and `agent-history-page` check that connection's
   own selection instead of the desktop selection. The desktop cannot act on a
   conversation merely because a phone shows it, and vice versa.
@@ -1635,15 +1656,18 @@ For a remote connection:
   selection; remote clients should ignore them.
 - `paste`, `submit-utterance`, `media-playback`, `composer-focus` and
   `agent-draft-result` are refused: they act on the desktop's focused window,
-  keyboard, media or composer drafts. So are `coding-defaults` and
-  `set-coding-defaults`, which only the desktop Activity page shows.
+  keyboard, media or composer focus. So are `coding-defaults` and
+  `set-coding-defaults`, which only the desktop Activity page shows, and
+  `draft-set` from a remote connection that is not a draft host.
 - `{"action":"withdraw-visibility"}` (remote connections only; desktop
   connections are refused) makes the connection show no conversation for the
-  [unread mark](#unread-mark) and keeps its selection. The gateway sends it when
+  [unread mark](#unread-mark) and keeps its selection. It also ends the
+  connection's draft hosting and pending send. The gateway sends it when
   its client has left while that client's requests still drain. It names no
   conversation and is idempotent, so it cannot be refused for a remote
   connection; the result is `visibility-withdrawn`.
-- `send-agent` text keeps 1–4000 characters, matching the phone protocol.
+- `send-agent` text allows 1–8000 characters, the desktop composer's bound,
+  matching the phone protocol.
 - `{"action":"start-agent","text":"…","profile":"coding"}` (or `quickQuestion`)
   starts a typed conversation with 1–4000 characters and **no screenshot**. It uses
   the ordinary tab/concurrency limits, opens in the background on desktop panels,
@@ -1657,13 +1681,18 @@ Every result/error envelope now echoes a string `requestId` of at most 128
 characters when the request carried one, for correlation of concurrent replies.
 
 The listener serves at most 16 socket clients at once, remote and desktop
-together; a 17th connection is closed before it receives anything. Each
+together; a 17th connection is closed before it receives anything. A request
+line may hold at most 128 Ki characters (`maximumRequestLineCharacters`: a
+16,000-unit draft written as escaped JSON fits); a longer line, or an
+unfinished one that grows past it, disconnects that client. The bound applies
+per line, so one read carrying several requests is fine. Each
 connection may have 16 control requests in flight; more are refused with
-"Previous request is still running". `panel-state` and `withdraw-visibility` are
-always admitted and take no slot: their handlers never wait, so each finishes
-right after the read that delivered it, in arrival order. A batch of reports
-therefore never makes a following request look busy, and a gateway withdrawing
-a departed client's visibility never waits for that client's slow requests. The gateway
+"Previous request is still running". `panel-state`, `withdraw-visibility` and
+`draft-set` are always admitted and take no slot: their handlers never wait,
+so each finishes right after the read that delivered it, in arrival order. A
+batch of reports or keystrokes therefore never makes a following request look
+busy, and a gateway withdrawing a departed client's visibility never waits for
+that client's slow requests. The gateway
 uses at most 8 of them (see [its limits](../remote/README.md#security-model)),
 which leaves 8 for desktop panels, observers and tools.
 The Unix socket remains the only listener transport; network access, pairing and

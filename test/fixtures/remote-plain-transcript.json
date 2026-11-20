@@ -1,0 +1,641 @@
+[
+  {
+    "type": "authenticated",
+    "deviceId": "<volatile>",
+    "deviceName": "Synthetic phone"
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "state",
+      "protocol": 1,
+      "listenerTime": "<volatile>",
+      "ready": true,
+      "paused": false,
+      "pauseReason": "",
+      "mediaPauseAvailable": true,
+      "speaking": false,
+      "soundsEnabled": false,
+      "processing": 0,
+      "history": [],
+      "activitySessionId": "<id-1>",
+      "activityHistoryCount": 0,
+      "historyDeletionAvailable": true,
+      "textInputAvailable": false,
+      "sessions": [
+        {
+          "id": "<id-2>",
+          "title": "Conversation A",
+          "status": "completed",
+          "toolEpoch": "<id-3>",
+          "model": "openai-codex/gpt-6-astra",
+          "profile": "coding",
+          "error": "",
+          "messages": [
+            {
+              "id": "user",
+              "kind": "user",
+              "text": "Conversation A",
+              "toolName": "",
+              "input": "",
+              "state": "done",
+              "screenshot": true,
+              "createdAt": "<volatile>",
+              "screenshotUrl": "api/screenshots/<id-2>"
+            }
+          ],
+          "updatedAt": "<volatile>",
+          "acceptsFollowUp": true,
+          "unread": true,
+          "lastTurnDurationMs": "<volatile>",
+          "completedTurnId": "<id-4>",
+          "history": {
+            "start": {
+              "index": 0,
+              "offset": 0
+            },
+            "end": {
+              "index": 1,
+              "offset": 0
+            },
+            "total": 1,
+            "revision": "<volatile>",
+            "ids": ["user"]
+          },
+          "pinnedMessage": null
+        },
+        {
+          "id": "<id-5>",
+          "title": "Conversation B",
+          "status": "completed",
+          "toolEpoch": "<id-6>",
+          "model": "openai-codex/gpt-6-astra",
+          "profile": "coding",
+          "error": "",
+          "messages": [
+            {
+              "id": "user",
+              "kind": "user",
+              "text": "Conversation B",
+              "toolName": "",
+              "input": "",
+              "state": "done",
+              "screenshot": true,
+              "createdAt": "<volatile>",
+              "screenshotUrl": "api/screenshots/<id-5>"
+            }
+          ],
+          "updatedAt": "<volatile>",
+          "acceptsFollowUp": true,
+          "unread": true,
+          "lastTurnDurationMs": "<volatile>",
+          "completedTurnId": "<id-7>",
+          "history": {
+            "start": {
+              "index": 0,
+              "offset": 0
+            },
+            "end": {
+              "index": 1,
+              "offset": 0
+            },
+            "total": 1,
+            "revision": "<volatile>",
+            "ids": ["user"]
+          },
+          "pinnedMessage": null
+        }
+      ],
+      "sessionOrderRevision": "<volatile>",
+      "previousSessions": [],
+      "sessionControlsAvailable": true,
+      "intents": [],
+      "transcriptionCleanup": null,
+      "captureStorage": {
+        "enabled": true,
+        "pending": "",
+        "saved": true,
+        "warning": ""
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "remote-agent-actions",
+      "actions": {
+        "sessionId": "",
+        "choices": [],
+        "stopRunId": ""
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "remote-agent-actions",
+      "actions": {
+        "sessionId": "<id-2>",
+        "choices": [],
+        "stopRunId": ""
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-2>",
+        "title": "Conversation A",
+        "status": "completed",
+        "toolEpoch": "<id-3>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": true,
+        "unread": false,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-4>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 1,
+            "offset": 0
+          },
+          "total": 1,
+          "revision": "<volatile>",
+          "ids": ["user"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "result",
+    "requestId": "report",
+    "action": "panel-state",
+    "result": "panel-recorded"
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-5>",
+        "title": "Conversation B",
+        "status": "starting",
+        "toolEpoch": "<id-6>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [
+          {
+            "id": "user-<id-8>",
+            "kind": "user",
+            "text": "typed remotely",
+            "toolName": "",
+            "input": "",
+            "state": "done",
+            "screenshot": false,
+            "createdAt": "<volatile>"
+          }
+        ],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": true,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-7>",
+        "turnStartedAt": "<volatile>",
+        "runId": "<volatile>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-8>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-5>",
+        "title": "Conversation B",
+        "status": "running",
+        "toolEpoch": "<id-6>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": true,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-7>",
+        "turnStartedAt": "<volatile>",
+        "runId": "<volatile>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-8>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-5>",
+        "title": "Conversation B",
+        "status": "running",
+        "toolEpoch": "<id-6>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": true,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-7>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-8>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-5>",
+        "title": "Conversation B",
+        "status": "completed",
+        "toolEpoch": "<id-6>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": true,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-9>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-8>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-turn-completed",
+      "id": "<id-5>",
+      "turnId": "<volatile>"
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-5>",
+        "title": "Conversation B",
+        "status": "completed",
+        "toolEpoch": "<id-6>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": true,
+        "unread": true,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-9>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-8>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "error",
+    "requestId": "draft-set",
+    "message": "This action is not available remotely"
+  },
+  {
+    "type": "error",
+    "requestId": "pending",
+    "message": "Unknown field: pendingSend"
+  },
+  {
+    "type": "error",
+    "requestId": "host",
+    "message": "Unknown field: draftHost"
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-2>",
+        "title": "Conversation A",
+        "status": "starting",
+        "toolEpoch": "<id-3>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [
+          {
+            "id": "user-<id-10>",
+            "kind": "user",
+            "text": "typed at the desk",
+            "toolName": "",
+            "input": "",
+            "state": "done",
+            "screenshot": false,
+            "createdAt": "<volatile>"
+          }
+        ],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": false,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-4>",
+        "turnStartedAt": "<volatile>",
+        "runId": "<volatile>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-10>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "remote-agent-actions",
+      "actions": {
+        "sessionId": "<id-2>",
+        "choices": [],
+        "stopRunId": "<id-11>"
+      }
+    }
+  },
+  {
+    "type": "result",
+    "requestId": "send",
+    "action": "send-agent",
+    "result": "submitted"
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-2>",
+        "title": "Conversation A",
+        "status": "running",
+        "toolEpoch": "<id-3>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": false,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-4>",
+        "turnStartedAt": "<volatile>",
+        "runId": "<volatile>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-10>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-2>",
+        "title": "Conversation A",
+        "status": "running",
+        "toolEpoch": "<id-3>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": false,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-4>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-10>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "remote-agent-actions",
+      "actions": {
+        "sessionId": "<id-2>",
+        "choices": [],
+        "stopRunId": ""
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-2>",
+        "title": "Conversation A",
+        "status": "completed",
+        "toolEpoch": "<id-3>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": false,
+        "unread": false,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-12>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-10>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-turn-completed",
+      "id": "<id-2>",
+      "turnId": "<volatile>"
+    }
+  },
+  {
+    "type": "engine",
+    "message": {
+      "type": "agent-session",
+      "session": {
+        "id": "<id-2>",
+        "title": "Conversation A",
+        "status": "completed",
+        "toolEpoch": "<id-3>",
+        "model": "openai-codex/gpt-6-astra",
+        "profile": "coding",
+        "error": "",
+        "messages": [],
+        "updatedAt": "<volatile>",
+        "acceptsFollowUp": true,
+        "unread": false,
+        "lastTurnDurationMs": "<volatile>",
+        "completedTurnId": "<id-12>",
+        "history": {
+          "start": {
+            "index": 0,
+            "offset": 0
+          },
+          "end": {
+            "index": 2,
+            "offset": 0
+          },
+          "total": 2,
+          "revision": "<volatile>",
+          "ids": ["user", "user-<id-10>"]
+        },
+        "pinnedMessage": null
+      }
+    }
+  },
+  {
+    "type": "result",
+    "requestId": "models",
+    "action": "agent-models",
+    "result": {
+      "models": ["local/qwen-synthetic", "cloud/synthetic-large"],
+      "pinned": ["local/qwen-synthetic"],
+      "thinkingLevels": {
+        "local/qwen-synthetic": ["off", "low"],
+        "cloud/synthetic-large": ["off", "low", "medium", "high"]
+      },
+      "coding": "openai-codex/gpt-6-astra",
+      "quickQuestion": "pillar-vllm/qwen3.8-128k",
+      "codingThinking": "medium",
+      "quickQuestionThinking": "off"
+    }
+  }
+]

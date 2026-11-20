@@ -59,11 +59,13 @@ import {
   maximumClientMessageBytes,
   maximumConnectionsPerDevice,
   maximumRemoteConnections,
+  maximumUnauthenticatedMessageBytes,
   type OverloadedReason,
 } from './protocol.ts';
+import { raiseMessageLimit } from './message-limit.ts';
 import { ReceiptBook } from './receipts.ts';
 import { closeCodes, Relay } from './relay.ts';
-import { DeviceRequestRate } from './request-rate.ts';
+import { DeviceRequestRate, draftEditRateLimit } from './request-rate.ts';
 import { tailscaleRefusal } from './tailscale-headers.ts';
 import { acquireLifetimeLock, claimUnixSocket, type UnixSocketClaim } from './unix-socket-claim.ts';
 
@@ -280,7 +282,10 @@ export class Gateway {
   private stateClaim?: FileHandle;
   private readonly sockets = new WebSocketServer({
     noServer: true,
-    maxPayload: maximumClientMessageBytes,
+    // Every socket starts with the 32 KiB bound it always had; startRelay
+    // raises it to `maximumClientMessageBytes` once the connection is
+    // authenticated and admitted (message-limit.ts).
+    maxPayload: maximumUnauthenticatedMessageBytes,
     // Compression of attacker-influenced text next to secrets invites
     // CRIME-style attacks, and phones gain little from it here.
     perMessageDeflate: false,
@@ -288,6 +293,8 @@ export class Gateway {
   private readonly devices: DeviceStore;
   private readonly receipts = new ReceiptBook();
   private readonly requestRate = new DeviceRequestRate();
+  /** Draft edits have their own per-device bucket (see request-rate.ts). */
+  private readonly draftEditRate = new DeviceRequestRate(undefined, draftEditRateLimit);
   /** Every relay that still holds a listener connection, with its device ID. */
   private readonly relays = new Map<Relay, string>();
   private readonly screenshots = new Map<string, Set<string>>();
@@ -963,10 +970,12 @@ export class Gateway {
     phone.once('message', async (data, isBinary) => {
       let token: unknown;
       let incrementalSessions = false;
+      let drafts = false;
       try {
         const message = JSON.parse(String(data));
         token = !isBinary && message?.type === 'auth' ? message.token : undefined;
         incrementalSessions = !isBinary && message?.incrementalSessions === true;
+        drafts = !isBinary && message?.drafts === true;
       } catch {
         token = undefined;
       }
@@ -997,7 +1006,12 @@ export class Gateway {
         return;
       }
 
-      this.startRelay(phone, device, incrementalSessions);
+      // Authenticated and admitted: from here on messages may be as large as
+      // a draft needs. Every other socket keeps the 32 KiB bound.
+      if (!raiseMessageLimit(phone, maximumClientMessageBytes)) {
+        this.options.log('Could not raise the message size limit; drafts over 32 KiB will fail');
+      }
+      this.startRelay(phone, device, { incrementalSessions, drafts });
     });
   }
 
@@ -1033,7 +1047,15 @@ export class Gateway {
     return false;
   }
 
-  private startRelay(phone: WebSocket, device: PairedDevice, incrementalSessions: boolean): void {
+  /**
+   * Relay one authenticated connection. `capabilities` are what its client
+   * asked for in its `auth` message (see AuthMessage in protocol.ts).
+   */
+  private startRelay(
+    phone: WebSocket,
+    device: PairedDevice,
+    capabilities: { incrementalSessions: boolean; drafts: boolean },
+  ): void {
     phone.send(
       JSON.stringify({ type: 'authenticated', deviceId: device.id, deviceName: device.name }),
     );
@@ -1049,7 +1071,9 @@ export class Gateway {
       deviceId: device.id,
       receipts: this.receipts,
       takeToken: () => this.requestRate.take(device.id),
-      incrementalSessions,
+      takeDraftToken: () => this.draftEditRate.take(device.id),
+      incrementalSessions: capabilities.incrementalSessions,
+      drafts: capabilities.drafts,
       allowScreenshot: (deviceId, sessionId) => {
         let allowed = this.screenshots.get(deviceId);
         if (!allowed) {
@@ -1061,9 +1085,10 @@ export class Gateway {
       frames,
       onClosed: () => {
         this.relays.delete(relay);
-        // The rate bucket lives as long as one of the device's connections.
+        // The rate buckets live as long as one of the device's connections.
         if (!this.deviceConnected(device.id)) {
           this.requestRate.forget(device.id);
+          this.draftEditRate.forget(device.id);
         }
       },
       log: this.options.log,
