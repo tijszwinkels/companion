@@ -102,7 +102,8 @@ export interface StoreOptions {
    * elsewhere while this page was offline change only in those pages (their
    * events were missed). The position reached is kept after every page, so
    * a reading that fails part way (the gateway's rate limit on a long run)
-   * continues there on Retry instead of starting over. Off by default (the
+   * continues there on Retry instead of starting over; a reading on its
+   * way when a reconnect's snapshot arrives starts over. Off by default (the
    * phone panel reads only what is new, and keeps its position at the end
    * of a reading); the browser shell turns it on.
    */
@@ -150,6 +151,12 @@ export class Store {
   private readonly readsActivity: boolean;
   /** Whether a reconnect reads the run's history again from its start (see StoreOptions). */
   private readonly rereadsActivity: boolean;
+  /**
+   * Changes when a reconnect asks for the run's history to be read again
+   * from the start; a reading begun before that is abandoned (only with
+   * `rereadActivityAfterReconnect`).
+   */
+  private activityReadGeneration = 0;
 
   constructor(options: StoreOptions = {}) {
     this.readsActivity = options.activity !== false;
@@ -557,10 +564,13 @@ export class Store {
     let activity = this.state.activity;
     if (activity.sessionId !== engine.activitySessionId) {
       activity = emptyActivity(engine.activitySessionId);
-    } else if (firstSnapshot && this.rereadsActivity && activity.read > 0) {
+    } else if (firstSnapshot && this.rereadsActivity) {
       // This connection's first snapshot of the same run: read every page
       // again, so deletions (removal markers) and newer revisions made while
-      // offline replace what is shown. Entries stay shown meanwhile.
+      // offline replace what is shown. Entries stay shown meanwhile. A
+      // reading still on its way (a Retry pressed before this snapshot) is
+      // abandoned and starts over (see syncActivity).
+      this.activityReadGeneration += 1;
       activity = { ...activity, read: 0 };
     }
 
@@ -703,8 +713,23 @@ export class Store {
 
     const sessionId = activity.sessionId;
     const identity = this.identityRevision;
+    const generation = this.activityReadGeneration;
     const through = engine.activityHistoryCount;
     this.setActivity({ syncing: true, error: '' });
+
+    /**
+     * A reconnect asked for the run to be read again while this reading was
+     * on its way: its pages and position may predate what changed offline,
+     * so it is dropped and a new reading starts from the reset position.
+     */
+    const restartIfReset = (): boolean => {
+      if (generation === this.activityReadGeneration) {
+        return false;
+      }
+      this.setActivity({ syncing: false });
+      void this.syncActivity();
+      return true;
+    };
 
     try {
       let after: number | null = activity.read;
@@ -718,6 +743,9 @@ export class Store {
         if (identity !== this.identityRevision || this.state.activity.sessionId !== sessionId) {
           return;
         }
+        if (restartIfReset()) {
+          return;
+        }
         this.applyActivityPage(page);
         after = page.next;
         if (this.rereadsActivity && after !== null) {
@@ -729,6 +757,9 @@ export class Store {
       this.setActivity({ read: through, syncing: false });
     } catch (error) {
       if (identity !== this.identityRevision || this.state.activity.sessionId !== sessionId) {
+        return;
+      }
+      if (restartIfReset()) {
         return;
       }
       this.setActivity({

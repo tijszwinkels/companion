@@ -726,6 +726,8 @@ test(
     )[2];
     assert.equal(third.profile, 'quickQuestion');
     assert.equal(third.text, 'Kept across hiding');
+    // The answer clears the box (a text typed before it would be kept).
+    await page.waitFor(`document.querySelector('#activity-start-text').value === ''`);
 
     // Offline the box keeps its text and Start is not offered.
     await page.evaluate(`document.querySelector('#activity-start-text').focus()`);
@@ -1299,6 +1301,122 @@ test(
       .prepare('SELECT correct, actual_intent FROM intent_feedback WHERE id = ?')
       .get(row.id) as { correct: number; actual_intent: string };
     assert.deepEqual({ ...stored }, { correct: 0, actual_intent: 'QUICK_QUESTION' });
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'a deletion on its way cannot be cancelled; a refused one keeps the confirmation',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    await heard(fixture, 'Synthetic entry deleted slowly');
+    await heard(fixture, 'Synthetic entry refused deletion');
+
+    // Hold the listener's deletion until released, or refuse it.
+    const runtime = fixture.desktop.runtime as unknown as {
+      history: { delete(id: string): Promise<void> };
+    };
+    const deleteRecord = runtime.history.delete.bind(runtime.history);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let refuse = false;
+    runtime.history.delete = async (id: string) => {
+      if (refuse) {
+        throw Error('Synthetic refusal');
+      }
+      await held;
+      return deleteRecord(id);
+    };
+
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await clickSelector(page, barToggle);
+    const slow = 'Synthetic entry deleted slowly';
+    await clickSelector(
+      page,
+      await entryButton(page, slow, 'Delete utterance, screenshot and audio'),
+    );
+    await clickSelector(page, await entryButton(page, slow, 'Delete permanently'));
+    const confirmText = `${entryExpression(slow)}?.querySelector('.activity-confirm')?.textContent ?? ''`;
+    await page.waitFor(`(${confirmText}).includes('Deleting…')`);
+
+    // Cancel is unavailable while the deletion is on its way; pressing it
+    // changes nothing.
+    const cancel = await entryButton(page, slow, 'Cancel');
+    assert.equal(
+      await page.evaluate(`document.querySelector('${cancel}').getAttribute('aria-disabled')`),
+      'true',
+    );
+    await clickAt(page, await box(page, cancel));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.match(await page.evaluate<string>(confirmText), /Deleting…/);
+
+    // Hidden and shown again, it still says so.
+    await clickSelector(page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`(${confirmText}).includes('Deleting…')`);
+    assert.equal(requestActions(sockets).filter((action) => action === 'delete-history').length, 1);
+
+    // The listener answers: the entry leaves the column.
+    release();
+    await page.waitFor(`!${entryExpression(slow)}`);
+
+    // A refused deletion: the confirmation stays, both buttons available.
+    refuse = true;
+    const refused = 'Synthetic entry refused deletion';
+    await clickSelector(
+      page,
+      await entryButton(page, refused, 'Delete utterance, screenshot and audio'),
+    );
+    await clickSelector(page, await entryButton(page, refused, 'Delete permanently'));
+    await page.waitFor(`document.querySelector('.toast.error')`);
+    await page.waitFor(
+      `document.querySelector('${await entryButton(page, refused, 'Delete permanently')}')?.getAttribute('aria-disabled') !== 'true'`,
+    );
+    assert.equal(
+      await page.evaluate(
+        `document.querySelector('${await entryButton(page, refused, 'Cancel')}').getAttribute('aria-disabled')`,
+      ),
+      null,
+    );
+    assert.ok(await page.evaluate(`Boolean(${entryExpression(refused)})`));
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'focus on the Activity divider moves to a ☰ when the divider goes away',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    const { page, sockets, browserContextId } = await pairedPage(fixture, browser, 1280, 800);
+    await page.call('Emulation.setFocusEmulationEnabled', { enabled: true });
+    await clickSelector(page, barToggle);
+    await page.waitFor(`document.querySelector('.activity-divider')`);
+
+    // The window narrows: the column lies over the chat, without a divider;
+    // focus moves to the column's ☰.
+    await page.evaluate(`document.querySelector('.activity-divider').focus()`);
+    await resize(page, 420);
+    await page.waitFor(`document.querySelector('${column}.overlay')`);
+    await page.waitFor(`document.activeElement?.getAttribute('aria-label') === 'Hide Activity'`);
+
+    // Another tab hides the column: focus moves to the bar's ☰.
+    await resize(page, 1280);
+    await page.waitFor(`document.querySelector('.activity-divider')`);
+    await page.evaluate(`document.querySelector('.activity-divider').focus()`);
+    const second = await desktopPage(browser, 1280, 800, browserContextId);
+    await second.page.navigate(`${fixture.origin}/`);
+    await second.page.waitFor(online, 8000);
+    await clickSelector(second.page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await page.waitFor(
+      `document.activeElement?.classList.contains('activity-toggle') && document.activeElement.closest('.chat-bar') !== null`,
+    );
+    await second.page.close();
     await assertCleanPage(fixture, page, sockets);
   },
 );

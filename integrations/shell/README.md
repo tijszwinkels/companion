@@ -366,6 +366,8 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
 | Window 420 px, column shown, Tab                              | Moves through list and column, never into the covered chat  |
 | Focus in the chat, the window narrows under 640 px            | Focus moves to the column's ☰                              |
 | Focus on a ☰ or in the column, another tab shows or hides it | Focus moves to the other ☰; focus elsewhere stays          |
+| Focus on the divider, the window narrows under 640 px         | Focus moves to the column's ☰ (the divider is gone)        |
+| Focus on the divider, another tab hides the column            | Focus moves to the bar's ☰                                 |
 | Window 420 px, list hidden, column shown                      | Over the whole window width                                 |
 | Width or shown state changed in another tab                   | This tab follows that entry                                 |
 | Sign-out and pairing again                                    | Layout kept                                                 |
@@ -393,7 +395,11 @@ and the full list's Activity entry says how many entries are new. Rule
    removed and a label given elsewhere is shown; events about them were
    missed while offline. The position reached is kept after each page, so
    a reading refused part way (the gateway's rate limit on a long run)
-   continues there on Retry.
+   continues there on Retry. Retry is offered only while requests are
+   admitted (after the reconnect's snapshot), checked again at the press;
+   and a reading that is still on its way when a reconnect's snapshot asks
+   for the run to be read again is abandoned and starts over from the
+   beginning, so it can never skip what changed while offline.
 3. A change of an entry already seen (its decision, outcome or label, from
    any client) is not new.
 4. Showing the column clears the marker (by either ☰, the Activity entry,
@@ -405,24 +411,25 @@ and the full list's Activity entry says how many entries are new. Rule
 7. Listening, pausing, hearing speech and processing are states, not
    entries: they never set it.
 
-| Event                                                       | Marker                                                 |
-| ----------------------------------------------------------- | ------------------------------------------------------ |
-| First reading after loading the page, with entries          | not set                                                |
-| A new entry arrives while hidden                            | set (count 1)                                          |
-| Two more arrive while hidden                                | set (count 3)                                          |
-| A new entry arrives while shown                             | not set, also after hiding                             |
-| An entry already seen is labelled or changes outcome        | not set                                                |
-| The column is shown (☰, Activity entry, or another tab)    | cleared                                                |
-| The only new entry is deleted                               | cleared                                                |
-| Entries heard while offline, learned after reconnecting     | set                                                    |
-| An entry deleted elsewhere while offline                    | gone after reconnecting; no longer counts              |
-| An entry labelled elsewhere while offline                   | label shown after reconnecting; not set                |
-| The reading after a reconnect is refused part way; Retry    | continues at the page reached; later deletions applied |
-| A reconnect without new entries                             | not set                                                |
-| A new listener run after catching up, with entries          | set                                                    |
-| The first reading fails; entries arrive; a retry catches up | not set until caught up                                |
-| Pause, resume, speech, processing                           | not set                                                |
-| Sign-out and pairing again (first reading)                  | not set                                                |
+| Event                                                                                                    | Marker                                                                                               |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| First reading after loading the page, with entries                                                       | not set                                                                                              |
+| A new entry arrives while hidden                                                                         | set (count 1)                                                                                        |
+| Two more arrive while hidden                                                                             | set (count 3)                                                                                        |
+| A new entry arrives while shown                                                                          | not set, also after hiding                                                                           |
+| An entry already seen is labelled or changes outcome                                                     | not set                                                                                              |
+| The column is shown (☰, Activity entry, or another tab)                                                 | cleared                                                                                              |
+| The only new entry is deleted                                                                            | cleared                                                                                              |
+| Entries heard while offline, learned after reconnecting                                                  | set                                                                                                  |
+| An entry deleted elsewhere while offline                                                                 | gone after reconnecting; no longer counts                                                            |
+| An entry labelled elsewhere while offline                                                                | label shown after reconnecting; not set                                                              |
+| The reading after a reconnect is refused part way; Retry                                                 | continues at the page reached; later deletions applied                                               |
+| Retry pressed after reconnecting, before the snapshot, after a partial reading; an entry deleted offline | Retry not offered until the snapshot; a reading already on its way starts over; the entry is removed |
+| A reconnect without new entries                                                                          | not set                                                                                              |
+| A new listener run after catching up, with entries                                                       | set                                                                                                  |
+| The first reading fails; entries arrive; a retry catches up                                              | not set until caught up                                                                              |
+| Pause, resume, speech, processing                                                                        | not set                                                                                              |
+| Sign-out and pairing again (first reading)                                                               | not set                                                                                              |
 
 ### Listening, starting a conversation and history entries
 
@@ -477,7 +484,10 @@ disabled, which in Chromium moves focus to the page; focus on a button of an
 entry that goes away (deleted here or elsewhere, or with its run) moves to
 the entry that takes its place, else the one above, else the History
 heading; picking the actual intent closes the choice and returns focus to
-Incorrect; Retry, once the reading works again, hands focus to the History
+Incorrect; focus on the Activity divider when it goes away (the window
+narrows under 640 px, or another tab hides the column) moves to the
+column's ☰ if the column is still shown, else to the bar's ☰; Retry, once
+the reading works again, hands focus to the History
 heading.
 
 - **Copy** puts the recognised text on the clipboard ("Copied", or "The
@@ -502,32 +512,38 @@ heading.
 - **Delete** (×) is offered only while the listener advertises deletion
   (`historyDeletionAvailable`). It opens a confirmation inside the entry
   ("Delete permanently" or Cancel) and sends `delete-history` only from
-  there; not while the entry is still processing. The entry leaves the
-  column when the listener reports it deleted.
+  there; not while the entry is still processing. Once Delete permanently
+  is pressed the confirmation says "Deleting…" and neither it nor Cancel
+  can be pressed until the listener answers (also after hiding and showing
+  the column): Cancel could not stop the deletion. The entry leaves the
+  column when the listener reports it deleted; a refusal keeps the
+  confirmation with both buttons available again (the toast explains).
 
-| Entry and state                                           | Copy | New coding session | Correct / Incorrect                        | Delete ×           |
-| --------------------------------------------------------- | ---- | ------------------ | ------------------------------------------ | ------------------ |
-| Saved entry with a decision; admitted; deletion offered   | on   | on                 | on                                         | shown, on          |
-| Offline                                                   | on   | off                | off                                        | shown, off         |
-| Reconnected, before the new snapshot                      | on   | off                | off                                        | shown, off         |
-| Deletion not advertised by the listener                   | on   | on                 | on                                         | not shown          |
-| Already labelled correct                                  | on   | on                 | on; Correct pressed                        | shown, on          |
-| Labelled incorrect → an intent                            | on   | on                 | on; Incorrect pressed; "→ intent"          | shown, on          |
-| A request of this entry awaits its answer                 | on   | off                | off                                        | shown, off         |
-| A request of another entry awaits its answer              | on   | on                 | on                                         | shown, on          |
-| The listener refused the request                          | on   | on (toast)         | on (toast); label unchanged                | shown, on (toast)  |
-| No decision (no intent)                                   | on   | on                 | off                                        | shown, on          |
-| Audio only (no text, no decision)                         | off  | off                | off                                        | shown, on          |
-| Not saved (capture storage was off)                       | on   | off                | off, "requires this entry's saved capture" | shown, on          |
-| Capture storage off (or being turned off) at the listener | on   | on                 | off, "requires capture storage"            | shown, on          |
-| An older listener that does not report capture storage    | on   | on                 | on (its own rules apply)                   | shown, on          |
-| Screenshot not kept                                       | on   | off                | on unless the listener names a reason      | shown, on          |
-| The listener names why the capture is incomplete          | on   | per screenshot     | off, "requires … complete saved capture"   | shown, on          |
-| Still processing                                          | on   | on                 | on                                         | shown, off         |
-| The listener offers no conversation controls              | on   | off                | on                                         | shown, on          |
-| The listener runs in preview mode                         | on   | off                | off, "Preview mode: labels are not saved." | not shown          |
-| Removed elsewhere while its confirmation is open          | —    | —                  | —                                          | gone; nothing sent |
-| Gone or a new run between drawing and the click           | —    | nothing sent       | nothing sent                               | nothing sent       |
+| Entry and state                                           | Copy | New coding session | Correct / Incorrect                        | Delete ×                                        |
+| --------------------------------------------------------- | ---- | ------------------ | ------------------------------------------ | ----------------------------------------------- |
+| Saved entry with a decision; admitted; deletion offered   | on   | on                 | on                                         | shown, on                                       |
+| Offline                                                   | on   | off                | off                                        | shown, off                                      |
+| Reconnected, before the new snapshot                      | on   | off                | off                                        | shown, off                                      |
+| Deletion not advertised by the listener                   | on   | on                 | on                                         | not shown                                       |
+| Already labelled correct                                  | on   | on                 | on; Correct pressed                        | shown, on                                       |
+| Labelled incorrect → an intent                            | on   | on                 | on; Incorrect pressed; "→ intent"          | shown, on                                       |
+| A request of this entry awaits its answer                 | on   | off                | off                                        | shown, off                                      |
+| A request of another entry awaits its answer              | on   | on                 | on                                         | shown, on                                       |
+| The listener refused the request                          | on   | on (toast)         | on (toast); label unchanged                | shown, on (toast)                               |
+| No decision (no intent)                                   | on   | on                 | off                                        | shown, on                                       |
+| Audio only (no text, no decision)                         | off  | off                | off                                        | shown, on                                       |
+| Not saved (capture storage was off)                       | on   | off                | off, "requires this entry's saved capture" | shown, on                                       |
+| Capture storage off (or being turned off) at the listener | on   | on                 | off, "requires capture storage"            | shown, on                                       |
+| An older listener that does not report capture storage    | on   | on                 | on (its own rules apply)                   | shown, on                                       |
+| Screenshot not kept                                       | on   | off                | on unless the listener names a reason      | shown, on                                       |
+| The listener names why the capture is incomplete          | on   | per screenshot     | off, "requires … complete saved capture"   | shown, on                                       |
+| Still processing                                          | on   | on                 | on                                         | shown, off                                      |
+| The listener offers no conversation controls              | on   | off                | on                                         | shown, on                                       |
+| The listener runs in preview mode                         | on   | off                | off, "Preview mode: labels are not saved." | not shown                                       |
+| Removed elsewhere while its confirmation is open          | —    | —                  | —                                          | gone; nothing sent                              |
+| Delete permanently pressed, answer pending                | on   | off                | off                                        | confirmation "Deleting…"; Cancel and Delete off |
+| Delete refused by the listener                            | on   | on                 | on                                         | confirmation kept; Cancel and Delete on (toast) |
+| Gone or a new run between drawing and the click           | —    | nothing sent       | nothing sent                               | nothing sent                                    |
 
 Pause and Resume follow the same rule (admitted, Companion running, its own
 toggle not awaiting an answer). Start is enabled while admitted, while the
@@ -947,7 +963,9 @@ with the list), the new-activity marker against the real phone Store (first
 reading, events while hidden and shown, labels, deletion, reconnects with and
 without entries heard offline, entries deleted and labelled elsewhere while
 offline, read through the listener's own history index, a reading refused
-part way and continued by Retry; a new listener run,
+part way and continued by Retry; a Retry pressed after reconnecting but before the
+snapshot, its reading abandoned and started over so an offline deletion is
+applied; a new listener run,
 a failed first reading, sign-out; and the phone's default reading only what
 is new), which actions each entry offers, when Incorrect sends and which
 actual intents are offered, and one pending request per entry, and
@@ -984,7 +1002,10 @@ the window narrows; focus on a ☰ or in the column's text box moving to the
 other ☰ when a second tab shows or hides the column; focus kept on Correct
 and Start while their requests await the answer, on the next entry after a
 deletion confirmed with the keyboard, and on Incorrect after picking the
-actual intent; the Coding / Quick question choice and the text kept across
+actual intent; a deletion on its way showing "Deleting…" with Cancel
+unavailable (also after hiding and showing), and a refused one keeping the
+confirmation; focus on the divider moving to the column's ☰ when the window
+narrows and to the bar's ☰ when another tab hides the column; the Coding / Quick question choice and the text kept across
 hiding the column; an Incorrect press handler drawn before another client
 chose the actual intent sending nothing (invoked through Preact's listener
 table); keyboard operation and accessible names; the gateway's unchanged policy, no

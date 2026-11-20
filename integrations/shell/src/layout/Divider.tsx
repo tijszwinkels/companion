@@ -14,6 +14,8 @@
 
 import { useRef, useState } from 'preact/hooks';
 
+import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
+
 export function Divider(props: {
   /** The resized part's shown width in CSS pixels. */
   width: number;
@@ -41,7 +43,14 @@ export function Divider(props: {
   onWidth: (width: number, remember: boolean) => void;
   /** Write the current preferred width to storage (the end of a drag). */
   onRemember: () => void;
+  /** The divider had keyboard focus when it went away (its owner moves focus on). */
+  onFocusLost?: () => void;
 }) {
+  const element = useRef<HTMLDivElement>(null);
+  useFocusHandOff(element, () => {
+    props.onFocusLost?.();
+  });
+
   // The pointer that is dragging the divider, if any, and whether it has
   // moved: a press that does not move (a click) changes nothing, also when
   // a narrow window shows the strip for a wider remembered list.
@@ -118,6 +127,7 @@ export function Divider(props: {
   return (
     <div
       class={classes.join(' ')}
+      ref={element}
       role="separator"
       aria-orientation="vertical"
       aria-label={props.label}

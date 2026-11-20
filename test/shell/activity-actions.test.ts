@@ -270,6 +270,22 @@ test('pending requests: one per entry; another entry is not held back', async ()
   assert.equal(await requests.run('B', async () => 'answer B'), 'answer B');
   assert.equal(started, 1);
 
+  // What is pending is named while it is (a deletion shows "Deleting…").
+  assert.equal(requests.pendingKind('A'), '');
+  let releaseDelete = () => {};
+  const deleting = requests.run(
+    'C',
+    () =>
+      new Promise<void>((resolve) => {
+        releaseDelete = resolve;
+      }),
+    'delete',
+  );
+  assert.equal(requests.pendingKind('C'), 'delete');
+  releaseDelete();
+  await deleting;
+  assert.equal(requests.pendingKind('C'), '');
+
   // A's answer arrives: A may ask again. A failure (shown by the Store's
   // toast) ends the pending state too.
   releaseFirst();

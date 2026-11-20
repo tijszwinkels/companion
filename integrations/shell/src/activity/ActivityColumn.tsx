@@ -324,7 +324,14 @@ function History(props: { bridge: GatewayChatBridge; requests: ActivityRequests 
       {state.activity.error && (
         <ReadingError
           message={state.activity.error}
-          onRetry={() => store.retryActivity()}
+          available={props.bridge.admitted}
+          onRetry={() => {
+            // Only after this connection's snapshot: a reading started before
+            // it could miss what changed while offline (README, marker rule 2).
+            if (props.bridge.admitted) {
+              store.retryActivity();
+            }
+          }}
           onFocusLost={() => {
             focusLostAt.current = -1;
           }}
@@ -353,16 +360,25 @@ function History(props: { bridge: GatewayChatBridge; requests: ActivityRequests 
   );
 }
 
-/** The Store's reading error with Retry; focus on Retry is handed on when it goes away. */
-function ReadingError(props: { message: string; onRetry: () => void; onFocusLost: () => void }) {
+/**
+ * The Store's reading error with Retry, offered only while requests are
+ * admitted; focus on Retry is handed on when it goes away.
+ */
+function ReadingError(props: {
+  message: string;
+  /** Retry may be pressed now: requests are admitted. */
+  available: boolean;
+  onRetry: () => void;
+  onFocusLost: () => void;
+}) {
   const element = useRef<HTMLParagraphElement>(null);
   useFocusHandOff(element, props.onFocusLost);
   return (
     <p ref={element} class="activity-error" role="alert">
       {props.message}{' '}
-      <button class="bar-button" onClick={props.onRetry}>
+      <ActionButton class="bar-button" available={props.available} onPress={props.onRetry}>
         Retry
-      </button>
+      </ActionButton>
     </p>
   );
 }

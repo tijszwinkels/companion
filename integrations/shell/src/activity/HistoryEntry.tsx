@@ -17,6 +17,7 @@
  * with the entry itself is moved to a neighbour.
  */
 
+import type { RefObject } from 'preact';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import type { ActivityEntry, IntentState } from '../../../../src/remote/protocol.ts';
@@ -53,14 +54,16 @@ export function HistoryEntry(props: {
   const store = useStore();
   const { entry } = props;
   const [choosing, setChoosing] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  // The delete confirmation is open; also when the column is shown again
+  // while this entry's deletion awaits its answer.
+  const [confirming, setConfirming] = useState(
+    () => props.requests.pendingKind(entry.id) === 'delete',
+  );
   const [copyFeedback, setCopyFeedback] = useState('');
   const cancelButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const incorrectButton = useRef<HTMLButtonElement>(null);
   const item = useRef<HTMLLIElement>(null);
-  // Whether closing the confirmation should give focus back to ×.
-  const restoreFocus = useRef(false);
 
   // Focus inside the entry when it goes away is handed to the history list,
   // which moves it to the entry that takes its place.
@@ -72,16 +75,15 @@ export function HistoryEntry(props: {
     entryContext(store.state.engine, props.bridge.admitted, props.requests.isPending(entry.id)),
   );
 
-  // The confirmation takes keyboard focus when it opens, and gives it back
-  // to × when it is cancelled (in the same frame, see Workspace.tsx).
+  // Pressed Delete permanently; its answer is awaited.
+  const deleting = props.requests.pendingKind(entry.id) === 'delete';
+
+  // The confirmation takes keyboard focus when it opens (in the same frame,
+  // see Workspace.tsx). When it closes with focus inside it, focus goes back
+  // to × (DeleteConfirmation).
   useLayoutEffect(() => {
-    if (confirming) {
+    if (confirming && !deleting) {
       cancelButton.current?.focus();
-      return;
-    }
-    if (restoreFocus.current) {
-      restoreFocus.current = false;
-      deleteButton.current?.focus();
     }
   }, [confirming]);
 
@@ -108,12 +110,13 @@ export function HistoryEntry(props: {
   function send(
     allowed: (actions: EntryActions, current: ActivityEntry) => boolean,
     work: () => Promise<unknown>,
+    kind = '',
   ): Promise<unknown> {
     const current = now();
     if (!current || !allowed(current.actions, current.entry)) {
       return Promise.resolve(undefined);
     }
-    return props.requests.run(entry.id, work);
+    return props.requests.run(entry.id, work, kind);
   }
 
   async function copy() {
@@ -181,7 +184,10 @@ export function HistoryEntry(props: {
   }
 
   function cancelDelete() {
-    restoreFocus.current = true;
+    // A deletion on its way cannot be cancelled: the listener deletes anyway.
+    if (props.requests.pendingKind(entry.id) === 'delete') {
+      return;
+    }
     setConfirming(false);
   }
 
@@ -191,11 +197,11 @@ export function HistoryEntry(props: {
       async () => {
         await store.request('delete-history', { id: entry.id });
         // The entry leaves the column when the listener reports it deleted
-        // (usually before this answer). Until then focus goes back to ×, so
-        // it is not lost with the confirmation.
-        restoreFocus.current = true;
+        // (usually before this answer). A refusal throws above and keeps
+        // the confirmation open.
         setConfirming(false);
       },
+      'delete',
     );
   }
 
@@ -311,23 +317,14 @@ export function HistoryEntry(props: {
         )}
 
         {confirming && (
-          <div class="activity-confirm" role="group" aria-label="Delete this entry?">
-            <p>
-              Delete this utterance, its screenshot and audio permanently? This cannot be undone.
-            </p>
-            <div class="activity-actions">
-              <button ref={cancelButton} class="bar-button" onClick={cancelDelete}>
-                Cancel
-              </button>
-              <ActionButton
-                class="bar-button danger"
-                available={actions.deleteEnabled}
-                onPress={confirmDelete}
-              >
-                Delete permanently
-              </ActionButton>
-            </div>
-          </div>
+          <DeleteConfirmation
+            deleting={deleting}
+            deleteAvailable={actions.deleteEnabled}
+            cancelButton={cancelButton}
+            onCancel={cancelDelete}
+            onDelete={confirmDelete}
+            onFocusLost={() => deleteButton.current?.focus()}
+          />
         )}
       </article>
     </li>
@@ -365,6 +362,51 @@ function IntentChoice(props: {
             {intent.label}
           </ActionButton>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The delete confirmation inside an entry. While the deletion awaits the
+ * listener's answer it says "Deleting…" and neither button can be pressed
+ * (Cancel could not stop it). If it closes with focus inside it, focus goes
+ * back to × (`onFocusLost`).
+ */
+function DeleteConfirmation(props: {
+  deleting: boolean;
+  deleteAvailable: boolean;
+  cancelButton: RefObject<HTMLButtonElement>;
+  onCancel: () => void;
+  onDelete: () => void;
+  onFocusLost: () => void;
+}) {
+  const element = useRef<HTMLDivElement>(null);
+  useFocusHandOff(element, props.onFocusLost);
+
+  return (
+    <div ref={element} class="activity-confirm" role="group" aria-label="Delete this entry?">
+      <p>
+        {props.deleting
+          ? 'Deleting…'
+          : 'Delete this utterance, its screenshot and audio permanently? This cannot be undone.'}
+      </p>
+      <div class="activity-actions">
+        <ActionButton
+          buttonRef={props.cancelButton}
+          class="bar-button"
+          available={!props.deleting}
+          onPress={props.onCancel}
+        >
+          Cancel
+        </ActionButton>
+        <ActionButton
+          class="bar-button danger"
+          available={props.deleteAvailable && !props.deleting}
+          onPress={props.onDelete}
+        >
+          {props.deleting ? 'Deleting…' : 'Delete permanently'}
+        </ActionButton>
       </div>
     </div>
   );

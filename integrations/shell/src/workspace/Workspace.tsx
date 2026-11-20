@@ -107,21 +107,19 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
   const barActivityButton = useRef<HTMLButtonElement>(null);
   const columnActivityButton = useRef<HTMLButtonElement>(null);
   const focusAfterToggle = useRef<'bar' | 'column' | ''>('');
-  // A layout effect: focus moves in the same frame the buttons change, so
-  // the reader's next key press already reaches the new button.
+  // A layout effect after every drawing: focus moves in the same frame the
+  // buttons change, so the reader's next key press already reaches the new
+  // button. The request is used once; one that names a ☰ that is not drawn
+  // now is dropped, never kept for a later toggle.
   useLayoutEffect(() => {
-    if (focusAfterToggle.current === 'column' && activity.shown) {
+    const target = focusAfterToggle.current;
+    focusAfterToggle.current = '';
+    if (target === 'column' && activity.shown) {
       columnActivityButton.current?.focus();
     }
-    if (focusAfterToggle.current === 'bar' && !activity.shown) {
+    if (target === 'bar' && !activity.shown) {
       barActivityButton.current?.focus();
     }
-    focusAfterToggle.current = '';
-  }, [activity.shown]);
-  // A hand-off asked for by a button that went away for another reason
-  // than the column being shown or hidden is not kept for a later toggle.
-  useLayoutEffect(() => {
-    focusAfterToggle.current = '';
   });
 
   /**
@@ -135,6 +133,25 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
   /** Focus was inside the column when another tab hid it: to the bar's ☰. */
   function columnLostFocus() {
     focusAfterToggle.current = 'bar';
+  }
+
+  // Whether the column is shown in the latest drawing. The divider's
+  // hand-off below runs with the callback of the divider's own last drawing,
+  // which predates the change that removed it, so it reads this instead.
+  const activityShownNow = useRef(activity.shown);
+  activityShownNow.current = activity.shown;
+
+  /**
+   * Focus was on the Activity divider when it went away: the window became
+   * narrow (the column now lies over the chat: to its ☰) or another tab hid
+   * the column (to the bar's ☰).
+   */
+  function activityDividerLostFocus() {
+    if (activityShownNow.current) {
+      focusAfterToggle.current = 'column';
+    } else {
+      focusAfterToggle.current = 'bar';
+    }
   }
 
   // In a narrow window the shown column covers the chat: the chat is inert
@@ -241,6 +258,7 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
           fromKey={activityWidthFromKey}
           onWidth={activity.setWidth}
           onRemember={activity.remember}
+          onFocusLost={activityDividerLostFocus}
         />
       )}
       {activity.shown && (

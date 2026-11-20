@@ -71,6 +71,8 @@ class Listener {
   failNext = false;
   /** Fail requests for pages from this position on (a rate limit), or -1. */
   failFrom = -1;
+  /** Hold the answer to the next `activity-history` request until this resolves. */
+  holdNext: Promise<void> | null = null;
   private nextId = 1;
 
   get runId(): string {
@@ -160,7 +162,15 @@ function harness(options: { phone?: boolean } = {}) {
     if (listener.failFrom >= 0 && parameters.after >= listener.failFrom) {
       throw Error('Too many requests');
     }
-    return listener.page(parameters.after, parameters.through);
+    // The page is the listener's state when the request arrives; a held
+    // answer arrives later.
+    const page = listener.page(parameters.after, parameters.through);
+    if (listener.holdNext) {
+      const hold = listener.holdNext;
+      listener.holdNext = null;
+      await hold;
+    }
+    return page;
   };
 
   store.subscribe(() => marker.observe(store.state, columnShown));
@@ -191,6 +201,16 @@ function harness(options: { phone?: boolean } = {}) {
     },
     disconnect(): void {
       connection_('reconnecting');
+    },
+    /** Connected again (authenticated), but this connection's snapshot has not arrived. */
+    authenticated(): void {
+      internals.online();
+      connection_('online');
+    },
+    /** This connection's snapshot. */
+    async snapshot(): Promise<void> {
+      internals.apply({ type: 'state', ...listener.engine(), sessions: [], previousSessions: [] });
+      await settle();
     },
     signOut(): void {
       connection_('unpaired');
@@ -400,5 +420,51 @@ test('a reading after a reconnect that fails part way continues there on Retry',
   await page.settle();
   assert.deepEqual(page.reads.slice(readsBefore), [{ after: 100, through: 120 }]);
   assert.equal(page.store.state.activity.entries.has(late.id), false, 'deleted after Retry');
+  assert.equal(page.store.state.activity.error, '');
+});
+
+test('a Retry pressed after reconnecting, before the snapshot, cannot skip an offline deletion', async () => {
+  const page = harness();
+  // 51 entries; the first reading is refused at its second page.
+  for (let index = 1; index <= 51; index++) {
+    page.listener.hear(`Synthetic utterance ${index}`);
+  }
+  page.listener.failFrom = 50;
+  await page.connect();
+  assert.equal(page.store.state.activity.read, 50);
+  assert.equal(page.store.state.activity.error, 'Too many requests');
+  page.listener.failFrom = -1;
+
+  // Offline, the first entry is deleted elsewhere.
+  const first = [...page.store.state.activity.entries.values()].find(
+    (entry) => entry.utterance === 'Synthetic utterance 1',
+  )!;
+  page.disconnect();
+  page.listener.remove(first);
+
+  // Authenticated again; Retry is pressed before the snapshot (the shell does
+  // not offer it then; the Store must hold even if it is called). Its
+  // reading continues at 50 and its answer is held past the snapshot.
+  page.authenticated();
+  let release = () => {};
+  page.listener.holdNext = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const readsBefore = page.reads.length;
+  page.store.retryActivity();
+  await page.settle();
+  assert.deepEqual(page.reads.slice(readsBefore), [{ after: 50, through: 51 }]);
+
+  // The snapshot asks for the run to be read again; the reading on its way
+  // is abandoned when its answer arrives, and a new one starts at 0.
+  await page.snapshot();
+  release();
+  await page.settle();
+  assert.deepEqual(page.reads.slice(readsBefore + 1), [
+    { after: 0, through: 51 },
+    { after: 50, through: 51 },
+  ]);
+  assert.equal(page.store.state.activity.entries.has(first.id), false, 'deleted offline');
+  assert.equal(page.store.state.activity.read, 51);
   assert.equal(page.store.state.activity.error, '');
 });

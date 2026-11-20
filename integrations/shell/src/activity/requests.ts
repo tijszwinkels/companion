@@ -15,12 +15,18 @@
  */
 
 export class ActivityRequests {
-  private readonly pending = new Set<string>();
+  /** Pending keys and what each request is (for example `delete`), or ''. */
+  private readonly pending = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
 
   /** Whether a request for `key` (an entry ID, or `pause`) awaits its answer. */
   isPending(key: string): boolean {
     return this.pending.has(key);
+  }
+
+  /** What the request for `key` awaiting its answer is (its `kind`), or ''. */
+  pendingKind(key: string): string {
+    return this.pending.get(key) ?? '';
   }
 
   subscribe(listener: () => void): () => void {
@@ -31,15 +37,20 @@ export class ActivityRequests {
   }
 
   /**
-   * Run `work` for `key` unless another request for it is pending. Resolves
-   * to its result, or to `undefined` when it was not started or failed (the
-   * Store's toast explains the failure).
+   * Run `work` for `key` unless another request for it is pending. `kind`
+   * names the request while it is pending (a deletion shows "Deleting…").
+   * Resolves to its result, or to `undefined` when it was not started or
+   * failed (the Store's toast explains the failure).
    */
-  async run<Result>(key: string, work: () => Promise<Result>): Promise<Result | undefined> {
+  async run<Result>(
+    key: string,
+    work: () => Promise<Result>,
+    kind = '',
+  ): Promise<Result | undefined> {
     if (this.pending.has(key)) {
       return undefined;
     }
-    this.pending.add(key);
+    this.pending.set(key, kind);
     this.changed();
     try {
       return await work();
