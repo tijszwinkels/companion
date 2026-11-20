@@ -657,14 +657,44 @@ test(
     );
     assert.match(await text(page, '.previous-sessions'), /Closed conversation/);
 
+    // One reopen at a time: while a (slow, then refused) reopen is in
+    // flight every Reopen is disabled; once it settles all are enabled.
+    await fixture.sessions.remove(kept.id);
+    await page.waitFor(`document.querySelectorAll('.previous-session').length === 2`);
+    const originalReopen = fixture.sessions.reopen.bind(fixture.sessions);
+    let refuse: () => void = () => {};
+    fixture.sessions.reopen = () =>
+      new Promise<void>((_resolve, reject) => {
+        refuse = () => reject(Error('Synthetic refusal'));
+      });
+    const reopenButtons = `[...document.querySelectorAll('.previous-session button')]`;
+    await clickAt(page, await box(page, '.previous-session button'));
+    await page.waitFor(`${reopenButtons}.every((button) => button.disabled)`);
+    assert.match(await text(page, '.previous-sessions'), /Opening…/);
+    refuse();
+    await page.waitFor(`document.querySelector('.toast.error')`);
+    await page.waitFor(`${reopenButtons}.every((button) => !button.disabled)`);
+    assert.doesNotMatch(await text(page, '.previous-sessions'), /Opening…/);
+    fixture.sessions.reopen = originalReopen;
+
     // Reopen: back in the list, and shown.
-    await clickButton(page, 'Reopen');
+    await page.evaluate(
+      `[...document.querySelectorAll('.previous-session')].find((row) => row.textContent.includes('Closed conversation')).querySelector('button').scrollIntoView()`,
+    );
+    await clickAt(
+      page,
+      await page.evaluate<{ x: number; y: number }>(`(() => {
+        const button = [...document.querySelectorAll('.previous-session')].find((row) => row.textContent.includes('Closed conversation')).querySelector('button');
+        const rect = button.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`),
+    );
     await page.waitFor(`Boolean(${entryExpression('Closed conversation')})`, 8000);
     await page.waitFor(
       `document.querySelector('.chat-bar-title')?.textContent === 'Closed conversation'`,
     );
     await page.waitFor(`document.querySelector('.transcript')?.textContent.includes('Closed.')`);
-    assert.equal(fixture.sessions.order().ids.length, 2);
+    assert.deepEqual(fixture.sessions.order().ids, [closed.id]);
 
     await assertCleanPage(fixture, page, sockets);
   },
@@ -731,6 +761,20 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.deepEqual(moves(sockets, before), []);
     assert.equal(await text(page, '.chat-bar-title'), 'Bravo');
+
+    // Released over the divider, which overlaps the list's edge: outside, no move.
+    before = sockets.sent.length;
+    start_ = await entryPoint(page, 'Delta');
+    const divider = await box(page, '.list-divider');
+    const listRight = await page.evaluate<number>(
+      `document.querySelector('.conversation-scroll').getBoundingClientRect().right`,
+    );
+    const overDivider = { x: Math.min(listRight - 1, divider.left + divider.width - 1), y: 30 };
+    assert.ok(overDivider.x > divider.left && overDivider.x < listRight, 'a point in both boxes');
+    await dragTo(page, start_, overDivider);
+    await mouse(page, 'mouseReleased', overDivider, false);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(moves(sockets, before), []);
 
     // The order changes at the listener during the drag: the drag ends
     // without a move, and the list shows the listener's new order.

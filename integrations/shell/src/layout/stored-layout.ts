@@ -82,3 +82,34 @@ export function writeLayout(storage: LayoutStorage, layout: ListLayout): void {
     // Storage disabled or full: the layout still applies to this page.
   }
 }
+
+/**
+ * Remember one change made in this tab and return the layout that results.
+ *
+ * The change is applied onto what is stored now, not onto this tab's copy
+ * (`current`): another tab may have written since, and its `storage` event
+ * may not have reached this tab yet. Only the fields `update` names come
+ * from this tab, so hiding the list here never writes back an older width,
+ * and a width set here never writes back an older hidden state. With
+ * nothing stored yet (or a storage that cannot be read), `current` is the
+ * base.
+ */
+export function rememberChange(
+  storage: LayoutStorage,
+  current: ListLayout,
+  update: Partial<ListLayout>,
+): ListLayout {
+  let stored: string | null = null;
+  try {
+    stored = storage.getItem(layoutStorageKey);
+  } catch {
+    stored = null;
+  }
+  let base = current;
+  if (stored !== null) {
+    base = readLayout(storage);
+  }
+  const next = { ...base, ...update };
+  writeLayout(storage, next);
+  return next;
+}

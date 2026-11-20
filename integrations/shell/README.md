@@ -98,7 +98,9 @@ Rule (`src/layout/list-width.ts`, `src/layout/stored-layout.ts`):
 4. ☰ hides and shows the list (and the divider). Hiding keeps the width.
 5. The chat keeps at least 320 px next to the list and the divider (which
    takes 1 px). The list is shown at its remembered width narrowed to the
-   window's width minus 321 px; if that is under 150 px the strip is shown. The window never changes what is remembered, so a wider
+   window's width minus 321 px; if that is under 150 px the strip is shown.
+   The strip never gets narrower, so in windows under 399 px the chat has
+   what remains (296 px at 375 px). The window never changes what is remembered, so a wider
    window shows the chosen width again.
 6. Remembered in this browser's `localStorage` under
    `companion.shell.layout` as `{"version":1,"listWidth":…,"listShown":…}`.
@@ -155,36 +157,46 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
 5. A drag never also selects or closes: the click after the release of any
    drag (completed or cancelled) is ignored; the next click is not.
 6. The press is followed from the window: a release anywhere ends it, a
-   movement without the button held forgets it, and a new press discards
-   anything left over.
+   movement without the button held forgets it, and a new press anywhere
+   in the page (in the list or not) discards anything left over.
 7. The list never reorders itself. It shows the listener's order; a move the
    listener refuses (the order changed meanwhile) leaves it as it was, with
    the Store's error toast.
+8. Inside the list means the list is what the pointer is over (a hit test):
+   not the divider overlapping its edge, nor a toast above it.
+9. Reordering is a mouse (and pen) gesture for desktop browsers. On a
+   touchscreen a swipe on the list scrolls it: the browser takes the swipe
+   for panning and cancels the pointer, so nothing moves (rule 4). Touch
+   reordering would need a gesture of its own (the phone panel has Move up
+   and Move down) and is not part of this slice.
 
-| Case                                                | Move requests | Click selects |
-| --------------------------------------------------- | ------------- | ------------- |
-| Press and release without moving                    | 0             | yes           |
-| Movement under 6 px, release                        | 0             | yes           |
-| Secondary button pressed and moved                  | 0             | —             |
-| Press while not admitted (offline, before snapshot) | 0             | yes           |
-| Press on ×                                          | 0             | × closes      |
-| Drag released inside at a new position              | 1, captured   | no            |
-| Drag released inside where it already is            | 0             | no            |
-| Drag released outside the list                      | 0             | no            |
-| Escape during the drag, then release                | 0             | no            |
-| Pointer cancelled during the drag                   | 0             | no            |
-| Pointer capture lost during the drag, then release  | 0             | no            |
-| Capture of another pointer lost during the drag     | 1, captured   | no            |
-| Window loses focus during the drag, then release    | 0             | no            |
-| Window loses focus before the threshold, press back | 0             | yes           |
-| Press while the listener names no order revision    | 0             | yes           |
-| Order revision changed during the drag              | 0             | no            |
-| A conversation opened or closed during the drag     | 0             | no            |
-| Connection lost during the drag                     | 0             | no            |
-| Order changed after the press, before the threshold | 0             | yes           |
-| Movement without the button held (release missed)   | 0             | —             |
-| New press after a cancelled drag; its click         | per new press | yes           |
-| Move refused by the listener                        | 1 (refused)   | no; unchanged |
+| Case                                                                  | Move requests         | Click selects |
+| --------------------------------------------------------------------- | --------------------- | ------------- |
+| Press and release without moving                                      | 0                     | yes           |
+| Movement under 6 px, release                                          | 0                     | yes           |
+| Secondary button pressed and moved                                    | 0                     | —             |
+| Press while not admitted (offline, before snapshot)                   | 0                     | yes           |
+| Press on ×                                                            | 0                     | × closes      |
+| Drag released inside at a new position                                | 1, captured           | no            |
+| Drag released inside where it already is                              | 0                     | no            |
+| Drag released outside the list                                        | 0                     | no            |
+| Escape during the drag, then release                                  | 0                     | no            |
+| Pointer cancelled during the drag                                     | 0                     | no            |
+| Pointer capture lost during the drag, then release                    | 0                     | no            |
+| Capture of another pointer lost during the drag                       | 1, captured           | no            |
+| Window loses focus during the drag, then release                      | 0                     | no            |
+| Window loses focus before the threshold, press back                   | 0                     | yes           |
+| Press while the listener names no order revision                      | 0                     | yes           |
+| Release missed, then a new press elsewhere dragged back over the list | 0                     | —             |
+| Drag released over the divider at the list's edge                     | 0                     | no            |
+| Touch swipe on the list (the browser pans)                            | 0 (pointer cancelled) | —             |
+| Order revision changed during the drag                                | 0                     | no            |
+| A conversation opened or closed during the drag                       | 0                     | no            |
+| Connection lost during the drag                                       | 0                     | no            |
+| Order changed after the press, before the threshold                   | 0                     | yes           |
+| Movement without the button held (release missed)                     | 0                     | —             |
+| New press after a cancelled drag; its click                           | per new press         | yes           |
+| Move refused by the listener                                          | 1 (refused)           | no; unchanged |
 
 ### Markers
 
@@ -198,22 +210,28 @@ remote role sends (`src/list/entries.ts`):
   turn starts and goes when the turn ends (done, stopped or failed).
 - **Answer not seen** (green dot and tint): the Store's `unread` set.
 
-| Event                                                               | Unread mark                                                                 |
-| ------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| A turn completes in a conversation that is not shown                | set                                                                         |
-| A turn completes in the shown conversation, page visible            | not set                                                                     |
-| A turn completes in the shown conversation, page hidden (other tab) | set                                                                         |
-| A turn is stopped or fails                                          | not set                                                                     |
-| A conversation this page has not seen arrives (started elsewhere)   | set                                                                         |
-| A conversation this page has seen is reopened elsewhere             | not set                                                                     |
-| A conversation reopened from this page's Previous sessions          | not set (it is selected)                                                    |
-| The first snapshot after loading the page or pairing                | set on every conversation whose latest turn completed, except the shown one |
-| The conversation is selected (also again while shown)               | cleared                                                                     |
-| The conversation is closed                                          | cleared                                                                     |
-| Sign-out                                                            | all cleared                                                                 |
+| Event                                                                                     | Unread mark                                                                 |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| A turn completes in a conversation that is not shown                                      | set                                                                         |
+| A turn completes in the shown conversation, page visible                                  | not set                                                                     |
+| A turn completes in the shown conversation, page hidden (other tab)                       | set                                                                         |
+| A turn is stopped or fails                                                                | not set                                                                     |
+| A conversation this page has not seen arrives in an event (started elsewhere)             | set                                                                         |
+| A conversation this page has seen is reopened elsewhere                                   | not set                                                                     |
+| After a reconnect, its snapshot shows a turn that completed while offline                 | set                                                                         |
+| After a reconnect, its snapshot shows a conversation started while offline, still running | not set (no completed turn)                                                 |
+| A marked conversation closed elsewhere while offline, later reopened without a new turn   | set again (its answer is still unseen)                                      |
+| A conversation reopened from this page's Previous sessions                                | not set (it is selected)                                                    |
+| The first snapshot after loading the page or pairing                                      | set on every conversation whose latest turn completed, except the shown one |
+| The conversation is selected (also again while shown)                                     | cleared                                                                     |
+| The conversation is closed                                                                | cleared                                                                     |
+| Sign-out                                                                                  | all cleared                                                                 |
 
-The first-snapshot row is the Store's existing rule (the phone behaves the
-same): it keeps no record of what this browser saw before loading.
+The first-snapshot and offline rows are the Store's existing rules (the
+phone behaves the same): it keeps no record of what this browser saw before
+loading, and it learns of changes made while offline from the reconnect
+snapshot, where only a new completed turn counts. `test/shell/markers.test.ts`
+plays every row against the real Store.
 
 ## How it works
 
@@ -383,8 +401,11 @@ dropped, and an uncertain send's notice kept next to other notices.
 `layout.test.ts` and `reorder-gesture.test.ts` check the list's pure rules in
 Node, each with the cases of its README table above: the remembered width and
 hidden state (initial, invalid, dragged, keys, narrow windows, reload), the
-entries' icons, and the reorder gesture (every row of the reordering table,
-plus the drawn insertion line).
+entries' icons (also without `Intl.Segmenter`), changes from two tabs, and the
+reorder gesture (every row of the reordering table, plus the drawn insertion
+line). `markers.test.ts` plays every row of the markers table against the
+real phone Store in Node (with stand-ins for history, storage and page
+visibility), read through the list's own derivation.
 
 `shell.test.ts` and `list.test.ts` run the built shell in headless Chromium at
 desktop sizes, on the phone tests' fixtures (real gateway, real listener
@@ -421,14 +442,17 @@ from the keyboard; strip and chat at 420 px
 without overflow and the centred 860 px column at 1600 px; each conversation's
 own unsent text across switches; the markers table's rows for completed,
 stopped and arriving turns, a conversation reopened elsewhere, selecting and
-closing; the invisible × taking no input, close, Previous sessions and reopen; and dragging: one move with the captured revision followed by the
-listener's order, none after Escape, a release outside the list, an order
+closing; the invisible × taking no input, close, Previous sessions, one reopen
+at a time (all Reopen buttons disabled during a slow, refused reopen and
+enabled after it) and reopen; and dragging: one move with the captured revision followed by the
+listener's order, none after Escape, a release outside the list or over the
+divider at its edge, an order
 changed at the listener during the drag or a lost connection, and a refused
 move leaving the list unchanged. Each test also checks that nothing went to
 another origin and that no Content-Security-Policy violation occurred.
 
-Not covered in the browser: a page hidden in a background tab (the markers
-table's hidden-page row is the Store's rule, used unchanged); a cancelled
+Not covered in the browser: a page hidden in a background tab and reconnect
+snapshots (the markers table's rows for them are in `markers.test.ts`); a cancelled
 pointer, lost pointer capture, the window losing focus and a missing order
 revision during a drag (checked in `reorder-gesture.test.ts`); a touch or pen
 drag; the × following input the editor holds (that needs over 16,000

@@ -56,7 +56,9 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
           />
         </>
       )}
-      <section class="workspace-main">
+      {/* The page's main landmark, as slice 1's: the bar and the chat,
+          Previous sessions or the empty view. */}
+      <main class="workspace-main">
         <MainArea
           selected={selected}
           showingPrevious={state.showingPrevious}
@@ -65,7 +67,7 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
           listShown={layout.shown}
           onToggleList={layout.toggleShown}
         />
-      </section>
+      </main>
     </div>
   );
 }

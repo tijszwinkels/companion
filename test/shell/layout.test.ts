@@ -12,6 +12,7 @@ import {
 import {
   layoutStorageKey,
   readLayout,
+  rememberChange,
   writeLayout,
   type LayoutStorage,
   type ListLayout,
@@ -225,4 +226,60 @@ test('icons: a leading emoji (one grapheme) is the icon, else "Q" and the number
       testCase.title,
     );
   }
+});
+
+test('icons without Intl.Segmenter (Firefox before 125): the whole first word, as the rail', async () => {
+  const { badgeOf } = await import('../../integrations/shell/src/list/entries.ts');
+  const segmenter = Object.getOwnPropertyDescriptor(Intl, 'Segmenter')!;
+  // Removed to stand for a browser without it.
+  Reflect.deleteProperty(Intl, 'Segmenter');
+  try {
+    assert.deepEqual(badgeOf('🗺️ Route planner', 1), {
+      glyph: '🗺️',
+      caption: 'Route planner',
+      emoji: true,
+    });
+    assert.deepEqual(badgeOf('1️⃣ First step', 1), {
+      glyph: '1️⃣',
+      caption: 'First step',
+      emoji: true,
+    });
+    assert.deepEqual(badgeOf('Invoice export', 4), {
+      glyph: 'Q4',
+      caption: 'Invoice export',
+      emoji: false,
+    });
+  } finally {
+    Object.defineProperty(Intl, 'Segmenter', segmenter);
+  }
+});
+
+test('tabs: each change is applied onto what is stored now, so no tab writes back an older value', () => {
+  // Two tabs start from the default; each keeps its own copy until the
+  // other's storage event arrives (here: never, the worst ordering).
+  const storage = memoryStorage();
+  let first: ListLayout = readLayout(storage);
+  let second: ListLayout = readLayout(storage);
+
+  // The first tab widens the list; the second hides it before hearing of it.
+  first = rememberChange(storage, first, { listWidth: 300 });
+  second = rememberChange(storage, second, { listShown: false });
+  assert.deepEqual(second, { listWidth: 300, listShown: false }, 'the width set elsewhere kept');
+  assert.deepEqual(readLayout(storage), { listWidth: 300, listShown: false });
+
+  // The first tab, still showing the list, narrows it: the hidden state set
+  // elsewhere is kept too.
+  first = rememberChange(storage, first, { listWidth: 78 });
+  assert.deepEqual(first, { listWidth: 78, listShown: false });
+  assert.deepEqual(readLayout(storage), { listWidth: 78, listShown: false });
+
+  // Nothing stored yet: the tab's own copy is the base.
+  const empty = memoryStorage();
+  assert.deepEqual(
+    rememberChange(empty, { listWidth: 300, listShown: true }, { listShown: false }),
+    {
+      listWidth: 300,
+      listShown: false,
+    },
+  );
 });

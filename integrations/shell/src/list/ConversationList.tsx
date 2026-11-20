@@ -81,9 +81,13 @@ export function ConversationList(props: {
   // buttons (`bridge.canClose`) without a phone Store change: re-render then.
   const [, setHeldInputVersion] = useState(0);
   useEffect(() => {
-    return props.bridge.onHeldInputChange(() => {
+    const changed = () => {
       setHeldInputVersion((version) => version + 1);
-    });
+    };
+    const unsubscribe = props.bridge.onHeldInputChange(changed);
+    // It can change between the first render and this subscription.
+    changed();
+    return unsubscribe;
   }, [props.bridge]);
 
   /** Redraw the drag feedback; stop edge scrolling when no drag is active. */
@@ -106,7 +110,10 @@ export function ConversationList(props: {
       return { beforeId: '', inside: false };
     }
     const box = element.getBoundingClientRect();
-    const inside = x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+    // Inside means the list is what the pointer is over: not the divider
+    // that overlaps its edge, a toast above it, or anything else on top.
+    const over = document.elementFromPoint(x, y);
+    const inside = over !== null && element.contains(over);
 
     const rows: { id: string; top: number; height: number }[] = [];
     for (const row of element.querySelectorAll<HTMLElement>('.conversation-entry[data-id]')) {
@@ -230,6 +237,13 @@ export function ConversationList(props: {
       refresh();
     };
 
+    // Any new press, in the list or elsewhere, ends what an earlier press
+    // left behind. (Capture phase: before an entry starts its own gesture.)
+    const anyPress = () => {
+      gesture.current.anotherPress();
+      refresh();
+    };
+
     // The window lost focus or was hidden: the release may happen where the
     // page cannot see it, so the gesture ends without a move.
     const left = () => {
@@ -255,9 +269,11 @@ export function ConversationList(props: {
     window.addEventListener('pointerup', release);
     window.addEventListener('pointercancel', cancel);
     window.addEventListener('keydown', escape, true);
+    window.addEventListener('pointerdown', anyPress, true);
     window.addEventListener('blur', left);
     document.addEventListener('visibilitychange', visibility);
     return () => {
+      window.removeEventListener('pointerdown', anyPress, true);
       window.removeEventListener('blur', left);
       document.removeEventListener('visibilitychange', visibility);
       window.removeEventListener('pointermove', move);

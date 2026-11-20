@@ -21,7 +21,7 @@ import {
 import {
   layoutStorageKey,
   readLayout,
-  writeLayout,
+  rememberChange,
   type LayoutStorage,
   type ListLayout,
 } from './stored-layout.ts';
@@ -99,16 +99,21 @@ export function useListLayout(): ListLayoutView {
     return () => window.removeEventListener('storage', changedElsewhere);
   }, []);
 
-  function change(next: ListLayout, remember: boolean) {
+  /**
+   * Apply one change. A remembered change is applied onto what is stored
+   * now, not onto this tab's copy: another tab may have written since and
+   * its `storage` event may not have arrived yet. Only the field the change
+   * names is taken from this tab, so ☰ here never writes back an older
+   * width, and a width set here never writes back an older hidden state.
+   */
+  function change(update: Partial<ListLayout>, remember: boolean) {
+    const storage = pageStorage();
+    let next: ListLayout = { ...latest.current, ...update };
+    if (remember && storage) {
+      next = rememberChange(storage, latest.current, update);
+    }
     latest.current = next;
     setLayout(next);
-    if (!remember) {
-      return;
-    }
-    const storage = pageStorage();
-    if (storage) {
-      writeLayout(storage, next);
-    }
   }
 
   const shownWidth = shownListWidth(layout.listWidth, width);
@@ -119,13 +124,15 @@ export function useListLayout(): ListLayoutView {
     appearance: appearanceOf(shownWidth),
     widest: widestShownListWidth(width),
     setWidth(listWidth, remember) {
-      change({ ...latest.current, listWidth }, remember);
+      change({ listWidth }, remember);
     },
     remember() {
-      change(latest.current, true);
+      // The end of a divider drag: the width this tab followed.
+      change({ listWidth: latest.current.listWidth }, true);
     },
     toggleShown() {
-      change({ ...latest.current, listShown: !latest.current.listShown }, true);
+      // Toggles what this tab shows (the person pressed ☰ on what they saw).
+      change({ listShown: !latest.current.listShown }, true);
     },
   };
 }

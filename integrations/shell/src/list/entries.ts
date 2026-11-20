@@ -38,11 +38,33 @@ export interface ListEntry {
   unread: boolean;
 }
 
-/** A title's first character as the reader sees it (one grapheme cluster). */
-const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+/**
+ * A title's first character as the reader sees it: its first grapheme
+ * cluster where the browser can segment text (`Intl.Segmenter`), else its
+ * whole first word, the rail's rule. (Firefox before 125, a supported
+ * target, has no Segmenter; the shell must still start there.)
+ */
+function firstCharacter(text: string): string {
+  if (typeof Intl.Segmenter === 'function') {
+    const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (const segment of graphemes.segment(text)) {
+      return segment.segment;
+    }
+    return '';
+  }
+  return text.split(/\s+/)[0] ?? '';
+}
 
-/** Emoji, flags (regional indicators) and keycaps, as the phone's tab icon detects them. */
-const emojiPattern = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u;
+/** Pictographs and flag letters (regional indicators), as the phone's tab icon detects them. */
+const emojiStart = /^(\p{Extended_Pictographic}|\p{Regional_Indicator})/u;
+
+/** A keycap ("1️⃣"): a digit or sign followed by the combining keycap mark. */
+const keycapMark = '\u20e3';
+
+/** Whether a title's first character is an emoji. */
+function isEmoji(first: string): boolean {
+  return emojiStart.test(first) || first.includes(keycapMark);
+}
 
 /**
  * The entry's icon and caption. A title that starts with an emoji shows that
@@ -60,12 +82,8 @@ export function badgeOf(
   number: number,
 ): { glyph: string; caption: string; emoji: boolean } {
   const trimmed = title.trim();
-  let first = '';
-  for (const segment of graphemes.segment(trimmed)) {
-    first = segment.segment;
-    break;
-  }
-  if (first && emojiPattern.test(first)) {
+  const first = firstCharacter(trimmed);
+  if (first && isEmoji(first)) {
     return { glyph: first, caption: trimmed.slice(first.length).trim(), emoji: true };
   }
   return { glyph: `Q${number}`, caption: trimmed, emoji: false };

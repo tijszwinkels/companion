@@ -253,6 +253,16 @@ export class ReorderGesture {
   }
 
   /**
+   * A pointer went down anywhere in the page. Whatever an earlier press
+   * left behind (its release was missed) ends here without a move, so a
+   * new press, in the list or elsewhere, never continues an old gesture.
+   * A press on an entry then starts its own gesture with `pointerDown`.
+   */
+  anotherPress(): void {
+    this.press = null;
+  }
+
+  /**
    * The window lost focus or was hidden. The release may now happen where
    * this page cannot see it, and the same pointer may press again elsewhere
    * and come back with the button held; neither may continue this gesture.

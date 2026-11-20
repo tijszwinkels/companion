@@ -44,6 +44,7 @@ type Step =
   | { cancel: true; pointer?: number }
   | { lostCapture: true; pointer?: number }
   | { windowLeft: true }
+  | { pressElsewhere: true }
   | { escape: true }
   | { orderChanged: OrderState };
 
@@ -89,6 +90,8 @@ function play(steps: Step[]): Outcome {
       gesture.lostCapture(step.pointer ?? 1);
     } else if ('windowLeft' in step) {
       gesture.windowLeft();
+    } else if ('pressElsewhere' in step) {
+      gesture.anotherPress();
     } else if ('escape' in step) {
       gesture.escape();
     } else {
@@ -185,6 +188,26 @@ const cases: { name: string; steps: Step[]; expected: Outcome }[] = [
       { windowLeft: true },
       { move: [10, 50], to: inside('') },
       { up: inside('') },
+    ],
+    expected: { moves: [], clickSelects: true },
+  },
+  {
+    name: 'release missed, then a new press elsewhere dragged back over the list',
+    steps: [
+      { down: 'a' },
+      { pressElsewhere: true },
+      { move: [10, 50], to: inside('') },
+      { up: inside('') },
+    ],
+    expected: { moves: [], clickSelects: true },
+  },
+  {
+    name: 'a drag whose release was missed, then a new press elsewhere',
+    steps: [
+      ...dragA,
+      { pressElsewhere: true },
+      { move: [10, 60], to: inside('d') },
+      { up: inside('d') },
     ],
     expected: { moves: [], clickSelects: true },
   },
