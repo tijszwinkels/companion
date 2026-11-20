@@ -2994,6 +2994,9 @@ export class AgentSessions implements InspectableModule {
 
   async idle(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((session) => session.done));
+    // A turn no longer waits for the save of the unread mark it set; being
+    // idle includes those saves (and any started by reports meanwhile).
+    await Promise.all([...this.unreadWrites]);
   }
 
   async close(): Promise<void> {
