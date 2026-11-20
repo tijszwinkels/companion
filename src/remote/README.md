@@ -742,13 +742,15 @@ same checks as the desktop; the listener applies them
    when the request arrives and again when the change runs, so a page hidden
    or switched in between allows nothing. When the gateway refuses one of a
    client's `panel-state` reports (request rate or pending bound), that
-   report may have hidden the page or moved it, so the gateway tells the
-   listener the page shows nothing (`id: ""`, `visible: false`, the last
-   report's draft-host fields): it never repeats a cached selection. Before
-   the role is confirmed this report keeps its place among the queued
-   requests. The gateway writes at most one per forwarded report that showed
-   something, and nobody waits for its reply. The client's next accepted
-   report replaces it. A report the listener itself refuses (for example for
+   report may have hidden the page or moved it, so the gateway sends the
+   listener `{"action":"report-refused","id":"<the refused report's id>"}`:
+   the connection stops counting as visible, and its selection ends unless
+   the refused report named the same conversation (a refused hide keeps it,
+   so a waiting Stop still runs). The notice never selects anything and
+   never changes draft fields. Before the role is confirmed it keeps its
+   place among the queued requests. The gateway sends one only when it can
+   change something (at most two per forwarded report), and nobody waits for
+   its reply. The client's next accepted report replaces its effect. A report the listener itself refuses (for example for
    a conversation that has just closed) likewise ends the connection's
    selection and visibility. A connection whose client left
    (`withdraw-visibility`) can stop but not allow. Refusals say "Open this

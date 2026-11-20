@@ -70,12 +70,15 @@ const draftEditRefusal = 'Too many draft edits; this edit was not saved';
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
 const withdrawalRequestId = 'withdraw';
 
+/** Upstream request ID of the gateway's `report-refused` notices (see reportRefused). */
+const reportRefusedRequestId = 'report-refused';
+
 /**
- * Upstream request ID of a report the gateway writes itself (see
- * reportNothingShown). Before role confirmation it also marks that report's
- * place among the queued requests.
+ * Before role confirmation, a refused report's place among the queued
+ * requests is kept as this prefix plus the conversation it named (a UUID or
+ * empty). Upstream request IDs are `r<number>`, so the two never collide.
  */
-const nothingShownRequestId = 'nothing-shown';
+const refusedReportMarker = 'refused:';
 
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
@@ -145,11 +148,14 @@ export class Relay {
    */
   private withdrawal: 'none' | 'wanted' | 'sent' = 'none';
   /**
-   * The fields of the last `panel-state` written upstream (without its
-   * request ID): what the listener believes this connection shows. See
-   * reportNothingShown.
+   * What the listener may still hold for this connection, from the reports
+   * written upstream and the notices since: the selected conversation, and
+   * whether the page may count as visible. Only used to skip notices that
+   * would change nothing (see reportRefused); the listener only ever lowers
+   * its state on a notice, so a needless one is harmless.
    */
-  private lastReport?: Record<string, unknown>;
+  private reportedSelection = '';
+  private reportedVisible = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   /**
    * Whether this connection is a draft host (the client asked with
@@ -263,7 +269,7 @@ export class Relay {
         message: 'Too many requests; slow down',
       });
       if (parsed.request.action === 'panel-state') {
-        this.reportNothingShown();
+        this.reportRefused(parsed.request.id);
       }
       return;
     }
@@ -343,7 +349,7 @@ export class Relay {
           : 'Too many unfinished requests; wait for earlier ones',
       });
       if (request.action === 'panel-state') {
-        this.reportNothingShown();
+        this.reportRefused(request.id);
       }
       return;
     }
@@ -388,53 +394,68 @@ export class Relay {
     // started closing) describes a page nobody sees any more: keep its
     // selection and order, but never let it count as visible.
     if (request.action === 'panel-state' && !this.phoneIsOpen()) {
-      this.lastReport = { ...fields, ...draftHost, visible: false };
-      this.writeUpstream({ ...this.lastReport, requestId: upstreamId });
+      this.reportedSelection = request.id;
+      this.reportedVisible = false;
+      this.writeUpstream({ ...fields, ...draftHost, visible: false, requestId: upstreamId });
       return;
     }
     if (request.action === 'panel-state') {
-      this.lastReport = { ...fields, ...draftHost };
+      this.reportedSelection = request.id;
+      this.reportedVisible = request.visible === true;
     }
     this.writeUpstream({ ...fields, ...draftHost, requestId: upstreamId });
   }
 
   /**
    * The gateway refused one of the client's `panel-state` reports (request
-   * rate or pending bound). That report may have hidden the page, or moved
-   * it to another conversation or to none, so the listener must stop
-   * counting what the last forwarded report recorded: an application chat
-   * permission waiting in the listener's queue would otherwise be allowed,
-   * or stopped, for a conversation the person may have left, and the unread
-   * mark would keep clearing. The gateway therefore reports that the page
-   * shows nothing (`id: ""`, `visible: false`), keeping the last report's
-   * draft-host fields. It never repeats a selection: a cached one could even
-   * select a conversation that has since been closed and reopened.
+   * rate or pending bound), which named conversation `id`. That report may
+   * have hidden the page or moved it, so the listener must not keep counting
+   * what the last forwarded report recorded: an application chat permission
+   * waiting in the listener's queue could otherwise be allowed on a page
+   * nobody sees, and the unread mark would keep clearing. The gateway sends
+   * the listener `{"action":"report-refused","id":…}`: the connection stops
+   * counting as visible, and its selection ends unless it is `id` (a hide of
+   * the same conversation keeps it, so a waiting Stop still runs). The
+   * listener never selects anything or changes draft fields for it.
    *
-   * Before the role is confirmed, requests wait in `queued`; this report
-   * takes its place there among them, so it follows exactly the requests
-   * admitted before the refusal and precedes those admitted after it.
+   * Before the role is confirmed, requests wait in `queued`; the notice takes
+   * its place there among them, so it follows exactly the requests admitted
+   * before the refusal and precedes those admitted after it.
    *
-   * At most one such report follows each forwarded report that showed
-   * something, so a flood of refused reports never becomes a flood upstream.
-   * The listener never waits on a report and takes no slot for it; nobody
-   * waits for its reply. The client's next accepted report replaces it.
+   * A notice is written only when it can change something, so a flood of
+   * refused reports becomes at most two notices per forwarded report. The
+   * listener never waits on it and takes no slot for it; nobody waits for its
+   * reply. The client's next accepted report replaces its effect.
    */
-  private reportNothingShown(): void {
+  private reportRefused(id: string): void {
     if (!this.ready) {
-      if (this.queued[this.queued.length - 1] !== nothingShownRequestId) {
-        this.queued.push(nothingShownRequestId);
+      const marker = refusedReportMarker + id;
+      const last = this.queued[this.queued.length - 1];
+      if (last === marker) {
+        return;
       }
+      if (last?.startsWith(refusedReportMarker)) {
+        // Two refusals in a row naming different conversations: together
+        // they keep no selection. One notice for no conversation says so.
+        this.queued[this.queued.length - 1] = refusedReportMarker;
+        return;
+      }
+      this.queued.push(marker);
       return;
     }
-    if (this.upstream.destroyed || !this.lastReport) {
-      return;
-    }
-    if (this.lastReport.id === '' && this.lastReport.visible !== true) {
+    if (this.upstream.destroyed) {
       return;
     }
 
-    this.lastReport = { ...this.lastReport, id: '', visible: false };
-    this.writeUpstream({ ...this.lastReport, requestId: nothingShownRequestId });
+    const endsSelection = this.reportedSelection !== '' && this.reportedSelection !== id;
+    if (!this.reportedVisible && !endsSelection) {
+      return;
+    }
+    this.reportedVisible = false;
+    if (endsSelection) {
+      this.reportedSelection = '';
+    }
+    this.writeUpstream({ action: 'report-refused', id, requestId: reportRefusedRequestId });
   }
 
   /** The device's rate limit is shared by all its connections. */
@@ -550,7 +571,7 @@ export class Relay {
       return;
     }
 
-    if (isReply && message.requestId === nothingShownRequestId) {
+    if (isReply && message.requestId === reportRefusedRequestId) {
       // Nobody waits for the gateway's own report either.
       return;
     }
@@ -628,9 +649,9 @@ export class Relay {
 
     // Requests sent while the role was being declared keep their order.
     for (const upstreamId of this.queued.splice(0)) {
-      if (upstreamId === nothingShownRequestId) {
+      if (upstreamId.startsWith(refusedReportMarker)) {
         // A report refused while the role was being declared (in its place).
-        this.reportNothingShown();
+        this.reportRefused(upstreamId.slice(refusedReportMarker.length));
         continue;
       }
       const pending = this.pending.get(upstreamId);

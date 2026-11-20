@@ -395,49 +395,114 @@ test('desktop connection: these two actions behave exactly as before', async (co
   }
 });
 
-test('a report the gateway refuses ends what the last report recorded', async (context) => {
+test('a report the gateway refuses: visibility ends, a hide keeps the selection', async (context) => {
   // The device's request budget runs out just when the page changes: the
-  // gateway refuses the report, so it tells the listener the page shows
-  // nothing (it might have been hidden or moved), and the waiting grant is
-  // refused. It never repeats a selection.
+  // gateway refuses the report and tells the listener (`report-refused`).
+  // The page no longer counts as visible; its selection ends unless the
+  // refused report named the same conversation.
   const f = await consentFixture();
   context.after(() => f.close());
   const id = f.applicationConversation;
 
-  for (const permission of ['read', 'send'] as const) {
-    await f.arrange(permission, false);
-    const phone = await f.openPhone();
-    await f.phoneReports(phone, id, true);
+  const cases: {
+    refused: string;
+    report: () => Record<string, unknown>;
+    allow: RegExp;
+    stop: Outcome;
+  }[] = [
+    { refused: 'hide', report: () => ({ id, visible: false }), allow: showFirst, stop: changed },
+    {
+      refused: 'switch',
+      report: () => ({ id: f.otherConversation, visible: true }),
+      allow: openFirst,
+      stop: openFirst,
+    },
+    {
+      refused: 'deselect',
+      report: () => ({ id: '', visible: true }),
+      allow: openFirst,
+      stop: openFirst,
+    },
+  ];
 
-    const release = await f.holdApplicationQueue();
-    const waiting = f.phoneSend(phone, f.change(permission, true));
+  for (const row of cases) {
+    for (const permission of ['read', 'send'] as const) {
+      for (const allowed of [true, false]) {
+        const label = `refused ${row.refused} / ${allowed ? 'allow' : 'stop'} ${permission}`;
+        const expected = allowed ? row.allow : row.stop;
+        await f.arrange(permission, !allowed);
+        const phone = await f.openPhone();
+        await f.phoneReports(phone, id, true);
 
-    // Spend the rest of the device's budget (pings share it), then hide.
-    for (let ping = 0; ping < 60; ping++) {
-      phone.socket.send(JSON.stringify({ type: 'ping' }));
+        const release = await f.holdApplicationQueue();
+        const waiting = f.phoneSend(phone, f.change(permission, allowed));
+
+        // Spend the rest of the device's budget (pings share it), then report.
+        for (let ping = 0; ping < 60; ping++) {
+          phone.socket.send(JSON.stringify({ type: 'ping' }));
+        }
+        const report = await f.phoneSend(phone, { action: 'panel-state', ...row.report() }).reply();
+        assert.equal(report.type, 'error', label);
+        assert.match(report.message!, /Too many requests/, label);
+
+        await waitFor(() => !f.remoteVisibleSelections().includes(id), 3000);
+        await release();
+        const answer = await waiting.reply();
+        if (expected === changed) {
+          assert.equal(answer.type, 'result', `${label}: ${answer.message}`);
+          assert.equal(f.allowedNow(permission), allowed, label);
+        } else {
+          assert.equal(answer.type, 'error', label);
+          assert.match(answer.message!, expected, label);
+          assert.equal(f.allowedNow(permission), !allowed, label);
+        }
+        await f.closePhone(phone);
+      }
     }
-    const hide = await f.phoneSend(phone, { action: 'panel-state', id, visible: false }).reply();
-    assert.equal(hide.type, 'error');
-    assert.match(hide.message!, /Too many requests/);
-
-    await waitFor(() => f.remoteSelections().every((selection) => selection === ''), 3000);
-    await release();
-    const answer = await waiting.reply();
-    assert.equal(answer.type, 'error', permission);
-    assert.match(answer.message!, openFirst, permission);
-    assert.equal(f.allowedNow(permission), false, permission);
-
-    // The client's next accepted report counts again, once the budget refills.
-    await delay(1000);
-    await f.phoneReports(phone, id, true);
-    const allowed = await f.phoneSend(phone, f.change(permission, true)).reply();
-    assert.equal(allowed.type, 'result', allowed.message ?? '');
-    await f.phoneReports(phone, id, false);
-    const stopped = await f.phoneSend(phone, f.change(permission, false)).reply();
-    assert.equal(stopped.type, 'result', stopped.message ?? '');
-    assert.equal(f.allowedNow(permission), false, permission);
-    await f.closePhone(phone);
   }
+});
+
+test('report-refused only lowers what a remote connection shows, never draft fields', async (context) => {
+  const f = await consentFixture();
+  context.after(() => f.close());
+  const id = f.applicationConversation;
+  const runtime = f.fixture.desktop.runtime as unknown as {
+    remoteClients: Map<number, { selection: string; visibleSelection: string }>;
+    draftHosts: Set<number>;
+    pendingDraftSends: Map<number, string>;
+  };
+
+  // Desktop connections cannot send it.
+  const desktop = await f.desktopSend({ action: 'report-refused', id }).reply();
+  assert.equal(desktop.type, 'error');
+
+  const control = await f.remoteControlConnection();
+  context.after(() => control.close());
+  assert.equal((await control.request({ action: 'client-role', role: 'remote' })).type, 'result');
+  const report = { action: 'panel-state', id, visible: true, draftHost: true, pendingSend: id };
+  assert.equal((await control.request(report)).type, 'result');
+  const remote = () => [...runtime.remoteClients.values()][0];
+  assert.equal(remote().visibleSelection, id);
+
+  // The same conversation: visibility ends, the selection stays.
+  assert.equal((await control.request({ action: 'report-refused', id })).result, 'report-refused');
+  assert.equal(remote().selection, id);
+  assert.equal(remote().visibleSelection, '');
+
+  // Another conversation: the selection ends too; nothing is ever selected.
+  const other = f.otherConversation;
+  assert.equal((await control.request({ action: 'report-refused', id: other })).type, 'result');
+  assert.equal(remote().selection, '');
+  assert.equal(remote().visibleSelection, '');
+  assert.equal((await control.request({ action: 'report-refused', id: other })).type, 'result');
+  assert.equal(remote().selection, '');
+
+  // Draft hosting and the pending send are untouched.
+  assert.equal(runtime.draftHosts.size, 1);
+  assert.deepEqual([...runtime.pendingDraftSends.values()], [id]);
+
+  // A malformed notice is refused and changes nothing more.
+  assert.equal((await control.request({ action: 'report-refused' })).type, 'error');
 });
 
 test('a report the listener refuses ends what the last report recorded', async (context) => {

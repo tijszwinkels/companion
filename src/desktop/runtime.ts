@@ -2189,6 +2189,29 @@ export class DesktopRuntime {
       return 'visibility-withdrawn';
     }
 
+    if (request.action === 'report-refused') {
+      // Sent by the gateway when it refused one of its client's panel
+      // reports (request rate or pending bound; src/remote/relay.ts). That
+      // report may have hidden the page or moved it, so this connection stops
+      // counting as visible, and its selection ends unless the refused report
+      // named the same conversation (a hide keeps it, so Stop still works).
+      // It only ever lowers what the connection shows: it never selects a
+      // conversation and leaves draft hosting and a pending send alone.
+      // Never waits; never refused for a remote connection with a valid `id`.
+      if (!remote) {
+        throw Error('Only remote panels can report a refused panel report');
+      }
+      if (typeof request.id !== 'string') {
+        throw Error("Expected the refused report's conversation id (or empty id)");
+      }
+      remote.visibleSelection = '';
+      if (remote.selection !== request.id) {
+        remote.selection = '';
+        this.publishRemoteAgentActions(clientId);
+      }
+      return 'report-refused';
+    }
+
     if (remote && typeof request.action === 'string' && desktopOnlyActions.has(request.action)) {
       throw Error('This action is only available on the desktop');
     }

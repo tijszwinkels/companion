@@ -1670,6 +1670,13 @@ For a remote connection:
   its client has left while that client's requests still drain. It names no
   conversation and is idempotent, so it cannot be refused for a remote
   connection; the result is `visibility-withdrawn`.
+- `{"action":"report-refused","id":"<conversation or empty>"}` (remote
+  connections only; desktop connections are refused) is sent by the gateway
+  when it refused one of its client's `panel-state` reports, which named
+  `id`. The connection stops counting as visible, and its selection ends
+  unless it is `id`. It never selects a conversation and leaves draft hosting
+  and a pending send alone. It never waits and takes no slot; the result is
+  `report-refused`.
 - `set-application-chat-read` and `set-application-chat-send` follow the
   remote rule in [application chat access from a paired
   device](#application-chat-access-from-a-paired-device): allowing needs that
@@ -1735,9 +1742,9 @@ Rules:
    selection and can stop but allow nothing. A closed conversation clears
    every remote selection of it. A remote `panel-state` the listener refuses
    (for example naming a conversation that has just closed) ends that
-   connection's selection and visibility, since its page has moved on; the
-   gateway reports an empty selection for a report it refuses itself
-   ([its rule](../remote/README.md#application-chat-access)).
+   connection's selection and visibility, since its page has moved on. For
+   a report the gateway refuses itself it sends `report-refused` ([remote
+   panels](#remote-panels)).
 5. Refusals for remote connections: "Open this conversation on this device
    first" when its selection is not the conversation, "Show this conversation
    on this device first" when allowing from a page that is not visible. They
@@ -1774,7 +1781,9 @@ gateway and a real control socket):
 | remote     | selected, visible                     | client leaves (withdrawn)        | Show … first           | yes                   |
 | remote     | selected, hidden                      | becomes visible                  | Show … first (arrival) | yes                   |
 | remote     | selected, visible                     | listener refuses its next report | Open … first           | Open … first          |
-| remote     | selected, visible                     | gateway refuses its next report  | Open … first           | Open … first          |
+| remote     | selected, visible                     | gateway refuses a hide           | Show … first           | yes                   |
+| remote     | selected, visible                     | gateway refuses a switch         | Open … first           | Open … first          |
+| remote     | selected, visible                     | gateway refuses a deselect       | Open … first           | Open … first          |
 | either     | admitted, wrong application ID        | —                                | permissions changed    | permissions changed   |
 | either     | admitted, old code version            | —                                | permissions changed    | permissions changed   |
 | either     | admitted, old permission revision     | —                                | permissions changed    | permissions changed   |
