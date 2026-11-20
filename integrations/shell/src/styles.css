@@ -931,10 +931,11 @@ body {
   display: contents;
 }
 
-/* Over everything (toasts are z-index 10), opaque, until Retry connects. */
+/* Over everything (toasts are z-index 10, the screenshot viewer's layer
+   20), opaque, until Retry connects. */
 .limit-page {
   position: fixed;
-  z-index: 20;
+  z-index: 30;
   inset: 0;
   display: flex;
   align-items: center;

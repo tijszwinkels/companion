@@ -1316,8 +1316,8 @@ tab closed, the `total` limit).
 
 Known limit: if the browser reports going offline just before the named
 refusal arrives, the page treats it as a network loss and makes one more
-attempt when the network returns; that attempt is refused again and then
-shows the limit page.
+attempt when the network returns; if the limit still holds, that attempt is
+refused and shows the limit page.
 
 ### The Stop rule
 

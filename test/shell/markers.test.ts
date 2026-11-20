@@ -770,6 +770,19 @@ test('fallback for an older listener: a cover that lifts clears the shown conver
   store.open('b');
   await settle(context);
   assert.deepEqual(marks(store), { a: 'U', b: 'W' }, 'Back to B: A keeps its mark');
+
+  // Under the limit page nothing is shown: choosing A there (browser Back)
+  // keeps its mark.
+  internals(store).connectionChanged({
+    status: 'limited',
+    message: '',
+    retryAt: 0,
+    deviceName: 'Browser',
+    limit: 'device',
+  });
+  store.open('a');
+  await settle(context);
+  assert.equal(marks(store).a, 'U', 'selected under the limit page: kept');
 });
 
 test('phone: Back over a dialog with a page chosen meanwhile publishes only that page', async (context) => {

@@ -305,8 +305,10 @@ export class Store {
     // Selecting shows the conversation, which clears its own mark; unless it
     // is selected where the reader does not see it (see `selectionShown`).
     // The listener's mark is cleared by the listener when this page reports
-    // the selection as visible.
-    if (this.selectionShown()) {
+    // the selection as visible. Under the limit page (browser Back there)
+    // nothing is shown either.
+    const limited = this.state.connection.status === 'limited';
+    if (this.selectionShown() && !limited) {
       ownUnread.delete(id);
     }
     this.ownUnread = ownUnread;
@@ -963,11 +965,14 @@ export class Store {
 
   /**
    * Whether the reader sees the selected conversation now: the page is
-   * visible, shows it (`selectionShown`) and no modal (a phone sheet, menu
-   * or the screenshot viewer) lies over it.
+   * visible, shows it (`selectionShown`), and neither the limit page nor a
+   * modal (a phone sheet, menu or the screenshot viewer) lies over it.
    */
   private selectionVisible(): boolean {
     if (document.visibilityState !== 'visible') {
+      return false;
+    }
+    if (this.state.connection.status === 'limited') {
       return false;
     }
     if (this.navigation.modalOpen) {
