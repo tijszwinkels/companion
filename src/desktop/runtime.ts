@@ -299,12 +299,13 @@ export class DesktopRuntime {
   // (`desktopDraftClient`).
   private readonly draftHosts = new Map<number, number>();
   // The authoritative unsent text of every conversation's text box (last
-  // received write wins). Read and written only by trusted desktop editors,
-  // the draft hosts; never sent to remote panels or applications.
+  // received write wins). Read and written only by the draft hosts: trusted
+  // desktop editors and remote panels whose client asked for drafts; never
+  // sent to other remote panels or to applications.
   private readonly drafts = new DraftStore((id) => this.knownConversation(id));
-  // Per desktop editor: the conversation whose send awaits its reply there
-  // (reported in panel-state). Agent drafts for it are refused meanwhile, as
-  // the editor itself did when it owned drafts.
+  // Per draft host, desktop or remote: the conversation whose send awaits
+  // its reply there (reported in panel-state). Agent drafts for it are
+  // refused meanwhile, as the editor itself did when it owned drafts.
   private readonly pendingDraftSends = new Map<number, string>();
   private draftReportSequence = 0;
   // Connections that declared the remote role, keyed by server client ID.
