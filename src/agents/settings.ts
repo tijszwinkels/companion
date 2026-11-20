@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, lstat, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,7 +75,9 @@ const topLevelKeys = [
 /**
  * Read afresh for each question so model edits need no Companion restart.
  * Initialize only when a session is requested, never during graph inspection.
- * An exclusive create preserves user edits and handles simultaneous starters.
+ * The file is published complete and never replaced (see
+ * `createConfigurationFileIfMissing`), which preserves user edits and handles
+ * simultaneous starters.
  */
 export async function loadAgentSettings(
   directory: string,
@@ -120,16 +123,7 @@ export async function loadAgentConfiguration(
 
   if (initialize) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    try {
-      await writeFile(path, JSON.stringify(initialAgentConfigurationFile(), null, 2) + '\n', {
-        flag: 'wx',
-        mode: 0o600,
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-    }
+    await createConfigurationFileIfMissing(directory, path);
   }
 
   let value: unknown;
@@ -143,6 +137,63 @@ export async function loadAgentConfiguration(
   }
 
   return parseAgentConfiguration(value, path);
+}
+
+/**
+ * Create `companion-agent.json` with every section's defaults unless something
+ * already exists at `path`. An existing file is never rewritten or reformatted.
+ *
+ * Concurrency: other loads, in this process or another, may read the file at
+ * any moment. Creating the file and writing it afterwards would let such a
+ * reader see an empty file and fail with "Unexpected end of JSON input". So the
+ * contents go into a private temporary file in the same directory first, and
+ * `link` then publishes it complete: a reader sees no file or the whole file.
+ * `link`, unlike `rename`, fails when the name exists, so of several
+ * simultaneous creators exactly one wins and the others keep its file.
+ *
+ * Cleanup: the temporary name is always removed. After a successful `link` the
+ * published name still refers to the same contents.
+ */
+async function createConfigurationFileIfMissing(directory: string, path: string): Promise<void> {
+  // Every question loads the configuration, so skip the temporary file when
+  // the name exists. `lstat` also counts a symbolic link, as `link` would.
+  try {
+    await lstat(path);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  const contents = JSON.stringify(initialAgentConfigurationFile(), null, 2) + '\n';
+
+  // The same directory keeps `link` on one filesystem. `wx` never reuses
+  // another file, and the hidden name keeps it out of the user's way.
+  const temporary = join(directory, `.companion-agent.json.${randomUUID()}.tmp`);
+
+  try {
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(contents, 'utf8');
+
+      // Flush before publishing, so a crash cannot leave an empty published file.
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+
+    try {
+      await link(temporary, path);
+    } catch (error) {
+      // Another creator published first, or the user created the file; keep it.
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  } finally {
+    await unlink(temporary).catch(() => {});
+  }
 }
 
 /**
