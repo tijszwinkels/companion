@@ -546,8 +546,8 @@ test(
     await clickSelector(page, barToggle);
     await openConversation(page, 'Layout conversation');
 
-    // 1600 px: list, chat and column side by side; the chat column is
-    // centred and at most 860 px wide.
+    // 1600 px: list, chat and column side by side; the chat column uses
+    // the main area's whole width.
     await resize(page, 1600);
     await page.waitFor(`${columnWidth} === 340`);
     const list = await box(page, '.conversations');
@@ -557,10 +557,8 @@ test(
     assert.ok(list.right <= main.left + 1, 'list left of the chat');
     assert.ok(main.right <= side.left + 1, 'chat left of the column');
     assert.equal(Math.round(side.right), 1600);
-    assert.ok(chat.width <= 860, `chat column ${chat.width} px`);
-    const leftGap = chat.left - main.left;
-    const rightGap = main.right - chat.right;
-    assert.ok(Math.abs(leftGap - rightGap) <= 1, 'chat column centred');
+    assert.equal(chat.width, main.width, `chat column ${chat.width} px`);
+    assert.equal(chat.left, main.left);
     assert.equal(await horizontalOverflow(page), 0);
 
     // 700 px: the column gives way to keep the chat at 320 px.

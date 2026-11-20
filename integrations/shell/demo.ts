@@ -15,6 +15,13 @@
  * and a new synthetic entry is heard every 40 seconds (six in all), so the
  * new-activity marker can be seen while the Activity column is hidden.
  *
+ * Turn and message times: one conversation (the invoice export) was asked
+ * "yesterday" and continued today, so its messages show both kinds of
+ * time; the flaky-test conversation's turn keeps running, so its timer
+ * counts in the bar and the list; the others show how long their last turn
+ * took. (The listener's clock is shifted back by a day and two hours for
+ * that first turn only; see `demoClock`.)
+ *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
  * screen or microphone, or binds a non-loopback address. Ctrl+C stops
@@ -254,6 +261,14 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     }
   };
 
+  /**
+   * The listener's clock for the demo's conversations: real time, except
+   * while the first conversation's first turn runs, when it is a day and
+   * two hours earlier, so that turn's messages were written "yesterday".
+   */
+  let demoClockShift = -26 * 60 * 60 * 1000;
+  const demoClock = () => Date.now() + demoClockShift;
+
   sessions = new AgentSessions(
     {
       pi: {
@@ -275,6 +290,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     },
     () => {},
     directory,
+    undefined,
+    undefined,
+    // The default (as before this clock was added): nothing saved.
+    new CaptureStoragePolicy(),
+    demoClock,
   );
 
   // ---- Listener runtime ------------------------------------------------------------
@@ -451,9 +471,24 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   // complete before the browser pairs, so the browser shows them unread at
   // first (the phone Store's rule for a fresh page); opening one marks it
   // read.
+  //
+  // The invoice export is asked "yesterday" (the shifted clock) and, once
+  // that turn has ended, continued today, so it shows both kinds of time.
+  const invoice = sessions.start(frame('🧾 Explain the invoice export'), controller.signal);
+  for (let waited = 0; waited < 20_000; waited += 50) {
+    continueStartup();
+    const session = sessions.snapshot().find((candidate) => candidate.id === invoice);
+    if (session && session.turnStartedAt === undefined && session.status === 'completed') {
+      break;
+    }
+    await delay(50);
+  }
+  demoClockShift = 0;
+  continueStartup();
+  sessions.followUp(invoice, 'Thanks. Is anything left to do today?', controller.signal);
+
   sessions.start(frame('🐛 Why does the list test fail? Please fix the bug.'), controller.signal);
   sessions.start(frame('🗺️ Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
-  sessions.start(frame('🧾 Explain the invoice export'), controller.signal);
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
   sessions.start(frame('Notification rules: summarise them'), controller.signal, 'quickQuestion');
 

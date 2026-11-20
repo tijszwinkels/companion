@@ -9,10 +9,16 @@
  *   button; width and hidden state are remembered in this browser
  *   (../layout/useListLayout.ts).
  * - The main area: the bar (ChatBar.tsx) and, below it, what the Store
- *   selects: a conversation (the unchanged desktop chat page, `Chat`, in a
- *   column at most 860 px wide, centred), Previous sessions, or an empty
- *   view when nothing is selected. Sign out is offered in the bar when no
+ *   selects: a conversation (the unchanged desktop chat page, `Chat`, using
+ *   the main area's whole width), Previous sessions, or an empty view when
+ *   nothing is selected. Sign out is offered in the bar when no
  *   conversation is shown, as on slice 1's list page.
+ * - The settings screen (../settings/SettingsScreen.tsx) in place of what
+ *   the Store selects, from the bar's gear or the list's Settings entry,
+ *   until the gear is pressed again, the reader chooses a conversation or
+ *   Previous sessions in the list, or goes Back or Forward in the browser.
+ *   It is this page's own view, not a Store page: the selection underneath
+ *   stays (also when it changes meanwhile), and the list marks Settings.
  * - The Activity column (../activity/ActivityColumn.tsx), hidden at first,
  *   shown and hidden by the ☰ at the bar's right end (the column's own ☰
  *   while shown) and by the list's Activity entry; its width and shown
@@ -53,7 +59,10 @@ import { stripWidth, widthFromKey, widthFromPointer } from '../layout/list-width
 import { useActivityLayout } from '../layout/useActivityLayout.ts';
 import { useListLayout } from '../layout/useListLayout.ts';
 import { ConversationList, conversationListId } from '../list/ConversationList.tsx';
-import { isWorking } from '../list/entries.ts';
+import { SettingsScreen } from '../settings/SettingsScreen.tsx';
+import { useDisplaySettings } from '../settings/useDisplaySettings.ts';
+import type { PageTimes } from '../times/page-times.ts';
+import { BarState } from './BarState.tsx';
 import { ChatBar } from './ChatBar.tsx';
 import { PreviousSessions } from './PreviousSessions.tsx';
 
@@ -66,8 +75,27 @@ interface ActivityBar {
   onFocusLost: () => void;
 }
 
-export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge }) {
+/** The settings screen's part of the bar: whether it is shown, and the gear. */
+interface SettingsBar {
+  shown: boolean;
+  onToggle: () => void;
+}
+
+export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge; times: PageTimes }) {
   const state = useAppState();
+  const display = useDisplaySettings(props.times.settings);
+
+  // The settings screen, shown in place of the chat. Browser Back and
+  // Forward change what the Store shows, and leave the settings screen too.
+  const [settingsShown, setSettingsShown] = useState(false);
+  useEffect(() => {
+    const navigated = () => {
+      setSettingsShown(false);
+    };
+    window.addEventListener('popstate', navigated);
+    return () => window.removeEventListener('popstate', navigated);
+  }, []);
+
   const activity = useActivityLayout();
   const windowWidth = activity.windowWidth;
   const overlay = isNarrowWindow(windowWidth);
@@ -211,6 +239,11 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
             activityShown={activity.shown}
             newActivity={newActivity}
             onToggleActivity={activity.toggleShown}
+            settingsShown={settingsShown}
+            onShowSettings={() => setSettingsShown(true)}
+            onLeaveSettings={() => setSettingsShown(false)}
+            display={display}
+            ticker={props.times.ticker}
           />
           <Divider
             width={layout.width}
@@ -244,6 +277,12 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
             button: barActivityButton,
             onFocusLost: barButtonLostFocus,
           }}
+          settings={{
+            shown: settingsShown,
+            onToggle: () => setSettingsShown(!settingsShown),
+          }}
+          times={props.times}
+          requests={requests}
         />
       </main>
       {activity.shown && !overlay && (
@@ -289,7 +328,7 @@ function listValueText(width: number): string {
   return `Full list, ${width} pixels`;
 }
 
-/** The bar and what is selected below it. */
+/** The bar and what is selected below it (or the settings screen). */
 function MainArea(props: {
   selected: AgentSession | undefined;
   showingPrevious: boolean;
@@ -298,26 +337,56 @@ function MainArea(props: {
   listShown: boolean;
   onToggleList: () => void;
   activity: ActivityBar;
+  settings: SettingsBar;
+  times: PageTimes;
+  requests: ActivityRequests;
 }) {
   const { selected } = props;
+  const display = useDisplaySettings(props.times.settings);
+
+  // The bar's parts every page has: ☰, the Activity ☰ and the gear.
+  const barControls = {
+    listShown: props.listShown,
+    onToggleList: props.onToggleList,
+    activityShown: props.activity.shown,
+    newActivity: props.activity.newActivity,
+    onShowActivity: props.activity.onShow,
+    activityButton: props.activity.button,
+    onActivityFocusLost: props.activity.onFocusLost,
+    settingsShown: props.settings.shown,
+    onToggleSettings: props.settings.onToggle,
+  };
+
+  if (props.settings.shown) {
+    return (
+      <>
+        <ChatBar title="Settings" state={null} {...barControls} />
+        <div class="page-column">
+          <HeldInput chat={props.chat} />
+          <SettingsScreen
+            settings={props.times.settings}
+            admitted={() => props.bridge.admitted}
+            requests={props.requests}
+          />
+        </div>
+      </>
+    );
+  }
 
   if (selected) {
-    let stateText = 'ready';
-    if (isWorking(selected)) {
-      stateText = 'working…';
-    }
     return (
       <>
         <ChatBar
           title={selected.title || 'Untitled'}
-          state={stateText}
-          listShown={props.listShown}
-          onToggleList={props.onToggleList}
-          activityShown={props.activity.shown}
-          newActivity={props.activity.newActivity}
-          onShowActivity={props.activity.onShow}
-          activityButton={props.activity.button}
-          onActivityFocusLost={props.activity.onFocusLost}
+          state={
+            <BarState
+              session={selected}
+              admitted={props.bridge.admitted}
+              settings={display}
+              ticker={props.times.ticker}
+            />
+          }
+          {...barControls}
         />
         <div class="chat-column">
           {/* A new chat view for each conversation lifetime: the same ID
@@ -332,17 +401,7 @@ function MainArea(props: {
   if (props.showingPrevious) {
     return (
       <>
-        <ChatBar
-          title="Previous sessions"
-          state=""
-          listShown={props.listShown}
-          onToggleList={props.onToggleList}
-          activityShown={props.activity.shown}
-          newActivity={props.activity.newActivity}
-          onShowActivity={props.activity.onShow}
-          activityButton={props.activity.button}
-          onActivityFocusLost={props.activity.onFocusLost}
-        >
+        <ChatBar title="Previous sessions" state={null} {...barControls}>
           <SignOut />
         </ChatBar>
         <div class="page-column">
@@ -355,17 +414,7 @@ function MainArea(props: {
 
   return (
     <>
-      <ChatBar
-        title="Conversations"
-        state=""
-        listShown={props.listShown}
-        onToggleList={props.onToggleList}
-        activityShown={props.activity.shown}
-        newActivity={props.activity.newActivity}
-        onShowActivity={props.activity.onShow}
-        activityButton={props.activity.button}
-        onActivityFocusLost={props.activity.onFocusLost}
-      >
+      <ChatBar title="Conversations" state={null} {...barControls}>
         <SignOut />
       </ChatBar>
       <div class="page-column">

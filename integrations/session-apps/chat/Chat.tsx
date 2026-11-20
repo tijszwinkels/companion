@@ -615,8 +615,14 @@ function UserHeading(props: { row: ChatRow; sessionId: string; bridge: NativeBri
     <div class={`heading ${row.state === 'error' ? 'error' : ''}`}>
       {who}
       {suffix}
+      {row.time ? <MessageTime text={row.time} /> : null}
     </div>
   );
+}
+
+/** The time a message was written, when the host sends one (`ChatRow.time`). */
+function MessageTime(props: { text: string }) {
+  return <span class="message-time">{props.text}</span>;
 }
 
 /** Copy, shown on hover or keyboard focus in the message's top-right corner. */
@@ -687,7 +693,10 @@ const Row = memo(function Row(props: { row: ChatRow; sessionId: string; bridge: 
   }
 
   const heading = (
-    <div class={`heading ${row.state === 'error' ? 'error' : ''}`}>Pi{row.fragmentLabel}</div>
+    <div class={`heading ${row.state === 'error' ? 'error' : ''}`}>
+      Pi{row.fragmentLabel}
+      {row.time ? <MessageTime text={row.time} /> : null}
+    </div>
   );
 
   if (row.kind === 'notice') {
