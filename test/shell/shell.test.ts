@@ -15,6 +15,7 @@ import {
   assertOwnOrigin,
   buttonExpression,
   click,
+  clickAt,
   clickButton,
   desktopPage,
   horizontalOverflow,
@@ -25,6 +26,7 @@ import {
   setup,
   skip,
   text,
+  type SocketLog,
 } from './page.ts';
 
 /**
@@ -91,6 +93,125 @@ async function scrollUntil(page: TestPage, deltaY: number, expression: string) {
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   await page.waitFor(expression, 5000);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** The directions (`before`, `after`) of the history pages requested since `from`. */
+function pageRequests(sockets: SocketLog, from = 0): string[] {
+  const directions: string[] = [];
+  for (const sent of sockets.sent.slice(from)) {
+    if (sent.type === 'request' && sent.action === 'agent-history-page') {
+      directions.push(String(sent.direction));
+    }
+  }
+  return directions;
+}
+
+/** The transcript's scroll position and box, in CSS pixels. */
+interface TranscriptGeometry {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  top: number;
+  left: number;
+  right: number;
+}
+
+function transcriptGeometry(page: TestPage): Promise<TranscriptGeometry> {
+  return page.evaluate<TranscriptGeometry>(`(() => {
+    const transcript = document.querySelector('.transcript');
+    const box = transcript.getBoundingClientRect();
+    return {
+      scrollTop: transcript.scrollTop,
+      scrollHeight: transcript.scrollHeight,
+      clientHeight: transcript.clientHeight,
+      top: box.top,
+      left: box.left,
+      right: box.right,
+    };
+  })()`);
+}
+
+/**
+ * Drag the transcript's scroll bar thumb with the mouse so that the content
+ * moves by about `distance` pixels (positive: toward the end), after holding
+ * it pressed without moving for `holdMilliseconds`. The thumb is the chat's
+ * 4 px handle at the transcript's right edge.
+ */
+async function dragScrollBar(page: TestPage, distance: number, holdMilliseconds = 0) {
+  const box = await transcriptGeometry(page);
+  const range = box.scrollHeight - box.clientHeight;
+  const thumbLength = (box.clientHeight * box.clientHeight) / box.scrollHeight;
+  const travel = box.clientHeight - thumbLength;
+  const x = box.right - 2;
+  const y = box.top + (box.scrollTop / range) * travel + thumbLength / 2;
+  // Not past either end of the track (the drag stops there anyway).
+  const thumbTop = (box.scrollTop / range) * travel;
+  const thumbDistance = Math.max(
+    -thumbTop - 8,
+    Math.min(travel - thumbTop + 8, (distance * travel) / range),
+  );
+  const steps = Math.max(1, Math.ceil(Math.abs(thumbDistance) / 4));
+  await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  const pressed = { x, y, button: 'left', clickCount: 1 };
+  await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...pressed });
+  await sleep(holdMilliseconds);
+  for (let step = 1; step <= steps; step++) {
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x,
+      y: y + (thumbDistance * step) / steps,
+      button: 'left',
+      buttons: 1,
+    });
+    await sleep(16);
+  }
+  const released = { x, y: y + thumbDistance, button: 'left', clickCount: 1 };
+  await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...released });
+}
+
+/**
+ * Pan the transcript with one finger so that the content moves by about
+ * `distance` pixels (positive: toward the end). The browser reports such a
+ * pan as pointerdown, pointercancel and then scroll events only. The finger
+ * rests before it lifts, so no fling follows; it can also rest for
+ * `holdMilliseconds` before it moves. Touch input is emulated for the pan
+ * only, so mouse and keyboard input stay as they are.
+ */
+async function touchPan(page: TestPage, distance: number, holdMilliseconds = 0) {
+  await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const box = await transcriptGeometry(page);
+  const x = box.left + 40;
+  const start = box.top + box.clientHeight / 2 + distance / 2;
+  const steps = Math.max(1, Math.ceil(Math.abs(distance) / 20));
+  await page.call('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x, y: start }],
+  });
+  await sleep(holdMilliseconds);
+  for (let step = 1; step <= steps; step++) {
+    await page.call('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x, y: start - (distance * step) / steps }],
+    });
+    await sleep(16);
+  }
+  await sleep(150);
+  await page.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.call('Emulation.setTouchEmulationEnabled', { enabled: false });
+}
+
+/** Click into the transcript (beside the rows' text) and press `key` there. */
+async function pressKeyInTranscript(page: TestPage, key: 'PageDown' | 'PageUp' | 'End') {
+  const codes = { PageUp: 33, PageDown: 34, End: 35 };
+  const box = await transcriptGeometry(page);
+  await clickAt(page, { x: box.left + 8, y: box.top + box.clientHeight / 2 });
+  const event = { key, code: key, windowsVirtualKeyCode: codes[key] };
+  await page.call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...event });
+  await page.call('Input.dispatchKeyEvent', { type: 'keyUp', ...event });
 }
 
 test(
@@ -328,25 +449,14 @@ test(
       }
       return reply;
     }) as unknown as typeof historyPage;
-    // The reader holds the pointer pressed in the transcript (as when
-    // dragging its scroll bar) and gets to the end only after more than a
-    // second: still their own scrolling, so the newer page is requested.
+    // The reader drags the scroll bar to the end, holding it still for more
+    // than a second first: their own scrolling, however slow, so the newer
+    // page is requested.
     const sentBeforeHold = sockets.sent.length;
-    const middle = await page.evaluate<{ x: number; y: number }>(`(() => {
-      const rect = document.querySelector('.transcript').getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`);
-    const pointer = { x: middle.x, y: middle.y, button: 'left', clickCount: 1 };
-    await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...pointer });
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    await page.evaluate(`(() => {
-      const transcript = document.querySelector('.transcript');
-      transcript.scrollTop = transcript.scrollHeight;
-    })()`);
+    await dragScrollBar(page, 100_000, 1200);
     await waitFor(() =>
       sockets.sent.slice(sentBeforeHold).some((sent) => sent.direction === 'after'),
     );
-    await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...pointer });
     assert.ok(await page.evaluate<boolean>(inView('History row 598')));
     holding = false;
     release();
@@ -406,14 +516,16 @@ test(
 );
 
 test(
-  'after a reconnect at the end of a detached snapshot a downward wheel loads the next page',
+  "at the end of a detached snapshot page-made scrolls ask for nothing, the reader's scroll does",
   { skip },
   async (context) => {
     const { fixture, browser } = await setup(context);
     fixture.sessions.start({ ...frame, utterance: 'Wheel fixture' }, signal());
     await waitFor(() => fixture.runs.length === 1);
     for (let index = 0; index < 1050; index++) {
-      fixture.runs[0].emit(chatMessage('wheel-' + index, 'assistant', 'History row ' + index));
+      // Long enough to wrap onto more lines in a narrower window.
+      const text = 'History row ' + index + ' ' + 'with synthetic filler text '.repeat(6);
+      fixture.runs[0].emit(chatMessage('wheel-' + index, 'assistant', text));
     }
     fixture.runs[0].finish();
     const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
@@ -461,26 +573,495 @@ test(
     // The listener may now answer the old connection's request; nobody gets it.
     release();
 
-    // Scrolling up near the end asks for nothing newer: the reader is
-    // heading toward older rows.
-    await wheel(page, -150);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(newerRequests(), 1, 'an upward scroll requested no newer page');
-    // Within a second of that upward wheel, the page itself moves the
-    // transcript back to the very end (as when it keeps the reader's row
-    // after a resize). That is not the reader moving toward the end, so it
-    // requests nothing either.
-    await page.evaluate(`(() => {
-      const transcript = document.querySelector('.transcript');
-      transcript.scrollTop = transcript.scrollHeight;
+    // The reader is now at the very end of the detached snapshot with
+    // nothing pending: exactly where their next scroll asks for the next
+    // page. What the page or the browser scrolls itself never asks. Each row
+    // says what happens and the request the paging rule allows for it (see
+    // `pagingRuleExpects`): none for page-made scrolls, the next newer page
+    // for the reader's own scroll within one viewport of the end.
+    const middle = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = document.querySelector('.transcript').getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     })()`);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.equal(newerRequests(), 1);
-    assert.ok(await page.evaluate<boolean>(inView('History row 598')));
-    await wheel(page, 300);
-    await waitFor(() => newerRequests() === 2, 5000);
-    await page.waitFor(shows('History row 700'));
-    assert.ok(await page.evaluate<boolean>(inView('History row 598')), 'the reader stayed');
+    const pointer = { x: middle.x, y: middle.y, button: 'left', clickCount: 1 };
+    async function resize(width: number, height: number): Promise<void> {
+      await page.call('Emulation.setDeviceMetricsOverride', {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+    }
+    // Newer pages asked for from here on are held until the end.
+    let releaseNewer = () => {};
+    const newerHeld = new Promise<void>((resolve) => {
+      releaseNewer = resolve;
+    });
+    fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
+      const reply = historyPage(request);
+      if (request.direction === 'after') {
+        await newerHeld;
+      }
+      return reply;
+    }) as unknown as typeof historyPage;
+    const steps: { name: string; act: () => Promise<void>; expected: number }[] = [
+      {
+        name: 'the reader wheels down at the very end, where nothing scrolls',
+        act: () => wheel(page, 300),
+        expected: 0,
+      },
+      {
+        name: "narrower with the mouse held still in the transcript: rows grow taller and the page keeps the reader's row by scrolling toward the end",
+        act: async () => {
+          await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...pointer });
+          const before = (await transcriptGeometry(page)).scrollTop;
+          await resize(420, 800);
+          await sleep(600);
+          assert.ok((await transcriptGeometry(page)).scrollTop > before, 'the page scrolled');
+          await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...pointer });
+        },
+        expected: 0,
+      },
+      {
+        name: "wider again: the page keeps the reader's row by scrolling toward the start",
+        act: () => resize(1280, 800),
+        expected: 0,
+      },
+      {
+        name: 'a much taller window: the browser pulls the view back to the end',
+        act: async () => {
+          await resize(1280, 1600);
+          await sleep(300);
+          const box = await transcriptGeometry(page);
+          assert.equal(box.scrollTop, box.scrollHeight - box.clientHeight, 'at the very end');
+        },
+        expected: 0,
+      },
+      {
+        name: "in one frame the page puts the reader's row back and the reader scrolls up 1 pixel",
+        act: () =>
+          page.evaluate(`(() => {
+            const transcript = document.querySelector('.transcript');
+            // Away from the row, then the page's resize handling restores it
+            // (its own scroll back to the end), then the reader's pixel: the
+            // browser reports one scroll event for all three.
+            transcript.scrollTop -= 50;
+            window.dispatchEvent(new Event('resize'));
+            transcript.scrollTop -= 1;
+          })()`),
+        expected: 1,
+      },
+    ];
+    // The gateway waits for a held reply before it can close, so it is
+    // released also when an assertion fails.
+    try {
+      const observed: string[] = [];
+      const expected: string[] = [];
+      for (const step of steps) {
+        const before = newerRequests();
+        await step.act();
+        await sleep(600);
+        observed.push(`${step.name}: ${newerRequests() - before}`);
+        expected.push(`${step.name}: ${step.expected}`);
+      }
+      assert.deepEqual(observed, expected);
+
+      // The page it asked for arrives (held until now): the reader's row stays.
+      const readerRow = await page.evaluate<string>(`(() => {
+        const edge = document.querySelector('.transcript').getBoundingClientRect().top;
+        const row = [...document.querySelectorAll('.rows > .message')].find(
+          (message) => message.getBoundingClientRect().bottom > edge + 1,
+        );
+        return row.textContent.match(/History row [0-9]+/)[0];
+      })()`);
+      releaseNewer();
+      await page.waitFor(shows('History row 700'));
+      await sleep(200);
+      assert.ok(await page.evaluate<boolean>(inView(readerRow)), 'the reader stayed');
+    } finally {
+      releaseNewer();
+    }
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'a scroll bar held still before dragging away from the live end still leaves it',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Held drag fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    // 401 rows: the live window holds History row 200–399, the previous
+    // page the question and History row 0–199.
+    for (let index = 0; index < 400; index++) {
+      fixture.runs[0].emit(chatMessage('held-' + index, 'assistant', 'History row ' + index));
+    }
+    fixture.runs[0].finish();
+    // Pages take 400 ms, so the drag is over before its page arrives (see
+    // the paging rule table).
+    const historyPage = fixture.sessions.historyPage.bind(fixture.sessions);
+    fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
+      await sleep(400);
+      return historyPage(request);
+    }) as unknown as typeof historyPage;
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Held drag fixture');
+    await page.waitFor(inView('History row 399'));
+    const from = sockets.sent.length;
+
+    // A scroll that is not the reader's (no input, as a layout change makes
+    // it) keeps the page at the live end and asks for nothing.
+    await page.evaluate(`document.querySelector('.transcript').scrollTop = 300`);
+    await sleep(300);
+    assert.ok(await page.evaluate<boolean>(inView('History row 399')), 'back at the live end');
+    assert.deepEqual(pageRequests(sockets, from), []);
+
+    // At the live end the reader presses the scroll bar, holds it still for
+    // more than a second, then drags it to the top: their own scrolling, so
+    // the view stays where they took it and the previous page is asked for.
+    await dragScrollBar(page, -100_000, 1200);
+    await waitFor(() => pageRequests(sockets, from).includes('before'), 5000);
+    await page.waitFor(shows('History row 199'));
+    assert.equal(await page.evaluate<boolean>(inView('History row 399')), false);
+    assert.deepEqual(pageRequests(sockets, from), ['before']);
+
+    // The same with a finger: back at the live end, it rests on the
+    // transcript for more than a second, then pans toward older rows. The
+    // browser cancels the pointer before the pan scrolls; the pan is still
+    // the reader's and leaves the end.
+    await click(page, 'button.latest');
+    await page.waitFor(`!document.querySelector('button.latest')`);
+    await page.waitFor(inView('History row 399'));
+    await touchPan(page, -400, 1200);
+    await sleep(500);
+    assert.equal(await page.evaluate<boolean>(inView('History row 399')), false, 'left the end');
+    assert.ok(await page.evaluate<boolean>(`Boolean(document.querySelector('button.latest'))`));
+
+    // One gesture, the finger never lifted: it pans down to the live end,
+    // rests there for more than a second, then pans back up. The pan back
+    // is still the reader's and leaves the end again.
+    await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    const box = await transcriptGeometry(page);
+    const x = box.left + 40;
+    let y = box.top + box.clientHeight - 40;
+    async function moveFinger(distance: number): Promise<void> {
+      const steps = Math.ceil(Math.abs(distance) / 20);
+      for (let step = 0; step < steps; step++) {
+        y -= distance / steps;
+        await page.call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+        await sleep(16);
+      }
+    }
+    const toEnd = box.scrollHeight - box.clientHeight - box.scrollTop;
+    assert.ok(toEnd < box.clientHeight - 140, `near the end: ${toEnd}`);
+    await page.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await moveFinger(toEnd + 100);
+    await page.waitFor(inView('History row 399'));
+    await sleep(1200);
+    await moveFinger(-400);
+    await sleep(500);
+    const leftAgain = !(await page.evaluate<boolean>(inView('History row 399')));
+    await page.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.call('Emulation.setTouchEmulationEnabled', { enabled: false });
+    assert.ok(leftAgain, 'left the end after resting there mid-gesture');
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'a detached snapshot shorter than two viewports pages the way the reader scrolls',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Short snapshot fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    // 1051 rows: the live window holds History row 850–1049.
+    for (let index = 0; index < 1050; index++) {
+      fixture.runs[0].emit(chatMessage('short-' + index, 'assistant', 'History row ' + index));
+    }
+    fixture.runs[0].finish();
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Short snapshot fixture');
+    await page.waitFor(shows('History row 1049'));
+
+    // Four older pages by wheeling up at an ordinary size: History row
+    // 50–649 resident, detached, older rows above and newer pages below.
+    for (let loaded = 0; loaded < 4; loaded++) {
+      const before = pageRequests(sockets).length;
+      for (let attempt = 0; attempt < 60 && pageRequests(sockets).length === before; attempt++) {
+        await wheel(page, -100_000);
+        await sleep(150);
+      }
+      await page.waitFor(
+        `!document.querySelector('.history-notice')?.textContent.includes('Loading')`,
+      );
+      await sleep(100);
+    }
+    assert.deepEqual(pageRequests(sockets), ['before', 'before', 'before', 'before']);
+    await page.waitFor(`${shows('History row 50')} && !${shows('History row 650')}`);
+
+    // Then the window grows so tall that the whole snapshot is shorter than
+    // two viewports: everywhere in it both edges are within one viewport.
+    await page.call('Emulation.setDeviceMetricsOverride', {
+      width: 1280,
+      height: 32_000,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await sleep(500);
+    const box = await transcriptGeometry(page);
+    assert.ok(box.scrollHeight > box.clientHeight, 'the snapshot still scrolls');
+    assert.ok(box.scrollHeight < 2 * box.clientHeight, 'both edges are always near');
+    assert.deepEqual(pageRequests(sockets).length, 4, 'growing the window asked for nothing');
+
+    // Toward the end: the next newer page; toward the start: the previous one.
+    let from = sockets.sent.length;
+    await wheel(page, 200);
+    await waitFor(() => pageRequests(sockets, from).length > 0, 5000);
+    await sleep(300);
+    assert.deepEqual(pageRequests(sockets, from), ['after']);
+    await page.waitFor(shows('History row 650'));
+    await page.waitFor(
+      `!document.querySelector('.history-notice')?.textContent.includes('Loading')`,
+    );
+
+    await sleep(300);
+    from = sockets.sent.length;
+    await wheel(page, -200);
+    await waitFor(() => pageRequests(sockets, from).length > 0, 5000);
+    await sleep(300);
+    assert.deepEqual(pageRequests(sockets, from), ['before']);
+    await assertNoViolations(page);
+  },
+);
+
+/**
+ * The paging rule (integrations/shell/README.md, "The paging rule") as one table:
+ *
+ *   A scroll the reader makes that leaves the transcript within one viewport
+ *   of an edge asks for the next page at that edge: the previous page near
+ *   the top (while there are older pages), the next newer page near the end
+ *   of a detached snapshot. Whatever moved it: wheel, keys, scroll bar or a
+ *   finger. Not while a page is loading, not after a failure. Scrolls the
+ *   page makes itself never ask.
+ *
+ * Every input method × where the reader's scroll leaves the transcript ×
+ * the page state. The reader starts 1.6 viewports from the edge (or in the
+ * middle) and moves about one viewport toward it. The expectation follows
+ * from the rule alone (`pagingRuleExpects`); what is observed is the gateway
+ * request the scroll caused and whether the transcript continued into the
+ * live rows. Page-made scrolls are the next test's table.
+ *
+ * The conversation has 1601 rows: the question and Paging row 0–1599. The
+ * live window holds Paging row 1400–1599; pages hold 200 rows, at most
+ * three stay resident:
+ * - live: the live window, the reader scrolled away from its end;
+ * - detached with newer pages: five pages up, rows 400–999 resident; the
+ *   next newer page (1000–1199) comes from the gateway;
+ * - detached at the newest page: three pages up, rows 800–1399 resident;
+ *   they end where the live window starts, so the next newer rows are the
+ *   live window itself, joined without a gateway request.
+ */
+type PageState = 'live' | 'detached with newer pages' | 'detached at the newest page';
+type ReaderPosition = 'near the top' | 'in the middle' | 'near the end';
+type InputMethod = 'wheel' | 'keyboard' | 'scroll bar drag' | 'touch pan';
+
+interface PagingOutcome {
+  /** The history page the gateway was asked for, or null for none. */
+  request: 'before' | 'after' | null;
+  /** Whether the transcript continued into the live rows (no request needed). */
+  joinedLive: boolean;
+}
+
+/** What the paging rule says a reader's scroll to `position` does in `state`. */
+function pagingRuleExpects(state: PageState, position: ReaderPosition): PagingOutcome {
+  // Every state here has older pages above it.
+  if (position === 'near the top') {
+    return { request: 'before', joinedLive: false };
+  }
+  if (position === 'near the end' && state === 'detached with newer pages') {
+    return { request: 'after', joinedLive: false };
+  }
+  // The next newer rows are the live window: the bridge joins it locally.
+  if (position === 'near the end' && state === 'detached at the newest page') {
+    return { request: null, joinedLive: true };
+  }
+  // In the middle, and at the end of the live window, there is nothing to ask for.
+  return { request: null, joinedLive: false };
+}
+
+const pageStates: PageState[] = [
+  'live',
+  'detached with newer pages',
+  'detached at the newest page',
+];
+const readerPositions: ReaderPosition[] = ['near the top', 'in the middle', 'near the end'];
+const inputMethods: InputMethod[] = ['wheel', 'keyboard', 'scroll bar drag', 'touch pan'];
+
+/** A page expression: a row whose text has `fragment` as a word is in the transcript. */
+function hasRow(fragment: string): string {
+  return `[...document.querySelectorAll('.rows > .message')].some((row) => new RegExp(${JSON.stringify(fragment)} + '(?![0-9])').test(row.textContent))`;
+}
+
+test(
+  'paging rule table: every input method, reader position and page state',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Paging table fixture' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    for (let index = 0; index < 1600; index++) {
+      fixture.runs[0].emit(chatMessage('table-' + index, 'assistant', 'Paging row ' + index));
+    }
+    fixture.runs[0].finish();
+    // Pages take 400 ms, as over a real network, so that each input's own
+    // scrolling (a key's smooth scrolling, a drag) is over before its page
+    // arrives and one input is one scroll gesture. With instant pages a
+    // scroll bar drag that goes on toward the top after the page arrived
+    // moves the view up again and, by the rule, asks for the next page.
+    const historyPage = fixture.sessions.historyPage.bind(fixture.sessions);
+    fixture.sessions.historyPage = (async (request: Parameters<typeof historyPage>[0]) => {
+      await sleep(400);
+      return historyPage(request);
+    }) as unknown as typeof historyPage;
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Paging table fixture');
+    await page.waitFor(hasRow('Paging row 1599'));
+
+    const loading = `document.querySelector('.history-notice')?.textContent.includes('Loading')`;
+
+    /** Back to the live window, then away from its end (by the reader's wheel). */
+    async function showLive(): Promise<void> {
+      if (await page.evaluate<boolean>(`Boolean(document.querySelector('button.latest'))`)) {
+        await click(page, 'button.latest');
+      }
+      await page.waitFor(`document.querySelectorAll('.rows > .message').length === 200`);
+      await page.waitFor(`!(${loading})`);
+      await wheel(page, -300);
+      await page.waitFor(`Boolean(document.querySelector('button.latest'))`);
+      // The wheel's own scrolling may still be under way.
+      await sleep(500);
+    }
+
+    /** Older pages loaded by the reader wheeling up to the top, one at a time. */
+    async function loadOlderPages(count: number): Promise<void> {
+      for (let loaded = 0; loaded < count; loaded++) {
+        const before = pageRequests(sockets).length;
+        for (let attempt = 0; attempt < 60 && pageRequests(sockets).length === before; attempt++) {
+          await wheel(page, -100_000);
+          await sleep(150);
+        }
+        assert.equal(pageRequests(sockets).length, before + 1, 'an older page was requested');
+        // Shown while the page takes its 400 ms, then gone when it arrived.
+        await page.waitFor(loading, 5000);
+        await page.waitFor(`!(${loading})`, 10_000);
+      }
+    }
+
+    /** A page expression: the page shows `state` (checked before every case). */
+    function stateExpression(state: PageState): string {
+      let expression = '';
+      if (state === 'live') {
+        expression = `${hasRow('Paging row 1599')} && !${hasRow('Paging row 1199')}`;
+      } else if (state === 'detached with newer pages') {
+        expression = `${hasRow('Paging row 999')} && !${hasRow('Paging row 1000')} && !${hasRow('Paging row 0')}`;
+      } else {
+        expression = `${hasRow('Paging row 1399')} && !${hasRow('Paging row 1400')} && !${hasRow('Paging row 799')}`;
+      }
+      return `Boolean(${expression}) && !(${loading})`;
+    }
+
+    async function enter(state: PageState): Promise<void> {
+      if (state === 'live') {
+        await showLive();
+      } else if (!(await page.evaluate<boolean>(stateExpression(state)))) {
+        await showLive();
+        await loadOlderPages(state === 'detached with newer pages' ? 5 : 3);
+      }
+      // Rows reach the page up to 30 ms after the status that ended loading.
+      await page.waitFor(stateExpression(state), 3000);
+    }
+
+    /** Put the reader where one viewport's move reaches `position` (no page is asked for there). */
+    async function placeReader(position: ReaderPosition): Promise<number> {
+      const box = await transcriptGeometry(page);
+      const range = box.scrollHeight - box.clientHeight;
+      let top = range / 2;
+      let direction = 1;
+      if (position === 'near the top') {
+        top = 1.6 * box.clientHeight;
+        direction = -1;
+      } else if (position === 'near the end') {
+        top = range - 1.6 * box.clientHeight;
+      }
+      await page.evaluate(`document.querySelector('.transcript').scrollTop = ${top}`);
+      // Longer than any window in which the reader's earlier input could count.
+      await sleep(1100);
+      const placed = (await transcriptGeometry(page)).scrollTop;
+      assert.ok(Math.abs(placed - top) <= 2, `the reader was placed ${position}`);
+      return direction * box.clientHeight;
+    }
+
+    async function move(input: InputMethod, distance: number): Promise<void> {
+      if (input === 'wheel') {
+        await wheel(page, distance);
+      } else if (input === 'keyboard') {
+        await pressKeyInTranscript(page, distance > 0 ? 'PageDown' : 'PageUp');
+      } else if (input === 'scroll bar drag') {
+        await dragScrollBar(page, distance);
+      } else {
+        await touchPan(page, distance * 0.9);
+      }
+    }
+
+    /** One outcome as a table cell, e.g. "after" or "none + joins live". */
+    function describe(request: string | null, joinedLive: boolean): string {
+      let text = request ?? 'none';
+      if (joinedLive) {
+        text += ' + joins live';
+      }
+      return text;
+    }
+
+    const rows: string[] = [];
+    const failures: string[] = [];
+    for (const state of pageStates) {
+      for (const position of readerPositions) {
+        for (const input of inputMethods) {
+          const name = `${input} | ${position} | ${state}`;
+          const expected = pagingRuleExpects(state, position);
+          await enter(state);
+          const distance = await placeReader(position);
+          const startTop = (await transcriptGeometry(page)).scrollTop;
+          const liveBefore = await page.evaluate<boolean>(hasRow('Paging row 1400'));
+          const from = sockets.sent.length;
+
+          await move(input, distance);
+          await sleep(1200);
+          await page.waitFor(`!(${loading})`, 10_000);
+
+          const requested = pageRequests(sockets, from);
+          const joinedLive =
+            !liveBefore && (await page.evaluate<boolean>(hasRow('Paging row 1400')));
+          // The input must really have scrolled. (Near the top an older page
+          // arriving moves the scroll position back down by its height, so
+          // the position says nothing there; the request does.)
+          const endTop = (await transcriptGeometry(page)).scrollTop;
+          const scrolled = position === 'near the top' || Math.abs(endTop - startTop) > 100;
+
+          const observedText = describe(requested.join(',') || null, joinedLive);
+          const expectedText = describe(expected.request, expected.joinedLive);
+          const row = `${name} | expected ${expectedText} | observed ${observedText}`;
+          rows.push(row);
+          if (observedText !== expectedText || !scrolled) {
+            failures.push(scrolled ? row : `${row} (the input did not scroll)`);
+          }
+        }
+      }
+    }
+    context.diagnostic('\n' + rows.join('\n'));
+    assert.deepEqual(failures, []);
     await assertNoViolations(page);
   },
 );

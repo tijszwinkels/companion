@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,7 +52,47 @@ try {
   process.exit(1);
 }
 
-const directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
+/**
+ * Ctrl+C (SIGINT) or SIGTERM, also while the demo is still starting: the
+ * listeners are installed before the temporary directory exists, so the
+ * default action (exit without cleanup) never applies. The first signal ends
+ * the wait below, or, during startup, skips the remaining steps; cleanup then
+ * runs in `finally`. A second signal while cleanup is still running deletes
+ * the directory at once and exits.
+ */
+let stopRequested = false;
+let directory = '';
+let resolveStop = () => {};
+const stopped = new Promise<void>((resolve) => {
+  resolveStop = resolve;
+});
+
+function onStopSignal(): void {
+  if (!stopRequested) {
+    stopRequested = true;
+    resolveStop();
+    return;
+  }
+  console.error('Stopping at once; deleting the temporary data.');
+  if (directory) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  process.exit(130);
+}
+
+process.on('SIGINT', onStopSignal);
+process.on('SIGTERM', onStopSignal);
+
+/** Thrown between startup steps when a stop was requested meanwhile. */
+class StartupStopped extends Error {}
+
+function continueStartup(): void {
+  if (stopRequested) {
+    throw new StartupStopped('stopped during startup');
+  }
+}
+
+directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
 const controller = new AbortController();
 
 // What has been started so far, so that a failed start (for example a port
@@ -248,8 +289,10 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
       throw Error('The demo never runs desktop commands');
     },
   );
+  continueStartup();
   await runtime.start();
   runtimeStarted = true;
+  continueStartup();
 
   // Several conversations for the list: coding questions, a quick question
   // and one whose turn keeps running (see scriptedRun). Their answers
@@ -279,6 +322,7 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     log: (message) => console.error(`[remote] ${message}`),
   });
   await gateway.start();
+  continueStartup();
 
   const { code } = await new DeviceStore(stateDirectory).createPairingCode();
 
@@ -295,11 +339,13 @@ Temporary data: ${directory}
 Press Ctrl+C to stop and delete it.
 `);
 
-  await new Promise<void>((resolve) => {
-    process.once('SIGINT', resolve);
-    process.once('SIGTERM', resolve);
-  });
+  await stopped;
   console.error('Stopping…');
+} catch (error) {
+  if (!(error instanceof StartupStopped)) {
+    throw error;
+  }
+  console.error('Stopped during startup.');
 } finally {
   controller.abort();
   // A gateway that failed to start may still hold its state claim; closing
