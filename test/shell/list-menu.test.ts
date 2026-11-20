@@ -258,6 +258,18 @@ async function screenshot(page: TestPage, name: string): Promise<void> {
   await writeFile(join(directory, `${name}.png`), await page.screenshot());
 }
 
+/**
+ * A page expression: the boxes of elements `first` and `second` (element
+ * expressions) do not overlap.
+ */
+function apart(first: string, second: string): string {
+  return `(() => {
+    const a = (${first}).getBoundingClientRect();
+    const b = (${second}).getBoundingClientRect();
+    return a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+  })()`;
+}
+
 /** The open menu's box and the window's size. */
 function menuInWindow(page: TestPage): Promise<boolean> {
   return page.evaluate<boolean>(`(() => {
@@ -725,6 +737,20 @@ test(
     });
     assert.match(await page.evaluate<string>(`getSelection().toString()`), /answer\./);
 
+    // A press on the menu's padding (beside its items) keeps focus in it:
+    // Escape still closes it.
+    await clickElement(page, menuButtonOf('Charlie'));
+    await waitFocused(page, menuItem('Move up'));
+    const padding = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const rect = document.querySelector('.entry-menu').getBoundingClientRect();
+      return { x: rect.left + 2, y: rect.top + rect.height / 2 };
+    })()`);
+    await clickAt(page, padding);
+    await waitFocused(page, menuItem('Move up'));
+    await key(page, 'Escape');
+    await page.waitFor(`!${openMenu}`);
+    await waitFocused(page, menuButtonOf('Charlie'));
+
     // Opening another entry's menu closes the first: one menu, the other's.
     await clickElement(page, menuButtonOf('Charlie'));
     await page.waitFor(openMenu);
@@ -855,8 +881,40 @@ test(
       const box = document.querySelector('.entry-menu').getBoundingClientRect();
       return box.top >= 0 && box.bottom <= innerHeight;
     })()`);
-    await key(page, 'Escape');
+    // A tap on another entry, still in view, closes the menu without
+    // scrolling the list back to the ⋯, and selects that entry.
+    const scrolledTo = await page.evaluate<number>(
+      `document.querySelector('.conversation-scroll').scrollTop`,
+    );
+    // An entry in view that the menu does not cover (it may lie over some).
+    const uncovered = await page.evaluate<{ title: string; x: number; y: number } | null>(`(() => {
+      const menu = document.querySelector('.entry-menu').getBoundingClientRect();
+      const list = document.querySelector('.conversation-scroll').getBoundingClientRect();
+      for (const select of document.querySelectorAll('.conversation-entry .entry-select')) {
+        const rect = select.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const inMenu = x >= menu.left && x <= menu.right && y >= menu.top && y <= menu.bottom;
+        if (!inMenu && y > list.top && y < list.bottom) {
+          return { title: select.title, x, y };
+        }
+      }
+      return null;
+    })()`);
+    assert.ok(uncovered, 'an entry in view beside the menu');
+    const lastTitle = uncovered.title;
+    const lastPoint = { x: uncovered.x, y: uncovered.y };
+    await page.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [lastPoint] });
+    assert.equal(
+      await page.evaluate<number>(`document.querySelector('.conversation-scroll').scrollTop`),
+      scrolledTo,
+      'not scrolled by closing the menu',
+    );
+    await page.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     await page.waitFor(`!${openMenu}`);
+    await page.waitFor(
+      `document.querySelector('.chat-bar-title')?.textContent.includes(${JSON.stringify(lastTitle)})`,
+    );
     await page.call('Emulation.setDeviceMetricsOverride', {
       width: 420,
       height: 800,
@@ -880,11 +938,31 @@ test(
       mobile: false,
     });
     await page.waitFor(`document.documentElement.clientWidth === 1280`);
+    // In the strip the ⋯ leaves the emoji entry's number clear.
+    const emojiEntry = entryExpression('Alpha with a longer title');
+    assert.ok(
+      await page.evaluate<boolean>(
+        apart(
+          `${emojiEntry}.querySelector('.entry-menu-button')`,
+          `${emojiEntry}.querySelector('.entry-number')`,
+        ),
+      ),
+      'the ⋯ and the number apart',
+    );
     await clickElement(page, menuButtonOf('Charlie'));
     await page.waitFor(openMenu);
     await screenshot(page, 'entry-menu-1280-strip');
     await key(page, 'Escape');
     await appearance(page, 'full');
+    // In the full list the ⋯ and the × (top-right) take different presses.
+    for (const title of await shownOrder(page)) {
+      assert.ok(
+        await page.evaluate<boolean>(
+          apart(menuButtonOf(title), `${entryExpression(title)}.querySelector('.entry-close')`),
+        ),
+        `the ⋯ and the × of ${title} apart`,
+      );
+    }
     await clickElement(page, menuButtonOf('Alpha'));
     await page.waitFor(openMenu);
     assert.ok(await menuInWindow(page));

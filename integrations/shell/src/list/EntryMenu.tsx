@@ -238,6 +238,13 @@ export function EntryMenu(props: {
       aria-label={props.label}
       onKeyDown={keyDown}
       onFocusOut={focusOut}
+      onMouseDown={(event) => {
+        // A press on the menu's own padding (no item) keeps focus on the
+        // item that has it, instead of dropping it on the page.
+        if (event.target === event.currentTarget) {
+          event.preventDefault();
+        }
+      }}
     >
       {buttons}
     </div>

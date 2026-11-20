@@ -294,12 +294,16 @@ export function ConversationList(props: {
     setMenuEntryId(id);
   }
 
-  /** Close the ⋯ menu; `returnFocus` puts focus on its ⋯ button. */
-  function closeMenu(returnFocus: boolean) {
+  /**
+   * Close the ⋯ menu; `returnFocus` puts focus on its ⋯ button, scrolling
+   * the list to it unless `preventScroll` (a press elsewhere must not move
+   * what it is pressing).
+   */
+  function closeMenu(returnFocus: boolean, preventScroll = false) {
     const id = menuEntryId;
     setMenuEntryId(null);
     if (returnFocus && id !== null) {
-      document.getElementById(menuButtonId(id))?.focus();
+      document.getElementById(menuButtonId(id))?.focus({ preventScroll });
     }
   }
 
@@ -307,7 +311,7 @@ export function ConversationList(props: {
     // Escape, Tab and a press outside return focus to the ⋯ button (a press
     // on something focusable then takes it); focus that moved to another
     // control stays there.
-    closeMenu(how !== 'focus-left');
+    closeMenu(how !== 'focus-left', how === 'outside');
   }
 
   // The menu closes when its conversation leaves the list (focus then goes

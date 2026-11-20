@@ -603,6 +603,10 @@ body {
   position: absolute;
   top: 0;
   left: 0;
+  /* Narrow enough to leave the badge's number (top-left of the centred
+     badge) clear. */
+  width: 14px;
+  border-radius: 7px;
 }
 
 .conversations.full .conversation-entry {
@@ -617,7 +621,9 @@ body {
 
 .conversations.full .entry-menu-button {
   flex: none;
-  margin-right: 4px;
+  /* At the bottom of the entry, clear of the × at its top-right corner. */
+  align-self: flex-end;
+  margin: 0 4px 4px 0;
 }
 
 .entry-menu-button:hover,

@@ -294,7 +294,8 @@ The ⋯ menu:
 1. Every entry, in the strip and in the full list, has a ⋯ button, always
    shown because touch has no hover: at the strip's top-left corner (the ×
    has the top-right one) and in the full list as a column of its own at
-   the entry's right, beside the title, last line and running time. It is
+   the entry's right, at its bottom (clear of the ×), beside the title,
+   last line and running time. It is
    named "Actions for" and the title, with `aria-haspopup="menu"` and
    `aria-expanded`.
 2. A click, a tap, or Enter or Space on the focused ⋯ opens the menu, with
@@ -323,7 +324,7 @@ The ⋯ menu:
 
 | Case (A, B, C in this order; by key or by menu; strip or full list) | Move requests              | Order after                  | Focus after                                                   |
 | ------------------------------------------------------------------- | -------------------------- | ---------------------------- | ------------------------------------------------------------- |
-| First (A) up                                                        | 0                          | A B C; Move up unavailable   | A: its select (key), its ⋯ (menu)                             |
+| First (A) up                                                        | 0                          | A B C; Move up unavailable   | A: the control that had it (key), its ⋯ (menu)                |
 | First (A) down                                                      | 1: A before C              | B A C                        | A, the same                                                   |
 | Middle (B) up                                                       | 1: B before A              | B A C                        | B                                                             |
 | Middle (B) down                                                     | 1: B before `""` (the end) | A C B                        | B                                                             |
