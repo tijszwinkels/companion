@@ -117,9 +117,13 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
   // transcript's top edge and its distance from that edge, so a resize or
   // reflow can put it back where it was (the classic view's reader anchor).
   const readerAnchor = useRef<{ row: Element; offset: number } | null>(null);
-  // The scroll position this component set itself to restore the reader's
-  // row; the scroll event that follows is not the reader moving.
-  const restoredTop = useRef<number | null>(null);
+  // The scroll position this component last set itself (following the end,
+  // restoring the reader's row, Jump to latest); the scroll event that
+  // follows is the page's own, not the reader moving.
+  const pageTop = useRef<number | null>(null);
+  // The scroll position after the previous scroll event or this component's
+  // own scrolling, to tell which way the next scroll event moved.
+  const lastTop = useRef(0);
   // Jump to latest was pressed in a detached snapshot and the host has not
   // shown the live rows yet (cleared when it has, or the reader scrolls).
   const jumping = useRef(false);
@@ -128,6 +132,19 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       jumping.current = false;
     }
   }, [history?.detached]);
+
+  /** Scroll the transcript as the page itself, never as the reader. */
+  function scrollPage(element: HTMLElement, top: number) {
+    const before = element.scrollTop;
+    element.scrollTop = top;
+    // An assignment that changes nothing fires no scroll event to recognize,
+    // and must not hide which way a pending scroll event moved (the browser
+    // may just have pulled the view back, see scrolled()).
+    if (element.scrollTop !== before) {
+      pageTop.current = element.scrollTop;
+      lastTop.current = element.scrollTop;
+    }
+  }
 
   function follow(value: boolean) {
     following.current = value;
@@ -168,8 +185,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     const edge = element.getBoundingClientRect().top;
     const offset = anchor.row.getBoundingClientRect().top - edge;
     if (Math.abs(offset - anchor.offset) > 0.5) {
-      element.scrollTop += offset - anchor.offset;
-      restoredTop.current = element.scrollTop;
+      scrollPage(element, element.scrollTop + offset - anchor.offset);
     }
     const restored = anchor.row.getBoundingClientRect().top - edge;
     return Math.abs(restored - anchor.offset) <= 1;
@@ -184,7 +200,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     }
     const first = rows.length > 0 ? rows[0].key : '';
     if (following.current) {
-      element.scrollTop = element.scrollHeight;
+      scrollPage(element, element.scrollHeight);
     } else if (readerAnchor.current && readerAnchor.current.row.isConnected) {
       // The reader's own row back in place, whatever changed above it in
       // this render or since the last frame (older rows, the history
@@ -194,7 +210,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
         rememberReaderRow();
       }
     } else if (first !== firstKey.current && heightBefore.current > 0) {
-      element.scrollTop += element.scrollHeight - heightBefore.current;
+      scrollPage(element, element.scrollTop + element.scrollHeight - heightBefore.current);
       rememberReaderRow();
     }
     firstKey.current = first;
@@ -208,7 +224,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     readerScrolledAt.current = -Infinity;
     const element = scroller.current;
     if (element) {
-      element.scrollTop = element.scrollHeight;
+      scrollPage(element, element.scrollHeight);
     }
   }, [status.sessionId]);
 
@@ -249,7 +265,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       return;
     }
     if (following.current) {
-      element.scrollTop = element.scrollHeight;
+      scrollPage(element, element.scrollHeight);
     } else if (restoreReaderRow()) {
       rememberReaderRow();
     }
@@ -269,7 +285,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     readerScrolledAt.current = -Infinity;
     const element = scroller.current;
     if (element) {
-      element.scrollTop = element.scrollHeight;
+      scrollPage(element, element.scrollHeight);
     }
     bridge.history(status.sessionId, 'latest');
   }
@@ -280,6 +296,17 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       return;
     }
     const atEnd = element.scrollTop + element.clientHeight >= element.scrollHeight - 4;
+
+    // Whether the reader moved the transcript, whatever they used (wheel,
+    // keys, scroll bar, a finger). Not when this component scrolled it
+    // itself, and not when the browser pulled it back to the end because the
+    // transcript grew or its content shrank (a resize): that moves toward the
+    // start and lands exactly at the end, which no reader's scroll does.
+    const pageMade = pageTop.current !== null && Math.abs(element.scrollTop - pageTop.current) <= 1;
+    pageTop.current = null;
+    const clamped = element.scrollTop < lastTop.current && atEnd;
+    lastTop.current = element.scrollTop;
+    const readerMoved = !pageMade && !clamped;
 
     // Like the classic view, only the reader leaves the live end: a scroll
     // within a second of their own input (each scroll while they drag or
@@ -293,7 +320,7 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       jumping.current = false;
     }
     if (following.current && !atEnd && !byReader) {
-      element.scrollTop = element.scrollHeight;
+      scrollPage(element, element.scrollHeight);
       heightBefore.current = element.scrollHeight;
       return;
     }
@@ -307,25 +334,26 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
       follow(followsEnd);
       bridge.following(status.sessionId, followsEnd);
     }
-    // The reader's new row, unless this scroll is the one this component
-    // made to restore it (the anchor stays as the reader left it).
-    const ownRestore =
-      restoredTop.current !== null && Math.abs(element.scrollTop - restoredTop.current) <= 1;
-    restoredTop.current = null;
-    if (!following.current && !ownRestore) {
+    // The reader's new row, unless this scroll is one this component made,
+    // e.g. to restore it (the anchor stays as the reader left it).
+    if (!following.current && !pageMade) {
       rememberReaderRow();
     }
     heightBefore.current = element.scrollHeight;
 
-    // Near the top: load the previous page once (the native model refuses
-    // repeats while one is pending or after an empty answer).
-    if (
-      element.scrollTop < element.clientHeight &&
-      history?.hasOlder &&
-      !history.pending &&
-      !history.error
-    ) {
+    // Paging: a scroll the reader made that leaves the transcript within one
+    // viewport of an edge asks for the next page at that edge: the previous
+    // page near the top, the next newer one near the end of a detached
+    // snapshot. Not while a page is loading, and not after a failure (only
+    // Retry repeats a request); the host refuses repeats after an empty answer.
+    if (!readerMoved || !history || history.pending || history.error) {
+      return;
+    }
+    const fromEnd = element.scrollHeight - element.clientHeight - element.scrollTop;
+    if (element.scrollTop < element.clientHeight && history.hasOlder) {
       bridge.history(status.sessionId, 'older');
+    } else if (fromEnd < element.clientHeight && history.detached) {
+      bridge.history(status.sessionId, 'newer');
     }
   }
 

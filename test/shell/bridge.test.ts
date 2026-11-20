@@ -769,3 +769,138 @@ test('a page that answers a superseded view is dropped', async () => {
   assert.equal(history.rows().length, 200);
   assert.equal(history.status().pending, false);
 });
+
+/**
+ * The footer Stop's notice ("Stop is not available for this turn") belongs
+ * to the turn it was pressed in: it goes when that turn is over, however the
+ * listener reports that. Each case starts with the footer Stop pressed in a
+ * turn that names no run (the turn after `turn-1`).
+ */
+const stopNoticeCases: {
+  name: string;
+  next: Partial<AgentSession>[];
+  /** Whether the notice is still shown afterwards. */
+  shown: boolean;
+}[] = [
+  { name: 'the same turn keeps running', next: [{ status: 'running' }], shown: true },
+  {
+    name: 'a follow-up run starts (the conversation names a run)',
+    next: [{ status: 'running', runId: 'run-2' }],
+    shown: false,
+  },
+  {
+    name: 'the turn ends and a follow-up starts that names no run',
+    next: [{ status: 'completed', completedTurnId: 'turn-2' }, { status: 'running' }],
+    shown: false,
+  },
+  {
+    name: 'the turn completes and the next unnamed turn is the first update seen',
+    next: [{ status: 'running', completedTurnId: 'turn-2' }],
+    shown: false,
+  },
+  { name: 'another client stops the turn', next: [{ status: 'cancelled' }], shown: false },
+];
+
+for (const noticeCase of stopNoticeCases) {
+  test(`footer Stop notice: ${noticeCase.name}`, async () => {
+    const { store, bridge, messages } = harness();
+    const unnamed = session(sessionA, 'Question A', {
+      status: 'running',
+      completedTurnId: 'turn-1',
+    });
+    store.update({ sessions: new Map(store.state.sessions).set(sessionA, unnamed) });
+    await settle();
+    bridge.stop(sessionA);
+    await settle();
+    assert.match(lastStatus(messages).inputError ?? '', /Stop is not available/);
+
+    for (const change of noticeCase.next) {
+      const next = session(sessionA, 'Question A', { completedTurnId: 'turn-1', ...change });
+      store.update({ sessions: new Map(store.state.sessions).set(sessionA, next) });
+    }
+    await settle();
+    const notice = lastStatus(messages).inputError ?? '';
+    assert.equal(/Stop is not available/.test(notice), noticeCase.shown, notice);
+    assert.deepEqual(
+      store.pending.filter((request) => request.action.startsWith('stop-agent')),
+      [],
+    );
+  });
+}
+
+test("the page's request for a newer page is never repeated after a failure", async () => {
+  const { store, bridge, messages } = harness();
+  // 1000 rows: the live window holds the newest 200, pages hold 200 each.
+  const rows = [];
+  for (let index = 0; index < 1000; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, {
+      ...full,
+      messages: live.messages,
+      history: live.history,
+    }),
+  });
+  await settle();
+
+  /** Answer every outstanding page request with the real page. */
+  async function answerPages(): Promise<void> {
+    for (const request of store.pending.splice(0)) {
+      const parameters = request.parameters as unknown as PageRequest;
+      request.resolve(
+        historyPage(full, 1, parameters.direction, {
+          index: parameters.index,
+          offset: parameters.offset,
+        }),
+      );
+    }
+    await settle();
+  }
+  // Every page request the bridge makes, in order.
+  const pageRequests: PageRequest[] = [];
+  const request = store.request.bind(store);
+  store.request = (action, parameters) => {
+    if (action === 'agent-history-page') {
+      pageRequests.push(parameters as unknown as PageRequest);
+    }
+    return request(action, parameters);
+  };
+
+  // Live: there is nothing newer to ask for.
+  bridge.history(sessionA, 'newer');
+  await settle();
+  assert.equal(pageRequests.length, 0);
+
+  // Four older pages detach the view (rows 0–599 resident at most).
+  for (let page = 0; page < 4; page++) {
+    bridge.following(sessionA, false);
+    bridge.history(sessionA, 'older');
+    await settle();
+    await answerPages();
+  }
+  assert.equal(lastStatus(messages).history?.detached, true);
+  assert.equal(pageRequests.length, 4);
+
+  // The page asks twice while the first newer page is pending: one request.
+  bridge.history(sessionA, 'newer');
+  bridge.history(sessionA, 'newer');
+  await settle();
+  assert.equal(pageRequests.length, 5);
+  assert.equal(pageRequests[4].direction, 'after');
+
+  // It fails: the page's next request sends nothing, only Retry does.
+  store.pending.splice(0)[0].reject(Error('Synthetic page failure'));
+  await settle();
+  assert.equal(lastStatus(messages).history?.error, 'Synthetic page failure');
+  bridge.history(sessionA, 'newer');
+  await settle();
+  assert.equal(pageRequests.length, 5);
+  bridge.history(sessionA, 'retry');
+  await settle();
+  assert.equal(pageRequests.length, 6);
+  assert.equal(pageRequests[5].direction, 'after');
+  assert.equal(pageRequests[5].index, pageRequests[4].index);
+});

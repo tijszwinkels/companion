@@ -145,9 +145,10 @@ export class ResidentHistory {
   }
 
   /**
-   * Automatic paging below a detached snapshot, as the reader scrolls toward
-   * its end. Like SessionView.readerScrolled it does nothing while a request
-   * is pending or after a failure: only the reader's Retry repeats a failed
+   * The page's request for the next newer page below a detached snapshot,
+   * made as the reader scrolls to within one viewport of its end (Chat.tsx).
+   * Like SessionView.readerScrolled it does nothing while a request is
+   * pending or after a failure: only the reader's Retry repeats a failed
    * request.
    */
   continueNewer(): void {

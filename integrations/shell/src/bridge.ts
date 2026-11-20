@@ -33,9 +33,6 @@
  * - Stricter admission: a send must be based on the current draft revision
  *   (no second send of text already sent), and nothing is admitted after a
  *   reconnect until the listener's new snapshot arrived.
- * - Newer history pages below a detached snapshot also load as the reader
- *   scrolls toward the end (`readerNearEnd`, reported by main.tsx); the page
- *   itself never asks for them.
  *
  * Replies and messages reach the page asynchronously and in call order, as
  * QWebChannel delivers them.
@@ -131,8 +128,9 @@ export class GatewayChatBridge implements NativeBridge {
   // Per conversation: the last refusal or failure to show (`inputError`),
   // with the conversation lifetime (ID and tool epoch) it belongs to. A
   // conversation closed and reopened under the same ID is a new lifetime and
-  // does not show the old one's notices.
-  private readonly errors = new Map<string, { lifetime: string; message: string }>();
+  // does not show the old one's notices. `turn` is set only for the footer
+  // Stop's notice, which belongs to the turn it was pressed in (see stop()).
+  private readonly errors = new Map<string, { lifetime: string; message: string; turn?: string }>();
   // Per conversation: the choice request awaiting its answer and the
   // lifetime it was made in, kept until it settles even when the page shows
   // another conversation meanwhile.
@@ -196,6 +194,7 @@ export class GatewayChatBridge implements NativeBridge {
     if (session) {
       this.noticeDraftChange(session.id);
     }
+    this.expireStopNotices();
     if (switched && this.pageReady) {
       // The new conversation's rows and status go out together, so the page
       // never shows one conversation's title with another's transcript.
@@ -560,6 +559,36 @@ export class GatewayChatBridge implements NativeBridge {
     this.scheduleStatus();
   }
 
+  /**
+   * The turn a footer Stop is pressed in: the conversation runs without
+   * naming a run, after its latest completed turn. '' when it does not run
+   * that way (no footer Stop is shown then).
+   */
+  private unnamedTurn(sessionId: string): string {
+    const session = this.store.state.sessions.get(sessionId);
+    if (!session || !this.running(session) || this.stopRunId(sessionId) !== '') {
+      return '';
+    }
+    return 'after:' + (session.completedTurnId ?? '');
+  }
+
+  /**
+   * The footer Stop's notice says Stop is not available for *this* turn. It
+   * goes as soon as that turn is over: the conversation stops running, names
+   * a run (a follow-up turn started) or completes the turn. Checked on every
+   * Store change, so a short pause between two turns is not missed.
+   */
+  private expireStopNotices(): void {
+    for (const [sessionId, entry] of this.errors) {
+      if (entry.turn === undefined) {
+        continue;
+      }
+      if (entry.turn !== this.unnamedTurn(sessionId)) {
+        this.errors.delete(sessionId);
+      }
+    }
+  }
+
   /** The conversation's notice, unless it belongs to an earlier lifetime. */
   private notice(sessionId: string): string {
     const entry = this.errors.get(sessionId);
@@ -791,7 +820,17 @@ export class GatewayChatBridge implements NativeBridge {
    */
   stop(sessionId: string, callback?: (answer: string) => void): void {
     if (this.sameSession(sessionId)) {
-      this.setNotice(sessionId, stopUnavailable);
+      const turn = this.unnamedTurn(sessionId);
+      // Only while the conversation runs without a run to name: otherwise
+      // the page has shown a footer Stop for a turn that is already over.
+      if (turn !== '') {
+        this.errors.set(sessionId, {
+          lifetime: this.lifetimeOf(sessionId),
+          message: stopUnavailable,
+          turn: turn,
+        });
+        this.scheduleStatus();
+      }
     }
     this.answer(callback, { accepted: false });
   }
@@ -846,7 +885,10 @@ export class GatewayChatBridge implements NativeBridge {
     } else if (request === 'older') {
       this.resident.loadOlder();
     } else if (request === 'newer') {
-      this.resident.loadNewer();
+      // The page asks as the reader nears the end of a detached snapshot.
+      // Never while a page is pending, and never after a failure: only the
+      // reader's Retry repeats a failed request.
+      this.resident.continueNewer();
     } else if (request === 'retry') {
       this.resident.retry();
     } else if (request === 'refresh') {
@@ -863,22 +905,6 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     this.resident.setFollowing(atEnd === true);
-    this.scheduleRows();
-    this.scheduleStatus();
-  }
-
-  /**
-   * The reader scrolled the transcript themselves to within one viewport of
-   * its end (reported by main.tsx, like SessionView's readerScrolled). Below
-   * a detached snapshot the next newer page then loads before the reader
-   * reaches the end, so the page keeps their place and the new rows simply
-   * continue below. Not after a failure: only Retry repeats a request.
-   */
-  readerNearEnd(): void {
-    if (!this.shownSession || !this.online) {
-      return;
-    }
-    this.resident.continueNewer();
     this.scheduleRows();
     this.scheduleStatus();
   }
