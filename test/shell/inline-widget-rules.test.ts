@@ -29,6 +29,7 @@ import {
   type FrameEvent,
   type FrameState,
 } from '../../integrations/shell/src/widgets/frame-state.ts';
+import { readerScrollThroughFrame } from '../../integrations/shell/src/widgets/frame-scroll.ts';
 import { frameVisible } from '../../integrations/shell/src/widgets/frame-visibility.ts';
 import { HeightThrottle } from '../../integrations/shell/src/widgets/height-throttle.ts';
 
@@ -411,4 +412,25 @@ test('visibility rule table', () => {
     assert.equal(frameVisible(inputs), result, name);
   }
   // "A different conversation shown" has no frame at all (inline-widgets.test.ts).
+});
+
+test('scrolling through a frame: toward the start with unchanged sizes is the reader', () => {
+  const before = { top: 1000, scrollHeight: 3000, clientHeight: 600 };
+  const cases: [string, typeof before | null, typeof before, boolean][] = [
+    ['toward the start, sizes unchanged', before, { ...before, top: 700 }, true],
+    ['toward the end, sizes unchanged', before, { ...before, top: 1200 }, false],
+    ['not moved', before, before, false],
+    [
+      'content shrank (the browser pulled the view back)',
+      before,
+      { top: 900, scrollHeight: 1500, clientHeight: 600 },
+      false,
+    ],
+    ['content grew', before, { top: 900, scrollHeight: 3200, clientHeight: 600 }, false],
+    ['the window was resized', before, { top: 900, scrollHeight: 3000, clientHeight: 500 }, false],
+    ['no earlier scroll known', null, { ...before, top: 700 }, false],
+  ];
+  for (const [name, previous, current, expected] of cases) {
+    assert.equal(readerScrollThroughFrame(previous, current), expected, name);
+  }
 });

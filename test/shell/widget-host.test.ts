@@ -52,6 +52,8 @@ const instrumentation = `(() => {
 /** Serves the fetched widget documents framed by test pages, and counts their state polls. */
 async function documentServer(documents: { loopback: string; socket: string }, state: Json) {
   const polls = { loopback: 0, socket: 0 };
+  // While set, state polls fail (503), as when the network is gone.
+  const failing = { loopback: false, socket: false };
   const server: Server = createServer((request, response) => {
     const path = request.url ?? '';
     const route = path.startsWith('/loopback/') ? 'loopback' : 'socket';
@@ -62,6 +64,11 @@ async function documentServer(documents: { loopback: string; socket: string }, s
     }
     if (path === '/loopback/state' || path === '/socket/state') {
       polls[route]++;
+      if (failing[route]) {
+        response.writeHead(503, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Synthetic outage' }));
+        return;
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify(state));
       return;
@@ -80,7 +87,7 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  return { origin: `http://127.0.0.1:${address.port}`, polls, server };
+  return { origin: `http://127.0.0.1:${address.port}`, polls, failing, server };
 }
 
 /** A desktop page with the instrumentation in every document and its frames attached. */
@@ -214,6 +221,25 @@ test(
       `document.getElementById('widget').contentWindow.postMessage({ type: 'visible', visible: true }, '*')`,
     );
     await grows(socketPolls, 2);
+
+    // A polling failure (the network went) shows in the frame's status line
+    // and, embedded, goes once polling works again. On the loopback route
+    // it stays, as before this change.
+    const statusLine = `document.querySelector('.error')?.textContent ?? ''`;
+    documents.failing.socket = true;
+    await waitInFrame(shell, socketFrame, `${statusLine} === 'Synthetic outage'`);
+    documents.failing.socket = false;
+    await waitInFrame(shell, socketFrame, `${statusLine} === ''`);
+    documents.failing.loopback = true;
+    await waitInFrame(loopbackParent, loopbackFrame, `${statusLine} === 'Synthetic outage'`);
+    documents.failing.loopback = false;
+    const loopbackPolls = () => documents!.polls.loopback;
+    await grows(loopbackPolls, 3);
+    assert.equal(
+      await evaluateInFrame(loopbackParent, loopbackFrame, statusLine),
+      'Synthetic outage',
+    );
+
     await shell.evaluate(
       `document.getElementById('widget').contentWindow.postMessage({ type: 'visible', visible: false }, '*')`,
     );

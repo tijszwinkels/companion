@@ -757,7 +757,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--background) 82%, transparent);
+  /* Opaque, the panel's own colour: whatever the frame shows while it
+     loads (for example the gateway's answer for an ended view) stays hidden. */
+  background: color-mix(in srgb, var(--foreground) 4%, var(--background));
   color: var(--muted);
   font-family: var(--mono);
   font-size: 12px;

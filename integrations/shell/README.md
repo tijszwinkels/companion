@@ -853,8 +853,13 @@ component, and the chat page uses it for such rows (see
   Message timestamps is on, as on message headings), above the widget's
   page in an iframe:
   `sandbox="allow-scripts allow-same-origin allow-forms"` (no popups, no top
-  navigation, no modals), an `allow` attribute that names every feature with
-  `'none'`, `referrerpolicy="no-referrer"` and `loading="lazy"`. The frame is
+  navigation, no modals), an `allow` attribute that grants no feature and
+  explicitly denies camera, microphone, geolocation, clipboard, payment,
+  USB, serial, Bluetooth, display capture, fullscreen and autoplay
+  (features it does not name keep the browser's default for a frame of
+  another origin, and the page's own Permissions-Policy denies camera,
+  microphone and geolocation to every frame), `referrerpolicy="no-referrer"`
+  and `loading="lazy"`. The frame is
   on another origin than the shell, so `allow-same-origin` gives it only its
   own origin's storage, never the shell's. The address is used exactly as
   the gateway sent it.
@@ -893,7 +898,11 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
    fails this way. The panel then shows "The <name> widget could not load.",
    the reason (the frame's error text, or "Its page did not answer within
    10 seconds."), "The conversation and the widget's saved data are
-   unchanged." and **Try again**. The frame is removed, so it makes no
+   unchanged." and **Try again**. When the page's own policy refused the
+   frame (the gateway's frame origin was set up or changed after this page
+   was loaded, so its `frame-src` does not name it), it fails at once with
+   "This page was opened before widgets were set up for it. Reload the page
+   to show them."; Try again cannot help there, a reload does. The frame is removed, so it makes no
    requests. Try again creates a new frame for the same address (loading).
 5. An `error` after the widget was shown changes nothing here; host.js shows
    it inside the frame, as on the desktop.
@@ -907,7 +916,10 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
    label, nothing loads, and a new frame loads once requests are admitted.
    Try again is unavailable while disconnected.
 7. Back with the **same address** (the device's handles lived on): the frame
-   continues where it was, without loading again. Back with a **new
+   continues where it was, without loading again. A polling failure it
+   showed in its own status line meanwhile (the network went before it was
+   told it is not visible) goes once its polling works again (host.js,
+   embedded only; on the desktop the line stays as before). Back with a **new
    address** (the handles ended, for example the gateway restarted): the row
    changes, the old frame is removed and the new address loads.
 8. A **conversation switched and back**: the frame goes with the chat and
@@ -918,23 +930,25 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
 10. **Two widgets in one conversation**: each has its own panel, frame, state
     and messages; nothing one frame sends reaches the other's panel.
 
-| Case                                                   | Shown                                                              |
-| ------------------------------------------------------ | ------------------------------------------------------------------ |
-| No `frameUrl`, or one of another shape                 | Not set up card, no frame                                          |
-| `frameUrl`, nothing reported yet                       | Panel, frame loading under "Loading the <name> widget…"            |
-| First `geometry` 180                                   | Shown, 180 px                                                      |
-| `error` "boom" before any `geometry`                   | Failed: "The <name> widget could not load. boom", Try again        |
-| No `geometry` within 10 s visible (also: upstream 404) | Failed: "… Its page did not answer within 10 seconds.", Try again  |
-| 10 s pass while out of view, then 9 s in view          | Still loading                                                      |
-| Try again                                              | A new frame, loading; shown at its first `geometry`                |
-| `error` after shown                                    | Still shown                                                        |
-| Connection lost                                        | Greyed, "Disconnected · reconnecting…", no input, `visible: false` |
-| Conversation opened while disconnected                 | No frame in the page (nothing loads) until admitted, then loading  |
-| Back with the same address                             | The same frame, shown, `visible: true`; not loaded again           |
-| Back with a new address                                | New frame for the new address: loading, then shown                 |
-| Conversation switched and back                         | Loads again, at its last height until its first `geometry`         |
-| Widget removed from the message                        | Message as text, frame removed                                     |
-| Two widgets, one reports 300                           | Only that panel is 300 px tall                                     |
+| Case                                                   | Shown                                                                                                     |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| No `frameUrl`, or one of another shape                 | Not set up card, no frame                                                                                 |
+| `frameUrl`, nothing reported yet                       | Panel, frame loading under "Loading the <name> widget…"                                                   |
+| First `geometry` 180                                   | Shown, 180 px                                                                                             |
+| `error` "boom" before any `geometry`                   | Failed: "The <name> widget could not load. boom", Try again                                               |
+| No `geometry` within 10 s visible (also: upstream 404) | Failed: "… Its page did not answer within 10 seconds.", Try again                                         |
+| The page's policy refuses the frame (set up later)     | Failed at once: "… This page was opened before widgets were set up for it. Reload the page to show them." |
+| 10 s pass while out of view, then 9 s in view          | Still loading                                                                                             |
+| Try again                                              | A new frame, loading; shown at its first `geometry`                                                       |
+| `error` after shown                                    | Still shown                                                                                               |
+| Connection lost                                        | Greyed, "Disconnected · reconnecting…", no input, `visible: false`                                        |
+| Conversation opened while disconnected                 | No frame in the page (nothing loads) until admitted, then loading                                         |
+| Back with the same address                             | The same frame, shown, `visible: true`; not loaded again                                                  |
+| Back with the same address after a failed poll         | The error line inside the frame goes at the next successful poll                                          |
+| Back with a new address                                | New frame for the new address: loading, then shown                                                        |
+| Conversation switched and back                         | Loads again, at its last height until its first `geometry`                                                |
+| Widget removed from the message                        | Message as text, frame removed                                                                            |
+| Two widgets, one reports 300                           | Only that panel is 300 px tall                                                                            |
 
 ### Rule: messages between the shell and a frame
 
@@ -1010,9 +1024,10 @@ column lying over the chat in a narrow window; `src/widgets/chat-cover.ts`)
 and the shell's requests are admitted. The shell tells the frame when this
 changes. The widget page polls its state every 400 ms only while it is
 visible (host.js; a hidden tab stopped it before as well), and only after
-the shell first said it is visible, so a frame the reader cannot see makes
-no requests. A conversation that is not shown has
-no frames at all.
+the shell first said it is visible, so a frame the reader cannot see
+starts no polls (a poll already on its way still completes, and the
+browser's lazy loading may fetch the page of a frame near the view before
+it is visible). A conversation that is not shown has no frames at all.
 
 | Case                                   | Visible | Polls                           |
 | -------------------------------------- | ------- | ------------------------------- |
@@ -1024,6 +1039,29 @@ no frames at all.
 | Activity beside the chat (wide window) | yes     | yes                             |
 | A different conversation shown         | —       | no (the frame is removed)       |
 | Disconnected                           | no      | no, until admitted again        |
+
+### Rule: scrolling over a widget
+
+A wheel or a finger over a widget goes to the widget's page, in another
+process; when that page cannot scroll any further, the browser scrolls the
+transcript instead, and neither the chat page nor the shell sees the
+reader's input. The chat page would take such a scroll for a layout change
+and, at the live end, pull the view straight back. So while at least one
+widget frame is in the transcript (`src/widgets/frame-scroll.ts`), a scroll
+of the transcript toward its start, with the transcript's height and its
+content's height unchanged since the previous scroll event (or size
+change), counts as the reader's: the shell sends the chat page a synthetic
+`wheel` on the transcript before the page's own scroll handler runs, which
+is how the page notes the reader's input. Layout changes that move the
+view change one of the heights; the chat page's own scrolls toward the
+start happen only then. A chat without widgets is not watched.
+
+| Case                                                     | Reader's scroll |
+| -------------------------------------------------------- | --------------- |
+| Toward the start, heights unchanged (wheel over a frame) | yes             |
+| Toward the end, heights unchanged                        | no (not needed) |
+| The content shrank and the browser pulled the view back  | no              |
+| The content grew, or the window was resized              | no              |
 
 ### Security
 
@@ -1471,7 +1509,8 @@ The [inline widget](#inline-widgets) rules have one table each:
   frame origin (no frame, no request to another origin); an ended view
   (upstream 404) failing after 10 seconds in view; disconnected (greyed,
   inert, not visible), back with the same address without loading again
-  and polling again, and a new address after a gateway restart, loaded;
+  and polling again, a conversation opened while disconnected loading
+  nothing until admitted, and a new address after a gateway restart, loaded;
   hostile and malformed messages (out of bounds, not a number, extra
   fields, another type, from the shell's own window, from the widget's
   inner frame, from another panel's frame, an error after shown) and a
@@ -1480,7 +1519,12 @@ The [inline widget](#inline-widgets) rules have one table each:
   message; and visibility: out of view at the live end, shown and polling
   when scrolled into view with the wheel, not visible and not polling when
   scrolled out, polling again when back, not visible behind the settings
-  screen and behind the Activity column over the chat at 420 px. Each test
+  screen and behind the Activity column over the chat at 420 px; at the
+  live end, a wheel over a widget's frame leaving the end and staying there
+  (it was pulled back before); a page loaded before the gateway had a frame
+  origin failing at once with the reload reason, and showing the widget
+  after a reload; while disconnected only the frame inert, its label
+  readable. Each test
   checks that no request left the gateway's origin and the frame origin
   and that no policy violation occurred. With
   `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves every state (loading,
@@ -1693,7 +1737,9 @@ and touch on real touch hardware (a synthetic touch swipe is covered); the × fo
 characters from an input method); and edge scrolling of a long list during a
 drag.
 
-Not covered in the browser for inline widgets: a hidden tab (the
+Not covered in the browser for inline widgets: a touch pan over a widget
+(the scrolling rule is about scrolls, whatever moved them; only the wheel
+is tested), a hidden tab (the
 visibility table's row is in `inline-widget-rules.test.ts`; host.js already
 stopped polling in a hidden tab before), and a frame whose own page
 navigates elsewhere (its messages then have another origin and are
@@ -1752,6 +1798,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/widgets/frame-messages.ts`      | Messages to and from a frame: checks, height bounds, theme                    |
 | `src/widgets/height-throttle.ts`     | At most one applied frame height per 100 ms                                   |
 | `src/widgets/frame-visibility.ts`    | The visibility rule                                                           |
+| `src/widgets/frame-scroll.ts`        | Scrolling over a widget counts as the reader's scroll                         |
 | `src/widgets/chat-cover.ts`          | Whether the settings screen or the Activity overlay covers the chat           |
 | `build.ts`                           | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
 | `demo.ts`                            | Synthetic end-to-end demo                                                     |

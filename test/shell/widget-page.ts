@@ -58,6 +58,7 @@ export function mount(root) {
       let child = 'unreachable';
       try {
         const frame = document.createElement('iframe');
+        frame.style.display = 'none';
         document.body.append(frame);
         child = typeof frame.contentWindow.RTCPeerConnection;
       } catch (error) {

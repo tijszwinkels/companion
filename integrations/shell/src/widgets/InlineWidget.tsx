@@ -44,6 +44,7 @@ import {
   visibleMessage,
 } from './frame-messages.ts';
 import { initialFrameState, loadDeadlineMilliseconds, nextFrameState } from './frame-state.ts';
+import { watchTranscript } from './frame-scroll.ts';
 import { frameVisible } from './frame-visibility.ts';
 import { HeightThrottle, type ThrottleTimers } from './height-throttle.ts';
 
@@ -58,10 +59,11 @@ export interface InlineWidgetEnvironment {
 }
 
 /**
- * The frame grants nothing: every feature the browser could delegate is
- * named with 'none' (the same list as host.js's inner frame, plus
- * fullscreen and autoplay). The gateway's own Permissions-Policy denies
- * camera, microphone and geolocation to the whole page as well.
+ * The frame is granted no feature, and these are denied explicitly (the
+ * same list as host.js's inner frame, plus fullscreen and autoplay);
+ * features not named keep the browser's default for a frame of another
+ * origin. The gateway's own Permissions-Policy denies camera, microphone
+ * and geolocation to the whole page as well.
  */
 const noPermissions =
   "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; payment 'none'; usb 'none'; serial 'none'; bluetooth 'none'; display-capture 'none'; fullscreen 'none'; autoplay 'none'";
@@ -84,6 +86,10 @@ function rememberHeight(address: string, height: number): void {
     }
   }
 }
+
+/** Why a frame the page's own policy refused could not load, and what helps. */
+const policyRefusal =
+  'This page was opened before widgets were set up for it. Reload the page to show them.';
 
 const pageTimers: ThrottleTimers = {
   now: () => performance.now(),
@@ -216,6 +222,16 @@ function WidgetFrame(props: {
     };
   }, []);
 
+  // Scrolling the transcript with the pointer over a frame counts as the
+  // reader's scroll (frame-scroll.ts), while this panel has a frame.
+  useEffect(() => {
+    const transcript = panel.current?.closest('.transcript');
+    if (!transcript) {
+      return;
+    }
+    return watchTranscript(transcript);
+  }, []);
+
   // Messages from this panel's frame only (frame-messages.ts checks the
   // source window, the origin and every field). Heights go through the
   // throttle; the listener and the throttle belong to one frame element, so
@@ -244,9 +260,20 @@ function WidgetFrame(props: {
       }
     }
 
+    // The page refused to frame the address: its policy (from the gateway,
+    // when the page was loaded) has no `frame-src` for this frame origin,
+    // because the frame origin was set up or changed after the page loaded.
+    function onPolicyViolation(event: SecurityPolicyViolationEvent) {
+      if (event.effectiveDirective === 'frame-src' && event.blockedURI.startsWith(origin)) {
+        dispatch({ type: 'error', text: policyRefusal });
+      }
+    }
+
     window.addEventListener('message', onMessage);
+    document.addEventListener('securitypolicyviolation', onPolicyViolation);
     return () => {
       window.removeEventListener('message', onMessage);
+      document.removeEventListener('securitypolicyviolation', onPolicyViolation);
       throttle.dispose();
     };
   }, [frameShown, frameKey, origin]);
@@ -346,26 +373,29 @@ function WidgetFrame(props: {
       data-connected={String(connected)}
     >
       <WidgetHeader name={name} time={time} />
-      {/* While disconnected the frame takes no input (it is paused). */}
-      <div class="inline-widget-body" inert={!connected}>
-        {/* The sandbox and the other attributes come before the address,
-            and all are set before the frame is put into the page. */}
-        {frameInPage ? (
-          <iframe
-            key={frameKey}
-            ref={iframe}
-            title={`${name} widget`}
-            sandbox="allow-scripts allow-same-origin allow-forms"
-            allow={noPermissions}
-            referrerpolicy="no-referrer"
-            loading="lazy"
-            src={address}
-            style={{ height: `${state.height}px` }}
-            onLoad={onFrameLoad}
-          />
-        ) : (
-          <div class="inline-widget-placeholder" style={{ height: `${state.height}px` }} />
-        )}
+      <div class="inline-widget-body">
+        {/* While disconnected the frame takes no input (it is paused). Only
+            the frame is inert: the labels below stay readable. */}
+        <div class="inline-widget-frame" inert={!connected}>
+          {/* The sandbox and the other attributes come before the address,
+              and all are set before the frame is put into the page. */}
+          {frameInPage ? (
+            <iframe
+              key={frameKey}
+              ref={iframe}
+              title={`${name} widget`}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              allow={noPermissions}
+              referrerpolicy="no-referrer"
+              loading="lazy"
+              src={address}
+              style={{ height: `${state.height}px` }}
+              onLoad={onFrameLoad}
+            />
+          ) : (
+            <div class="inline-widget-placeholder" style={{ height: `${state.height}px` }} />
+          )}
+        </div>
         {state.phase === 'loading' && connected && (
           <div class="inline-widget-cover" role="status">
             Loading the {name} widget…

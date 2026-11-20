@@ -372,14 +372,18 @@ test(
     await screenshots(page, 'broken', 'failed');
 
     // Try again: a new frame for the same address, which fails again.
+    // (The broken widget's document address: the one frame document that is
+    // not the probe's.)
+    const documentAddress = new RegExp('^' + fixture.frameOrigin + '/f/[A-Za-z0-9_-]{43}/$');
     const brokenAddress = page.requests.find(
-      (url) => url.startsWith(fixture.frameOrigin + '/f/') && url !== probeAddress,
+      (url) => documentAddress.test(url) && url !== probeAddress,
     )!;
     const loadsBefore = documentLoads(page, brokenAddress);
+    assert.equal(loadsBefore, 1);
     const button = `[...${panelExpression('broken')}.querySelectorAll('button')].find((element) => element.textContent === 'Try again')`;
     await page.evaluate(`${button}.scrollIntoView({ block: 'center' })`);
     await click(page, `.inline-widget[data-phase="failed"] button`);
-    await page.waitFor(`${panelExpression('broken')}?.dataset.phase !== 'failed'`);
+    await waitFor(() => documentLoads(page, brokenAddress) === loadsBefore + 1, 10_000);
     await page.waitFor(`${panelExpression('broken')}?.dataset.phase === 'failed'`, 15_000);
     assert.equal(documentLoads(page, brokenAddress), loadsBefore + 1);
 
@@ -496,13 +500,16 @@ test(
         visible: panel.dataset.visible,
         classes: panel.className,
         text: panel.textContent,
-        inert: panel.querySelector('.inline-widget-body').inert,
+        inert: panel.querySelector('.inline-widget-frame').inert,
+        // The label is not inside the inert part: it stays readable.
+        labelInert: panel.querySelector('.inline-widget-cover.offline').closest('[inert]') !== null,
       };
     })()`);
     assert.equal(offline.visible, 'false');
     assert.match(offline.classes, /disconnected/);
     assert.match(offline.text, /Disconnected · reconnecting…/);
     assert.equal(offline.inert, true);
+    assert.equal(offline.labelInert, false);
 
     // Back with the same address: the same frame continues, not loaded again.
     await page.waitFor(`${panelExpression('counter')}?.dataset.connected === 'true'`, 15_000);
@@ -656,24 +663,25 @@ test(
     await settle(160);
     assert.equal(await phase(page, 'counter'), 'shown');
 
-    // A burst of 1,000 heights: applied at most every 100 ms, the last one wins.
+    // A burst of 1,000 heights: the page applies at most one per 100 ms
+    // (measured where they are applied), and the last one wins.
     await page.evaluate(`(() => {
       window.__heights = [];
       const frame = ${panelExpression('counter')}.querySelector('iframe');
-      new MutationObserver(() => window.__heights.push(frame.style.height)).observe(frame, { attributes: true, attributeFilter: ['style'] });
+      new MutationObserver(() => window.__heights.push({ height: frame.style.height, at: performance.now() })).observe(frame, { attributes: true, attributeFilter: ['style'] });
     })()`);
-    const burst = await evaluateInFrame<number>(
+    await evaluateInFrame(
       page,
       counter,
-      `(() => { const start = performance.now(); for (let index = 0; index < 999; index++) { parent.postMessage({ type: 'geometry', height: 101 + (index % 300) }, '*'); } parent.postMessage({ type: 'geometry', height: 260 }, '*'); return performance.now() - start; })()`,
+      `(() => { for (let index = 0; index < 999; index++) { parent.postMessage({ type: 'geometry', height: 101 + (index % 300) }, '*'); } parent.postMessage({ type: 'geometry', height: 260 }, '*'); })()`,
     );
     await page.waitFor(`${frameHeight('counter')} === 260`);
-    const applied = await page.evaluate<string[]>(`window.__heights`);
-    assert.ok(
-      applied.length <= 2 + Math.ceil(burst / 100),
-      `${applied.length} heights applied for a burst of ${burst} ms`,
-    );
-    assert.equal(applied.at(-1), '260px');
+    const applied = await page.evaluate<{ height: string; at: number }[]>(`window.__heights`);
+    for (let index = 1; index < applied.length; index++) {
+      // Timer granularity allows a few milliseconds early.
+      assert.ok(applied[index].at - applied[index - 1].at >= 95, JSON.stringify(applied));
+    }
+    assert.equal(applied.at(-1)!.height, '260px');
 
     // Another conversation: both frames go, and nothing polls for them.
     await openConversation(page, 'Plain conversation');
@@ -786,5 +794,105 @@ test(
     assert.equal(await horizontalOverflow(page), 0);
     assertTwoOrigins(fixture, page);
     await assertNoViolations(page);
+  },
+);
+
+test(
+  'scrolling with the wheel over a widget leaves the live end and stays there',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await frameSetup(context);
+    const { run } = await conversation(fixture, 'Wheel fixture');
+    for (let index = 0; index < 20; index++) {
+      run.emit(
+        chatMessage(
+          'earlier-' + index,
+          'assistant',
+          `Earlier answer ${index}. ` + 'Words. '.repeat(30),
+        ),
+      );
+    }
+    await fixture.publishWidget(run, 'probe', { label: 'Under the pointer', height: 380 });
+    run.finish();
+
+    const { page } = await pairedPage(fixture, browser, 1280, 800);
+    await attachFrames(browser, page);
+    await openConversation(page, 'Wheel fixture');
+    await page.waitFor(`${panelExpression('probe')}?.dataset.phase === 'shown'`, 15_000);
+    const transcript = `document.querySelector('.transcript')`;
+    const atEnd = `(${transcript}.scrollTop + ${transcript}.clientHeight >= ${transcript}.scrollHeight - 4)`;
+    await page.waitFor(atEnd);
+
+    // The pointer over the widget's frame, which cannot scroll itself: the
+    // wheel scrolls the transcript, and the view stays where the reader
+    // took it (the chat page used to pull it back to the end).
+    const point = await page.evaluate<{ x: number; y: number }>(`(() => {
+      const box = ${panelExpression('probe')}.querySelector('iframe').getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    })()`);
+    const before = await page.evaluate<number>(`${transcript}.scrollTop`);
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
+    await page.call('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: point.x,
+      y: point.y,
+      deltaX: 0,
+      deltaY: -300,
+    });
+    await page.waitFor(`${transcript}.scrollTop < ${before - 100}`);
+    const moved = await page.evaluate<number>(`${transcript}.scrollTop`);
+    // The chat page pulled the view back within a frame or two before the
+    // fix; the view now stays, and Jump to latest is offered.
+    await drawn(page);
+    await drawn(page);
+    assert.equal(await page.evaluate<number>(`${transcript}.scrollTop`), moved);
+    await page.waitFor(`document.querySelector('button.latest')`);
+    await assertNoViolations(page);
+  },
+);
+
+test(
+  'a page opened before the frame origin was set up says to reload it',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await frameSetup(context, { frames: false });
+    const { run } = await conversation(fixture, 'Set up later');
+    await fixture.publishCounter(run);
+    run.finish();
+
+    const { page } = await pairedPage(fixture, browser, 1280, 800);
+    await openConversation(page, 'Set up later');
+    await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'not-set-up'`);
+
+    // The gateway restarts with a frame origin; the open page still has the
+    // policy it was loaded with, which has no frame-src for it.
+    await fixture.gateway.close();
+    const replacement = new Gateway({
+      host: '127.0.0.1',
+      port: fixture.port,
+      origins: [fixture.origin],
+      stateDirectory: join(fixture.directory, 'remote-state'),
+      controlSocket: fixture.desktop.socketPath,
+      sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+      appDirectory,
+      log: () => {},
+      frames: {
+        listen: { host: '127.0.0.1', port: fixture.framePort },
+        origin: fixture.frameOrigin,
+      },
+    });
+    await replacement.start();
+    context.after(() => replacement.close());
+
+    await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'failed'`, 20_000);
+    assert.match(
+      await page.evaluate<string>(`${panelExpression('counter')}.textContent`),
+      /The counter widget could not load\. This page was opened before widgets were set up for it\. Reload the page to show them\./,
+    );
+
+    // Reloaded, the page has the gateway's new policy and shows the widget.
+    await page.navigate(`${fixture.origin}/`);
+    await openConversation(page, 'Set up later');
+    await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'shown'`, 15_000);
   },
 );
