@@ -79,10 +79,13 @@ window.addEventListener('popstate', () => {
 // column (the phone panel's default), and after each reconnect from the
 // start, so changes made elsewhere while offline (deletions, labels) are not
 // missed. The selected conversation is not shown while the settings screen
-// covers it, so an answer completed then is marked unread.
+// covers it, so an answer completed then is marked unread. Conversation
+// drafts are the listener's where the gateway offers them (README,
+// "Listener drafts"), else kept in this browser as before.
 const store = new Store({
   rereadActivityAfterReconnect: true,
   selectionShown: () => !settingsView.shown,
+  listenerDrafts: true,
 });
 
 // The listener's clock offset is taken from each state message as the

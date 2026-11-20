@@ -29,6 +29,7 @@ import type {
   RemoteAgentActions,
 } from '../../../src/remote/protocol.ts';
 import { Connection, UncertainOutcome, type ConnectionState } from './connection.ts';
+import { ListenerDrafts } from './listener-drafts.ts';
 import { Navigation, type PhonePage } from './navigation.ts';
 
 export interface Toast {
@@ -118,6 +119,17 @@ export interface StoreOptions {
    * is shown.
    */
   selectionShown?: () => boolean;
+  /**
+   * Share conversation drafts with the listener (./listener-drafts.ts): ask
+   * every connection for them, show the listener's draft in each
+   * conversation's box, write edits with `draft-set`, and report
+   * `pendingSend` while a send waits. A connection without drafts (an older
+   * gateway or listener) keeps them in this browser exactly as without this
+   * option. Off by default (the phone panel keeps its drafts on the phone);
+   * the browser shell turns it on. The new-conversation box (`new`) always
+   * stays local.
+   */
+  listenerDrafts?: boolean;
 }
 
 export class Store {
@@ -169,6 +181,13 @@ export class Store {
    * `rereadActivityAfterReconnect`).
    */
   private activityReadGeneration = 0;
+  /** Listener-owned drafts, only with the `listenerDrafts` option. */
+  private readonly listenerDrafts: ListenerDrafts | undefined;
+  /**
+   * The conversation whose send waits for its answer, as `panel-state`
+   * reports it (`pendingSend`, listener drafts only), or ''.
+   */
+  private pendingSendReport = '';
 
   constructor(options: StoreOptions = {}) {
     this.readsActivity = options.activity !== false;
@@ -178,7 +197,21 @@ export class Store {
       (event) => this.apply(event),
       (connection) => this.connectionChanged(connection),
       () => this.online(),
+      { drafts: options.listenerDrafts === true },
     );
+    if (options.listenerDrafts === true) {
+      this.listenerDrafts = new ListenerDrafts({
+        shown: (id) => this.draft(id),
+        shownIds: () => [...this.drafts.keys()].filter((id) => id !== 'new'),
+        show: (id, text) => this.showListenerDraft(id, text),
+        write: (id, text, editId) => this.connection.request('draft-set', { id, text, editId }),
+        changed: () => {
+          // What is not confirmed yet is kept in this browser (see saveDrafts).
+          this.saveDrafts();
+          this.update({});
+        },
+      });
+    }
     this.navigation = new Navigation((page) => this.applyPage(page));
     this.state = { ...this.state, connection: this.connection.state };
     if (this.connection.paired) {
@@ -278,18 +311,47 @@ export class Store {
       return;
     }
     const id = this.state.sessions.has(this.state.selected) ? this.state.selected : '';
-    void this.request('panel-state', { id }, { quiet: true }).catch(() => {});
+    const report: { id: string; pendingSend?: string } = { id };
+    // Only a connection that shares drafts may name a waiting send; one
+    // without drafts would refuse the field.
+    if (this.listenerDrafts !== undefined && this.listenerDrafts.ready) {
+      report.pendingSend = this.pendingSendReport;
+    }
+    void this.request('panel-state', report, { quiet: true }).then(
+      () => this.selectionReportAccepted(),
+      () => {},
+    );
+  }
+
+  /**
+   * The listener accepted a `panel-state` report. Without a draft snapshot
+   * before the connection's first one, the connection does not share
+   * drafts: they are this browser's again (see ./listener-drafts.ts).
+   */
+  private selectionReportAccepted(): void {
+    if (this.listenerDrafts === undefined) {
+      return;
+    }
+    const leftListener = this.listenerDrafts.reportAccepted();
+    if (leftListener) {
+      // The shown texts are now local drafts: kept and saved as before.
+      this.pruneDrafts(new Set(this.state.sessions.keys()));
+    }
   }
 
   private online(): void {
     // Wait for this connection's authoritative snapshot before reporting a
     // selection: the old conversation may have been closed while offline.
     this.receivedSnapshot = false;
+    this.listenerDrafts?.connected();
   }
 
   private connectionChanged(connection: ConnectionState): void {
     if (connection.status === 'unpaired') {
       this.clearPrivateState();
+    }
+    if (connection.status !== 'online') {
+      this.listenerDrafts?.disconnected();
     }
     this.update({ connection });
   }
@@ -302,6 +364,8 @@ export class Store {
     this.seen.clear();
     this.receivedSnapshot = false;
     this.revealNextRestore = '';
+    this.listenerDrafts?.forget();
+    this.pendingSendReport = '';
     this.navigation.reset();
     try {
       localStorage.removeItem(draftKey);
@@ -344,7 +408,50 @@ export class Store {
       this.drafts.delete(id);
     }
     this.saveDrafts();
+    // A conversation's draft shared with the listener is written there.
+    if (id !== 'new') {
+      this.listenerDrafts?.edited(id, text);
+    }
     this.update({});
+  }
+
+  /**
+   * Show the listener's text in a conversation's box (listener drafts). Not
+   * an edit: nothing is written. The revision advances, as for any change of
+   * the draft that the person did not type here.
+   */
+  private showListenerDraft(id: string, text: string): void {
+    this.draftRevisions.set(id, (this.draftRevisions.get(id) ?? 0) + 1);
+    if (text) {
+      this.drafts.set(id, text);
+    } else {
+      this.drafts.delete(id);
+    }
+  }
+
+  /** Whether this page's conversation drafts are the listener's now (listener drafts only). */
+  get draftsShared(): boolean {
+    return this.listenerDrafts !== undefined && this.listenerDrafts.mode === 'listener';
+  }
+
+  /** Why a conversation's shown text is not saved in the listener, or ''. */
+  draftUnsaved(id: string): string {
+    return this.listenerDrafts?.unsaved(id) ?? '';
+  }
+
+  /** The agent that proposed a conversation's shown, unedited draft, or ''. */
+  draftSource(id: string): string {
+    return this.listenerDrafts?.source(id) ?? '';
+  }
+
+  /** Save: write a conversation's unsaved text. False when there is none. */
+  saveUnsavedDraft(id: string): boolean {
+    return this.listenerDrafts?.save(id) ?? false;
+  }
+
+  /** Discard: show the listener's draft instead of the unsaved text. */
+  discardUnsavedDraft(id: string): boolean {
+    return this.listenerDrafts?.discard(id) ?? false;
   }
 
   /**
@@ -370,16 +477,23 @@ export class Store {
     const identity = this.identityRevision;
     const sending = { pending: true, error: '' };
     this.update({ sends: new Map(this.state.sends).set(id, sending) });
+    this.reportPendingSend(id);
     try {
       const result =
         id === 'new'
           ? await this.request('start-agent', { text, profile }, { quiet: true })
           : await this.request('send-agent', { id, text }, { quiet: true });
+      this.endPendingSend(id);
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
         return undefined;
       }
       const unchangedDraft = (this.draftRevisions.get(id) ?? 0) === revision;
-      if (unchangedDraft) {
+      if (id !== 'new' && this.draftsShared) {
+        // The listener clears its draft itself, only while it still equals
+        // the sent text, and tells every editor; this page never writes an
+        // empty draft for a send (newer text typed elsewhere would go).
+        this.listenerDrafts?.sent(id, text);
+      } else if (unchangedDraft) {
         this.setDraft(id, '');
       }
       const sends = new Map(this.state.sends);
@@ -402,6 +516,7 @@ export class Store {
       }
       return startedId(result);
     } catch (error) {
+      this.endPendingSend(id);
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
         return undefined;
       }
@@ -415,12 +530,42 @@ export class Store {
     }
   }
 
-  /** Only open conversations and the new-conversation composer retain drafts. */
+  /**
+   * With listener drafts, report the conversation whose send now waits
+   * (`pendingSend`) before the send leaves, so agents cannot propose a draft
+   * for it meanwhile (src/remote/README.md, "Drafts"). Nothing otherwise.
+   */
+  private reportPendingSend(id: string): void {
+    if (id === 'new' || this.listenerDrafts === undefined || !this.listenerDrafts.ready) {
+      return;
+    }
+    this.pendingSendReport = id;
+    this.reportSelection();
+  }
+
+  /** The send of `id` has its answer (or lost it): no longer reported as waiting. */
+  private endPendingSend(id: string): void {
+    if (this.pendingSendReport !== id) {
+      return;
+    }
+    this.pendingSendReport = '';
+    if (this.listenerDrafts !== undefined && this.listenerDrafts.ready) {
+      this.reportSelection();
+    }
+  }
+
+  /**
+   * Only open conversations and the new-conversation composer retain drafts.
+   * With listener drafts the listener keeps every conversation's draft (also
+   * of closed ones, which may be reopened), so only sends are pruned.
+   */
   private pruneDrafts(active: Set<string>): void {
-    for (const id of this.drafts.keys()) {
-      if (id !== 'new' && !active.has(id)) {
-        this.drafts.delete(id);
-        this.draftRevisions.delete(id);
+    if (!this.draftsShared) {
+      for (const id of this.drafts.keys()) {
+        if (id !== 'new' && !active.has(id)) {
+          this.drafts.delete(id);
+          this.draftRevisions.delete(id);
+        }
       }
     }
     this.saveDrafts();
@@ -443,8 +588,27 @@ export class Store {
   }
 
   private saveDrafts(): void {
+    let kept = this.drafts;
+    if (this.listenerDrafts !== undefined && this.draftsShared) {
+      // Conversation drafts are the listener's. This browser keeps only the
+      // new-conversation box and text the listener has not confirmed yet
+      // (unsaved, or still being written), so a reload offers that text
+      // again instead of losing it. Local copies from before are deleted
+      // here once the listener's snapshot offered them.
+      kept = new Map();
+      const newConversation = this.drafts.get('new');
+      if (newConversation !== undefined) {
+        kept.set('new', newConversation);
+      }
+      for (const id of this.listenerDrafts.unconfirmedIds()) {
+        const text = this.drafts.get(id);
+        if (text !== undefined) {
+          kept.set(id, text);
+        }
+      }
+    }
     try {
-      localStorage.setItem(draftKey, JSON.stringify(Object.fromEntries(this.drafts)));
+      localStorage.setItem(draftKey, JSON.stringify(Object.fromEntries(kept)));
     } catch {
       // Ignore: the draft stays in memory for this page.
     }
@@ -532,6 +696,17 @@ export class Store {
         return;
       case 'history-deleted':
         this.historyDeleted(event.id, event.sessionId);
+        return;
+      case 'draft-snapshot':
+        // Only a connection that asked for drafts receives these.
+        if (this.listenerDrafts !== undefined) {
+          this.listenerDrafts.snapshot(event);
+          // Local copies have been offered: deleted from this browser.
+          this.saveDrafts();
+        }
+        return;
+      case 'draft':
+        this.listenerDrafts?.change(event);
         return;
     }
   }

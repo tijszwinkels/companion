@@ -84,6 +84,29 @@ class FakeStore {
     this.update({});
   }
 
+  // Listener drafts (Store.draftUnsaved and the rest): set by a test, else none.
+  readonly unsaved = new Map<string, string>();
+  readonly sources = new Map<string, string>();
+  readonly savedOrDiscarded: string[] = [];
+
+  draftUnsaved(id: string): string {
+    return this.unsaved.get(id) ?? '';
+  }
+
+  draftSource(id: string): string {
+    return this.sources.get(id) ?? '';
+  }
+
+  saveUnsavedDraft(id: string): boolean {
+    this.savedOrDiscarded.push('save ' + id);
+    return this.unsaved.delete(id);
+  }
+
+  discardUnsavedDraft(id: string): boolean {
+    this.savedOrDiscarded.push('discard ' + id);
+    return this.unsaved.delete(id);
+  }
+
   open(id: string): void {
     this.update({ selected: id });
   }
@@ -168,6 +191,55 @@ test('messages are numbered without gaps and ready() resends everything in full'
   assert.equal(again[0].type === 'rows' && again[0].full, true);
   assert.equal(again[0].seq, before + 1);
   assert.equal(again[1].type, 'status');
+});
+
+test('listener drafts reach the page: unsaved text, the agent source with Clear, Save, Discard and Close', async () => {
+  const { store, bridge, messages } = harness();
+  await settle();
+
+  // Without listener drafts (the Store reports none) the status is as before.
+  let status = lastStatus(messages);
+  assert.equal(status.draftUnsaved, '');
+  assert.equal(status.draft!.source, '');
+  assert.equal('clearable' in status.draft!, false, 'no Clear without an agent source');
+
+  // An agent's unedited proposal: its source, and Clear.
+  store.sources.set(sessionA, 'Planner');
+  store.update({});
+  await settle();
+  status = lastStatus(messages);
+  assert.equal(status.draft!.source, 'Planner');
+  assert.equal(status.draft!.clearable, true);
+
+  // Unsaved text: its reason; Close is refused (page and list) until it is
+  // saved or discarded.
+  store.sources.delete(sessionA);
+  store.unsaved.set(sessionA, 'Companion is not connected; your text is not saved yet.');
+  store.update({});
+  await settle();
+  status = lastStatus(messages);
+  assert.equal(status.draftUnsaved, 'Companion is not connected; your text is not saved yet.');
+  assert.equal('clearable' in status.draft!, false);
+  assert.equal(bridge.canClose(sessionA), false);
+  assert.equal(bridge.canClose(sessionB), true);
+  assert.deepEqual(await ask((callback) => bridge.closeSession(sessionA, callback)), {
+    accepted: false,
+  });
+  assert.equal(store.pending.filter((request) => request.action === 'close-agent').length, 0);
+
+  // Save and Discard act only on the shown conversation.
+  assert.deepEqual(await ask((callback) => bridge.saveDraft(sessionB, callback)), {
+    accepted: false,
+  });
+  assert.deepEqual(await ask((callback) => bridge.saveDraft(sessionA, callback)), {
+    accepted: true,
+  });
+  store.unsaved.set(sessionA, 'refused');
+  assert.deepEqual(await ask((callback) => bridge.discardUnsavedDraft(sessionA, callback)), {
+    accepted: true,
+  });
+  assert.deepEqual(store.savedOrDiscarded, ['save ' + sessionA, 'discard ' + sessionA]);
+  assert.equal(bridge.canClose(sessionA), true);
 });
 
 test('a send based on an older draft revision is refused (no second send)', async () => {

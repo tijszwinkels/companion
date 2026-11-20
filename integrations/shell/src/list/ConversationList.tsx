@@ -91,7 +91,9 @@ export function ConversationList(props: {
 }) {
   const store = useStore();
   const state = useAppState();
-  const entries = listEntries(state);
+  // Unsent text is listed only while drafts are shared with the listener;
+  // with drafts kept in this browser the list is as before.
+  const entries = listEntries(state, (id) => (store.draftsShared ? store.draft(id) : ''));
   const available = props.bridge.admitted;
 
   const order: OrderState = {
@@ -467,7 +469,12 @@ function Entry(props: {
   // ("running for 2:16"), read when the reader comes to the entry.
   let timer = null;
   const descriptions: string[] = [];
-  if (entry.lastLine) {
+  // Unsent text takes the last line's place ("Draft: …").
+  let lastLine = entry.lastLine;
+  if (entry.draft) {
+    lastLine = `Draft: ${entry.draft}`;
+  }
+  if (lastLine) {
     descriptions.push(lastLineId(entry));
   }
   if (props.runningSince !== undefined) {
@@ -502,6 +509,8 @@ function Entry(props: {
           <span class={entry.emoji ? 'entry-glyph emoji' : 'entry-glyph'}>{entry.glyph}</span>
           {entry.emoji && <span class="entry-number">{entry.number}</span>}
           {entry.unread && <span class="entry-unread" />}
+          {/* Unsent text: drawn in the strip only (the full list says "Draft: …"). */}
+          {entry.draft && <span class="entry-draft">✎</span>}
         </span>
         {/* The title is in the accessible name; the last line is its
             description (also in the strip, where it is not drawn). */}
@@ -510,7 +519,7 @@ function Entry(props: {
           {/* In the strip the running time is under the name. */}
           {props.appearance === 'strip' && timer}
           <span class="entry-last-line" id={lastLineId(entry)}>
-            {entry.lastLine}
+            {lastLine}
           </span>
         </span>
         {/* In the full list it is right-aligned. */}

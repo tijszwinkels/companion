@@ -65,6 +65,13 @@ export interface ChatStatus {
     revision: number;
     source: string;
     notice: string;
+    /**
+     * Offer **Clear** next to the "Drafted by agent" note, which empties the
+     * draft (one edit with empty text). Optional: absent, the note is
+     * exactly as without it. The Qt host never sets it; the browser shell
+     * does while the shown text is an agent's unedited proposal.
+     */
+    clearable?: boolean;
   };
   maximumMessageLength?: number;
   /** Longest draft text the host accepts from the page. */
