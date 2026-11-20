@@ -609,9 +609,10 @@ follow-ups: they never interrupt a running turn, never overtake earlier queued
 messages, and are cancelled with the rest of the queue by Stop or a failed turn.
 The existing limits of eight queued messages and ten running agents apply.
 Agent, external and wake messages keep 1–4000 characters
-(`MAX_RELAYED_MESSAGE_LENGTH`). Only the person at the desktop composer or
-Activity text input may send up to 8000 (`MAX_DIRECT_USER_MESSAGE_LENGTH`, in
-`message-limits.ts`); `followUp` tells them apart by the message's origin.
+(`MAX_RELAYED_MESSAGE_LENGTH`). The person at the desktop composer or Activity
+text input, or at a remote panel's composer (`send-agent` through the gateway),
+may send up to 8000 (`MAX_DIRECT_USER_MESSAGE_LENGTH`, in `message-limits.ts`);
+`followUp` tells them apart by the message's origin.
 Each queued turn gets a fresh lease and inherits its own message's depth.
 
 **Loops and duplicates.** Depth is 0 for a human-originated turn and origin

@@ -409,8 +409,11 @@ export class Relay {
     this.drainTimer = setTimeout(() => this.upstream.destroy(), drainMilliseconds);
 
     // The upstream stays open while it drains, but nobody sees the page any
-    // more: it must not keep reading conversations (the unread mark).
-    this.withdrawal = 'wanted';
+    // more: it must not keep reading conversations (the unread mark). It may
+    // already have been withdrawn when the role was confirmed while closing.
+    if (this.withdrawal === 'none') {
+      this.withdrawal = 'wanted';
+    }
     this.withdrawVisibility();
   }
 
@@ -563,8 +566,14 @@ export class Relay {
       }
     }
 
-    // A phone that left during role negotiation: withdraw after its queued
-    // reports, which the listener handles in order.
+    // A phone that left during role negotiation, or whose socket is already
+    // closing: withdraw after its queued reports, edits and sends, which the
+    // listener handles in order. Its forwarded reports said `visible: false`
+    // but may still have declared it a draft host with a pending send; the
+    // withdrawal ends both without waiting for the `close` event.
+    if (!this.phoneIsOpen() && this.withdrawal === 'none') {
+      this.withdrawal = 'wanted';
+    }
     this.withdrawVisibility();
   }
 

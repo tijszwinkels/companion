@@ -957,8 +957,8 @@ Stop, Close, and orderly shutdown. A hard crash can lose unsaved current output.
 No retention limit or legacy Pi-session import is applied.
 
 Agent controls return `stopped`, `closed`, `reopened`, or `submitted`. Follow-ups from a
-desktop panel are bounded to 8000 characters (4000 from a remote panel, as from
-agents) and queue while that session is answering, with at most eight
+desktop or remote panel are bounded to 8000 characters (4000 from agents) and
+queue while that session is answering, with at most eight
 pending messages. Submission starts or queues a new turn in the same Pi session,
 without another screenshot. Message IDs
 are unique across turns, so a later answer cannot overwrite an earlier bubble.

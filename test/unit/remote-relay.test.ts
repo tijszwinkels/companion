@@ -348,9 +348,12 @@ test('a report forwarded while the phone is closing is never visible', async (co
 
   // The role is confirmed during the handshake, before any `close` event.
   roleAccepted(listener!);
-  await waitFor(() => received.length === 2);
+  await waitFor(() => received.length >= 2);
   assert.equal(received[1].action, 'panel-state');
   assert.equal(received[1].visible, false);
+  // The page is already gone: its visibility is withdrawn right after.
+  await waitFor(() => received.length === 3);
+  assert.equal(received[2].action, 'withdraw-visibility');
 });
 
 test('draft events reach only connections that asked for drafts, and panel reports say so', async (context) => {
@@ -403,4 +406,72 @@ test('draft events reach only connections that asked for drafts, and panel repor
   // The gateway declared only the opted-in connection a draft host.
   assert.equal(reports.length, 2);
   assert.deepEqual(reports.map((report) => report.draftHost).sort(), [true, undefined].sort());
+});
+
+test('a draft host whose phone closes during role negotiation is withdrawn after its queued requests', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'remote-relay-draft-closing-'));
+  const controlSocket = join(directory, 'control.sock');
+  const received: Record<string, unknown>[] = [];
+  let listener: Socket | undefined;
+  const server = createServer((socket) => {
+    listener = socket;
+    socket.setEncoding('utf8');
+    let buffered = '';
+    socket.on('data', (chunk) => {
+      buffered += chunk;
+      let newline: number;
+      while ((newline = buffered.indexOf('\n')) >= 0) {
+        received.push(JSON.parse(buffered.slice(0, newline)));
+        buffered = buffered.slice(newline + 1);
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(controlSocket, resolve));
+  const phone = new FakePhone();
+  const relay = new Relay(phone as unknown as WebSocket, {
+    controlSocket,
+    sessionsDirectory: directory,
+    deviceId: 'device',
+    receipts: new ReceiptBook(),
+    takeToken: () => true,
+    takeDraftToken: () => true,
+    drafts: true,
+    allowScreenshot: () => {},
+    onClosed: () => {},
+    log: () => {},
+  });
+  context.after(async () => {
+    relay.terminate(4001, 'Test over');
+    listener?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  });
+  await waitFor(() => received.length === 1);
+
+  // A report with a pending send and an edit wait for the role; then the
+  // closing handshake starts (no `close` event yet).
+  const conversation = '00000000-0000-4000-8000-000000000004';
+  const requests = [
+    { requestId: 'shown', action: 'panel-state', id: '', visible: true, pendingSend: conversation },
+    { requestId: 'edit', action: 'draft-set', id: conversation, text: 'typed', editId: 'e1' },
+  ];
+  for (const request of requests) {
+    phone.emit('message', Buffer.from(JSON.stringify({ type: 'request', ...request })), false);
+  }
+  phone.readyState = phone.CLOSING;
+  roleAccepted(listener!);
+
+  // The report and the edit keep their order; the withdrawal follows them.
+  await waitFor(() => received.length === 4);
+  assert.deepEqual(
+    received.slice(1).map((message) => message.action),
+    ['panel-state', 'draft-set', 'withdraw-visibility'],
+  );
+  assert.equal(received[1].visible, false);
+  assert.equal(received[1].draftHost, true);
+
+  // The `close` event later does not withdraw a second time.
+  phone.emit('close');
+  await delay(50);
+  assert.equal(received.filter((message) => message.action === 'withdraw-visibility').length, 1);
 });
