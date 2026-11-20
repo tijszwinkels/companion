@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Companion browser shell. Served by the gateway (`--app-directory`) under
+      its Content-Security-Policy: only these files, no inline scripts or
+      styles, connections only to this origin.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Companion</title>
+    <link rel="stylesheet" href="app.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>Companion needs JavaScript.</noscript>
+  </body>
+</html>
