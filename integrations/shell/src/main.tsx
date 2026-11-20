@@ -60,8 +60,11 @@ const transcriptView: TranscriptView = {
   },
 };
 
-// No Activity view yet, so Activity history is never requested.
-const store = new Store({ activity: false });
+// The Store reads this listener run's Activity history for the Activity
+// column (the phone panel's default), and after each reconnect from the
+// start, so changes made elsewhere while offline (deletions, labels) are not
+// missed.
+const store = new Store({ rereadActivityAfterReconnect: true });
 const bridge = new GatewayChatBridge(store, transcriptView);
 const chat = new ChatStore();
 chat.attach(bridge);
