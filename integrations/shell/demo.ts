@@ -316,7 +316,12 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     application: string,
   ): Promise<void> {
     const observed = frame(utterance, application);
-    activity.transcribed?.({ ...observed, storage: activity.admitCapture?.() });
+    activity.transcribed?.({
+      ...observed,
+      // The application that was in front, shown with the entry.
+      application: observed.screenshot.window,
+      storage: activity.admitCapture?.(),
+    });
     await activity.screenshotCaptured?.(observed.id, observed.screenshot);
     activity.intentRecognized?.(observed.id, intent);
     activity.outcome?.(observed.id, outcome);
@@ -349,7 +354,11 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
 
   // Not saved: heard while capture storage was off, so it cannot be labelled.
   const unsaved = frame('Quick question what is the capital of Norway', 'org.mozilla.firefox');
-  activity.transcribed?.({ ...unsaved, storage: notAdmitted });
+  activity.transcribed?.({
+    ...unsaved,
+    application: unsaved.screenshot.window,
+    storage: notAdmitted,
+  });
   activity.intentRecognized?.(unsaved.id, 'QUICK_QUESTION');
   activity.outcome?.(unsaved.id, 'started');
   activity.finished?.(unsaved.id);

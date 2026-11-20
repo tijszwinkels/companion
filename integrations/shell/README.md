@@ -328,8 +328,10 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
 6. **Narrow window (under 640 px):** the column lies over the chat, from the
    list's right edge (or the window's left edge while the list is hidden) to
    the window's right edge, until it is hidden again; there is no divider.
-   The list keeps its own width. The window never changes what is
-   remembered.
+   The list keeps its own width. The covered chat is inert meanwhile (no
+   keyboard focus, no input, hidden from assistive technology); focus that
+   was in the chat when the column came over it moves to the column's ☰.
+   The window never changes what is remembered.
 7. Remembered as two more independent entries next to the list's,
    `companion.shell.layout.activityWidth` and
    `companion.shell.layout.activityShown`, each `{"version":1,"value":…}`,
@@ -358,6 +360,8 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
 | Window 700 px, strip, column 520 remembered          | Column 300 px (700 − 321 − 79); chat 320 px                 |
 | Window 640 px, strip, column shown                   | Column 240 px beside the chat                               |
 | Window 639 / 420 px, column shown                    | Over the chat, right of the list; no divider; no overflow   |
+| Window 420 px, column shown, Tab                     | Moves through list and column, never into the covered chat  |
+| Focus in the chat, the window narrows under 640 px   | Focus moves to the column's ☰                              |
 | Window 420 px, list hidden, column shown             | Over the whole window width                                 |
 | Width or shown state changed in another tab          | This tab follows that entry                                 |
 | Sign-out and pairing again                           | Layout kept                                                 |
@@ -379,7 +383,11 @@ and the full list's Activity entry says how many entries are new. Rule
 2. Learned means from an `activity-entry` event or from a history page,
    including the pages read after a reconnect (entries heard while the page
    was offline) and those of a new listener run started after the page
-   caught up.
+   caught up. After each reconnect the page reads the run's history again
+   from its start (the Store's `rereadActivityAfterReconnect`, on in the
+   shell, off on the phone), so an entry deleted elsewhere meanwhile is
+   removed and a label given elsewhere is shown; events about them were
+   missed while offline.
 3. A change of an entry already seen (its decision, outcome or label, from
    any client) is not new.
 4. Showing the column clears the marker (by either ☰, the Activity entry,
@@ -391,21 +399,23 @@ and the full list's Activity entry says how many entries are new. Rule
 7. Listening, pausing, hearing speech and processing are states, not
    entries: they never set it.
 
-| Event                                                       | Marker                     |
-| ----------------------------------------------------------- | -------------------------- |
-| First reading after loading the page, with entries          | not set                    |
-| A new entry arrives while hidden                            | set (count 1)              |
-| Two more arrive while hidden                                | set (count 3)              |
-| A new entry arrives while shown                             | not set, also after hiding |
-| An entry already seen is labelled or changes outcome        | not set                    |
-| The column is shown (☰, Activity entry, or another tab)    | cleared                    |
-| The only new entry is deleted                               | cleared                    |
-| Entries heard while offline, learned after reconnecting     | set                        |
-| A reconnect without new entries                             | not set                    |
-| A new listener run after catching up, with entries          | set                        |
-| The first reading fails; entries arrive; a retry catches up | not set until caught up    |
-| Pause, resume, speech, processing                           | not set                    |
-| Sign-out and pairing again (first reading)                  | not set                    |
+| Event                                                       | Marker                                    |
+| ----------------------------------------------------------- | ----------------------------------------- |
+| First reading after loading the page, with entries          | not set                                   |
+| A new entry arrives while hidden                            | set (count 1)                             |
+| Two more arrive while hidden                                | set (count 3)                             |
+| A new entry arrives while shown                             | not set, also after hiding                |
+| An entry already seen is labelled or changes outcome        | not set                                   |
+| The column is shown (☰, Activity entry, or another tab)    | cleared                                   |
+| The only new entry is deleted                               | cleared                                   |
+| Entries heard while offline, learned after reconnecting     | set                                       |
+| An entry deleted elsewhere while offline                    | gone after reconnecting; no longer counts |
+| An entry labelled elsewhere while offline                   | label shown after reconnecting; not set   |
+| A reconnect without new entries                             | not set                                   |
+| A new listener run after catching up, with entries          | set                                       |
+| The first reading fails; entries arrive; a retry catches up | not set until caught up                   |
+| Pause, resume, speech, processing                           | not set                                   |
+| Sign-out and pairing again (first reading)                  | not set                                   |
 
 ### Listening, starting a conversation and history entries
 
@@ -422,8 +432,13 @@ running`, and below it while listening `Hearing speech`, `Processing N…`
   send rules: the text is kept in this browser until the start is answered,
   a second Start cannot send it again, and a failure keeps the text with
   the explanation. The conversation opens in the background on the
-  desktop; here it appears in the list and is **selected**, unless the
-  reader selected something else while the start was on its way.
+  desktop; here it appears in the list and is **selected** once listed,
+  unless what is shown (the selected conversation or Previous sessions)
+  changed at any moment since Start was pressed, also to and fro or by Back
+  and Forward (`src/activity/select-started.ts`). Waiting for it ends after
+  10 seconds, on sign-out or when the start fails. Not offered while the
+  listener runs in preview mode (it would answer without starting anything,
+  and the text would be cleared).
 - **History** is this listener run's (earlier runs are not shown), read by
   the phone Store in pages of 50 and kept current by `activity-entry` and
   `history-deleted` events; newest first. Each entry shows the recognised
@@ -437,9 +452,10 @@ Per entry, the actions follow one rule: an action that asks the listener
 for something is **enabled** only while requests are admitted (connected,
 after this connection's snapshot; the conversation list's rule), while no
 other request of the same entry awaits its answer, and while the entry
-allows it; at the click the page checks again that requests are admitted
-and that the entry is still in the current run, and otherwise sends
-nothing. A refused request shows the Store's error toast and leaves the
+allows it. At the click the page applies the same rule again to the
+Store's current entry and listener state (the entry still in the run it
+was drawn for, requests admitted, the action still allowed) and otherwise
+sends nothing. A refused request shows the Store's error toast and leaves the
 entry as the listener reports it; nothing is shown as done before the
 listener says so. Copy is local and always enabled when there is text.
 
@@ -448,7 +464,8 @@ listener says so. Copy is local and always enabled when there is text.
 - **New coding session** (`start-history-agent`) starts a coding
   conversation from the entry's saved screenshot and text, in the
   background on the desktop. Not for an audio-only entry or one whose
-  screenshot was not kept. The listener's answer does not name the new
+  screenshot was not kept, nor while the listener offers no conversation
+  controls or runs in preview mode. The listener's answer does not name the new
   conversation, so it appears in the list with the "not seen" marker and is
   not selected.
 - **Correct** and **Incorrect** (`label-history`) label the decision; they
@@ -457,7 +474,8 @@ listener says so. Copy is local and always enabled when there is text.
   phone). Incorrect sends the label and opens "What should it have been?",
   the listener's intents; picking one sends the label with that actual
   intent. On an entry already labelled incorrect, Incorrect only opens the
-  choice. The pressed button shows the current label.
+  choice. Not while the listener runs in preview mode, where labels are
+  not saved. The pressed button shows the current label.
 - **Delete** (×) is offered only while the listener advertises deletion
   (`historyDeletionAvailable`). It opens a confirmation inside the entry
   ("Delete permanently" or Cancel) and sends `delete-history` only from
@@ -483,13 +501,17 @@ listener says so. Copy is local and always enabled when there is text.
 | Screenshot not kept                                       | on   | off                | on unless the listener names a reason      | shown, on          |
 | The listener names why the capture is incomplete          | on   | per screenshot     | off, "requires … complete saved capture"   | shown, on          |
 | Still processing                                          | on   | on                 | on                                         | shown, off         |
+| The listener offers no conversation controls              | on   | off                | on                                         | shown, on          |
+| The listener runs in preview mode                         | on   | off                | off, "Preview mode: labels are not saved." | not shown          |
 | Removed elsewhere while its confirmation is open          | —    | —                  | —                                          | gone; nothing sent |
 | Gone or a new run between drawing and the click           | —    | nothing sent       | nothing sent                               | nothing sent       |
 
 Pause and Resume follow the same rule (admitted, Companion running, its own
 toggle not awaiting an answer). Start is enabled while admitted, while the
-listener offers conversation controls, with text, and no start awaiting its
-answer.
+listener offers conversation controls and is not in preview mode, with
+text, and no start awaiting its answer. A request of an entry still
+awaiting its answer keeps that entry's requests disabled also when the
+column is hidden and shown again.
 
 Known limits: `toggle-pause` is the remote role's only listening action and
 it toggles, so a Pause pressed at the moment listening was paused elsewhere
@@ -721,14 +743,20 @@ changed at the listener during the drag or a lost connection, and a refused
 move leaving the list unchanged. Each test also checks that nothing went to
 another origin and that no Content-Security-Policy violation occurred.
 
-`activity-layout.test.ts`, `activity-marker.test.ts` and
-`activity-actions.test.ts` check the Activity rules in Node, each with the
+`activity-layout.test.ts`, `activity-marker.test.ts`,
+`activity-actions.test.ts` and `activity-start.test.ts` check the Activity
+rules in Node, each with the
 cases of its README table above: the column's width and shown state
 (defaults, invalid entries, drag and keys, two tabs, wide and narrow windows
 with the list), the new-activity marker against the real phone Store (first
 reading, events while hidden and shown, labels, deletion, reconnects with and
-without entries heard offline, a new listener run, a failed first reading,
-sign-out), and which actions each entry offers.
+without entries heard offline, entries deleted and labelled elsewhere while
+offline, read through the listener's own history index; a new listener run,
+a failed first reading, sign-out; and the phone's default reading only what
+is new), which actions each entry offers and one pending request per entry,
+and selecting a started conversation (listed before or after the answer,
+another selection or a selection undone meanwhile, a failed start,
+sign-out, the deadline).
 
 `activity.test.ts` covers the Activity side in the browser: history read in
 two pages of 50 and kept live, newest first; the marker set while hidden
@@ -746,8 +774,13 @@ offline; Copy (clipboard), Correct, Incorrect and the actual intent (stored
 by the listener), New coding session, Delete after a confirmation that
 Cancel leaves without a request, actions offline; a label the listener
 refuses (its saved screenshot removed after drawing) leaving the entry
-unlabelled; no delete control when the listener does not advertise it;
-keyboard operation and accessible names; the gateway's unchanged policy, no
+unlabelled; no delete control when the listener does not advertise it, and
+in preview mode neither Start nor New coding session, the typed text kept;
+one request per entry at a time, also across hiding and showing the
+column, while another entry's request goes out; the handlers of an entry
+deleted by another client sending nothing when clicked afterwards; at
+420 px Tab never reaching the covered chat, and focus moved out of it when
+the window narrows; keyboard operation and accessible names; the gateway's unchanged policy, no
 policy violation and no request to another origin; never the unscoped
 `stop-agent`. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 column hidden and shown at 420, 760, 1280 and 1600 px.
@@ -787,6 +820,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/activity/new-activity.ts`       | The new-activity marker's rule, without DOM access                          |
 | `src/activity/listening.ts`          | The listening state's wording                                               |
 | `src/activity/requests.ts`           | Activity requests awaiting their answer, per entry                          |
+| `src/activity/select-started.ts`     | Selecting a started conversation unless what is shown changed meanwhile     |
 | `src/bridge.ts`                      | `NativeBridge` over the gateway: rows/status messages, request mapping      |
 | `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)    |
 | `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                |

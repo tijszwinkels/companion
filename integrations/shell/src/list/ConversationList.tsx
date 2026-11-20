@@ -487,11 +487,7 @@ function PreviousEntry(props: { count: number; shown: boolean; onShow: () => voi
       </span>
       <span class="entry-text">
         <span class="entry-title">Previous sessions</span>
-        {/* The listening state is the entry's description (also in the
-            strip, where it is not drawn). */}
-        <span class="entry-last-line" id="activity-list-summary">
-          {summary}
-        </span>
+        <span class="entry-last-line">{summary}</span>
       </span>
     </button>
   );

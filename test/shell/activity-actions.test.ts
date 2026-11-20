@@ -5,6 +5,7 @@ import {
   entryActions,
   type EntryContext,
 } from '../../integrations/shell/src/activity/entry-actions.ts';
+import { ActivityRequests } from '../../integrations/shell/src/activity/requests.ts';
 import type { ActivityEntry } from '../../src/remote/protocol.ts';
 
 /**
@@ -47,6 +48,8 @@ const admitted: EntryContext = {
   pending: false,
   deletionAdvertised: true,
   captureStorage: { enabled: true } as EntryContext['captureStorage'],
+  sessionControls: true,
+  preview: false,
 };
 
 /** The table's columns: Copy, New coding session, label, delete ('—' not shown). */
@@ -195,6 +198,24 @@ test('entry actions: each row of the README table', () => {
       },
     },
     {
+      name: 'the listener offers no conversation controls',
+      entry: entry(),
+      context: { ...admitted, sessionControls: false },
+      expected: { copy: 'on', session: 'off', label: 'on', reason: '', delete: 'on' },
+    },
+    {
+      name: 'the listener runs in preview mode (and then advertises no deletion)',
+      entry: entry(),
+      context: { ...admitted, preview: true, deletionAdvertised: false },
+      expected: {
+        copy: 'on',
+        session: 'off',
+        label: 'off',
+        reason: 'Preview mode: labels are not saved.',
+        delete: '—',
+      },
+    },
+    {
       name: 'still processing',
       entry: entry({ outcome: 'processing' }),
       context: admitted,
@@ -206,8 +227,57 @@ test('entry actions: each row of the README table', () => {
   }
 });
 
-test('entry actions: a request of another entry does not disable this one', () => {
-  // The pending state is per entry; the page passes only this entry's.
-  const other = row(entry(), { ...admitted, pending: false });
-  assert.deepEqual(other, { copy: 'on', session: 'on', label: 'on', reason: '', delete: 'on' });
+test('pending requests: one per entry; another entry is not held back', async () => {
+  const requests = new ActivityRequests();
+  let releaseFirst = () => {};
+  const first = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let started = 0;
+
+  // A's request is on its way: A is pending, B is not.
+  const onTheWay = requests.run('A', async () => {
+    started++;
+    await first;
+    return 'answer A';
+  });
+  assert.equal(requests.isPending('A'), true);
+  assert.equal(requests.isPending('B'), false);
+  assert.deepEqual(row(entry({ id: 'A' }), { ...admitted, pending: requests.isPending('A') }), {
+    copy: 'on',
+    session: 'off',
+    label: 'off',
+    reason: '',
+    delete: 'off',
+  });
+  assert.deepEqual(row(entry({ id: 'B' }), { ...admitted, pending: requests.isPending('B') }), {
+    copy: 'on',
+    session: 'on',
+    label: 'on',
+    reason: '',
+    delete: 'on',
+  });
+
+  // A second request for A is not started; one for B is.
+  assert.equal(
+    await requests.run('A', async () => {
+      started++;
+    }),
+    undefined,
+  );
+  assert.equal(await requests.run('B', async () => 'answer B'), 'answer B');
+  assert.equal(started, 1);
+
+  // A's answer arrives: A may ask again. A failure (shown by the Store's
+  // toast) ends the pending state too.
+  releaseFirst();
+  assert.equal(await onTheWay, 'answer A');
+  assert.equal(requests.isPending('A'), false);
+  assert.equal(
+    await requests.run('A', async () => {
+      throw Error('refused');
+    }),
+    undefined,
+  );
+  assert.equal(requests.isPending('A'), false);
 });

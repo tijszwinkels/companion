@@ -22,21 +22,19 @@ import type { Ref } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
-import type { Store } from '../../../mobile/src/store.ts';
+import type { AppState } from '../../../mobile/src/store.ts';
 import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import type { GatewayChatBridge } from '../bridge.ts';
 import { HistoryEntry } from './HistoryEntry.tsx';
 import { listeningView } from './listening.ts';
 import type { ActivityRequests } from './requests.ts';
+import { StartedSelection } from './select-started.ts';
 
 /** The column's id, named by the ☰ buttons, the list's Activity entry and the divider. */
 export const activityColumnId = 'activity-column';
 
 /** The longest text the gateway accepts for a new conversation. */
 const maximumStartLength = 4000;
-
-/** How long a started conversation may take to appear before it is no longer selected. */
-const selectStartedMilliseconds = 10_000;
 
 export function ActivityColumn(props: {
   /** Lies over the chat (narrow window) instead of beside it. */
@@ -148,7 +146,8 @@ function Listening(props: { bridge: GatewayChatBridge; requests: ActivityRequest
  * text is the phone Store's `new` draft, sent with its rules (one send per
  * draft; a failure keeps the text with the explanation). The conversation
  * opens in the background on the desktop; here it is selected once it is
- * in the list, unless the reader selected something else meanwhile.
+ * in the list, unless what is shown changed meanwhile (select-started.ts).
+ * Not offered while the listener is in preview mode.
  */
 function StartConversation(props: { bridge: GatewayChatBridge }) {
   const store = useStore();
@@ -158,24 +157,30 @@ function StartConversation(props: { bridge: GatewayChatBridge }) {
   const send = state.sends.get('new');
   const pending = send?.pending ?? false;
   const error = send?.error ?? '';
-  const available = state.engine?.sessionControlsAvailable !== false;
-  const canStart = props.bridge.admitted && available && !pending && text.trim() !== '';
+  const canStart = props.bridge.admitted && startAvailable(state) && !pending && text.trim() !== '';
 
   async function start(event: Event) {
     event.preventDefault();
-    if (!props.bridge.admitted || !available) {
+    // Checked again at the click: the state may have changed since drawing.
+    if (!props.bridge.admitted || !startAvailable(store.state)) {
       return;
     }
-    const before = { selected: store.state.selected, previous: store.state.showingPrevious };
+    // Watch what is shown from now on, so a selection made while the start
+    // is on its way is never overridden (select-started.ts).
+    const selection = new StartedSelection(store);
     const id = await store.sendDraft('new', profile);
     if (id) {
-      selectStarted(store, id, before);
+      selection.started(id);
+    } else {
+      selection.cancel();
     }
   }
 
   let hint = 'Opens in the background on the computer. No screenshot is attached.';
   if (!props.bridge.admitted) {
     hint = 'Disconnected · the text is kept';
+  } else if (state.engine?.preview) {
+    hint = 'Preview mode: Companion starts no conversations.';
   }
 
   return (
@@ -226,44 +231,13 @@ function StartConversation(props: { bridge: GatewayChatBridge }) {
 }
 
 /**
- * Select the conversation a start created once it is in the list (its
- * event may arrive just after the answer), unless the reader selected
- * something else since the start was asked for, or signed out. Gives up
- * after `selectStartedMilliseconds`.
+ * Whether the listener can start a conversation now: it offers conversation
+ * controls and is not in preview mode (where it would answer without
+ * starting anything, and the Store would clear the text).
  */
-function selectStarted(
-  store: Store,
-  id: string,
-  before: { selected: string; previous: boolean },
-): void {
-  let unsubscribe = () => {};
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const finished = (): boolean => {
-    const state = store.state;
-    if (state.connection.status === 'unpaired' || state.selected === id) {
-      return true;
-    }
-    if (state.selected !== before.selected || state.showingPrevious !== before.previous) {
-      return true;
-    }
-    if (!state.sessions.has(id)) {
-      return false;
-    }
-    store.open(id);
-    return true;
-  };
-
-  if (finished()) {
-    return;
-  }
-  unsubscribe = store.subscribe(() => {
-    if (finished()) {
-      unsubscribe();
-      clearTimeout(timer);
-    }
-  });
-  timer = setTimeout(unsubscribe, selectStartedMilliseconds);
+function startAvailable(state: AppState): boolean {
+  const engine = state.engine;
+  return engine?.sessionControlsAvailable !== false && engine?.preview !== true;
 }
 
 /** This run's history, newest first, with the Store's reading error and Retry. */
@@ -303,7 +277,6 @@ function History(props: { bridge: GatewayChatBridge; requests: ActivityRequests 
             labels={labels}
             bridge={props.bridge}
             requests={props.requests}
-            deletionAdvertised={engine?.historyDeletionAvailable === true}
           />
         ))}
       </ul>

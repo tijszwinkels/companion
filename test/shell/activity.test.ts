@@ -73,8 +73,8 @@ async function assertCleanPage(fixture: Fixture, page: TestPage, sockets: Socket
 let nextFrameId = 1000;
 
 /**
- * The listener heard `utterance`: a finished Activity entry of this run with
- * its screenshot saved (capture storage is on in the fixture), so it can be
+ * The listener heard `utterance` in the synthetic frame's application: a
+ * finished Activity entry of this run with its screenshot saved (capture storage is on in the fixture), so it can be
  * labelled and a coding session can start from it.
  */
 async function heard(
@@ -87,7 +87,11 @@ async function heard(
   const id = nextFrameId;
   nextFrameId++;
   const observed = { ...frame, id, utterance };
-  activity.transcribed?.({ ...observed, storage: activity.admitCapture?.() });
+  activity.transcribed?.({
+    ...observed,
+    application: observed.screenshot.window,
+    storage: activity.admitCapture?.(),
+  });
   await activity.screenshotCaptured?.(id, observed.screenshot);
   activity.intentRecognized?.(id, intent);
   activity.outcome?.(id, outcome);
@@ -752,6 +756,12 @@ test(
     assert.match(heading, /Quick question · Started a session/);
     assert.match(heading, /\d{2}:\d{2}/);
     assert.equal(
+      await page.evaluate<string>(
+        `${entryExpression('Synthetic entry for a session')}.querySelector('.activity-pill').textContent`,
+      ),
+      frame.screenshot.window.app,
+    );
+    assert.equal(
       await page.evaluate(
         `${entryExpression('Synthetic entry to label')}.querySelector('article').getAttribute('aria-label').startsWith('Heard at ')`,
       ),
@@ -938,6 +948,182 @@ test(
       null,
     );
     assert.match(await text(page, '.activity-listening'), /preview mode/);
+
+    // A listener in preview mode would answer without starting anything:
+    // neither a new conversation nor a session from an entry is offered,
+    // and the typed text stays.
+    const newSession = await entryButton(page, 'Synthetic entry in preview', 'New coding session');
+    assert.equal(await page.evaluate(`document.querySelector('${newSession}').disabled`), true);
+    await clickSelector(page, '#activity-start-text');
+    await page.type('Kept in preview mode');
+    assert.equal(
+      await page.evaluate(`document.querySelector('.activity-start-button').disabled`),
+      true,
+    );
+    assert.match(
+      await text(page, '.activity-start'),
+      /Preview mode: Companion starts no conversations/,
+    );
+    await page.evaluate(`document.querySelector('.activity-start').requestSubmit()`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(
+      await page.evaluate(`document.querySelector('#activity-start-text').value`),
+      'Kept in preview mode',
+    );
+    assert.equal(fixture.runs.length, 0, 'no conversation started');
+    assert.ok(!requestActions(sockets).includes('start-agent'));
+    assert.ok(!requestActions(sockets).includes('start-history-agent'));
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'one request per entry at a time, also across hiding and showing; stale clicks send nothing',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    await heard(fixture, 'Synthetic entry A');
+    await heard(fixture, 'Synthetic entry B');
+    await heard(fixture, 'Synthetic entry deleted elsewhere');
+
+    // Hold the listener's answer to New coding session until released.
+    const runtime = fixture.desktop.runtime as unknown as {
+      history: { recordedFrame(id: string): Promise<unknown> };
+    };
+    const recordedFrame = runtime.history.recordedFrame.bind(runtime.history);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    runtime.history.recordedFrame = async (id: string) => {
+      await held;
+      return recordedFrame(id);
+    };
+
+    const { page, sockets } = await pairedPage(fixture, browser, 1280, 800);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`document.querySelectorAll('.activity-entry').length === 3`);
+    const sessionRequests = () =>
+      requestActions(sockets).filter((action) => action === 'start-history-agent').length;
+    const disabled = async (utterance: string, label: string) =>
+      page.evaluate<boolean>(
+        `document.querySelector('${await entryButton(page, utterance, label)}').disabled`,
+      );
+
+    // A's request is on its way: A's requests are disabled, B's are not.
+    await clickSelector(page, await entryButton(page, 'Synthetic entry A', 'New coding session'));
+    await waitFor(() => sessionRequests() === 1);
+    await page.waitFor(
+      `document.querySelector('${await entryButton(page, 'Synthetic entry A', 'Correct')}').disabled`,
+    );
+    assert.equal(await disabled('Synthetic entry A', 'New coding session'), true);
+    assert.equal(await disabled('Synthetic entry A', 'Copy'), false);
+    assert.equal(await disabled('Synthetic entry B', 'New coding session'), false);
+    assert.equal(await disabled('Synthetic entry B', 'Correct'), false);
+
+    // Hidden and shown again, A still awaits its answer: still disabled, and
+    // a click on it sends nothing.
+    await clickSelector(page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`document.querySelectorAll('.activity-entry').length === 3`);
+    assert.equal(await disabled('Synthetic entry A', 'New coding session'), true);
+    await page.evaluate(
+      `document.querySelector('${await entryButton(page, 'Synthetic entry A', 'New coding session')}').click()`,
+    );
+    assert.equal(sessionRequests(), 1);
+
+    // B's own request goes out meanwhile.
+    await clickSelector(page, await entryButton(page, 'Synthetic entry B', 'Correct'));
+    await page.waitFor(
+      `${entryExpression('Synthetic entry B')}.querySelector('.activity-label')?.textContent === 'Labelled correct'`,
+    );
+
+    // The answer arrives: A is offered again; one conversation was started.
+    release();
+    await waitFor(() => fixture.runs.length === 1);
+    await page.waitFor(
+      `!document.querySelector('${await entryButton(page, 'Synthetic entry A', 'New coding session')}').disabled`,
+    );
+    assert.equal(sessionRequests(), 1);
+
+    // Stale clicks: buttons of an entry another client deletes. The page
+    // keeps references to them; after the entry is gone their handlers run
+    // on an old drawing and must send nothing.
+    await page.evaluate(`(() => {
+      const entry = ${entryExpression('Synthetic entry deleted elsewhere')};
+      window.__stale = [...entry.querySelectorAll('button')];
+    })()`);
+    const { token } = await fixture.pair('Second synthetic client');
+    const other = await fixture.phone(token);
+    await other.engine('state');
+    const row = fixture.desktop.database
+      .prepare("SELECT id FROM utterances WHERE transcript = 'Synthetic entry deleted elsewhere'")
+      .get() as { id: string };
+    other.send({ requestId: 'delete-elsewhere', action: 'delete-history', id: row.id });
+    const reply = await other.reply('delete-elsewhere');
+    assert.equal(reply.type, 'result');
+    await page.waitFor(`!${entryExpression('Synthetic entry deleted elsewhere')}`);
+    const sentBefore = sockets.sent.length;
+    await page.evaluate(`window.__stale.forEach((button) => button.click())`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const staleRequests = requestActions(sockets, sentBefore).filter(
+      (action) => action !== 'panel-state',
+    );
+    assert.deepEqual(staleRequests, [], 'stale handlers send nothing');
+
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'in a narrow window the chat under the column is out of reach of the keyboard',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Narrow conversation' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    const { page, sockets } = await pairedPage(fixture, browser, 420, 800);
+    await openConversation(page, 'Narrow conversation');
+
+    // Opened from the list's Activity entry: focus stays there; Tab moves
+    // into the column and never into the covered chat.
+    await clickSelector(page, listEntry);
+    await page.waitFor(`document.querySelector('${column}.overlay')`);
+    assert.equal(await page.evaluate(`document.querySelector('.workspace-main').inert`), true);
+    await page.evaluate(`document.querySelector('${listEntry}').focus()`);
+    const visited: string[] = [];
+    for (let step = 0; step < 40; step++) {
+      await key(page, 'Tab');
+      const where = await page.evaluate<string>(`(() => {
+        const element = document.activeElement;
+        if (!element || element === document.body) return 'body';
+        if (element.closest('.workspace-main')) return 'chat';
+        if (element.closest('#activity-column')) return 'column';
+        if (element.closest('.conversations')) return 'list';
+        return element.className || element.tagName;
+      })()`);
+      visited.push(where);
+    }
+    assert.ok(!visited.includes('chat'), `Tab reached the covered chat: ${visited.join(', ')}`);
+    assert.ok(visited.includes('column'));
+
+    // Focus in the chat when the column comes over it (a narrower window):
+    // it moves to the column's ☰.
+    await clickSelector(page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await resize(page, 1280);
+    await clickSelector(page, barToggle);
+    await page.waitFor(`document.querySelector('${column}:not(.overlay)')`);
+    await page.evaluate(`document.querySelector('.chat textarea').focus()`);
+    await resize(page, 420);
+    await page.waitFor(`document.querySelector('${column}.overlay')`);
+    await page.waitFor(`document.activeElement?.getAttribute('aria-label') === 'Hide Activity'`);
+
+    // Hidden again, the chat is reachable.
+    await clickSelector(page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    assert.equal(await page.evaluate(`document.querySelector('.workspace-main').inert`), false);
     await assertCleanPage(fixture, page, sockets);
   },
 );
@@ -970,6 +1156,10 @@ test('keyboard operation and accessible names', { skip }, async (context) => {
       return [button.getAttribute('aria-label'), document.getElementById(button.getAttribute('aria-describedby')).textContent];
     })()`),
     ['Show Activity', 'Listening'],
+  );
+  assert.equal(
+    await page.evaluate(`document.querySelectorAll('#activity-list-summary').length`),
+    1,
   );
 
   // Enter on the bar's ☰ shows the column, focus on its ☰; Space there hides it.

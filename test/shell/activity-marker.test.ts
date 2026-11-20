@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { ActivityHistory } from '../../src/desktop/activity-history.ts';
+import type { HistoryEntry } from '../../src/desktop/history.ts';
 import type { ActivityEntry } from '../../src/remote/protocol.ts';
 
 /**
@@ -55,56 +57,51 @@ const { NewActivity } = await import('../../integrations/shell/src/activity/new-
 
 // ---- A synthetic listener ------------------------------------------------------------
 
-/** The listener's Activity history of one run, as `activity-history` pages read it. */
+/**
+ * The listener's Activity history of one run: the listener's own index
+ * (src/desktop/activity-history.ts, with its removal markers and revisions),
+ * read in its pages of 50, plus the listening state it reports.
+ */
 class Listener {
-  runId = 'run-1';
-  entries: ActivityEntry[] = [];
+  history = new ActivityHistory();
   paused = false;
   speaking = false;
   processing = 0;
   /** Fail the next `activity-history` request. */
   failNext = false;
-  private revision = 0;
+  private nextId = 1;
+
+  get runId(): string {
+    return this.history.sessionId;
+  }
 
   hear(utterance: string): ActivityEntry {
-    this.revision++;
     const entry = {
-      id: `${this.runId}-${this.entries.length + 1}`,
+      id: `utterance-${this.nextId}`,
       observedAt: 0,
       utterance,
       application: null,
       intent: 'IGNORE',
       outcome: 'ignored',
-      correct: null,
-      actualIntent: null,
-      sequence: this.entries.length + 1,
-      revision: this.revision,
-    } as unknown as ActivityEntry;
-    this.entries.push(entry);
-    return entry;
+    } as unknown as HistoryEntry;
+    this.nextId++;
+    return this.history.update(entry, { correct: null, actualIntent: null });
   }
 
   label(entry: ActivityEntry): ActivityEntry {
-    this.revision++;
-    const labelled = { ...entry, correct: true, revision: this.revision };
-    this.entries[entry.sequence - 1] = labelled;
-    return labelled;
+    return this.history.update(entry, { correct: true, actualIntent: null });
+  }
+
+  remove(entry: ActivityEntry): void {
+    this.history.remove(entry.id);
   }
 
   newRun(): void {
-    this.runId = `run-${Number(this.runId.slice(4)) + 1}`;
-    this.entries = [];
+    this.history = new ActivityHistory();
   }
 
   page(after: number, through: number) {
-    const next = Math.min(after + 2, through);
-    return {
-      sessionId: this.runId,
-      entries: this.entries.slice(after, next),
-      removed: [],
-      next: next < through ? next : null,
-      through,
-    };
+    return this.history.page(after, through);
   }
 
   engine() {
@@ -119,7 +116,7 @@ class Listener {
       preview: false,
       history: [],
       activitySessionId: this.runId,
-      activityHistoryCount: this.entries.length,
+      activityHistoryCount: this.history.count,
       historyDeletionAvailable: true,
       sessionControlsAvailable: true,
       intents: [],
@@ -135,9 +132,11 @@ interface StoreInternals {
 }
 
 /** A page with the Store, the listener and the marker, observed after every change. */
-function harness() {
+function harness(options: { reread?: boolean } = {}) {
   const listener = new Listener();
-  const store = new Store();
+  // The shell's Store: it reads the run again after each reconnect.
+  const store = new Store({ rereadActivityAfterReconnect: options.reread !== false });
+  const reads: { after: number; through: number }[] = [];
   const internals = store as unknown as StoreInternals;
   const marker = new NewActivity();
   let columnShown = false;
@@ -147,6 +146,7 @@ function harness() {
   };
   connection.request = async (action, parameters) => {
     assert.equal(action, 'activity-history');
+    reads.push({ after: parameters.after, through: parameters.through });
     if (listener.failNext) {
       listener.failNext = false;
       throw Error('Synthetic reading failure');
@@ -171,6 +171,7 @@ function harness() {
     listener,
     store,
     marker,
+    reads,
     settle,
     /** Connected, then the connection's snapshot. */
     async connect(): Promise<void> {
@@ -200,6 +201,7 @@ function harness() {
       await settle();
     },
     async deleted(entry: ActivityEntry): Promise<void> {
+      listener.remove(entry);
       internals.apply({ type: 'history-deleted', id: entry.id, sessionId: listener.runId });
       await settle();
     },
@@ -221,9 +223,9 @@ test('new-activity marker: each row of the README table, against the real Store'
   const page = harness();
 
   // First reading after loading the page, with entries: not set.
-  page.listener.hear('Heard before the page loaded');
-  page.listener.hear('Also before');
-  page.listener.hear('And a third, read on a second page');
+  page.listener.hear('Synthetic utterance 1');
+  page.listener.hear('Synthetic utterance 2');
+  page.listener.hear('Synthetic utterance 3');
   await page.connect();
   assert.equal(page.store.state.activity.entries.size, 3, 'all pages were read');
   assert.equal(page.marker.count, 0, 'first reading');
@@ -276,6 +278,27 @@ test('new-activity marker: each row of the README table, against the real Store'
   await page.connect();
   assert.equal(page.marker.count, 2, 'heard while offline');
 
+  // Deleted and labelled elsewhere while this page was offline: after
+  // reconnecting the page reads the run again, so the deleted entry is gone
+  // (and no longer counts as new) and the label is shown; neither is new.
+  const offlineEntries = [...page.store.state.activity.entries.values()].filter((entry) =>
+    entry.utterance.endsWith('while offline'),
+  );
+  const labelledElsewhere = [...page.store.state.activity.entries.values()].find(
+    (entry) => entry.utterance === 'Synthetic utterance 1',
+  )!;
+  page.disconnect();
+  page.listener.remove(offlineEntries[0]);
+  page.listener.label(labelledElsewhere);
+  await page.connect();
+  assert.equal(
+    page.store.state.activity.entries.has(offlineEntries[0].id),
+    false,
+    'deleted offline',
+  );
+  assert.equal(page.store.state.activity.entries.get(labelledElsewhere.id)?.correct, true);
+  assert.equal(page.marker.count, 1, 'the deleted one no longer counts');
+
   // A new listener run after catching up, with entries: set (the old run's
   // new entries are gone with it).
   page.disconnect();
@@ -317,4 +340,22 @@ test('new-activity marker: nothing is new until the first reading has caught up'
   assert.equal(page.marker.count, 0, 'caught up');
   await page.heard('After catching up');
   assert.equal(page.marker.count, 1, 'new after catching up');
+});
+
+test('the phone Store (default options) keeps reading only what is new after a reconnect', async () => {
+  const page = harness({ reread: false });
+  page.listener.hear('Synthetic utterance 1');
+  await page.connect();
+  const readsBefore = page.reads.length;
+  page.disconnect();
+  await page.connect();
+  assert.equal(page.reads.length, readsBefore, 'nothing read again');
+
+  // The shell's option reads the run from its start after a reconnect.
+  const shell = harness();
+  shell.listener.hear('Synthetic utterance 1');
+  await shell.connect();
+  shell.disconnect();
+  await shell.connect();
+  assert.deepEqual(shell.reads.at(-1), { after: 0, through: 1 });
 });

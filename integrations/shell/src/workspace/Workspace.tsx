@@ -99,6 +99,24 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
     focusAfterToggle.current = '';
   }, [activity.shown]);
 
+  // In a narrow window the shown column covers the chat: the chat is inert
+  // then (no focus, no input, hidden from assistive technology), so the
+  // keyboard cannot reach controls the reader cannot see. If the focus was
+  // in the chat when the column came over it (a resize, another tab showing
+  // it, the list's Activity entry keeps its own focus), it moves to the
+  // column's ☰.
+  const chatCovered = activity.shown && overlay;
+  const mainArea = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (!chatCovered) {
+      return;
+    }
+    const focused = document.activeElement;
+    if (focused && mainArea.current?.contains(focused)) {
+      columnActivityButton.current?.focus();
+    }
+  }, [chatCovered]);
+
   function showFromBar() {
     focusAfterToggle.current = 'column';
     activity.setShown(true);
@@ -154,7 +172,7 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
       )}
       {/* The page's main landmark, as slice 1's: the bar and the chat,
           Previous sessions or the empty view. */}
-      <main class="workspace-main">
+      <main class="workspace-main" ref={mainArea} inert={chatCovered}>
         <MainArea
           selected={selected}
           showingPrevious={state.showingPrevious}

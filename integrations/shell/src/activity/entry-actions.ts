@@ -11,6 +11,11 @@
  * connection's snapshot), the conversation list's rule, rather than only a
  * connection.
  *
+ * The page applies the same function twice: when drawing the buttons, and
+ * again at the click with the Store's current entry and listener state, so
+ * a click on a button drawn for an older state sends nothing the rule does
+ * not allow now.
+ *
  * Pure: no DOM, no Store. test/shell/activity-actions.test.ts checks it with
  * the README's table.
  */
@@ -27,6 +32,10 @@ export interface EntryContext {
   deletionAdvertised: boolean;
   /** The listener's capture storage, as it reports it (absent from older listeners). */
   captureStorage: EngineState['captureStorage'];
+  /** The listener offers conversation controls (`sessionControlsAvailable`). */
+  sessionControls: boolean;
+  /** The listener runs in preview mode: it answers requests without acting on them. */
+  preview: boolean;
 }
 
 export interface EntryActions {
@@ -94,7 +103,9 @@ export function entryActions(entry: ActivityEntry, context: EntryContext): Entry
   const labelable = storageOn && !facts.notSaved && !facts.originalUnavailable;
   let labelReason = '';
   if (entry.intent !== null) {
-    if (!storageOn) {
+    if (context.preview) {
+      labelReason = 'Preview mode: labels are not saved.';
+    } else if (!storageOn) {
       labelReason = 'Labeling requires capture storage.';
     } else if (facts.notSaved) {
       labelReason = "Labeling requires this entry's saved capture.";
@@ -105,11 +116,34 @@ export function entryActions(entry: ActivityEntry, context: EntryContext): Entry
 
   return {
     copy: !facts.audioOnly,
-    // It starts from the saved screenshot; never substitute another one.
-    startSession: requestsAllowed && !facts.audioOnly && !facts.screenshotMissing,
-    label: requestsAllowed && entry.intent !== null && labelable,
+    // It starts from the saved screenshot; never substitute another one. A
+    // listener in preview mode would answer without starting anything.
+    startSession:
+      requestsAllowed &&
+      context.sessionControls &&
+      !context.preview &&
+      !facts.audioOnly &&
+      !facts.screenshotMissing,
+    // A listener in preview mode answers labels without saving them.
+    label: requestsAllowed && entry.intent !== null && labelable && !context.preview,
     labelReason,
     deleteOffered: context.deletionAdvertised,
     deleteEnabled: context.deletionAdvertised && requestsAllowed && entry.outcome !== 'processing',
+  };
+}
+
+/** The context for an entry from the Store's state (with this entry's pending state). */
+export function entryContext(
+  engine: Partial<EngineState> | undefined,
+  admitted: boolean,
+  pending: boolean,
+): EntryContext {
+  return {
+    admitted,
+    pending,
+    deletionAdvertised: engine?.historyDeletionAvailable === true,
+    captureStorage: engine?.captureStorage,
+    sessionControls: engine?.sessionControlsAvailable !== false,
+    preview: engine?.preview === true,
   };
 }

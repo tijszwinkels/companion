@@ -96,6 +96,14 @@ export interface StoreOptions {
    * Off, the Store never requests them.
    */
   activity?: boolean;
+  /**
+   * After each reconnect, read the run's Activity history again from its
+   * start instead of only what completed since. Entries deleted or labelled
+   * elsewhere while this page was offline change only in those pages (their
+   * events were missed). Off by default (the phone panel reads only what is
+   * new); the browser shell turns it on.
+   */
+  rereadActivityAfterReconnect?: boolean;
 }
 
 export class Store {
@@ -137,9 +145,12 @@ export class Store {
 
   /** Whether this store reads Activity history (see StoreOptions). */
   private readonly readsActivity: boolean;
+  /** Whether a reconnect reads the run's history again from its start (see StoreOptions). */
+  private readonly rereadsActivity: boolean;
 
   constructor(options: StoreOptions = {}) {
     this.readsActivity = options.activity !== false;
+    this.rereadsActivity = options.rereadActivityAfterReconnect === true;
     this.connection = new Connection(
       (event) => this.apply(event),
       (connection) => this.connectionChanged(connection),
@@ -538,6 +549,11 @@ export class Store {
     let activity = this.state.activity;
     if (activity.sessionId !== engine.activitySessionId) {
       activity = emptyActivity(engine.activitySessionId);
+    } else if (firstSnapshot && this.rereadsActivity && activity.read > 0) {
+      // This connection's first snapshot of the same run: read every page
+      // again, so deletions (removal markers) and newer revisions made while
+      // offline replace what is shown. Entries stay shown meanwhile.
+      activity = { ...activity, read: 0 };
     }
 
     this.update({
