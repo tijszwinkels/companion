@@ -97,6 +97,29 @@ function Header(props: { status: ChatStatus }) {
 
 // ---- Transcript -------------------------------------------------------------
 
+/**
+ * The paging rule for one scroll the reader made (see "The paging rule" in
+ * integrations/shell/README.md): the page to ask for, if any. Within one
+ * viewport of the top the previous page (while there are older pages),
+ * within one viewport of the end of a detached snapshot the next newer one.
+ * In a transcript so short that both edges are that near, the way the reader
+ * moved decides. Positions in CSS pixels.
+ */
+export function pageToAsk(
+  scroll: { top: number; maximumTop: number; viewportHeight: number; towardEnd: boolean },
+  history: { hasOlder: boolean; detached: boolean },
+): 'older' | 'newer' | null {
+  const olderNear = scroll.top < scroll.viewportHeight && history.hasOlder;
+  const newerNear = scroll.maximumTop - scroll.top < scroll.viewportHeight && history.detached;
+  if (olderNear && !(newerNear && scroll.towardEnd)) {
+    return 'older';
+  }
+  if (newerNear) {
+    return 'newer';
+  }
+  return null;
+}
+
 /** A transcript scroll position and the largest one possible, in CSS pixels. */
 export interface ScrollPosition {
   top: number;
@@ -144,9 +167,14 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
   }
 
   // The press ends wherever the pointer is released or the browser cancels
-  // it (a touch pan). The listeners belong to this component.
+  // it (a touch pan, which then scrolls). Its end counts as the reader's
+  // input, so the pan or momentum that follows is theirs however long the
+  // finger rested first. The listeners belong to this component.
   useEffect(() => {
     function released() {
+      if (pointerHeld.current) {
+        readerInput();
+      }
       pointerHeld.current = false;
     }
     document.addEventListener('pointerup', released, true);
@@ -350,13 +378,16 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     // itself, and not when the browser pulled it back because the transcript
     // grew or its content shrank (a resize): the scroll range shrank below
     // the previous position and the view landed at the new end.
-    const pageMade = pageTop.current !== null && Math.abs(element.scrollTop - pageTop.current) <= 1;
+    // Exactly the position read back after setting it: a reader's scroll in
+    // the same frame, however small, leaves another one.
+    const pageMade = pageTop.current !== null && element.scrollTop === pageTop.current;
     pageTop.current = null;
     const maximumTop = element.scrollHeight - element.clientHeight;
     const clamped = pulledBack(
       { top: lastTop.current, maximumTop: lastMaximumTop.current },
       { top: element.scrollTop, maximumTop: maximumTop },
     );
+    const towardEnd = element.scrollTop > lastTop.current;
     lastTop.current = element.scrollTop;
     lastMaximumTop.current = maximumTop;
     const readerMoved = !pageMade && !clamped;
@@ -396,19 +427,23 @@ function Transcript(props: { rows: ChatRow[]; status: ChatStatus; bridge: Native
     }
     heightBefore.current = element.scrollHeight;
 
-    // Paging: a scroll the reader made that leaves the transcript within one
-    // viewport of an edge asks for the next page at that edge: the previous
-    // page near the top, the next newer one near the end of a detached
-    // snapshot. Not while a page is loading, and not after a failure (only
-    // Retry repeats a request); the host refuses repeats after an empty answer.
+    // Paging (pageToAsk) follows the reader's own scrolls only. Not while a
+    // page is loading, and not after a failure (only Retry repeats a
+    // request); the host refuses repeats after an empty answer.
     if (!readerMoved || !history || history.pending || history.error) {
       return;
     }
-    const fromEnd = element.scrollHeight - element.clientHeight - element.scrollTop;
-    if (element.scrollTop < element.clientHeight && history.hasOlder) {
-      bridge.history(status.sessionId, 'older');
-    } else if (fromEnd < element.clientHeight && history.detached) {
-      bridge.history(status.sessionId, 'newer');
+    const request = pageToAsk(
+      {
+        top: element.scrollTop,
+        maximumTop: maximumTop,
+        viewportHeight: element.clientHeight,
+        towardEnd: towardEnd,
+      },
+      history,
+    );
+    if (request !== null) {
+      bridge.history(status.sessionId, request);
     }
   }
 

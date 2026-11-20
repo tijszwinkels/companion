@@ -117,8 +117,9 @@ the browser and in the Qt host:
 > A scroll the reader makes that leaves the transcript within one viewport of
 > an edge asks for the next page at that edge: the previous page near the top
 > (while there are older pages), the next newer page near the end of a
-> detached snapshot. Whatever moved it: wheel, keys, scroll bar or a finger.
-> Not while a page is loading and not after a failure (only Retry repeats a
+> detached snapshot. In a transcript so short that both edges are that near,
+> the way the reader moved decides. Whatever moved it: wheel, keys, scroll
+> bar or a finger. Not while a page is loading and not after a failure (only Retry repeats a
 > request). Scrolls the page makes itself never ask: following the live end,
 > keeping the reader's row in place (when rows arrive or the window is
 > resized), Jump to latest, and the browser pulling the view back to the end
@@ -150,15 +151,19 @@ newest page, whose next rows are the live window), 36 cases with the request
 the rule allows for each, and a second table of page-made scrolls at the end
 of a detached snapshot (a downward wheel where nothing scrolls, a narrower
 window with the mouse held still, a wider window, a taller window that pulls
-the view back to the end) followed by the reader's own 3-pixel scroll there,
-which does ask. Further tests cover a scroll without input at the live end
-(the page stays there and asks for nothing) and a scroll bar held still for
-more than a second before dragging away from it (it leaves the end and asks
-for the previous page). `bridge.test.ts` has a table for `pulledBack`
-(fractional positions, a reader's 1- and 3-pixel scroll at the very end, a
-reader landing just before a new end), and checks that an arriving page
-reaches the page as rows before the status that ends loading, while a failed
-request leaves queued rows to their 30 ms coalescing: the page never sees a
+the view back to the end) followed by the reader's own 1-pixel scroll there
+in the same frame as the page putting their row back, which does ask.
+Further tests cover a scroll without input at the live end (the page stays
+there and asks for nothing), and a scroll bar or a finger held still for
+more than a second before scrolling away from it (it leaves the end).
+`bridge.test.ts` has the rule's decision (`pageToAsk`) as a table, including
+transcripts so short that both edges are near (the browser cannot reach
+those: the reader would see more than half of a detached snapshot, and rows
+the reader sees are never trimmed), a table for `pulledBack` (fractional
+positions, a reader's 1- and 3-pixel scroll at the very end, a reader
+landing just before a new end), and checks that an arriving page reaches
+the page as rows before the status that ends loading, while a failed or
+refused page leaves queued rows to their 30 ms coalescing: the page never sees a
 request settled while it still shows the previous rows, so a scroll that
 continues meanwhile (a key's smooth scrolling, a fling) cannot ask for the
 page after one it has not shown yet.
@@ -184,9 +189,10 @@ were made for the browser:
    the end of a detached snapshot, and asks for nothing (`older` included)
    on scrolls it makes itself. Leaving the live end still needs the reader's
    input within the last second, as before, or now also a pointer held
-   pressed in the transcript: a scroll bar held still for more than a second
-   before dragging used to be pulled back to the end. A scroll without input
-   (a layout change) still keeps the page at the live end.
+   pressed in the transcript, and the end of such a press counts as input: a
+   scroll bar or a finger held still for more than a second before moving
+   used to be pulled back to the end. A scroll without input (a layout
+   change) still keeps the page at the live end.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -256,7 +262,10 @@ chat of a conversation with more than about a thousand rows,
    does not load older pages by itself; scrolling up to the top and "Load
    earlier messages" still do;
 6. at the live end, press the scroll bar, hold it still for two seconds and
-   drag up: the view leaves the end and stays where it was dragged;
+   drag up: the view leaves the end and stays where it was dragged (on a
+   touch screen the same with a finger resting before it pans); a scroll
+   without input still keeps the view at the live end (the existing
+   `test/session-apps-ui/surface.qml.in` case);
 7. the classic view (unchanged QML) still pages as before, and the existing
    Qt suites (`npm run test:window`, `test/session-apps-ui/`) pass.
 

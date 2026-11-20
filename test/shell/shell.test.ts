@@ -353,10 +353,11 @@ async function dragScrollBar(page: TestPage, distance: number, holdMilliseconds 
  * Pan the transcript with one finger so that the content moves by about
  * `distance` pixels (positive: toward the end). The browser reports such a
  * pan as pointerdown, pointercancel and then scroll events only. The finger
- * rests before it lifts, so no fling follows. Touch input is emulated for
- * the pan only, so mouse and keyboard input stay as they are.
+ * rests before it lifts, so no fling follows; it can also rest for
+ * `holdMilliseconds` before it moves. Touch input is emulated for the pan
+ * only, so mouse and keyboard input stay as they are.
  */
-async function touchPan(page: TestPage, distance: number) {
+async function touchPan(page: TestPage, distance: number, holdMilliseconds = 0) {
   await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   const box = await transcriptGeometry(page);
   const x = box.left + 40;
@@ -366,6 +367,7 @@ async function touchPan(page: TestPage, distance: number) {
     type: 'touchStart',
     touchPoints: [{ x, y: start }],
   });
+  await sleep(holdMilliseconds);
   for (let step = 1; step <= steps; step++) {
     await page.call('Input.dispatchTouchEvent', {
       type: 'touchMove',
@@ -823,8 +825,17 @@ test(
         expected: 0,
       },
       {
-        name: 'the reader scrolls up by 3 pixels at the very end',
-        act: () => wheel(page, -3),
+        name: "in one frame the page puts the reader's row back and the reader scrolls up 1 pixel",
+        act: () =>
+          page.evaluate(`(() => {
+            const transcript = document.querySelector('.transcript');
+            // Away from the row, then the page's resize handling restores it
+            // (its own scroll back to the end), then the reader's pixel: the
+            // browser reports one scroll event for all three.
+            transcript.scrollTop -= 50;
+            window.dispatchEvent(new Event('resize'));
+            transcript.scrollTop -= 1;
+          })()`),
         expected: 1,
       },
     ];
@@ -901,6 +912,18 @@ test(
     await page.waitFor(shows('History row 199'));
     assert.equal(await page.evaluate<boolean>(inView('History row 399')), false);
     assert.deepEqual(pageRequests(sockets, from), ['before']);
+
+    // The same with a finger: back at the live end, it rests on the
+    // transcript for more than a second, then pans toward older rows. The
+    // browser cancels the pointer before the pan scrolls; the pan is still
+    // the reader's and leaves the end.
+    await click(page, 'button.latest');
+    await page.waitFor(`!document.querySelector('button.latest')`);
+    await page.waitFor(inView('History row 399'));
+    await touchPan(page, -400, 1200);
+    await sleep(500);
+    assert.equal(await page.evaluate<boolean>(inView('History row 399')), false, 'left the end');
+    assert.ok(await page.evaluate<boolean>(`Boolean(document.querySelector('button.latest'))`));
     await assertNoViolations(page);
   },
 );

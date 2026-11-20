@@ -103,6 +103,9 @@ export class ResidentHistory {
   private deadline: ReturnType<typeof setTimeout> | undefined;
   // Whether the reader is at the live end (reported by the page).
   private followEnd = true;
+  // Counts the pages' rows applied (applyHistory succeeding), so a change
+  // can tell the host whether the page must get new rows first.
+  private rowsApplied = 0;
 
   constructor(private readonly host: HistoryHost) {}
 
@@ -184,8 +187,9 @@ export class ResidentHistory {
     }
     const shownBefore = this.shownHistory();
     if (shownBefore && HistoryRows.comparePositions(shownBefore.end, live.start) >= 0) {
+      const appliedBefore = this.rowsApplied;
       this.joinLiveWindow(this.historyRows);
-      this.host.changed(true);
+      this.host.changed(this.rowsApplied !== appliedBefore);
       if (!this.detached()) {
         return;
       }
@@ -374,12 +378,13 @@ export class ResidentHistory {
     );
     const boundary = request.position;
     const stall = request.direction + ':' + HistoryRows.positionKey(boundary);
+    const appliedBefore = this.rowsApplied;
 
     if (request.refresh) {
       this.stalled = new Set();
       this.followEnd = false;
       this.replaceHistory(rows);
-      this.host.changed(true);
+      this.host.changed(this.rowsApplied !== appliedBefore);
       return;
     }
 
@@ -429,7 +434,7 @@ export class ResidentHistory {
         this.joinLiveWindow(this.historyRows);
       }
     }
-    this.host.changed(rows.length > 0);
+    this.host.changed(this.rowsApplied !== appliedBefore);
   }
 
   private stopDeadline(): void {
@@ -583,6 +588,7 @@ export class ResidentHistory {
     }
     this.historyRows = candidate;
     this.attached = joined && candidate.length > 0;
+    this.rowsApplied++;
     return true;
   }
 

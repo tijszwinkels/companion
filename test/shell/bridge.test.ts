@@ -4,7 +4,7 @@ import test from 'node:test';
 import { historyPage, type HistoryPage } from '../../src/agents/history-pages.ts';
 import { chatMessage, type AgentSession } from '../../src/agents/types.ts';
 import type { Store } from '../../integrations/mobile/src/store.ts';
-import { pulledBack } from '../../integrations/session-apps/chat/Chat.tsx';
+import { pageToAsk, pulledBack } from '../../integrations/session-apps/chat/Chat.tsx';
 import type { ChatStatus, HostMessage } from '../../integrations/session-apps/chat/protocol.ts';
 import { GatewayChatBridge } from '../../integrations/shell/src/bridge.ts';
 import { ResidentHistory, type PageRequest } from '../../integrations/shell/src/history.ts';
@@ -1048,3 +1048,202 @@ test('a failed page request leaves queued rows to their 30 ms coalescing', async
   assert.ok(messages.slice(from).some((message) => message.type === 'rows'));
   assert.equal(lastStatus(messages).history?.error, 'Synthetic page failure');
 });
+
+test('a page refused because it would trim visible rows leaves queued rows to their coalescing', async () => {
+  const store = new FakeStore();
+  const rows = [];
+  for (let index = 0; index < 1000; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  const shown = { ...full, messages: live.messages, history: live.history };
+  store.state.sessions.set(sessionA, shown);
+  store.state.selected = sessionA;
+  // The reader sees every row: trimming any of them is refused.
+  const bridge = new GatewayChatBridge(store as unknown as Store, {
+    visibleIndexes: () => [...Array(1000).keys()],
+    topIndex: () => 0,
+  });
+  const messages: HostMessage[] = [];
+  bridge.message.connect((json) => messages.push(JSON.parse(json) as HostMessage));
+  bridge.ready('synthetic-document');
+  store.update({ engine: { paused: false } });
+  await settle();
+
+  /** Ask for the previous page and answer it with the real one. */
+  async function older(): Promise<void> {
+    bridge.history(sessionA, 'older');
+    await settle();
+    const request = store.pending.splice(0)[0];
+    const parameters = request.parameters as unknown as PageRequest;
+    request.resolve(
+      historyPage(full, 1, parameters.direction, {
+        index: parameters.index,
+        offset: parameters.offset,
+      }),
+    );
+  }
+
+  // Two older pages fit within three pages; the third would need trimming.
+  bridge.following(sessionA, false);
+  await older();
+  await settle();
+  await older();
+  await settle();
+  assert.ok(messages.some((message) => message.type === 'rows'));
+  bridge.history(sessionA, 'older');
+  await settle();
+  const request = store.pending.splice(0)[0];
+  const parameters = request.parameters as unknown as PageRequest;
+
+  // A row streams in, then the third page arrives and is refused.
+  const latest = store.state.sessions.get(sessionA)!;
+  const streamed = {
+    ...latest,
+    messages: [...latest.messages, chatMessage('new', 'assistant', 'New')],
+  };
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, streamed) });
+  const from = messages.length;
+  request.resolve(
+    historyPage(full, 1, parameters.direction, {
+      index: parameters.index,
+      offset: parameters.offset,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(
+    messages.slice(from).some((message) => message.type === 'rows'),
+    false,
+    'no rows sent at once',
+  );
+  await settle();
+  const sent = messages.slice(from).filter((message) => message.type === 'rows');
+  // The streamed change goes out with the 30 ms timer; the refused page's
+  // rows (Row 200–399) never do.
+  assert.equal(sent.length, 1);
+  assert.equal(
+    sent[0].type === 'rows' && sent[0].order.some((key) => key.includes('row-399')),
+    false,
+  );
+});
+
+/**
+ * The paging rule's decision for one scroll the reader made (Chat.tsx
+ * `pageToAsk`), in a 600 px viewport. The Chromium table in shell.test.ts
+ * tests the same rule through real input; this covers transcripts too short
+ * for a browser test to reach, where both edges are within one viewport.
+ */
+const pageToAskCases: {
+  name: string;
+  top: number;
+  maximumTop: number;
+  towardEnd: boolean;
+  hasOlder: boolean;
+  detached: boolean;
+  expected: 'older' | 'newer' | null;
+}[] = [
+  {
+    name: 'near the top',
+    top: 300,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'older',
+  },
+  {
+    name: 'near the top, nothing older',
+    top: 300,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: false,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'in the middle',
+    top: 4000,
+    maximumTop: 9000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'near the end of a detached snapshot',
+    top: 8700,
+    maximumTop: 9000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'near the end, moving up',
+    top: 8700,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'near the end of the live rows',
+    top: 8700,
+    maximumTop: 9000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: false,
+    expected: null,
+  },
+  {
+    name: 'short snapshot, moving toward the end',
+    top: 300,
+    maximumTop: 300,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'short snapshot, moving toward the start',
+    top: 295,
+    maximumTop: 300,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'older',
+  },
+  {
+    name: 'short snapshot, nothing older, moving up',
+    top: 100,
+    maximumTop: 300,
+    towardEnd: false,
+    hasOlder: false,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'short live rows, moving toward the end',
+    top: 300,
+    maximumTop: 300,
+    towardEnd: true,
+    hasOlder: true,
+    detached: false,
+    expected: 'older',
+  },
+];
+
+for (const pagingCase of pageToAskCases) {
+  test(`page to ask: ${pagingCase.name}`, () => {
+    const scroll = {
+      top: pagingCase.top,
+      maximumTop: pagingCase.maximumTop,
+      viewportHeight: 600,
+      towardEnd: pagingCase.towardEnd,
+    };
+    const history = { hasOlder: pagingCase.hasOlder, detached: pagingCase.detached };
+    assert.equal(pageToAsk(scroll, history), pagingCase.expected);
+  });
+}
