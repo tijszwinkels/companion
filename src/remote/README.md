@@ -242,6 +242,13 @@ and answered only to its requester. Page replies and canonical pin attachments
 receive the same screenshot authorization and local widget-URL removal as
 session snapshots. Retained history is never exposed through an unbounded reply.
 
+[Turn and message times](../agents/README.md#turn-and-message-times)
+(`turnStartedAt`, `lastTurnDurationMs`, message `createdAt`) and the state
+message's [`listenerTime`](../desktop/README.md#listener-time) pass through the
+gateway unchanged, in snapshots, events and history pages. A held initial
+snapshot or a queued phone write delivers `listenerTime` late by that wait, so
+the phone should refresh its clock offset from every later `state` message.
+
 Desktop-selection events (`agent-actions`, `agent-view-actions`, `agent-draft`,
 `agent-select`) are not relayed; the phone uses `remote-agent-actions` for its own selection. Only the
 declared remote event set is forwarded, and initial snapshots stay at the gateway
