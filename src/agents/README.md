@@ -244,6 +244,17 @@ is deliberately absent from saved transcripts, so reopening a historical session
 does not manufacture a new completion. Old backends without the field can show
 running rings but need a listener restart for unread completion tracking.
 
+The listener also keeps one shared mark per conversation, `unread`, set when a
+turn completes successfully while no connected client shows the conversation on
+a visible page, and cleared when one does. It is saved with the conversation, so
+it survives reloads, reconnects and restarts, and reading on one device clears
+it on every other. The exact rule (desktop main view, pop-out windows, remote
+pages) and the decisions for errors, stops, close/reopen and restarts are in
+[unread mark](../desktop/README.md#unread-mark). `sessions.ts` sets it at the
+completion moment above and `markRead` clears it; the desktop runtime decides
+what is shown. The panel, window and phone do not use it yet and keep the local
+marks described above.
+
 ## Turn and message times
 
 The listener records two kinds of time so that clients can show how long a

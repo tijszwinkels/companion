@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { EventEmitter } from 'node:events';
+import type { WebSocket } from 'ws';
+
 import { DeviceStore } from '../../src/remote/devices.ts';
+import { ReceiptBook } from '../../src/remote/receipts.ts';
+import { Relay } from '../../src/remote/relay.ts';
 import { Gateway } from '../../src/remote/gateway.ts';
 import { connectPhone, delay, freePort, waitFor } from '../remote-fixture.ts';
 
@@ -78,7 +83,9 @@ function roleAccepted(socket: Socket): void {
   );
 }
 
-test('two relay slots include draining phones and leave listener capacity for desktop clients', async (context) => {
+test('relay slots include draining phones and leave listener capacity for desktop clients', async (context) => {
+  // The full limit rules are tabled in remote-connection-limits.test.ts; this
+  // repeats the draining case against a listener that never answers.
   let forwarded = false;
   const setup = await fixture(context, (socket, request) => {
     if (request.action === 'client-role') {
@@ -93,17 +100,21 @@ test('two relay slots include draining phones and leave listener capacity for de
   await waitFor(() => forwarded);
   first.socket.terminate();
   await first.closed;
-  const second = await setup.phone();
-  await waitFor(() => second.messages.some((message) => message.type === 'authenticated'));
-  const third = await setup.phone();
-  assert.equal((await third.closed).code, 4429);
-  assert.equal(setup.sockets.size, 2);
-  second.socket.close();
-  await second.closed;
-  await waitFor(() => setup.sockets.size === 1);
+  const open = [];
+  for (let index = 0; index < 3; index++) {
+    const phone = await setup.phone();
+    await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+    open.push(phone);
+  }
+  const fifth = await setup.phone();
+  assert.deepEqual(await fifth.closed, { code: 4429, reason: 'device' });
+  assert.equal(setup.sockets.size, 4);
+  open[0].socket.close();
+  await open[0].closed;
+  await waitFor(() => setup.sockets.size === 3);
   const replacement = await setup.phone();
   await waitFor(() => replacement.messages.some((message) => message.type === 'authenticated'));
-  assert.equal(setup.sockets.size, 2);
+  assert.equal(setup.sockets.size, 4);
 });
 
 test('a listener that rejects the role cannot leak its initial snapshot', async (context) => {
@@ -226,4 +237,117 @@ test('an authenticated heartbeat replies without forwarding a listener request',
   phone.socket.send(JSON.stringify({ type: 'ping' }));
   await waitFor(() => phone.messages.some((message) => message.type === 'pong'));
   assert.equal(upstreamRequests, 1, 'only the role declaration reaches the listener');
+});
+
+test('a phone that leaves while the role is pending never reports a visible page', async (context) => {
+  const received: Record<string, unknown>[] = [];
+  let listener: Socket | undefined;
+  const setup = await fixture(context, (socket, request) => {
+    listener = socket;
+    received.push(request);
+  });
+  const phone = await setup.phone();
+  await waitFor(() => phone.messages.some((message) => message.type === 'authenticated'));
+  await waitFor(() => received.length === 1);
+
+  // Queued behind the role; the phone leaves before the listener confirms.
+  phone.send({
+    action: 'panel-state',
+    requestId: 'shown',
+    id: '00000000-0000-4000-8000-000000000001',
+    visible: true,
+  });
+  await delay(30);
+  phone.socket.terminate();
+  await phone.closed;
+
+  roleAccepted(listener!);
+  await waitFor(() => received.length === 3);
+  assert.equal(received[0].action, 'client-role');
+  // The queued report keeps its selection and place, but the page is gone:
+  // it must not read anything the listener finished meanwhile.
+  assert.deepEqual(received[1], {
+    action: 'panel-state',
+    id: '00000000-0000-4000-8000-000000000001',
+    visible: false,
+    requestId: received[1].requestId,
+  });
+  // Then the withdrawal, which names no conversation.
+  assert.deepEqual(received[2], { action: 'withdraw-visibility', requestId: 'withdraw' });
+});
+
+/**
+ * A stand-in for the gateway's WebSocket to a phone, so a test can hold it
+ * in the CLOSING state (closing handshake started, no `close` event yet).
+ */
+class FakePhone extends EventEmitter {
+  readonly OPEN = 1;
+  readonly CLOSING = 2;
+  readyState = 1;
+  readonly sent: string[] = [];
+
+  send(text: string, callback?: (error?: Error) => void): void {
+    this.sent.push(text);
+    callback?.();
+  }
+
+  close(): void {
+    this.readyState = this.CLOSING;
+  }
+}
+
+test('a report forwarded while the phone is closing is never visible', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'remote-relay-closing-'));
+  const controlSocket = join(directory, 'control.sock');
+  const received: Record<string, unknown>[] = [];
+  let listener: Socket | undefined;
+  const server = createServer((socket) => {
+    listener = socket;
+    socket.setEncoding('utf8');
+    let buffered = '';
+    socket.on('data', (chunk) => {
+      buffered += chunk;
+      let newline: number;
+      while ((newline = buffered.indexOf('\n')) >= 0) {
+        received.push(JSON.parse(buffered.slice(0, newline)));
+        buffered = buffered.slice(newline + 1);
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(controlSocket, resolve));
+  const phone = new FakePhone();
+  const relay = new Relay(phone as unknown as WebSocket, {
+    controlSocket,
+    sessionsDirectory: directory,
+    deviceId: 'device',
+    receipts: new ReceiptBook(),
+    takeToken: () => true,
+    allowScreenshot: () => {},
+    onClosed: () => {},
+    log: () => {},
+  });
+  context.after(async () => {
+    relay.terminate(4001, 'Test over');
+    listener?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  });
+  await waitFor(() => received.length === 1);
+
+  // A visible report waits for the role; then the closing handshake starts.
+  const report = {
+    type: 'request',
+    requestId: 'shown',
+    action: 'panel-state',
+    id: '00000000-0000-4000-8000-000000000003',
+    visible: true,
+  };
+  phone.emit('message', Buffer.from(JSON.stringify(report)), false);
+  phone.readyState = phone.CLOSING;
+
+  // The role is confirmed during the handshake, before any `close` event.
+  roleAccepted(listener!);
+  await waitFor(() => received.length === 2);
+  assert.equal(received[1].action, 'panel-state');
+  assert.equal(received[1].visible, false);
 });

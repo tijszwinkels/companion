@@ -55,9 +55,15 @@ import { AppRegistry } from '../apps/registry.ts';
 import { DeviceStore, type PairedDevice } from './devices.ts';
 import { frameSourceDirective } from './frames/headers.ts';
 import { FrameOrigin, type FrameListenOptions } from './frames/server.ts';
-import { maximumClientMessageBytes } from './protocol.ts';
+import {
+  maximumClientMessageBytes,
+  maximumConnectionsPerDevice,
+  maximumRemoteConnections,
+  type OverloadedReason,
+} from './protocol.ts';
 import { ReceiptBook } from './receipts.ts';
 import { closeCodes, Relay } from './relay.ts';
+import { DeviceRequestRate } from './request-rate.ts';
 import { tailscaleRefusal } from './tailscale-headers.ts';
 import { acquireLifetimeLock, claimUnixSocket, type UnixSocketClaim } from './unix-socket-claim.ts';
 
@@ -147,10 +153,13 @@ export interface GatewayAppOptions {
   registryDirectory: string;
 }
 
-/** Concurrent authenticated phones and not-yet-authenticated sockets. */
-// Include draining relays: at most two of the listener's eight client slots
-// belong to this gateway, leaving room for desktop panels during reconnects.
-const maximumPhones = 2;
+/**
+ * Concurrent not-yet-authenticated sockets. Authenticated connections are
+ * limited by `maximumRemoteConnections` in total and
+ * `maximumConnectionsPerDevice` per device (protocol.ts), draining relays
+ * included: at most 8 of the listener's 16 client slots belong to this
+ * gateway, leaving room for desktop panels during reconnects.
+ */
 const maximumUnauthenticated = 8;
 
 /** How long a failed start waits for the app proxy to close before reporting. */
@@ -278,6 +287,8 @@ export class Gateway {
   });
   private readonly devices: DeviceStore;
   private readonly receipts = new ReceiptBook();
+  private readonly requestRate = new DeviceRequestRate();
+  /** Every relay that still holds a listener connection, with its device ID. */
   private readonly relays = new Map<Relay, string>();
   private readonly screenshots = new Map<string, Set<string>>();
   private readonly allowedHosts: Set<string>;
@@ -914,7 +925,7 @@ export class Gateway {
     }
     if (
       this.unauthenticated >= maximumUnauthenticated ||
-      this.sockets.clients.size >= maximumPhones + maximumUnauthenticated
+      this.sockets.clients.size >= maximumRemoteConnections + maximumUnauthenticated
     ) {
       reject(503, 'Service Unavailable');
       return;
@@ -975,8 +986,11 @@ export class Gateway {
         phone.close(closeCodes.unauthorized, 'Not paired');
         return;
       }
-      if (this.relays.size >= maximumPhones) {
-        phone.close(closeCodes.overloaded, 'Too many phones connected');
+      // Checked synchronously with startRelay below, so two sockets that
+      // authenticate together cannot both take the last slot.
+      const refusal = this.connectionRefusal(device.id);
+      if (refusal) {
+        phone.close(closeCodes.overloaded, refusal);
         return;
       }
       if (phone.readyState !== phone.OPEN) {
@@ -985,6 +999,38 @@ export class Gateway {
 
       this.startRelay(phone, device, incrementalSessions);
     });
+  }
+
+  /**
+   * Why a newly authenticated connection of `deviceId` must be refused, or
+   * undefined when it fits. Its own device's limit is reported first, since
+   * the client can act on it (close a tab). The reason names no other device.
+   */
+  private connectionRefusal(deviceId: string): OverloadedReason | undefined {
+    let sameDevice = 0;
+    for (const relayDevice of this.relays.values()) {
+      if (relayDevice === deviceId) {
+        sameDevice++;
+      }
+    }
+
+    if (sameDevice >= maximumConnectionsPerDevice) {
+      return 'device';
+    }
+    if (this.relays.size >= maximumRemoteConnections) {
+      return 'total';
+    }
+    return undefined;
+  }
+
+  /** Whether any relay of `deviceId` still holds a listener connection. */
+  private deviceConnected(deviceId: string): boolean {
+    for (const relayDevice of this.relays.values()) {
+      if (relayDevice === deviceId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private startRelay(phone: WebSocket, device: PairedDevice, incrementalSessions: boolean): void {
@@ -1002,6 +1048,7 @@ export class Gateway {
       sessionsDirectory: this.options.sessionsDirectory,
       deviceId: device.id,
       receipts: this.receipts,
+      takeToken: () => this.requestRate.take(device.id),
       incrementalSessions,
       allowScreenshot: (deviceId, sessionId) => {
         let allowed = this.screenshots.get(deviceId);
@@ -1012,7 +1059,13 @@ export class Gateway {
         allowed.add(sessionId);
       },
       frames,
-      onClosed: () => this.relays.delete(relay),
+      onClosed: () => {
+        this.relays.delete(relay);
+        // The rate bucket lives as long as one of the device's connections.
+        if (!this.deviceConnected(device.id)) {
+          this.requestRate.forget(device.id);
+        }
+      },
       log: this.options.log,
     });
 

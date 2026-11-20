@@ -27,6 +27,23 @@ export type {
 /** Largest WebSocket message the gateway accepts from a phone, in bytes. */
 export const maximumClientMessageBytes = 32 * 1024;
 
+/**
+ * Authenticated connections the gateway relays at once, in total and per
+ * paired device. Draining connections (closed by the client, still waiting
+ * for replies) count. Each uses one of the listener's 16 client slots.
+ */
+export const maximumRemoteConnections = 8;
+export const maximumConnectionsPerDevice = 4;
+
+/**
+ * Close reason sent with close code 4429 when a new connection is refused:
+ * `device` when its own device already has `maximumConnectionsPerDevice`,
+ * `total` when the gateway already relays `maximumRemoteConnections`.
+ * Connections that are already open are never closed to make room, and the
+ * reason never names another device.
+ */
+export type OverloadedReason = 'device' | 'total';
+
 /** Client request IDs are opaque, short and URL-safe so they can key receipts. */
 const requestIdPattern = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -38,7 +55,11 @@ const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
  * paste, submit-utterance, media-playback, composer-focus and draft replies.
  */
 export interface RemoteActionParameters {
-  'panel-state': { id: string };
+  /**
+   * `visible`: the page showing `id` is visible (for example not a background
+   * tab). Absent counts as not visible, so the conversation is not read.
+   */
+  'panel-state': { id: string; visible?: boolean };
   'toggle-pause': Record<string, never>;
   'toggle-sounds': Record<string, never>;
   'set-intent-enabled': { name: string; mode: 'inference' | 'shortcut'; enabled: boolean };
@@ -272,7 +293,7 @@ interface ActionShape {
 }
 
 const shapes: Record<RemoteAction, ActionShape> = {
-  'panel-state': { required: { id: optionalSessionId } },
+  'panel-state': { required: { id: optionalSessionId }, optional: { visible: boolean } },
   'toggle-pause': { required: {} },
   'toggle-sounds': { required: {} },
   'set-intent-enabled': {
