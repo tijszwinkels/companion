@@ -438,6 +438,8 @@ test('limits: setting the wall clock back and forward again never changes the re
   // The default refill clock is monotonic; the wall clock is what jumps.
   let wall = Date.now();
   context.mock.method(Date, 'now', () => wall);
+  // Hold the monotonic clock still, so a scheduling pause cannot refill.
+  context.mock.method(performance, 'now', () => 0);
   const rate = new DeviceRequestRate();
 
   for (let index = 0; index < requestBurst; index++) {
