@@ -26,6 +26,14 @@ export interface ChatRow {
     groupId: string;
   } | null;
   widget: { name: string } | null;
+  /**
+   * When the message was written, as the host formats it for the reader
+   * (`14:02`, `Yesterday 16:48`), shown at the right of its heading line.
+   * Optional: absent, the heading is exactly as without it. The Qt host
+   * never sets it; the browser shell does while its Message timestamps
+   * switch is on and the message has a time.
+   */
+  time?: string;
 }
 
 export interface ChatChoice {

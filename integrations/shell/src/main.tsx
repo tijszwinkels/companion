@@ -20,7 +20,13 @@ import { ChatStore } from '../../session-apps/chat/store.ts';
 import '../../session-apps/chat/styles.css';
 import { App } from './App.tsx';
 import { GatewayChatBridge, type TranscriptView } from './bridge.ts';
+import type { LayoutStorage } from './layout/stored-layout.ts';
+import { DisplaySettings, displayStoragePrefix } from './settings/display-settings.ts';
+import { SettingsView } from './settings/settings-view.ts';
 import './styles.css';
+import { ListenerClock } from './times/listener-clock.ts';
+import type { PageTimes } from './times/page-times.ts';
+import { TurnTicker } from './times/turn-ticker.ts';
 
 /**
  * Where the chat page's rows are on screen. Chat.tsx draws one `.message`
@@ -60,12 +66,50 @@ const transcriptView: TranscriptView = {
   },
 };
 
+// Whether the settings screen covers the chat (settings/settings-view.ts).
+// Browser Back and Forward leave it. Listening before the Store exists puts
+// this ahead of the Store's own navigation handling, so the page the Store
+// then selects counts as shown (and its unread mark is cleared).
+const settingsView = new SettingsView();
+window.addEventListener('popstate', () => {
+  settingsView.setShown(false);
+});
+
 // The Store reads this listener run's Activity history for the Activity
 // column (the phone panel's default), and after each reconnect from the
 // start, so changes made elsewhere while offline (deletions, labels) are not
-// missed.
-const store = new Store({ rereadActivityAfterReconnect: true });
-const bridge = new GatewayChatBridge(store, transcriptView);
+// missed. The selected conversation is not shown while the settings screen
+// covers it, so an answer completed then is marked unread.
+const store = new Store({
+  rereadActivityAfterReconnect: true,
+  selectionShown: () => !settingsView.shown,
+});
+
+// The listener's clock offset is taken from each state message as the
+// Store applies it. Subscribed first, so the bridge and the page already
+// see the new offset when the same Store change reaches them.
+const clock = new ListenerClock();
+store.subscribe(() => clock.observe(store.state.engine));
+
+/** This browser's localStorage, or null where the page may not use it. */
+function pageStorage(): LayoutStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const times: PageTimes = {
+  settings: new DisplaySettings(pageStorage),
+  clock,
+  ticker: new TurnTicker(clock),
+};
+
+const bridge = new GatewayChatBridge(store, transcriptView, {
+  settings: times.settings,
+  clock,
+});
 const chat = new ChatStore();
 chat.attach(bridge);
 
@@ -75,6 +119,13 @@ chat.attach(bridge);
 store.subscribe(() => {
   if (store.state.connection.status === 'unpaired' && chat.unresolved() !== null) {
     chat.setUnresolved(null);
+  }
+});
+
+// Signed out: the next pairing starts with its conversation, not Settings.
+store.subscribe(() => {
+  if (store.state.connection.status === 'unpaired') {
+    settingsView.setShown(false);
   }
 });
 
@@ -92,12 +143,17 @@ window.addEventListener('storage', (event) => {
   // `key` is null when another tab cleared the whole storage.
   if (event.key === credentialStorageKey || event.key === null) {
     window.location.reload();
+    return;
+  }
+  // Another tab switched a Display setting: this tab follows that entry.
+  if (event.key.startsWith(displayStoragePrefix)) {
+    times.settings.followStorage(event.key);
   }
 });
 
 render(
   <StoreContext.Provider value={store}>
-    <App chat={chat} bridge={bridge} />
+    <App chat={chat} bridge={bridge} times={times} settingsView={settingsView} />
   </StoreContext.Provider>,
   document.getElementById('app')!,
 );

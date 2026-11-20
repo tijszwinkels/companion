@@ -36,6 +36,17 @@
  *
  * Replies and messages reach the page asynchronously and in call order, as
  * QWebChannel delivers them.
+ *
+ * Message times (the one addition to the Qt host's rows): while the Display
+ * setting Message timestamps is on, each row whose message has `createdAt`
+ * carries `time`, its text for the reader (../times/message-time.ts). The
+ * rows are sent again (only those whose text changed, by the usual diff)
+ * when the switch changes, when the listener clock's offset changes and
+ * when a new calendar day starts here ("14:02" becomes "Yesterday 14:02").
+ * A publication made only for the times is not sent when no row's text
+ * changed (the offset moves by milliseconds with every state message), so
+ * the page is not drawn again for nothing. With the switch off, or without
+ * `times`, rows are exactly the Qt host's.
  */
 
 import type { AgentSession } from '../../../src/agents/types.ts';
@@ -50,6 +61,14 @@ import type {
 } from '../../session-apps/chat/protocol.ts';
 import { ResidentHistory, type PageRequest } from './history.ts';
 import { pageRow } from './rows.ts';
+import type { DisplaySettings } from './settings/display-settings.ts';
+import type { ListenerClock } from './times/listener-clock.ts';
+import {
+  browserCalendar,
+  messageTimeText,
+  untilNextDay,
+  type LocalCalendar,
+} from './times/message-time.ts';
 
 /** Longest message the gateway accepts for `send-agent` (src/remote/protocol.ts). */
 export const maximumMessageLength = 4000;
@@ -80,6 +99,25 @@ export interface TranscriptView {
   topIndex(): number;
 }
 
+/**
+ * What the bridge needs for message times: the Display settings (the
+ * Message timestamps switch) and the listener's clock (its offset, and this
+ * browser's now). `calendar` is this browser's time zone unless a test
+ * gives another.
+ */
+export interface MessageTimes {
+  settings: DisplaySettings;
+  clock: ListenerClock;
+  calendar?: LocalCalendar;
+}
+
+/**
+ * The longest wait for the next calendar day, in milliseconds. The wait is
+ * set for the next local midnight; checking at least every hour also
+ * catches a clock or time zone that changed meanwhile.
+ */
+const longestDayWait = 60 * 60 * 1000;
+
 type Answer = Record<string, unknown>;
 
 export class GatewayChatBridge implements NativeBridge {
@@ -101,6 +139,16 @@ export class GatewayChatBridge implements NativeBridge {
   private rowsDirty = true;
   private rowsTimer: ReturnType<typeof setTimeout> | undefined;
   private statusQueued = false;
+  // Waits for the next calendar day while message times are shown.
+  private dayTimer: ReturnType<typeof setTimeout> | undefined;
+  // The rows waiting to be published were scheduled only because message
+  // times may have changed (a new offset or day): an unchanged result is
+  // then not sent.
+  private onlyTimesChanged = false;
+  // The reader's calendar date the published times were formatted on
+  // ('' before the first), so any Store change noticed on another date
+  // (a timeout that came late, a computer that slept) sends them again.
+  private timesDate = '';
 
   // The shown conversation and its resident rows.
   private shownSession: AgentSession | null = null;
@@ -146,6 +194,7 @@ export class GatewayChatBridge implements NativeBridge {
   constructor(
     private readonly store: Store,
     private readonly view: TranscriptView,
+    private readonly times?: MessageTimes,
   ) {
     this.message = {
       connect: (callback) => {
@@ -165,6 +214,7 @@ export class GatewayChatBridge implements NativeBridge {
           // meanwhile (a key's smooth scrolling, a fling) would ask for the
           // page after the one it has not shown yet.
           this.cancelRowsTimer();
+          this.onlyTimesChanged = false;
           this.publishRows();
         } else {
           this.scheduleRows();
@@ -173,6 +223,29 @@ export class GatewayChatBridge implements NativeBridge {
       },
     });
     store.subscribe(() => this.storeChanged());
+    if (times) {
+      // A switched setting or a new offset can change every row's time.
+      // Only the Message timestamps switch changes the rows; the other two
+      // Display switches change nothing here.
+      let timestampsShown = times.settings.values.messageTimestamps;
+      times.settings.subscribe(() => {
+        const shown = times.settings.values.messageTimestamps;
+        if (shown === timestampsShown) {
+          return;
+        }
+        timestampsShown = shown;
+        this.scheduleTimeRows();
+        this.waitForNextDay();
+      });
+      // A new offset can mean this browser's clock was corrected: the times
+      // and the moment the day changes are taken again.
+      times.clock.subscribe(() => {
+        if (times.settings.values.messageTimestamps) {
+          this.scheduleTimeRows();
+          this.waitForNextDay();
+        }
+      });
+    }
     this.storeChanged();
   }
 
@@ -185,6 +258,7 @@ export class GatewayChatBridge implements NativeBridge {
       this.forgetPrivateState();
     }
     this.followConnection();
+    this.noticeNewDay();
 
     let session: AgentSession | null = null;
     if (state.selected) {
@@ -296,7 +370,18 @@ export class GatewayChatBridge implements NativeBridge {
     }
   }
 
-  private scheduleRows(): void {
+  /** Rows again because only message times may have changed. */
+  private scheduleTimeRows(): void {
+    if (!this.rowsDirty) {
+      this.onlyTimesChanged = true;
+    }
+    this.scheduleRows(true);
+  }
+
+  private scheduleRows(onlyTimes = false): void {
+    if (!onlyTimes) {
+      this.onlyTimesChanged = false;
+    }
     this.rowsDirty = true;
     if (this.rowsTimer !== undefined) {
       return;
@@ -321,12 +406,85 @@ export class GatewayChatBridge implements NativeBridge {
     }, 0);
   }
 
+  /**
+   * While message times are shown, rows are sent again when a new calendar
+   * day starts here. One timeout at a time; none while the switch is off.
+   */
+  private waitForNextDay(): void {
+    if (this.dayTimer !== undefined) {
+      clearTimeout(this.dayTimer);
+      this.dayTimer = undefined;
+    }
+    const times = this.times;
+    if (!times || !this.pageReady || !times.settings.values.messageTimestamps) {
+      return;
+    }
+    const calendar = times.calendar ?? browserCalendar;
+    const wait = Math.min(untilNextDay(times.clock.readerNow(), calendar), longestDayWait);
+    this.dayTimer = setTimeout(() => {
+      this.dayTimer = undefined;
+      this.scheduleTimeRows();
+      this.waitForNextDay();
+    }, wait);
+  }
+
+  /** The reader's calendar date now, as a key ('' without message times). */
+  private readerDate(): string {
+    const times = this.times;
+    if (!times) {
+      return '';
+    }
+    const today = (times.calendar ?? browserCalendar)(times.clock.readerNow());
+    return `${today.year}-${today.month}-${today.day}`;
+  }
+
+  /**
+   * A Store change on another calendar date than the published times':
+   * they are formatted again, and the wait for the next day taken again.
+   */
+  private noticeNewDay(): void {
+    const times = this.times;
+    if (!times || !this.pageReady || !times.settings.values.messageTimestamps) {
+      return;
+    }
+    if (this.timesDate === '' || this.readerDate() === this.timesDate) {
+      return;
+    }
+    this.scheduleTimeRows();
+    this.waitForNextDay();
+  }
+
+  /** The time on a message's heading line, or '' for none (../times/message-time.ts). */
+  private messageTime(createdAt: unknown): string {
+    const times = this.times;
+    if (!times || !times.settings.values.messageTimestamps) {
+      return '';
+    }
+    return messageTimeText(
+      createdAt,
+      times.clock.offset,
+      times.clock.readerNow(),
+      times.calendar ?? browserCalendar,
+    );
+  }
+
   private publishRows(): void {
     if (!this.pageReady) {
       return;
     }
-    const rows = this.resident.rows().map(pageRow);
+    this.timesDate = this.readerDate();
+    const rows = this.resident
+      .rows()
+      .map((row) => pageRow(row, this.messageTime(row.message.createdAt)));
     const diff = diffRows(this.sentRows, rows, this.fullRows);
+    const onlyTimes = this.onlyTimesChanged;
+    this.onlyTimesChanged = false;
+    if (onlyTimes && !this.fullRows && diff.changed.length === 0) {
+      // Only times could have changed, and none did (the order cannot
+      // change without another reason to publish).
+      this.rowsDirty = false;
+      return;
+    }
     this.sentRows = diff.sent;
     this.sentOrder = diff.order;
     const sessionId = this.shownSession ? this.shownSession.id : '';
@@ -666,6 +824,7 @@ export class GatewayChatBridge implements NativeBridge {
     this.cancelRowsTimer();
     this.publishRows();
     this.publishStatus();
+    this.waitForNextDay();
     if (callback) {
       this.deliver(callback);
     }

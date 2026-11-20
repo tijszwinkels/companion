@@ -108,6 +108,16 @@ export interface StoreOptions {
    * of a reading); the browser shell turns it on.
    */
   rereadActivityAfterReconnect?: boolean;
+  /**
+   * Whether the selected conversation is shown to the reader now, besides
+   * the page being visible. Absent (the phone panel) it always is. The
+   * browser shell's settings screen covers the selected conversation: a turn
+   * completed meanwhile is then marked unread and announced, as for a
+   * conversation that is not selected, and selecting a conversation then
+   * (a started one, underneath the settings screen) keeps its mark until it
+   * is shown.
+   */
+  selectionShown?: () => boolean;
 }
 
 export class Store {
@@ -151,6 +161,8 @@ export class Store {
   private readonly readsActivity: boolean;
   /** Whether a reconnect reads the run's history again from its start (see StoreOptions). */
   private readonly rereadsActivity: boolean;
+  /** Whether the selected conversation is shown besides page visibility (see StoreOptions). */
+  private readonly selectionShown: () => boolean;
   /**
    * Changes when a reconnect asks for the run's history to be read again
    * from the start; a reading begun before that is abandoned (only with
@@ -161,6 +173,7 @@ export class Store {
   constructor(options: StoreOptions = {}) {
     this.readsActivity = options.activity !== false;
     this.rereadsActivity = options.rereadActivityAfterReconnect === true;
+    this.selectionShown = options.selectionShown ?? (() => true);
     this.connection = new Connection(
       (event) => this.apply(event),
       (connection) => this.connectionChanged(connection),
@@ -234,7 +247,11 @@ export class Store {
     this.pageRevision += 1;
     const id = this.state.sessions.has(page.selected) ? page.selected : '';
     const unread = new Set(this.state.unread);
-    unread.delete(id);
+    // Selecting shows the conversation, which clears its mark; unless it is
+    // selected where the reader does not see it (see `selectionShown`).
+    if (this.selectionShown()) {
+      unread.delete(id);
+    }
     this.update({
       selected: id,
       showingPrevious: this.connection.paired && page.showingPrevious,
@@ -655,7 +672,7 @@ export class Store {
         continue;
       }
       this.completedTurns.set(session.id, turn);
-      if (session.id !== viewed || document.visibilityState !== 'visible') {
+      if (session.id !== viewed || !this.selectionVisible()) {
         unread = new Set(unread);
         unread.add(session.id);
       }
@@ -685,8 +702,13 @@ export class Store {
     this.pruneDrafts(new Set(sessions.keys()));
   }
 
+  /** Whether the reader sees the selected conversation now: the page is visible and shows it. */
+  private selectionVisible(): boolean {
+    return document.visibilityState === 'visible' && this.selectionShown();
+  }
+
   private turnCompleted(id: string): void {
-    if (id === this.state.selected && document.visibilityState === 'visible') {
+    if (id === this.state.selected && this.selectionVisible()) {
       return;
     }
     const title = this.state.sessions.get(id)?.title ?? 'A conversation';

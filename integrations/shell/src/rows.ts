@@ -136,7 +136,15 @@ export function rowData(row: HistoryRow): Record<string, unknown> {
   };
 }
 
-/** The page's row for one resident row: `ChatState.chatRow(rowData(row))`. */
-export function pageRow(row: HistoryRow): ChatRow {
-  return chatRow(rowData(row));
+/**
+ * The page's row for one resident row: `ChatState.chatRow(rowData(row))`,
+ * plus the time the message was written (`ChatRow.time`) when `time` is not
+ * empty. Without a time the row is exactly the Qt host's.
+ */
+export function pageRow(row: HistoryRow, time = ''): ChatRow {
+  const page: ChatRow = chatRow(rowData(row));
+  if (time) {
+    page.time = time;
+  }
+  return page;
 }

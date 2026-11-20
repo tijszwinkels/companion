@@ -274,8 +274,8 @@ test(
     await page.waitFor(`document.querySelector('.conversations.full')`);
     assert.equal(await page.evaluate(listWidth), 420);
 
-    // ☰ hides the list and the divider; the chat uses the freed width up to
-    // its maximum and stays centred.
+    // ☰ hides the list and the divider; the chat uses the freed width (the
+    // whole window: there is no maximum).
     await openConversation(page, 'Route planner');
     assert.equal(
       await page.evaluate(`document.querySelector('.list-toggle').getAttribute('aria-expanded')`),
@@ -289,8 +289,8 @@ test(
       'false',
     );
     const freed = await box(page, '.chat-column');
-    assert.equal(freed.width, 860);
-    assert.ok(Math.abs(freed.left + freed.width / 2 - 640) <= 1, 'centred in the window');
+    assert.equal(freed.width, 1280);
+    assert.equal(freed.left, 0);
     assert.deepEqual(await page.evaluate(storedLayout), { listWidth: 420, listShown: false });
 
     // The hidden state survives a reload; ☰ shows the list at its width again.
@@ -459,7 +459,7 @@ test('the divider and the list entries work from the keyboard', { skip }, async 
 });
 
 test(
-  'at 420 px strip and chat fit without overflow; at 1600 px the chat column is centred and at most 860 px',
+  'at 420 px strip and chat fit without overflow; at 1600 px the chat uses the main area’s whole width',
   { skip },
   async (context) => {
     const { fixture, browser } = await setup(context);
@@ -485,19 +485,27 @@ test(
     // The bar's title is cut with an ellipsis rather than pushing the state out.
     const state = await box(page, '.chat-bar-state');
     assert.ok(state.left + state.width <= 420, 'the state stays visible');
-    assert.equal(await text(page, '.chat-bar-state'), 'ready');
+    // A finished turn's duration follows `ready` (the Last turn duration
+    // switch is on by default).
+    assert.match(await text(page, '.chat-bar-state'), /^ready · last turn \d+:\d\d$/);
 
     for (const width of [760, 1280, 1600]) {
       await resize(page, width);
       assert.equal(await horizontalOverflow(page), 0, `overflow at ${width} px`);
     }
-    // At 1600 px: the main area is wider than 860 px; the column is 860 px
-    // and centred in it.
+    // At 1600 px: the chat column is as wide as the main area (no 860 px
+    // maximum), and the messages and the text box use its width (less the
+    // column's 16 px padding; a message keeps its gutter opposite the
+    // sender, chat/styles.css `.panel`).
     const main = await box(page, '.workspace-main');
     const column = await box(page, '.chat-column');
-    assert.ok(main.width > 860);
-    assert.equal(column.width, 860);
-    assert.ok(Math.abs(column.x - main.x) <= 1, 'centred in the main area');
+    assert.equal(main.width, 1600 - 79);
+    assert.equal(column.width, main.width);
+    assert.equal(column.x, main.x);
+    const message = await box(page, '.message.assistant .panel');
+    assert.ok(message.width > column.width - 32 - 40, `message ${message.width} px`);
+    const editor = await box(page, '.composer textarea');
+    assert.ok(editor.width >= column.width - 32 - 1, `text box ${editor.width} px`);
 
     await assertCleanPage(fixture, page, sockets);
   },
@@ -573,14 +581,17 @@ test('unread and working markers follow the README table', { skip }, async (cont
     assert.match(state.label, /, working$/);
   }
 
+  // The bar counts the running turn (turn timers are on by default).
   await openConversation(page, 'Shown conversation');
-  assert.equal(await text(page, '.chat-bar-state'), 'working…');
+  assert.match(await text(page, '.chat-bar-state'), /^working · \d+:\d\d$/);
 
   // A turn completes in the shown conversation with the page visible: not
-  // unread; the ring and `working…` go.
+  // unread; the ring and the running time go, the last turn's duration shows.
   answer(shown.run, 'a1', 'Shown answer.');
   await page.waitFor(`!(${working('Shown conversation')})`);
-  await page.waitFor(`document.querySelector('.chat-bar-state').textContent === 'ready'`);
+  await page.waitFor(
+    `/^ready · last turn \\d+:\\d\\d$/.test(document.querySelector('.chat-bar-state').textContent)`,
+  );
   assert.equal((await marks('Shown conversation')).unread, false);
 
   // A turn completes in a conversation that is not shown: unread (dot and
@@ -611,7 +622,9 @@ test('unread and working markers follow the README table', { skip }, async (cont
   fixture.sessions.followUp(other.id, 'One more question', signal());
   await waitFor(() => fixture.runs.length > runsBefore);
   await page.waitFor(working('Other conversation'));
-  await page.waitFor(`document.querySelector('.chat-bar-state').textContent === 'working…'`);
+  await page.waitFor(
+    `/^working · \\d+:\\d\\d$/.test(document.querySelector('.chat-bar-state').textContent)`,
+  );
   const followUp = fixture.runs.at(-1)!;
   answer(followUp, 'a3', 'Follow-up answer.');
   await page.waitFor(`!(${working('Other conversation')})`);

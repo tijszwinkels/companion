@@ -1227,6 +1227,31 @@ test(
   },
 );
 
+/**
+ * Wait for `expression` in a tab that reloads itself meanwhile (the second
+ * tab below reloads when the stored pairing changes): a check that lands
+ * while the tab navigates is retried instead of failing the wait.
+ */
+async function waitThroughReload(page: TestPage, expression: string, timeout: number) {
+  const until = Date.now() + timeout;
+  while (Date.now() < until) {
+    try {
+      await page.waitFor(expression, Math.max(1, until - Date.now()));
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const navigated =
+        message.includes('Inspected target navigated or closed') ||
+        message.includes('Execution context was destroyed') ||
+        message.includes('Cannot find context');
+      if (!navigated) {
+        throw error;
+      }
+    }
+  }
+  throw Error(`Timed out waiting for: ${expression}`);
+}
+
 test(
   'another tab of the same browser is retired when this one signs out',
   { skip },
@@ -1251,7 +1276,7 @@ test(
     await clickButton(first.page, 'Sign out');
     await first.page.waitFor(`document.querySelector('#code')`);
     await second.page.call('Page.bringToFront');
-    await second.page.waitFor(`document.querySelector('#code')`, 8000);
+    await waitThroughReload(second.page, `document.querySelector('#code')`, 8000);
 
     // Pair again in the first tab: neither tab offers the earlier draft.
     const { code } = await fixture.devices.createPairingCode();
@@ -1261,7 +1286,7 @@ test(
     await click(first.page, 'button[type=submit]');
     await first.page.waitFor(online, 8000);
     await second.page.call('Page.bringToFront');
-    await second.page.waitFor(online, 8000);
+    await waitThroughReload(second.page, online, 8000);
     for (const tab of [first.page, second.page]) {
       await tab.call('Page.bringToFront');
       await openConversation(tab, 'Two-tab fixture');

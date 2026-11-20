@@ -1,0 +1,29 @@
+<div class="message user "><div class="panel"><div class="heading "><span>You</span></div><div class="bubble">A plain question</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user queued"><div class="panel"><div class="heading "><span>You</span> · queued</div><div class="bubble">A queued follow-up</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading error"><span>You</span> · not sent</div><div class="bubble">A message that was not sent</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span>You</span> · screenshot attached</div><button class="panel-action small">View screenshot</button><div class="bubble">With a screenshot</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span>You</span> · screenshot unavailable</div><div class="bubble">Screenshot unavailable</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span>You</span> · screenshot not saved</div><div class="bubble">Screenshot not saved</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span>You</span> · text 1–200 of 900</div><div class="bubble">Part of a long message</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><button title="Opens the source conversation" class="from link">Agent · Route planner</button></div><div class="bubble">From another conversation</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span class="from">External agent (unverified) · Script</span></div><div class="bubble">From an external agent</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span class="from">Application · planner · v2 · receipt 01234567</span></div><div class="bubble">From an application</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span class="from">Your edits in this conversation's app</span></div><div class="bubble">Edits in the app</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message user "><div class="panel"><div class="heading "><span class="from">Scheduled wake · Morning check</span></div><div class="bubble">A scheduled wake</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message assistant "><div class="panel"><div class="heading ">Pi</div><div class="bubble markdown"><p>An <strong>answer</strong> with <code>code</code>.</p>
+</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message assistant "><div class="panel"><div class="heading ">Pi</div><div class="bubble markdown"><p>Still streaming</p>
+</div></div></div>
+<div class="message assistant error"><div class="panel"><div class="heading error">Pi</div><div class="bubble markdown"><p>A failed answer</p>
+</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message assistant "><div class="panel"><div class="heading ">Pi · text 201–400 of 900</div><div class="bubble markdown"><p>A fragment</p>
+</div><button aria-label="Copy message" class="copy">Copy</button></div></div>
+<div class="message assistant "><div class="panel"><div class="heading ">Pi</div><div class="bubble markdown"><p>…</p>
+</div></div></div>
+<div class="message assistant notice "><div class="panel"><div class="heading ">Pi</div><div class="bubble">A timer notice</div></div></div>
+<div class="message assistant notice error"><div class="panel"><div class="heading error">Pi</div><div class="bubble">A failure notice</div></div></div>
+<div class="message assistant"><div class="panel"><div class="heading ">Pi</div><div class="widget-card"><strong>Planner</strong> widget — shown in the classic view.<button class="link">Open</button><div>A widget row</div></div></div></div>
+<div class="message tool"><div class="panel"><button title="Tool details are in the classic view" class="heading tool-heading">▸ 3 tool calls</button></div></div>
+<div class="message tool"><div class="panel"><button title="Tool details are in the classic view" class="heading tool-heading">▸ bash · running</button></div></div>
+<div class="message tool"><div class="panel"><button title="Tool details are in the classic view" class="heading tool-heading">▸ 1 tool call · failed or stopped</button></div></div>
+<div class="message tool"><div class="panel"><button title="Tool details are in the classic view" class="heading tool-heading">▸ 2 tool calls · details unavailable</button></div></div>

@@ -36,6 +36,12 @@ export interface ListEntry {
   selected: boolean;
   working: boolean;
   unread: boolean;
+  /**
+   * The running turn's start on the listener's clock, as the listener sent
+   * it (present only while a turn runs); whether a timer is shown follows
+   * ../times/turn-times.ts.
+   */
+  turnStartedAt?: number;
 }
 
 /**
@@ -116,6 +122,7 @@ export function listEntries(state: AppState): ListEntry[] {
       selected: state.selected === id && !state.showingPrevious,
       working: isWorking(session),
       unread: state.unread.has(id),
+      turnStartedAt: session.turnStartedAt,
     });
   }
   return entries;

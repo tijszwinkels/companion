@@ -1,6 +1,6 @@
 # Companion browser shell
 
-Status: third slice (2026-11). The desktop chat page in an ordinary browser,
+Status: fourth slice (2026-11). The desktop chat page in an ordinary browser,
 against the existing remote gateway, with the conversation list on its left
 and the Activity column on its right.
 The goal of the larger project is the whole sidebar in a browser, so the
@@ -25,11 +25,14 @@ A paired browser can:
 7. show what Companion heard and decided in an **Activity** column on the
    right, pause and resume listening, start a conversation from typed text,
    and copy, label, delete or start a coding session from what was heard
-   (see [Activity](#activity)).
+   (see [Activity](#activity));
+8. show how long each running turn has been going, how long the last one
+   took and when each message was written, and switch those displays and
+   the listener's sound, intent and shortcut switches on a **settings
+   screen** (see [Settings, turn timers and message times](#settings-turn-timers-and-message-times)).
 
-Not yet in the browser: the settings screen, the sound, intent and shortcut
-switches, turn timers, message timestamps, Activity history of earlier
-listener runs, inserting text into desktop applications, and widgets.
+Not yet in the browser: Activity history of earlier listener runs, inserting
+text into desktop applications, and widgets.
 
 ## Conversation list and layout
 
@@ -37,11 +40,12 @@ The arrangement is the same at every window width, as in the agreed design:
 
 ```text
 ┌──────────┬┬──────────────────────────────────────────┐
-│ list     ││ ☰  title of the conversation      ready  │  ← bar above the chat
+│ list     ││ ☰  title of the conversation  ready ⚙ ☰ │  ← bar above the chat
 │ (strip   ││──────────────────────────────────────────│
-│  or full ││        chat, centred, at most 860 px      │
+│  or full ││ chat, using the whole width              │
 │  list)   ││                                          │
 │ ◷ Prev.  ││                                          │
+│ ⚙ Sett.  ││                                          │
 └──────────┴┴──────────────────────────────────────────┘
             └ divider
 ```
@@ -59,12 +63,26 @@ The arrangement is the same at every window width, as in the agreed design:
   dragging, or from the keyboard (it is a focusable separator named
   "Conversation list width").
 - **The bar above the chat** has the ☰ button that hides and shows the
-  list, the conversation's title and its state as text: `working…` while
-  its agent works on a turn (status `starting` or `running`), else `ready`.
-  On Previous sessions, or with nothing selected, the bar has Sign out
-  instead of a state.
-- **The chat** is the unchanged chat page in a centred column of at most
-  860 px; with the list hidden it uses the freed width up to that maximum.
+  list, the conversation's title and its state as text: `working · 2:16`
+  while a turn runs, `working…` while its agent works on a turn without a
+  counted start (status `starting` or `running`), else `ready`, or
+  `ready · last turn 0:42` (see
+  [turn timers](#turn-timers-and-the-last-turn-duration)). On Previous
+  sessions, or with nothing selected, the bar has Sign out instead of a
+  state. At its right end are the gear that shows the
+  [settings screen](#the-settings-screen) and the Activity ☰. Where the
+  state does not fit beside the title (a narrow window), it goes on a second
+  line under the title. The title keeps at least 64 px; where even that does
+  not fit beside the buttons (Sign out, the gear and ☰ in a very narrow
+  window), the last of them go on a second line of the bar instead of
+  covering the title. Under 480 px the bar's spacing is tighter.
+- **The chat** is the unchanged chat page, using the whole width of the area
+  between the list and the Activity column (a design change of 2026-11-20:
+  the earlier centred column of at most 860 px is gone, for every
+  conversation). Its messages keep their gutter opposite the sender; its
+  text box is as wide as the chat. With the list hidden it uses the freed
+  width. Previous sessions and the settings screen stay in a centred column
+  of at most 860 px.
 - **Selecting** a conversation (click, or Enter/Space on the focused entry)
   shows it with its own unsent text: drafts are kept per conversation in
   the phone Store, as in slice 1.
@@ -245,6 +263,8 @@ remote role sends (`src/list/entries.ts`):
 | A turn completes in a conversation that is not shown                                                            | set                                                                         |
 | A turn completes in the shown conversation, page visible                                                        | not set                                                                     |
 | A turn completes in the shown conversation, page hidden (other tab)                                             | set                                                                         |
+| A turn completes in the selected conversation while the settings screen covers it                               | set                                                                         |
+| A conversation with that mark is selected underneath the settings screen (a started one)                        | kept until it is shown                                                      |
 | A turn is stopped or fails                                                                                      | not set                                                                     |
 | A conversation this page has not seen arrives in an event (started elsewhere)                                   | set                                                                         |
 | A conversation this page has seen is reopened elsewhere                                                         | not set                                                                     |
@@ -271,9 +291,9 @@ listening controls, in a column on the right of the chat:
 
 ```text
 ┌────────┬┬──────────────────────────────┬┬──────────────────────┐
-│ ◖ Act. ││ ☰  title            ready    ││ Activity listening ☰ │
+│ ◖ Act. ││ ☰  title          ready  ⚙   ││ Activity listening ☰ │
 │────────││──────────────────────────────││──────────────────────│
-│ list   ││  chat, centred, ≤ 860 px     ││ listening · pause    │
+│ list   ││  chat, the whole width       ││ listening · pause    │
 │        ││                              ││ start a conversation │
 │        ││                              ││ history, newest first│
 └────────┴┴──────────────────────────────┴┴──────────────────────┘
@@ -351,37 +371,37 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
    own entry; a storage that refuses writes keeps the page's values; not
    cleared on sign-out; other tabs follow each entry they see written.
 
-| Case                                                                          | Result                                                      |
-| ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Initial (nothing remembered)                                                  | Hidden; 320 px when shown                                   |
-| Both entries invalid or of another version                                    | Hidden; 320 px when shown                                   |
-| Only the width invalid; column shown                                          | Shown at 320 px                                             |
-| Only the shown state invalid; 400 px                                          | Hidden; 400 px when shown                                   |
-| Remembered width 100 / 900 (out of range)                                     | 240 / 520 px                                                |
-| ☰ in the bar, then ☰ in the column                                          | Shown, then hidden; each remembered; the width kept         |
-| The Activity entry pressed twice                                              | Shown, then hidden (the same entry as ☰)                   |
-| Divider dragged to 300 px from the right edge                                 | 300 px, remembered on release                               |
-| Divider dragged to 100 / 900 px from the right edge                           | 240 / 520 px                                                |
-| Press on the divider without moving                                           | Nothing changes or is written                               |
-| Left / Right / Home / End on the divider                                      | +20 / −20 / 240 / 520 px, each remembered                   |
-| Reload                                                                        | Width and shown state as remembered                         |
-| Storage refuses writes; 400 px, ☰                                            | 400 px, shown, for this page                                |
-| Window 1600 px, strip, column 320 px                                          | Side by side; chat area 1200 px, its column 860 px, centred |
-| Window 1000 px, full list 420, column 520 remembered                          | Column 520 px; full list 158 px; chat 320 px                |
-| Window 700 px, strip, column 520 remembered                                   | Column 300 px (700 − 321 − 79); chat 320 px                 |
-| Window 640 px, strip, column shown                                            | Column 240 px beside the chat                               |
-| Window 639 / 420 px, column shown                                             | Over the chat, right of the list; no divider; no overflow   |
-| Window 420 px, column shown, Tab                                              | Moves through list and column, never into the covered chat  |
-| Window 420 px, column shown, an error toast                                   | The toast and its Dismiss are drawn above the column        |
-| Divider dragged to 400 px, the column hidden from another tab before release  | 400 px remembered                                           |
-| Divider dragged to 400 px; a second pointer presses it; the first is released | 400 px, remembered once                                     |
-| Focus in the chat, the window narrows under 640 px                            | Focus moves to the column's ☰                              |
-| Focus on a ☰ or in the column, another tab shows or hides it                 | Focus moves to the other ☰; focus elsewhere stays          |
-| Focus on the divider, the window narrows under 640 px                         | Focus moves to the column's ☰ (the divider is gone)        |
-| Focus on the divider, another tab hides the column                            | Focus moves to the bar's ☰                                 |
-| Window 420 px, list hidden, column shown                                      | Over the whole window width                                 |
-| Width or shown state changed in another tab                                   | This tab follows that entry                                 |
-| Sign-out and pairing again                                                    | Layout kept                                                 |
+| Case                                                                          | Result                                                     |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Initial (nothing remembered)                                                  | Hidden; 320 px when shown                                  |
+| Both entries invalid or of another version                                    | Hidden; 320 px when shown                                  |
+| Only the width invalid; column shown                                          | Shown at 320 px                                            |
+| Only the shown state invalid; 400 px                                          | Hidden; 400 px when shown                                  |
+| Remembered width 100 / 900 (out of range)                                     | 240 / 520 px                                               |
+| ☰ in the bar, then ☰ in the column                                          | Shown, then hidden; each remembered; the width kept        |
+| The Activity entry pressed twice                                              | Shown, then hidden (the same entry as ☰)                  |
+| Divider dragged to 300 px from the right edge                                 | 300 px, remembered on release                              |
+| Divider dragged to 100 / 900 px from the right edge                           | 240 / 520 px                                               |
+| Press on the divider without moving                                           | Nothing changes or is written                              |
+| Left / Right / Home / End on the divider                                      | +20 / −20 / 240 / 520 px, each remembered                  |
+| Reload                                                                        | Width and shown state as remembered                        |
+| Storage refuses writes; 400 px, ☰                                            | 400 px, shown, for this page                               |
+| Window 1600 px, strip, column 320 px                                          | Side by side; chat area 1200 px, the chat as wide          |
+| Window 1000 px, full list 420, column 520 remembered                          | Column 520 px; full list 158 px; chat 320 px               |
+| Window 700 px, strip, column 520 remembered                                   | Column 300 px (700 − 321 − 79); chat 320 px                |
+| Window 640 px, strip, column shown                                            | Column 240 px beside the chat                              |
+| Window 639 / 420 px, column shown                                             | Over the chat, right of the list; no divider; no overflow  |
+| Window 420 px, column shown, Tab                                              | Moves through list and column, never into the covered chat |
+| Window 420 px, column shown, an error toast                                   | The toast and its Dismiss are drawn above the column       |
+| Divider dragged to 400 px, the column hidden from another tab before release  | 400 px remembered                                          |
+| Divider dragged to 400 px; a second pointer presses it; the first is released | 400 px, remembered once                                    |
+| Focus in the chat, the window narrows under 640 px                            | Focus moves to the column's ☰                             |
+| Focus on a ☰ or in the column, another tab shows or hides it                 | Focus moves to the other ☰; focus elsewhere stays         |
+| Focus on the divider, the window narrows under 640 px                         | Focus moves to the column's ☰ (the divider is gone)       |
+| Focus on the divider, another tab hides the column                            | Focus moves to the bar's ☰                                |
+| Window 420 px, list hidden, column shown                                      | Over the whole window width                                |
+| Width or shown state changed in another tab                                   | This tab follows that entry                                |
+| Sign-out and pairing again                                                    | Layout kept                                                |
 
 ### The new-activity marker
 
@@ -579,6 +599,232 @@ run's history is drawn (it is read in pages, not shown in pages). The
 marker's memory is this page's: a reload or a second tab starts from its
 own first reading.
 
+## Settings, turn timers and message times
+
+The listener publishes when each running turn started (`turnStartedAt`, only
+while it runs), how long the last one took (`lastTurnDurationMs`), when each
+message was written (`createdAt`) and its own clock (`listenerTime` on every
+state message); see
+[turn and message times](../../src/agents/README.md#turn-and-message-times).
+The browser shows them, and a settings screen switches each display off and
+on.
+
+### The settings screen
+
+1. It is reached by the **gear** in the bar above the chat (left of the
+   Activity ☰; at the bar's right end while the Activity column is shown,
+   which then has that ☰) and by the **Settings** entry at the bottom of the
+   conversation list, below Previous sessions. In a narrow window, where the
+   shown Activity column lies over the main area, the Settings entry also
+   hides the column (as its ☰ would), so the settings screen can be seen
+   and reached.
+2. It takes the place of the chat (or Previous sessions, or the empty view);
+   the bar's title says "Settings" and the bar shows no state. The gear is
+   pressed (`aria-pressed`), and the list marks Settings as shown instead of
+   a conversation. A conversation's chat stays drawn under it, covered and
+   inert, so going back finds it as it was: the same scroll position (or
+   still following the live end), the same text in the editor.
+3. It is left by the gear again, by choosing a conversation (also the one
+   underneath) or Previous sessions in the list, and by the browser's Back
+   and Forward. Nothing else leaves it: it is this page's own view, not one
+   of the Store's pages, so what the Store selects underneath stays as it
+   is, also when it changes meanwhile (a conversation started from Activity
+   is selected underneath and shown when the settings screen is left; the
+   conversation underneath closed elsewhere shows the empty view then).
+4. The conversation underneath is **not shown** while the settings screen
+   covers it: an answer completed meanwhile gets the "answer not seen" mark
+   and the toast, as for a conversation that is not selected (the Store's
+   `selectionShown` option, off on the phone), and a conversation selected
+   underneath it (a started one) keeps its mark. Going back to it with the
+   gear, or by Back and Forward, shows it, which clears the mark, as
+   choosing it does.
+5. Text only the chat editor holds is offered there as on Previous sessions
+   (Copy, Discard).
+
+It has two sections. **Display**: three switches with one line each, the
+agreed design's wording, this browser's own (rules below). **Listening**:
+the listener's Sound feedback switch and one switch per intent and per
+shortcut, as the phone panel offers them. These are Companion's own
+settings, shared with the computer and every client.
+
+#### Display switches
+
+Rule (`src/settings/display-settings.ts`):
+
+1. Turn timers, Last turn duration and Message timestamps are each **on**
+   unless switched off here, and apply at once (rows already shown included).
+2. Each is remembered in this browser's `localStorage` as its own entry,
+   `companion.shell.display.turnTimers`, `….lastTurnDuration` and
+   `….messageTimestamps`, `{"version":1,"value":true|false}`, with the layout
+   entries' rules: an entry that is missing, unreadable, of another version
+   or not a boolean gives its default (on); a change writes only its own
+   entry; a storage that refuses writes keeps the switch for this page; not
+   cleared on sign-out; other tabs follow each entry they see written, so
+   two tabs switching different switches never undo each other.
+
+| Case                                                | Result                                                       |
+| --------------------------------------------------- | ------------------------------------------------------------ |
+| Nothing remembered                                  | All three on                                                 |
+| Turn timers switched off                            | Its entry `false`; the other two not written; on as before   |
+| Last turn duration switched off                     | Its entry `false` only                                       |
+| Message timestamps switched off                     | Its entry `false` only                                       |
+| Switched off, then on again                         | Its entry `true`                                             |
+| Reload                                              | As remembered                                                |
+| Another tab switches one                            | This tab follows that switch only                            |
+| Two tabs switch different ones at the same moment   | Both kept, in both tabs                                      |
+| Storage refuses writes; one switched off            | Off for this page; a reload shows it on (nothing remembered) |
+| Storage cannot be used at all                       | All on; switches work for this page                          |
+| Entry not JSON, of version 2, `"no"`, `0` or `null` | That switch on (its default); the others as remembered       |
+| Another tab clears the whole storage                | This tab reloads (the pairing is gone too); all on           |
+| Sign-out and pairing again                          | Kept                                                         |
+
+#### Listening switches
+
+Rule (`src/settings/listening-switches.ts`): each switch shows the
+listener's current value, also a change made elsewhere (it arrives with the
+next state message), and nothing is shown as changed before the listener
+says so. It is **available** only while requests are admitted (connected,
+after this connection's snapshot), while no request of the same switch
+awaits its answer, for Sound feedback while the listener is not in preview
+mode, and for an intent or shortcut while it is toggleable and the listener
+reports independent intent and shortcut switches. Sound feedback sends
+`toggle-sounds`; an intent or shortcut `set-intent-enabled` with its name,
+mode and the opposite of the value the Store has at the press. Independent
+switches means `inferenceEnabled` and `shortcutEnabled` are booleans on every
+intent. An older listener reports per intent only the combined `enabled`
+(for deciding from speech and its shortcut together, without
+`supportsInference`): each of its intents is shown as one read-only switch
+with that value ("Intent and shortcut together"). A refusal
+shows the Store's error toast. An unavailable switch stays focusable
+(`aria-disabled`, dimmed), so focus is never lost while an answer is on its
+way.
+
+| State                                           | Sound feedback | Intent and shortcut switches                   | Note shown                                           |
+| ----------------------------------------------- | -------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| Connected, after the snapshot                   | available      | available                                      | —                                                    |
+| Before the first snapshot of the pairing        | not shown      | not shown                                      | "…shown once it is connected."                       |
+| Offline, or reconnected before the new snapshot | unavailable    | unavailable                                    | "Shown as Companion last reported them…"             |
+| Listener in preview mode                        | unavailable    | available                                      | "Preview mode: sound feedback cannot be changed."    |
+| Older listener without independent switches     | available      | one per intent, its `enabled` value, read-only | "Restart Companion to load independent intent and …" |
+| An intent that is not toggleable                | —              | that one unavailable                           | its line says "Always on"                            |
+| A request of this switch awaits its answer      | unavailable    | that one unavailable                           | —                                                    |
+| Changed on the computer or another client       | follows        | follows                                        | —                                                    |
+
+### Turn timers and the last turn duration
+
+Rule (`src/times/turn-times.ts`, `src/times/listener-clock.ts`):
+
+1. A running time is shown only while the conversation has `turnStartedAt`,
+   the Turn timers switch is on and its state is known (requests are
+   admitted: connected and after this connection's snapshot). Offline, or
+   reconnected before the new snapshot, the last known start is not counted
+   as if live: the turn may have ended meanwhile.
+2. The running time is `Date.now() + offset - turnStartedAt`, with
+   `offset = listenerTime - Date.now()` taken when each state message
+   arrives (0 without `listenerTime`, an older listener). So the listener's
+   clock may be ahead of or behind the browser's.
+3. The bar shows `working · m:ss` then, and `working…` with a start not
+   counted by rule 1.
+4. Without `turnStartedAt`, a conversation with `lastTurnDurationMs` has no
+   running turn: the bar shows `ready · last turn m:ss` while the Last turn
+   duration switch is on, else `ready`. That holds also in the moment after
+   a turn ended in which `status` still says `running` (the listener removes
+   the start and sets the duration together, and its status follows once
+   the turn is saved). The duration is a stored value, not a count, so it is
+   shown whatever the connection. Without either field (an older listener)
+   `status` decides: `working…` while `starting` or `running`, else `ready`.
+   (The list's turning ring follows `status`, as before.)
+5. The list shows rule 1's time on each conversation that has one:
+   right-aligned in the full list, under the name in the strip. In a full
+   list too narrow for the title (at least 48 px) and the time side by side,
+   the time goes on a line of its own, still right-aligned. It is not part
+   of the entry's accessible name (which would change every second), but of
+   its description: the last line, then "running for 2:16".
+6. Times are `m:ss` under an hour and `h:mm:ss` from an hour, whole seconds
+   rounded down, in tabular digits; a negative time is `0:00`.
+7. The times advance every second without drawing the page again
+   (`src/times/turn-ticker.ts`): one timeout for all shown timers, set for
+   the next moment one of them reaches a whole second; only the timers'
+   text changes. A new offset writes them at once.
+
+| Case                                                             | Bar                      | List         |
+| ---------------------------------------------------------------- | ------------------------ | ------------ |
+| No turn, no duration                                             | `ready`                  | —            |
+| Turn starting (`starting`, started just now)                     | `working · 0:00`         | `0:00`       |
+| Running for 2 min 16 s                                           | `working · 2:16`         | `2:16`       |
+| One second later                                                 | `working · 2:17`         | `2:17`       |
+| Ended, with a duration of 42 s                                   | `ready · last turn 0:42` | —            |
+| Ended without a duration (nothing reached the model)             | `ready`                  | —            |
+| Status still `running` a moment after the end, with its duration | `ready · last turn 0:42` | —            |
+| Status `running` without either time (older listener)            | `working…`               | —            |
+| Reopened after a listener restart (stopped, no times)            | `ready`                  | —            |
+| Offline, last known running                                      | `working…`               | —            |
+| Reconnected, before the new snapshot                             | `working…`               | —            |
+| After the new snapshot, still running                            | `working · ` the time    | the time     |
+| After the new snapshot, ended while offline                      | `ready · last turn m:ss` | —            |
+| Listener's clock 5 min ahead of the browser's, running 2:16      | `working · 2:16`         | `2:16`       |
+| Listener's clock 5 min behind the browser's, running 2:16        | `working · 2:16`         | `2:16`       |
+| No `listenerTime` (older listener), same clocks, running 2:16    | `working · 2:16`         | `2:16`       |
+| Start later than the listener's now (clocks disagree)            | `working · 0:00`         | `0:00`       |
+| Running 59:59, then one second later                             | `59:59`, `1:00:00`       | the same     |
+| Running 10 h 5 min 3 s                                           | `working · 10:05:03`     | `10:05:03`   |
+| Turn timers off, running                                         | `working…`               | —            |
+| Last turn duration off, ended with a duration                    | `ready`                  | —            |
+| Two conversations running                                        | the shown one's          | each its own |
+
+### Message timestamps
+
+Rule (`src/times/message-time.ts`):
+
+1. A message with `createdAt` shows when it was written, right-aligned on
+   its heading line ("You", "Pi"); a message without shows nothing (no time
+   is invented), and none shows while the Message timestamps switch is off.
+   Tool groups have no heading line of their own and show none. A
+   `createdAt` that is not a number, negative, or beyond what a date can
+   hold shows none either.
+2. The time is the reader's: `createdAt - offset`, in this browser's time
+   zone (the listener's zone plays no part), compared with this browser's
+   today.
+3. Today `HH:MM` (24-hour); yesterday `Yesterday HH:MM`; any other day
+   `18 Nov 14:02`, with the year for another year (`3 Dec 2025 09:15`).
+   Days are calendar days in the reader's zone (so a 23- or 25-hour day of a
+   daylight saving change makes no difference).
+4. A message keeps its time while it is updated (streaming text, a queued
+   message starting): the listener keeps its `createdAt`.
+5. The bridge puts the text into the chat page's rows (`ChatRow.time`, see
+   [changes to the shared chat page](#changes-to-the-shared-chat-page)) and
+   sends the rows again (only those that changed) when the switch changes,
+   when the offset changes and when a new day starts here. The moment the
+   next day starts is found on the calendar itself (the first minute after
+   now on another date, looked for in order around the wall clock's
+   midnight), so a daylight saving change around midnight (a skipped or a
+   repeated hour) does not move it; it is taken again with each new offset (this browser's clock may
+   have been corrected), and checked at least every hour. The other two
+   Display switches do not send the rows again. Any change the page hears
+   of on another date than the shown times were made on (a timeout that
+   came late, a computer that slept) sends them again too. A publication
+   made only for the times is not sent
+   when no row's text changed, so the offset's millisecond changes with
+   every state message do not draw the chat again.
+
+| Message written (reader's clock)                                | Reader's now         | Shown              |
+| --------------------------------------------------------------- | -------------------- | ------------------ |
+| 20 Nov 2026 14:02                                               | 20 Nov 2026 16:00    | `14:02`            |
+| 19 Nov 2026 16:48                                               | 20 Nov 2026 16:00    | `Yesterday 16:48`  |
+| 18 Nov 2026 14:02                                               | 20 Nov 2026 16:00    | `18 Nov 14:02`     |
+| 3 Dec 2025 09:15                                                | 20 Nov 2026 16:00    | `3 Dec 2025 09:15` |
+| 19 Nov 2026 23:59                                               | 20 Nov 2026 00:00:30 | `Yesterday 23:59`  |
+| 20 Nov 2026 00:00                                               | 20 Nov 2026 00:00:30 | `00:00`            |
+| 31 Dec 2025 22:00                                               | 1 Jan 2026 08:00     | `Yesterday 22:00`  |
+| Listener's clock 2 min ahead; its `createdAt` 14:04             | 20 Nov 2026 16:00    | `14:02`            |
+| Listener's clock 2 min ahead; its `createdAt` 00:01 on the 20th | 20 Nov 2026 08:00    | `Yesterday 23:59`  |
+| The same moment, reader in Tokyo, listener in Amsterdam         | (Tokyo)              | Tokyo's time       |
+| 28 Mar 2026 12:00, Amsterdam (the day before summer time)       | 29 Mar 2026 12:00    | `Yesterday 12:00`  |
+| No `createdAt` (saved by an older version)                      | any                  | nothing            |
+| `Number.MAX_SAFE_INTEGER` (beyond a date)                       | any                  | nothing            |
+| Message timestamps off                                          | any                  | nothing (no field) |
+| A streaming answer updated ten times                            | any                  | its first time     |
+
 ## How it works
 
 ```text
@@ -604,8 +850,10 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   choices → `choose-agent`, Stop → `stop-agent-run` (see the Stop rule below), Close
   session → `close-agent`, history → `agent-history-page`. These are all in
   the gateway's remote allowlist (`src/remote/protocol.ts`); besides them
-  only the phone Store's own `panel-state` selection report and the
-  Activity column's requests (see [Activity](#activity)) leave the page. The
+  only the phone Store's own `panel-state` selection report, the
+  Activity column's requests (see [Activity](#activity)) and the settings
+  screen's `toggle-sounds` and `set-intent-enabled` (see
+  [listening switches](#listening-switches)) leave the page. The
   Store reads this run's Activity history (`activity-history`), as on the
   phone.
 - A send names the draft revision its text is based on and is refused when
@@ -738,7 +986,7 @@ page after one it has not shown yet.
 
 ### Changes to the shared chat page
 
-`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Two changes
+`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Three changes
 were made for the browser:
 
 1. Its transcript does not count the end of a **detached** history snapshot
@@ -762,6 +1010,14 @@ were made for the browser:
    counts as input: a scroll bar or a finger held still for more than a
    second before moving used to be pulled back to the end. A scroll without input (a layout
    change) still keeps the page at the live end.
+3. A row may carry one optional field, `time` (`protocol.ts`), the text of
+   when the message was written; the page draws it as
+   `<span class="message-time">` at the end of the message's heading line
+   ("You" and "Pi" headings; not tool groups). Without the field the page's
+   output is exactly what it was: the Qt host never sends it, so nothing
+   changes there (`test/shell/chat-heading.test.ts` compares the page's
+   HTML with a reference drawn before the change). The shell's stylesheet
+   aligns it right; `ChatState.mjs` and QML are unchanged.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -857,7 +1113,7 @@ the chat page:
 | Session applications                           | `application: null`                                                                                    |
 | Screenshots                                    | Labelled "screenshot unavailable"; no viewer yet                                                       |
 | Voice target, voice hints, focus shortcut      | `voiceTarget: false`, `voiceStatus` and `focusShortcut` empty; choices are clicked                     |
-| Settings, model picker, timers                 | Not in this slice                                                                                      |
+| Model picker                                   | Not in this slice                                                                                      |
 | Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                          |
 
 Known limit: two tabs of the same browser under the same pairing each keep
@@ -886,7 +1142,11 @@ The demo prints a pairing code; open the URL in a desktop browser and enter it.
 A scripted backend streams Markdown, tool calls and choices; Activity has
 synthetic entries of different kinds (typed, ignored, a started
 conversation, audio only, not saved), listening starts paused for media, and
-a new entry is heard every 40 seconds (six in all) to show the marker. No
+a new entry is heard every 40 seconds (six in all) to show the marker.
+For the times, the invoice conversation was asked "yesterday" and continued
+today (the listener's clock is set back by a day for its first turn only),
+the flaky-test conversation's turn keeps running (its timer counts), and the
+others show how long their last turn took. No
 model, microphone, screen capture or personal data is involved. Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
@@ -952,13 +1212,14 @@ and as full list (keep them out of Git).
 1280 px the strip next to the chat, the divider dragged under and over the snap
 point and beyond the maximum, the width remembered only on release, a press
 on the divider without moving changing nothing, ☰ hiding
-the list with the chat then 860 px and centred, width and hidden state after
+the list with the chat then as wide as the window, width and hidden state after
 reloads, a narrow window showing the strip without changing what is
 remembered, a storage that refuses writes keeping the page's width; a layout change in one tab followed by another, whose ☰ then
 keeps that width; the divider's role, name, value and keys, the entries'
 accessible description, and selecting, closing, Previous sessions and Reopen
 from the keyboard; strip and chat at 420 px
-without overflow and the centred 860 px column at 1600 px; each conversation's
+without overflow and, at 1600 px, the chat, its messages and its text box
+as wide as the main area; each conversation's
 own unsent text across switches; the markers table's rows for completed,
 stopped and arriving turns, a conversation reopened elsewhere, selecting and
 closing; the invisible × taking no input, close, Previous sessions, one reopen
@@ -969,6 +1230,67 @@ list or over the divider at its edge, an order
 changed at the listener during the drag or a lost connection, and a refused
 move leaving the list unchanged. Each test also checks that nothing went to
 another origin and that no Content-Security-Policy violation occurred.
+
+`times.test.ts` and `listening-switches.test.ts` check the rules of
+[Settings, turn timers and message times](#settings-turn-timers-and-message-times)
+in Node, each table row by row: the turn timer cases through the listener
+clock's offset and the ticker with a controlled clock and timeouts (each
+second, across an hour, two timers, a new offset), the elapsed-time format,
+the message time cases in named time zones (today, yesterday, older, another
+year, midnight, the listener's clock ahead, Tokyo and Amsterdam, a daylight
+saving day, no or invalid `createdAt`), the Display switches' storage (each
+switch, reload, two tabs, refused and unusable storage, invalid entries), the
+bridge's rows with and without `time` (switched off they are exactly the Qt
+host's), a streaming answer keeping its time, a new offset sending the
+changed rows again and one that changes no time sending nothing, midnight
+passing (from 30 seconds before it) and a corrected clock moving the wait
+for it, the moment the next day starts (also in Nuuk the night its clocks
+skip the hour before midnight, through the bridge too), a state message on a new date with an unchanged offset, the other two
+switches sending no rows, the midnight that came twice in St. John's (2010); and the Listening switches' availability and
+notes (also for the historical payload with only `enabled`, and a partial
+one). `markers.test.ts`
+has the rows of an answer completed behind the settings screen and of a
+conversation selected underneath it.
+`chat-heading.test.ts` draws every kind of row with the shared chat page in
+headless Chromium and compares the HTML with `fixtures/chat-rows-reference.txt`,
+drawn by the base revision's `Chat.tsx` before `ChatRow.time` existed
+(`chat-rows-page.ts` says how to draw it again), and checks that with `time`
+each "You" and "Pi" heading ends with it and nothing else changes (in
+the DOM: the time is the last element of the row's own heading).
+
+`settings.test.ts` covers them in the browser with a controlled listener
+clock and a shifted page clock in another time zone: running turns counting
+in the bar and the list (strip, under the name; full list, right-aligned),
+advancing when both clocks move on while nothing in the document changes
+but the timers' text (a mutation observer), the
+listener's clock behind the browser's, two conversations, a message's time
+in the reader's zone and clock, the last turn's duration when a turn ends;
+offline the last known start not counted and, after a gateway restart and
+the new snapshot, the new turn counted from its own start; the settings
+screen from the gear and the list's entry, by mouse and keyboard, leaving
+by the gear, a conversation, Previous sessions and Back, the gear's place
+with the Activity column shown; each Display switch hiding its display at
+once, its own storage entry, a reload, another tab switching one, a storage
+that refuses writes; the sound, intent and shortcut switches sending
+`toggle-sounds` and `set-intent-enabled`, following changes another client
+makes, focus kept on a switch while its answer is on its way, unavailable
+and sending nothing offline; 420 and 1600 px without overflow, at 1600 px the
+messages and the text box as wide as the chat area and the time at the
+heading's right; at 375 px a long last duration under the title with the
+title and every bar button in the window; an answer completed behind the
+settings screen marked unread (and announced), cleared by going back (the gear, or Back to a page whose answer completed
+meanwhile), kept when another conversation is chosen; the reader's scroll position the same
+after Settings and back, with no history request; at 420 px the Settings
+entry hiding the Activity column that lay over the chat, and the switches
+reachable by keyboard; the conversation underneath closed elsewhere leaving
+the settings screen with its focused switch and scroll position; at 375
+and 360 px the bars of Previous sessions and the empty view with no button
+over the title; the full list at 150 px with a ten-hour time on its own
+line under a title that keeps its room, and the entry's description ending
+in "running for" and the time; at 1600 px the text box itself as wide as
+the chat and each message's gutter opposite its sender. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
+settings screen, running timers (strip and full list), timestamps and all
+switches off at 420, 1280 and 1600 px.
 
 `activity-layout.test.ts`, `activity-marker.test.ts`,
 `activity-actions.test.ts` and `activity-start.test.ts` check the Activity
@@ -999,7 +1321,7 @@ entry showing and hiding the same column with focus following ☰; the
 divider by pointer and keyboard (no write while dragging or on a press
 without moving), width and shown state after a reload and in a second tab,
 a storage that refuses writes; at 1600 px list, chat and column side by side
-with the chat column centred and at most 860 px, at 700 px the column giving
+with the chat as wide as the area between them, at 700 px the column giving
 way, at 420 px the column over the chat without overflow; pause and resume
 through the listener, paused for media; starting a coding conversation and
 a quick question (keyboard), each selected in the list, and the box
@@ -1052,7 +1374,8 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/main.tsx`                       | Creates the phone Store, the bridge and the chat page's ChatStore             |
 | `src/App.tsx`                        | Pairing, connection banner, toasts; the workspace once paired                 |
 | `src/workspace/Workspace.tsx`        | List, main area and Activity column with their dividers; held input           |
-| `src/workspace/ChatBar.tsx`          | The bar above the chat: ☰, title, state, Activity ☰                         |
+| `src/workspace/ChatBar.tsx`          | The bar above the chat: ☰, title, state, gear, Activity ☰                   |
+| `src/workspace/BarState.tsx`         | The bar's state: `working · 2:16`, `working…`, `ready · last turn 0:42`       |
 | `src/workspace/focus-hand-off.ts`    | Focus kept when a focused ☰ goes away because another tab changed the column |
 | `src/workspace/PreviousSessions.tsx` | Previous sessions with Reopen                                                 |
 | `src/list/ConversationList.tsx`      | The conversation list: entries, markers, close, drag wiring, Previous entry   |
@@ -1072,6 +1395,16 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/activity/requests.ts`           | Activity requests awaiting their answer, per entry                            |
 | `src/activity/select-started.ts`     | Selecting a started conversation unless what is shown changed meanwhile       |
 | `src/activity/ActionButton.tsx`      | Buttons that stay focusable while unavailable (`aria-disabled`)               |
+| `src/settings/SettingsScreen.tsx`    | The settings screen: Display and Listening sections                           |
+| `src/settings/display-settings.ts`   | The Display switches and their `localStorage` entries                         |
+| `src/settings/useDisplaySettings.ts` | The Display switches in a component, following changes                        |
+| `src/settings/listening-switches.ts` | The listener's sound, intent and shortcut switches, without DOM access        |
+| `src/times/listener-clock.ts`        | The listener clock's offset from each state message                           |
+| `src/times/turn-times.ts`            | What the bar and the list show about turns, without DOM access                |
+| `src/times/turn-ticker.ts`           | Advances every shown running time each second, without drawing the page       |
+| `src/times/TurnTimer.tsx`            | One running time on the page, written by the ticker                           |
+| `src/times/message-time.ts`          | A message's time text for the reader                                          |
+| `src/times/page-times.ts`            | The page's time parts, handed from `main.tsx` to the workspace                |
 | `src/bridge.ts`                      | `NativeBridge` over the gateway: rows/status messages, request mapping        |
 | `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
 | `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |

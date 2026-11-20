@@ -17,7 +17,14 @@
  *   rules are in reorder-gesture.ts. The list never reorders itself: it
  *   draws `state.order`, and a completed move shows up when the listener
  *   reports the new order;
- * - Previous sessions: the entry at the bottom (`Store.showPrevious`).
+ * - Previous sessions: the entry at the bottom (`Store.showPrevious`);
+ * - Settings: the entry below it, which shows the settings screen in place
+ *   of the chat (../settings/SettingsScreen.tsx). Choosing a conversation
+ *   or Previous sessions leaves the settings screen.
+ *
+ * A conversation whose turn runs shows how long it has been running (by the
+ * rules of ../times/turn-times.ts), right-aligned in the full list and under
+ * the name in the strip, advanced by the page's ticker.
  *
  * Above the conversations, with a separator, the Activity entry shows and
  * hides the Activity column (the same column as the ☰ at the bar's right
@@ -42,6 +49,11 @@ import { activityColumnId } from '../activity/ActivityColumn.tsx';
 import { listeningView, type ListeningView } from '../activity/listening.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
 import type { ListAppearance } from '../layout/list-width.ts';
+import type { DisplaySettingsValues } from '../settings/display-settings.ts';
+import { settingsScreenId } from '../settings/SettingsScreen.tsx';
+import { TurnTimer } from '../times/TurnTimer.tsx';
+import type { TurnTicker } from '../times/turn-ticker.ts';
+import { runningTurnStart } from '../times/turn-times.ts';
 import { entryLabel, listEntries, type ListEntry } from './entries.ts';
 import {
   ReorderGesture,
@@ -68,6 +80,14 @@ export function ConversationList(props: {
   newActivity: number;
   /** Show the Activity column if hidden, else hide it. */
   onToggleActivity: () => void;
+  /** Whether the settings screen is shown in place of the chat. */
+  settingsShown: boolean;
+  onShowSettings: () => void;
+  /** The reader chose a conversation or Previous sessions: leave the settings screen. */
+  onLeaveSettings: () => void;
+  /** The Display switches (whether running turn timers are shown). */
+  display: DisplaySettingsValues;
+  ticker: TurnTicker;
 }) {
   const store = useStore();
   const state = useAppState();
@@ -343,10 +363,17 @@ export function ConversationList(props: {
       <Entry
         key={entry.id}
         entry={entry}
+        selected={entry.selected && !props.settingsShown}
+        appearance={props.appearance}
+        runningSince={runningTurnStart(entry, available, props.display)}
+        ticker={props.ticker}
         dragged={drag?.id === entry.id}
         canClose={props.bridge.canClose(entry.id)}
         onPointerDown={(event) => pointerDown(event, entry.id)}
-        onSelect={() => store.open(entry.id)}
+        onSelect={() => {
+          props.onLeaveSettings();
+          store.open(entry.id);
+        }}
         onClose={() => close(entry)}
       />,
     );
@@ -362,6 +389,10 @@ export function ConversationList(props: {
       style={{ width: `${props.width}px` }}
       aria-label="Conversations"
     >
+      {/* Read before an entry's running time in its description. */}
+      <span id={runningLabelId} hidden>
+        running for
+      </span>
       <ActivityListEntry
         listening={listeningView(state)}
         shown={props.activityShown}
@@ -393,9 +424,13 @@ export function ConversationList(props: {
       </nav>
       <PreviousEntry
         count={state.previous.length}
-        shown={state.showingPrevious}
-        onShow={() => store.showPrevious()}
+        shown={state.showingPrevious && !props.settingsShown}
+        onShow={() => {
+          props.onLeaveSettings();
+          store.showPrevious();
+        }}
       />
+      <SettingsEntry shown={props.settingsShown} onShow={props.onShowSettings} />
     </aside>
   );
 }
@@ -403,6 +438,12 @@ export function ConversationList(props: {
 /** One open conversation: the select button with its markers, and its close button. */
 function Entry(props: {
   entry: ListEntry;
+  /** Marked as shown (not while the settings screen is in place of the chat). */
+  selected: boolean;
+  appearance: ListAppearance;
+  /** The running turn's start to count (listener clock), or undefined for no timer. */
+  runningSince: number | undefined;
+  ticker: TurnTicker;
   dragged: boolean;
   canClose: boolean;
   onPointerDown: (event: PointerEvent) => void;
@@ -411,7 +452,7 @@ function Entry(props: {
 }) {
   const { entry } = props;
   const classes = ['conversation-entry'];
-  if (entry.selected) {
+  if (props.selected) {
     classes.push('selected');
   }
   if (entry.unread) {
@@ -421,13 +462,38 @@ function Entry(props: {
     classes.push('dragged');
   }
 
+  // The running time: not in the accessible name (a name that changed every
+  // second would be read out again and again), but in the description
+  // ("running for 2:16"), read when the reader comes to the entry.
+  let timer = null;
+  const descriptions: string[] = [];
+  if (entry.lastLine) {
+    descriptions.push(lastLineId(entry));
+  }
+  if (props.runningSince !== undefined) {
+    timer = (
+      <TurnTimer
+        ticker={props.ticker}
+        startedAt={props.runningSince}
+        className="entry-timer"
+        id={timerId(entry)}
+        hidden={true}
+      />
+    );
+    descriptions.push(runningLabelId, timerId(entry));
+  }
+  let describedBy: string | undefined;
+  if (descriptions.length > 0) {
+    describedBy = descriptions.join(' ');
+  }
+
   return (
     <li class={classes.join(' ')} data-id={entry.id} onPointerDown={props.onPointerDown}>
       <button
         class="entry-select"
-        aria-current={entry.selected ? 'page' : undefined}
+        aria-current={props.selected ? 'page' : undefined}
         aria-label={entryLabel(entry)}
-        aria-describedby={entry.lastLine ? lastLineId(entry) : undefined}
+        aria-describedby={describedBy}
         title={entry.title}
         onClick={props.onSelect}
       >
@@ -441,10 +507,14 @@ function Entry(props: {
             description (also in the strip, where it is not drawn). */}
         <span class="entry-text" aria-hidden="true">
           <span class="entry-title">{entry.caption}</span>
+          {/* In the strip the running time is under the name. */}
+          {props.appearance === 'strip' && timer}
           <span class="entry-last-line" id={lastLineId(entry)}>
             {entry.lastLine}
           </span>
         </span>
+        {/* In the full list it is right-aligned. */}
+        {props.appearance === 'full' && timer}
       </button>
       {/* Shown on hover or keyboard focus, like the rail's close button. */}
       <button
@@ -464,6 +534,14 @@ function Entry(props: {
 function lastLineId(entry: ListEntry): string {
   return `last-line-${entry.id}`;
 }
+
+/** The element id of an entry's running time (in its description). */
+function timerId(entry: ListEntry): string {
+  return `turn-timer-${entry.id}`;
+}
+
+/** The id of the hidden words before a running time in a description. */
+const runningLabelId = 'turn-running-label';
 
 /** The Previous sessions entry at the bottom of the list. */
 function PreviousEntry(props: { count: number; shown: boolean; onShow: () => void }) {
@@ -488,6 +566,31 @@ function PreviousEntry(props: { count: number; shown: boolean; onShow: () => voi
       <span class="entry-text">
         <span class="entry-title">Previous sessions</span>
         <span class="entry-last-line">{summary}</span>
+      </span>
+    </button>
+  );
+}
+
+/** The Settings entry at the bottom of the list, below Previous sessions. */
+function SettingsEntry(props: { shown: boolean; onShow: () => void }) {
+  const classes = ['previous-entry', 'settings-entry'];
+  if (props.shown) {
+    classes.push('selected');
+  }
+  return (
+    <button
+      class={classes.join(' ')}
+      aria-current={props.shown ? 'page' : undefined}
+      aria-controls={props.shown ? settingsScreenId : undefined}
+      title="Settings"
+      onClick={props.onShow}
+    >
+      <span class="entry-badge" aria-hidden="true">
+        <span class="entry-glyph">⚙</span>
+      </span>
+      <span class="entry-text">
+        <span class="entry-title">Settings</span>
+        <span class="entry-last-line">Display and listening</span>
       </span>
     </button>
   );

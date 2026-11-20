@@ -17,9 +17,16 @@ import type { ChatStore } from '../../session-apps/chat/store.ts';
 import { useAppState, useStore } from '../../mobile/src/hooks.ts';
 import type { AppState } from '../../mobile/src/store.ts';
 import type { GatewayChatBridge } from './bridge.ts';
+import type { SettingsView } from './settings/settings-view.ts';
+import type { PageTimes } from './times/page-times.ts';
 import { Workspace } from './workspace/Workspace.tsx';
 
-export function App(props: { chat: ChatStore; bridge: GatewayChatBridge }) {
+export function App(props: {
+  chat: ChatStore;
+  bridge: GatewayChatBridge;
+  times: PageTimes;
+  settingsView: SettingsView;
+}) {
   const state = useAppState();
 
   if (state.connection.status === 'unpaired') {
@@ -35,7 +42,12 @@ export function App(props: { chat: ChatStore; bridge: GatewayChatBridge }) {
   return (
     <div class="shell" data-connection={state.connection.status}>
       <ConnectionBanner />
-      <Workspace chat={props.chat} bridge={props.bridge} />
+      <Workspace
+        chat={props.chat}
+        bridge={props.bridge}
+        times={props.times}
+        settingsView={props.settingsView}
+      />
       <Toasts />
     </div>
   );

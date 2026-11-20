@@ -61,8 +61,12 @@ export interface LayoutStorage {
   setItem(key: string, value: string): void;
 }
 
-/** One entry's value, or undefined when it is missing or not valid. */
-function readEntry(storage: LayoutStorage, key: string): unknown {
+/**
+ * One entry's value, or undefined when it is missing or not valid. Also
+ * used for the display settings (../settings/display-settings.ts), which
+ * follow the same storage rules.
+ */
+export function readEntry(storage: LayoutStorage, key: string): unknown {
   let text: string | null = null;
   try {
     text = storage.getItem(key);
@@ -90,7 +94,7 @@ function readEntry(storage: LayoutStorage, key: string): unknown {
 }
 
 /** Write one entry; a storage that refuses keeps the value for this page only. */
-function writeEntry(storage: LayoutStorage, key: string, value: number | boolean): void {
+export function writeEntry(storage: LayoutStorage, key: string, value: number | boolean): void {
   try {
     storage.setItem(key, JSON.stringify({ version: 1, value }));
   } catch {
