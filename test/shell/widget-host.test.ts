@@ -22,7 +22,7 @@ import test from 'node:test';
 import { frameFixture } from '../frame-fixture.ts';
 import { TestBrowser, TestPage } from '../mobile/browser.ts';
 import { skip } from './page.ts';
-import { attachFrames, evaluateInFrame, waitInFrame } from './widget-page.ts';
+import { attachFrames, evaluateInFrame, quiet, waitInFrame } from './widget-page.ts';
 
 type Json = Record<string, any>;
 
@@ -206,17 +206,18 @@ test(
       '2',
     );
 
-    // visible: false stops the polling; visible: true resumes it.
-    await grows(() => documents!.polls.socket, 2);
+    // Embedded, it polls only once the shell said it is visible (this test
+    // page never did); visible: true starts the polling, false stops it.
+    const socketPolls = () => documents!.polls.socket;
+    assert.equal(await quiet(socketPolls), 0);
+    await shell.evaluate(
+      `document.getElementById('widget').contentWindow.postMessage({ type: 'visible', visible: true }, '*')`,
+    );
+    await grows(socketPolls, 2);
     await shell.evaluate(
       `document.getElementById('widget').contentWindow.postMessage({ type: 'visible', visible: false }, '*')`,
     );
-    // A poll already on its way may still arrive; after that none for
-    // longer than five polling intervals (400 ms each).
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const paused = documents.polls.socket;
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    assert.equal(documents.polls.socket, paused);
+    const paused = await quiet(socketPolls);
 
     // Malformed visibility messages change nothing.
     for (const message of [
@@ -224,13 +225,13 @@ test(
       `{ type: 'visible', visible: true, extra: 1 }`,
       `{ type: 'visible' }`,
       `'visible'`,
+      `Object.assign([], { type: 'visible', visible: true })`,
     ]) {
       await shell.evaluate(
         `document.getElementById('widget').contentWindow.postMessage(${message}, '*')`,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    assert.equal(documents.polls.socket, paused);
+    assert.equal(await quiet(socketPolls), paused);
 
     // From another window than the parent (the widget's own inner frame):
     // ignored too.
@@ -240,8 +241,7 @@ test(
       `parent.postMessage({ type: 'visible', visible: true }, '*')`,
       true,
     );
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    assert.equal(documents.polls.socket, paused);
+    assert.equal(await quiet(socketPolls), paused);
 
     await shell.evaluate(
       `document.getElementById('widget').contentWindow.postMessage({ type: 'visible', visible: true }, '*')`,
@@ -258,6 +258,19 @@ test(
     const theme = `{ foreground: '#112233', background: '#000000', accent: '#445566', muted: '#778899', scale: 1 }`;
     await post(`{ type: 'theme', theme: ${theme} }`);
     await waitInFrame(shell, socketFrame, `${foreground} === '#112233'`, true);
+    // Every foreground the widget's frame uses from now on is recorded.
+    await evaluateInFrame(
+      shell,
+      socketFrame,
+      `(() => {
+        const root = document.documentElement;
+        root.dataset.foregrounds = '';
+        new MutationObserver(() => {
+          root.dataset.foregrounds += ${foreground} + ' ';
+        }).observe(root, { attributes: true, attributeFilter: ['style'] });
+      })()`,
+      true,
+    );
     for (const invalid of [
       `{ type: 'theme', theme: { ...${theme}, foreground: 'red' } }`,
       `{ type: 'theme', theme: { ...${theme}, foreground: '#ff0000', scale: 50 } }`,
@@ -270,6 +283,14 @@ test(
     // A valid theme after the invalid ones shows they were handled in order.
     await post(`{ type: 'theme', theme: ${theme.replace('#112233', '#223344')} }`);
     await waitInFrame(shell, socketFrame, `${foreground} === '#223344'`, true);
+    const seen = await evaluateInFrame<string>(
+      shell,
+      socketFrame,
+      `document.documentElement.dataset.foregrounds`,
+      true,
+    );
+    assert.ok(!seen.includes('#ff0000') && !seen.includes('red'), seen);
+    assert.ok(seen.includes('#223344'), seen);
 
     // Widget code cannot open WebRTC connections, on either route.
     for (const [page, address] of [

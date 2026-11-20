@@ -730,6 +730,14 @@ body {
   white-space: nowrap;
 }
 
+/* The message's time, at the header's right end, as on message headings. */
+.inline-widget-header .message-time {
+  margin-left: auto;
+  padding-left: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .inline-widget-body {
   position: relative;
 }

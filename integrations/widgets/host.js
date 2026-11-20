@@ -66,8 +66,11 @@ const ready = new Promise((resolve) => {
 // does this page talk to its parent; on the loopback route (desktop panel,
 // pop-out) it installs no listener for it and posts nothing to it.
 const shellEmbedded = bootstrap.api === 'location' && window.parent !== window;
-// Whether the shell shows this frame. Polling stops while it does not.
-let shellVisible = true;
+// Whether the shell shows this frame. Polling stops while it does not. An
+// embedded page waits for the shell's first `visible` (sent when the frame
+// has loaded), so a frame out of view never polls; elsewhere it is always
+// true, as before.
+let shellVisible = !shellEmbedded;
 // The first height goes to the shell only once the first state was drawn
 // (the inner frame reports a height before that too); later ones as they
 // change.
@@ -772,7 +775,12 @@ function shellTheme(value) {
 
 if (shellEmbedded) {
   window.addEventListener('message', (event) => {
-    if (event.source !== window.parent || !event.data || typeof event.data !== 'object') {
+    if (
+      event.source !== window.parent ||
+      !event.data ||
+      typeof event.data !== 'object' ||
+      Array.isArray(event.data)
+    ) {
       return;
     }
     const message = event.data;

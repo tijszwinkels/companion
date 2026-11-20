@@ -246,7 +246,12 @@ export function mount(root, api) {
         const box = document.createElement('input');
         box.type = 'checkbox';
         box.checked = item.packed;
-        box.onchange = () => { void api.call('toggle', { index }).catch(() => {}); };
+        // A refused change shows the saved state again (no update follows it).
+        box.onchange = () => {
+          void api.call('toggle', { index }).catch(() => {
+            box.checked = item.packed;
+          });
+        };
         label.append(box, ' ' + item.text);
         entry.append(label);
         list.append(entry);

@@ -41,8 +41,9 @@ export function frameAddress(value: unknown): string {
   }
 
   // Only the canonical spelling: the string the browser loads is exactly the
-  // one checked here (no case or encoding the URL parser would change).
-  if (url.href !== value) {
+  // one checked here (no case or encoding the URL parser would change, and
+  // no empty `?` or `#`, which the parser reports as no query or fragment).
+  if (value !== url.origin + url.pathname) {
     return '';
   }
   return value;

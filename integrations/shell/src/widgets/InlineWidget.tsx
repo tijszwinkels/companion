@@ -25,7 +25,14 @@
 
 import type { ComponentType } from 'preact';
 import { useSyncExternalStore } from 'preact/compat';
-import { useCallback, useEffect, useReducer, useRef, useState } from 'preact/hooks';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'preact/hooks';
 
 import type { InlineWidgetProps } from '../../../session-apps/chat/protocol.ts';
 import type { ChatCover } from './chat-cover.ts';
@@ -94,25 +101,34 @@ export function createInlineWidget(
       return null;
     }
 
+    // The message's time (`row.time`, while the Message timestamps switch
+    // is on) is shown at the right of the panel's header, as on messages.
+    const time = props.row.time ?? '';
     const address = frameAddress(widget.frameUrl);
     if (!address) {
-      return <NotSetUp name={widget.name} />;
+      return <NotSetUp name={widget.name} time={time} />;
     }
 
     // A new address (after a reconnect that ended the old handles) is a new
     // panel: the old frame and everything it owns go, the new one loads.
     return (
-      <WidgetFrame key={address} name={widget.name} address={address} environment={environment} />
+      <WidgetFrame
+        key={address}
+        name={widget.name}
+        time={time}
+        address={address}
+        environment={environment}
+      />
     );
   }
   return InlineWidget;
 }
 
 /** No frame origin is configured on the gateway: the widget's name only. */
-function NotSetUp(props: { name: string }) {
+function NotSetUp(props: { name: string; time: string }) {
   return (
     <div class="panel inline-widget" data-phase="not-set-up">
-      <WidgetHeader name={props.name} />
+      <WidgetHeader name={props.name} time={props.time} />
       <p class="inline-widget-note">
         Widgets are not set up for this browser, so only the widget's name is shown.
       </p>
@@ -120,21 +136,23 @@ function NotSetUp(props: { name: string }) {
   );
 }
 
-function WidgetHeader(props: { name: string }) {
+function WidgetHeader(props: { name: string; time: string }) {
   return (
     <div class="inline-widget-header">
       <span aria-hidden="true">🧩</span>
       <span class="inline-widget-name">{props.name}</span>
+      {props.time ? <span class="message-time">{props.time}</span> : null}
     </div>
   );
 }
 
 function WidgetFrame(props: {
   name: string;
+  time: string;
   address: string;
   environment: InlineWidgetEnvironment;
 }) {
-  const { name, address, environment } = props;
+  const { name, time, address, environment } = props;
   const origin = frameOriginOf(address);
 
   const [state, dispatch] = useReducer(nextFrameState, undefined, () =>
@@ -156,12 +174,26 @@ function WidgetFrame(props: {
   const panel = useRef<HTMLDivElement>(null);
   const iframe = useRef<HTMLIFrameElement>(null);
 
-  // Whether the current frame (this attempt) has loaded, and what it was
-  // last told about its visibility. Messages go to a frame only after its
-  // load event: before that its window still holds the initial empty
-  // document, and the target origin would not match anyway.
-  const [loadedAttempt, setLoadedAttempt] = useState(-1);
-  const loaded = loadedAttempt === state.attempt && state.phase !== 'failed';
+  // The frame element: a new one for each attempt (Try again), and a new one
+  // when a frame that had not been shown yet comes back after the shell was
+  // disconnected. While disconnected a frame that was never shown is not in
+  // the page at all, so nothing starts loading (or half-loads) before
+  // requests are admitted again.
+  const [generation, setGeneration] = useState(0);
+  const frameKey = state.attempt + ':' + generation;
+  const frameInPage = connected || state.phase === 'shown';
+  useEffect(() => {
+    if (!connected && state.phase === 'loading') {
+      setGeneration((value) => value + 1);
+    }
+  }, [connected, state.phase]);
+
+  // Whether the current frame element has loaded, and what it was last told
+  // about its visibility. Messages go to a frame only after its load event:
+  // before that its window still holds the initial empty document, and the
+  // target origin would not match anyway.
+  const [loadedKey, setLoadedKey] = useState('');
+  const loaded = loadedKey === frameKey && frameInPage && state.phase !== 'failed';
   const toldVisible = useRef<boolean | null>(null);
   const visibleNow = useRef(visible);
   visibleNow.current = visible;
@@ -186,10 +218,12 @@ function WidgetFrame(props: {
 
   // Messages from this panel's frame only (frame-messages.ts checks the
   // source window, the origin and every field). Heights go through the
-  // throttle; the listener and the throttle belong to one frame, so a
-  // replaced frame's late messages and waiting heights are dropped.
+  // throttle; the listener and the throttle belong to one frame element, so
+  // a replaced frame's late messages and waiting heights are dropped. A
+  // layout effect: it is installed in the same task that puts the frame into
+  // the page, before the frame can run a script and report.
   const frameShown = state.phase !== 'failed';
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!frameShown) {
       return;
     }
@@ -215,7 +249,7 @@ function WidgetFrame(props: {
       window.removeEventListener('message', onMessage);
       throttle.dispose();
     };
-  }, [frameShown, state.attempt, origin]);
+  }, [frameShown, frameKey, origin]);
 
   // A loading frame has ten seconds to report its first height, counted
   // only while it is visible: a frame out of view, in a hidden tab, under
@@ -269,13 +303,13 @@ function WidgetFrame(props: {
     target.postMessage(themeMessage(theme), origin);
     target.postMessage(visibleMessage(visibleNow.current), origin);
     toldVisible.current = visibleNow.current;
-    setLoadedAttempt(state.attempt);
+    setLoadedKey(frameKey);
   }
 
   if (state.phase === 'failed') {
     return (
       <div ref={panel} class="panel inline-widget" data-phase="failed" data-visible="false">
-        <WidgetHeader name={name} />
+        <WidgetHeader name={name} time={time} />
         <div class="inline-widget-failed">
           <p>
             <strong>The {name} widget could not load.</strong> {state.reason}
@@ -284,7 +318,12 @@ function WidgetFrame(props: {
             The conversation and the widget's saved data are unchanged.
           </p>
           <div>
-            <button class="panel-action small" onClick={() => dispatch({ type: 'retry' })}>
+            {/* A new frame needs requests admitted, as its first load does. */}
+            <button
+              class="panel-action small"
+              disabled={!connected}
+              onClick={() => dispatch({ type: 'retry' })}
+            >
               Try again
             </button>
           </div>
@@ -306,23 +345,27 @@ function WidgetFrame(props: {
       data-visible={String(visible)}
       data-connected={String(connected)}
     >
-      <WidgetHeader name={name} />
+      <WidgetHeader name={name} time={time} />
       {/* While disconnected the frame takes no input (it is paused). */}
       <div class="inline-widget-body" inert={!connected}>
         {/* The sandbox and the other attributes come before the address,
             and all are set before the frame is put into the page. */}
-        <iframe
-          key={state.attempt}
-          ref={iframe}
-          title={`${name} widget`}
-          sandbox="allow-scripts allow-same-origin allow-forms"
-          allow={noPermissions}
-          referrerpolicy="no-referrer"
-          loading="lazy"
-          src={address}
-          style={{ height: `${state.height}px` }}
-          onLoad={onFrameLoad}
-        />
+        {frameInPage ? (
+          <iframe
+            key={frameKey}
+            ref={iframe}
+            title={`${name} widget`}
+            sandbox="allow-scripts allow-same-origin allow-forms"
+            allow={noPermissions}
+            referrerpolicy="no-referrer"
+            loading="lazy"
+            src={address}
+            style={{ height: `${state.height}px` }}
+            onLoad={onFrameLoad}
+          />
+        ) : (
+          <div class="inline-widget-placeholder" style={{ height: `${state.height}px` }} />
+        )}
         {state.phase === 'loading' && connected && (
           <div class="inline-widget-cover" role="status">
             Loading the {name} widget…

@@ -305,3 +305,32 @@ export async function waitInFrame(
 export function panelExpression(name: string, index = 0): string {
   return `[...document.querySelectorAll('.inline-widget')].filter((panel) => panel.querySelector('.inline-widget-name')?.textContent === ${JSON.stringify(name)})[${index}]`;
 }
+
+/**
+ * Wait until `count()` has not changed for `quietMilliseconds` (more than
+ * three polling intervals of 400 ms), and return it: polling has stopped,
+ * and any request that was already on its way has arrived. Fails when the
+ * count keeps changing until `timeout`.
+ */
+export async function quiet(
+  count: () => number,
+  quietMilliseconds = 1500,
+  timeout = 8000,
+): Promise<number> {
+  const until = Date.now() + timeout;
+  let value = count();
+  let since = Date.now();
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const now = count();
+    if (now !== value) {
+      value = now;
+      since = Date.now();
+    } else if (Date.now() - since >= quietMilliseconds) {
+      return value;
+    }
+    if (Date.now() >= until) {
+      throw Error(`Still changing after ${timeout} ms`);
+    }
+  }
+}

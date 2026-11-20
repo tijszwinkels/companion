@@ -212,35 +212,36 @@ no-op, order key), in `src/list/reorder-gesture.ts`:
    tap selects. Touch reordering would need a gesture of its own (the phone
    panel has Move up and Move down) and is not part of this slice.
 
-| Case                                                                     | Move requests | Click selects |
-| ------------------------------------------------------------------------ | ------------- | ------------- |
-| Press and release without moving                                         | 0             | yes           |
-| Movement under 6 px, release                                             | 0             | yes           |
-| Secondary button pressed and moved                                       | 0             | —             |
-| Press while not admitted (offline, before snapshot)                      | 0             | yes           |
-| Press on ×                                                               | 0             | × closes      |
-| Drag released inside at a new position                                   | 1, captured   | no            |
-| Drag released inside where it already is                                 | 0             | no            |
-| Drag released outside the list                                           | 0             | no            |
-| Escape during the drag, then release                                     | 0             | no            |
-| Pointer cancelled during the drag                                        | 0             | no            |
-| Pointer capture lost during the drag, then release                       | 0             | no            |
-| Capture of another pointer lost during the drag                          | 1, captured   | no            |
-| Window loses focus during the drag, then release                         | 0             | no            |
-| Window loses focus before the threshold, press back                      | 0             | yes           |
-| Press while the listener names no order revision                         | 0             | yes           |
-| Release missed, then a new press elsewhere dragged back over the list    | 0             | —             |
-| Drag released over the divider at the list's edge                        | 0             | no            |
-| Touch press and movement on an entry (the list scrolls)                  | 0             | yes (a tap)   |
-| Pen drag released inside at a new position                               | 1, captured   | no            |
-| Order revision changed during the drag                                   | 0             | no            |
-| A conversation opened or closed during the drag                          | 0             | no            |
-| Connection lost during the drag                                          | 0             | no            |
-| Order changed after the press, before the threshold                      | 0             | yes           |
-| Order changed before the threshold, noticed only by the movement past it | 0             | yes           |
-| Movement without the button held (release missed)                        | 0             | —             |
-| New press after a cancelled drag; its click                              | per new press | yes           |
-| Move refused by the listener                                             | 1 (refused)   | no; unchanged |
+| Case                                                                     | Move requests                                                     | Click selects |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------- | ------------- |
+| Press and release without moving                                         | 0                                                                 | yes           |
+| Movement under 6 px, release                                             | 0                                                                 | yes           |
+| Secondary button pressed and moved                                       | 0                                                                 | —             |
+| Press while not admitted (offline, before snapshot)                      | 0                                                                 | yes           |
+| Press on ×                                                               | 0                                                                 | × closes      |
+| Drag released inside at a new position                                   | 1, captured                                                       | no            |
+| Drag released inside where it already is                                 | 0                                                                 | no            |
+| Drag released outside the list                                           | 0                                                                 | no            |
+| Escape during the drag, then release                                     | 0                                                                 | no            |
+| Pointer cancelled during the drag                                        | 0                                                                 | no            |
+| Pointer capture lost during the drag, then release                       | 0                                                                 | no            |
+| Capture of another pointer lost during the drag                          | 1, captured                                                       | no            |
+| Window loses focus during the drag, then release                         | 0                                                                 | no            |
+| Window loses focus before the threshold, press back                      | 0                                                                 | yes           |
+| Press while the listener names no order revision                         | 0                                                                 | yes           |
+| Release missed, then a new press elsewhere dragged back over the list    | 0                                                                 | —             |
+| Drag released over the divider at the list's edge                        | 0                                                                 | no            |
+| Touch press and movement on an entry (the list scrolls)                  | 0                                                                 | yes (a tap)   |
+| Pen drag released inside at a new position                               | 1, captured                                                       | no            |
+| Order revision changed during the drag                                   | 0                                                                 | no            |
+| A conversation opened or closed during the drag                          | 0                                                                 | no            |
+| Connection lost during the drag                                          | 0                                                                 | no            |
+| Conversation opened while disconnected                                   | No frame in the page (nothing loads) until admitted, then loading |
+| Order changed after the press, before the threshold                      | 0                                                                 | yes           |
+| Order changed before the threshold, noticed only by the movement past it | 0                                                                 | yes           |
+| Movement without the button held (release missed)                        | 0                                                                 | —             |
+| New press after a cancelled drag; its click                              | per new press                                                     | yes           |
+| Move refused by the listener                                             | 1 (refused)                                                       | no; unchanged |
 
 ### Markers
 
@@ -848,16 +849,22 @@ component, and the chat page uses it for such rows (see
 - **With a frame address**: directly under the agent's message, a rounded
   panel as wide as an agent message (the chat's whole width less the
   gutter opposite the sender, like the other messages) with a small header,
-  🧩 and the widget's name, above the widget's page in an iframe:
+  🧩 and the widget's name (and, at its right, the message's time while
+  Message timestamps is on, as on message headings), above the widget's
+  page in an iframe:
   `sandbox="allow-scripts allow-same-origin allow-forms"` (no popups, no top
   navigation, no modals), an `allow` attribute that names every feature with
   `'none'`, `referrerpolicy="no-referrer"` and `loading="lazy"`. The frame is
   on another origin than the shell, so `allow-same-origin` gives it only its
   own origin's storage, never the shell's. The address is used exactly as
   the gateway sent it.
-- **Without one** (no frame origin configured): a small card with the
-  widget's name and one line, "Widgets are not set up for this browser, so
-  only the widget's name is shown." No frame, no request.
+- **Without one** (no frame origin configured): a small card with the same
+  header and one line, "Widgets are not set up for this browser, so only
+  the widget's name is shown." No frame, no request.
+
+The widget row's own text (the widget's `describe()` fallback, which the
+desktop's classic view shows) is not drawn: the frame shows the widget
+itself, and the agreed design has no text there.
 
 **Height.** The frame is as tall as the widget's content within the
 desktop sidebar's bounds for an inline widget (`WidgetSurface.qml`:
@@ -891,10 +898,14 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
 5. An `error` after the widget was shown changes nothing here; host.js shows
    it inside the frame, as on the desktop.
 6. **Disconnected**: while the shell's requests are not admitted (offline,
-   reconnecting, or reconnected before the new snapshot), the frame is
+   reconnecting, or reconnected before the new snapshot), a shown frame is
    greyed with "Disconnected · reconnecting…" over it, takes no input and
    is told it is not visible (so it stops polling). Its state is kept and
-   its deadline paused.
+   its deadline paused. A frame that was not shown yet (also one opened
+   while disconnected, or one that was loading when the connection went) is
+   not in the page meanwhile: the panel keeps its height with the same
+   label, nothing loads, and a new frame loads once requests are admitted.
+   Try again is unavailable while disconnected.
 7. Back with the **same address** (the device's handles lived on): the frame
    continues where it was, without loading again. Back with a **new
    address** (the handles ended, for example the gateway restarted): the row
@@ -918,6 +929,7 @@ Rule (`src/widgets/frame-state.ts`, drawn by `src/widgets/InlineWidget.tsx`):
 | Try again                                              | A new frame, loading; shown at its first `geometry`                |
 | `error` after shown                                    | Still shown                                                        |
 | Connection lost                                        | Greyed, "Disconnected · reconnecting…", no input, `visible: false` |
+| Conversation opened while disconnected                 | No frame in the page (nothing loads) until admitted, then loading  |
 | Back with the same address                             | The same frame, shown, `visible: true`; not loaded again           |
 | Back with a new address                                | New frame for the new address: loading, then shown                 |
 | Conversation switched and back                         | Loads again, at its last height until its first `geometry`         |
@@ -953,7 +965,9 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    (`bootstrap.api` is the marker `location`) and is framed: the browser
    shell. It accepts messages only from `window.parent`, only `theme` (four
    `#rrggbb` colours and a scale within 0.4–6) and `visible` (a boolean),
-   with exactly those fields; everything else is ignored. It posts with the
+   with exactly those fields, as plain objects (not arrays); everything else
+   is ignored. Embedded, it does not poll until the shell's first
+   `visible: true`. It posts with the
    target origin `*` (it cannot know the shell's origin: the shell frames it
    without a referrer), which reveals nothing: `frame-ancestors` lets only
    the gateway's pages frame it, and the messages carry only a height and
@@ -964,25 +978,27 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    was removed (or replaced by Try again or a new address) is ignored: its
    panel's listener is gone or its window is no longer the panel's frame.
 
-| Case                                                 | Result                                           |
-| ---------------------------------------------------- | ------------------------------------------------ |
-| `geometry` 180 from the frame, frame origin          | Applied: 180 px                                  |
-| `error` "boom" from the frame before shown           | Failed with "boom"                               |
-| `error` with a text of 1,000 characters              | Its first 200 characters shown                   |
-| `geometry` from the shell's own window               | Ignored                                          |
-| `geometry` from the widget's inner frame (`top`)     | Ignored                                          |
-| `geometry` from another panel's frame                | Ignored by this panel                            |
-| `geometry` from the frame's window, another origin   | Ignored                                          |
-| `geometry` with an extra field, or `height` a string | Ignored                                          |
-| `geometry` `NaN` or `Infinity`                       | Ignored                                          |
-| `geometry` −50 / 0 / 99.6 / 5000                     | 100 / 100 / 100 / 420 px                         |
-| 1,000 `geometry` messages in one burst, last 250     | At most 2 heights applied in the burst, then 250 |
-| A message before the frame's `load` event            | Checked like any other                           |
-| A message after the frame was removed                | Ignored                                          |
-| host.js: `visible` false from the parent             | Polling stops                                    |
-| host.js: `theme` with `"red"` or a scale of 50       | Ignored                                          |
-| host.js: any message from another window             | Ignored                                          |
-| host.js on the loopback route, framed or not         | No listener for its parent, nothing posted to it |
+| Case                                                   | Result                                           |
+| ------------------------------------------------------ | ------------------------------------------------ |
+| `geometry` 180 from the frame, frame origin            | Applied: 180 px                                  |
+| `error` "boom" from the frame before shown             | Failed with "boom"                               |
+| `error` with a text of 1,000 characters                | Its first 200 characters shown                   |
+| `geometry` from the shell's own window                 | Ignored                                          |
+| `geometry` from the widget's inner frame (`top`)       | Ignored                                          |
+| `geometry` from another panel's frame                  | Ignored by this panel                            |
+| `geometry` from the frame's window, another origin     | Ignored                                          |
+| `geometry` with an extra field, or `height` a string   | Ignored                                          |
+| `geometry` `NaN` or `Infinity`                         | Ignored                                          |
+| `geometry` −50 / 0 / 99.6 / 5000                       | 100 / 100 / 100 / 420 px                         |
+| 1,000 `geometry` messages in one burst, last 250       | At most 2 heights applied in the burst, then 250 |
+| A message before the frame's `load` event              | Checked like any other                           |
+| A message after the frame was removed                  | Ignored                                          |
+| host.js: `visible` false from the parent               | Polling stops                                    |
+| host.js: `theme` with `"red"` or a scale of 50         | Ignored                                          |
+| host.js: any message from another window               | Ignored                                          |
+| host.js: an array with `type` and `visible` properties | Ignored                                          |
+| host.js embedded, before the first `visible`           | No polling                                       |
+| host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it |
 
 ### Rule: visibility
 
@@ -993,8 +1009,9 @@ covered by this page's own screens (the settings screen, or the Activity
 column lying over the chat in a narrow window; `src/widgets/chat-cover.ts`)
 and the shell's requests are admitted. The shell tells the frame when this
 changes. The widget page polls its state every 400 ms only while it is
-visible (host.js; a hidden tab stopped it before as well), so a frame the
-reader cannot see makes no requests. A conversation that is not shown has
+visible (host.js; a hidden tab stopped it before as well), and only after
+the shell first said it is visible, so a frame the reader cannot see makes
+no requests. A conversation that is not shown has
 no frames at all.
 
 | Case                                   | Visible | Polls                           |
@@ -1043,6 +1060,20 @@ no frames at all.
   another port of the same host name is the same site, so a renderer
   exploit in a widget could reach the shell's process; see the gateway
   README.
+
+### Known limits
+
+- **Older pages after a long disconnection.** A widget in an older history
+  page the reader has loaded (above the live window) keeps the frame
+  address it was loaded with. When the shell was disconnected for more than
+  the gateway's 30-second grace period, that address has ended, and the
+  widget shows its own "Not found" error inside the frame (host.js's status
+  line) instead of updating. Jump to latest and scrolling up again, or
+  reloading the page, loads the page again with a new address. Widgets in
+  the live window get their new address with the new snapshot. Refreshing
+  the resident older pages after a reconnect would need new logic in the
+  paging model (its existing refresh detaches the reader's view), so it is
+  left for later.
 
 ## How it works
 

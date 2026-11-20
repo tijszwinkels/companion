@@ -38,6 +38,7 @@ import {
   frameErrors,
   frameSetup,
   panelExpression,
+  quiet,
   waitInFrame,
   writeShellWidgets,
   type ShellFrameFixture,
@@ -255,6 +256,19 @@ test(
       assert.match(feature.trim(), /^[a-z-]+ 'none'$/);
     }
 
+    // The header names the widget and, as message headings do, its time.
+    const header = await page.evaluate<Json>(`(() => {
+      const header = ${panelExpression('counter')}.querySelector('.inline-widget-header');
+      return {
+        name: header.querySelector('.inline-widget-name').textContent,
+        time: header.querySelector('.message-time')?.textContent ?? '',
+        last: header.lastElementChild.className,
+      };
+    })()`);
+    assert.equal(header.name, 'counter');
+    assert.match(header.time, /^\d\d:\d\d$/);
+    assert.equal(header.last, 'message-time');
+
     // As wide as the agent's message above it.
     const widths = await page.evaluate<Json>(`(() => {
       const panel = ${panelExpression('counter')};
@@ -388,9 +402,10 @@ test(
     const { page } = await pairedPage(fixture, browser, 1280, 800);
     await openConversation(page, 'Unconfigured fixture');
     await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'not-set-up'`);
-    assert.equal(
+    // The widget's name, the message's time and one line.
+    assert.match(
       await page.evaluate<string>(`${panelExpression('counter')}.textContent`),
-      "🧩counterWidgets are not set up for this browser, so only the widget's name is shown.",
+      /^🧩counter\d\d:\d\dWidgets are not set up for this browser, so only the widget's name is shown\.$/,
     );
     assert.equal(await page.evaluate(`document.querySelectorAll('iframe').length`), 0);
     await screenshots(page, 'counter', 'not-set-up');
@@ -460,6 +475,9 @@ test(
     const { run } = await conversation(fixture, 'Reconnect widget');
     await fixture.publishCounter(run);
     run.finish();
+    const later = await conversation(fixture, 'Opened offline');
+    await fixture.publishWidget(later.run, 'probe', { label: 'Offline', height: 150 });
+    later.run.finish();
 
     const { page } = await pairedPage(fixture, browser, 1280, 800);
     await attachFrames(browser, page);
@@ -500,24 +518,31 @@ test(
     await page.waitFor(`${panelExpression('counter')}?.dataset.connected === 'false'`, 5000);
     await screenshots(page, 'counter', 'disconnected');
 
+    /** A new gateway on the same ports and state, with the frame origin. */
+    async function restartGateway(): Promise<Gateway> {
+      const replacement = new Gateway({
+        host: '127.0.0.1',
+        port: fixture.port,
+        origins: [fixture.origin],
+        stateDirectory: join(fixture.directory, 'remote-state'),
+        controlSocket: fixture.desktop.socketPath,
+        sessionsDirectory: join(fixture.directory, '.companion-sessions'),
+        appDirectory,
+        log: () => {},
+        frames: {
+          listen: { host: '127.0.0.1', port: fixture.framePort },
+          origin: fixture.frameOrigin,
+        },
+      });
+      await replacement.start();
+      context.after(() => replacement.close());
+      return replacement;
+    }
+
     // The gateway restarts: its handles were in memory, so the shell gets a
     // new address for the same widget and loads it.
-    const replacement = new Gateway({
-      host: '127.0.0.1',
-      port: fixture.port,
-      origins: [fixture.origin],
-      stateDirectory: join(fixture.directory, 'remote-state'),
-      controlSocket: fixture.desktop.socketPath,
-      sessionsDirectory: join(fixture.directory, '.companion-sessions'),
-      appDirectory,
-      log: () => {},
-      frames: {
-        listen: { host: '127.0.0.1', port: fixture.framePort },
-        origin: fixture.frameOrigin,
-      },
-    });
-    await replacement.start();
-    context.after(() => replacement.close());
+    const replacement = await restartGateway();
+
     await page.waitFor(
       `${panelExpression('counter')}?.querySelector('iframe') && ${panelExpression('counter')}.querySelector('iframe').src !== ${JSON.stringify(address)}`,
       20_000,
@@ -526,6 +551,35 @@ test(
     assert.match(renewed, new RegExp('^' + fixture.frameOrigin + '/f/[A-Za-z0-9_-]{43}/$'));
     await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'shown'`, 15_000);
     assert.equal(documentLoads(page, renewed), 1);
+
+    // A conversation opened while disconnected: its widget's frame is not
+    // put into the page (nothing loads) until requests are admitted again.
+    await replacement.close();
+    await page.waitFor(`${panelExpression('counter')}?.dataset.connected === 'false'`, 5000);
+    const requestsBefore = page.requests.length;
+    await openConversation(page, 'Opened offline');
+    await page.waitFor(`${panelExpression('probe')}`);
+    const unloaded = await page.evaluate<Json>(`(() => {
+      const panel = ${panelExpression('probe')};
+      return {
+        frame: Boolean(panel.querySelector('iframe')),
+        placeholder: panel.querySelector('.inline-widget-placeholder')?.style.height,
+        text: panel.textContent,
+      };
+    })()`);
+    assert.deepEqual(
+      { frame: unloaded.frame, placeholder: unloaded.placeholder },
+      { frame: false, placeholder: '100px' },
+    );
+    assert.match(unloaded.text, /Disconnected · reconnecting…/);
+    assert.deepEqual(
+      page.requests.slice(requestsBefore).filter((url) => url.startsWith(fixture.frameOrigin)),
+      [],
+    );
+    await restartGateway();
+    await page.waitFor(`${panelExpression('probe')}?.dataset.phase === 'shown'`, 20_000);
+    assert.equal(documentLoads(page, await frameSource(page, 'probe')), 1);
+    await page.waitFor(`${frameHeight('probe')} === 174`);
     assertTwoOrigins(fixture, page);
   },
 );
@@ -625,15 +679,26 @@ test(
     await openConversation(page, 'Plain conversation');
     await page.waitFor(`document.querySelectorAll('.inline-widget').length === 0`);
     await drawn(page);
-    const polls = statePolls(page, counter) + statePolls(page, probe);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    assert.equal(statePolls(page, counter) + statePolls(page, probe), polls);
+    const polls = await quiet(() => statePolls(page, counter) + statePolls(page, probe));
+    assert.equal(await quiet(() => statePolls(page, counter) + statePolls(page, probe)), polls);
 
     // Back: both load again, the probe at the height it last had (300, the
-    // last one it reported here), and both are shown again.
+    // last one it reported here), and both are shown again. The height the
+    // probe's frame has when it is put into the page is recorded at once.
+    await page.evaluate(`(() => {
+      window.__firstProbeHeight = null;
+      const observer = new MutationObserver(() => {
+        const frame = ${panelExpression('probe')}?.querySelector('iframe');
+        if (frame && window.__firstProbeHeight === null) {
+          window.__firstProbeHeight = frame.style.height;
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    })()`);
     await openConversation(page, 'Two widgets');
-    await page.waitFor(`${panelExpression('probe')}`);
-    assert.equal(await page.evaluate(frameHeight('probe')), 300);
+    await page.waitFor(`window.__firstProbeHeight !== null`);
+    assert.equal(await page.evaluate(`window.__firstProbeHeight`), '300px');
     await page.waitFor(`${panelExpression('probe')}?.dataset.phase === 'shown'`, 15_000);
     await page.waitFor(`${panelExpression('counter')}?.dataset.phase === 'shown'`, 15_000);
     assert.equal(documentLoads(page, counter), 2);
@@ -695,10 +760,8 @@ test(
     // (a poll already on its way may still arrive first).
     await wheelUntil(page, 400, panelOutOfView('counter'));
     await page.waitFor(`${panelExpression('counter')}.dataset.visible === 'false'`);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    polls = statePolls(page, address);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    assert.equal(statePolls(page, address), polls);
+    polls = await quiet(() => statePolls(page, address));
+    assert.equal(await quiet(() => statePolls(page, address)), polls);
 
     // Back in view: polling resumes.
     await wheelUntil(page, -400, panelInView('counter'));
