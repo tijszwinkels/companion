@@ -70,8 +70,12 @@ const draftEditRefusal = 'Too many draft edits; this edit was not saved';
 /** Upstream request ID of the visibility withdrawal (see withdrawVisibility). */
 const withdrawalRequestId = 'withdraw';
 
-/** Upstream request ID of a report the gateway writes itself (see hideAfterRefusedReport). */
-const hiddenReportRequestId = 'hidden-report';
+/**
+ * Upstream request ID of a report the gateway writes itself (see
+ * reportNothingShown). Before role confirmation it also marks that report's
+ * place among the queued requests.
+ */
+const nothingShownRequestId = 'nothing-shown';
 
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
@@ -143,11 +147,9 @@ export class Relay {
   /**
    * The fields of the last `panel-state` written upstream (without its
    * request ID): what the listener believes this connection shows. See
-   * hideAfterRefusedReport.
+   * reportNothingShown.
    */
   private lastReport?: Record<string, unknown>;
-  /** A report was refused before the role was confirmed; hide once it is. */
-  private hideWhenReady = false;
   private drainTimer?: ReturnType<typeof setTimeout>;
   /**
    * Whether this connection is a draft host (the client asked with
@@ -261,7 +263,7 @@ export class Relay {
         message: 'Too many requests; slow down',
       });
       if (parsed.request.action === 'panel-state') {
-        this.hideAfterRefusedReport();
+        this.reportNothingShown();
       }
       return;
     }
@@ -341,7 +343,7 @@ export class Relay {
           : 'Too many unfinished requests; wait for earlier ones',
       });
       if (request.action === 'panel-state') {
-        this.hideAfterRefusedReport();
+        this.reportNothingShown();
       }
       return;
     }
@@ -354,11 +356,6 @@ export class Relay {
       requestMilliseconds,
     );
     this.pending.set(upstreamId, { request, finish, timer });
-
-    // An accepted report is newer than any refused before it.
-    if (request.action === 'panel-state') {
-      this.hideWhenReady = false;
-    }
 
     if (this.ready) {
       this.sendRequest(upstreamId, request);
@@ -403,30 +400,41 @@ export class Relay {
 
   /**
    * The gateway refused one of the client's `panel-state` reports (request
-   * rate or pending bound). The client may have reported its page hidden or
-   * another conversation, so the listener must not keep counting the page
-   * as visible: an application chat permission waiting in the listener's
-   * queue would otherwise be allowed on a page nobody sees, and the unread
-   * mark would keep clearing. The gateway therefore repeats the last report
-   * it forwarded with `visible: false` (same selection, draft host and
-   * pending send). It writes at most one such report per forwarded visible
-   * report, so a flood of refused reports never becomes a flood upstream.
-   * The listener never waits on a report, so it takes no slot there, and
-   * nobody waits for its reply. The client's next accepted report replaces
-   * it.
+   * rate or pending bound). That report may have hidden the page, or moved
+   * it to another conversation or to none, so the listener must stop
+   * counting what the last forwarded report recorded: an application chat
+   * permission waiting in the listener's queue would otherwise be allowed,
+   * or stopped, for a conversation the person may have left, and the unread
+   * mark would keep clearing. The gateway therefore reports that the page
+   * shows nothing (`id: ""`, `visible: false`), keeping the last report's
+   * draft-host fields. It never repeats a selection: a cached one could even
+   * select a conversation that has since been closed and reopened.
+   *
+   * Before the role is confirmed, requests wait in `queued`; this report
+   * takes its place there among them, so it follows exactly the requests
+   * admitted before the refusal and precedes those admitted after it.
+   *
+   * At most one such report follows each forwarded report that showed
+   * something, so a flood of refused reports never becomes a flood upstream.
+   * The listener never waits on a report and takes no slot for it; nobody
+   * waits for its reply. The client's next accepted report replaces it.
    */
-  private hideAfterRefusedReport(): void {
+  private reportNothingShown(): void {
     if (!this.ready) {
-      // Queued reports are written when the role is confirmed; hide after them.
-      this.hideWhenReady = true;
+      if (this.queued[this.queued.length - 1] !== nothingShownRequestId) {
+        this.queued.push(nothingShownRequestId);
+      }
       return;
     }
-    if (!this.lastReport || this.lastReport.visible !== true || this.upstream.destroyed) {
+    if (this.upstream.destroyed || !this.lastReport) {
+      return;
+    }
+    if (this.lastReport.id === '' && this.lastReport.visible !== true) {
       return;
     }
 
-    this.lastReport = { ...this.lastReport, visible: false };
-    this.writeUpstream({ ...this.lastReport, requestId: hiddenReportRequestId });
+    this.lastReport = { ...this.lastReport, id: '', visible: false };
+    this.writeUpstream({ ...this.lastReport, requestId: nothingShownRequestId });
   }
 
   /** The device's rate limit is shared by all its connections. */
@@ -542,7 +550,7 @@ export class Relay {
       return;
     }
 
-    if (isReply && message.requestId === hiddenReportRequestId) {
+    if (isReply && message.requestId === nothingShownRequestId) {
       // Nobody waits for the gateway's own report either.
       return;
     }
@@ -620,14 +628,15 @@ export class Relay {
 
     // Requests sent while the role was being declared keep their order.
     for (const upstreamId of this.queued.splice(0)) {
+      if (upstreamId === nothingShownRequestId) {
+        // A report refused while the role was being declared (in its place).
+        this.reportNothingShown();
+        continue;
+      }
       const pending = this.pending.get(upstreamId);
       if (pending) {
         this.sendRequest(upstreamId, pending.request);
       }
-    }
-    if (this.hideWhenReady) {
-      this.hideWhenReady = false;
-      this.hideAfterRefusedReport();
     }
 
     // A phone that left during role negotiation, or whose socket is already

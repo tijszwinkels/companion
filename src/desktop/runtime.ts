@@ -2632,20 +2632,34 @@ export class DesktopRuntime {
       // Remote panels report which conversation they show, whether their
       // page is visible and, as draft hosts, a send they are waiting for.
       // Focus and navigation fields describe the desktop and are ignored.
+      //
+      // A report refused below still means the page moved on (for example
+      // to a conversation that has just closed), so it no longer shows what
+      // the previous report recorded: the connection's selection and
+      // visibility end. Otherwise a permission change waiting in an
+      // application's queue could be allowed for a conversation the person
+      // has left (src/desktop/README.md, "Application chat access from a
+      // paired device").
+      const refused = (message: string): Error => {
+        remote.selection = '';
+        remote.visibleSelection = '';
+        this.publishRemoteAgentActions(clientId);
+        return Error(message);
+      };
       if (
         typeof request.id !== 'string' ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
-        throw Error('Expected a visible agent session id (or empty id)');
+        throw refused('Expected a visible agent session id (or empty id)');
       }
       if (request.visible !== undefined && typeof request.visible !== 'boolean') {
-        throw Error('Expected visible to be true or false');
+        throw refused('Expected visible to be true or false');
       }
       if (request.draftHost !== undefined && typeof request.draftHost !== 'boolean') {
-        throw Error('Expected draftHost to be true or false');
+        throw refused('Expected draftHost to be true or false');
       }
       if (request.pendingSend !== undefined && typeof request.pendingSend !== 'string') {
-        throw Error('Expected pendingSend to be a conversation id or empty');
+        throw refused('Expected pendingSend to be a conversation id or empty');
       }
       // Pop-out windows are desktop windows; a remote panel cannot claim any.
       if (
@@ -2653,7 +2667,7 @@ export class DesktopRuntime {
         request.rail !== undefined ||
         request.popouts !== undefined
       ) {
-        throw Error('Remote panels cannot report pop-out windows');
+        throw refused('Remote panels cannot report pop-out windows');
       }
       remote.selection = request.id;
       // Every report is complete: one without `visible` (an older phone app)

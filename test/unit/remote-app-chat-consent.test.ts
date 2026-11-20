@@ -395,10 +395,11 @@ test('desktop connection: these two actions behave exactly as before', async (co
   }
 });
 
-test('a report the gateway refuses still ends the page counting as visible', async (context) => {
-  // The device's request budget runs out just when the page is hidden: the
-  // gateway refuses the hide report, so it repeats the last report it
-  // forwarded with `visible: false`, and the waiting grant is refused.
+test('a report the gateway refuses ends what the last report recorded', async (context) => {
+  // The device's request budget runs out just when the page changes: the
+  // gateway refuses the report, so it tells the listener the page shows
+  // nothing (it might have been hidden or moved), and the waiting grant is
+  // refused. It never repeats a selection.
   const f = await consentFixture();
   context.after(() => f.close());
   const id = f.applicationConversation;
@@ -419,14 +420,14 @@ test('a report the gateway refuses still ends the page counting as visible', asy
     assert.equal(hide.type, 'error');
     assert.match(hide.message!, /Too many requests/);
 
-    await waitFor(() => !f.remoteVisibleSelections().includes(id), 3000);
+    await waitFor(() => f.remoteSelections().every((selection) => selection === ''), 3000);
     await release();
     const answer = await waiting.reply();
     assert.equal(answer.type, 'error', permission);
-    assert.match(answer.message!, showFirst, permission);
+    assert.match(answer.message!, openFirst, permission);
     assert.equal(f.allowedNow(permission), false, permission);
 
-    // The selection stays: stopping still works once the budget refills.
+    // The client's next accepted report counts again, once the budget refills.
     await delay(1000);
     await f.phoneReports(phone, id, true);
     const allowed = await f.phoneSend(phone, f.change(permission, true)).reply();
@@ -436,5 +437,37 @@ test('a report the gateway refuses still ends the page counting as visible', asy
     assert.equal(stopped.type, 'result', stopped.message ?? '');
     assert.equal(f.allowedNow(permission), false, permission);
     await f.closePhone(phone);
+  }
+});
+
+test('a report the listener refuses ends what the last report recorded', async (context) => {
+  // The page moves to a conversation that has just closed: the listener
+  // refuses that report, and the connection no longer shows the one it left.
+  const f = await consentFixture();
+  context.after(() => f.close());
+  const id = f.applicationConversation;
+
+  for (const permission of ['read', 'send'] as const) {
+    for (const allowed of [true, false]) {
+      const label = `${allowed ? 'allow' : 'stop'} ${permission}`;
+      await f.arrange(permission, !allowed);
+      const phone = await f.openPhone();
+      await f.phoneReports(phone, id, true);
+
+      const release = await f.holdApplicationQueue();
+      const waiting = f.phoneSend(phone, f.change(permission, allowed));
+      const closed = randomUUID();
+      const moved = await f
+        .phoneSend(phone, { action: 'panel-state', id: closed, visible: true })
+        .reply();
+      assert.equal(moved.type, 'error', label);
+      await release();
+
+      const answer = await waiting.reply();
+      assert.equal(answer.type, 'error', label);
+      assert.match(answer.message!, openFirst, label);
+      assert.equal(f.allowedNow(permission), !allowed, label);
+      await f.closePhone(phone);
+    }
   }
 });

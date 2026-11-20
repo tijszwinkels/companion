@@ -299,8 +299,10 @@ listener side is [`src/widgets/socket.ts`](../widgets/socket.ts) and
   the frame origin exactly as on the gateway.
 
 When both options are absent nothing changes: no second listener, the relay
-removes view addresses as before, and every gateway response and header is
-byte-identical to the previous release.
+removes view addresses as before, and every gateway HTTP response and header
+is byte-identical to the previous release. (Relayed sessions now also carry
+each application's `chatAccess`, with or without frames; see
+[application chat access](#application-chat-access).)
 
 ### What a client receives
 
@@ -740,10 +742,15 @@ same checks as the desktop; the listener applies them
    when the request arrives and again when the change runs, so a page hidden
    or switched in between allows nothing. When the gateway refuses one of a
    client's `panel-state` reports (request rate or pending bound), that
-   report might have said the page is hidden, so the gateway repeats the last
-   report it forwarded with `visible: false` (same selection, draft host and
-   pending send; at most once per forwarded visible report, and nobody waits
-   for its reply). The client's next accepted report replaces it. A connection whose client left
+   report may have hidden the page or moved it, so the gateway tells the
+   listener the page shows nothing (`id: ""`, `visible: false`, the last
+   report's draft-host fields): it never repeats a cached selection. Before
+   the role is confirmed this report keeps its place among the queued
+   requests. The gateway writes at most one per forwarded report that showed
+   something, and nobody waits for its reply. The client's next accepted
+   report replaces it. A report the listener itself refuses (for example for
+   a conversation that has just closed) likewise ends the connection's
+   selection and visibility. A connection whose client left
    (`withdraw-visibility`) can stop but not allow. Refusals say "Open this
    conversation on this device first" or "Show this conversation on this
    device first" and say nothing about other devices. The application ID, code

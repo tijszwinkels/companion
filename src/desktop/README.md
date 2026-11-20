@@ -1733,7 +1733,11 @@ Rules:
    conversation or none, or has gone, can change nothing; one whose
    visibility was withdrawn (its client left, `withdraw-visibility`) keeps its
    selection and can stop but allow nothing. A closed conversation clears
-   every remote selection of it.
+   every remote selection of it. A remote `panel-state` the listener refuses
+   (for example naming a conversation that has just closed) ends that
+   connection's selection and visibility, since its page has moved on; the
+   gateway reports an empty selection for a report it refuses itself
+   ([its rule](../remote/README.md#application-chat-access)).
 5. Refusals for remote connections: "Open this conversation on this device
    first" when its selection is not the conversation, "Show this conversation
    on this device first" when allowing from a page that is not visible. They
@@ -1754,25 +1758,27 @@ Rules:
 Cases (tested in `test/unit/remote-app-chat-consent.test.ts`, through the real
 gateway and a real control socket):
 
-| Connection | When the request arrives              | While it waits in the queue | Allow                  | Stop                  |
-| ---------- | ------------------------------------- | --------------------------- | ---------------------- | --------------------- |
-| desktop    | shows the conversation                | nothing changes             | yes                    | yes                   |
-| desktop    | shows another conversation            | —                           | no longer selected     | no longer selected    |
-| desktop    | shows the conversation                | selects another             | no longer selected     | no longer selected    |
-| remote     | selected, visible                     | nothing changes             | yes                    | yes                   |
-| remote     | selected, hidden                      | nothing changes             | Show … first           | yes                   |
-| remote     | another conversation selected         | —                           | Open … first           | Open … first          |
-| remote     | nothing selected (`id: ""`)           | —                           | Open … first           | Open … first          |
-| remote     | never reported                        | —                           | Open … first           | Open … first          |
-| remote     | selected, visibility withdrawn        | —                           | Show … first           | yes                   |
-| remote     | selected, visible                     | becomes hidden              | Show … first           | yes                   |
-| remote     | selected, visible                     | selects another             | Open … first           | Open … first          |
-| remote     | selected, visible                     | client leaves (withdrawn)   | Show … first           | yes                   |
-| remote     | selected, hidden                      | becomes visible             | Show … first (arrival) | yes                   |
-| either     | admitted, wrong application ID        | —                           | permissions changed    | permissions changed   |
-| either     | admitted, old code version            | —                           | permissions changed    | permissions changed   |
-| either     | admitted, old permission revision     | —                           | permissions changed    | permissions changed   |
-| either     | preview mode, admitted / not admitted | —                           | `"preview"` / refusal  | `"preview"` / refusal |
+| Connection | When the request arrives              | While it waits in the queue      | Allow                  | Stop                  |
+| ---------- | ------------------------------------- | -------------------------------- | ---------------------- | --------------------- |
+| desktop    | shows the conversation                | nothing changes                  | yes                    | yes                   |
+| desktop    | shows another conversation            | —                                | no longer selected     | no longer selected    |
+| desktop    | shows the conversation                | selects another                  | no longer selected     | no longer selected    |
+| remote     | selected, visible                     | nothing changes                  | yes                    | yes                   |
+| remote     | selected, hidden                      | nothing changes                  | Show … first           | yes                   |
+| remote     | another conversation selected         | —                                | Open … first           | Open … first          |
+| remote     | nothing selected (`id: ""`)           | —                                | Open … first           | Open … first          |
+| remote     | never reported                        | —                                | Open … first           | Open … first          |
+| remote     | selected, visibility withdrawn        | —                                | Show … first           | yes                   |
+| remote     | selected, visible                     | becomes hidden                   | Show … first           | yes                   |
+| remote     | selected, visible                     | selects another                  | Open … first           | Open … first          |
+| remote     | selected, visible                     | client leaves (withdrawn)        | Show … first           | yes                   |
+| remote     | selected, hidden                      | becomes visible                  | Show … first (arrival) | yes                   |
+| remote     | selected, visible                     | listener refuses its next report | Open … first           | Open … first          |
+| remote     | selected, visible                     | gateway refuses its next report  | Open … first           | Open … first          |
+| either     | admitted, wrong application ID        | —                                | permissions changed    | permissions changed   |
+| either     | admitted, old code version            | —                                | permissions changed    | permissions changed   |
+| either     | admitted, old permission revision     | —                                | permissions changed    | permissions changed   |
+| either     | preview mode, admitted / not admitted | —                                | `"preview"` / refusal  | `"preview"` / refusal |
 
 ### Native self-wake visibility
 

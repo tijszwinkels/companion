@@ -62,6 +62,7 @@ export async function consentFixture(options: FrameFixtureOptions = {}) {
   ).widgets.renderer;
   const nodeReduce = renderer.reduce;
   let gate: { entered: () => void; release: Promise<void> } | undefined;
+  const heldQueues = new Set<() => void>();
   renderer.reduce = async (...args: unknown[]) => {
     const current = gate;
     if (current) {
@@ -80,6 +81,8 @@ export async function consentFixture(options: FrameFixtureOptions = {}) {
     const entered = deferred<void>();
     const release = deferred<void>();
     gate = { entered: () => entered.resolve(), release: release.promise };
+    // A test that fails while holding must not keep the fixture from closing.
+    heldQueues.add(() => release.resolve());
 
     const application = listenerApplication();
     const action = fetch(application.viewUrl + '/action', {
@@ -212,6 +215,13 @@ export async function consentFixture(options: FrameFixtureOptions = {}) {
    * The visible selections of the listener's remote connections. Read only
    * to know when the gateway's `withdraw-visibility` has been handled.
    */
+  function remoteSelections(): string[] {
+    const runtime = fixture.desktop.runtime as unknown as {
+      remoteClients: Map<number, { selection: string }>;
+    };
+    return [...runtime.remoteClients.values()].map((remote) => remote.selection);
+  }
+
   function remoteVisibleSelections(): string[] {
     const runtime = fixture.desktop.runtime as unknown as {
       remoteClients: Map<number, { visibleSelection: string }>;
@@ -277,8 +287,14 @@ export async function consentFixture(options: FrameFixtureOptions = {}) {
     phoneReports,
     closePhone,
     remoteVisibleSelections,
+    remoteSelections,
     remoteControlConnection,
-    close: () => fixture.close(),
+    close: async () => {
+      for (const release of heldQueues) {
+        release();
+      }
+      await fixture.close();
+    },
   };
 }
 
