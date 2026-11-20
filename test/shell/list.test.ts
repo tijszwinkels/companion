@@ -615,11 +615,16 @@ test('unread and working markers follow the README table', { skip }, async (cont
   await page.waitFor(`!(${working('Stopped conversation')})`);
   assert.equal((await marks('Stopped conversation')).unread, false);
 
-  // A conversation started elsewhere arrives unread (it is not shown) and working.
-  await start(fixture, 'Arrived conversation');
+  // A conversation started elsewhere arrives working, not unread: the
+  // listener marks it only when a turn completes unseen.
+  const arrived = await start(fixture, 'Arrived conversation');
   await page.waitFor(`Boolean(${entryExpression('Arrived conversation')})`);
+  await page.waitFor(working('Arrived conversation'));
+  assert.equal((await marks('Arrived conversation')).unread, false);
+  // Its answer completes while another conversation is shown: unread.
+  answer(arrived.run, 'a4', 'Arrived answer.');
   await page.waitFor(unread('Arrived conversation'));
-  assert.equal((await marks('Arrived conversation')).working, true);
+  assert.equal((await marks('Arrived conversation')).working, false);
 
   // Selecting clears the mark; a new turn in it then shows the ring again.
   await openConversation(page, 'Other conversation');
@@ -647,12 +652,11 @@ test('unread and working markers follow the README table', { skip }, async (cont
     0,
   );
 
-  // Reopened elsewhere, a conversation this page has seen before is not
-  // marked (no new completed turn, not a new arrival).
+  // Reopened elsewhere, it comes back with the listener's saved mark: its
+  // answer is still unseen.
   await fixture.sessions.reopen(arrivedId, false);
   await page.waitFor(`Boolean(${entryExpression('Arrived conversation')})`);
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  assert.equal((await marks('Arrived conversation')).unread, false);
+  await page.waitFor(unread('Arrived conversation'));
 
   await assertCleanPage(fixture, page, sockets);
 });

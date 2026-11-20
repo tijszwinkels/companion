@@ -11,7 +11,8 @@
  * Actions, all through the phone panel's Store and the gateway's remote
  * role:
  * - select: a click (or Enter/Space on the focused entry) shows the
- *   conversation (`Store.open`, which also clears its unread mark);
+ *   conversation (`Store.open`, which reports it as shown, so the listener
+ *   clears its unread mark);
  * - close: the × that appears on hover or keyboard focus (`close-agent`);
  * - reorder: dragging (`move-agent` with the captured order revision; the
  *   rules are in reorder-gesture.ts), Alt+Shift+Up and Alt+Shift+Down on a
