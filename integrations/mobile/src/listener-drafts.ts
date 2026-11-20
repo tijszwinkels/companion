@@ -30,8 +30,8 @@
  * - **Writing.** Every edit is one `draft-set` with a fresh `editId`. At
  *   most one is in flight per conversation, from sending until its answer
  *   arrives; text typed meanwhile waits, and newer text replaces waiting
- *   text, so fast typing never queues stale edits (except text a send waits
- *   for, which leaves as it is; see `written`). A change that carries an
+ *   text, so fast typing never queues stale edits. Text typed while a send
+ *   is in progress is written after the send's answer (see `written`). A change that carries an
  *   `editId` is this page's own (the listener names it only to the
  *   connection that wrote it): it is never shown a second time.
  * - **Unsaved text.** Text the listener has not confirmed (typed while not
@@ -108,12 +108,17 @@ interface DraftEntry {
   /** The newest text typed while an edit was in flight, still to be sent. */
   waiting: string | null;
   /**
-   * A send waits for `waiting` (see `written`): it leaves as it is, and
-   * text typed after it waits in `later` instead of replacing it.
+   * A send of this conversation is in progress (from `written` until
+   * `sendSettled`). Text typed meanwhile waits in `afterSend`.
    */
-  waitingPinned: boolean;
-  /** Text typed after a send pinned `waiting`; it becomes `waiting` once that leaves. */
-  later: string | null;
+  sending: boolean;
+  /**
+   * The newest text typed while a send was in progress. It is written only
+   * after the send's answer: the listener clears its draft when it equals
+   * the sent text, so text written before that answer (the same words typed
+   * again) could be cleared.
+   */
+  afterSend: string | null;
   /** Why the shown text is not saved in the listener, or '' (it is, or it is the listener's). */
   unsaved: string;
   /** Edits sent so far, and how many of them are settled (answered or lost). */
@@ -167,7 +172,7 @@ export class ListenerDrafts {
     this.decided = false;
     let changed = false;
     for (const entry of this.entries.values()) {
-      if (entry.inFlight === null && entry.waiting === null) {
+      if (entry.inFlight === null && entry.waiting === null && entry.afterSend === null) {
         continue;
       }
       entry.inFlight = null;
@@ -313,7 +318,8 @@ export class ListenerDrafts {
 
     // Another editor's change waits while this page's own edits are on their
     // way (those win) or its text is not saved (the person decides).
-    if (entry.inFlight === null && entry.waiting === null && entry.unsaved === '') {
+    const writing = entry.inFlight !== null || entry.waiting !== null || entry.afterSend !== null;
+    if (!writing && entry.unsaved === '') {
       if (this.host.shown(change.id) !== change.text) {
         this.host.show(change.id, change.text);
       }
@@ -376,16 +382,14 @@ export class ListenerDrafts {
     entry.inFlight = null;
     if (entry.waiting !== null) {
       const text = entry.waiting;
-      // Text typed after a send pinned the waiting text goes next.
-      entry.waiting = entry.later;
-      entry.later = null;
-      entry.waitingPinned = false;
+      entry.waiting = null;
       this.send(id, entry, text);
       this.releaseWaiters(entry);
       return;
     }
     entry.unsaved = '';
-    if (this.host.shown(id) !== entry.listenerText) {
+    // Text typed after a send stays shown; it is written after that send.
+    if (entry.afterSend === null && this.host.shown(id) !== entry.listenerText) {
       this.host.show(id, entry.listenerText);
     }
     this.releaseWaiters(entry);
@@ -430,9 +434,9 @@ export class ListenerDrafts {
     // Discard now would be undone when this edit is applied). If this edit
     // fails, its own reason marks the text again.
     entry.unsaved = '';
-    if (entry.inFlight !== null && entry.waitingPinned) {
-      // A send waits for the waiting text: it is not replaced.
-      entry.later = text;
+    if (entry.sending) {
+      // Written after the send's answer (see `afterSend`).
+      entry.afterSend = text;
     } else if (entry.inFlight !== null) {
       entry.waiting = text;
     } else {
@@ -470,25 +474,45 @@ export class ListenerDrafts {
   }
 
   /**
-   * A send of `text` from this page was accepted. The listener clears its
-   * draft only if it still equals the sent text, and tells every editor.
-   * If the box still shows the sent text with nothing of this page on its
-   * way, that text no longer needs saving: the listener's draft is shown.
-   * Newer typing stays as it is.
+   * The send that `written` was called for has its answer: `sent` is the
+   * text when the listener accepted it, null when it failed, was lost or
+   * never left.
+   *
+   * Text typed while it was in progress is written now. Otherwise, after an
+   * accepted send: the listener clears its draft only if it still equals
+   * the sent text, and tells every editor; if the box still shows the sent
+   * text with nothing of this page on its way, that text no longer needs
+   * saving, and the listener's draft is shown.
    */
-  sent(id: string, text: string): void {
+  sendSettled(id: string, sent: string | null): void {
     const entry = this.entries.get(id);
     if (this.currentMode !== 'listener' || !entry) {
       return;
     }
-    if (this.host.shown(id) !== text || entry.inFlight !== null || entry.waiting !== null) {
+    entry.sending = false;
+    const typedAfter = entry.afterSend;
+    entry.afterSend = null;
+
+    if (typedAfter !== null) {
+      if (!this.writable) {
+        entry.unsaved = notConnectedReason;
+      } else if (entry.inFlight !== null) {
+        entry.waiting = typedAfter;
+      } else {
+        this.send(id, entry, typedAfter);
+      }
+      this.host.changed();
       return;
     }
-    entry.unsaved = '';
-    if (text !== entry.listenerText) {
-      this.host.show(id, entry.listenerText);
+
+    const quiet = entry.inFlight === null && entry.waiting === null;
+    if (sent !== null && quiet && this.host.shown(id) === sent) {
+      entry.unsaved = '';
+      if (sent !== entry.listenerText) {
+        this.host.show(id, entry.listenerText);
+      }
+      this.forgetIfIdle(id, entry);
     }
-    this.forgetIfIdle(id, entry);
     this.host.changed();
   }
 
@@ -508,19 +532,23 @@ export class ListenerDrafts {
    * listener has the sent text as its draft before the send arrives (it
    * clears only a draft that equals the sent text), and a send never
    * overtakes the edit carrying its own text. Text typed after the call
-   * does not delay it.
+   * does not delay it: it waits until `sendSettled`.
    */
   written(id: string): Promise<void> {
-    const entry = this.entries.get(id);
-    if (!entry || (entry.inFlight === null && entry.waiting === null)) {
+    if (this.currentMode !== 'listener') {
       return Promise.resolve();
     }
-    // The waiting text, if any, leaves as the next edit, unchanged: text
-    // typed from now on waits behind it.
+    // From now on until `sendSettled`, typing waits in `afterSend`, so the
+    // waiting text (if any) leaves as it is.
+    const entry = this.entry(id);
+    entry.sending = true;
+    if (entry.inFlight === null && entry.waiting === null) {
+      return Promise.resolve();
+    }
+    // The waiting text, if any, leaves as the next edit.
     let target = entry.issued;
     if (entry.waiting !== null) {
       target += 1;
-      entry.waitingPinned = true;
     }
     return new Promise((resolve) => {
       entry.waiters.push({ target, resolve });
@@ -550,6 +578,9 @@ export class ListenerDrafts {
     if (entry.inFlight !== null || entry.waiting !== null || entry.unsaved !== '') {
       return '';
     }
+    if (entry.afterSend !== null) {
+      return '';
+    }
     if (entry.listenerText === '' || this.host.shown(id) !== entry.listenerText) {
       return '';
     }
@@ -568,7 +599,8 @@ export class ListenerDrafts {
     }
     const ids: string[] = [];
     for (const [id, entry] of this.entries) {
-      if (entry.unsaved !== '' || entry.inFlight !== null || entry.waiting !== null) {
+      const writing = entry.inFlight !== null || entry.waiting !== null || entry.afterSend !== null;
+      if (entry.unsaved !== '' || writing) {
         ids.push(id);
       }
     }
@@ -591,8 +623,8 @@ export class ListenerDrafts {
         listenerSequence: 0,
         inFlight: null,
         waiting: null,
-        waitingPinned: false,
-        later: null,
+        sending: false,
+        afterSend: null,
         unsaved: '',
         issued: 0,
         settled: 0,
@@ -609,7 +641,12 @@ export class ListenerDrafts {
    * idle entry for an empty draft is dropped.
    */
   private forgetIfIdle(id: string, entry: DraftEntry): void {
-    const idle = entry.inFlight === null && entry.waiting === null && entry.unsaved === '';
+    const idle =
+      entry.inFlight === null &&
+      entry.waiting === null &&
+      entry.afterSend === null &&
+      !entry.sending &&
+      entry.unsaved === '';
     if (idle && entry.listenerText === '' && entry.listenerSource === '') {
       this.entries.delete(id);
     }
@@ -633,11 +670,13 @@ export class ListenerDrafts {
     entry.waiters = remaining;
   }
 
-  /** No text waits to be written any more (it stays shown). */
+  /**
+   * No text waits to be written any more (it stays shown, and is never
+   * written by itself afterwards).
+   */
   private dropWaiting(entry: DraftEntry): void {
     entry.waiting = null;
-    entry.later = null;
-    entry.waitingPinned = false;
+    entry.afterSend = null;
   }
 
   /** Resolve every waiting send (sign-out, or drafts no longer shared). */

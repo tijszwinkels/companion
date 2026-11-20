@@ -484,7 +484,21 @@ export class Store {
       // first, so a send never overtakes it (the listener clears only a
       // draft that equals the sent text).
       if (id !== 'new' && this.listenerDrafts !== undefined) {
+        const unsavedBefore = this.draftUnsaved(id);
         await this.listenerDrafts.written(id);
+        // Meanwhile signed out, or this send was dropped (the conversation
+        // closed, maybe already reopened): it must not leave any more.
+        if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
+          this.endPendingSend(id);
+          this.listenerDrafts.sendSettled(id, null);
+          return undefined;
+        }
+        // The edit carrying this text was refused: the listener does not
+        // hold it, so after the send it could not clear it, and the box
+        // would offer the same text again. Not sent; the text stays unsaved.
+        if (unsavedBefore === '' && this.draftUnsaved(id) !== '') {
+          throw Error('Your text could not be saved, so it was not sent.');
+        }
       }
       const result =
         id === 'new'
@@ -492,6 +506,10 @@ export class Store {
           : await this.request('send-agent', { id, text }, { quiet: true });
       this.endPendingSend(id);
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
+        if (id !== 'new') {
+          // Text typed while it was in progress is written now.
+          this.listenerDrafts?.sendSettled(id, text);
+        }
         return undefined;
       }
       const unchangedDraft = (this.draftRevisions.get(id) ?? 0) === revision;
@@ -499,7 +517,7 @@ export class Store {
         // The listener clears its draft itself, only while it still equals
         // the sent text, and tells every editor; this page never writes an
         // empty draft for a send (newer text typed elsewhere would go).
-        this.listenerDrafts?.sent(id, text);
+        this.listenerDrafts?.sendSettled(id, text);
       } else if (unchangedDraft) {
         this.setDraft(id, '');
       }
@@ -524,6 +542,10 @@ export class Store {
       return startedId(result);
     } catch (error) {
       this.endPendingSend(id);
+      if (id !== 'new') {
+        // Text typed while it was in progress is written now.
+        this.listenerDrafts?.sendSettled(id, null);
+      }
       if (identity !== this.identityRevision || this.state.sends.get(id) !== sending) {
         return undefined;
       }
@@ -535,7 +557,7 @@ export class Store {
       // A shared draft follows the listener: if the send arrived, the
       // listener cleared it, so the box need not hold the text any more.
       if (id !== 'new' && this.draftsShared && error instanceof UncertainOutcome) {
-        message = `${explanation} Check the conversation before sending it again; the text box shows Companion's draft.`;
+        message = `${explanation} Check the conversation before sending it again.`;
       }
       this.update({ sends: new Map(this.state.sends).set(id, { pending: false, error: message }) });
       return undefined;

@@ -1122,29 +1122,39 @@ not yet).
    (the text is then the person's); sending it is accepting it. The browser
    never switches conversation for a draft (a remote connection is never
    asked to focus one).
-6. **Sending.** A send names exactly the text shown, as before. While it
-   waits for its answer, `panel-state` reports `pendingSend` for that
-   conversation (reported before `send-agent` leaves, withdrawn when its
-   answer, or its loss, arrives), so the listener refuses agent proposals
-   for it meanwhile (when another conversation's send still waits, that one
-   is reported next; a send that started before the connection's draft
-   snapshot is reported as soon as it arrives). The send leaves only after
-   the edits that were on their way or waiting when it was pressed are
-   answered, so the listener has the sent text as its draft first; text
-   typed after pressing Send waits behind the sent text instead of
-   replacing it, and does not delay the send. Close (the page's and the
-   list's ×) waits for the send's answer, so it cannot reach the listener
+6. **Sending.** A send names exactly the text shown, as before. While it waits
+   for its answer, `panel-state` reports `pendingSend` for that conversation
+   (reported before `send-agent` leaves, withdrawn when its answer, or its
+   loss, arrives), so the listener refuses agent proposals for it meanwhile
+   (when another conversation's send still waits, that one is reported next; a
+   send that started before the connection's draft snapshot is reported as
+   soon as it arrives). The send leaves only after the edits that were on
+   their way or waiting when it was pressed are answered, so the listener has
+   the sent text as its draft first. Text typed after pressing Send does not
+   delay it and is written only after the send's answer, so the listener's
+   clearing of the sent text cannot take it (the same words typed again stay).
+   A send whose own text could not be written (the edit was refused) is not
+   sent; the text stays unsaved with Save and Discard and the notice says so
+   (the listener could not clear it afterwards, and the box would offer the
+   same text again). A send that was dropped meanwhile (its conversation
+   closed, also when reopened at once) does not leave. Close (the page's and
+   the list's ×) waits for the send's answer, so it cannot reach the listener
    before the send. A send whose answer was lost says to check the
-   conversation; the box shows the listener's draft (empty if the send
-   arrived). The listener clears the draft after accepting the send
-   if the draft still equals the sent text, and every editor follows; this
-   page never writes an empty draft for a send. If the box still shows the
-   sent text (for example unsaved text that differed from the listener's),
-   it then shows the listener's draft; anything typed meanwhile stays.
+   conversation before sending again; the box follows the listener's draft
+   (empty if the send arrived) unless it holds unsaved text. The listener
+   clears the draft after accepting the send if the draft still equals the
+   sent text, and every editor follows; this page never writes an empty draft
+   for a send. If the box still shows the sent text (for example unsaved text
+   that differed from the listener's), it then shows the listener's draft;
+   anything typed meanwhile stays.
+
 7. **In the list.** A conversation that has unsent text and is not the one
-   shown (also the selected one while the settings screen covers it) carries a ✎ on its icon in the strip, and in the full list its
-   second line reads "Draft: …" instead of its last message (also for the
-   person's own unsent text); its accessible name ends in "unsent draft".
+   shown (also the selected one while the settings screen covers it) carries a
+   ✎ on its icon in the strip, and in the full list its second line reads
+   "Draft: …" instead of its last message (also for the person's own unsent
+   text, and for text of only spaces or line breaks); its accessible name ends
+   in "unsent draft".
+
 8. **Migration.** Drafts this browser kept in `localStorage` (the phone
    Store's draft map: drafts from before listener drafts, from a connection
    without them, or unsaved text of a page that was reloaded) are offered
@@ -1583,6 +1593,13 @@ Known limits:
   box was changed after pressing Send, the unsent text is no longer in it.
   This needs a drop within one answer's time after Send and new typing in
   that same moment.
+- A `pendingSend` withdrawal (the report after the send's answer) that the
+  gateway refuses, for example when the device's request allowance is used up,
+  leaves the listener refusing agent proposals for that conversation until
+  this page's next report (another selection, or a reconnect).
+- The browser still sends at most 4,000 characters (`maximumMessageLength`,
+  from before the gateway allowed 8,000): a longer draft written elsewhere is
+  shown, but Send stays unavailable until it is shortened.
 - Text emptied while not connected (an offline Clear) stays empty and
   unsaved across a reconnect, but not across a reload of the page: this
   browser keeps no empty text, so after a reload the listener's draft is
@@ -1831,14 +1848,22 @@ policy violation and no request to another origin; never the unscoped
 `stop-agent`. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 column hidden and shown at 420, 760, 1280 and 1600 px.
 
-`listener-drafts.test.ts` plays every row of the four
-[listener drafts](#listener-drafts) tables against the real phone Store and
-Connection in Node, through a stand-in socket and a stand-in gateway and
-listener that follow the drafts protocol (`drafts-listener-stand-in.ts`):
-snapshots, changes from elsewhere while this page is idle or typing, its own
-echo with newer text typed since, sends from here (also while their text is still being written, and with text typed after pressing Send) and elsewhere, a conversation closed and reopened, switching; one edit, fast typing with answers held back, refused, unanswered at a reconnect (also when the listener had applied it), offline typing, an offline Clear, typing after a refusal, Save, Discard, two tabs; agent
-proposals for the shown and another conversation, while a send waits,
-Clear, editing and sending; the selected conversation's draft listed under the settings screen; local drafts offered or not, a reload with unsaved text (also after its conversation was closed elsewhere), a gateway without drafts, and switching between the two
+`listener-drafts.test.ts` plays every row of the four [listener
+drafts](#listener-drafts) tables against the real phone Store and Connection
+in Node, through a stand-in socket and a stand-in gateway and listener that
+follow the drafts protocol (`drafts-listener-stand-in.ts`): snapshots, changes
+from elsewhere while this page is idle or typing, its own echo with newer text
+typed since, sends from here (also while their text is still being written,
+with text typed after pressing Send, the same words typed again, the
+conversation closed and reopened before the send left, and text that could not
+be written) and elsewhere, a conversation closed and reopened, switching; one
+edit, fast typing with answers held back, refused, unanswered at a reconnect
+(also when the listener had applied it), offline typing, an offline Clear,
+typing after a refusal, Save, Discard, two tabs; agent proposals for the shown
+and another conversation, while a send waits, Clear, editing and sending; the
+selected conversation's draft listed under the settings screen; local drafts
+offered or not, a reload with unsaved text (also after its conversation was
+closed elsewhere), a gateway without drafts, and switching between the two
 modes after reconnects. `bridge.test.ts` checks what the page gets
 (`draftUnsaved`, `draft.source` and `clearable`, Save and Discard for the
 shown conversation only, Close refused while text is unsaved).

@@ -38,9 +38,12 @@ export interface ListEntry {
   /** The last user or assistant text, as one plain line. */
   lastLine: string;
   /**
-   * The unsent text as one line, or '': none, not shared with the listener,
-   * or the conversation is the one shown.
+   * Whether the conversation has unsent text to mark in the list: it is
+   * shared with the listener and the conversation is not the one shown.
+   * Also text of only spaces or line breaks.
    */
+  hasDraft: boolean;
+  /** That unsent text as one line ('' without one, or for only white space). */
   draft: string;
   selected: boolean;
   working: boolean;
@@ -136,9 +139,9 @@ export function listEntries(
     const title = session.title || 'Untitled';
     const { glyph, caption, emoji } = badgeOf(title, number);
     const selected = state.selected === id && !state.showingPrevious;
-    let draft = '';
+    let unsent = '';
     if (draftOf && !(selected && !selectionCovered)) {
-      draft = draftLine(draftOf(id));
+      unsent = draftOf(id);
     }
     entries.push({
       id,
@@ -148,7 +151,8 @@ export function listEntries(
       emoji,
       caption,
       lastLine: plainPreview(lastText(session)),
-      draft,
+      hasDraft: unsent !== '',
+      draft: draftLine(unsent),
       selected,
       working: isWorking(session),
       unread: state.unread.has(id),
@@ -170,7 +174,7 @@ export function entryLabel(entry: ListEntry): string {
   if (entry.unread) {
     label += ', new answer';
   }
-  if (entry.draft) {
+  if (entry.hasDraft) {
     label += ', unsent draft';
   }
   return label;

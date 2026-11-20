@@ -1104,7 +1104,17 @@ export class GatewayChatBridge implements NativeBridge {
    * the same refusals as the chat page's Close session.
    */
   canClose(sessionId: string): boolean {
-    return this.online && !this.holdsText(sessionId) && !this.pendingSend(sessionId);
+    return this.online && !this.holdsText(sessionId) && !this.closeWaitsForSend(sessionId);
+  }
+
+  /**
+   * With listener drafts a send leaves only after its text is written, so a
+   * Close admitted while it waits would reach the listener first and the
+   * send would be refused: Close waits for the send's answer. With drafts
+   * kept in this browser the send has left already, as before.
+   */
+  private closeWaitsForSend(sessionId: string): boolean {
+    return this.store.draftsShared && this.pendingSend(sessionId);
   }
 
   /**
@@ -1119,16 +1129,14 @@ export class GatewayChatBridge implements NativeBridge {
 
   /**
    * Close session. Not while the conversation holds text only this page has,
-   * and not while a send of it waits: with listener drafts a send leaves
-   * only after its text is written, so a Close admitted meanwhile would
-   * reach the listener first and the send would be refused.
+   * and not while a send of it waits to leave (see closeWaitsForSend).
    */
   closeSession(sessionId: string, callback?: (answer: string) => void): void {
     if (
       !this.sameSession(sessionId) ||
       !this.online ||
       this.holdsText(sessionId) ||
-      this.pendingSend(sessionId)
+      this.closeWaitsForSend(sessionId)
     ) {
       this.answer(callback, { accepted: false });
       return;

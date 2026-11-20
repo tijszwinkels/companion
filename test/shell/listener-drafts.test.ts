@@ -294,14 +294,103 @@ test('draft text shown: each row of the README table', async (context) => {
         const order = tab.link.requests
           .filter((frame) => frame.action === 'draft-set' || frame.action === 'send-agent')
           .map((frame) => `${frame.action}:${frame.text}`);
+        // Text typed after pressing Send is written after the send's answer.
         assert.deepEqual(order, [
           'draft-set:h',
           'draft-set:hello',
-          'draft-set:next',
           'send-agent:hello',
+          'draft-set:next',
         ]);
         assert.equal(listener.text('a'), 'next', 'the newer text stays');
         assert.equal(tab.shown('a'), 'next');
+      },
+    },
+    {
+      row: 'The same words typed again right after Send',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        listener.holdActions.add('draft-set');
+        tab.type('a', 'O');
+        tab.type('a', 'OK');
+        const sending = tab.store.sendDraft('a');
+        // Cleared and typed again: the second "OK" is the person's new text.
+        tab.type('a', '');
+        tab.type('a', 'OK');
+        await settle();
+        listener.release();
+        await sending;
+        await settle();
+        const order = tab.link.requests
+          .filter((frame) => frame.action === 'draft-set' || frame.action === 'send-agent')
+          .map((frame) => `${frame.action}:${frame.text}`);
+        assert.deepEqual(order, ['draft-set:O', 'draft-set:OK', 'send-agent:OK', 'draft-set:OK']);
+        assert.equal(
+          listener.text('a'),
+          'OK',
+          'the listener cleared the sent text, then got the new one',
+        );
+        assert.equal(tab.shown('a'), 'OK');
+        assert.equal(tab.unsaved('a'), '');
+      },
+    },
+    {
+      row: 'A send, then its conversation closed and reopened elsewhere before the send left',
+      async play() {
+        const listener = freshListener();
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        listener.holdActions.add('draft-set');
+        tab.type('a', 'Do it');
+        const first = tab.store.sendDraft('a');
+        await settle();
+        const conversation = listener.sessions.find((entry) => entry.id === 'a')!;
+        tab.link.socket.deliver({ type: 'engine', message: { type: 'agent-removed', id: 'a' } });
+        tab.link.socket.deliver({
+          type: 'engine',
+          message: { type: 'agent-restored', session: conversation },
+        });
+        await settle();
+        // The reopened conversation still shows the text; Send again.
+        tab.store.open('a');
+        const second = tab.store.sendDraft('a');
+        listener.release();
+        await first;
+        await second;
+        await settle();
+        const sends = tab.link.requests.filter((frame) => frame.action === 'send-agent');
+        assert.deepEqual(
+          sends.map((frame) => frame.text),
+          ['Do it'],
+          'one send, not two',
+        );
+      },
+    },
+    {
+      row: 'A send whose text could not be written',
+      async play() {
+        const listener = freshListener();
+        listener.desktopEdit('a', 'alpha\r\nbeta');
+        const tab = await openTab(listener, context);
+        tab.store.open('a');
+        // The page writes its own text first (as the bridge does for \n
+        // line breaks); that edit is refused.
+        listener.refuseEdits = 'Too many draft edits; this edit was not saved';
+        tab.type('a', 'alpha\nbeta');
+        await tab.store.sendDraft('a');
+        await settle();
+        assert.deepEqual(
+          tab.link.requests.filter((frame) => frame.action === 'send-agent'),
+          [],
+          'not sent',
+        );
+        assert.equal(tab.shown('a'), 'alpha\nbeta');
+        assert.match(tab.unsaved('a'), /not saved/);
+        assert.match(
+          tab.store.state.sends.get('a')?.error ?? '',
+          /Your text could not be saved, so it was not sent\./,
+        );
       },
     },
     {
@@ -789,6 +878,13 @@ test('list: the selected conversation covered by the settings screen lists its d
   assert.equal(shown.draft, '', 'not while it is shown');
   const covered = listEntries(store.state, draftOf, true).find((entry) => entry.id === 'a')!;
   assert.equal(covered.draft, 'Draft of a', 'listed while the settings screen covers it');
+
+  // Text of only line breaks is unsent text too.
+  listener.desktopEdit('b', '\n');
+  await settle();
+  const blank = listEntries(store.state, draftOf, false).find((entry) => entry.id === 'b')!;
+  assert.equal(blank.hasDraft, true);
+  assert.equal(blank.draft, '');
 });
 
 // ---- Migration and fallback --------------------------------------------------------

@@ -85,6 +85,7 @@ class FakeStore {
   }
 
   // Listener drafts (Store.draftUnsaved and the rest): set by a test, else none.
+  draftsShared = false;
   readonly unsaved = new Map<string, string>();
   readonly sources = new Map<string, string>();
   readonly savedOrDiscarded: string[] = [];
@@ -263,6 +264,7 @@ test('listener drafts reach the page: unsaved text, the agent source with Clear,
 
 test('a draft with \\r\\n line breaks reaches the page as the text box keeps it, and can be sent', async () => {
   const { store, bridge, messages } = harness();
+  store.draftsShared = true;
   await statusWhere(messages, (candidate) => candidate.sessionId === sessionA);
 
   // Written elsewhere (an agent's proposal from a Windows file).
@@ -287,6 +289,15 @@ test('a draft with \\r\\n line breaks reaches the page as the text box keeps it,
   });
   send.resolve({});
   await statusWhere(messages, (candidate) => candidate.pendingSend === false);
+  assert.equal(bridge.canClose(sessionA), true);
+
+  // With drafts kept in this browser (a gateway without them) the send has
+  // left already: Close is admitted while it waits, as before.
+  store.draftsShared = false;
+  store.setDraft(sessionA, 'Local text');
+  const local = await statusWhere(messages, (candidate) => candidate.draft!.text === 'Local text');
+  await ask((callback) => bridge.send(sessionA, local.draft!.revision, 'Local text', callback));
+  assert.equal(store.state.sends.get(sessionA)?.pending, true);
   assert.equal(bridge.canClose(sessionA), true);
 });
 

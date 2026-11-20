@@ -477,8 +477,8 @@ function Entry(props: {
   const descriptions: string[] = [];
   // Unsent text takes the last line's place ("Draft: …").
   let lastLine = entry.lastLine;
-  if (entry.draft) {
-    lastLine = `Draft: ${entry.draft}`;
+  if (entry.hasDraft) {
+    lastLine = `Draft: ${entry.draft}`.trim();
   }
   if (lastLine) {
     descriptions.push(lastLineId(entry));
@@ -516,7 +516,7 @@ function Entry(props: {
           {entry.emoji && <span class="entry-number">{entry.number}</span>}
           {entry.unread && <span class="entry-unread" />}
           {/* Unsent text: drawn in the strip only (the full list says "Draft: …"). */}
-          {entry.draft && <span class="entry-draft">✎</span>}
+          {entry.hasDraft && <span class="entry-draft">✎</span>}
         </span>
         {/* The title is in the accessible name; the last line is its
             description (also in the strip, where it is not drawn). */}
