@@ -93,42 +93,92 @@ window.addEventListener('storage', (event) => {
 });
 
 /**
- * The reader's own scrolling of the transcript, as SessionView's
- * readerScrolled sees it: a scroll while the reader holds a pointer pressed
- * in the transcript (dragging its scroll bar, however slowly), or within one
- * second of their wheel, key, pointer or touch input there. Within one
- * viewport of the end, the bridge loads the next newer page below a detached
- * snapshot before the reader gets there. Layout changes and the page's own
- * scrolling never count. The listeners live as long as the page.
+ * The reader's own movement of the transcript toward its end, as
+ * SessionView's readerScrolled sees it: a scroll toward the end while the
+ * reader drags in the transcript (its scroll bar or a finger, however
+ * slowly), or within one second of wheel or key input there that itself
+ * pointed toward the end (and of the end of such a drag, for momentum).
+ * Within one viewport of the end, the bridge then loads the next newer page
+ * below a detached snapshot before the reader gets there.
+ *
+ * Scrolls the page makes itself never count, also right after the reader's
+ * own input: keeping the reader's row in place after a resize, for example,
+ * can move the transcript toward the end just after the reader wheeled up.
+ * Only the direction of the reader's own input decides. The listeners live
+ * as long as the page.
  */
 const readerInputWindowMilliseconds = 1000;
+// When the reader last gave input in the transcript, and which way it
+// pointed: 1 toward the end, -1 toward the start, 0 no direction.
 let readerInputAt = -Infinity;
+let readerDirection = 0;
 let readerDragging = false;
 
 function insideTranscript(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('.transcript') !== null;
 }
 
-for (const type of ['wheel', 'keydown', 'pointerdown', 'touchstart']) {
-  document.addEventListener(
-    type,
-    (event) => {
-      if (insideTranscript(event.target)) {
-        readerInputAt = performance.now();
-        if (type === 'pointerdown') {
-          readerDragging = true;
-        }
-      }
-    },
-    { capture: true, passive: true },
-  );
+/** Which way a key moves a scrolled element: 1 toward the end, -1 back, 0 neither. */
+function keyDirection(event: KeyboardEvent): number {
+  if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End') {
+    return 1;
+  }
+  if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
+    return -1;
+  }
+  if (event.key === ' ') {
+    if (event.shiftKey) {
+      return -1;
+    }
+    return 1;
+  }
+  return 0;
 }
 
-// A drag ends wherever the pointer is released or the browser cancels it.
+document.addEventListener(
+  'wheel',
+  (event) => {
+    if (insideTranscript(event.target)) {
+      readerInputAt = performance.now();
+      readerDirection = Math.sign(event.deltaY);
+    }
+  },
+  { capture: true, passive: true },
+);
+
+document.addEventListener(
+  'keydown',
+  (event) => {
+    if (insideTranscript(event.target)) {
+      readerInputAt = performance.now();
+      readerDirection = keyDirection(event);
+    }
+  },
+  { capture: true, passive: true },
+);
+
+// Pointer events cover the mouse on the scroll bar and touch alike.
+document.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (insideTranscript(event.target)) {
+      readerInputAt = performance.now();
+      readerDirection = 0;
+      readerDragging = true;
+    }
+  },
+  { capture: true, passive: true },
+);
+
+// A drag ends wherever the pointer is released or the browser cancels it;
+// momentum after it keeps the direction the drag last moved in.
 for (const type of ['pointerup', 'pointercancel']) {
   document.addEventListener(
     type,
     () => {
+      if (readerDragging) {
+        readerInputAt = performance.now();
+      }
       readerDragging = false;
     },
     { capture: true, passive: true },
@@ -146,18 +196,23 @@ document.addEventListener(
     if (!(element instanceof Element) || !element.classList.contains('transcript')) {
       return;
     }
-    // Only movement toward the end asks for newer rows (SessionView's
-    // readerScrolled loads in the direction the reader is moving).
     const previousTop = lastScrollTops.get(element) ?? element.scrollTop;
     lastScrollTops.set(element, element.scrollTop);
-    if (element.scrollTop <= previousTop) {
+    const towardEnd = element.scrollTop > previousTop;
+    if (readerDragging) {
+      // The drag itself moves the transcript: its direction is the reader's.
+      if (element.scrollTop !== previousTop) {
+        readerDirection = towardEnd ? 1 : -1;
+      }
+      if (towardEnd) {
+        readerScrolled(element);
+      }
       return;
     }
     const recentInput = performance.now() - readerInputAt <= readerInputWindowMilliseconds;
-    if (!readerDragging && !recentInput) {
-      return;
+    if (towardEnd && recentInput && readerDirection === 1) {
+      readerScrolled(element);
     }
-    readerScrolled(element);
   },
   { capture: true, passive: true },
 );

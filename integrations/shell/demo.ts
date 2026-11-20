@@ -54,51 +54,60 @@ try {
 const directory = await mkdtemp(join(tmpdir(), 'companion-shell-demo-'));
 const controller = new AbortController();
 
-// The demo's own agent profile, so defaults name the scripted demo models.
-await writeFile(
-  join(directory, 'companion-agent.json'),
-  JSON.stringify({
-    executable: 'demo-no-executable',
-    model: 'cloud/demo-model',
-    thinking: 'medium',
-    quickQuestion: { model: 'local/qwen-demo', thinking: 'off' },
-  }),
-  { mode: 0o600 },
-);
+// What has been started so far, so that a failed start (for example a port
+// that is already taken) stops exactly that and still deletes the temporary
+// directory. Everything below runs inside try/finally for that reason.
+let sessions: AgentSessions | undefined;
+let runtime: DesktopRuntime | undefined;
+let runtimeStarted = false;
+let gateway: Gateway | undefined;
 
-let nextFrameId = 1;
+try {
+  // The demo's own agent profile, so defaults name the scripted demo models.
+  await writeFile(
+    join(directory, 'companion-agent.json'),
+    JSON.stringify({
+      executable: 'demo-no-executable',
+      model: 'cloud/demo-model',
+      thinking: 'medium',
+      quickQuestion: { model: 'local/qwen-demo', thinking: 'off' },
+    }),
+    { mode: 0o600 },
+  );
 
-/** A complete 1×1 PNG standing in for a captured window. */
-const syntheticPng = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
-  'base64',
-);
+  let nextFrameId = 1;
 
-/**
- * A spoken request with a synthetic screenshot. The shell does not show
- * screenshots yet, so its message is labelled "screenshot unavailable".
- */
-function frame(utterance: string): UserSensorFrame {
-  const frameId = nextFrameId;
-  nextFrameId++;
-  return {
-    id: frameId,
-    observedAt: Date.now(),
-    utterance: utterance,
-    screenshot: {
-      png: syntheticPng,
-      width: 1,
-      height: 1,
-      capturedAt: Date.now(),
-      window: { address: '0xdemo', app: 'org.example.Editor', title: 'Synthetic window' },
-    },
-  };
-}
+  /** A complete 1×1 PNG standing in for a captured window. */
+  const syntheticPng = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=',
+    'base64',
+  );
 
-// ---- Scripted agent backend -------------------------------------------------
+  /**
+   * A spoken request with a synthetic screenshot. The shell does not show
+   * screenshots yet, so its message is labelled "screenshot unavailable".
+   */
+  function frame(utterance: string): UserSensorFrame {
+    const frameId = nextFrameId;
+    nextFrameId++;
+    return {
+      id: frameId,
+      observedAt: Date.now(),
+      utterance: utterance,
+      screenshot: {
+        png: syntheticPng,
+        width: 1,
+        height: 1,
+        capturedAt: Date.now(),
+        window: { address: '0xdemo', app: 'org.example.Editor', title: 'Synthetic window' },
+      },
+    };
+  }
 
-const answers: Record<string, string> = {
-  trip: `Here is a relaxed **two-day plan** for the synthetic city trip:
+  // ---- Scripted agent backend -------------------------------------------------
+
+  const answers: Record<string, string> = {
+    trip: `Here is a relaxed **two-day plan** for the synthetic city trip:
 
 ### Day 1
 1. Morning walk along the river
@@ -112,7 +121,7 @@ const answers: Record<string, string> = {
 > All places in this demo are made up.
 
 Want me to add restaurant options?`,
-  code: `I looked at the failing test. The fixture returns \`undefined\` when the list is empty:
+    code: `I looked at the failing test. The fixture returns \`undefined\` when the list is empty:
 
 \`\`\`ts
 export function first(items: string[]): string | undefined {
@@ -121,133 +130,138 @@ export function first(items: string[]): string | undefined {
 \`\`\`
 
 A guard in the caller fixes it. Should I apply the change?`,
-  default: `Sure — here is a short answer with a list:
+    default: `Sure — here is a short answer with a list:
 
 - Point one
 - Point two, with a [documentation link](https://example.com/docs)
 
 Agent text such as <b>this tag</b> stays literal. That is all synthetic text for the demo.`,
-};
+  };
 
-function pickAnswer(text: string): string {
-  if (/trip|travel|city/i.test(text)) {
-    return answers.trip;
-  }
-  if (/test|code|bug|fix/i.test(text)) {
-    return answers.code;
-  }
-  return answers.default;
-}
-
-/**
- * One turn: for coding questions two tool calls first, then the answer
- * streamed word by word, then three choices. Stops when the turn is stopped.
- */
-const scriptedRun: AgentBackend['run'] = async (request, signal, emit, publishChoices) => {
-  const question = request.prompt.text;
-
-  if (/test|code|bug|fix/i.test(question)) {
-    const calls: [string, string, string][] = [
-      ['read', '{"path":"src/list.ts"}', 'export function first(items) {\n  return items[0];\n}\n'],
-      ['bash', '{"command":"npm test -- list"}', 'not ok 1 - first() of empty list\n# fail 1\n'],
-    ];
-    for (const [name, input, output] of calls) {
-      const id = randomUUID();
-      const running: AgentMessage = { ...chatMessage(id, 'tool', ''), toolName: name, input };
-      emit({ ...running, state: 'running' });
-      await delay(400, undefined, { signal });
-      emit({ ...running, text: output, state: 'done' });
+  function pickAnswer(text: string): string {
+    if (/trip|travel|city/i.test(text)) {
+      return answers.trip;
     }
-  }
-
-  const id = randomUUID();
-  const words = pickAnswer(question).split(/(\s+)/);
-  let text = '';
-  for (const word of words) {
-    text += word;
-    emit({ ...chatMessage(id, 'assistant', text), state: 'running' });
-    if (word.trim()) {
-      await delay(35, undefined, { signal });
+    if (/test|code|bug|fix/i.test(text)) {
+      return answers.code;
     }
+    return answers.default;
   }
-  emit({ ...chatMessage(id, 'assistant', text), state: 'done' });
 
-  if (publishChoices) {
-    publishChoices(
-      parseChoices(['[Yes] - Go ahead', '[More detail] - Explain further', '[No] - Stop here']),
-    );
-  }
-};
+  /**
+   * One turn: for coding questions two tool calls first, then the answer
+   * streamed word by word, then three choices. Stops when the turn is stopped.
+   */
+  const scriptedRun: AgentBackend['run'] = async (request, signal, emit, publishChoices) => {
+    const question = request.prompt.text;
 
-const sessions = new AgentSessions(
-  {
-    pi: {
-      id: 'demo-backend',
-      label: 'Scripted demo backend',
-      dependencies: {},
-      run: scriptedRun,
-      async models() {
-        return {
-          models: ['local/qwen-demo', 'cloud/demo-model'],
-          pinned: ['local/qwen-demo'],
-          thinkingLevels: {
-            'local/qwen-demo': ['off', 'low'],
-            'cloud/demo-model': ['off', 'low', 'medium', 'high'],
-          },
-        };
+    if (/test|code|bug|fix/i.test(question)) {
+      const calls: [string, string, string][] = [
+        [
+          'read',
+          '{"path":"src/list.ts"}',
+          'export function first(items) {\n  return items[0];\n}\n',
+        ],
+        ['bash', '{"command":"npm test -- list"}', 'not ok 1 - first() of empty list\n# fail 1\n'],
+      ];
+      for (const [name, input, output] of calls) {
+        const id = randomUUID();
+        const running: AgentMessage = { ...chatMessage(id, 'tool', ''), toolName: name, input };
+        emit({ ...running, state: 'running' });
+        await delay(400, undefined, { signal });
+        emit({ ...running, text: output, state: 'done' });
+      }
+    }
+
+    const id = randomUUID();
+    const words = pickAnswer(question).split(/(\s+)/);
+    let text = '';
+    for (const word of words) {
+      text += word;
+      emit({ ...chatMessage(id, 'assistant', text), state: 'running' });
+      if (word.trim()) {
+        await delay(35, undefined, { signal });
+      }
+    }
+    emit({ ...chatMessage(id, 'assistant', text), state: 'done' });
+
+    if (publishChoices) {
+      publishChoices(
+        parseChoices(['[Yes] - Go ahead', '[More detail] - Explain further', '[No] - Stop here']),
+      );
+    }
+  };
+
+  sessions = new AgentSessions(
+    {
+      pi: {
+        id: 'demo-backend',
+        label: 'Scripted demo backend',
+        dependencies: {},
+        run: scriptedRun,
+        async models() {
+          return {
+            models: ['local/qwen-demo', 'cloud/demo-model'],
+            pinned: ['local/qwen-demo'],
+            thinkingLevels: {
+              'local/qwen-demo': ['off', 'low'],
+              'cloud/demo-model': ['off', 'low', 'medium', 'high'],
+            },
+          };
+        },
       },
     },
-  },
-  () => {},
-  directory,
-);
+    () => {},
+    directory,
+  );
 
-// ---- Listener runtime ------------------------------------------------------------
+  // ---- Listener runtime ------------------------------------------------------------
 
-const pause = new PauseControl();
-const runtime = new DesktopRuntime(
-  pause,
-  () => {},
-  controller.signal,
-  {
-    database: join(directory, 'utterances.sqlite'),
-    socket: join(directory, 'control.sock'),
-    preview: false,
-    sounds: false,
-    agents: sessions,
-    captureStorage: CaptureStoragePolicy.enabledForTesting(),
-  },
-  async () => {
-    throw Error('The demo never runs desktop commands');
-  },
-);
-await runtime.start();
+  const pause = new PauseControl();
+  runtime = new DesktopRuntime(
+    pause,
+    () => {},
+    controller.signal,
+    {
+      database: join(directory, 'utterances.sqlite'),
+      socket: join(directory, 'control.sock'),
+      preview: false,
+      sounds: false,
+      agents: sessions,
+      captureStorage: CaptureStoragePolicy.enabledForTesting(),
+    },
+    async () => {
+      throw Error('The demo never runs desktop commands');
+    },
+  );
+  await runtime.start();
+  runtimeStarted = true;
 
-// Two conversations: a coding question and a quick question.
-sessions.start(frame('Why does the list test fail? Please fix the bug.'), controller.signal);
-sessions.start(frame('Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
+  // Two conversations: a coding question and a quick question.
+  sessions.start(frame('Why does the list test fail? Please fix the bug.'), controller.signal);
+  sessions.start(frame('Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
 
-// ---- Gateway --------------------------------------------------------------------
+  // ---- Gateway --------------------------------------------------------------------
 
-const port = Number(values.port);
-const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
-const stateDirectory = join(directory, 'remote');
+  const port = Number(values.port);
+  const origins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
+  const stateDirectory = join(directory, 'remote');
 
-const gateway = new Gateway({
-  host: '127.0.0.1',
-  port,
-  origins,
-  stateDirectory,
-  controlSocket: join(directory, 'control.sock'),
-  sessionsDirectory: join(directory, '.companion-sessions'),
-  appDirectory,
-  log: (message) => console.error(`[remote] ${message}`),
-});
-await gateway.start();
+  gateway = new Gateway({
+    host: '127.0.0.1',
+    port,
+    origins,
+    stateDirectory,
+    controlSocket: join(directory, 'control.sock'),
+    sessionsDirectory: join(directory, '.companion-sessions'),
+    appDirectory,
+    log: (message) => console.error(`[remote] ${message}`),
+  });
+  await gateway.start();
 
-const { code } = await new DeviceStore(stateDirectory).createPairingCode();
+  const { code } = await new DeviceStore(stateDirectory).createPairingCode();
 
-console.log(`
+  console.log(`
 Companion browser shell demo (synthetic data only)
 
   Open:          http://127.0.0.1:${port}/
@@ -260,14 +274,23 @@ Temporary data: ${directory}
 Press Ctrl+C to stop and delete it.
 `);
 
-await new Promise<void>((resolve) => {
-  process.once('SIGINT', resolve);
-  process.once('SIGTERM', resolve);
-});
-
-console.error('Stopping…');
-controller.abort();
-await gateway.close();
-await sessions.close();
-await runtime.close();
-await rm(directory, { recursive: true, force: true });
+  await new Promise<void>((resolve) => {
+    process.once('SIGINT', resolve);
+    process.once('SIGTERM', resolve);
+  });
+  console.error('Stopping…');
+} finally {
+  controller.abort();
+  // A gateway that failed to start may still hold its state claim; closing
+  // it releases whatever it took (as test/remote-fixture.ts does).
+  if (gateway) {
+    await gateway.close();
+  }
+  if (sessions) {
+    await sessions.close();
+  }
+  if (runtime && runtimeStarted) {
+    await runtime.close();
+  }
+  await rm(directory, { recursive: true, force: true });
+}

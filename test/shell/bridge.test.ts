@@ -328,79 +328,243 @@ test('the same conversation reopened in a new lifetime is replaced like a switch
   assert.equal(after[1].type, 'status');
 });
 
-test('Stop is scoped to the run the page shows, and unscoped only once controls arrived', async () => {
-  const { store, bridge, messages } = harness();
-  // The conversation names its run before the listener's controls report
-  // arrives: the page's Stop is scoped to that run.
-  const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
-  store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
-  await settle();
-  const shown = lastStatus(messages);
-  assert.equal(shown.running, true);
-  assert.equal(shown.stopRunId, 'run-1');
-  // The unscoped Stop is not offered then, and refused if asked anyway.
-  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
-  assert.equal(store.pending.length, 0);
+/**
+ * The browser's Stop rule, as one table. The rule (integrations/shell/README.md):
+ *
+ * 1. The browser never sends the unscoped `stop-agent`.
+ * 2. A Stop it sends is `stop-agent-run` naming the run that Stop was
+ *    rendered for: the `stopRunId` of the status the page showed.
+ * 3. It is sent only while connected (after the connection's new snapshot)
+ *    and while that run is still the run the conversation names; otherwise
+ *    nothing is sent.
+ * 4. The page shows the per-run Stop exactly when the conversation names a
+ *    run (`stopRunId` set) and the footer Stop when it runs without one; the
+ *    footer Stop sends nothing.
+ *
+ * Each case says what the listener reports before the page renders, what
+ * happens between rendering and the click, which Stop the page shows and
+ * the one request the rule allows (or none). The expectations follow from
+ * the rule alone.
+ */
+type StopEvent =
+  /** The listener publishes the conversation (a run ID only while named). */
+  | { conversation: 'running' | 'completed' | 'cancelled'; runId?: string }
+  /** The listener's controls report for this browser. */
+  | { controls: string }
+  /** The connection drops and authenticates again, before its new snapshot. */
+  | { reconnect: true }
+  /** The new connection's snapshot, showing the conversation like this. */
+  | { snapshot: 'running' | 'completed' | 'cancelled'; runId?: string };
 
-  // The next turn starts before the page has seen it: a Stop pressed for the
-  // shown run must not reach the new one.
-  const next = session(sessionA, 'Question A', { status: 'running', runId: 'run-2' });
-  store.update({ sessions: new Map(store.state.sessions).set(sessionA, next) });
-  assert.deepEqual(await ask((answer) => bridge.stopRun(sessionA, shown.stopRunId!, answer)), {
-    accepted: false,
-  });
-  assert.equal(store.pending.length, 0);
-  await settle();
-  assert.equal(lastStatus(messages).stopRunId, 'run-2');
-  assert.deepEqual(await ask((answer) => bridge.stopRun(sessionA, 'run-2', answer)), {
-    accepted: true,
-  });
-  assert.equal(store.pending[0].action, 'stop-agent-run');
-  assert.deepEqual(store.pending[0].parameters, { id: sessionA, runId: 'run-2' });
+interface StopCase {
+  name: string;
+  /** The conversation in this browser's first snapshot. */
+  first: { status: 'running' | 'completed'; runId?: string };
+  beforeRender: StopEvent[];
+  /** The Stop the page shows (rule 4). */
+  shown: 'per-run' | 'footer' | 'none';
+  betweenRenderAndClick: StopEvent[];
+  /** The run ID of the one `stop-agent-run` sent, or null for nothing. */
+  expected: string | null;
+}
 
-  // A conversation that never named a run (a listener without run IDs; here
-  // a new lifetime of the same ID): no Stop until the listener reported the
-  // controls, since "no run ID" may only mean "not reported yet".
-  const unnamed = session(sessionA, 'Question A', {
-    status: 'running',
-    toolEpoch: 'epoch-without-run-ids',
-  });
-  store.update({ sessions: new Map(store.state.sessions).set(sessionA, unnamed) });
-  await settle();
-  assert.equal(lastStatus(messages).stopRunId, '');
-  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
-  assert.equal(store.pending.length, 1);
-  await settle();
-  assert.match(lastStatus(messages).inputError ?? '', /controls have not arrived/);
-  store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
-  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
-  assert.equal(store.pending[1].action, 'stop-agent');
-});
+const stopCases: StopCase[] = [
+  {
+    name: 'a named run: the per-run Stop names it',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [],
+    expected: 'run-1',
+  },
+  {
+    name: 'a named run with the controls report naming it too',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [{ controls: 'run-1' }],
+    shown: 'per-run',
+    betweenRenderAndClick: [],
+    expected: 'run-1',
+  },
+  {
+    name: 'the run changes between rendering and the click',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [{ conversation: 'running', runId: 'run-2' }],
+    expected: null,
+  },
+  {
+    name: 'the Stop rendered for the new run names the new run',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [{ conversation: 'running', runId: 'run-2' }],
+    shown: 'per-run',
+    betweenRenderAndClick: [],
+    expected: 'run-2',
+  },
+  {
+    name: 'an ending turn: its run ID is withdrawn after rendering, still running',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [{ conversation: 'running' }, { controls: '' }],
+    expected: null,
+  },
+  {
+    name: 'an ending turn rendered after its run ID was withdrawn: footer Stop',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [{ conversation: 'running' }, { controls: '' }],
+    shown: 'footer',
+    betweenRenderAndClick: [],
+    expected: null,
+  },
+  {
+    name: 'the first snapshot already shows an ending turn, then the controls arrive',
+    first: { status: 'running' },
+    beforeRender: [],
+    shown: 'footer',
+    betweenRenderAndClick: [{ controls: '' }],
+    expected: null,
+  },
+  {
+    name: 'a conversation that never names its run (footer Stop)',
+    first: { status: 'running' },
+    beforeRender: [{ controls: '' }],
+    shown: 'footer',
+    betweenRenderAndClick: [],
+    expected: null,
+  },
+  {
+    name: 'reconnect: clicked before the new snapshot',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [{ reconnect: true }],
+    expected: null,
+  },
+  {
+    name: 'reconnect: the new snapshot shows the same run',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [{ reconnect: true }, { snapshot: 'running', runId: 'run-1' }],
+    expected: 'run-1',
+  },
+  {
+    name: 'reconnect: the new snapshot shows a follow-up run',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [{ reconnect: true }, { snapshot: 'running', runId: 'run-2' }],
+    expected: null,
+  },
+  {
+    name: 'another client stops the run meanwhile',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [{ conversation: 'running' }, { conversation: 'cancelled' }],
+    expected: null,
+  },
+  {
+    name: 'a follow-up starts meanwhile',
+    first: { status: 'running', runId: 'run-1' },
+    beforeRender: [],
+    shown: 'per-run',
+    betweenRenderAndClick: [
+      { conversation: 'completed' },
+      { conversation: 'running', runId: 'run-2' },
+      { controls: 'run-2' },
+    ],
+    expected: null,
+  },
+  {
+    name: 'a finished conversation shows no Stop',
+    first: { status: 'completed' },
+    beforeRender: [],
+    shown: 'none',
+    betweenRenderAndClick: [],
+    expected: null,
+  },
+];
 
-test('a turn whose run ID was withdrawn while it ends gets no unscoped Stop', async () => {
-  const { store, bridge, messages } = harness();
-  store.update({ actions: { sessionId: sessionA, stopRunId: 'run-1', choices: [] } });
-  const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
-  store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
-  await settle();
-  assert.equal(lastStatus(messages).stopRunId, 'run-1');
+/** Apply one listener or connection event to the stand-in Store. */
+function applyStopEvent(store: FakeStore, event: StopEvent): void {
+  if ('conversation' in event || 'snapshot' in event) {
+    const status = 'conversation' in event ? event.conversation : event.snapshot;
+    const changed = session(sessionA, 'Question A', { status: status, runId: event.runId });
+    const sessions = new Map(store.state.sessions).set(sessionA, changed);
+    if ('snapshot' in event) {
+      // A snapshot replaces the engine state too (see the reconnect test).
+      store.update({ sessions: sessions, engine: { paused: false } });
+    } else {
+      store.update({ sessions: sessions });
+    }
+    return;
+  }
+  if ('controls' in event) {
+    store.update({ actions: { sessionId: sessionA, stopRunId: event.controls, choices: [] } });
+    return;
+  }
+  store.update({ connection: { ...store.state.connection, status: 'reconnecting' } });
+  store.update({ connection: { ...store.state.connection, status: 'online' } });
+}
 
-  // Stopping: the listener withdraws the run ID (and its controls) first and
-  // reports the conversation as running until the turn has ended.
-  const ending = session(sessionA, 'Question A', { status: 'running' });
-  store.update({
-    sessions: new Map(store.state.sessions).set(sessionA, ending),
-    actions: { sessionId: sessionA, stopRunId: '', choices: [] },
+for (const stopCase of stopCases) {
+  test(`Stop rule: ${stopCase.name}`, async () => {
+    const store = new FakeStore();
+    const first = session(sessionA, 'Question A', {
+      status: stopCase.first.status,
+      runId: stopCase.first.runId,
+    });
+    store.state.sessions.set(sessionA, first);
+    store.state.selected = sessionA;
+    const bridge = new GatewayChatBridge(store as unknown as Store, {
+      visibleIndexes: () => [],
+      topIndex: () => -1,
+    });
+    const messages: HostMessage[] = [];
+    bridge.message.connect((json) => messages.push(JSON.parse(json) as HostMessage));
+    bridge.ready('synthetic-document');
+    store.update({ engine: { paused: false } });
+    for (const event of stopCase.beforeRender) {
+      applyStopEvent(store, event);
+    }
+    await settle();
+
+    // What the page renders (Chat.tsx): the per-run Stop for `stopRunId`,
+    // else the footer Stop while running.
+    const rendered = lastStatus(messages);
+    let shown: StopCase['shown'] = 'none';
+    if (rendered.stopRunId) {
+      shown = 'per-run';
+    } else if (rendered.running) {
+      shown = 'footer';
+    }
+    assert.equal(shown, stopCase.shown);
+
+    for (const event of stopCase.betweenRenderAndClick) {
+      applyStopEvent(store, event);
+    }
+    if (shown === 'per-run') {
+      bridge.stopRun(sessionA, rendered.stopRunId!);
+    } else if (shown === 'footer') {
+      bridge.stop(sessionA);
+    }
+    await settle();
+
+    const stops = store.pending.filter((request) => request.action.startsWith('stop-agent'));
+    if (stopCase.expected === null) {
+      assert.deepEqual(stops, []);
+    } else {
+      assert.equal(stops.length, 1);
+      assert.equal(stops[0].action, 'stop-agent-run');
+      assert.deepEqual(stops[0].parameters, { id: sessionA, runId: stopCase.expected });
+    }
+    if (shown === 'footer') {
+      assert.match(lastStatus(messages).inputError ?? '', /Stop is not available/);
+    }
   });
-  await settle();
-  const status = lastStatus(messages);
-  assert.equal(status.running, true);
-  assert.equal(status.stopRunId, '');
-  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: false });
-  assert.equal(store.pending.length, 0);
-  await settle();
-  assert.match(lastStatus(messages).inputError ?? '', /already ending/);
-});
+}
 
 test('notices and pending choices end with the conversation lifetime', async () => {
   const { store, bridge, messages } = harness();
@@ -469,11 +633,12 @@ test('an uncertain send stays visible next to other notices', async () => {
 
 test('a request failing after sign-out leaves no notice for the next pairing', async () => {
   const { store, bridge, messages } = harness();
-  store.update({ actions: { sessionId: sessionA, stopRunId: '', choices: [] } });
-  const running = session(sessionA, 'Question A', { status: 'running' });
+  const running = session(sessionA, 'Question A', { status: 'running', runId: 'run-1' });
   store.update({ sessions: new Map(store.state.sessions).set(sessionA, running) });
   await settle();
-  assert.deepEqual(await ask((answer) => bridge.stop(sessionA, answer)), { accepted: true });
+  assert.deepEqual(await ask((answer) => bridge.stopRun(sessionA, 'run-1', answer)), {
+    accepted: true,
+  });
 
   // Sign-out rejects the outstanding request after clearing private state.
   store.update({

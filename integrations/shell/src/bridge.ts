@@ -18,8 +18,8 @@
  * - Input: the page's requests, checked again here against the shown
  *   conversation exactly like the Qt bridge, then sent as the gateway's
  *   remote actions: `send-agent`, `choose-agent`, `stop-agent-run`,
- *   `stop-agent`, `close-agent` and `agent-history-page`. Nothing else
- *   leaves the page.
+ *   `close-agent` and `agent-history-page`. Nothing else leaves the page;
+ *   in particular never the unscoped `stop-agent` (see stop()).
  *
  * Differences from the Qt host (deliberate, see integrations/shell/README.md):
  * - The draft is kept in this page per conversation, as the phone panel does
@@ -67,9 +67,9 @@ const rowsIntervalMilliseconds = 30;
 const classicUnavailable =
   'Tool details, widgets and the classic view are not available in the browser yet.';
 const applicationUnavailable = 'Session applications are not available in the browser yet.';
-const stopEnding = 'This turn is already ending.';
-const stopNotReady =
-  "This conversation's controls have not arrived yet. Try Stop again in a moment.";
+/** Shown when the footer Stop is pressed: there is no run to name. */
+const stopUnavailable =
+  'Stop is not available for this turn: Companion has not named its run (it may already be ending).';
 
 /**
  * Where the transcript is on screen. The page draws one `.message` element
@@ -137,11 +137,6 @@ export class GatewayChatBridge implements NativeBridge {
   // lifetime it was made in, kept until it settles even when the page shows
   // another conversation meanwhile.
   private readonly pendingChoices = new Map<string, { lifetime: string }>();
-  // Conversation lifetimes (ID and tool epoch) that have named a run. In
-  // such a conversation a running turn without a run ID is one the listener
-  // is already ending (it withdraws the ID first), so the unscoped Stop is
-  // not offered: it could cancel a turn that started meanwhile.
-  private readonly namedRuns = new Set<string>();
   // Advances on sign-out or revocation. Answers to requests of an earlier
   // pairing are ignored, so they cannot bring back its notices.
   private pairing = 0;
@@ -201,7 +196,6 @@ export class GatewayChatBridge implements NativeBridge {
     if (session) {
       this.noticeDraftChange(session.id);
     }
-    this.noticeNamedRuns();
     if (switched && this.pageReady) {
       // The new conversation's rows and status go out together, so the page
       // never shows one conversation's title with another's transcript.
@@ -211,15 +205,6 @@ export class GatewayChatBridge implements NativeBridge {
       return;
     }
     this.scheduleStatus();
-  }
-
-  /** Remember every open conversation lifetime that has named a run. */
-  private noticeNamedRuns(): void {
-    for (const session of this.store.state.sessions.values()) {
-      if (typeof session.runId === 'string' && session.runId !== '') {
-        this.namedRuns.add(this.lifetime(session));
-      }
-    }
   }
 
   /** A conversation's identity for the page: its ID and tool epoch. */
@@ -263,7 +248,6 @@ export class GatewayChatBridge implements NativeBridge {
     this.cursors.clear();
     this.errors.clear();
     this.pendingChoices.clear();
-    this.namedRuns.clear();
     this.unresolved = null;
   }
 
@@ -507,24 +491,21 @@ export class GatewayChatBridge implements NativeBridge {
   }
 
   /**
-   * The run the page's Stop is scoped to (`status.stopRunId`). The run the
-   * conversation itself names comes first: it is never older than the
-   * listener's controls report, which can lag behind. The page renders its
-   * Stop with this ID and stopRun() accepts it only while it is still the
-   * current one, so a Stop pressed for one turn never reaches the next.
+   * The run a Stop for this conversation may name (`status.stopRunId`): the
+   * run the conversation itself names while it runs, or '' when it names
+   * none. The listener sets that ID when a turn starts and withdraws it as
+   * soon as it starts ending the turn, and it stops a run only while that
+   * run is current, so a Stop naming it can never reach another turn.
    */
   private stopRunId(sessionId: string): string {
     const session = this.store.state.sessions.get(sessionId);
-    if (session && this.running(session) && typeof session.runId === 'string') {
-      if (session.runId !== '') {
-        return session.runId;
-      }
-    }
-    const actions = this.store.state.actions;
-    if (!actions || actions.sessionId !== sessionId) {
+    if (!session || !this.running(session)) {
       return '';
     }
-    return actions.stopRunId || '';
+    if (typeof session.runId !== 'string') {
+      return '';
+    }
+    return session.runId;
   }
 
   // ---- Transcript position (for history trimming) -------------------------------
@@ -777,6 +758,13 @@ export class GatewayChatBridge implements NativeBridge {
     this.answer(callback, { accepted: true });
   }
 
+  /**
+   * The page's per-run Stop, rendered for `runId` (the `stopRunId` of the
+   * status it showed). Sent as `stop-agent-run` naming that run, and only
+   * while connected (after the new snapshot) and while that run is still the
+   * conversation's run; otherwise nothing is sent (the page then shows the
+   * Stop of the newer run, or none). See the Stop rule in the README.
+   */
   stopRun(sessionId: string, runId: string, callback?: (answer: string) => void): void {
     if (
       !this.sameSession(sessionId) ||
@@ -795,43 +783,17 @@ export class GatewayChatBridge implements NativeBridge {
   }
 
   /**
-   * The conversation's own Stop, offered by the page only while it runs
-   * without a run to scope a Stop to (`stopRunId` is empty: neither the
-   * conversation nor the listener's controls name one). It is refused when
-   * a run is named by now (the page then shows the scoped Stop), and when
-   * this conversation has named runs before: the listener withdraws a run's
-   * ID as soon as it starts ending it, so a running turn without one is
-   * already stopping. The unscoped `stop-agent` (for listeners that name no
-   * runs) is admitted only after the listener reported this conversation's
-   * controls to this browser: before that, "no run ID" may only mean "not
-   * reported yet". Either way an unscoped Stop could otherwise cancel a turn
-   * that started meanwhile.
+   * The page's footer Stop. The page offers it only while the conversation
+   * runs without a run to name (`stopRunId` is empty), and the browser never
+   * stops a conversation without naming the run (no `stop-agent`): an
+   * unscoped Stop could reach a turn that started after the reader pressed
+   * it. Nothing is sent; the notice says why Stop is unavailable.
    */
   stop(sessionId: string, callback?: (answer: string) => void): void {
-    const session = this.shownSession;
-    if (
-      !session ||
-      !this.sameSession(sessionId) ||
-      !this.online ||
-      !this.running(session) ||
-      this.stopRunId(sessionId) !== ''
-    ) {
-      this.answer(callback, { accepted: false });
-      return;
+    if (this.sameSession(sessionId)) {
+      this.setNotice(sessionId, stopUnavailable);
     }
-    if (this.namedRuns.has(this.lifetime(session))) {
-      this.setNotice(sessionId, stopEnding);
-      this.answer(callback, { accepted: false });
-      return;
-    }
-    const actions = this.store.state.actions;
-    if (!actions || actions.sessionId !== sessionId) {
-      this.setNotice(sessionId, stopNotReady);
-      this.answer(callback, { accepted: false });
-      return;
-    }
-    this.act(sessionId, () => this.store.request('stop-agent', { id: sessionId }, { quiet: true }));
-    this.answer(callback, { accepted: true });
+    this.answer(callback, { accepted: false });
   }
 
   closeSession(sessionId: string, callback?: (answer: string) => void): void {

@@ -415,15 +415,10 @@ test(
     await waitFor(() => fixture.runs.length === before + 1, 5000);
     assert.match(fixture.runs.at(-1)!.request.prompt.text, /Execute them/);
 
-    // Stop the running turn (run-scoped Stop or the conversation's own).
-    await page.waitFor(
-      `${buttonExpression('Stop')} || document.querySelector('.panel-action.stop')`,
-    );
-    if (await page.evaluate(`Boolean(document.querySelector('.panel-action.stop'))`)) {
-      await click(page, '.panel-action.stop');
-    } else {
-      await clickButton(page, 'Stop');
-    }
+    // Stop the running turn: the conversation names its run, so the page
+    // shows the per-run Stop for it (see the Stop rule in the README).
+    await page.waitFor(`document.querySelector('.panel-action.stop:not([disabled])')`);
+    await click(page, '.panel-action.stop');
     await waitFor(
       () =>
         fixture.sessions.snapshot().find((session) => session.id === id)?.status === 'cancelled',
@@ -455,18 +450,14 @@ test(
     for (const action of ['send-agent', 'choose-agent', 'close-agent']) {
       assert.ok(actions.includes(action), `${action} was sent`);
     }
-    assert.ok(actions.includes('stop-agent-run') || actions.includes('stop-agent'));
+    assert.equal(actions.filter((action) => action === 'stop-agent-run').length, 1);
+    assert.equal(actions.includes('stop-agent'), false, 'never the unscoped Stop');
     assert.equal(actions.filter((action) => action === 'send-agent').length, 2);
     for (const action of actions) {
       assert.ok(
-        [
-          'panel-state',
-          'send-agent',
-          'choose-agent',
-          'stop-agent-run',
-          'stop-agent',
-          'close-agent',
-        ].includes(action),
+        ['panel-state', 'send-agent', 'choose-agent', 'stop-agent-run', 'close-agent'].includes(
+          action,
+        ),
         `unexpected request ${action}`,
       );
     }
@@ -662,12 +653,12 @@ test(
     // Scrolling up near the end asks for nothing newer: the reader is
     // heading toward older rows.
     await wheel(page, -150);
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 200));
     assert.equal(newerRequests(), 1, 'an upward scroll requested no newer page');
-    // Back at the very end (moved there by the page, not the reader, so this
-    // requests nothing either), where nothing can scroll any further: a
-    // downward wheel is the reader asking for more, and the next page loads.
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    // Within a second of that upward wheel, the page itself moves the
+    // transcript back to the very end (as when it keeps the reader's row
+    // after a resize). That is not the reader moving toward the end, so it
+    // requests nothing either.
     await page.evaluate(`(() => {
       const transcript = document.querySelector('.transcript');
       transcript.scrollTop = transcript.scrollHeight;

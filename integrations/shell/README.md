@@ -39,7 +39,7 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   a TypeScript port of `SessionView.rowData()` (`src/rows.ts`).
 - It checks every page request again against the shown conversation, like the
   Qt bridge, and maps it to a gateway action: Send/Queue → `send-agent`,
-  choices → `choose-agent`, Stop → `stop-agent-run` or `stop-agent`, Close
+  choices → `choose-agent`, Stop → `stop-agent-run` (see the Stop rule below), Close
   session → `close-agent`, history → `agent-history-page`. These are all in
   the gateway's remote allowlist (`src/remote/protocol.ts`); nothing else
   leaves the page except the phone Store's own `panel-state` selection report.
@@ -57,10 +57,12 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   pages not requested again. Below a detached snapshot (after loading more
   than three pages up), the next newer page loads when the reader scrolls toward the end to within
   one viewport of it, observed by `src/main.tsx` like
-  SessionView's `readerScrolled` (a scroll while a pointer is held in the
-  transcript, as when dragging its scroll bar, or within a second of wheel, key,
-  pointer or touch input there; at the very end, where nothing scrolls, a
-  downward wheel), so the new rows continue below without
+  SessionView's `readerScrolled`: a scroll toward the end while the reader drags
+  in the transcript (scroll bar or finger), or within a second of wheel or key
+  input there that itself pointed toward the end; at the very end, where
+  nothing scrolls, a downward wheel. Scrolls the page makes itself (keeping
+  the reader's row after a resize, say) never count, also right after the
+  reader's input. This way so the new rows continue below without
   moving the reader (also when they reach the end before the page arrives).
   It never repeats a failed request.
 - Connection loss: the phone Connection reconnects with backoff and never
@@ -69,16 +71,7 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   "Disconnected" state. Sending, choosing, stopping and closing are refused
   while offline, and after reconnecting until the listener's new snapshot has
   arrived (the shown conversation may have been closed or reopened meanwhile).
-- Stop never reaches a later turn than the one shown. The page's Stop is
-  scoped to a run (`status.stopRunId`): the run the conversation names, or
-  else the one in the listener's controls report (which can lag behind). The
-  page renders Stop with that run ID; `stop-agent-run` is admitted only while
-  it is still the current run, and the listener checks it again. The listener
-  withdraws a run's ID as soon as it starts ending it, so in a conversation
-  that has named runs, a running turn without one is already stopping and
-  gets no Stop. Only a conversation that never names its runs (an older
-  listener) gets the unscoped `stop-agent`, and only after the listener
-  reported this conversation's controls to this browser.
+- Stop follows one rule, below.
 - Notices and pending choices belong to one conversation lifetime (ID and
   tool epoch): a conversation closed and reopened under the same ID does not
   show the old one's notices, and late answers for the old one are ignored.
@@ -88,6 +81,31 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   stored pairing changes, so it cannot write its old drafts back. Input only
   the editor holds stays reachable from the list (Copy, Discard) when its
   conversation is not shown.
+
+### The Stop rule
+
+1. The browser never sends the unscoped `stop-agent`.
+2. A Stop it sends is `stop-agent-run` naming the run that Stop was rendered
+   for: the `stopRunId` of the status the page showed. That is the run the
+   conversation itself names while it runs (`AgentSession.runId`); the
+   listener sets it when a turn starts and withdraws it as soon as it starts
+   ending the turn.
+3. It is sent only while connected (after the connection's new snapshot) and
+   while that run is still the run the conversation names; otherwise nothing
+   is sent. The listener stops a run only while it is current, so a Stop can
+   never reach another turn, whatever happens between rendering and the
+   click (another client stopping it, a follow-up starting, a reconnect).
+4. The page shows its per-run Stop exactly when the conversation names a run
+   (`stopRunId` set), and its footer Stop while it runs without one. The
+   footer Stop sends nothing; it explains in `inputError` that Stop is not
+   available for this turn (the turn is usually already ending). A listener
+   that names no runs therefore cannot be stopped from the browser.
+
+`test/shell/bridge.test.ts` lists the cases in one table (named run, a run
+that changes before the click, an ending turn before and after rendering, a
+first snapshot that already shows an ending turn, reconnects, another
+client's Stop, a follow-up starting meanwhile; per-run and footer Stop) with
+the request the rule allows for each.
 
 ### One change to the shared chat page
 
@@ -161,10 +179,9 @@ numbers and full resynchronization, no second send from a stale draft
 revision, a conversation switch sending rows with their status, pending
 choices across navigation, nothing admitted between reconnecting and the new
 snapshot, sign-out clearing held input and late failures, a conversation
-reopened under the same ID replaced like a switch, the unscoped Stop waiting
-for the controls report, contiguous paging within three pages including newer pages, no automatic retry after a failure, superseded pages
-dropped, Stop scoped to the shown run, and an uncertain send's notice kept
-next to other notices.
+reopened under the same ID replaced like a switch, the Stop rule table,
+contiguous paging within three pages including newer pages, no automatic retry after a failure, superseded pages
+dropped, and an uncertain send's notice kept next to other notices.
 
 `shell.test.ts` runs the built shell in headless Chromium at desktop sizes, on
 the phone tests' fixtures (real gateway, real listener control socket,
