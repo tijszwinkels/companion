@@ -139,6 +139,38 @@ function entryTimer(page: TestPage, title: string): Promise<string | null> {
   );
 }
 
+/** The seconds a shown time (`m:ss` or `h:mm:ss`) stands for. */
+function secondsOf(text: string): number {
+  let seconds = 0;
+  for (const part of text.split(':')) {
+    seconds = seconds * 60 + Number(part);
+  }
+  return seconds;
+}
+
+/**
+ * A page expression: the time at the end of the bar's state (or an entry's
+ * time) is at least `from` and at most `to` seconds. Real time passes on
+ * both clocks while a test runs (slowly, under load), so a step checks the
+ * range it guarantees rather than an exact second.
+ */
+function timeBetween(timeExpression: string, from: number, to: number): string {
+  return `(() => {
+    const match = /(\\d+(?::\\d\\d)+)$/.exec(${timeExpression} ?? '');
+    if (!match) return false;
+    const seconds = match[1].split(':').reduce((total, part) => total * 60 + Number(part), 0);
+    return seconds >= ${from} && seconds <= ${to};
+  })()`;
+}
+
+/** The bar's state text (a page expression). */
+const barText = `document.querySelector('.chat-bar-state')?.textContent`;
+
+/** An entry's running time (a page expression). */
+function entryTimerText(title: string): string {
+  return `${entryExpression(title)}?.querySelector('.entry-timer')?.textContent`;
+}
+
 /** A page expression: the bar's state text matches `pattern`. */
 function barMatches(pattern: RegExp): string {
   return `${pattern}.test(document.querySelector('.chat-bar-state')?.textContent ?? '')`;
@@ -342,8 +374,8 @@ test(
 
     // The strip: each running conversation has its own time under its name.
     await page.waitFor(`document.querySelector('.conversations.strip')`);
-    await page.waitFor(entryTimerMatches('Long run', /^2:00:0\d$/));
-    await page.waitFor(entryTimerMatches('Short run', /^5:0\d$/));
+    await page.waitFor(entryTimerMatches('Long run', /^2:00:\d\d$/));
+    await page.waitFor(entryTimerMatches('Short run', /^5:\d\d$/));
     assert.equal(await entryTimer(page, 'Done run'), null);
     // Under the name: inside the entry's text, below the title.
     assert.equal(
@@ -355,7 +387,7 @@ test(
 
     // The bar of the shown conversation.
     await openConversation(page, 'Long run');
-    await page.waitFor(barMatches(/^working · 2:00:0\d$/));
+    await page.waitFor(barMatches(/^working · 2:00:\d\d$/));
     await screenshot(page, 'timers-1280-strip');
 
     // Time passes (65 s on both clocks): every time advances, without the
@@ -381,9 +413,16 @@ test(
         subtree: true, childList: true, attributes: true, characterData: true,
       });
     })()`);
+    // From the times shown just before: 65 s more, plus the real time the
+    // steps take (at most half a minute here, also under load).
+    const barBefore = secondsOf((await page.evaluate<string>(barText)).replace('working · ', ''));
+    const shortBefore = secondsOf((await page.evaluate<string>(entryTimerText('Short run'))) ?? '');
     await advance(listener, page, 65 * second);
-    await page.waitFor(barMatches(/^working · 2:01:0\d$/), 3000);
-    await page.waitFor(entryTimerMatches('Short run', /^6:0\d$/), 3000);
+    await page.waitFor(timeBetween(barText, barBefore + 65, barBefore + 95), 3000);
+    await page.waitFor(
+      timeBetween(entryTimerText('Short run'), shortBefore + 65, shortBefore + 95),
+      3000,
+    );
     await page.evaluate(`window.__mutations.disconnect()`);
     assert.ok((await page.evaluate<number>(`window.__timerChanges`)) >= 3);
     assert.deepEqual(await page.evaluate(`window.__otherChanges`), []);
@@ -392,7 +431,7 @@ test(
     await page.evaluate(`document.querySelector('.list-divider').focus()`);
     await key(page, 'End');
     await page.waitFor(`document.querySelector('.conversations.full')`);
-    await page.waitFor(entryTimerMatches('Short run', /^6:0\d$/));
+    await page.waitFor(entryTimerMatches('Short run', /^6:\d\d$/));
     const timerRight = await page.evaluate<number>(
       `${entryExpression('Short run')}.querySelector('.entry-timer').getBoundingClientRect().right`,
     );
@@ -422,7 +461,9 @@ test(
 
     // The turn ends: the time goes, the last turn's duration shows.
     answer(long.run, 'long-answer', 'Done after a long run.');
-    await page.waitFor(barMatches(/^ready · last turn 2:01:0\d$/), 5000);
+    // Two hours, the 65 s advance and the real time since the start.
+    await page.waitFor(barMatches(/^ready · last turn /), 5000);
+    await page.waitFor(timeBetween(barText, 2 * 3600 + 65, 2 * 3600 + 65 + 120));
     await page.waitFor(`${entryExpression('Long run')}.querySelector('.entry-timer') === null`);
     // The other conversation counts on.
     assert.match((await entryTimer(page, 'Short run')) ?? '', /^6:\d\d$/);
@@ -432,7 +473,7 @@ test(
 
     // The finished conversation shows its duration.
     await openConversation(page, 'Done run');
-    await page.waitFor(barMatches(/^ready · last turn 0:4\d$/));
+    await page.waitFor(barMatches(/^ready · last turn 0:[45]\d$/));
 
     short.run.finish();
     await assertCleanPage(fixture, page, sockets);
@@ -449,7 +490,7 @@ test(
     listener.shift = 0;
     const { page, sockets } = await pairedClockPage(fixture, browser, 1280);
     await openConversation(page, 'Counting run');
-    await page.waitFor(barMatches(/^working · 3:0\d$/));
+    await page.waitFor(barMatches(/^working · 3:\d\d$/));
 
     // The gateway stops: offline, the state is unknown; the bar says
     // `working…` and the list has no time.
@@ -480,8 +521,9 @@ test(
 
     // After the new snapshot the new turn is counted from its own start.
     await page.waitFor(`!document.querySelector('.connection-banner')`, 20_000);
-    await page.waitFor(barMatches(/^working · 0:0\d$/), 5000);
-    await page.waitFor(entryTimerMatches('Counting run', /^0:0\d$/));
+    // (Under a minute: the earlier turn would show more than three.)
+    await page.waitFor(barMatches(/^working · 0:\d\d$/), 5000);
+    await page.waitFor(entryTimerMatches('Counting run', /^0:\d\d$/));
 
     fixture.runs.at(-1)!.finish();
     await assertCleanPage(fixture, page, sockets);
@@ -598,9 +640,9 @@ test(
     const { page, sockets, browserContextId } = await pairedClockPage(fixture, browser, 1280);
 
     await openConversation(page, 'Done run');
-    await page.waitFor(barMatches(/^ready · last turn 0:4\d$/));
+    await page.waitFor(barMatches(/^ready · last turn 0:[45]\d$/));
     await page.waitFor(`document.querySelectorAll('.rows .message-time').length === 2`);
-    await page.waitFor(entryTimerMatches('Short run', /^5:0\d$/));
+    await page.waitFor(entryTimerMatches('Short run', /^5:\d\d$/));
     assert.deepEqual(await storedDisplay(page), {
       turnTimers: null,
       lastTurnDuration: null,
@@ -860,7 +902,7 @@ test(
 
     // 1600 px: the chat area's whole width for the messages and the text box.
     await resize(page, 1600);
-    await page.waitFor(barMatches(/^ready · last turn 0:4\d$/));
+    await page.waitFor(barMatches(/^ready · last turn 0:[45]\d$/));
     assert.equal(await horizontalOverflow(page), 0);
     const main = await box(page, '.workspace-main');
     const column = await box(page, '.chat-column');
@@ -1069,7 +1111,7 @@ test(
     answer(conversation.run, 'a1', 'An answer after an hour.');
     const { page, sockets } = await pairedClockPage(fixture, browser, 375);
     await openConversation(page, 'A conversation with a long title');
-    await page.waitFor(barMatches(/^ready · last turn 1:02:0\d$/));
+    await page.waitFor(barMatches(/^ready · last turn 1:0[2-4]:\d\d$/));
 
     assert.equal(await horizontalOverflow(page), 0);
     const title = await box(page, '.chat-bar-title');

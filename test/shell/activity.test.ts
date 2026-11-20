@@ -692,9 +692,14 @@ test(
     await page.waitFor(
       `document.querySelector('.chat-bar-title')?.textContent.includes('Synthetic quick question')`,
     );
-    const sent = sockets.sent.filter(
-      (message) => message.type === 'request' && message.action === 'start-agent',
-    );
+    // The page's frames are recorded from DevTools events, which can arrive
+    // after the listener has already acted on them (seen under load).
+    const startRequests = () =>
+      sockets.sent.filter(
+        (message) => message.type === 'request' && message.action === 'start-agent',
+      );
+    await waitFor(() => startRequests().length === 2, 5000);
+    const sent = startRequests();
     assert.deepEqual(
       sent.map((message) => message.profile),
       ['coding', 'quickQuestion'],
@@ -719,9 +724,8 @@ test(
     );
     await clickSelector(page, '.activity-start-button');
     await waitFor(() => fixture.runs.length === 4);
-    const third = sockets.sent.filter(
-      (message) => message.type === 'request' && message.action === 'start-agent',
-    )[2];
+    await waitFor(() => startRequests().length === 3, 5000);
+    const third = startRequests()[2];
     assert.equal(third.profile, 'quickQuestion');
     assert.equal(third.text, 'Kept across hiding');
     // The answer clears the box (a text typed before it would be kept).
@@ -1424,6 +1428,11 @@ test(
       'Dismiss is reachable above the column',
     );
     await resize(page, 1280);
+    // The window's width changes before the page has handled its resize:
+    // wait until the column is beside the chat again (no longer over it),
+    // or Cancel's position is measured in the narrow layout and the press
+    // misses it (seen under load).
+    await page.waitFor(`document.querySelector('${column}:not(.overlay)')`);
     await toastGone();
     await clickSelector(page, await entryButton(page, refused, 'Cancel'));
     await page.waitFor(`${confirmText(refused)} === ''`);
