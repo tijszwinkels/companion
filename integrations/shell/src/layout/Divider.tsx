@@ -27,8 +27,11 @@ export function Divider(props: {
   /** Write the current preferred width to storage (the end of a drag). */
   onRemember: () => void;
 }) {
-  // The pointer that is dragging the divider, if any.
+  // The pointer that is dragging the divider, if any, and whether it has
+  // moved: a press that does not move (a click) changes nothing, also when
+  // a narrow window shows the strip for a wider remembered list.
   const dragPointer = useRef<number | null>(null);
+  const dragMoved = useRef(false);
   const [dragging, setDragging] = useState(false);
 
   /**
@@ -55,6 +58,7 @@ export function Divider(props: {
     const element = event.currentTarget as HTMLElement;
     element.setPointerCapture?.(event.pointerId);
     dragPointer.current = event.pointerId;
+    dragMoved.current = false;
     setDragging(true);
   }
 
@@ -62,6 +66,7 @@ export function Divider(props: {
     if (dragPointer.current !== event.pointerId) {
       return;
     }
+    dragMoved.current = true;
     props.onWidth(pointerWidth(event), false);
   }
 
@@ -72,6 +77,9 @@ export function Divider(props: {
     }
     dragPointer.current = null;
     setDragging(false);
+    if (!dragMoved.current) {
+      return;
+    }
     if (event.type === 'pointerup') {
       props.onWidth(pointerWidth(event), false);
     }

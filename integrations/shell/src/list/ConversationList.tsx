@@ -178,6 +178,7 @@ export function ConversationList(props: {
     gesture.current.pointerDown(
       id,
       event.pointerId,
+      event.pointerType,
       event.button,
       event.clientX,
       event.clientY,
@@ -198,6 +199,7 @@ export function ConversationList(props: {
         event.buttons,
         event.clientX,
         event.clientY,
+        orderRef.current,
       );
       if (!dragging) {
         if (wasDragging || !gesture.current.pressed) {

@@ -10,10 +10,11 @@ import {
   type ListAppearance,
 } from '../../integrations/shell/src/layout/list-width.ts';
 import {
-  layoutStorageKey,
+  listShownKey,
+  listWidthKey,
   readLayout,
-  rememberChange,
-  writeLayout,
+  writeListShown,
+  writeListWidth,
   type LayoutStorage,
   type ListLayout,
 } from '../../integrations/shell/src/layout/stored-layout.ts';
@@ -47,73 +48,6 @@ function shown(layout: ListLayout, windowWidth: number): { width: number; look: 
   const width = shownListWidth(layout.listWidth, windowWidth);
   return { width, look: appearanceOf(width) };
 }
-
-test('remembered layout: initial, invalid and other versions give the strip, shown', () => {
-  const cases: { name: string; stored: string | null; expected: ListLayout }[] = [
-    { name: 'nothing remembered', stored: null, expected: { listWidth: 78, listShown: true } },
-    { name: 'not JSON', stored: '{', expected: { listWidth: 78, listShown: true } },
-    { name: 'not an object', stored: '42', expected: { listWidth: 78, listShown: true } },
-    {
-      name: 'another version',
-      stored: JSON.stringify({ version: 2, listWidth: 300, listShown: false }),
-      expected: { listWidth: 78, listShown: true },
-    },
-    {
-      name: 'a wrong width type with a valid hidden state',
-      stored: JSON.stringify({ version: 1, listWidth: 'bad', listShown: false }),
-      expected: { listWidth: 78, listShown: true },
-    },
-    {
-      name: 'a valid width with a wrong hidden-state type',
-      stored: JSON.stringify({ version: 1, listWidth: 300, listShown: 'no' }),
-      expected: { listWidth: 78, listShown: true },
-    },
-    {
-      name: 'a missing field',
-      stored: JSON.stringify({ version: 1, listWidth: 300 }),
-      expected: { listWidth: 78, listShown: true },
-    },
-    {
-      name: 'wrong field types',
-      stored: JSON.stringify({ version: 1, listWidth: '300', listShown: 'no' }),
-      expected: { listWidth: 78, listShown: true },
-    },
-    {
-      name: 'a width between the appearances snaps (rule 1)',
-      stored: JSON.stringify({ version: 1, listWidth: 130, listShown: true }),
-      expected: { listWidth: 150, listShown: true },
-    },
-    {
-      name: 'a width beyond the maximum',
-      stored: JSON.stringify({ version: 1, listWidth: 900, listShown: false }),
-      expected: { listWidth: 420, listShown: false },
-    },
-    {
-      name: 'a valid full list, hidden',
-      stored: JSON.stringify({ version: 1, listWidth: 300, listShown: false }),
-      expected: { listWidth: 300, listShown: false },
-    },
-  ];
-  for (const testCase of cases) {
-    const initial: Record<string, string> = {};
-    if (testCase.stored !== null) {
-      initial[layoutStorageKey] = testCase.stored;
-    }
-    assert.deepEqual(readLayout(memoryStorage(initial)), testCase.expected, testCase.name);
-  }
-
-  // Storage that throws (disabled): the default, and writing does not throw.
-  const broken: LayoutStorage = {
-    getItem: () => {
-      throw Error('disabled');
-    },
-    setItem: () => {
-      throw Error('disabled');
-    },
-  };
-  assert.deepEqual(readLayout(broken), { listWidth: 78, listShown: true });
-  writeLayout(broken, { listWidth: 300, listShown: false });
-});
 
 test('divider dragged: strip left of the snap point, else a full list within its range', () => {
   const cases: { pointer: number; width: number; look: ListAppearance }[] = [
@@ -186,21 +120,6 @@ test('narrow windows: the chat keeps 320 px beside list and divider; a full list
   assert.equal(shownListWidth(300, 1280), 300);
 });
 
-test('written layouts are read back (reload), including the hidden state', () => {
-  const storage = memoryStorage();
-  const cases: ListLayout[] = [
-    { listWidth: 78, listShown: true },
-    { listWidth: 300, listShown: true },
-    { listWidth: 300, listShown: false },
-    { listWidth: 420, listShown: false },
-  ];
-  for (const layout of cases) {
-    writeLayout(storage, layout);
-    assert.deepEqual(readLayout(storage), layout);
-    assert.deepEqual(JSON.parse(storage.items.get(layoutStorageKey)!), { version: 1, ...layout });
-  }
-});
-
 test('icons: a leading emoji (one grapheme) is the icon, else "Q" and the number', async () => {
   const { badgeOf } = await import('../../integrations/shell/src/list/entries.ts');
   const cases: { title: string; glyph: string; caption: string; emoji: boolean }[] = [
@@ -254,32 +173,118 @@ test('icons without Intl.Segmenter (Firefox before 125): the whole first word, a
   }
 });
 
-test('tabs: each change is applied onto what is stored now, so no tab writes back an older value', () => {
-  // Two tabs start from the default; each keeps its own copy until the
-  // other's storage event arrives (here: never, the worst ordering).
-  const storage = memoryStorage();
-  let first: ListLayout = readLayout(storage);
-  let second: ListLayout = readLayout(storage);
+/** One stored entry as the shell writes it. */
+function entry(value: unknown, version = 1): string {
+  return JSON.stringify({ version, value });
+}
 
-  // The first tab widens the list; the second hides it before hearing of it.
-  first = rememberChange(storage, first, { listWidth: 300 });
-  second = rememberChange(storage, second, { listShown: false });
-  assert.deepEqual(second, { listWidth: 300, listShown: false }, 'the width set elsewhere kept');
-  assert.deepEqual(readLayout(storage), { listWidth: 300, listShown: false });
-
-  // The first tab, still showing the list, narrows it: the hidden state set
-  // elsewhere is kept too.
-  first = rememberChange(storage, first, { listWidth: 78 });
-  assert.deepEqual(first, { listWidth: 78, listShown: false });
-  assert.deepEqual(readLayout(storage), { listWidth: 78, listShown: false });
-
-  // Nothing stored yet: the tab's own copy is the base.
-  const empty = memoryStorage();
-  assert.deepEqual(
-    rememberChange(empty, { listWidth: 300, listShown: true }, { listShown: false }),
+test('remembered layout: each entry that is missing or not valid gives its default', () => {
+  const cases: { name: string; width?: string; shown?: string; expected: ListLayout }[] = [
+    { name: 'nothing remembered', expected: { listWidth: 78, listShown: true } },
     {
-      listWidth: 300,
-      listShown: false,
+      name: 'both valid',
+      width: entry(300),
+      shown: entry(false),
+      expected: { listWidth: 300, listShown: false },
     },
-  );
+    {
+      name: 'width not JSON, hidden state valid',
+      width: '{',
+      shown: entry(false),
+      expected: { listWidth: 78, listShown: false },
+    },
+    {
+      name: 'width of the wrong type, hidden state valid',
+      width: entry('300'),
+      shown: entry(false),
+      expected: { listWidth: 78, listShown: false },
+    },
+    {
+      name: 'width valid, hidden state of the wrong type',
+      width: entry(300),
+      shown: entry('no'),
+      expected: { listWidth: 300, listShown: true },
+    },
+    {
+      name: 'another version',
+      width: entry(300, 2),
+      shown: entry(false, 2),
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
+      name: 'not an object',
+      width: '42',
+      shown: 'true',
+      expected: { listWidth: 78, listShown: true },
+    },
+    {
+      name: 'a width between the appearances snaps (rule 1)',
+      width: entry(130),
+      expected: { listWidth: 150, listShown: true },
+    },
+    {
+      name: 'a width beyond the maximum',
+      width: entry(900),
+      expected: { listWidth: 420, listShown: true },
+    },
+  ];
+  for (const testCase of cases) {
+    const initial: Record<string, string> = {};
+    if (testCase.width !== undefined) {
+      initial[listWidthKey] = testCase.width;
+    }
+    if (testCase.shown !== undefined) {
+      initial[listShownKey] = testCase.shown;
+    }
+    assert.deepEqual(readLayout(memoryStorage(initial)), testCase.expected, testCase.name);
+  }
+
+  // Storage that throws (disabled): the default, and writing does not throw.
+  const broken: LayoutStorage = {
+    getItem: () => {
+      throw Error('disabled');
+    },
+    setItem: () => {
+      throw Error('disabled');
+    },
+  };
+  assert.deepEqual(readLayout(broken), { listWidth: 78, listShown: true });
+  writeListWidth(broken, 300);
+  writeListShown(broken, false);
+});
+
+test('written entries are read back (reload); each write touches only its own entry', () => {
+  const storage = memoryStorage();
+  writeListWidth(storage, 300);
+  assert.deepEqual(readLayout(storage), { listWidth: 300, listShown: true });
+  assert.equal(storage.items.has(listShownKey), false, 'the hidden state is not written');
+  writeListShown(storage, false);
+  assert.deepEqual(readLayout(storage), { listWidth: 300, listShown: false });
+  writeListWidth(storage, 78);
+  assert.deepEqual(readLayout(storage), { listWidth: 78, listShown: false });
+  assert.deepEqual(JSON.parse(storage.items.get(listWidthKey)!), { version: 1, value: 78 });
+  assert.deepEqual(JSON.parse(storage.items.get(listShownKey)!), { version: 1, value: false });
+  // An invalid width is stored made valid.
+  writeListWidth(storage, 130);
+  assert.deepEqual(JSON.parse(storage.items.get(listWidthKey)!), { version: 1, value: 150 });
+});
+
+test('tabs: changes of different entries from two tabs, in any order, both survive', () => {
+  // Each tab writes only the entry it changed, whatever its own copy of the
+  // other entry is; every interleaving keeps both changes.
+  const orders: string[][] = [
+    ['width', 'shown'],
+    ['shown', 'width'],
+  ];
+  for (const order of orders) {
+    const storage = memoryStorage();
+    for (const step of order) {
+      if (step === 'width') {
+        writeListWidth(storage, 300);
+      } else {
+        writeListShown(storage, false);
+      }
+    }
+    assert.deepEqual(readLayout(storage), { listWidth: 300, listShown: false }, order.join(', '));
+  }
 });

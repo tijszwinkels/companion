@@ -749,7 +749,7 @@ test(
       for (const width of [420, 760, 1280, 1600]) {
         const { page } = await pairedPage(fixture, browser, width, 800);
         await page.evaluate(
-          `localStorage.setItem('companion.shell.layout', JSON.stringify({ version: 1, listWidth: ${layout.listWidth}, listShown: true }))`,
+          `localStorage.setItem('companion.shell.layout.listWidth', JSON.stringify({ version: 1, value: ${layout.listWidth} }))`,
         );
         await page.navigate(`${fixture.origin}/`);
         await page.waitFor(online, 8000);

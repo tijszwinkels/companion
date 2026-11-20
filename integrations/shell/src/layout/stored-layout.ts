@@ -2,22 +2,30 @@
  * The list layout this browser remembers: the list's preferred width and
  * whether it is shown.
  *
- * Kept in `localStorage` under `layoutStorageKey`, as JSON
- * `{ "version": 1, "listWidth": <pixels>, "listShown": <boolean> }`. It
- * describes only the arrangement of this page, not the person or their
- * conversations, so it is not cleared on sign-out and is shared by the tabs
- * of this browser (each tab follows the last change, useListLayout.ts).
+ * Kept in `localStorage` as two independent entries, each JSON
+ * `{ "version": 1, "value": … }`:
  *
- * Anything missing, unreadable, of another version or with a field of the
- * wrong type gives the default: the strip, shown (the agreed design's
- * starting arrangement). A storage that
- * cannot be read or written (disabled, full) keeps the layout for this page
- * only.
+ * - `companion.shell.layout.listWidth`: the preferred width in pixels;
+ * - `companion.shell.layout.listShown`: whether the list is shown.
+ *
+ * They describe only the arrangement of this page, not the person or their
+ * conversations, so they are not cleared on sign-out. Each change writes
+ * only its own entry, so two tabs of this browser changing different things
+ * at the same moment cannot undo each other, and a tab never writes back a
+ * value it did not change (useListLayout.ts follows the other tabs).
+ *
+ * An entry that is missing, unreadable, of another version or of the wrong
+ * type gives that entry's default: the strip, shown (the agreed design's
+ * starting arrangement). A storage that cannot be read or written
+ * (disabled, full) keeps the layout for this page only.
  */
 
 import { stripWidth, validListWidth } from './list-width.ts';
 
-export const layoutStorageKey = 'companion.shell.layout';
+/** The entries' common prefix, for recognising them in `storage` events. */
+export const layoutStoragePrefix = 'companion.shell.layout.';
+export const listWidthKey = `${layoutStoragePrefix}listWidth`;
+export const listShownKey = `${layoutStoragePrefix}listShown`;
 
 export interface ListLayout {
   /** Preferred width in CSS pixels: the strip's, or a full list's (see list-width.ts). */
@@ -34,82 +42,63 @@ export interface LayoutStorage {
   setItem(key: string, value: string): void;
 }
 
-/** The remembered layout, or the default when there is none or it is not valid. */
-export function readLayout(storage: LayoutStorage): ListLayout {
+/** One entry's value, or undefined when it is missing or not valid. */
+function readEntry(storage: LayoutStorage, key: string): unknown {
   let text: string | null = null;
   try {
-    text = storage.getItem(layoutStorageKey);
+    text = storage.getItem(key);
   } catch {
-    return { ...defaultLayout };
+    return undefined;
   }
   if (text === null) {
-    return { ...defaultLayout };
+    return undefined;
   }
 
   let stored: unknown;
   try {
     stored = JSON.parse(text);
   } catch {
-    return { ...defaultLayout };
+    return undefined;
   }
   if (typeof stored !== 'object' || stored === null) {
-    return { ...defaultLayout };
+    return undefined;
   }
-
   const record = stored as Record<string, unknown>;
   if (record.version !== 1) {
-    return { ...defaultLayout };
+    return undefined;
   }
-
-  // Both fields or neither: a record with one unusable field is not
-  // trusted for the other either.
-  if (typeof record.listWidth !== 'number' || typeof record.listShown !== 'boolean') {
-    return { ...defaultLayout };
-  }
-  return { listWidth: validListWidth(record.listWidth), listShown: record.listShown };
+  return record.value;
 }
 
-/** Remember `layout`; a storage that refuses keeps it for this page only. */
-export function writeLayout(storage: LayoutStorage, layout: ListLayout): void {
-  const stored = {
-    version: 1,
-    listWidth: validListWidth(layout.listWidth),
-    listShown: layout.listShown,
-  };
+/** Write one entry; a storage that refuses keeps the value for this page only. */
+function writeEntry(storage: LayoutStorage, key: string, value: number | boolean): void {
   try {
-    storage.setItem(layoutStorageKey, JSON.stringify(stored));
+    storage.setItem(key, JSON.stringify({ version: 1, value }));
   } catch {
     // Storage disabled or full: the layout still applies to this page.
   }
 }
 
-/**
- * Remember one change made in this tab and return the layout that results.
- *
- * The change is applied onto what is stored now, not onto this tab's copy
- * (`current`): another tab may have written since, and its `storage` event
- * may not have reached this tab yet. Only the fields `update` names come
- * from this tab, so hiding the list here never writes back an older width,
- * and a width set here never writes back an older hidden state. With
- * nothing stored yet (or a storage that cannot be read), `current` is the
- * base.
- */
-export function rememberChange(
-  storage: LayoutStorage,
-  current: ListLayout,
-  update: Partial<ListLayout>,
-): ListLayout {
-  let stored: string | null = null;
-  try {
-    stored = storage.getItem(layoutStorageKey);
-  } catch {
-    stored = null;
+/** The remembered layout; each entry that is missing or not valid gives its default. */
+export function readLayout(storage: LayoutStorage): ListLayout {
+  const layout = { ...defaultLayout };
+  const width = readEntry(storage, listWidthKey);
+  if (typeof width === 'number') {
+    layout.listWidth = validListWidth(width);
   }
-  let base = current;
-  if (stored !== null) {
-    base = readLayout(storage);
+  const shown = readEntry(storage, listShownKey);
+  if (typeof shown === 'boolean') {
+    layout.listShown = shown;
   }
-  const next = { ...base, ...update };
-  writeLayout(storage, next);
-  return next;
+  return layout;
+}
+
+/** Remember the preferred width (and only it). */
+export function writeListWidth(storage: LayoutStorage, width: number): void {
+  writeEntry(storage, listWidthKey, validListWidth(width));
+}
+
+/** Remember whether the list is shown (and only that). */
+export function writeListShown(storage: LayoutStorage, shown: boolean): void {
+  writeEntry(storage, listShownKey, shown);
 }

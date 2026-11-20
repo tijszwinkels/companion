@@ -182,7 +182,14 @@ async function assertCleanPage(fixture: Fixture, page: TestPage, sockets: Socket
   }
 }
 
-const storedLayout = `JSON.parse(localStorage.getItem('companion.shell.layout'))`;
+/**
+ * A page expression: the two remembered entries' values (`undefined` for an
+ * entry never written), see integrations/shell/src/layout/stored-layout.ts.
+ */
+const storedLayout = `({
+  listWidth: JSON.parse(localStorage.getItem('companion.shell.layout.listWidth'))?.value,
+  listShown: JSON.parse(localStorage.getItem('companion.shell.layout.listShown'))?.value,
+})`;
 const listWidth = `(document.querySelector('.conversations')?.getBoundingClientRect().width ?? 0)`;
 
 // ---- Layout -----------------------------------------------------------------------
@@ -218,18 +225,24 @@ test(
     await dragTo(page, { x: divider.x, y: 300 }, { x: 100, y: 300 });
     await mouse(page, 'mouseReleased', { x: 100, y: 300 }, false);
     await page.waitFor(`document.querySelector('.conversations.strip')`);
-    assert.deepEqual(await page.evaluate(storedLayout), {
-      version: 1,
-      listWidth: 78,
-      listShown: true,
-    });
+    // Only the width is written; the hidden state was never changed.
+    assert.deepEqual(await page.evaluate(storedLayout), { listWidth: 78 });
+
+    // A press on the divider that does not move changes nothing.
+    await mouse(page, 'mouseMoved', { x: divider.x, y: 300 }, false);
+    await mouse(page, 'mousePressed', { x: divider.x, y: 300 }, true);
+    await mouse(page, 'mouseReleased', { x: divider.x, y: 300 }, false);
+    await page.evaluate(`localStorage.removeItem('companion.shell.layout.listWidth')`);
+    await mouse(page, 'mousePressed', { x: divider.x, y: 300 }, true);
+    await mouse(page, 'mouseReleased', { x: divider.x, y: 300 }, false);
+    assert.deepEqual(await page.evaluate(storedLayout), {});
 
     // Dragged over it: the full list with titles and last lines.
     await dragTo(page, { x: divider.x, y: 300 }, { x: 300, y: 300 });
     // While dragging the width follows the pointer and is not yet remembered.
     await page.waitFor(`document.querySelector('.conversations.full')`);
     assert.equal(await page.evaluate(listWidth), 300);
-    assert.equal((await page.evaluate<{ listWidth: number }>(storedLayout)).listWidth, 78);
+    assert.deepEqual(await page.evaluate(storedLayout), {}, 'nothing written while dragging');
     await mouse(page, 'mouseReleased', { x: 300, y: 300 }, false);
     await page.waitFor(`${storedLayout}?.listWidth === 300`);
     const fullText = await text(page, '.conversations');
@@ -270,11 +283,7 @@ test(
     const freed = await box(page, '.chat-column');
     assert.equal(freed.width, 860);
     assert.ok(Math.abs(freed.left + freed.width / 2 - 640) <= 1, 'centred in the window');
-    assert.deepEqual(await page.evaluate(storedLayout), {
-      version: 1,
-      listWidth: 420,
-      listShown: false,
-    });
+    assert.deepEqual(await page.evaluate(storedLayout), { listWidth: 420, listShown: false });
 
     // The hidden state survives a reload; ☰ shows the list at its width again.
     await page.navigate(`${fixture.origin}/`);
@@ -294,6 +303,21 @@ test(
     await page.waitFor(`${listWidth} === 279`);
     await resize(page, 1280);
     await page.waitFor(`${listWidth} === 420`);
+    assert.equal((await page.evaluate<{ listWidth: number }>(storedLayout)).listWidth, 420);
+
+    // A storage that refuses writes keeps the page's own values: 300 px,
+    // then ☰ twice, is still 300 px.
+    await page.evaluate(`Storage.prototype.setItem = () => {
+      throw new DOMException('Synthetic full storage', 'QuotaExceededError');
+    }`);
+    const handle = await box(page, '.list-divider');
+    await dragTo(page, { x: handle.x, y: 300 }, { x: 300, y: 300 });
+    await mouse(page, 'mouseReleased', { x: 300, y: 300 }, false);
+    await page.waitFor(`${listWidth} === 300`);
+    await clickAt(page, await box(page, '.list-toggle'));
+    await page.waitFor(`!document.querySelector('.conversations')`);
+    await clickAt(page, await box(page, '.list-toggle'));
+    await page.waitFor(`${listWidth} === 300`);
     assert.equal((await page.evaluate<{ listWidth: number }>(storedLayout)).listWidth, 420);
 
     await assertCleanPage(fixture, page, sockets);
@@ -762,6 +786,24 @@ test(
     assert.deepEqual(moves(sockets, before), []);
     assert.equal(await text(page, '.chat-bar-title'), 'Bravo');
 
+    // A touch never starts a reorder: on a touchscreen the list scrolls.
+    before = sockets.sent.length;
+    start_ = await entryPoint(page, 'Delta');
+    await page.call('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x: start_.x, y: start_.y }],
+    });
+    for (let step = 1; step <= 6; step++) {
+      await page.call('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ x: start_.x, y: start_.y - step * 25 }],
+      });
+    }
+    await page.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(await page.evaluate(`document.querySelector('.drop-marker')`), null);
+    assert.deepEqual(moves(sockets, before), []);
+
     // Released over the divider, which overlaps the list's edge: outside, no move.
     before = sockets.sent.length;
     start_ = await entryPoint(page, 'Delta');
@@ -846,7 +888,6 @@ test(
     await clickAt(second.page, await box(second.page, '.list-toggle'));
     await second.page.waitFor(`${storedLayout}?.listShown === false`);
     assert.deepEqual(await second.page.evaluate(storedLayout), {
-      version: 1,
       listWidth: 420,
       listShown: false,
     });

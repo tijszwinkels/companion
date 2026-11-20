@@ -184,18 +184,27 @@ test('markers: each row of the README table, in one sequence against the real St
   assert.equal(store.state.selected, 'c');
   assert.deepEqual(marks(store).c, '', 'reopened here');
 
-  // While offline: b (unread) is closed elsewhere, e starts and is still
-  // running, f starts and completes. The reconnect snapshot discovers them:
-  // e is not set (no completed turn), f is set (a new completion).
+  // While offline: b (unread) is closed elsewhere; c (shown, page visible)
+  // completes a turn; e starts and is still running; f starts and
+  // completes; g starts, completes and runs a follow-up. The reconnect
+  // snapshot is judged by the same rule as events: a completed turn new to
+  // this page sets the mark unless its conversation is shown on a visible
+  // page, whatever the conversation's current status.
   internals(store).online();
   snapshot(store, [
     session('a', 'error'),
-    session('c', 'completed'),
+    session('c', 'completed', 'c1'),
     session('d', 'completed'),
     session('e', 'running'),
     session('f', 'completed', 'f1'),
+    session('g', 'running', 'g1'),
   ]);
-  assert.deepEqual(marks(store), { a: '', c: '', d: '', e: 'W', f: 'U' }, 'reconnect snapshot');
+  assert.equal(store.state.selected, 'c');
+  assert.deepEqual(
+    marks(store),
+    { a: '', c: '', d: '', e: 'W', f: 'U', g: 'UW' },
+    'reconnect snapshot',
+  );
 
   // b, closed while offline, kept its mark in the Store: reopened elsewhere
   // without a new turn, its answer is still unseen and the mark shows again.

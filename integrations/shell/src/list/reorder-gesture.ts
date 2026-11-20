@@ -111,17 +111,23 @@ export class ReorderGesture {
   /**
    * A pointer went down on conversation `id` (not on its close button). A
    * new press always ends whatever an earlier one left behind. Only the
-   * primary button starts a gesture, and only while the list is available.
+   * primary button of a mouse or pen starts a gesture, and only while the
+   * list is available. A touch never does: on a touchscreen the list
+   * scrolls and a tap selects (see the README's rule 9).
    */
   pointerDown(
     id: string,
     pointerId: number,
+    pointerType: string,
     button: number,
     x: number,
     y: number,
     order: OrderState,
   ): void {
     this.press = null;
+    if (pointerType === 'touch') {
+      return;
+    }
     if (button !== primaryButton || !movable(order) || !order.ids.includes(id)) {
       return;
     }
@@ -145,9 +151,18 @@ export class ReorderGesture {
    *
    * Movement without the primary button held means the release was missed
    * (released outside the window, say): the press is forgotten, as hovering
-   * is not dragging.
+   * is not dragging. A press whose order, membership or availability
+   * changed before it became a drag is forgotten too, here and not only
+   * when the list reports the change (`orderChanged`), so it stays an
+   * ordinary click whichever comes first.
    */
-  pointerMove(pointerId: number, buttons: number, x: number, y: number): boolean {
+  pointerMove(
+    pointerId: number,
+    buttons: number,
+    x: number,
+    y: number,
+    order: OrderState,
+  ): boolean {
     const press = this.press;
     if (!press || pointerId !== press.pointerId) {
       return false;
@@ -160,6 +175,10 @@ export class ReorderGesture {
       return false;
     }
     if (!press.active) {
+      if (!movable(order) || orderKey(order.ids, order.revision) !== press.key) {
+        this.press = null;
+        return false;
+      }
       const distance = Math.hypot(x - press.startX, y - press.startY);
       if (distance < dragThreshold) {
         return false;

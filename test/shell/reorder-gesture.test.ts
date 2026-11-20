@@ -32,7 +32,14 @@ function inside(beforeId: string): DropPosition {
 const outside: DropPosition = { beforeId: 'a', inside: false };
 
 type Step =
-  | { down: string; button?: number; at?: [number, number]; order?: OrderState; pointer?: number }
+  | {
+      down: string;
+      button?: number;
+      at?: [number, number];
+      order?: OrderState;
+      pointer?: number;
+      type?: string;
+    }
   | {
       move: [number, number];
       buttons?: number;
@@ -65,6 +72,7 @@ function play(steps: Step[]): Outcome {
       gesture.pointerDown(
         step.down,
         step.pointer ?? 1,
+        step.type ?? 'mouse',
         step.button ?? 0,
         x,
         y,
@@ -73,7 +81,13 @@ function play(steps: Step[]): Outcome {
       clickSelects = true;
     } else if ('move' in step) {
       const [x, y] = step.move;
-      const dragging = gesture.pointerMove(step.pointer ?? 1, step.buttons ?? 1, x, y);
+      const dragging = gesture.pointerMove(
+        step.pointer ?? 1,
+        step.buttons ?? 1,
+        x,
+        y,
+        step.order ?? order(),
+      );
       if (dragging) {
         gesture.track(step.to ?? inside(''), step.order ?? order());
       }
@@ -212,6 +226,25 @@ const cases: { name: string; steps: Step[]; expected: Outcome }[] = [
     expected: { moves: [], clickSelects: true },
   },
   {
+    name: 'order changed before the threshold, noticed only by the movement past it',
+    steps: [
+      { down: 'a' },
+      { move: [10, 50], to: inside('c'), order: order({ revision: 'revision-2' }) },
+      { up: inside('c'), order: order({ revision: 'revision-2' }) },
+    ],
+    expected: { moves: [], clickSelects: true },
+  },
+  {
+    name: 'a touch press and movement (the list scrolls instead)',
+    steps: [{ down: 'a', type: 'touch' }, { move: [16, 50], to: inside('') }, { up: inside('') }],
+    expected: { moves: [], clickSelects: true },
+  },
+  {
+    name: 'a pen drag released inside at a new position',
+    steps: [{ down: 'a', type: 'pen' }, { move: [10, 50], to: inside('c') }, { up: inside('c') }],
+    expected: { moves: [moveAToC], clickSelects: false },
+  },
+  {
     name: 'press without an order revision (the listener named none)',
     steps: [
       { down: 'a', order: order({ revision: '' }) },
@@ -315,9 +348,9 @@ test('reorder gesture: the README table, one case at a time', () => {
 
 test('reorder gesture: the drag view shows where a release would move to', () => {
   const gesture = new ReorderGesture();
-  gesture.pointerDown('a', 1, 0, 10, 10, order());
+  gesture.pointerDown('a', 1, 'mouse', 0, 10, 10, order());
   assert.equal(gesture.view(order()), null, 'no drag before the threshold');
-  assert.equal(gesture.pointerMove(1, 1, 10, 50), true);
+  assert.equal(gesture.pointerMove(1, 1, 10, 50, order()), true);
   gesture.track(inside('c'), order());
   assert.deepEqual(gesture.view(order()), { id: 'a', beforeId: 'c', droppable: true });
   gesture.track(inside('b'), order());

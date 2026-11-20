@@ -3,11 +3,14 @@
  * and the window width it is shown in, combined by the width rules
  * (list-width.ts).
  *
- * The preference is read when the page loads and written whenever the
- * person changes it (divider released, divider key, ☰); a change written by
- * another tab of this browser is followed here too (the last change wins). While the divider
- * is being dragged the preference follows the pointer without being
- * written; the release writes it. The window width follows `resize`.
+ * The preference is read when the page loads. A change the person makes
+ * (divider dragged and released, divider key, ☰) writes only the entry it
+ * changes; while the divider is being dragged the width follows the pointer
+ * without being written, and a press on the divider that does not move
+ * writes nothing. A change another tab of this browser writes is followed
+ * here, entry by entry, so the last change of each wins. A storage that
+ * cannot be written keeps this page's values. The window width follows
+ * `resize`.
  */
 
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -19,9 +22,11 @@ import {
   type ListAppearance,
 } from './list-width.ts';
 import {
-  layoutStorageKey,
+  listShownKey,
+  listWidthKey,
   readLayout,
-  rememberChange,
+  writeListShown,
+  writeListWidth,
   type LayoutStorage,
   type ListLayout,
 } from './stored-layout.ts';
@@ -79,41 +84,60 @@ export function useListLayout(): ListLayoutView {
     return () => window.removeEventListener('resize', resized);
   }, []);
 
-  // Another tab of this browser changed the layout: follow it, so a later
-  // change here (☰, say) does not write this tab's older width back over
-  // the one chosen there. The `storage` event reaches only the other tabs.
+  // Another tab of this browser changed an entry: follow that entry. (The
+  // `storage` event reaches only the other tabs.)
   useEffect(() => {
-    const changedElsewhere = (event: StorageEvent) => {
-      if (event.key !== layoutStorageKey) {
-        return;
-      }
+    const follow = (keys: string[]) => {
       const storage = pageStorage();
       if (!storage) {
         return;
       }
-      const next = readLayout(storage);
+      const stored = readLayout(storage);
+      const next = { ...latest.current };
+      if (keys.includes(listWidthKey)) {
+        next.listWidth = stored.listWidth;
+      }
+      if (keys.includes(listShownKey)) {
+        next.listShown = stored.listShown;
+      }
+      if (
+        next.listWidth === latest.current.listWidth &&
+        next.listShown === latest.current.listShown
+      ) {
+        return;
+      }
       latest.current = next;
       setLayout(next);
     };
+    const changedElsewhere = (event: StorageEvent) => {
+      if (event.key === listWidthKey || event.key === listShownKey) {
+        follow([event.key]);
+      }
+    };
     window.addEventListener('storage', changedElsewhere);
+    // A change can arrive between the first render and this subscription.
+    follow([listWidthKey, listShownKey]);
     return () => window.removeEventListener('storage', changedElsewhere);
   }, []);
 
-  /**
-   * Apply one change. A remembered change is applied onto what is stored
-   * now, not onto this tab's copy: another tab may have written since and
-   * its `storage` event may not have arrived yet. Only the field the change
-   * names is taken from this tab, so ☰ here never writes back an older
-   * width, and a width set here never writes back an older hidden state.
-   */
+  /** Apply one change to this page; `remember` writes the entries it names. */
   function change(update: Partial<ListLayout>, remember: boolean) {
-    const storage = pageStorage();
-    let next: ListLayout = { ...latest.current, ...update };
-    if (remember && storage) {
-      next = rememberChange(storage, latest.current, update);
-    }
+    const next: ListLayout = { ...latest.current, ...update };
     latest.current = next;
     setLayout(next);
+    if (!remember) {
+      return;
+    }
+    const storage = pageStorage();
+    if (!storage) {
+      return;
+    }
+    if (update.listWidth !== undefined) {
+      writeListWidth(storage, next.listWidth);
+    }
+    if (update.listShown !== undefined) {
+      writeListShown(storage, next.listShown);
+    }
   }
 
   const shownWidth = shownListWidth(layout.listWidth, width);
