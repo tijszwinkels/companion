@@ -36,7 +36,7 @@ import {
 
 import type { InlineWidgetProps } from '../../../session-apps/chat/protocol.ts';
 import type { ChatCover } from './chat-cover.ts';
-import { frameAddress, frameOriginOf } from './frame-address.ts';
+import { frameAddress, frameOriginOf, policyRefusedFrame } from './frame-address.ts';
 import {
   readFrameMessage,
   themeFromVariables,
@@ -223,14 +223,21 @@ function WidgetFrame(props: {
   }, []);
 
   // Scrolling the transcript with the pointer over a frame counts as the
-  // reader's scroll (frame-scroll.ts), while this panel has a frame.
+  // reader's scroll (frame-scroll.ts), while this panel has a frame in the
+  // page (not after it failed, nor while a frame not shown yet waits for the
+  // connection).
+  const frameShown = state.phase !== 'failed';
+  const hasFrame = frameInPage && frameShown;
   useEffect(() => {
+    if (!hasFrame) {
+      return;
+    }
     const transcript = panel.current?.closest('.transcript');
     if (!transcript) {
       return;
     }
     return watchTranscript(transcript);
-  }, []);
+  }, [hasFrame]);
 
   // Messages from this panel's frame only (frame-messages.ts checks the
   // source window, the origin and every field). Heights go through the
@@ -238,7 +245,6 @@ function WidgetFrame(props: {
   // a replaced frame's late messages and waiting heights are dropped. A
   // layout effect: it is installed in the same task that puts the frame into
   // the page, before the frame can run a script and report.
-  const frameShown = state.phase !== 'failed';
   useLayoutEffect(() => {
     if (!frameShown) {
       return;
@@ -264,7 +270,7 @@ function WidgetFrame(props: {
     // when the page was loaded) has no `frame-src` for this frame origin,
     // because the frame origin was set up or changed after the page loaded.
     function onPolicyViolation(event: SecurityPolicyViolationEvent) {
-      if (event.effectiveDirective === 'frame-src' && event.blockedURI.startsWith(origin)) {
+      if (policyRefusedFrame(event, origin)) {
         dispatch({ type: 'error', text: policyRefusal });
       }
     }

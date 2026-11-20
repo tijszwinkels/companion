@@ -992,27 +992,27 @@ Rule (`src/widgets/frame-messages.ts`, `src/widgets/height-throttle.ts` and
    was removed (or replaced by Try again or a new address) is ignored: its
    panel's listener is gone or its window is no longer the panel's frame.
 
-| Case                                                   | Result                                           |
-| ------------------------------------------------------ | ------------------------------------------------ |
-| `geometry` 180 from the frame, frame origin            | Applied: 180 px                                  |
-| `error` "boom" from the frame before shown             | Failed with "boom"                               |
-| `error` with a text of 1,000 characters                | Its first 200 characters shown                   |
-| `geometry` from the shell's own window                 | Ignored                                          |
-| `geometry` from the widget's inner frame (`top`)       | Ignored                                          |
-| `geometry` from another panel's frame                  | Ignored by this panel                            |
-| `geometry` from the frame's window, another origin     | Ignored                                          |
-| `geometry` with an extra field, or `height` a string   | Ignored                                          |
-| `geometry` `NaN` or `Infinity`                         | Ignored                                          |
-| `geometry` −50 / 0 / 99.6 / 5000                       | 100 / 100 / 100 / 420 px                         |
-| 1,000 `geometry` messages in one burst, last 250       | At most 2 heights applied in the burst, then 250 |
-| A message before the frame's `load` event              | Checked like any other                           |
-| A message after the frame was removed                  | Ignored                                          |
-| host.js: `visible` false from the parent               | Polling stops                                    |
-| host.js: `theme` with `"red"` or a scale of 50         | Ignored                                          |
-| host.js: any message from another window               | Ignored                                          |
-| host.js: an array with `type` and `visible` properties | Ignored                                          |
-| host.js embedded, before the first `visible`           | No polling                                       |
-| host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it |
+| Case                                                   | Result                                                   |
+| ------------------------------------------------------ | -------------------------------------------------------- |
+| `geometry` 180 from the frame, frame origin            | Applied: 180 px                                          |
+| `error` "boom" from the frame before shown             | Failed with "boom"                                       |
+| `error` with a text of 1,000 characters                | Its first 200 characters shown                           |
+| `geometry` from the shell's own window                 | Ignored                                                  |
+| `geometry` from the widget's inner frame (`top`)       | Ignored                                                  |
+| `geometry` from another panel's frame                  | Ignored by this panel                                    |
+| `geometry` from the frame's window, another origin     | Ignored                                                  |
+| `geometry` with an extra field, or `height` a string   | Ignored                                                  |
+| `geometry` `NaN` or `Infinity`                         | Ignored                                                  |
+| `geometry` −50 / 0 / 99.6 / 5000                       | 100 / 100 / 100 / 420 px                                 |
+| 1,000 `geometry` messages in one burst, last 410       | The first at once, then at most one per 100 ms; 410 last |
+| A message before the frame's `load` event              | Checked like any other                                   |
+| A message after the frame was removed                  | Ignored                                                  |
+| host.js: `visible` false from the parent               | Polling stops                                            |
+| host.js: `theme` with `"red"` or a scale of 50         | Ignored                                                  |
+| host.js: any message from another window               | Ignored                                                  |
+| host.js: an array with `type` and `visible` properties | Ignored                                                  |
+| host.js embedded, before the first `visible`           | No polling                                               |
+| host.js on the loopback route, framed or not           | No listener for its parent, nothing posted to it         |
 
 ### Rule: visibility
 
@@ -1052,7 +1052,9 @@ of the transcript toward its start, with the transcript's height and its
 content's height unchanged since the previous scroll event (or size
 change), counts as the reader's: the shell sends the chat page a synthetic
 `wheel` on the transcript before the page's own scroll handler runs, which
-is how the page notes the reader's input. Layout changes that move the
+is how the page notes the reader's input. A panel watches only while its
+frame is in the page (not after it failed, nor while it waits for the
+connection). Layout changes that move the
 view change one of the heights; the chat page's own scrolls toward the
 start happen only then. A chat without widgets is not watched.
 
@@ -1524,9 +1526,10 @@ The [inline widget](#inline-widgets) rules have one table each:
   (it was pulled back before); a page loaded before the gateway had a frame
   origin failing at once with the reload reason, and showing the widget
   after a reload; while disconnected only the frame inert, its label
-  readable. Each test
-  checks that no request left the gateway's origin and the frame origin
-  and that no policy violation occurred. With
+  readable. The tests check
+  that no request left the gateway's origin and the frame origin, and most
+  that no policy violation occurred (not the late-setup case, which
+  depends on one: the page's own `frame-src` refusal). With
   `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves every state (loading,
   shown, failed, disconnected, not set up) at 420 and 1280 px.
 - `widget-host.test.ts` takes widget documents from the real loopback and

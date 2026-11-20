@@ -707,6 +707,11 @@ if (api) {
     if (document.hidden || !shellVisible) {
       return;
     }
+    // Embedded, a tick while a refresh is still on its way does nothing:
+    // only a completed refresh may clear a polling error (below).
+    if (shellEmbedded && refreshing) {
+      return;
+    }
     void refresh()
       .then(() => {
         // Embedded, a polling failure the shell's connection loss caused

@@ -664,7 +664,8 @@ test(
     assert.equal(await phase(page, 'counter'), 'shown');
 
     // A burst of 1,000 heights: the page applies at most one per 100 ms
-    // (measured where they are applied), and the last one wins.
+    // (measured where they are applied), and the last one (410, outside the
+    // burst's own 101–400) wins.
     await page.evaluate(`(() => {
       window.__heights = [];
       const frame = ${panelExpression('counter')}.querySelector('iframe');
@@ -673,15 +674,15 @@ test(
     await evaluateInFrame(
       page,
       counter,
-      `(() => { for (let index = 0; index < 999; index++) { parent.postMessage({ type: 'geometry', height: 101 + (index % 300) }, '*'); } parent.postMessage({ type: 'geometry', height: 260 }, '*'); })()`,
+      `(() => { for (let index = 0; index < 999; index++) { parent.postMessage({ type: 'geometry', height: 101 + (index % 300) }, '*'); } parent.postMessage({ type: 'geometry', height: 410 }, '*'); })()`,
     );
-    await page.waitFor(`${frameHeight('counter')} === 260`);
+    await page.waitFor(`${frameHeight('counter')} === 410`);
     const applied = await page.evaluate<{ height: string; at: number }[]>(`window.__heights`);
     for (let index = 1; index < applied.length; index++) {
       // Timer granularity allows a few milliseconds early.
       assert.ok(applied[index].at - applied[index - 1].at >= 95, JSON.stringify(applied));
     }
-    assert.equal(applied.at(-1)!.height, '260px');
+    assert.equal(applied.at(-1)!.height, '410px');
 
     // Another conversation: both frames go, and nothing polls for them.
     await openConversation(page, 'Plain conversation');

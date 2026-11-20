@@ -12,7 +12,11 @@ import test from 'node:test';
 
 import { chatMessage, type AgentMessage } from '../../src/agents/types.ts';
 import { pageRow } from '../../integrations/shell/src/rows.ts';
-import { frameAddress, frameOriginOf } from '../../integrations/shell/src/widgets/frame-address.ts';
+import {
+  frameAddress,
+  frameOriginOf,
+  policyRefusedFrame,
+} from '../../integrations/shell/src/widgets/frame-address.ts';
 import {
   clampFrameHeight,
   mixColours,
@@ -432,5 +436,29 @@ test('scrolling through a frame: toward the start with unchanged sizes is the re
   ];
   for (const [name, previous, current, expected] of cases) {
     assert.equal(readerScrollThroughFrame(previous, current), expected, name);
+  }
+});
+
+test('frame states rule: a refusal by the page policy fails exactly that origin', () => {
+  const origin = 'https://widgets.example.ts.net';
+  const refusal = {
+    disposition: 'enforce',
+    effectiveDirective: 'frame-src',
+    blockedURI: `${origin}/f/${handle}/`,
+  };
+  const cases: [string, typeof refusal, boolean][] = [
+    ['enforced frame-src refusal of this origin', refusal, true],
+    ['the origin alone', { ...refusal, blockedURI: origin }, true],
+    [
+      'the same host on another port',
+      { ...refusal, blockedURI: `${origin}:8443/f/${handle}/` },
+      false,
+    ],
+    ['report-only', { ...refusal, disposition: 'report' }, false],
+    ['another directive', { ...refusal, effectiveDirective: 'connect-src' }, false],
+    ['not an address', { ...refusal, blockedURI: 'inline' }, false],
+  ];
+  for (const [name, violation, expected] of cases) {
+    assert.equal(policyRefusedFrame(violation, origin), expected, name);
   }
 });

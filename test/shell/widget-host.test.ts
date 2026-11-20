@@ -20,6 +20,7 @@ import { createServer, type Server } from 'node:http';
 import test from 'node:test';
 
 import { frameFixture } from '../frame-fixture.ts';
+import { waitFor } from '../remote-fixture.ts';
 import { TestBrowser, TestPage } from '../mobile/browser.ts';
 import { skip } from './page.ts';
 import { attachFrames, evaluateInFrame, quiet, waitInFrame } from './widget-page.ts';
@@ -54,6 +55,15 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   const polls = { loopback: 0, socket: 0 };
   // While set, state polls fail (503), as when the network is gone.
   const failing = { loopback: false, socket: false };
+  // While set, state polls get no answer until `release()`, as on a slow
+  // connection.
+  const holding = { loopback: false, socket: false };
+  const held: (() => void)[] = [];
+  function release(): void {
+    for (const answer of held.splice(0)) {
+      answer();
+    }
+  }
   const server: Server = createServer((request, response) => {
     const path = request.url ?? '';
     const route = path.startsWith('/loopback/') ? 'loopback' : 'socket';
@@ -69,8 +79,15 @@ async function documentServer(documents: { loopback: string; socket: string }, s
         response.end(JSON.stringify({ error: 'Synthetic outage' }));
         return;
       }
-      response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify(state));
+      const answer = () => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify(state));
+      };
+      if (holding[route]) {
+        held.push(answer);
+        return;
+      }
+      answer();
       return;
     }
     if (path === '/frame-loopback.html' || path === '/frame-socket.html') {
@@ -87,7 +104,15 @@ async function documentServer(documents: { loopback: string; socket: string }, s
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  return { origin: `http://127.0.0.1:${address.port}`, polls, failing, server };
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    polls,
+    failing,
+    holding,
+    held,
+    release,
+    server,
+  };
 }
 
 /** A desktop page with the instrumentation in every document and its frames attached. */
@@ -225,10 +250,19 @@ test(
     // A polling failure (the network went) shows in the frame's status line
     // and, embedded, goes once polling works again. On the loopback route
     // it stays, as before this change.
-    const statusLine = `document.querySelector('.error')?.textContent ?? ''`;
+    const statusLine = `(document.querySelector('.error')?.textContent ?? '')`;
     documents.failing.socket = true;
     await waitInFrame(shell, socketFrame, `${statusLine} === 'Synthetic outage'`);
+    // The next poll is slow: while it is on its way (over three polling
+    // ticks) the line stays; only its answer clears it.
     documents.failing.socket = false;
+    documents.holding.socket = true;
+    await waitFor(() => documents!.held.length === 1, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(await evaluateInFrame(shell, socketFrame, statusLine), 'Synthetic outage');
+    assert.equal(documents.held.length, 1);
+    documents.holding.socket = false;
+    documents.release();
     await waitInFrame(shell, socketFrame, `${statusLine} === ''`);
     documents.failing.loopback = true;
     await waitInFrame(loopbackParent, loopbackFrame, `${statusLine} === 'Synthetic outage'`);

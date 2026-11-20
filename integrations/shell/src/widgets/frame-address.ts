@@ -56,3 +56,27 @@ export function frameAddress(value: unknown): string {
 export function frameOriginOf(address: string): string {
   return new URL(address).origin;
 }
+
+/** The parts of a `securitypolicyviolation` event the check below uses. */
+export interface PolicyViolation {
+  disposition: string;
+  effectiveDirective: string;
+  blockedURI: string;
+}
+
+/**
+ * Whether the page's own policy refused to frame an address on
+ * `frameOrigin`: an enforced (not report-only) `frame-src` refusal whose
+ * blocked address has exactly that origin (`https://host` is not
+ * `https://host:8443`).
+ */
+export function policyRefusedFrame(violation: PolicyViolation, frameOrigin: string): boolean {
+  if (violation.disposition !== 'enforce' || violation.effectiveDirective !== 'frame-src') {
+    return false;
+  }
+  try {
+    return new URL(violation.blockedURI).origin === frameOrigin;
+  } catch {
+    return false;
+  }
+}
