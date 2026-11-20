@@ -271,21 +271,32 @@ the harness:
   that was set back during the turn gives 0, not a negative value. Turns in
   which nothing reached the model keep the previous duration: a placeholder
   with nothing to deliver, an application send refused at its gate, a wake
-  that could not enter, and an application send withdrawn, stopped or closed
-  before it was admitted to the model.
+  that could not enter, and an application's turn (a send, or edits
+  delivered as an event) withdrawn, stopped or shut down before it was
+  admitted to the model (before its harness was called).
 
-  | Ends by               | While starting, slow first save | While running      | While the final save is pending |
-  | --------------------- | ------------------------------- | ------------------ | ------------------------------- |
-  | Stop                  | at Stop                         | at Stop            | already ended; unchanged        |
-  | Listener shutdown     | at shutdown                     | at shutdown        | already ended; unchanged        |
-  | Send withdrawn by the | at the withdrawal; keeps the    | not possible: only | not possible                    |
-  | application service   | previous duration               | unstarted sends    |                                 |
-  | Error in the harness  | when the error is observed      | when the harness   | already ended; unchanged        |
-  |                       |                                 | returns the error  |                                 |
-  | Error the listener    | not possible: no tool output    | at the error       | already ended; unchanged        |
-  | finds (tool storage)  | before the harness runs         |                    |                                 |
-  | Process exit          | not possible: no harness yet    | when the harness   | not possible: the harness has   |
-  |                       |                                 | returns            | already returned                |
+  | Ends by               | Before the harness runs ¹    | While the harness runs | While the final save is pending |
+  | --------------------- | ---------------------------- | ---------------------- | ------------------------------- |
+  | Stop                  | at Stop ²                    | at Stop                | already ended; unchanged        |
+  | Listener shutdown     | at shutdown ² ³              | at shutdown ³          | already ended; unchanged        |
+  | Send withdrawn by the | at the withdrawal; keeps the | not possible: only     | not possible                    |
+  | application service   | previous duration            | unstarted sends        |                                 |
+  | Error in the harness  | when the error is observed   | when the harness       | already ended; unchanged        |
+  |                       |                              | returns the error      |                                 |
+  | Error the listener    | not possible: no tool output | at the error (first or | already ended; unchanged        |
+  | finds (tool storage)  | before the harness runs      | coalesced write)       |                                 |
+  | Process exit          | not possible: no harness yet | when the harness       | not possible: the harness has   |
+  |                       |                              | returns                | already returned                |
+
+  ¹ From admission (`starting`, including a slow first save) until the harness
+  is called. The status is already `running` while the turn's tool leases
+  are prepared, just before the harness is called.
+
+  ² An application's turn (its send, or the person's edits delivered as an
+  event) that ends this way never reached the model and keeps the previous
+  duration.
+
+  ³ Every running turn ends at the same moment of shutdown.
 
   "At Stop" and "at shutdown": the turn ends even while it still waits for its
   first save or the harness is still winding down after the cancellation;

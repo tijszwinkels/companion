@@ -1122,18 +1122,26 @@ test('a widget row repaired after a failed close gets no invented time', async (
 /*
  * When a turn ends, case by case. Each cell is covered by a test.
  *
- * | Ends by                | while starting, slow first save | while running         | while the final save is pending |
- * | ---------------------- | ------------------------------- | --------------------- | ------------------------------- |
- * | Stop                   | at Stop                         | at Stop               | already ended; unchanged        |
- * | Listener shutdown      | at shutdown                     | at shutdown           | already ended; unchanged        |
- * | Send withdrawn by the  | at the withdrawal; keeps the    | not possible: only    | not possible                    |
- * | application service    | previous duration               | unstarted sends       |                                 |
- * | Error in the harness   | when the error is observed      | when the harness      | already ended; unchanged        |
- * |                        | (the failing save is the work)  | returns the error     |                                 |
- * | Error the listener     | not possible: no tool output    | at the error          | already ended; unchanged        |
- * | finds (tool storage)   | before the harness runs         |                       |                                 |
- * | Process exit           | not possible: no harness yet    | when the harness      | not possible: the harness has   |
- * |                        |                                 | returns               | already returned                |
+ * | Ends by                | Before the harness runs ¹       | While the harness runs | While the final save is pending |
+ * | ---------------------- | ------------------------------- | ---------------------- | ------------------------------- |
+ * | Stop                   | at Stop ²                       | at Stop                | already ended; unchanged        |
+ * | Listener shutdown      | at shutdown ² ³                 | at shutdown ³          | already ended; unchanged        |
+ * | Send withdrawn by the  | at the withdrawal; keeps the    | not possible: only     | not possible                    |
+ * | application service    | previous duration               | unstarted sends        |                                 |
+ * | Error in the harness   | when the error is observed      | when the harness       | already ended; unchanged        |
+ * |                        |                                 | returns the error      |                                 |
+ * | Error the listener     | not possible: no tool output    | at the error (first or | already ended; unchanged        |
+ * | finds (tool storage)   | before the harness runs         | coalesced write)       |                                 |
+ * | Process exit           | not possible: no harness yet    | when the harness       | not possible: the harness has   |
+ * |                        |                                 | returns                | already returned                |
+ *
+ * ¹ From admission (`starting`, including a slow first save) until the harness
+ *   is called. The status is already `running` while the turn's tool leases
+ *   are prepared, just before the harness is called.
+ * ² An application's turn (its send, or the person's edits delivered as an
+ *   event) that ends this way never reached the model and keeps the previous
+ *   duration.
+ * ³ Every running turn ends at the same moment of shutdown.
  *
  * Every early end goes through one path (endTurnNow): it removes the
  * running time and sets the duration together and publishes them, before
@@ -1346,7 +1354,7 @@ test('listener shutdown publishes the end of a turn at once, also while starting
 });
 
 for (const harness of harnesses) {
-  test(`${harness}: a tool-storage error ends the turn when the listener finds it`, async (context) => {
+  test(`${harness}: a coalesced tool-storage error ends the turn when the listener finds it`, async (context) => {
     const clock = fakeClock();
     const fixture = await harnessFixture(context, { configuration, wakeClock: clock.now });
     const events = recordEvents(fixture.sessions);
@@ -1386,3 +1394,141 @@ for (const harness of harnesses) {
     assert.equal(fixture.view(id).lastTurnDurationMs, 20);
   });
 }
+
+for (const harness of harnesses) {
+  test(`${harness}: an immediate tool-storage error ends the turn at once, not after the harness cleanup`, async (context) => {
+    const clock = fakeClock();
+    const fixture = await harnessFixture(context, { configuration, wakeClock: clock.now });
+    const events = recordEvents(fixture.sessions);
+    // Reaches into the private tool store on purpose to make one write fail.
+    const tools = (fixture.sessions as unknown as { store: SessionStore }).store.tools;
+    const put = tools.put.bind(tools);
+
+    const id = fixture.sessions.start(frame, signal(), 'coding', harness);
+    fixture.script(id, async (run) => {
+      // The first update of a tool call is written at once, not coalesced.
+      tools.put = () => {
+        throw Error('Synthetic tool storage failure');
+      };
+      clock.advance(20);
+      try {
+        const call = { ...chatMessage('call', 'tool', ''), toolName: 'bash', input: 'ls' };
+        run.emit({ ...call, state: 'running' });
+        await stopped(run.signal);
+      } finally {
+        // Like the real harnesses, it then winds its process down.
+        clock.advance(750);
+      }
+    });
+
+    await waitFor(() => lastPublished(events, id).status === 'error');
+    const published = lastPublished(events, id);
+    assert.equal(published.turnStartedAt, undefined);
+    assert.equal(published.lastTurnDurationMs, 20);
+    await fixture.sessions.idle();
+    tools.put = put;
+
+    assert.equal(fixture.view(id).status, 'error');
+    assert.match(fixture.view(id).error, /Synthetic tool storage failure/);
+    assert.equal(fixture.view(id).lastTurnDurationMs, 20);
+  });
+}
+
+test('listener shutdown ends every running turn at the same moment', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const events = recordEvents(fixture.sessions);
+  // Reaches into the private tool store on purpose to make a write slow.
+  const tools = (fixture.sessions as unknown as { store: SessionStore }).store.tools;
+  const put = tools.put.bind(tools);
+
+  // Two conversations start at the same instant and keep running; each
+  // winds down for five seconds after the abort.
+  const emits = new Map<string, (message: AgentMessage) => void>();
+  const ids = [fixture.sessions.start(frame, signal()), fixture.sessions.start(frame, signal())];
+  for (const id of ids) {
+    fixture.script(id, async (run) => {
+      emits.set(id, run.emit);
+      try {
+        await stopped(run.signal);
+      } finally {
+        clock.advance(5_000);
+      }
+    });
+  }
+  await waitFor(() => emits.size === 2);
+
+  // The first conversation has a partial tool result waiting to be written,
+  // and that write takes 500 ms when shutdown publishes it.
+  const call = { ...chatMessage('call', 'tool', ''), toolName: 'bash', input: 'ls' };
+  const emitFirst = emits.get(ids[0])!;
+  emitFirst({ ...call, state: 'running' });
+  emitFirst({ ...call, text: 'partial', state: 'running' });
+  tools.put = (...parameters) => {
+    clock.advance(500);
+    return put(...parameters);
+  };
+
+  clock.advance(20);
+  const closing = fixture.sessions.close();
+  for (const id of ids) {
+    const published = lastPublished(events, id);
+    assert.equal(published.turnStartedAt, undefined, 'published at once');
+    assert.equal(published.lastTurnDurationMs, 20);
+  }
+  await closing;
+  tools.put = put;
+
+  for (const id of ids) {
+    assert.equal(fixture.view(id).lastTurnDurationMs, 20);
+  }
+});
+
+test('Stop before an edit event reaches the model keeps the previous duration, live and saved', async (context) => {
+  const clock = fakeClock();
+  const fixture = await harnessFixture(context, { wakeClock: clock.now });
+  const id = fixture.sessions.start(frame, signal());
+  fixture.script(id, async () => {
+    clock.advance(800);
+  });
+  await fixture.sessions.idle();
+  assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+
+  // A stand-in for the application service: preparing the edits for
+  // delivery is slow, and then finds nothing left to deliver. Reaches into
+  // private fields on purpose; no authored code runs.
+  const applications = (
+    fixture.sessions as unknown as {
+      widgets: { applications: { beginDelivery: (owner: string) => Promise<undefined> } };
+    }
+  ).widgets.applications;
+  const preparation = deferred<undefined>();
+  let preparing = false;
+  applications.beginDelivery = () => {
+    preparing = true;
+    return preparation.promise;
+  };
+
+  const origin = {
+    kind: 'application-event' as const,
+    applicationId: '8b1c2d3e-4f5a-4b6c-8d7e-0123456789ab',
+    depth: 0 as const,
+  };
+  fixture.sessions.followUp(id, 'Application edits are waiting to be delivered.', signal(), origin);
+  let stopping: Promise<number> | undefined;
+  try {
+    await waitFor(() => preparing);
+    clock.advance(20);
+    stopping = fixture.sessions.stop(id);
+    assert.equal(fixture.view(id).turnStartedAt, undefined);
+    assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+  } finally {
+    preparation.resolve(undefined);
+  }
+  await stopping;
+  await fixture.sessions.idle();
+
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(fixture.view(id).lastTurnDurationMs, 800);
+  assert.equal((await savedJson(fixture.directory, id)).lastTurnDurationMs, 800);
+});
