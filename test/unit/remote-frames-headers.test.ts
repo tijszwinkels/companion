@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +34,7 @@ const permissions =
 /** The fixed headers of every frame-origin response, by rule. */
 function expectedFrameHeaders(fixture: Fixture): Record<string, string> {
   return {
-    'content-security-policy': `frame-ancestors ${fixture.origin}`,
+    'content-security-policy': `frame-ancestors ${fixture.origin}; webrtc 'block'`,
     'origin-agent-cluster': '?1',
     'referrer-policy': 'no-referrer',
     'cross-origin-resource-policy': 'same-origin',
@@ -218,7 +219,7 @@ const upstreamCases: UpstreamCase[] = [
       // Both policies apply: ours, then the document's own, unchanged.
       assert.equal(
         headers['content-security-policy'],
-        `frame-ancestors ${fixture.origin}, default-src 'none'`,
+        `frame-ancestors ${fixture.origin}; webrtc 'block', default-src 'none'`,
       );
     },
   },
@@ -400,4 +401,67 @@ test('an upstream 404 ends the handle and answers like an unknown one', async (c
   upstream.respond((_request, response) => json(response, 200));
   assert.equal((await fixture.frameRequest(frameUrl + 'state')).status, 404);
   assert.equal(upstream.seen.length, before);
+});
+
+test('a client that leaves cancels its upstream request before its slot is reused', async (context) => {
+  const upstream = await fakeUpstream();
+  context.after(() => upstream.close());
+  const fixture = await frameFixture({ widgetSocket: upstream.socketPath });
+  context.after(() => fixture.close());
+  const frameUrl = await widgetFrame(fixture);
+
+  const held: Array<{ request: IncomingMessage; response: ServerResponse; closed: boolean }> = [];
+  upstream.respond((request, response) => {
+    const entry = { request, response, closed: false };
+    response.once('close', () => (entry.closed = true));
+    held.push(entry);
+  });
+  const clients = Array.from({ length: 8 }, () => new AbortController());
+  const pending = clients.map((client) =>
+    fetch(frameUrl + 'state', { signal: client.signal }).catch(() => undefined),
+  );
+  const until = Date.now() + 3000;
+  while (held.length < 8) {
+    assert.ok(Date.now() < until);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  // The device's eight slots are busy.
+  const busy = await fixture.frameRequest(frameUrl + 'state');
+  assert.equal(busy.status, 503);
+  await busy.arrayBuffer();
+
+  // Every client leaves; each upstream request is cancelled, and only then
+  // are the slots free again.
+  for (const client of clients) {
+    client.abort();
+  }
+  await Promise.all(pending);
+  while (!held.every((entry) => entry.closed)) {
+    assert.ok(Date.now() < until + 3000);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  upstream.respond((_request, response) => json(response, 200));
+  const later = until + 6000;
+  let status = 0;
+  while (status !== 200) {
+    assert.ok(Date.now() < later, `status ${status}`);
+    const response = await fixture.frameRequest(frameUrl + 'state');
+    status = response.status;
+    await response.arrayBuffer();
+  }
+});
+
+test('a client that never finishes its request headers is closed after about 10 seconds', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  const socket = createConnection(fixture.framePort, '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  const started = Date.now();
+  socket.write(`GET /f/${'a'.repeat(43)}/ HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\n`);
+  socket.on('data', () => {});
+  socket.on('error', () => {});
+  await new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 9_000 && elapsed <= 12_500, `closed after ${elapsed} ms`);
 });

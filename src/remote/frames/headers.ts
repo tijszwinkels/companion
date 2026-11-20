@@ -34,7 +34,13 @@ export function frameResponseHeaders(
   upstreamPolicies: readonly string[] = [],
 ): OutgoingHttpHeaders {
   return {
-    'Content-Security-Policy': [`frame-ancestors ${gatewayOrigins.join(' ')}`, ...upstreamPolicies],
+    // `webrtc 'block'` stops WebRTC where browsers implement it. Chromium
+    // (tested) does not yet, so it is a hardening, not a guarantee; see
+    // README "What a widget page can and cannot reach".
+    'Content-Security-Policy': [
+      `frame-ancestors ${gatewayOrigins.join(' ')}; webrtc 'block'`,
+      ...upstreamPolicies,
+    ],
     'Origin-Agent-Cluster': '?1',
     'Referrer-Policy': 'no-referrer',
     'Cross-Origin-Resource-Policy': 'same-origin',

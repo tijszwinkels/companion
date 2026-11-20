@@ -35,6 +35,9 @@ const gatewayMessages = new Set([
   'Too many requests',
   'Busy; try again',
   'Public requests are not allowed',
+  'Too many header fields',
+  'Repeated header field',
+  'Expectation not supported',
 ]);
 
 interface Views {
@@ -583,6 +586,57 @@ const cases: AdmissionCase[] = [
       ),
     status: 400,
   },
+
+  // ---- Header lists and expectations ---------------------------------------
+  {
+    name: '64 header fields (a Funnel marker could have been dropped)',
+    request: (fixture, views) =>
+      rawGet(fixture, `/f/${views.widgetHandle}/state`, [
+        ...Array.from({ length: 61 }, (_value, index) => `X-Filler-${index}: x`),
+        'Tailscale-Funnel-Request: ?1',
+      ]),
+    status: 431,
+  },
+  {
+    name: '63 header fields are still admitted',
+    request: (fixture, views) =>
+      rawGet(
+        fixture,
+        `/f/${views.widgetHandle}/state`,
+        Array.from({ length: 61 }, (_value, index) => `X-Filler-${index}: x`),
+      ),
+    status: 200,
+  },
+  {
+    name: 'a repeated Host, the first one correct',
+    request: (fixture, views) =>
+      rawGet(fixture, `/f/${views.widgetHandle}/state`, ['Host: evil.example']),
+    status: 400,
+  },
+  {
+    name: 'a repeated Origin',
+    request: (fixture, views) =>
+      rawGet(fixture, `/f/${views.widgetHandle}/state`, [
+        `Origin: ${fixture.frameOrigin}`,
+        `Origin: ${fixture.frameOrigin}`,
+      ]),
+    status: 400,
+  },
+  {
+    name: 'a repeated Funnel marker',
+    request: (fixture, views) =>
+      rawGet(fixture, `/f/${views.widgetHandle}/state`, [
+        'Tailscale-Funnel-Request: ?1',
+        'Tailscale-Funnel-Request: ?1',
+      ]),
+    status: 400,
+  },
+  {
+    name: 'an unsupported expectation',
+    request: (fixture, views) =>
+      rawGet(fixture, `/f/${views.widgetHandle}/state`, ['Expect: something-else']),
+    status: 417,
+  },
 ];
 
 test('frame request admission table', async (context) => {
@@ -762,4 +816,116 @@ test('frame requests do not use phone connection slots', async (context) => {
   // And a third phone is still refused for capacity, not because of frames.
   const third = await fixture.phone(token);
   assert.equal((await third.closed).code, 4429);
+});
+
+/** Send a POST's headers with `Expect: 100-continue` and report what comes back first. */
+async function expectContinue(fixture: Fixture, views: Views, origin: string): Promise<string> {
+  const socket = createConnection(fixture.framePort, '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  const body = JSON.stringify({ action: 'increment', args: {}, requestId: 'continue-' + origin });
+  socket.write(
+    [
+      `POST /f/${views.widgetHandle}/action HTTP/1.1`,
+      `Host: 127.0.0.1:${fixture.framePort}`,
+      `Origin: ${origin}`,
+      'Content-Type: application/json',
+      `Content-Length: ${Buffer.byteLength(body)}`,
+      'Expect: 100-continue',
+      'Connection: close',
+      '',
+      '',
+    ].join('\r\n'),
+  );
+  const first = await readStatusLine(socket);
+  if (first.includes(' 100 ')) {
+    socket.write(body);
+  }
+  socket.destroy();
+  return first;
+}
+
+test('Expect: 100-continue is answered only for an admitted request', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  const { run } = await fixture.conversation();
+  await fixture.publishCounter(run);
+  const { token } = await fixture.pair();
+  const phone = await fixture.phone(token);
+  const snapshot = await phone.engine('state', (message) =>
+    message.sessions?.some((session: Json) => session.messages.some((row: Json) => row.widget)),
+  );
+  const widget = snapshot.sessions[0].messages.find((row: Json) => row.widget).widget
+    .frameUrl as string;
+  const views = { widget, widgetHandle: widget.split('/')[4] } as Views;
+
+  assert.match(await expectContinue(fixture, views, fixture.frameOrigin), / 100 /);
+  assert.match(await expectContinue(fixture, views, 'http://evil.example'), / 403 /);
+});
+
+test('upgrade and CONNECT refusals carry the fixed headers', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  const socket = createConnection(fixture.framePort, '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  socket.write(
+    `GET /f/${'a'.repeat(43)}/ HTTP/1.1\r\nHost: 127.0.0.1:${fixture.framePort}\r\n` +
+      'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n' +
+      'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n',
+  );
+  let text = '';
+  socket.setEncoding('latin1');
+  await new Promise<void>((resolve) => {
+    socket.on('data', (chunk) => (text += chunk));
+    socket.once('close', () => resolve());
+  });
+  assert.match(text, /^HTTP\/1\.1 400 /);
+  assert.match(text, new RegExp(`content-security-policy: frame-ancestors ${fixture.origin}`, 'i'));
+  assert.match(text, /origin-agent-cluster: \?1/i);
+  assert.match(text, /"error":"Upgrades are not accepted here"/);
+});
+
+test('a POST whose handle ends while its body arrives is not forwarded', async (context) => {
+  const fixture = await frameFixture();
+  context.after(() => fixture.close());
+  const { run } = await fixture.conversation();
+  const widgetId = await fixture.publishCounter(run);
+  const { token, deviceId } = await fixture.pair();
+  const phone = await fixture.phone(token);
+  const snapshot = await phone.engine('state', (message) =>
+    message.sessions?.some((session: Json) => session.messages.some((row: Json) => row.widget)),
+  );
+  const widget = snapshot.sessions[0].messages.find((row: Json) => row.widget).widget
+    .frameUrl as string;
+
+  const body = JSON.stringify({ action: 'increment', args: {}, requestId: 'during-revocation' });
+  const socket = createConnection(fixture.framePort, '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  socket.write(
+    [
+      `POST /f/${widget.split('/')[4]}/action HTTP/1.1`,
+      `Host: 127.0.0.1:${fixture.framePort}`,
+      `Origin: ${fixture.frameOrigin}`,
+      'Content-Type: application/json',
+      `Content-Length: ${Buffer.byteLength(body)}`,
+      'Connection: close',
+      '',
+      body.slice(0, 10),
+    ].join('\r\n'),
+  );
+  // Admitted and waiting for the rest of the body; now revoke the device.
+  await delay(100);
+  await fixture.devices.revoke(deviceId);
+  const until = Date.now() + 3000;
+  while (fixture.gateway.frames!.handles.size > 0) {
+    assert.ok(Date.now() < until);
+    await delay(20);
+  }
+  socket.write(body.slice(10));
+  const line = await readStatusLine(socket);
+  socket.destroy();
+  assert.match(line, / 404 /);
+  const record = fixture.sessions
+    .snapshot()[0]
+    ?.messages.find((row) => row.widget?.id === widgetId);
+  assert.equal(record?.widget?.revision, 1, 'the action never reached the listener');
 });

@@ -539,8 +539,8 @@ export class Relay {
       // A session application's view capability is a desktop loopback URL,
       // like a widget's. The phone keeps the descriptor's metadata only.
       const application = value.application as Record<string, unknown> | undefined;
-      const applicationFrame = this.options.frames?.application(value.id, application?.viewUrl);
       if (application && typeof application === 'object') {
+        const applicationFrame = this.options.frames?.application(value.id, application.viewUrl);
         delete application.viewUrl;
         delete application.chatAccess;
         if (applicationFrame) {

@@ -25,10 +25,18 @@
  *   `graceMilliseconds` after the last one closed. A reconnect within the
  *   grace period keeps them.
  * - They end at once when the device is revoked (the gateway's recheck),
- *   when the conversation closes (`agent-removed`), when the conversation's
- *   application is removed or changes address, when the widget service says
- *   the view is unknown (upstream 404), and when the gateway stops. Nothing
- *   is written to disk.
+ *   when the conversation closes (`agent-removed`), when the widget service
+ *   says the view is unknown (upstream 404: the conversation closed or the
+ *   application was removed), and when the gateway stops. Nothing is written
+ *   to disk.
+ * - Only ordered facts end a handle. Several relays deliver listener events
+ *   at different times (an initial snapshot can wait for role negotiation),
+ *   so a relay may still process an older snapshot after another relay saw
+ *   a newer one. A snapshot without a view therefore never ends anything.
+ *   `agent-removed` ends exactly the view capabilities that the same
+ *   connection saw for that conversation before the event: those belong to
+ *   the closed conversation and are dead for every device (a reopened
+ *   conversation gets new random capabilities).
  *
  * Handles are bearer capabilities, like the listener's own: a frame request
  * carries no device credential (no cookie, no token). "Bound to a device"
@@ -78,13 +86,12 @@ export interface FrameTarget {
 export interface RelayFrames {
   /** The frame address for a widget view address, or undefined to drop it. */
   widget(conversationId: unknown, viewUrl: unknown): string | undefined;
-  /**
-   * The frame address for a conversation's application, given the current
-   * descriptor's view address (undefined: no application, or no view). A
-   * different or missing address ends the conversation's earlier handles.
-   */
+  /** The frame address for a conversation's application view address. */
   application(conversationId: unknown, viewUrl: unknown): string | undefined;
-  /** The conversation closed: its handles end for every device. */
+  /**
+   * The conversation closed: the views this connection saw for it end, for
+   * every device.
+   */
   conversationRemoved(conversationId: unknown): void;
 }
 
@@ -160,17 +167,37 @@ export class FrameHandles {
 
     const owner = record;
     let closed = false;
+    // Conversation → view capabilities this connection was given a handle
+    // for, in the order of its own event stream (see the header comment).
+    const seen = new Map<string, Set<string>>();
+    const issueAndRemember = (conversationId: unknown, kind: FrameKind, viewUrl: unknown) => {
+      const issued = this.issue(owner, conversationId, kind, viewUrl);
+      if (issued) {
+        const conversation = conversationId as string;
+        let views = seen.get(conversation);
+        if (!views) {
+          views = new Set();
+          seen.set(conversation, views);
+        }
+        views.add(capabilityOf(viewUrl)!);
+      }
+      return issued;
+    };
     const connection: FrameConnection = {
       widget: (conversationId, viewUrl) => {
-        return this.issue(owner, conversationId, 'widget', viewUrl);
+        return issueAndRemember(conversationId, 'widget', viewUrl);
       },
       application: (conversationId, viewUrl) => {
-        return this.applicationChanged(owner, conversationId, viewUrl);
+        return issueAndRemember(conversationId, 'application', viewUrl);
       },
       conversationRemoved: (conversationId) => {
-        if (typeof conversationId === 'string') {
-          this.endWhere((entry) => entry.conversationId === conversationId);
+        if (typeof conversationId !== 'string') {
+          return;
         }
+        for (const capability of seen.get(conversationId) ?? []) {
+          this.viewEnded(capability);
+        }
+        seen.delete(conversationId);
       },
       close: () => {
         if (closed) {
@@ -295,29 +322,6 @@ export class FrameHandles {
       this.entries.delete(entry.handle);
       this.devices.get(entry.deviceId)?.handles.delete(entry.capability);
     }
-  }
-
-  /**
-   * An application descriptor (or its absence) for one conversation. Any
-   * earlier application handle of that conversation with another address
-   * ends for every device: the listener no longer serves it.
-   */
-  private applicationChanged(
-    record: DeviceRecord,
-    conversationId: unknown,
-    viewUrl: unknown,
-  ): string | undefined {
-    if (typeof conversationId !== 'string') {
-      return undefined;
-    }
-    const capability = capabilityOf(viewUrl);
-    this.endWhere(
-      (entry) =>
-        entry.kind === 'application' &&
-        entry.conversationId === conversationId &&
-        entry.capability !== capability,
-    );
-    return this.issue(record, conversationId, 'application', viewUrl);
   }
 
   private issue(

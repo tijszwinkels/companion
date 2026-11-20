@@ -109,6 +109,57 @@ export function admitFrameRequest(
   return { ok: true, handle: match[1], operation: match[2], definition, bodyBytes: length };
 }
 
+/**
+ * Fields Node keeps at most this many of; a request with this many or more
+ * may have lost some (the parser drops the rest), so security headers such
+ * as the Funnel marker could be missing. It is refused before any check.
+ */
+export const maximumHeaderFields = 64;
+
+/**
+ * Fields whose repetition is never legitimate here. Node keeps only the
+ * first `Host`, `Content-Type` or `Authorization` and joins others, so a
+ * repeated one is refused instead of interpreted.
+ */
+const singletonFields = new Set([
+  'host',
+  'origin',
+  'content-type',
+  'content-length',
+  'transfer-encoding',
+  'authorization',
+  'upgrade',
+  'expect',
+  'x-forwarded-host',
+  'tailscale-funnel-request',
+  'tailscale-user-login',
+]);
+
+/**
+ * Check the raw header list before anything reads `request.headers`:
+ * undefined when it is complete and has no repeated singleton field,
+ * otherwise the refusal.
+ */
+export function headerListRefusal(
+  rawHeaders: readonly string[],
+): { status: number; error: string } | undefined {
+  if (rawHeaders.length / 2 >= maximumHeaderFields) {
+    return { status: 431, error: 'Too many header fields' };
+  }
+  const seen = new Set<string>();
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    const name = rawHeaders[index].toLowerCase();
+    if (!singletonFields.has(name)) {
+      continue;
+    }
+    if (seen.has(name)) {
+      return { status: 400, error: 'Repeated header field' };
+    }
+    seen.add(name);
+  }
+  return undefined;
+}
+
 function refuse(status: number, error: string): Admission {
   return { ok: false, status, error };
 }

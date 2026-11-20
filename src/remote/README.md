@@ -289,10 +289,17 @@ the listener's session types it passes through.
    keeps them; after that they are gone and a new connection gets new ones.
 5. They end at once when the device is revoked (the existing recheck, every
    5 seconds, also during the 30 seconds), when device authorization cannot
-   be read, when the conversation closes (`agent-removed`), when the
-   conversation's application is removed or its view address changes, when
-   the widget service answers 404 for the view (for every device), and when
-   the gateway stops. Handles live in memory only.
+   be read, when the conversation closes (`agent-removed`), when the widget
+   service answers 404 for the view (the conversation closed or the
+   application was removed; for every device), and when the gateway stops.
+   Handles live in memory only. A request whose body was still arriving when
+   its handle ended is not forwarded. Only ordered facts end handles: relays
+   deliver listener events at different times (an initial snapshot waits for
+   role negotiation), so a snapshot without a view never ends anything.
+   `agent-removed` ends the views that the same connection saw for that
+   conversation before the event, for every device; a reopened conversation
+   has new capabilities. Removing an application is seen through the widget
+   service's 404.
 6. Replacing an application's code keeps its view address, so the handle stays;
    the page reloads itself when it sees the new code version.
 7. Bounds: 1024 handles per device, 4096 in total. At a bound no new handle is
@@ -301,8 +308,13 @@ the listener's session types it passes through.
 
 ### Rules: request admission
 
-Checked in this order; every refusal has a fixed JSON body.
+Checked in this order; every refusal has a fixed JSON body and the headers
+below, including refusals of upgrades and `CONNECT`.
 
+0. 64 or more header fields (Node may have dropped some, so a Funnel marker
+   could be missing): 431. A repeated `Host`, `Origin`, `Content-Type`,
+   `Content-Length`, `Transfer-Encoding`, `Authorization`, `Upgrade`,
+   `Expect`, `X-Forwarded-Host` or `Tailscale-*` field: 400.
 1. A `Tailscale-Funnel-Request` header, or a missing/wrong required Tailscale
    login: 403.
 2. `Host` (on a Unix socket: `X-Forwarded-Host`) other than the frame
@@ -316,7 +328,8 @@ Checked in this order; every refusal has a fixed JSON body.
 5. A method other than the operation's: 405.
 6. An `Origin` other than the frame origin: 403. A POST without `Origin`: 403.
 7. POST: `Content-Type` other than `application/json` 415; no
-   `Content-Length` or any `Transfer-Encoding` 411; a length above the limit 413. GET with a body: 400.
+   `Content-Length` or any `Transfer-Encoding` 411; a length above the limit 413. GET with a body: 400. `Expect: 100-continue` is answered only after
+   every step here admitted the request; any other expectation: 417.
 8. An unknown or ended handle, or one whose view does not implement the
    operation: 404 `Not found`, the same answer as step 4. Steps 3–7 never
    look at the handle.
@@ -353,16 +366,20 @@ answered like an unknown handle. An unreachable listener: 503; no answer
 within 15 seconds: 504; other statuses pass through with their JSON body.
 
 Resources: at most 64 sockets on the frame listener, 10 seconds for request
-headers, 30 seconds for a whole exchange including the client reading the
-answer; a forwarded request keeps its slot until the client has the answer.
-Frame requests use the widget service socket, not the control socket: they do
-not count against the gateway's phone connections or the listener's client
-slots.
+headers (enforced within a second), 30 seconds for a whole exchange including
+the client reading the answer. A forwarded request keeps its slot until the
+client has the answer or has gone and the upstream request has ended; a
+client that leaves cancels its upstream request. Frame requests use the
+widget service socket, not the control socket: they do not count against the
+gateway's phone connections or the listener's client slots. Requests for
+unknown handles are not budgeted (no device is known) but are answered
+without touching the listener; restrict who can reach the port as for the
+gateway.
 
 ### Rules: headers
 
 - Every frame-origin response, forwarded or refused, carries
-  `Content-Security-Policy: frame-ancestors <gateway origins>`,
+  `Content-Security-Policy: frame-ancestors <gateway origins>; webrtc 'block'`,
   `Origin-Agent-Cluster: ?1`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store`,
   `X-Content-Type-Options: nosniff` and `Permissions-Policy: camera=(),
@@ -385,18 +402,31 @@ state, call its declared actions and queries, report its layout, change its
 own presentation, and, only after the person allowed it on the desktop, read
 or send chat. It **cannot** reach the gateway's origin (different origin: no
 `localStorage`, device token, cookies or same-origin API calls), any other
-view (another handle is needed), other operations of its own view, the
-listener's control socket or loopback port, or any third origin (its own CSP
-plus `connect-src 'self'` on the host page). It cannot be framed by any page
-except the gateway's.
+view (another handle is needed), other operations of its own view, or the
+listener's control socket or loopback port. It cannot make HTTP requests to
+any third origin (`connect-src 'none'` in the inner frame, `connect-src
+'self'` on the host page). It cannot be framed by any page except the
+gateway's.
+
+**WebRTC is not blocked in Chromium.** CSP `webrtc 'block'` is sent, but
+Chromium (tested here) does not implement that directive yet, and no
+Permissions Policy covers it, so widget code can open an `RTCPeerConnection`
+and send STUN/ICE traffic to a server of its choice from the browser's
+network. Widget code is authored by the agent from the user's own library;
+treat that as the same trust as on the desktop, not as a no-egress sandbox.
 
 **Residual risk accepted by this design.** A second port on the same host name
-is a different origin but the same _site_. A browser may therefore keep the
-frame page and the shell in one process, and a renderer exploit in the frame
-could reach the shell's memory, including the device token. The
-`Origin-Agent-Cluster` header and the inner opaque sandboxed frame reduce
-this; a separate host name for the frame origin (a different site) removes it
-and can be configured later without code changes.
+is a different origin but the same _site_ (scheme plus registrable domain). A
+browser may therefore keep the frame page and the shell in one process, and a
+renderer exploit in the frame could reach the shell's memory, including the
+device token. The `Origin-Agent-Cluster` header and the inner opaque sandboxed
+frame reduce this. Only a frame origin on a different registrable domain is a
+different site; another host name under the same registrable domain (for
+example two names in one tailnet's `ts.net` domain) is still the same site.
+Cookies are scoped to the host name regardless of port; the gateway and the
+frame origin use none, and app origins need distinct host names for that
+reason. A different frame host name can be configured later without code
+changes.
 
 ### Tests
 

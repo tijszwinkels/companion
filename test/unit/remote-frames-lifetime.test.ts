@@ -284,35 +284,56 @@ const cases: LifetimeCase[] = [
   },
   {
     rule: '5',
-    name: 'application removed or moved to another address: its handle ends for every device',
+    name: 'application removed: the widget service 404 ends its handle for every device',
+    async run(fixture) {
+      const { id, widgetId } = await setUp(fixture);
+      const one = await fixture.pair('One');
+      const two = await fixture.pair('Two');
+      const first = await framesFrom(await fixture.phone(one.token), id, widgetId);
+      const second = await framesFrom(await fixture.phone(two.token), id, widgetId);
+
+      // The listener has no "remove application" operation yet; simulate its
+      // outcome on the widget service: the conversation has no application.
+      const applications = (fixture.sessions as any).widgets.applications;
+      applications.entries.get(id).record = undefined;
+
+      assert.equal(await status(fixture, first.application), 404);
+      assert.equal(await status(fixture, second.application), 404);
+      // The widget of the same conversation is not affected.
+      assert.equal(await status(fixture, first.widget), 200);
+    },
+  },
+  {
+    rule: '5',
+    name: 'ordered facts only: a late snapshot or removal from another relay ends nothing new',
     async run() {
       const conversation = '00000000-0000-4000-8000-000000000001';
       const view = (hex: string) => `http://127.0.0.1:1234/view/${hex.repeat(64)}`;
-      const handles = new FrameHandles('https://frames.example');
-      const one = handles.connect('device-one');
-      const two = handles.connect('device-two');
-      const first = one.application(conversation, view('a'))!;
-      const other = two.application(conversation, view('a'))!;
-      const widget = one.widget(conversation, view('c'))!;
       const handleOf = (url: string) => url.split('/')[4];
+      const handles = new FrameHandles('https://frames.example');
+      const current = handles.connect('device-one');
+      const lagging = handles.connect('device-two');
+      const sameDeviceLagging = handles.connect('device-one');
 
-      // Same address again (a replaced code version keeps it): same handle.
-      assert.equal(one.application(conversation, view('a')), first);
-      // Removed (no descriptor or no view address): ended for both devices.
-      assert.equal(one.application(conversation, undefined), undefined);
-      assert.equal(handles.lookup(handleOf(first)), undefined);
+      // An application appears; one relay is already past it.
+      const application = current.application(conversation, view('a'))!;
+      // Relays still processing an older snapshot (no application) or an
+      // older close of the conversation's previous instance end nothing.
+      lagging.conversationRemoved(conversation);
+      sameDeviceLagging.conversationRemoved(conversation);
+      assert.ok(handles.lookup(handleOf(application)));
+
+      // A relay that saw the view and then the removal ends it everywhere.
+      const other = lagging.application(conversation, view('a'))!;
+      assert.notEqual(other, application);
+      lagging.conversationRemoved(conversation);
+      assert.equal(handles.lookup(handleOf(application)), undefined);
       assert.equal(handles.lookup(handleOf(other)), undefined);
-      // Widgets of the conversation are not affected.
-      assert.ok(handles.lookup(handleOf(widget)));
-      // A new address gets a new handle and ends nothing else.
-      const next = one.application(conversation, view('b'))!;
-      assert.notEqual(next, first);
-      assert.ok(handles.lookup(handleOf(next)));
-      assert.ok(handles.lookup(handleOf(widget)));
-      // Moving to yet another address ends the previous one for every device.
-      const moved = two.application(conversation, view('d'))!;
-      assert.equal(handles.lookup(handleOf(next)), undefined);
-      assert.ok(handles.lookup(handleOf(moved)));
+
+      // The reopened conversation's new views are unaffected by a late removal.
+      const reopened = current.widget(conversation, view('b'))!;
+      sameDeviceLagging.conversationRemoved(conversation);
+      assert.ok(handles.lookup(handleOf(reopened)));
     },
   },
   {
