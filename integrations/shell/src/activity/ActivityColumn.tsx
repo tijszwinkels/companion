@@ -18,14 +18,15 @@
  * list's right edge (`left`) to the window's right edge.
  */
 
-import type { Ref } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import type { RefObject } from 'preact';
+import { useState } from 'preact/hooks';
 
 import { useAppState, useStore } from '../../../mobile/src/hooks.ts';
 import type { AppState } from '../../../mobile/src/store.ts';
 import { MicIcon, MicOffIcon } from '../../../chat-ui/icons.tsx';
 import type { GatewayChatBridge } from '../bridge.ts';
 import { HistoryEntry } from './HistoryEntry.tsx';
+import { useFocusHandOff } from '../workspace/focus-hand-off.ts';
 import { listeningView } from './listening.ts';
 import type { ActivityRequests } from './requests.ts';
 import { StartedSelection } from './select-started.ts';
@@ -47,19 +48,19 @@ export function ActivityColumn(props: {
   requests: ActivityRequests;
   onHide: () => void;
   /** The ☰ that hides the column, for moving keyboard focus to it. */
-  hideButton: Ref<HTMLButtonElement>;
+  hideButton: RefObject<HTMLButtonElement>;
+  /** That ☰ had keyboard focus when the column went away. */
+  onFocusLost: () => void;
 }) {
   const state = useAppState();
   const listening = listeningView(state);
 
-  // A request's start or end changes what the entries offer without a Store
-  // change: re-render then.
-  const [, setRequestsVersion] = useState(0);
-  useEffect(() => {
-    return props.requests.subscribe(() => {
-      setRequestsVersion((version) => version + 1);
-    });
-  }, [props.requests]);
+  // A request's start or end re-renders the workspace, and with it this
+  // column (Workspace.tsx follows `requests` for as long as the pairing).
+
+  // Focus on the column's ☰ when the column goes away without that ☰
+  // being pressed (another tab hid it): it moves to the bar's ☰.
+  useFocusHandOff(props.hideButton, props.onFocusLost);
 
   const classes = ['activity-column'];
   let style: Record<string, string> = { width: `${props.width}px` };
@@ -168,7 +169,8 @@ function StartConversation(props: { bridge: GatewayChatBridge }) {
     // Watch what is shown from now on, so a selection made while the start
     // is on its way is never overridden (select-started.ts).
     const selection = new StartedSelection(store);
-    const id = await store.sendDraft('new', profile);
+    // The shell selects the result by its own rule, not the phone's.
+    const id = await store.sendDraft('new', profile, { openStarted: false });
     if (id) {
       selection.started(id);
     } else {

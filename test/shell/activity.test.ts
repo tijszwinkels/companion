@@ -16,6 +16,7 @@ import {
   assertNoViolations,
   assertOwnOrigin,
   clickAt,
+  desktopPage,
   horizontalOverflow,
   online,
   openConversation,
@@ -793,6 +794,13 @@ test(
     await page.waitFor(
       `${entryExpression('Synthetic entry to label')}.querySelector('.activity-label')?.textContent === 'Labelled incorrect'`,
     );
+    // The recognised intent (Ignore) is not offered: the listener refuses it.
+    assert.deepEqual(
+      await page.evaluate(
+        `[...${entryExpression('Synthetic entry to label')}.querySelectorAll('.activity-choice button')].map((button) => button.getAttribute('aria-label'))`,
+      ),
+      ['Correct intent to Quick question'],
+    );
     await clickSelector(
       page,
       await entryButton(page, 'Synthetic entry to label', 'Correct intent to Quick question'),
@@ -1039,9 +1047,15 @@ test(
       `${entryExpression('Synthetic entry B')}.querySelector('.activity-label')?.textContent === 'Labelled correct'`,
     );
 
-    // The answer arrives: A is offered again; one conversation was started.
+    // The answer arrives while the column is hidden: shown again, A is
+    // offered again; one conversation was started.
+    await clickSelector(page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
     release();
     await waitFor(() => fixture.runs.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await clickSelector(page, barToggle);
+    await page.waitFor(`document.querySelectorAll('.activity-entry').length === 3`);
     await page.waitFor(
       `!document.querySelector('${await entryButton(page, 'Synthetic entry A', 'New coding session')}').disabled`,
     );
@@ -1124,6 +1138,45 @@ test(
     await clickSelector(page, columnToggle);
     await page.waitFor(`!document.querySelector('${column}')`);
     assert.equal(await page.evaluate(`document.querySelector('.workspace-main').inert`), false);
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'focus on a ☰ moves to the other ☰ when another tab shows or hides the column',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setup(context);
+    fixture.sessions.start({ ...frame, utterance: 'Two-tab conversation' }, signal());
+    await waitFor(() => fixture.runs.length === 1);
+    const { page, sockets, browserContextId } = await pairedPage(fixture, browser, 420, 800);
+    await openConversation(page, 'Two-tab conversation');
+    await page.call('Emulation.setFocusEmulationEnabled', { enabled: true });
+    const second = await desktopPage(browser, 420, 800, browserContextId);
+    await second.page.navigate(`${fixture.origin}/`);
+    await second.page.waitFor(online, 8000);
+
+    // Focus on the bar's ☰ here; the other tab shows the column.
+    await page.evaluate(`document.querySelector('${barToggle}').focus()`);
+    await clickSelector(second.page, barToggle);
+    await page.waitFor(`document.querySelector('${column}.overlay')`);
+    await page.waitFor(`document.activeElement?.getAttribute('aria-label') === 'Hide Activity'`);
+
+    // And back: the other tab hides it; focus returns to the bar's ☰.
+    await clickSelector(second.page, columnToggle);
+    await page.waitFor(`!document.querySelector('${column}')`);
+    await page.waitFor(
+      `document.activeElement?.classList.contains('activity-toggle') && document.activeElement.closest('.chat-bar') !== null`,
+    );
+
+    // Focus elsewhere (the list) is left where it is.
+    await page.evaluate(`document.querySelector('${listEntry}').focus()`);
+    await clickSelector(second.page, barToggle);
+    await page.waitFor(`document.querySelector('${column}')`);
+    assert.ok(
+      await page.evaluate(`document.activeElement?.classList.contains('activity-list-entry')`),
+    );
+    await second.page.close();
     await assertCleanPage(fixture, page, sockets);
   },
 );

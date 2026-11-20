@@ -20,7 +20,7 @@
  * the README's table.
  */
 
-import type { ActivityEntry, EngineState } from '../../../../src/remote/protocol.ts';
+import type { ActivityEntry, EngineState, IntentState } from '../../../../src/remote/protocol.ts';
 
 /** What the page knows besides the entry itself. */
 export interface EntryContext {
@@ -146,4 +146,23 @@ export function entryContext(
     sessionControls: engine?.sessionControlsAvailable !== false,
     preview: engine?.preview === true,
   };
+}
+
+/**
+ * Whether pressing Incorrect sends the label: not on an entry already
+ * labelled incorrect, where it only opens the choice of the actual intent
+ * (sending again would erase the actual intent chosen before, here or
+ * elsewhere). Applied to the entry as the Store has it at the click.
+ */
+export function incorrectSendsLabel(entry: ActivityEntry): boolean {
+  return entry.correct !== false;
+}
+
+/**
+ * The intents offered as what the decision should have been: every intent
+ * of the listener except the recognised one, which the listener refuses as
+ * an actual intent ("label this detection correct" instead).
+ */
+export function actualIntentChoices(entry: ActivityEntry, intents: IntentState[]): IntentState[] {
+  return intents.filter((intent) => intent.name !== entry.intent);
 }

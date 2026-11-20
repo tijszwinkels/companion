@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  actualIntentChoices,
   entryActions,
+  incorrectSendsLabel,
   type EntryContext,
 } from '../../integrations/shell/src/activity/entry-actions.ts';
 import { ActivityRequests } from '../../integrations/shell/src/activity/requests.ts';
-import type { ActivityEntry } from '../../src/remote/protocol.ts';
+import type { ActivityEntry, IntentState } from '../../src/remote/protocol.ts';
 
 /**
  * Which actions an Activity history entry offers and enables, checked with
@@ -280,4 +282,35 @@ test('pending requests: one per entry; another entry is not held back', async ()
     undefined,
   );
   assert.equal(requests.isPending('A'), false);
+});
+
+test('Incorrect and the actual intent: by the entry as the Store has it at the click', () => {
+  // Incorrect sends the label unless the entry is already labelled
+  // incorrect (also by another client since drawing): then it only opens
+  // the choice, so an actual intent chosen before is not erased.
+  const cases: { name: string; entry: ActivityEntry; sends: boolean }[] = [
+    { name: 'not labelled', entry: entry(), sends: true },
+    { name: 'labelled correct', entry: entry({ correct: true }), sends: true },
+    { name: 'labelled incorrect', entry: entry({ correct: false }), sends: false },
+    {
+      name: 'labelled incorrect → an intent',
+      entry: entry({ correct: false, actualIntent: 'QUICK_QUESTION' }),
+      sends: false,
+    },
+  ];
+  for (const testCase of cases) {
+    assert.equal(incorrectSendsLabel(testCase.entry), testCase.sends, testCase.name);
+  }
+
+  // The choice offers every intent but the recognised one, which the
+  // listener refuses as an actual intent.
+  const intents = [
+    { name: 'IGNORE', label: 'Ignore' },
+    { name: 'QUICK_QUESTION', label: 'Quick question' },
+    { name: 'SEND_TEXT_TO_APPLICATION', label: 'Type text' },
+  ] as IntentState[];
+  assert.deepEqual(
+    actualIntentChoices(entry({ intent: 'IGNORE' }), intents).map((intent) => intent.name),
+    ['QUICK_QUESTION', 'SEND_TEXT_TO_APPLICATION'],
+  );
 });

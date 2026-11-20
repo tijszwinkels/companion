@@ -108,11 +108,34 @@ function connectedStore() {
     open(id);
   };
 
+  // The listener's answer to `start-agent`, held until `answer` is called;
+  // other requests (the selection report) are answered at once.
+  let answer: (result: unknown) => void = () => {};
+  const connection = store.connection as unknown as {
+    request(action: string): Promise<unknown>;
+  };
+  connection.request = (action) => {
+    if (action === 'start-agent') {
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    }
+    return Promise.resolve(undefined);
+  };
+
   return {
     store,
     /** The started conversation C arrives in the list (its event). */
     listed(): void {
       internals.apply({ type: 'agent-session', session: session('C') });
+    },
+    /** A conversation is closed elsewhere. */
+    closed(id: string): void {
+      internals.apply({ type: 'agent-removed', id });
+    },
+    /** The listener answers the start: it started C. */
+    answered(): void {
+      answer({ outcome: 'started', id: 'C' });
     },
     signOut(): void {
       internals.connectionChanged({ status: 'unpaired', message: '', retryAt: 0, deviceName: '' });
@@ -213,4 +236,50 @@ test('started conversation: waiting ends after the deadline', (context) => {
   page.listed();
   assert.equal(page.store.state.selected, 'A', 'listed after the deadline');
   assert.equal(page.opens(), 0);
+});
+
+test('started through the Store: the shell alone selects, by its rule', async () => {
+  // The shown conversation is closed elsewhere while the start is on its
+  // way, and the started one arrives before the answer: nothing is shown
+  // now, but what is shown changed, so it is not selected.
+  {
+    const page = connectedStore();
+    page.store.setDraft('new', 'Synthetic start');
+    const selection = new StartedSelection(page.store);
+    const sending = page.store.sendDraft('new', 'coding', { openStarted: false });
+    page.closed('A');
+    page.listed();
+    page.answered();
+    const id = await sending;
+    assert.equal(id, 'C');
+    selection.started(id!);
+    assert.equal(page.store.state.selected, '', 'closed elsewhere meanwhile');
+    assert.equal(page.opens(), 0);
+    assert.equal(page.store.draft('new'), '', 'the draft was sent');
+  }
+
+  // Nothing changed meanwhile: selected once listed.
+  {
+    const page = connectedStore();
+    page.store.setDraft('new', 'Synthetic start');
+    const selection = new StartedSelection(page.store);
+    const sending = page.store.sendDraft('new', 'coding', { openStarted: false });
+    page.answered();
+    selection.started((await sending)!);
+    page.listed();
+    assert.equal(page.store.state.selected, 'C');
+  }
+
+  // The phone's default is unchanged: from its Activity page (nothing
+  // selected) the Store itself shows the started conversation.
+  {
+    const page = connectedStore();
+    page.store.showActivity();
+    page.store.setDraft('new', 'Synthetic start');
+    const sending = page.store.sendDraft('new');
+    page.listed();
+    page.answered();
+    assert.equal(await sending, 'C');
+    assert.equal(page.store.state.selected, 'C', 'the phone shows it');
+  }
 });

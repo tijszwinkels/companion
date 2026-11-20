@@ -24,6 +24,7 @@
  * requests on their way; both belong to this pairing and go with it.
  */
 
+import type { RefObject } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
@@ -57,7 +58,8 @@ interface ActivityBar {
   shown: boolean;
   newActivity: number;
   onShow: () => void;
-  button: { current: HTMLButtonElement | null };
+  button: RefObject<HTMLButtonElement>;
+  onFocusLost: () => void;
 }
 
 export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge }) {
@@ -81,6 +83,17 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
   const newActivity = marker.current.count;
   const [requests] = useState(() => new ActivityRequests());
 
+  // A request's start or end changes what the entries offer without a Store
+  // change: re-render then. Subscribed here, for the whole pairing, rather
+  // than in the column, which may mount while a request is on its way and
+  // would miss an answer that arrives before its own subscription.
+  const [, setRequestsVersion] = useState(0);
+  useEffect(() => {
+    return requests.subscribe(() => {
+      setRequestsVersion((version) => version + 1);
+    });
+  }, [requests]);
+
   // Keyboard focus follows the ☰ that was pressed: showing the column from
   // the bar moves focus to the column's ☰, hiding it from there back to the
   // bar's (which reappears). The list's Activity entry keeps its focus.
@@ -98,6 +111,23 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
     }
     focusAfterToggle.current = '';
   }, [activity.shown]);
+  // A hand-off asked for by a button that went away for another reason
+  // than the column being shown or hidden is not kept for a later toggle.
+  useLayoutEffect(() => {
+    focusAfterToggle.current = '';
+  });
+
+  /**
+   * The focused ☰ went away without being pressed (another tab showed or
+   * hid the column): focus moves to the ☰ that replaces it, as if pressed.
+   */
+  function barButtonLostFocus() {
+    focusAfterToggle.current = 'column';
+  }
+
+  function columnButtonLostFocus() {
+    focusAfterToggle.current = 'bar';
+  }
 
   // In a narrow window the shown column covers the chat: the chat is inert
   // then (no focus, no input, hidden from assistive technology), so the
@@ -185,6 +215,7 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
             newActivity,
             onShow: showFromBar,
             button: barActivityButton,
+            onFocusLost: barButtonLostFocus,
           }}
         />
       </main>
@@ -213,6 +244,7 @@ export function Workspace(props: { chat: ChatStore; bridge: GatewayChatBridge })
           requests={requests}
           onHide={hideFromColumn}
           hideButton={columnActivityButton}
+          onFocusLost={columnButtonLostFocus}
         />
       )}
     </div>
@@ -255,6 +287,7 @@ function MainArea(props: {
           newActivity={props.activity.newActivity}
           onShowActivity={props.activity.onShow}
           activityButton={props.activity.button}
+          onActivityFocusLost={props.activity.onFocusLost}
         />
         <div class="chat-column">
           {/* A new chat view for each conversation lifetime: the same ID
@@ -278,6 +311,7 @@ function MainArea(props: {
           newActivity={props.activity.newActivity}
           onShowActivity={props.activity.onShow}
           activityButton={props.activity.button}
+          onActivityFocusLost={props.activity.onFocusLost}
         >
           <SignOut />
         </ChatBar>
@@ -300,6 +334,7 @@ function MainArea(props: {
         newActivity={props.activity.newActivity}
         onShowActivity={props.activity.onShow}
         activityButton={props.activity.button}
+        onActivityFocusLost={props.activity.onFocusLost}
       >
         <SignOut />
       </ChatBar>

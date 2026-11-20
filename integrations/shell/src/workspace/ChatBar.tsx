@@ -11,10 +11,11 @@
  * header has the ☰ that hides it, in the same place.
  */
 
-import type { ComponentChildren, Ref } from 'preact';
+import type { ComponentChildren, RefObject } from 'preact';
 
 import { activityColumnId } from '../activity/ActivityColumn.tsx';
 import { conversationListId } from '../list/ConversationList.tsx';
+import { useFocusHandOff } from './focus-hand-off.ts';
 
 export function ChatBar(props: {
   title: string;
@@ -28,7 +29,9 @@ export function ChatBar(props: {
   newActivity: number;
   onShowActivity: () => void;
   /** The ☰ that shows the Activity column, for moving keyboard focus to it. */
-  activityButton: Ref<HTMLButtonElement>;
+  activityButton: RefObject<HTMLButtonElement>;
+  /** That ☰ had keyboard focus when it went away (another tab showed the column). */
+  onActivityFocusLost: () => void;
   children?: ComponentChildren;
 }) {
   let toggleLabel = 'Show the conversation list';
@@ -58,6 +61,7 @@ export function ChatBar(props: {
           newActivity={props.newActivity}
           onShow={props.onShowActivity}
           button={props.activityButton}
+          onFocusLost={props.onActivityFocusLost}
         />
       )}
     </header>
@@ -68,8 +72,11 @@ export function ChatBar(props: {
 function ActivityButton(props: {
   newActivity: number;
   onShow: () => void;
-  button: Ref<HTMLButtonElement>;
+  button: RefObject<HTMLButtonElement>;
+  onFocusLost: () => void;
 }) {
+  useFocusHandOff(props.button, props.onFocusLost);
+
   let label = 'Show Activity';
   if (props.newActivity === 1) {
     label = 'Show Activity, 1 new entry';

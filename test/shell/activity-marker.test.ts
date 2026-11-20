@@ -69,6 +69,8 @@ class Listener {
   processing = 0;
   /** Fail the next `activity-history` request. */
   failNext = false;
+  /** Fail requests for pages from this position on (a rate limit), or -1. */
+  failFrom = -1;
   private nextId = 1;
 
   get runId(): string {
@@ -132,10 +134,14 @@ interface StoreInternals {
 }
 
 /** A page with the Store, the listener and the marker, observed after every change. */
-function harness(options: { reread?: boolean } = {}) {
+function harness(options: { phone?: boolean } = {}) {
   const listener = new Listener();
-  // The shell's Store: it reads the run again after each reconnect.
-  const store = new Store({ rereadActivityAfterReconnect: options.reread !== false });
+  // The shell's Store reads the run again after each reconnect; the phone's
+  // is created with its defaults.
+  let store = new Store({ rereadActivityAfterReconnect: true });
+  if (options.phone) {
+    store = new Store();
+  }
   const reads: { after: number; through: number }[] = [];
   const internals = store as unknown as StoreInternals;
   const marker = new NewActivity();
@@ -150,6 +156,9 @@ function harness(options: { reread?: boolean } = {}) {
     if (listener.failNext) {
       listener.failNext = false;
       throw Error('Synthetic reading failure');
+    }
+    if (listener.failFrom >= 0 && parameters.after >= listener.failFrom) {
+      throw Error('Too many requests');
     }
     return listener.page(parameters.after, parameters.through);
   };
@@ -343,7 +352,7 @@ test('new-activity marker: nothing is new until the first reading has caught up'
 });
 
 test('the phone Store (default options) keeps reading only what is new after a reconnect', async () => {
-  const page = harness({ reread: false });
+  const page = harness({ phone: true });
   page.listener.hear('Synthetic utterance 1');
   await page.connect();
   const readsBefore = page.reads.length;
@@ -358,4 +367,38 @@ test('the phone Store (default options) keeps reading only what is new after a r
   shell.disconnect();
   await shell.connect();
   assert.deepEqual(shell.reads.at(-1), { after: 0, through: 1 });
+});
+
+test('a reading after a reconnect that fails part way continues there on Retry', async () => {
+  const page = harness();
+  // 120 entries: three pages of 50.
+  for (let index = 1; index <= 120; index++) {
+    page.listener.hear(`Synthetic utterance ${index}`);
+  }
+  await page.connect();
+  assert.equal(page.store.state.activity.entries.size, 120);
+
+  // Offline, one entry on the third page is deleted elsewhere. After
+  // reconnecting, the reading from the start is refused from that page on
+  // (as the gateway's rate limit refuses a long reading).
+  const late = [...page.store.state.activity.entries.values()].find(
+    (entry) => entry.utterance === 'Synthetic utterance 110',
+  )!;
+  page.disconnect();
+  page.listener.remove(late);
+  page.listener.failFrom = 100;
+  await page.connect();
+  assert.equal(page.store.state.activity.error, 'Too many requests');
+  assert.equal(page.store.state.activity.entries.has(late.id), true, 'not reached yet');
+  assert.equal(page.store.state.activity.read, 100, 'the position reached is kept');
+
+  // The limit has passed: Retry continues at that page, not from the start,
+  // and reaches the deletion.
+  page.listener.failFrom = -1;
+  const readsBefore = page.reads.length;
+  page.store.retryActivity();
+  await page.settle();
+  assert.deepEqual(page.reads.slice(readsBefore), [{ after: 100, through: 120 }]);
+  assert.equal(page.store.state.activity.entries.has(late.id), false, 'deleted after Retry');
+  assert.equal(page.store.state.activity.error, '');
 });

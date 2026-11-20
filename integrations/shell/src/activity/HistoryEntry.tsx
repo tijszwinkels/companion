@@ -22,7 +22,14 @@ import { outcomeLabels } from '../../../mobile/src/components/Activity.tsx';
 import { clockTime, copyText, intentLabel } from '../../../mobile/src/format.ts';
 import { useStore } from '../../../mobile/src/hooks.ts';
 import type { GatewayChatBridge } from '../bridge.ts';
-import { entryActions, entryContext, entryFacts, type EntryActions } from './entry-actions.ts';
+import {
+  actualIntentChoices,
+  entryActions,
+  entryContext,
+  entryFacts,
+  incorrectSendsLabel,
+  type EntryActions,
+} from './entry-actions.ts';
 import type { ActivityRequests } from './requests.ts';
 
 /** How long "Copied" (or the refusal) stays next to Copy. */
@@ -67,11 +74,11 @@ export function HistoryEntry(props: {
   }, [confirming]);
 
   /**
-   * The actions the rule allows now, from the Store's current entry and
-   * listener state (not the ones this button was drawn for), or null when
-   * the entry is no longer in the run it was drawn for.
+   * The entry as the Store has it now and the actions the rule allows for it
+   * (not the ones this button was drawn for), or null when the entry is no
+   * longer in the run it was drawn for.
    */
-  function actionsNow(): EntryActions | null {
+  function now(): { entry: ActivityEntry; actions: EntryActions } | null {
     const activity = store.state.activity;
     const current = activity.entries.get(entry.id);
     if (activity.sessionId !== props.runId || !current) {
@@ -79,19 +86,19 @@ export function HistoryEntry(props: {
     }
     // Another request of this entry is refused by `requests.run` itself.
     const context = entryContext(store.state.engine, props.bridge.admitted, false);
-    return entryActions(current, context);
+    return { entry: current, actions: entryActions(current, context) };
   }
 
   /**
-   * Send one request for this entry if the rule allows it now (`allowed`
-   * picks the action from what the rule allows); otherwise send nothing.
+   * Send one request for this entry if `allowed` accepts the entry and the
+   * actions as they are now; otherwise send nothing.
    */
   function send(
-    allowed: (now: EntryActions) => boolean,
+    allowed: (actions: EntryActions, current: ActivityEntry) => boolean,
     work: () => Promise<unknown>,
   ): Promise<unknown> {
-    const now = actionsNow();
-    if (!now || !allowed(now)) {
+    const current = now();
+    if (!current || !allowed(current.actions, current.entry)) {
       return Promise.resolve(undefined);
     }
     return props.requests.run(entry.id, work);
@@ -109,7 +116,7 @@ export function HistoryEntry(props: {
 
   function startSession() {
     void send(
-      (now) => now.startSession,
+      (actions) => actions.startSession,
       async () => {
         const answer = await store.request('start-history-agent', { id: entry.id });
         // Anything but "started" (a listener in preview mode) started nothing.
@@ -128,26 +135,25 @@ export function HistoryEntry(props: {
   function labelCorrect() {
     setChoosing(false);
     void send(
-      (now) => now.label,
+      (actions) => actions.label,
       () => store.request('label-history', { id: entry.id, correct: true }),
     );
   }
 
   function labelIncorrect() {
     setChoosing(!choosing);
-    // Already labelled incorrect: only the choice of the actual intent opens.
-    if (entry.correct !== false) {
-      void send(
-        (now) => now.label,
-        () => store.request('label-history', { id: entry.id, correct: false }),
-      );
-    }
+    // Already labelled incorrect (as the Store has it now, also by another
+    // client): only the choice of the actual intent opens.
+    void send(
+      (actions, current) => actions.label && incorrectSendsLabel(current),
+      () => store.request('label-history', { id: entry.id, correct: false }),
+    );
   }
 
   function labelActual(intent: IntentState) {
     setChoosing(false);
     void send(
-      (now) => now.label,
+      (actions, current) => actions.label && intent.name !== current.intent,
       () =>
         store.request('label-history', {
           id: entry.id,
@@ -164,7 +170,7 @@ export function HistoryEntry(props: {
 
   function confirmDelete() {
     void send(
-      (now) => now.deleteEnabled,
+      (actions) => actions.deleteEnabled,
       async () => {
         await store.request('delete-history', { id: entry.id });
         // The entry leaves the column when the listener reports it deleted.
@@ -270,7 +276,7 @@ export function HistoryEntry(props: {
           <div class="activity-choice" role="group" aria-label="What should it have been?">
             <p class="activity-hint">What should it have been?</p>
             <div class="activity-actions">
-              {props.intents.map((intent) => (
+              {actualIntentChoices(entry, props.intents).map((intent) => (
                 <button
                   key={intent.name}
                   class="bar-button"

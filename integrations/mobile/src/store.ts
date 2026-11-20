@@ -100,8 +100,11 @@ export interface StoreOptions {
    * After each reconnect, read the run's Activity history again from its
    * start instead of only what completed since. Entries deleted or labelled
    * elsewhere while this page was offline change only in those pages (their
-   * events were missed). Off by default (the phone panel reads only what is
-   * new); the browser shell turns it on.
+   * events were missed). The position reached is kept after every page, so
+   * a reading that fails part way (the gateway's rate limit on a long run)
+   * continues there on Retry instead of starting over. Off by default (the
+   * phone panel reads only what is new, and keeps its position at the end
+   * of a reading); the browser shell turns it on.
    */
   rereadActivityAfterReconnect?: boolean;
 }
@@ -323,12 +326,16 @@ export class Store {
   /**
    * One admitted send per draft, even when its component unmounts/remounts.
    * For the new-conversation draft (`new`) it resolves to the started
-   * conversation's ID when the listener names one (the browser shell selects
-   * it), otherwise to undefined.
+   * conversation's ID when the listener names one, otherwise to undefined.
+   *
+   * The phone shows a conversation started from its Activity page itself
+   * (`openStarted`, on by default). The browser shell turns that off and
+   * selects the result by its own rule.
    */
   async sendDraft(
     id: string,
     profile: 'coding' | 'quickQuestion' = 'coding',
+    options: { openStarted?: boolean } = {},
   ): Promise<string | undefined> {
     const text = this.draft(id);
     if (!text.trim() || this.state.sends.get(id)?.pending) {
@@ -358,6 +365,7 @@ export class Store {
       // dismiss the keyboard while they compose a newer question.
       if (
         id === 'new' &&
+        options.openStarted !== false &&
         unchangedDraft &&
         pageRevision === this.pageRevision &&
         !this.state.selected &&
@@ -712,6 +720,11 @@ export class Store {
         }
         this.applyActivityPage(page);
         after = page.next;
+        if (this.rereadsActivity && after !== null) {
+          // Keep the position reached, so a failure later in this reading
+          // continues from here (see StoreOptions).
+          this.setActivity({ read: after });
+        }
       }
       this.setActivity({ read: through, syncing: false });
     } catch (error) {

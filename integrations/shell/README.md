@@ -284,7 +284,9 @@ listening controls, in a column on the right of the chat:
   separator, shows and hides the **same** column; it is not a page of its
   own, and the conversation shown in the chat stays shown. Keyboard focus
   follows: showing the column with the bar's ☰ moves focus to the column's
-  ☰, hiding it with the column's ☰ moves focus back to the bar's ☰.
+  ☰, hiding it with the column's ☰ moves focus back to the bar's ☰. When
+  another tab shows or hides the column while one of these ☰ has focus
+  here, focus moves the same way instead of being lost with the button.
 - **The Activity entry** carries the microphone (struck through while
   listening is paused or Companion is not running) and, in the full list,
   the listening state as its last line (`Listening`, `Paused`, `Paused for
@@ -362,6 +364,7 @@ Rule (`src/layout/activity-width.ts`, `src/layout/stored-layout.ts`):
 | Window 639 / 420 px, column shown                    | Over the chat, right of the list; no divider; no overflow   |
 | Window 420 px, column shown, Tab                     | Moves through list and column, never into the covered chat  |
 | Focus in the chat, the window narrows under 640 px   | Focus moves to the column's ☰                              |
+| Focus on a ☰, another tab shows or hides the column | Focus moves to the other ☰; focus elsewhere stays          |
 | Window 420 px, list hidden, column shown             | Over the whole window width                                 |
 | Width or shown state changed in another tab          | This tab follows that entry                                 |
 | Sign-out and pairing again                           | Layout kept                                                 |
@@ -387,7 +390,9 @@ and the full list's Activity entry says how many entries are new. Rule
    from its start (the Store's `rereadActivityAfterReconnect`, on in the
    shell, off on the phone), so an entry deleted elsewhere meanwhile is
    removed and a label given elsewhere is shown; events about them were
-   missed while offline.
+   missed while offline. The position reached is kept after each page, so
+   a reading refused part way (the gateway's rate limit on a long run)
+   continues there on Retry.
 3. A change of an entry already seen (its decision, outcome or label, from
    any client) is not new.
 4. Showing the column clears the marker (by either ☰, the Activity entry,
@@ -399,23 +404,24 @@ and the full list's Activity entry says how many entries are new. Rule
 7. Listening, pausing, hearing speech and processing are states, not
    entries: they never set it.
 
-| Event                                                       | Marker                                    |
-| ----------------------------------------------------------- | ----------------------------------------- |
-| First reading after loading the page, with entries          | not set                                   |
-| A new entry arrives while hidden                            | set (count 1)                             |
-| Two more arrive while hidden                                | set (count 3)                             |
-| A new entry arrives while shown                             | not set, also after hiding                |
-| An entry already seen is labelled or changes outcome        | not set                                   |
-| The column is shown (☰, Activity entry, or another tab)    | cleared                                   |
-| The only new entry is deleted                               | cleared                                   |
-| Entries heard while offline, learned after reconnecting     | set                                       |
-| An entry deleted elsewhere while offline                    | gone after reconnecting; no longer counts |
-| An entry labelled elsewhere while offline                   | label shown after reconnecting; not set   |
-| A reconnect without new entries                             | not set                                   |
-| A new listener run after catching up, with entries          | set                                       |
-| The first reading fails; entries arrive; a retry catches up | not set until caught up                   |
-| Pause, resume, speech, processing                           | not set                                   |
-| Sign-out and pairing again (first reading)                  | not set                                   |
+| Event                                                       | Marker                                                 |
+| ----------------------------------------------------------- | ------------------------------------------------------ |
+| First reading after loading the page, with entries          | not set                                                |
+| A new entry arrives while hidden                            | set (count 1)                                          |
+| Two more arrive while hidden                                | set (count 3)                                          |
+| A new entry arrives while shown                             | not set, also after hiding                             |
+| An entry already seen is labelled or changes outcome        | not set                                                |
+| The column is shown (☰, Activity entry, or another tab)    | cleared                                                |
+| The only new entry is deleted                               | cleared                                                |
+| Entries heard while offline, learned after reconnecting     | set                                                    |
+| An entry deleted elsewhere while offline                    | gone after reconnecting; no longer counts              |
+| An entry labelled elsewhere while offline                   | label shown after reconnecting; not set                |
+| The reading after a reconnect is refused part way; Retry    | continues at the page reached; later deletions applied |
+| A reconnect without new entries                             | not set                                                |
+| A new listener run after catching up, with entries          | set                                                    |
+| The first reading fails; entries arrive; a retry catches up | not set until caught up                                |
+| Pause, resume, speech, processing                           | not set                                                |
+| Sign-out and pairing again (first reading)                  | not set                                                |
 
 ### Listening, starting a conversation and history entries
 
@@ -435,7 +441,10 @@ running`, and below it while listening `Hearing speech`, `Processing N…`
   desktop; here it appears in the list and is **selected** once listed,
   unless what is shown (the selected conversation or Previous sessions)
   changed at any moment since Start was pressed, also to and fro or by Back
-  and Forward (`src/activity/select-started.ts`). Waiting for it ends after
+  and Forward, and when the listener closed the shown conversation
+  (`src/activity/select-started.ts`; the shell alone selects it, the phone
+  Store's own selection of a started conversation is turned off with
+  `sendDraft(…, { openStarted: false })`). Waiting for it ends after
   10 seconds, on sign-out or when the start fails. Not offered while the
   listener runs in preview mode (it would answer without starting anything,
   and the text would be cleared).
@@ -472,9 +481,11 @@ listener says so. Copy is local and always enabled when there is text.
   need a decision (an intent), capture storage on at the listener, and the
   entry's complete saved capture (otherwise the reason is shown, as on the
   phone). Incorrect sends the label and opens "What should it have been?",
-  the listener's intents; picking one sends the label with that actual
-  intent. On an entry already labelled incorrect, Incorrect only opens the
-  choice. Not while the listener runs in preview mode, where labels are
+  the listener's intents except the recognised one (which the listener
+  refuses); picking one sends the label with that actual intent. On an
+  entry already labelled incorrect, as the Store has it at the click (also
+  by another client since it was drawn), Incorrect only opens the choice,
+  so the actual intent chosen before is kept. Not while the listener runs in preview mode, where labels are
   not saved. The pressed button shows the current label.
 - **Delete** (×) is offered only while the listener advertises deletion
   (`historyDeletionAvailable`). It opens a confirmation inside the entry
@@ -751,12 +762,15 @@ cases of its README table above: the column's width and shown state
 with the list), the new-activity marker against the real phone Store (first
 reading, events while hidden and shown, labels, deletion, reconnects with and
 without entries heard offline, entries deleted and labelled elsewhere while
-offline, read through the listener's own history index; a new listener run,
+offline, read through the listener's own history index, a reading refused
+part way and continued by Retry; a new listener run,
 a failed first reading, sign-out; and the phone's default reading only what
-is new), which actions each entry offers and one pending request per entry,
-and selecting a started conversation (listed before or after the answer,
-another selection or a selection undone meanwhile, a failed start,
-sign-out, the deadline).
+is new), which actions each entry offers, when Incorrect sends and which
+actual intents are offered, and one pending request per entry, and
+selecting a started conversation (listed before or after the answer,
+another selection or a selection undone meanwhile, the shown conversation
+closed elsewhere through the Store's `sendDraft`, the phone's default
+unchanged, a failed start, sign-out, the deadline).
 
 `activity.test.ts` covers the Activity side in the browser: history read in
 two pages of 50 and kept live, newest first; the marker set while hidden
@@ -777,10 +791,13 @@ refuses (its saved screenshot removed after drawing) leaving the entry
 unlabelled; no delete control when the listener does not advertise it, and
 in preview mode neither Start nor New coding session, the typed text kept;
 one request per entry at a time, also across hiding and showing the
-column, while another entry's request goes out; the handlers of an entry
+column and with its answer arriving while the column is hidden, while
+another entry's request goes out; the recognised intent not offered as the
+actual intent; the handlers of an entry
 deleted by another client sending nothing when clicked afterwards; at
 420 px Tab never reaching the covered chat, and focus moved out of it when
-the window narrows; keyboard operation and accessible names; the gateway's unchanged policy, no
+the window narrows; focus on a ☰ moving to the other when a second tab
+shows or hides the column; keyboard operation and accessible names; the gateway's unchanged policy, no
 policy violation and no request to another origin; never the unscoped
 `stop-agent`. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 column hidden and shown at 420, 760, 1280 and 1600 px.
@@ -798,32 +815,33 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 
 ## Structure
 
-| File                                 | Responsibility                                                              |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `src/main.tsx`                       | Creates the phone Store, the bridge and the chat page's ChatStore           |
-| `src/App.tsx`                        | Pairing, connection banner, toasts; the workspace once paired               |
-| `src/workspace/Workspace.tsx`        | List, main area and Activity column with their dividers; held input         |
-| `src/workspace/ChatBar.tsx`          | The bar above the chat: ☰, title, state, Activity ☰                       |
-| `src/workspace/PreviousSessions.tsx` | Previous sessions with Reopen                                               |
-| `src/list/ConversationList.tsx`      | The conversation list: entries, markers, close, drag wiring, Previous entry |
-| `src/list/entries.ts`                | What each entry shows, from the Store (number, icon, markers, last line)    |
-| `src/list/reorder-gesture.ts`        | The reorder gesture's rules, without DOM access                             |
-| `src/layout/list-width.ts`           | Width rules: strip, full list, snapping, keyboard, narrow windows           |
-| `src/layout/stored-layout.ts`        | The remembered width and hidden state in `localStorage`                     |
-| `src/layout/useListLayout.ts`        | The layout of this page: preference, window width, remembering              |
-| `src/layout/Divider.tsx`             | The draggable, keyboard-operable divider (list and Activity)                |
-| `src/layout/activity-width.ts`       | Activity column width rules: range, keys, wide and narrow windows           |
-| `src/layout/useActivityLayout.ts`    | The Activity column's layout of this page: preference, shown, remembering   |
-| `src/activity/ActivityColumn.tsx`    | The Activity column: header, listening, start a conversation, history       |
-| `src/activity/HistoryEntry.tsx`      | One history entry and its actions                                           |
-| `src/activity/entry-actions.ts`      | Which actions an entry offers and enables, without DOM access               |
-| `src/activity/new-activity.ts`       | The new-activity marker's rule, without DOM access                          |
-| `src/activity/listening.ts`          | The listening state's wording                                               |
-| `src/activity/requests.ts`           | Activity requests awaiting their answer, per entry                          |
-| `src/activity/select-started.ts`     | Selecting a started conversation unless what is shown changed meanwhile     |
-| `src/bridge.ts`                      | `NativeBridge` over the gateway: rows/status messages, request mapping      |
-| `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)    |
-| `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                |
-| `src/styles.css`                     | The frame around the chat; the chat keeps its desktop stylesheet            |
-| `build.ts`                           | esbuild bundle (Preact) plus `public/index.html`; no network dependencies   |
-| `demo.ts`                            | Synthetic end-to-end demo                                                   |
+| File                                 | Responsibility                                                                |
+| ------------------------------------ | ----------------------------------------------------------------------------- |
+| `src/main.tsx`                       | Creates the phone Store, the bridge and the chat page's ChatStore             |
+| `src/App.tsx`                        | Pairing, connection banner, toasts; the workspace once paired                 |
+| `src/workspace/Workspace.tsx`        | List, main area and Activity column with their dividers; held input           |
+| `src/workspace/ChatBar.tsx`          | The bar above the chat: ☰, title, state, Activity ☰                         |
+| `src/workspace/focus-hand-off.ts`    | Focus kept when a focused ☰ goes away because another tab changed the column |
+| `src/workspace/PreviousSessions.tsx` | Previous sessions with Reopen                                                 |
+| `src/list/ConversationList.tsx`      | The conversation list: entries, markers, close, drag wiring, Previous entry   |
+| `src/list/entries.ts`                | What each entry shows, from the Store (number, icon, markers, last line)      |
+| `src/list/reorder-gesture.ts`        | The reorder gesture's rules, without DOM access                               |
+| `src/layout/list-width.ts`           | Width rules: strip, full list, snapping, keyboard, narrow windows             |
+| `src/layout/stored-layout.ts`        | The remembered width and hidden state in `localStorage`                       |
+| `src/layout/useListLayout.ts`        | The layout of this page: preference, window width, remembering                |
+| `src/layout/Divider.tsx`             | The draggable, keyboard-operable divider (list and Activity)                  |
+| `src/layout/activity-width.ts`       | Activity column width rules: range, keys, wide and narrow windows             |
+| `src/layout/useActivityLayout.ts`    | The Activity column's layout of this page: preference, shown, remembering     |
+| `src/activity/ActivityColumn.tsx`    | The Activity column: header, listening, start a conversation, history         |
+| `src/activity/HistoryEntry.tsx`      | One history entry and its actions                                             |
+| `src/activity/entry-actions.ts`      | Which actions an entry offers and enables, without DOM access                 |
+| `src/activity/new-activity.ts`       | The new-activity marker's rule, without DOM access                            |
+| `src/activity/listening.ts`          | The listening state's wording                                                 |
+| `src/activity/requests.ts`           | Activity requests awaiting their answer, per entry                            |
+| `src/activity/select-started.ts`     | Selecting a started conversation unless what is shown changed meanwhile       |
+| `src/bridge.ts`                      | `NativeBridge` over the gateway: rows/status messages, request mapping        |
+| `src/history.ts`                     | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
+| `src/rows.ts`                        | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
+| `src/styles.css`                     | The frame around the chat; the chat keeps its desktop stylesheet              |
+| `build.ts`                           | esbuild bundle (Preact) plus `public/index.html`; no network dependencies     |
+| `demo.ts`                            | Synthetic end-to-end demo                                                     |
