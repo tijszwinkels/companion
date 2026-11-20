@@ -1,7 +1,9 @@
 /**
  * The bar above the chat: the ☰ button that hides and shows the
- * conversation list, the title of what is shown, and the conversation's
- * state as text (`working…` while its agent works on a turn, else `ready`).
+ * conversation list, the title of what is shown, the conversation's state
+ * as text (`working…` while its agent works on a turn, else `ready`) and,
+ * beside it, the conversation's model with its picker
+ * (../models/ModelPicker.tsx).
  * Pages other than a conversation (Previous sessions, nothing selected) put
  * their own controls at its right end instead of a state.
  *
@@ -29,6 +31,8 @@ export function ChatBar(props: {
    * other pages (./BarState.tsx).
    */
   state: ComponentChildren;
+  /** The conversation's model picker, beside its state; absent for other pages. */
+  model?: ComponentChildren;
   listShown: boolean;
   onToggleList: () => void;
   /** Whether the Activity column is shown (then this bar has no Activity ☰). */
@@ -70,6 +74,7 @@ export function ChatBar(props: {
           {props.title}
         </h1>
         {props.state ? <span class="chat-bar-state">{props.state}</span> : null}
+        {props.model ?? null}
       </div>
       {props.children}
       <button

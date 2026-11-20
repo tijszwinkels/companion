@@ -95,3 +95,84 @@ test(
     }
   },
 );
+
+/**
+ * The page's change for tool details in place (`ChatRow.tools`): without the
+ * field the rows are exactly the reference (the first test above, which
+ * also covers every tool row); with it, only tool rows change: their
+ * heading opens and closes the details in place, and an open group draws
+ * the host's status, page and actions.
+ */
+test(
+  'with tool details, only tool rows change; without them every row is as before',
+  { skip },
+  async (context) => {
+    const browser = new TestBrowser();
+    await browser.start();
+    context.after(() => browser.close());
+
+    const reference = await readFile(referencePath, 'utf8');
+    const referenceLines = reference.trimEnd().split(/\n(?=<div class="message )/);
+
+    const closed = {
+      open: false,
+      status: '',
+      failed: false,
+      text: '',
+      loaded: false,
+      reload: '',
+      next: false,
+      restart: false,
+      busy: false,
+    };
+    const withTools = referenceRows.map((row, index) => {
+      if (row.kind !== 'tool') {
+        return row;
+      }
+      // The first tool row open with a loaded page, the others closed.
+      const firstTool = referenceRows.findIndex((candidate) => candidate.kind === 'tool');
+      if (index === firstTool) {
+        return {
+          ...row,
+          tools: {
+            ...closed,
+            open: true,
+            status: 'Tool 1 of 2 · characters 1–9',
+            text: '<b>x</b>',
+            loaded: true,
+            reload: 'Refresh page',
+            next: true,
+          },
+        };
+      }
+      return { ...row, tools: closed };
+    });
+    const drawn = await drawRows(browser, chatDirectory, withTools);
+    const lines = drawn.trimEnd().split(/\n(?=<div class="message )/);
+    assert.equal(lines.length, withTools.length);
+
+    for (let index = 0; index < withTools.length; index++) {
+      const row = withTools[index];
+      const line = lines[index];
+      if (row.kind !== 'tool') {
+        assert.equal(line, referenceLines[index], `row ${row.key} is unchanged`);
+        continue;
+      }
+      assert.notEqual(line, referenceLines[index], `tool row ${row.key} changed`);
+      assert.match(line, /<button aria-expanded="(true|false)"[^>]*class="heading tool-heading"/);
+      if (row.tools?.open) {
+        assert.match(line, /▾ /);
+        // The page's text is text, never markup.
+        assert.match(line, /<pre class="tool-page">&lt;b&gt;x&lt;\/b&gt;<\/pre>/);
+        assert.match(line, /Tool 1 of 2 · characters 1–9/);
+        assert.match(line, />Refresh page<\/button>/);
+        assert.match(line, />Next page<\/button>/);
+        assert.match(line, />Copy page<\/button>/);
+        assert.doesNotMatch(line, />From start<\/button>/);
+      } else {
+        assert.match(line, /▸ /);
+        assert.doesNotMatch(line, /tool-details/);
+      }
+    }
+  },
+);
