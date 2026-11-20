@@ -15,6 +15,7 @@ import {
 import { ListenerClock } from '../../integrations/shell/src/times/listener-clock.ts';
 import {
   messageTimeText,
+  untilNextDay,
   zoneCalendar,
   type LocalCalendar,
 } from '../../integrations/shell/src/times/message-time.ts';
@@ -737,6 +738,7 @@ function conversation(messages: AgentSession['messages']): AgentSession {
 function bridgeHarness(
   context: { after(callback: () => void): void },
   startAt = Date.UTC(2026, 10, 20, 16, 0),
+  calendar: LocalCalendar = zoneCalendar('UTC'),
   storage = memoryStorage(),
 ) {
   let now = startAt;
@@ -758,7 +760,7 @@ function bridgeHarness(
   const bridge = new GatewayChatBridge(
     store as unknown as Store,
     { visibleIndexes: () => [], topIndex: () => -1 },
-    { settings, clock, calendar: zoneCalendar('UTC') },
+    { settings, clock, calendar },
   );
   const messages: HostMessage[] = [];
   bridge.message.connect((json) => messages.push(JSON.parse(json) as HostMessage));
@@ -940,4 +942,89 @@ test('a new offset that changes no time sends no rows', async (context) => {
   await settle();
   assert.equal(rowsMessages(), before + 1);
   assert.equal(harness.rows().get('q1')!.time, '14:01');
+});
+
+test('the wait for the next day ends exactly at the next local midnight', () => {
+  const utc = zoneCalendar('UTC');
+  const nuuk = zoneCalendar('America/Nuuk');
+  const amsterdam = zoneCalendar('Europe/Amsterdam');
+  const cases: { name: string; now: number; calendar: LocalCalendar; wait: number }[] = [
+    { name: 'noon', now: Date.UTC(2026, 10, 20, 12), calendar: utc, wait: 12 * hour },
+    {
+      name: '30 s before midnight',
+      now: Date.UTC(2026, 10, 20, 23, 59, 30),
+      calendar: utc,
+      wait: 30 * second,
+    },
+    {
+      name: 'at midnight: the whole next day',
+      now: Date.UTC(2026, 10, 21),
+      calendar: utc,
+      wait: 24 * hour,
+    },
+    {
+      // Nuuk's clocks go from 23:00 straight to 00:00 that night: 22:59:30
+      // (00:59:30 UTC) is 30 s before the new day, not an hour and 30 s.
+      name: 'Nuuk, the hour before midnight skipped',
+      now: Date.UTC(2026, 2, 29, 0, 59, 30),
+      calendar: nuuk,
+      wait: 30 * second,
+    },
+    {
+      // Amsterdam's summer time starts at 02:00 that night: midnight is as usual.
+      name: 'Amsterdam, the evening before summer time',
+      now: Date.UTC(2026, 2, 28, 22, 59),
+      calendar: amsterdam,
+      wait: minute,
+    },
+  ];
+  for (const testCase of cases) {
+    assert.equal(untilNextDay(testCase.now, testCase.calendar), testCase.wait, testCase.name);
+  }
+});
+
+test('in Nuuk the night the clocks skip an hour, today’s times change at midnight', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  // 22:59:30 in Nuuk; the question was written at 14:02 UTC, 12:02 there.
+  const harness = bridgeHarness(
+    context,
+    Date.UTC(2026, 2, 29, 0, 59, 30),
+    zoneCalendar('America/Nuuk'),
+  );
+  harness.store.state.sessions.set(
+    sessionId,
+    conversation([
+      { ...chatMessage('q1', 'user', 'Question'), createdAt: Date.UTC(2026, 2, 28, 14, 2) },
+    ]),
+  );
+  harness.store.update({});
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, '12:02');
+
+  // 30 seconds later it is 00:00 on the 29th there.
+  harness.setNow(Date.UTC(2026, 2, 29, 1, 0, 0, 30));
+  context.mock.timers.tick(30 * second - 50);
+  context.mock.timers.tick(50);
+  await flushDeliveries();
+  assert.equal(harness.rows().get('q1')!.time, 'Yesterday 12:02');
+});
+
+test('switching Turn timers or Last turn duration sends no rows', async (context) => {
+  const harness = bridgeHarness(context);
+  await settle();
+  const rowsMessages = () => harness.messages.filter((message) => message.type === 'rows').length;
+  const before = rowsMessages();
+  harness.settings.set('turnTimers', false);
+  harness.settings.set('lastTurnDuration', false);
+  await settle();
+  harness.settings.set('turnTimers', true);
+  harness.settings.set('lastTurnDuration', true);
+  await settle();
+  assert.equal(rowsMessages(), before);
+
+  // Message timestamps does.
+  harness.settings.set('messageTimestamps', false);
+  await settle();
+  assert.equal(rowsMessages(), before + 1);
 });

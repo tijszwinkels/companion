@@ -284,6 +284,8 @@ async function screenshot(page: TestPage, name: string): Promise<void> {
     return;
   }
   await mkdir(directory, { recursive: true });
+  // The switches' 150 ms transitions end first.
+  await page.evaluate(`new Promise((resolve) => setTimeout(resolve, 250))`);
   await writeFile(join(directory, `${name}.png`), await page.screenshot());
 }
 
@@ -421,6 +423,7 @@ test(
     assert.match((await entryTimer(page, 'Short run')) ?? '', /^6:\d\d$/);
     // The answer has a time too; every message row of this conversation has one.
     await page.waitFor(`document.querySelectorAll('.rows .message-time').length === 2`);
+    await screenshot(page, 'timestamps-1280');
 
     // The finished conversation shows its duration.
     await openConversation(page, 'Done run');
@@ -923,6 +926,22 @@ test(
     await openConversation(page, 'First conversation');
     await page.waitFor(`!(${unread('First conversation')})`);
 
+    // Browser Back from Settings: the page it goes to is shown, so the
+    // answer that completed there meanwhile is seen (history: Second, First).
+    await clickElement(page, gear);
+    await page.waitFor(settingsShown);
+    const runsNow = fixture.runs.length;
+    fixture.sessions.followUp(second_.id, 'Another question', signal());
+    await waitFor(() => fixture.runs.length > runsNow);
+    answer(fixture.runs.at(-1)!, 'b2', 'Another answer.');
+    await page.waitFor(unread('Second conversation'));
+    await page.evaluate(`history.back()`);
+    await page.waitFor(`!(${settingsShown})`);
+    await page.waitFor(
+      `document.querySelector('.chat-bar-title').textContent.includes('Second conversation')`,
+    );
+    await page.waitFor(`!(${unread('Second conversation')})`);
+
     await assertCleanPage(fixture, page, sockets);
   },
 );
@@ -1046,6 +1065,105 @@ test(
       assert.ok(button.width >= 33, `${selector} keeps its size`);
     }
     await screenshot(page, 'bar-375');
+
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'the conversation underneath closed elsewhere leaves the settings screen, its focus and scroll as they were',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setupWithClock(context);
+    await registerIntent(fixture);
+    const conversation = await start(fixture, '🗺️ Closed elsewhere');
+    answer(conversation.run, 'a1', 'An answer.');
+    const { page, sockets } = await pairedClockPage(fixture, browser, 1280);
+    await resize(page, 1280, 360);
+    await openConversation(page, 'Closed elsewhere');
+
+    // The settings screen, scrolled to its end, the last switch focused.
+    await clickElement(page, gear);
+    await page.waitFor(settingsShown);
+    await page.waitFor(switchExpression('Note shortcut'));
+    const scroller = `document.querySelector('.settings-layer .page-column')`;
+    await page.evaluate(`${scroller}.scrollTop = ${scroller}.scrollHeight`);
+    const scrolled = await page.evaluate<number>(`${scroller}.scrollTop`);
+    assert.ok(scrolled > 0, 'the settings screen scrolls at this height');
+    await page.evaluate(`${switchExpression('Note shortcut')}.focus()`);
+    await page.evaluate(`window.__focusedSwitch = document.activeElement`);
+
+    // The conversation underneath is closed on the computer.
+    await fixture.sessions.remove(conversation.id);
+    await page.waitFor(`!(${entryExpression('Closed elsewhere')})`);
+    await page.waitFor(settingsShown);
+    assert.equal(await page.evaluate(`document.activeElement === window.__focusedSwitch`), true);
+    assert.equal(await page.evaluate<number>(`${scroller}.scrollTop`), scrolled);
+    assert.equal(await text(page, '.chat-bar-title'), 'Settings');
+
+    // Leaving it shows what is selected now: nothing.
+    await clickElement(page, gear);
+    await page.waitFor(`!(${settingsShown})`);
+    assert.equal(await text(page, '.chat-bar-title'), 'Conversations');
+
+    await assertCleanPage(fixture, page, sockets);
+  },
+);
+
+test(
+  'at 375 and 360 px the bar of Previous sessions and the empty view keeps the title clear of its buttons',
+  { skip },
+  async (context) => {
+    const { fixture, browser } = await setupWithClock(context);
+    const { page, sockets } = await pairedClockPage(fixture, browser, 375);
+
+    /** Whether two boxes overlap. */
+    const intersects = (first: Box, second: Box) =>
+      first.left < second.right - 0.5 &&
+      second.left < first.right - 0.5 &&
+      first.top < second.top + second.height - 0.5 &&
+      second.top < first.top + first.height - 0.5;
+
+    for (const width of [375, 360]) {
+      await resize(page, width);
+      for (const view of ['empty', 'previous']) {
+        if (view === 'previous') {
+          await clickElement(
+            page,
+            `document.querySelector('.previous-entry:not(.settings-entry)')`,
+          );
+          await page.waitFor(
+            `document.querySelector('.chat-bar-title').textContent === 'Previous sessions'`,
+          );
+        } else {
+          await page.waitFor(
+            `document.querySelector('.chat-bar-title').textContent === 'Conversations'`,
+          );
+        }
+        assert.equal(await horizontalOverflow(page), 0, `${view} at ${width} px`);
+        const title = await box(page, '.chat-bar-title');
+        assert.ok(title.width >= 63, `${view} at ${width} px: title ${title.width} px`);
+        const buttons = await page.evaluate<Box[]>(
+          `[...document.querySelectorAll('.chat-bar button')].map((button) => {
+            const rect = button.getBoundingClientRect();
+            return { left: rect.left, top: rect.top, width: rect.width, height: rect.height, right: rect.right };
+          })`,
+        );
+        assert.equal(buttons.length, 4, 'list ☰, Sign out, gear, Activity ☰');
+        for (const button of buttons) {
+          assert.ok(
+            !intersects(title, button),
+            `${view} at ${width} px: a button covers the title`,
+          );
+          assert.ok(
+            button.left >= 0 && button.right <= width,
+            `${view} at ${width} px: in the window`,
+          );
+        }
+        await screenshot(page, `bar-${view}-${width}`);
+      }
+      await page.evaluate(`history.back()`);
+    }
 
     await assertCleanPage(fixture, page, sockets);
   },

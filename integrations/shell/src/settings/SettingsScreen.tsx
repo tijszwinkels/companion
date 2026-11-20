@@ -105,6 +105,10 @@ function ListeningSection(props: { admitted: () => boolean; requests: ActivityRe
       void props.requests.run(current.key, () => store.request('toggle-sounds', {}));
       return;
     }
+    if (current.kind === 'combined') {
+      // An older listener's switch is never available; nothing to send.
+      return;
+    }
     const mode = current.kind;
     void props.requests.run(current.key, () =>
       store.request('set-intent-enabled', {

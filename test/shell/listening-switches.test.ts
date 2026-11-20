@@ -109,55 +109,76 @@ test('listening switches: each row of the README table', () => {
   assert.equal(preview.switches[0], 'Sound feedback: on, unavailable');
   assert.equal(preview.switches[1], 'Note intent: on, available');
 
-  // An older listener without independent switches: intents read-only.
-  const older = engine({
-    intents: [intent('note', { inferenceEnabled: undefined as unknown as boolean })],
-  });
-  const olderView = summary(listeningView(older, true, nothingPending));
-  assert.deepEqual(olderView.notes, [olderListenerNote]);
-  assert.deepEqual(olderView.switches, [
-    'Sound feedback: on, available',
-    // No value for the intent mode: the combined `enabled` (on).
-    'Note intent: on, unavailable',
-    'Note shortcut: on, unavailable',
-  ]);
-
-  // The historical shape: only the combined `enabled` (no mode values).
-  // Both switches show it, read-only.
+  // An older listener: its intents as it sent them before separate intent
+  // and shortcut switches existed (no `supportsInference`, no mode values;
+  // only the combined `enabled`). One read-only switch per intent, with its
+  // value, an inference-only intent included.
+  const historicalIntent = (fields: Record<string, unknown>) => fields as unknown as Intent;
   const historical = engine({
     intents: [
-      intent('note', {
+      historicalIntent({
+        name: 'question',
+        label: 'Question',
         enabled: true,
-        inferenceEnabled: undefined as unknown as boolean,
-        shortcutEnabled: undefined as unknown as boolean,
+        toggleable: true,
+        inferenceAvailable: true,
+        prefixes: [],
+        prefixAvailable: true,
       }),
-      intent('mute', {
+      historicalIntent({
+        name: 'note',
+        label: 'Note',
         enabled: false,
-        inferenceEnabled: undefined as unknown as boolean,
-        shortcutEnabled: undefined as unknown as boolean,
+        toggleable: true,
+        inferenceAvailable: true,
+        prefixes: ['note'],
+        prefixAvailable: true,
+      }),
+      historicalIntent({
+        name: 'ignore',
+        label: 'Ignore',
+        enabled: true,
+        toggleable: false,
+        inferenceAvailable: true,
+        prefixes: [],
+        prefixAvailable: true,
       }),
     ],
   });
   const historicalView = listeningView(historical, true, nothingPending);
-  assert.deepEqual(summary(historicalView).switches, [
-    'Sound feedback: on, available',
-    'Note intent: on, unavailable',
-    'Note shortcut: on, unavailable',
-    'Mute intent: off, unavailable',
-    'Mute shortcut: off, unavailable',
-  ]);
-  assert.deepEqual(historicalView.notes, [olderListenerNote]);
-  assert.equal(historicalView.switches[2].description, 'Shortcut · On · note …');
+  assert.deepEqual(summary(historicalView), {
+    switches: [
+      'Sound feedback: on, available',
+      'Question: on, unavailable',
+      'Note: off, unavailable',
+      'Ignore: on, unavailable',
+    ],
+    notes: [olderListenerNote],
+  });
+  assert.deepEqual(
+    historicalView.switches.map((entry) => entry.description),
+    [
+      'Cues play on the computer.',
+      'Intent and shortcut together · On',
+      'Intent and shortcut together · Off · note …',
+      'Intent and shortcut together · Always on',
+    ],
+  );
 
-  // A report with the intent's value but not the shortcut's: read-only too.
+  // A report with the intent's own value but not the shortcut's: that
+  // intent is one read-only switch too, and the others become read-only.
   const partial = engine({
-    intents: [intent('note', { enabled: true, shortcutEnabled: undefined as unknown as boolean })],
+    intents: [
+      intent('note', { enabled: true, shortcutEnabled: undefined as unknown as boolean }),
+      intent('question'),
+    ],
   });
   const partialView = summary(listeningView(partial, true, nothingPending));
   assert.deepEqual(partialView.switches, [
     'Sound feedback: on, available',
-    'Note intent: on, unavailable',
-    'Note shortcut: on, unavailable',
+    'Note: on, unavailable',
+    'Question intent: on, unavailable',
+    'Question shortcut: on, unavailable',
   ]);
   assert.deepEqual(partialView.notes, [olderListenerNote]);
 

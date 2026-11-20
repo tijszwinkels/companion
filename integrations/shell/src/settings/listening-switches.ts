@@ -18,10 +18,13 @@
  * - for Sound feedback: the listener is not in preview mode;
  * - for intents and shortcuts: the intent is toggleable and the listener
  *   reports independent switches (`inferenceEnabled` and `shortcutEnabled`,
- *   both booleans, on every intent). An older listener that does not is
- *   shown read-only with the phone's note; a mode it reports no value for
- *   shows the intent's combined `enabled` value (what such a listener
- *   applies to both).
+ *   both booleans, on every intent).
+ *
+ * An older listener does not: it reports per intent only the combined
+ * `enabled` that applies to deciding from speech and to its shortcut
+ * together (and not `supportsInference`, so which routes an intent has is
+ * not known). Each of its intents is shown as one read-only switch with
+ * that value, with the phone's note.
  *
  * Nothing is shown as changed before the listener says so.
  */
@@ -36,7 +39,8 @@ export type IntentMode = 'inference' | 'shortcut';
 export interface ListeningSwitch {
   /** Unique per switch, also its key for pending requests: `sounds` or `intent:<name>:<mode>`. */
   key: string;
-  kind: 'sounds' | IntentMode;
+  /** `combined`: an older listener's one switch for an intent and its shortcut. */
+  kind: 'sounds' | IntentMode | 'combined';
   /** The intent's name (for intents and shortcuts), else ''. */
   intent: string;
   label: string;
@@ -77,20 +81,45 @@ export function independentSwitches(intents: readonly Intent[]): boolean {
   );
 }
 
-/**
- * Whether a mode of an intent is on, as the listener reports it: the
- * mode's own value, or for an older listener without one the intent's
- * combined `enabled`.
- */
+/** Whether the listener reports both of an intent's own switches. */
+function hasModeValues(intent: Intent): boolean {
+  return (
+    typeof intent.inferenceEnabled === 'boolean' && typeof intent.shortcutEnabled === 'boolean'
+  );
+}
+
+/** Whether a mode of an intent is on, as the listener reports it. */
 function modeEnabled(intent: Intent, mode: IntentMode): boolean {
-  let value: unknown = intent.shortcutEnabled;
   if (mode === 'inference') {
-    value = intent.inferenceEnabled;
+    return intent.inferenceEnabled === true;
   }
-  if (typeof value === 'boolean') {
-    return value;
+  return intent.shortcutEnabled === true;
+}
+
+/** An older listener's intent: one read-only switch for both routes. */
+function combinedSwitch(intent: Intent): ListeningSwitch {
+  let state = 'Off';
+  if (intent.enabled === true) {
+    state = 'On';
+    if (!intent.toggleable) {
+      state = 'Always on';
+    }
   }
-  return intent.enabled === true;
+  let description = `Intent and shortcut together · ${state}`;
+  const prefixes = prefixesText(intent);
+  if (prefixes) {
+    description += ` · ${prefixes}`;
+  }
+  return {
+    key: `intent:${intent.name}:combined`,
+    kind: 'combined',
+    intent: intent.name,
+    label: intent.label,
+    name: intent.label,
+    description,
+    checked: intent.enabled === true,
+    available: false,
+  };
 }
 
 /** The phone's state words for an intent or shortcut. */
@@ -166,6 +195,10 @@ export function listeningView(
   });
 
   for (const intent of intents) {
+    if (!hasModeValues(intent)) {
+      switches.push(combinedSwitch(intent));
+      continue;
+    }
     const modes: IntentMode[] = [];
     if (intent.supportsInference) {
       modes.push('inference');

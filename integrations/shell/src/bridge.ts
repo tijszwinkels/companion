@@ -221,8 +221,16 @@ export class GatewayChatBridge implements NativeBridge {
     store.subscribe(() => this.storeChanged());
     if (times) {
       // A switched setting or a new offset can change every row's time.
+      // Only the Message timestamps switch changes the rows; the other two
+      // Display switches change nothing here.
+      let timestampsShown = times.settings.values.messageTimestamps;
       times.settings.subscribe(() => {
-        this.scheduleRows();
+        const shown = times.settings.values.messageTimestamps;
+        if (shown === timestampsShown) {
+          return;
+        }
+        timestampsShown = shown;
+        this.scheduleTimeRows();
         this.waitForNextDay();
       });
       // A new offset can mean this browser's clock was corrected: the times

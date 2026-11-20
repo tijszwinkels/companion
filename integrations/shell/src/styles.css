@@ -174,8 +174,12 @@ body {
 
 /* ---- Bar above the chat --------------------------------------------------------- */
 
+/* In a narrow window (a heading that cannot keep its 64 px beside the
+   buttons and Sign out), the bar's last items go on a second line instead
+   of overlapping the title. */
 .chat-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -184,15 +188,23 @@ body {
   font-family: var(--mono);
 }
 
+/* Narrow windows: tighter spacing, so the title keeps more room. */
+@media (max-width: 479px) {
+  .chat-bar {
+    gap: 6px;
+    padding: 10px;
+  }
+}
+
 /* Title and state, wrapping the state under the title when it does not fit. */
 .chat-bar-heading {
   display: flex;
-  flex: 1;
+  flex: 1 1 0;
   flex-wrap: wrap;
   align-items: center;
   column-gap: 10px;
   row-gap: 2px;
-  min-width: 0;
+  min-width: 64px;
 }
 
 .chat-bar-title {

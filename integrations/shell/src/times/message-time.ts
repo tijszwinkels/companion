@@ -150,15 +150,27 @@ export function messageTimeText(
  * Milliseconds from `readerNow` until the next calendar day starts in the
  * calendar's time zone (when "today" becomes "yesterday"), at least 1.
  *
- * Counted on the wall clock: the minutes left in the day, less the part of
- * the current minute already gone (time zones differ from UTC by whole
- * minutes). On a day whose midnight a daylight saving change moves, the
- * result is off by that change; the caller checks again after waiting.
+ * Found on the calendar itself, not by counting the wall clock's minutes,
+ * so a daylight saving change around midnight (a skipped or repeated hour)
+ * is no error: the first whole minute after `readerNow` that falls on
+ * another date, by a binary search over the next 26 hours (time zones
+ * differ from UTC by whole minutes, so days start on whole minutes).
  */
 export function untilNextDay(readerNow: number, calendar: LocalCalendar = browserCalendar): number {
   const minute = 60 * 1000;
-  const now = calendar(readerNow);
-  const minutesLeft = (23 - now.hour) * 60 + (59 - now.minute);
-  const intoMinute = ((readerNow % minute) + minute) % minute;
-  return Math.max(1, minutesLeft * minute + (minute - intoMinute));
+  const today = calendar(readerNow);
+  const sameDate = (moment: number) => sameDay(calendar(moment), today);
+
+  // Minute numbers since the epoch: `low` is on today's date, `high` is not.
+  let low = Math.floor(readerNow / minute);
+  let high = low + 26 * 60;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (sameDate(middle * minute)) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  return Math.max(1, high * minute - readerNow);
 }

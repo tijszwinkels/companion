@@ -72,8 +72,10 @@ The arrangement is the same at every window width, as in the agreed design:
   state. At its right end are the gear that shows the
   [settings screen](#the-settings-screen) and the Activity ☰. Where the
   state does not fit beside the title (a narrow window), it goes on a second
-  line under the title; the title keeps at least 64 px and the buttons stay
-  in the window.
+  line under the title. The title keeps at least 64 px; where even that does
+  not fit beside the buttons (Sign out, the gear and ☰ in a very narrow
+  window), the last of them go on a second line of the bar instead of
+  covering the title. Under 480 px the bar's spacing is tighter.
 - **The chat** is the unchanged chat page, using the whole width of the area
   between the list and the Activity column (a design change of 2026-11-20:
   the earlier centred column of at most 860 px is gone, for every
@@ -262,6 +264,7 @@ remote role sends (`src/list/entries.ts`):
 | A turn completes in the shown conversation, page visible                                                        | not set                                                                     |
 | A turn completes in the shown conversation, page hidden (other tab)                                             | set                                                                         |
 | A turn completes in the selected conversation while the settings screen covers it                               | set                                                                         |
+| A conversation with that mark is selected underneath the settings screen (a started one)                        | kept until it is shown                                                      |
 | A turn is stopped or fails                                                                                      | not set                                                                     |
 | A conversation this page has not seen arrives in an event (started elsewhere)                                   | set                                                                         |
 | A conversation this page has seen is reopened elsewhere                                                         | not set                                                                     |
@@ -631,8 +634,10 @@ on.
 4. The conversation underneath is **not shown** while the settings screen
    covers it: an answer completed meanwhile gets the "answer not seen" mark
    and the toast, as for a conversation that is not selected (the Store's
-   `selectionShown` option, off on the phone). Going back to it with the
-   gear shows it, which clears the mark, as choosing it does.
+   `selectionShown` option, off on the phone), and a conversation selected
+   underneath it (a started one) keeps its mark. Going back to it with the
+   gear, or by Back and Forward, shows it, which clears the mark, as
+   choosing it does.
 5. Text only the chat editor holds is offered there as on Previous sessions
    (Copy, Discard).
 
@@ -686,22 +691,24 @@ reports independent intent and shortcut switches. Sound feedback sends
 `toggle-sounds`; an intent or shortcut `set-intent-enabled` with its name,
 mode and the opposite of the value the Store has at the press. Independent
 switches means `inferenceEnabled` and `shortcutEnabled` are booleans on every
-intent; an older listener reports only `enabled`, which then shows for both
-(read-only). A refusal
+intent. An older listener reports per intent only the combined `enabled`
+(for deciding from speech and its shortcut together, without
+`supportsInference`): each of its intents is shown as one read-only switch
+with that value ("Intent and shortcut together"). A refusal
 shows the Store's error toast. An unavailable switch stays focusable
 (`aria-disabled`, dimmed), so focus is never lost while an answer is on its
 way.
 
-| State                                           | Sound feedback | Intent and shortcut switches   | Note shown                                           |
-| ----------------------------------------------- | -------------- | ------------------------------ | ---------------------------------------------------- |
-| Connected, after the snapshot                   | available      | available                      | —                                                    |
-| Before the first snapshot of the pairing        | not shown      | not shown                      | "…shown once it is connected."                       |
-| Offline, or reconnected before the new snapshot | unavailable    | unavailable                    | "Shown as Companion last reported them…"             |
-| Listener in preview mode                        | unavailable    | available                      | "Preview mode: sound feedback cannot be changed."    |
-| Older listener without independent switches     | available      | its `enabled` value, read-only | "Restart Companion to load independent intent and …" |
-| An intent that is not toggleable                | —              | that one unavailable           | its line says "Always on"                            |
-| A request of this switch awaits its answer      | unavailable    | that one unavailable           | —                                                    |
-| Changed on the computer or another client       | follows        | follows                        | —                                                    |
+| State                                           | Sound feedback | Intent and shortcut switches                   | Note shown                                           |
+| ----------------------------------------------- | -------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| Connected, after the snapshot                   | available      | available                                      | —                                                    |
+| Before the first snapshot of the pairing        | not shown      | not shown                                      | "…shown once it is connected."                       |
+| Offline, or reconnected before the new snapshot | unavailable    | unavailable                                    | "Shown as Companion last reported them…"             |
+| Listener in preview mode                        | unavailable    | available                                      | "Preview mode: sound feedback cannot be changed."    |
+| Older listener without independent switches     | available      | one per intent, its `enabled` value, read-only | "Restart Companion to load independent intent and …" |
+| An intent that is not toggleable                | —              | that one unavailable                           | its line says "Always on"                            |
+| A request of this switch awaits its answer      | unavailable    | that one unavailable                           | —                                                    |
+| Changed on the computer or another client       | follows        | follows                                        | —                                                    |
 
 ### Turn timers and the last turn duration
 
@@ -781,9 +788,12 @@ Rule (`src/times/message-time.ts`):
 5. The bridge puts the text into the chat page's rows (`ChatRow.time`, see
    [changes to the shared chat page](#changes-to-the-shared-chat-page)) and
    sends the rows again (only those that changed) when the switch changes,
-   when the offset changes and when a new day starts here. The wait for the
-   next day is taken again with each new offset (this browser's clock may
-   have been corrected). A publication made only for the times is not sent
+   when the offset changes and when a new day starts here. The moment the
+   next day starts is found on the calendar itself (the first minute on
+   another date), so a daylight saving change around midnight does not move
+   it; it is taken again with each new offset (this browser's clock may
+   have been corrected), and checked at least every hour. The other two
+   Display switches do not send the rows again. A publication made only for the times is not sent
    when no row's text changed, so the offset's millisecond changes with
    every state message do not draw the chat again.
 
@@ -1221,9 +1231,13 @@ bridge's rows with and without `time` (switched off they are exactly the Qt
 host's), a streaming answer keeping its time, a new offset sending the
 changed rows again and one that changes no time sending nothing, midnight
 passing (from 30 seconds before it) and a corrected clock moving the wait
-for it; and the Listening switches' availability and notes (also for the
-historical payload with only `enabled`, and a partial one). `markers.test.ts`
-has the row of an answer completed behind the settings screen.
+for it, the moment the next day starts (also in Nuuk the night its clocks
+skip the hour before midnight, through the bridge too), and the other two
+switches sending no rows; and the Listening switches' availability and
+notes (also for the historical payload with only `enabled`, and a partial
+one). `markers.test.ts`
+has the rows of an answer completed behind the settings screen and of a
+conversation selected underneath it.
 `chat-heading.test.ts` draws every kind of row with the shared chat page in
 headless Chromium and compares the HTML with `fixtures/chat-rows-reference.txt`,
 drawn by the base revision's `Chat.tsx` before `ChatRow.time` existed
@@ -1250,11 +1264,14 @@ and sending nothing offline; 420 and 1600 px without overflow, at 1600 px the
 messages and the text box as wide as the chat area and the time at the
 heading's right; at 375 px a long last duration under the title with the
 title and every bar button in the window; an answer completed behind the
-settings screen marked unread (and announced), cleared by going back, kept
-when another conversation is chosen; the reader's scroll position the same
+settings screen marked unread (and announced), cleared by going back (the gear, or Back to a page whose answer completed
+meanwhile), kept when another conversation is chosen; the reader's scroll position the same
 after Settings and back, with no history request; at 420 px the Settings
 entry hiding the Activity column that lay over the chat, and the switches
-reachable by keyboard. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
+reachable by keyboard; the conversation underneath closed elsewhere leaving
+the settings screen with its focused switch and scroll position; and at 375
+and 360 px the bars of Previous sessions and the empty view with no button
+over the title. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 settings screen, running timers (strip and full list), timestamps and all
 switches off at 420, 1280 and 1600 px.
 

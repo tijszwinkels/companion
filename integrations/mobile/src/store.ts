@@ -113,7 +113,9 @@ export interface StoreOptions {
    * the page being visible. Absent (the phone panel) it always is. The
    * browser shell's settings screen covers the selected conversation: a turn
    * completed meanwhile is then marked unread and announced, as for a
-   * conversation that is not selected.
+   * conversation that is not selected, and selecting a conversation then
+   * (a started one, underneath the settings screen) keeps its mark until it
+   * is shown.
    */
   selectionShown?: () => boolean;
 }
@@ -245,7 +247,11 @@ export class Store {
     this.pageRevision += 1;
     const id = this.state.sessions.has(page.selected) ? page.selected : '';
     const unread = new Set(this.state.unread);
-    unread.delete(id);
+    // Selecting shows the conversation, which clears its mark; unless it is
+    // selected where the reader does not see it (see `selectionShown`).
+    if (this.selectionShown()) {
+      unread.delete(id);
+    }
     this.update({
       selected: id,
       showingPrevious: this.connection.paired && page.showingPrevious,

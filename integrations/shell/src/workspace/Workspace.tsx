@@ -95,8 +95,7 @@ export function Workspace(props: {
   const display = useDisplaySettings(props.times.settings);
 
   // The settings screen, shown in place of the chat (drawn again when it is
-  // shown or left). Browser Back and Forward change what the Store shows,
-  // and leave the settings screen too.
+  // shown or left). Browser Back and Forward leave it too (main.tsx).
   const settingsView = props.settingsView;
   const [settingsShown, setSettingsShownState] = useState(settingsView.shown);
   useEffect(() => {
@@ -105,14 +104,7 @@ export function Workspace(props: {
     });
     // It can change between the first render and this subscription.
     setSettingsShownState(settingsView.shown);
-    const navigated = () => {
-      settingsView.setShown(false);
-    };
-    window.addEventListener('popstate', navigated);
-    return () => {
-      unsubscribe();
-      window.removeEventListener('popstate', navigated);
-    };
+    return unsubscribe;
   }, [settingsView]);
 
   const activity = useActivityLayout();
@@ -405,22 +397,28 @@ function MainArea(props: {
     onToggleSettings: props.settings.onToggle,
   };
 
-  const settingsScreen = (
-    <div class="page-column">
+  // What the Store selects, below the bar. Each kind has its own key, so a
+  // change of selection never replaces the settings layer beside it.
+  let bar = <ChatBar title="Conversations" state={null} {...barControls} />;
+  let content = (
+    <div key="empty" class="page-column" inert={props.settings.shown}>
       <HeldInput chat={props.chat} />
-      <SettingsScreen
-        settings={props.times.settings}
-        admitted={() => props.bridge.admitted}
-        requests={props.requests}
-      />
+      <NothingSelected />
     </div>
   );
+  if (!props.settings.shown) {
+    bar = (
+      <ChatBar title="Conversations" state={null} {...barControls}>
+        <SignOut />
+      </ChatBar>
+    );
+  }
 
   if (selected) {
     // The chat stays drawn while the settings screen covers it (inert and
     // hidden from assistive technology meanwhile), so its scroll position,
     // its following of the live end and its editor survive the round trip.
-    let bar = (
+    bar = (
       <ChatBar
         title={selected.title || 'Untitled'}
         state={
@@ -434,56 +432,55 @@ function MainArea(props: {
         {...barControls}
       />
     );
-    if (props.settings.shown) {
-      bar = <ChatBar title="Settings" state={null} {...barControls} />;
+    content = (
+      <div key="chat" class="chat-column" inert={props.settings.shown}>
+        {/* A new chat view for each conversation lifetime: the same ID
+            reopened elsewhere (a new tool epoch) starts at its live end
+            with a fresh editor, like a different conversation. */}
+        <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
+      </div>
+    );
+  } else if (props.showingPrevious) {
+    bar = <ChatBar title="Previous sessions" state={null} {...barControls} />;
+    if (!props.settings.shown) {
+      bar = (
+        <ChatBar title="Previous sessions" state={null} {...barControls}>
+          <SignOut />
+        </ChatBar>
+      );
     }
-    return (
-      <>
-        {bar}
-        <div class="main-body">
-          <div class="chat-column" inert={props.settings.shown}>
-            {/* A new chat view for each conversation lifetime: the same ID
-                reopened elsewhere (a new tool epoch) starts at its live end
-                with a fresh editor, like a different conversation. */}
-            <Chat key={selected.id + ' ' + (selected.toolEpoch ?? '')} store={props.chat} />
-          </div>
-          {props.settings.shown && <div class="settings-layer">{settingsScreen}</div>}
-        </div>
-      </>
+    content = (
+      <div key="previous" class="page-column" inert={props.settings.shown}>
+        <HeldInput chat={props.chat} />
+        <PreviousSessions bridge={props.bridge} />
+      </div>
     );
   }
 
   if (props.settings.shown) {
-    return (
-      <>
-        <ChatBar title="Settings" state={null} {...barControls} />
-        {settingsScreen}
-      </>
-    );
+    bar = <ChatBar title="Settings" state={null} {...barControls} />;
   }
 
-  if (props.showingPrevious) {
-    return (
-      <>
-        <ChatBar title="Previous sessions" state={null} {...barControls}>
-          <SignOut />
-        </ChatBar>
-        <div class="page-column">
-          <HeldInput chat={props.chat} />
-          <PreviousSessions bridge={props.bridge} />
-        </div>
-      </>
-    );
-  }
-
+  // The settings screen lies over what is selected, in the same place
+  // whatever the selection does meanwhile (a conversation closed elsewhere
+  // keeps the reader's focus and scroll position on the settings screen).
   return (
     <>
-      <ChatBar title="Conversations" state={null} {...barControls}>
-        <SignOut />
-      </ChatBar>
-      <div class="page-column">
-        <HeldInput chat={props.chat} />
-        <NothingSelected />
+      {bar}
+      <div class="main-body">
+        {content}
+        {props.settings.shown && (
+          <div key="settings" class="settings-layer">
+            <div class="page-column">
+              <HeldInput chat={props.chat} />
+              <SettingsScreen
+                settings={props.times.settings}
+                admitted={() => props.bridge.admitted}
+                requests={props.requests}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

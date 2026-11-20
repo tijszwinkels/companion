@@ -67,7 +67,13 @@ const transcriptView: TranscriptView = {
 };
 
 // Whether the settings screen covers the chat (settings/settings-view.ts).
+// Browser Back and Forward leave it. Listening before the Store exists puts
+// this ahead of the Store's own navigation handling, so the page the Store
+// then selects counts as shown (and its unread mark is cleared).
 const settingsView = new SettingsView();
+window.addEventListener('popstate', () => {
+  settingsView.setShown(false);
+});
 
 // The Store reads this listener run's Activity history for the Activity
 // column (the phone panel's default), and after each reconnect from the

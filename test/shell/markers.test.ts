@@ -164,6 +164,18 @@ test('markers: each row of the README table, in one sequence against the real St
   store.open('a');
   assert.deepEqual(marks(store), { a: '', b: 'W' }, 'back from the settings screen');
 
+  // Selected underneath the settings screen (a conversation started from
+  // Activity, selected when its start is answered): its unseen answer keeps
+  // the mark until it is shown.
+  settingsShown = true;
+  update(store, session('a', 'completed', 'a5'));
+  store.open('b');
+  store.open('a');
+  assert.deepEqual(marks(store), { a: 'U', b: 'W' }, 'selected underneath the settings screen');
+  settingsShown = false;
+  store.open('a');
+  assert.deepEqual(marks(store), { a: '', b: 'W' }, 'shown at last');
+
   // A turn completes in a conversation that is not shown: set, no longer working.
   update(store, session('b', 'completed', 'b1'));
   assert.deepEqual(marks(store), { a: '', b: 'U' }, 'not shown');
