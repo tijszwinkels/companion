@@ -380,9 +380,11 @@ had not seen, in an event or in a snapshot, unless that conversation is
 shown on a visible page, whatever the conversation does now (it may already
 run its next turn); and when a conversation this page never saw arrives in
 an event and is not shown. It is cleared when this page selects the
-conversation while it is shown or learns it was closed (an event), and on
-sign-out. A cover (the settings screen, the narrow Activity column) counts
-as not shown.
+conversation while it is shown, when a cover over the selected
+conversation lifts (after the current event, as the visible report), or
+when it learns the conversation was closed (an event), and on sign-out. A
+cover (the settings screen, the narrow Activity column) counts as not
+shown.
 
 | Event                                                                                                           | Unread mark                                                                 |
 | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -391,6 +393,8 @@ as not shown.
 | A turn completes in the shown conversation, page hidden (other tab)                                             | set                                                                         |
 | A turn completes in the selected conversation while the settings screen covers it                               | set                                                                         |
 | A conversation with that mark is selected underneath the settings screen (a started one)                        | kept until it is shown                                                      |
+| The cover over a marked selected conversation lifts (the column hidden, the gear)                               | cleared                                                                     |
+| Browser Back from the settings screen to another conversation                                                   | the one underneath keeps its mark                                           |
 | A turn is stopped or fails                                                                                      | not set                                                                     |
 | A conversation this page has not seen arrives in an event (started elsewhere)                                   | set                                                                         |
 | A conversation this page has seen is reopened elsewhere                                                         | not set                                                                     |
@@ -1071,9 +1075,16 @@ browser's tabs count for its device), and refuses a newcomer with close code
 
 `test/shell/limit-page.test.ts` plays the table: the reasons and the
 automatic-reconnect rows against the real Connection in Node with a stand-in
-socket, and the fifth tab, the second tab, Retry and the `total` limit in
-headless Chromium against the real gateway, for the shell and the phone
-panel.
+socket (the Connection is the phone panel's too), and the fifth tab, the
+second tab, Retry and the `total` limit in headless Chromium against the
+real gateway for the shell. `test/mobile/limit-and-unread.test.ts` checks
+the phone panel's limit page in the browser (the fifth tab, Retry after a
+tab closed, the `total` limit).
+
+Known limit: if the browser reports going offline just before the named
+refusal arrives, the page treats it as a network loss and makes one more
+attempt when the network returns; that attempt is refused again and then
+shows the limit page.
 
 ### The Stop rule
 

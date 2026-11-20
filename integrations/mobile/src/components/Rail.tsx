@@ -59,7 +59,15 @@ export function Rail() {
             unread={state.unread.has(session.id)}
             online={state.connection.status === 'online'}
             onSelect={() => store.open(session.id)}
-            onMenu={() => setMenuFor(session)}
+            onMenu={() => {
+              // A long press that started just before the connection was
+              // refused over a limit opens nothing: a menu would make the
+              // limit page and its Retry inert (read when the press fires).
+              if (store.state.connection.status === 'limited') {
+                return;
+              }
+              setMenuFor(session);
+            }}
           />
         ))}
       </div>

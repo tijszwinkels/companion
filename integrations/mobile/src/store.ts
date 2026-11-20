@@ -169,6 +169,8 @@ export class Store {
   private lastReport?: { id: string; visible: boolean };
   /** A deferred check for a selection that became visible (see `visibilityChanged`). */
   private visibleCheck?: ReturnType<typeof setTimeout>;
+  /** A cover lifted since the last deferred check (see `selectionShownChanged`). */
+  private coverLifted = false;
   /** A later attempt after a report the gateway refused (see `reportSelection`). */
   private reportRetry?: ReturnType<typeof setTimeout>;
   /** Refused reports in a row; the Store tries again at most `reportRetryLimit` times. */
@@ -434,6 +436,10 @@ export class Store {
     this.visibleCheck = setTimeout(() => {
       this.visibleCheck = undefined;
       this.reportSelection();
+      if (this.coverLifted) {
+        this.coverLifted = false;
+        this.clearOwnMarkOfShown();
+      }
     }, 0);
   }
 
@@ -441,9 +447,30 @@ export class Store {
    * The answer of `selectionShown` may have changed (the browser shell's
    * settings screen or narrow Activity column came or went). Reports the
    * selection again when needed; calling it without a change sends nothing.
+   * A cover that lifts shows the selected conversation, which then counts
+   * as chosen for the Store's own rule too (an older listener): its own mark
+   * is cleared, after the current event, as the report is sent.
    */
   selectionShownChanged(): void {
+    if (this.selectionVisible()) {
+      this.coverLifted = true;
+    }
     this.visibilityChanged();
+  }
+
+  /**
+   * The Store's own rule (an older listener): the selected conversation is
+   * shown to the reader now, so its own mark goes, as when it is selected.
+   */
+  private clearOwnMarkOfShown(): void {
+    const id = this.state.selected;
+    if (!id || !this.ownUnread.has(id) || !this.selectionVisible()) {
+      return;
+    }
+    const ownUnread = new Set(this.ownUnread);
+    ownUnread.delete(id);
+    this.ownUnread = ownUnread;
+    this.update({ unread: this.unreadMarks(this.state.sessions) });
   }
 
   private online(): void {

@@ -7,8 +7,10 @@
  * for this one, and the text names no other device.
  *
  * It lies over the whole app (App.tsx makes the rest inert meanwhile), so
- * the page underneath, its drafts and open sheets are as the reader left
- * them when Retry connects.
+ * the page underneath and its drafts are as the reader left them when Retry
+ * connects. Open sheets and menus are closed when it appears (the Store
+ * closes every modal: their layer would make the limit page inert); none
+ * of them holds typed text.
  */
 
 import { useEffect, useRef } from 'preact/hooks';

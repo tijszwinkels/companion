@@ -731,3 +731,72 @@ test('visible report on the phone: a sheet, menu or the screenshot viewer covers
   assert.equal(closed, true, 'the open modal was closed');
   assert.equal(store.navigation.modalOpen, false);
 });
+
+test('fallback for an older listener: a cover that lifts clears the shown conversation’s own mark', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  page.visibilityState = 'visible';
+  let overlay = false;
+  let settingsShown = false;
+  const store = new Store({
+    activity: false,
+    selectionShown: () => !overlay && !settingsShown,
+  });
+  recordReports(store);
+  internals(store).online();
+  // An older listener: conversations without `unread`.
+  snapshot(store, [session('a', 'running'), session('b', 'running')]);
+  store.open('a');
+
+  // The narrow Activity column over A while its answer completes: marked.
+  overlay = true;
+  store.selectionShownChanged();
+  update(store, session('a', 'completed', 'a1'));
+  assert.equal(marks(store).a, 'U', 'completed behind the column');
+
+  // The column hidden: A is shown, its own mark goes after the event.
+  overlay = false;
+  store.selectionShownChanged();
+  await settle(context);
+  assert.equal(marks(store).a, '', 'shown when the column is hidden');
+
+  // Browser Back from the settings screen to B: the cover lifts and the
+  // selection changes in one event; A, only underneath, keeps its mark.
+  settingsShown = true;
+  store.selectionShownChanged();
+  update(store, session('a', 'completed', 'a2'));
+  assert.equal(marks(store).a, 'U');
+  settingsShown = false;
+  store.selectionShownChanged();
+  store.open('b');
+  await settle(context);
+  assert.deepEqual(marks(store), { a: 'U', b: 'W' }, 'Back to B: A keeps its mark');
+});
+
+test('phone: Back over a dialog with a page chosen meanwhile publishes only that page', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  page.visibilityState = 'visible';
+  const store = new Store({ activity: false });
+  const { reports } = recordReports(store);
+  internals(store).online();
+  snapshot(store, [marked('a', 'completed', false, 'a1'), marked('b', 'completed', true, 'b1')]);
+  store.open('a');
+
+  // A dialog over A (reported hidden); its close button goes Back, and an
+  // action in it chooses B before that Back arrives.
+  const lifetime = (window.history.state as { companionPanel: { lifetime: string } }).companionPanel
+    .lifetime;
+  const modal = store.navigation.openModal(() => {});
+  assert.deepEqual(reports.at(-1), { id: 'a', visible: false });
+  modal.dismiss();
+  store.open('b');
+  const from = reports.length;
+
+  // The Back arrives (the entry under the dialog: A).
+  const navigation = store.navigation as unknown as { pop(state: unknown): void };
+  navigation.pop({
+    companionPanel: { selected: 'a', showingPrevious: false, lifetime, modals: [] },
+  });
+  await settle(context);
+  assert.equal(store.state.selected, 'b');
+  assert.deepEqual(reports.slice(from), [{ id: 'b', visible: true }], 'never A visible');
+});

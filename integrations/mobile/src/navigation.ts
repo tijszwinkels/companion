@@ -165,11 +165,15 @@ export class Navigation {
     this.entry = { ...page, lifetime: this.lifetime, modals: retained };
     this.write(true);
     this.dismissing = false;
-    this.onPage(page);
+    // A page navigated to while this Back was on its way is the one shown:
+    // the page under the closed dialog is not published in between, so it
+    // is never reported as shown (and never read) for that instant.
     const deferred = this.deferredPage;
     this.deferredPage = undefined;
     if (deferred) {
       this.navigate(deferred);
+    } else {
+      this.onPage(page);
     }
     const waiting = [...this.deferredModals].filter((id) => this.modals.has(id));
     this.deferredModals.clear();
