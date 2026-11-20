@@ -60,8 +60,12 @@ export interface HistoryHost {
   visibleKeys(): Record<string, boolean>;
   /** Key of the row at the transcript's top edge, or ''. */
   topKey(): string;
-  /** Rows or status changed outside `show` (a page arrived, a deadline passed). */
-  changed(): void;
+  /**
+   * Rows or status changed outside `show` (a page arrived, a deadline
+   * passed). `rowsChanged` is true when a page's rows were applied: the page
+   * must then get the new rows before the status that ends loading.
+   */
+  changed(rowsChanged?: boolean): void;
 }
 
 /** One outstanding (or failed) page request. */
@@ -99,6 +103,9 @@ export class ResidentHistory {
   private deadline: ReturnType<typeof setTimeout> | undefined;
   // Whether the reader is at the live end (reported by the page).
   private followEnd = true;
+  // Counts the pages' rows applied (applyHistory succeeding), so a change
+  // can tell the host whether the page must get new rows first.
+  private rowsApplied = 0;
 
   constructor(private readonly host: HistoryHost) {}
 
@@ -145,9 +152,10 @@ export class ResidentHistory {
   }
 
   /**
-   * Automatic paging below a detached snapshot, as the reader scrolls toward
-   * its end. Like SessionView.readerScrolled it does nothing while a request
-   * is pending or after a failure: only the reader's Retry repeats a failed
+   * The page's request for the next newer page below a detached snapshot,
+   * made as the reader scrolls to within one viewport of its end (Chat.tsx).
+   * Like SessionView.readerScrolled it does nothing while a request is
+   * pending or after a failure: only the reader's Retry repeats a failed
    * request.
    */
   continueNewer(): void {
@@ -155,6 +163,19 @@ export class ResidentHistory {
       return;
     }
     this.loadNewer();
+  }
+
+  /**
+   * The page's request for the previous page. Not after a failure: the page
+   * may not have shown the error yet while the reader keeps scrolling, and
+   * only the reader's Retry repeats a failed request. (loadHistory itself
+   * refuses while a request is pending.)
+   */
+  continueOlder(): void {
+    if (this.error !== '') {
+      return;
+    }
+    this.loadOlder();
   }
 
   /** The previous page, above the resident rows. */
@@ -179,8 +200,9 @@ export class ResidentHistory {
     }
     const shownBefore = this.shownHistory();
     if (shownBefore && HistoryRows.comparePositions(shownBefore.end, live.start) >= 0) {
+      const appliedBefore = this.rowsApplied;
       this.joinLiveWindow(this.historyRows);
-      this.host.changed();
+      this.host.changed(this.rowsApplied !== appliedBefore);
       if (!this.detached()) {
         return;
       }
@@ -369,12 +391,13 @@ export class ResidentHistory {
     );
     const boundary = request.position;
     const stall = request.direction + ':' + HistoryRows.positionKey(boundary);
+    const appliedBefore = this.rowsApplied;
 
     if (request.refresh) {
       this.stalled = new Set();
       this.followEnd = false;
       this.replaceHistory(rows);
-      this.host.changed();
+      this.host.changed(this.rowsApplied !== appliedBefore);
       return;
     }
 
@@ -424,7 +447,7 @@ export class ResidentHistory {
         this.joinLiveWindow(this.historyRows);
       }
     }
-    this.host.changed();
+    this.host.changed(this.rowsApplied !== appliedBefore);
   }
 
   private stopDeadline(): void {
@@ -578,6 +601,7 @@ export class ResidentHistory {
     }
     this.historyRows = candidate;
     this.attached = joined && candidate.length > 0;
+    this.rowsApplied++;
     return true;
   }
 

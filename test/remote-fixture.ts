@@ -47,6 +47,8 @@ export async function remoteFixture(
     captureStorage?: CaptureStoragePolicy;
     /** Run the listener in preview mode (it then advertises no history deletion). */
     preview?: boolean;
+    /** The listener's wall clock (wakes, turn and message times); real by default. */
+    clock?: () => number;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-remote-'));
@@ -96,6 +98,7 @@ export async function remoteFixture(
     undefined,
     // Conversation screenshots are saved only while capture storage is on.
     captureStorage,
+    options.clock,
   );
 
   const desktop = await desktopFixture(async () => assert.fail('No desktop input'), sessions, {

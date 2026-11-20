@@ -16,7 +16,7 @@ A paired browser can:
    sessions;
 3. show the selected conversation with the **desktop chat page**
    (`../session-apps/chat/Chat.tsx`, shared with the Qt host; see
-   [one change to the shared chat page](#one-change-to-the-shared-chat-page)):
+   [changes to the shared chat page](#changes-to-the-shared-chat-page)):
    streaming transcript, Markdown, tool-group summary rows and origin labels;
 4. send a message, queue a follow-up while the agent runs, stop the run,
    answer offered choices and close the conversation;
@@ -562,7 +562,9 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 - It sends the page the same `rows` and `status` messages as the Qt host, with
   the same sequence-number rules: every message is numbered, `ready()` resends
   everything in full, rows are diffed with `ChatState.diffRows` and coalesced
-  for 30 ms, status is sent whole when it changed. A conversation switch sends
+  for 30 ms, status is sent whole when it changed. One exception: the rows of
+  an arrived history page go out at once, before the status that ends
+  loading (see [the paging rule](#the-paging-rule)). A conversation switch sends
   the new rows and status at once. Rows are built with `ChatState.chatRow` from
   a TypeScript port of `SessionView.rowData()` (`src/rows.ts`).
 - It checks every page request again against the shown conversation, like the
@@ -583,17 +585,12 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   on the shared `../panel/HistoryRows.mjs`: contiguous joins only, at most
   three pages resident, rows the reader can see are never trimmed, one request
   at a time with a 10 s deadline, failures only retried by the reader, empty
-  pages not requested again. Below a detached snapshot (after loading more
-  than three pages up), the next newer page loads when the reader scrolls toward the end to within
-  one viewport of it, observed by `src/main.tsx` like
-  SessionView's `readerScrolled`: a scroll toward the end while the reader drags
-  in the transcript (scroll bar or finger), or within a second of wheel or key
-  input there that itself pointed toward the end; at the very end, where
-  nothing scrolls, a downward wheel. Scrolls the page makes itself (keeping
-  the reader's row after a resize, say) never count, also right after the
-  reader's input. This way so the new rows continue below without
-  moving the reader (also when they reach the end before the page arrives).
-  It never repeats a failed request.
+  pages not requested again. The chat page asks for older and newer pages by
+  the [paging rule](#the-paging-rule); the bridge answers each request
+  (`older`, `newer`) with the next page at that edge. New rows below a
+  detached snapshot continue under the reader without moving them (also
+  when they reach the end before the page arrives). A failed request is
+  never repeated, only the reader's Retry sends it again.
 - Connection loss: the phone Connection reconnects with backoff and never
   resends a request whose answer did not arrive; such a send keeps its text in
   the editor with an explanation. The page shows a banner and the chat's
@@ -601,6 +598,7 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
   while offline, and after reconnecting until the listener's new snapshot has
   arrived (the shown conversation may have been closed or reopened meanwhile).
 - Stop follows one rule, below.
+- Paging through history follows one rule, below.
 - Notices and pending choices belong to one conversation lifetime (ID and
   tool epoch): a conversation closed and reopened under the same ID does not
   show the old one's notices, and late answers for the old one are ignored.
@@ -627,30 +625,192 @@ Here `src/bridge.ts` implements the same `NativeBridge` interface
 4. The page shows its per-run Stop exactly when the conversation names a run
    (`stopRunId` set), and its footer Stop while it runs without one. The
    footer Stop sends nothing; it explains in `inputError` that Stop is not
-   available for this turn (the turn is usually already ending). A listener
-   that names no runs therefore cannot be stopped from the browser.
+   available for this turn (the turn is usually already ending). That notice
+   belongs to the turn: it goes as soon as the conversation stops running,
+   names a run (a follow-up started) or completes the turn. A listener that
+   names no runs therefore cannot be stopped from the browser.
 
 `test/shell/bridge.test.ts` lists the cases in one table (named run, a run
 that changes before the click, an ending turn before and after rendering, a
 first snapshot that already shows an ending turn, reconnects, another
 client's Stop, a follow-up starting meanwhile; per-run and footer Stop) with
-the request the rule allows for each.
+the request the rule allows for each, and a second table for the footer
+Stop's notice (same turn, a follow-up with or without a run, a completed
+turn, stopped elsewhere).
 
-### One change to the shared chat page
+### The paging rule
 
-Apart from this, `Chat.tsx` is as the Qt host had it. Its transcript no longer counts the end of
-a **detached** history snapshot as the live end (`following` is reported and
-kept as `atEnd && !history.detached`), except right after Jump to latest
-until the host has shown the live rows; and Jump to latest no longer counts
-its own scrolling as the reader's when the reader used the wheel just
-before. The browser shell needs this: newer
-pages are appended below a detached snapshot, and a page that thought it was
-following would jump to the end of each new page, skipping it. In the Qt host
-nothing is appended below a detached snapshot, and its bridge already sets
-`followEnd = atEnd && !detached`, so what it records is unchanged; the only
-visible difference there is that a Refresh or a resize while reading at the
-end of a detached snapshot keeps the reader's row in place instead of the end
-of the rows, which is what the classic view does.
+The chat page (`Chat.tsx`) asks for history pages itself, the same way in
+the browser and in the Qt host:
+
+> A scroll the reader makes that leaves the transcript within one viewport of
+> an edge asks for the next page at that edge: the previous page near the top
+> (while there are older pages), the next newer page near the end of a
+> detached snapshot. In a transcript so short that both edges are that near,
+> the way the reader moved decides. Whatever moved it: wheel, keys, scroll
+> bar or a finger. Not while a page is loading and not after a failure (only Retry repeats a
+> request). Scrolls the page makes itself never ask: following the live end,
+> keeping the reader's row in place (when rows arrive or the window is
+> resized), Jump to latest, and the browser pulling the view back to the end
+> when the transcript grows.
+
+The page tells its own scrolls from the reader's by the scroll positions it
+set itself; the browser's pull-back is the one scroll toward the start after
+which the scroll range did not grow and the view sits at its new end, having
+either been beyond it or moved less than a pixel (`pulledBack` in
+`Chat.tsx`; positions can be fractional, sizes are whole pixels). "Within
+one viewport" includes exactly one viewport. No input events are interpreted for paging, so
+a touch pan (which the browser reports as pointerdown, pointercancel and then
+scroll events only) counts like any other scroll. The bridge answers `newer`
+with the next page below the snapshot, or joins the live rows when the
+snapshot already ends where they start, and `older` with the previous page;
+it sends nothing while a page is pending, after a failure (also when the
+page has not shown that failure yet and the reader's scroll goes on), or at
+a boundary the listener answered with an empty page.
+
+Because the rule is about scrolls, input that moves nothing asks for
+nothing: a downward wheel at the very end of a detached snapshot (where the
+previous shell asked for the next page) does not. That end is only reached
+without the next page already requested when the request could not be made
+or was lost in a reconnect; any scroll there by the reader, a small one back
+up included, then asks for it, and Jump to latest always works.
+
+`test/shell/shell.test.ts` tests the rule with one table derived from it:
+each input method (wheel, keyboard, scroll bar drag, touch pan) × where the
+reader's scroll leaves the transcript (near the top, in the middle, near the
+end) × the page state (live; detached with newer pages; detached at the
+newest page, whose next rows are the live window), 36 cases with the request
+the rule allows for each, and a second table of page-made scrolls at the end
+of a detached snapshot (a downward wheel where nothing scrolls, a narrower
+window with the mouse held still, a wider window, a taller window that pulls
+the view back to the end) followed by the reader's own 1-pixel scroll there
+in the same frame as the page putting their row back, which does ask.
+Further tests cover a scroll without input at the live end (the page stays
+there and asks for nothing), a scroll bar or a finger held still for more
+than a second before scrolling away from it (it leaves the end), and one
+touch gesture that pans to the live end, rests there and pans back without
+lifting the finger (it leaves the end again). A detached snapshot shorter
+than two viewports, where both edges are always near, is reached by
+detaching at an ordinary size and then making the window very tall: a scroll
+toward the end asks for the newer page, one toward the start for the older.
+`bridge.test.ts` has the rule's decision (`pageToAsk`) as a table, a table
+for `pulledBack` (fractional positions, a reader's 1- and 3-pixel scroll at
+the very end, a reader landing 1 or 3 pixels before a new end, pull-backs
+to a fractional end and by half a pixel), and checks that an arriving page
+reaches the page as rows before the status that ends loading, while a failed
+or refused page leaves a queued streamed edit to its 30 ms coalescing and
+then delivers it, and that after a failed page only Retry asks again: the page never sees a
+request settled while it still shows the previous rows, so a scroll that
+continues meanwhile (a key's smooth scrolling, a fling) cannot ask for the
+page after one it has not shown yet.
+
+### Changes to the shared chat page
+
+`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Two changes
+were made for the browser:
+
+1. Its transcript does not count the end of a **detached** history snapshot
+   as the live end (`following` is reported and kept as
+   `atEnd && !history.detached`), except right after Jump to latest until the
+   host has shown the live rows; and Jump to latest does not count its own
+   scrolling as the reader's when the reader used the wheel just before.
+   Newer pages are appended below a detached snapshot, and a page that
+   thought it was following would jump to the end of each new page, skipping
+   it. The Qt bridge already sets `followEnd = atEnd && !detached`, so what it
+   records is unchanged; the only visible difference there is that a Refresh
+   or a resize while reading at the end of a detached snapshot keeps the
+   reader's row in place instead of the end of the rows, which is what the
+   classic view does.
+2. It pages by [the paging rule](#the-paging-rule): it asks for `newer` near
+   the end of a detached snapshot, and asks for nothing (`older` included)
+   on scrolls it makes itself. Leaving the live end still needs the reader's
+   input within the last second, as before, or now also a pointer held
+   pressed in the transcript (for a finger, until it is lifted, also after
+   the browser cancels its pointer to pan), and the end of such a press
+   counts as input: a scroll bar or a finger held still for more than a
+   second before moving used to be pulled back to the end. A scroll without input (a layout
+   change) still keeps the page at the live end.
+
+What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
+`ChatState.mjs`, `../panel/SessionView.qml`):
+
+- **Before the second change.** Nothing loads there. The page never asked
+  for `newer`, and SessionView's own `readerScrolled`, which loads newer
+  pages for the classic view, only runs on input to the classic transcript,
+  which is hidden while the HTML page shows. The reader sees the end of the
+  snapshot and returns to the live rows with Jump to latest
+  (`latestHistory`). Near the top, the page asked for `older` on every
+  scroll event there, its own included (for example while it follows the
+  live end of a live window shorter than two viewports).
+- **After it.** A scroll by the reader within one viewport of the end of a
+  detached snapshot asks for `newer`; `TrustedChatView.history` calls
+  `SessionView.loadNewer()`, exactly what the classic view does when its
+  reader scrolls there: it joins the live window when the snapshot reaches
+  it, otherwise requests the next page after the snapshot (unless that
+  boundary already answered empty). The page arrives through
+  `onToolPageReceived`, is appended with the oldest rows trimmed to stay
+  within three pages, and joins the live window once it reaches it; the chat
+  page keeps the reader's row in place while rows are added below and
+  trimmed above. Like the classic view, the page does not ask while a page is
+  pending or after a failure (`loadNewer` itself would clear the error).
+  Scrolls the page makes itself no longer ask for `older` either, as in the
+  classic view.
+
+This is a deliberate difference: the HTML chat now reads down through a
+detached snapshot like the classic view instead of stopping at its end.
+`ChatState.mjs` (row diffing) is unchanged. Two consequences of the Qt host's
+existing model show up more now that newer pages load there:
+
+- Trimming spares the rows `SessionView.visibleKeys()` reports, and that
+  reads the hidden classic transcript, not the HTML page (as it already does
+  for older pages). If the hidden transcript happens to show rows that a
+  newer page would trim, `applyHistory()` refuses and the whole reply is
+  dropped: no new rows appear, nothing is retried, and the reader's next
+  scroll near the end asks again. Conversely, if the reader scrolls back up
+  while a newer page is in flight, rows they see can be trimmed; the page
+  can then no longer keep their row and shifts the view by the change in the
+  transcript's height instead, as it does when rows change without a row to
+  keep.
+- `TrustedChatView.qml` sends the status at once but coalesces rows for up to
+  30 ms, so the page can see "loading" end up to 30 ms before the new rows. A
+  scroll that continues in that window (a key's smooth scrolling, a fling)
+  can then ask for one more page; it loads below, and the reader's row stays
+  in place. The browser bridge sends an arrived page's rows first; the Qt
+  host's order is QML and not changed here. For the same reason a scroll
+  that goes on right after a failed page, before the page shows the error,
+  can ask again there (`SessionView.loadOlder`/`loadNewer` clear the error);
+  this was already so for older pages before this change. The browser bridge
+  refuses both after a failure.
+
+To check in the Qt host (not run here; it needs the Qt build): in the HTML
+chat of a conversation with more than about a thousand rows,
+
+1. scroll up until more than three pages are loaded (Jump to latest appears
+   and the newest rows are gone), then scroll down to the end with the wheel,
+   with Page Down, by dragging the scroll bar and, where available, by touch:
+   each time the next newer page loads below without moving the reader's row,
+   and reading on reaches the live rows (nothing skipped or duplicated);
+2. while a newer page is in flight, scroll back up a little: the reader's
+   row should stay or move only by the trimmed height, and the page should
+   either load below or (if the hidden classic transcript protected old rows)
+   be dropped with the next scroll near the end asking again, never loop;
+3. with the history request failing (gateway or listener refusing it), the
+   failure notice shows and scrolling at the end does not send the request
+   again; Retry does;
+4. Jump to latest from a detached snapshot still shows the live rows and
+   follows new ones;
+5. a live conversation shorter than two viewports that streams an answer
+   does not load older pages by itself; scrolling up to the top and "Load
+   earlier messages" still do;
+6. at the live end, press the scroll bar, hold it still for two seconds and
+   drag up: the view leaves the end and stays where it was dragged (on a
+   touch screen the same with a finger resting before it pans, and with a
+   finger that pans down to the end, rests there and pans back up without
+   lifting); a scroll
+   without input still keeps the view at the live end (the existing
+   `test/session-apps-ui/surface.qml.in` case);
+7. the classic view (unchanged QML) still pages as before, and the existing
+   Qt suites (`npm run test:window`, `test/session-apps-ui/`) pass.
 
 ### Differences from the desktop chat
 
@@ -695,8 +855,10 @@ A scripted backend streams Markdown, tool calls and choices; Activity has
 synthetic entries of different kinds (typed, ignored, a started
 conversation, audio only, not saved), listening starts paused for media, and
 a new entry is heard every 40 seconds (six in all) to show the marker. No
-model, microphone, screen capture or personal data is involved. Ctrl+C stops it and
-deletes its temporary directory. `--port N` picks another port.
+model, microphone, screen capture or personal data is involved. Ctrl+C stops
+it and deletes its temporary directory, also while it is still starting (a
+second Ctrl+C during the cleanup deletes the directory at once). `--port N`
+picks another port.
 
 Against a real listener, serve the shell with the gateway's existing option:
 `bin/companion-remote serve --app-directory integrations/shell/dist` (see the
@@ -714,7 +876,12 @@ choices across navigation, nothing admitted between reconnecting and the new
 snapshot, sign-out clearing held input and late failures, a conversation
 reopened under the same ID replaced like a switch, the Stop rule table,
 contiguous paging within three pages including newer pages, no automatic retry after a failure, superseded pages
-dropped, and an uncertain send's notice kept next to other notices.
+dropped, an uncertain send's notice kept next to other notices, the footer
+Stop's notice ending with its turn, and the page's `newer` request never
+repeated while pending or after a failure.
+
+`demo.test.ts` interrupts `shell:demo` with Ctrl+C while it starts and after
+it started, and checks that no temporary directory is left.
 
 `layout.test.ts` and `reorder-gesture.test.ts` check the list's pure rules in
 Node, each with the cases of its README table above: the remembered width and
@@ -734,9 +901,10 @@ shared helpers in `page.ts`).
 the list and picking a conversation; a streamed Markdown answer with agent HTML
 kept literal; send; a follow-up queued while running; a choice; stop; close;
 loading older pages while scrolling up, reading down through newer pages below
-a detached snapshot without skipping rows (also when the reader reaches the end by a slow drag before the next page
-arrives), and Jump to latest from a detached snapshot followed by a streamed
-row; a conversation reopened under the same ID while offline shown at its
+a detached snapshot without skipping rows (also when the reader reaches the
+end by a slow scroll bar drag before the next page arrives), and Jump to
+latest from a detached snapshot followed by a streamed row; the
+[paging rule](#the-paging-rule) tables; a conversation reopened under the same ID while offline shown at its
 live end; a send whose
 answer was lost in a gateway restart, kept with its notice and not replayed
 after reconnecting; signing out and pairing again without the previous draft, also with a second

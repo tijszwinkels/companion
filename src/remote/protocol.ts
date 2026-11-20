@@ -161,6 +161,11 @@ export type EngineEvent =
 
 export interface EngineState {
   protocol: number;
+  /**
+   * The listener's clock when it built this state message, in milliseconds
+   * since the Unix epoch. Absent from older listeners. Relayed unchanged.
+   */
+  listenerTime?: number;
   ready: boolean;
   paused: boolean;
   pauseReason: '' | 'manual' | 'media';

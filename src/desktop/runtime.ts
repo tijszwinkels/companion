@@ -1050,6 +1050,11 @@ export class DesktopRuntime {
 
     return {
       protocol: 1,
+      // The listener's clock when this message was built, in milliseconds
+      // since the Unix epoch. A client on another machine compares it with
+      // its own clock on receipt to show turn durations and message times
+      // correctly (see "Listener time" in src/desktop/README.md).
+      listenerTime: agents?.now() ?? Date.now(),
       ready: this.ready,
       paused: this.pause.paused,
       pauseReason: this.pause.reason,

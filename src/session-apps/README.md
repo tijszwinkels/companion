@@ -265,8 +265,9 @@ The result is either `{changed:false, revision}` or a full replacement snapshot
 `{changed:true, revision, status, truncated, messages}`. Each message has `id`,
 `role`, `source`, `text`, `state` and `truncated`. IDs identify streaming row
 replacements. `status` is the canonical conversation status, including running,
-completed, cancelled and error. No per-row timestamps are invented: the existing
-canonical records do not retain them.
+completed, cancelled and error. No per-row timestamps are included: canonical
+messages now record `createdAt` (older ones have none), but this contract and
+its disclosure cover conversation text, not timing metadata.
 
 - At most 24 user/assistant text rows from the last 256 canonical rows.
 - At most 8192 UTF-16 units per row, keeping the newest suffix on truncation.

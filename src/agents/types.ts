@@ -107,6 +107,15 @@ export interface AgentMessage {
   historyFragment?: { start: number; end: number; total: number };
   /** Present only on user-kind messages written by another conversation's agent. */
   origin?: AgentMessageOrigin;
+  /**
+   * When the listener created this message, in milliseconds since the Unix
+   * epoch on the listener's clock. Set once, when the row first enters the
+   * conversation; later updates of the same row (streaming text, a queued
+   * message starting, a tool group growing) keep it. For a tool group it is
+   * the creation of the group's first call. Saved with the conversation.
+   * Absent on messages saved before Companion recorded it; none is invented.
+   */
+  createdAt?: number;
 }
 
 /** Selects a model configuration for the whole conversation, including reopening. */
@@ -211,6 +220,25 @@ export interface AgentSession {
   acceptsFollowUp?: boolean;
   /** Latest successful turn in this process; snapshots recover missed UI updates. */
   completedTurnId?: string;
+  /**
+   * Live-only: present exactly while a turn is running in this conversation,
+   * from the moment its message is admitted (status `starting`) until the
+   * turn has finished or failed, or until Stop or listener shutdown (removed
+   * at once, even while the turn is still winding down). Milliseconds since the Unix
+   * epoch on the listener's clock. Never saved, so no running time survives
+   * a listener restart. See "Turn and message times" in the agents README.
+   */
+  turnStartedAt?: number;
+  /**
+   * How long the last finished turn took, in milliseconds: from its start
+   * (`turnStartedAt`) until the harness returned, or until the moment the
+   * listener ended it earlier (Stop, shutdown, an error it found), whatever
+   * the outcome (completed, stopped or failed).
+   * Saved with the conversation. Absent
+   * before a turn has finished since Companion recorded it, and after
+   * reopening a conversation whose last turn was cut off by a restart.
+   */
+  lastTurnDurationMs?: number;
   /**
    * Live-only: an agent tool opened this tab without requesting focus. Clients
    * add it to the rail without selecting it or revealing the panel.

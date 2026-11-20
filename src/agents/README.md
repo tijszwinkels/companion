@@ -244,6 +244,137 @@ is deliberately absent from saved transcripts, so reopening a historical session
 does not manufacture a new completion. Old backends without the field can show
 running rings but need a listener restart for unread completion tracking.
 
+## Turn and message times
+
+The listener records two kinds of time so that clients can show how long a
+running turn has been going, how long the last one took, and when each message
+was written. All times are milliseconds since the Unix epoch on the listener's
+own clock; durations are milliseconds. `AgentSessions` takes the clock as an
+optional constructor argument (the same one that schedules self-wake timers),
+so tests inject it.
+
+**Turn times** are measured in `sessions.ts`, around each turn, independently of
+the harness:
+
+- `turnStartedAt` (live session field) is set when a turn's message is admitted
+  and the conversation enters `starting`: in `create` for the first question and
+  in `prepareFollowUp` for every later one. It stays while the turn runs and is
+  removed when the turn ends. Clients compute the running duration from it.
+- A turn ends when the harness's `run` returns or throws (answered, failed,
+  or its process exited), or earlier: at the moment of Stop, listener
+  shutdown, a withdrawal of the turn's own application send, or an error the
+  listener itself finds (tool storage). There is one path for every end,
+  `endTurnNow`: it records the end and the duration (`lastTurnDurationMs`,
+  end minus start), removes `turnStartedAt` and publishes both together, before
+  anything else (timer cancellation, saves, the harness's cancellation
+  cleanup) can take time or publish. The first end of a turn stands. A clock
+  that was set back during the turn gives 0, not a negative value. Turns in
+  which nothing reached the model keep the previous duration: a placeholder
+  with nothing to deliver, an application send refused at its gate, a wake
+  that could not enter, and an application's turn (a send, or edits
+  delivered as an event) withdrawn, stopped or shut down before it was
+  admitted to the model (before its harness was called).
+
+  | Ends by               | Before the harness runs ¹    | While the harness runs | While the final save is pending |
+  | --------------------- | ---------------------------- | ---------------------- | ------------------------------- |
+  | Stop                  | at Stop ²                    | at Stop                | already ended; unchanged        |
+  | Listener shutdown     | at shutdown ² ³              | at shutdown ³          | already ended; unchanged        |
+  | Send withdrawn by the | at the withdrawal; keeps the | not possible: only     | not possible                    |
+  | application service   | previous duration            | unstarted sends        |                                 |
+  | Error in the harness  | when the error is observed   | when the harness       | already ended; unchanged        |
+  |                       |                              | returns the error      |                                 |
+  | Error the listener    | not possible: no tool output | at the error (first or | already ended; unchanged        |
+  | finds (tool storage)  | before the harness runs      | coalesced write)       |                                 |
+  | Process exit          | not possible: no harness yet | when the harness       | not possible: the harness has   |
+  |                       |                              | returns                | already returned                |
+
+  ¹ From admission (`starting`, including a slow first save) until the harness
+  is called. The status is already `running` while the turn's tool leases
+  are prepared, just before the harness is called.
+
+  ² An application's turn (its send, or the person's edits delivered as an
+  event) that ends this way never reached the model and keeps the previous
+  duration.
+
+  ³ Every running turn ends at the same moment of shutdown.
+
+  "At Stop" and "at shutdown": the turn ends even while it still waits for its
+  first save or the harness is still winding down after the cancellation;
+  neither wait is counted. An error in the harness ends the turn when it is
+  observed: a slow first save that then fails was the turn's failing work and
+  is counted. Otherwise the end includes the harness's own bounded shutdown
+  after the answer (Pi's final name read, Claude Code's natural exit, process
+  cleanup; each bounded to a few seconds), because the turn only ends when the
+  harness returns.
+
+  The end of a turn is published before the turn's final save is awaited, so
+  a slow save cannot keep a client counting, and the final save is not
+  counted. The status and error clients see stay as they were last published
+  (`starting` or `running`) until that bookkeeping is done: the conversation
+  is still busy and queues new messages, and a failed save still turns the
+  turn into an error. `agent-turn-completed` still follows the successful
+  save.
+
+- Every admitted message is its own turn. A queued follow-up starts its
+  measurement when it leaves the queue (when the previous turn has ended), not
+  when it was queued; queuing never changes the running turn's start. A
+  scheduled wake or application turn is measured the same way.
+- Retries, compaction and several executable attempts inside one harness `run`
+  belong to that one turn and one measurement. Process lifetime is never used:
+  Pi and Claude Code are started per turn today, but a harness that kept its
+  process alive between turns would be measured the same way.
+- Nothing running survives the end of a turn. `endTurnNow` is the only place
+  that removes `turnStartedAt`. Besides the early ends above, `run` calls it
+  when the harness returns, the placeholder and wake paths call it when
+  nothing ran, and `drain` calls it again when the conversation stops being
+  busy (covering any exception between turns). Stopped queued messages never
+  start a turn. An application send that fails while starting did start a
+  turn and is measured.
+- Conversations are independent: each conversation's fields change only with its
+  own turns.
+
+`turnStartedAt` is live-only and never saved. A turn does not survive a listener
+restart: the restarted listener shows that conversation as stopped ("Companion
+stopped before this answer finished") with no `turnStartedAt`, and also without
+`lastTurnDurationMs`, because the saved duration belonged to an earlier turn
+and the interrupted one has none. `lastTurnDurationMs` is otherwise saved with
+the conversation and comes back on reopening and in `previousSessions`.
+
+**Message times**: every message gets `createdAt` when it first enters a
+conversation. `message()` stamps every new row and keeps the existing row's
+value on every update of the same ID (streaming text, a queued message starting,
+a running bubble finalized as an error), so it is the time the message was
+written, not the time it last changed. A tool bubble groups consecutive tool
+calls; its `createdAt` is the time of the group's first call. Individual tool
+calls in [tool pages](../desktop/README.md#lazy-tool-transcript-pages) carry no
+time. A time supplied by a backend is never trusted for a new row.
+
+Messages saved before this change have no `createdAt` and keep none; no time is
+invented for them, also not when they are updated later. Reopening repairs a
+saved transcript without saving it, so a repaired row must get the same time on
+every reopen: a missing timer notice takes its timer's creation time, the timer
+service warning the time this listener last raised one, and a missing widget
+row (committed earlier at an unrecorded time) none. Timer notices and the
+warning get those same times when they first appear in an open tab, so a
+timer notice has the same time live and after any restart. A new warning row
+takes the time of the warning occurrence it first shows; later warnings update
+its text and keep that time. The store drops a damaged saved time or duration (anything but a
+non-negative safe integer) instead of refusing the conversation. Old archives
+are never rewritten for this; new fields are simply added on the next save.
+The session application chat-read projection (`session-apps/chat.ts`) does not
+include message times: that contract and its consent disclosure cover recent
+conversation text, and extending them to timing metadata is a separate decision.
+
+Clients on another machine use `listenerTime` from the desktop protocol to
+correct for clock differences; see
+[listener time](../desktop/README.md#listener-time).
+
+`test/unit/turn-and-message-times.test.ts` covers this with an injected clock,
+temporary stores and the scripted Pi and Claude Code backends (and the real
+backends driven by the scripted executables for a process exit): independent
+conversations, queued follow-ups, Stop, errors, restarts, old-format archives,
+history pages, and relay to a phone through the gateway.
+
 ## Conversation choices
 
 `PiBackend` starts each turn with the native Pi extension `choice-tool.ts` using

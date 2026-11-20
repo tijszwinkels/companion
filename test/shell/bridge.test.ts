@@ -4,6 +4,7 @@ import test from 'node:test';
 import { historyPage, type HistoryPage } from '../../src/agents/history-pages.ts';
 import { chatMessage, type AgentSession } from '../../src/agents/types.ts';
 import type { Store } from '../../integrations/mobile/src/store.ts';
+import { pageToAsk, pulledBack } from '../../integrations/session-apps/chat/Chat.tsx';
 import type { ChatStatus, HostMessage } from '../../integrations/session-apps/chat/protocol.ts';
 import { GatewayChatBridge } from '../../integrations/shell/src/bridge.ts';
 import { ResidentHistory, type PageRequest } from '../../integrations/shell/src/history.ts';
@@ -769,3 +770,574 @@ test('a page that answers a superseded view is dropped', async () => {
   assert.equal(history.rows().length, 200);
   assert.equal(history.status().pending, false);
 });
+
+/**
+ * The footer Stop's notice ("Stop is not available for this turn") belongs
+ * to the turn it was pressed in: it goes when that turn is over, however the
+ * listener reports that. Each case starts with the footer Stop pressed in a
+ * turn that names no run (the turn after `turn-1`).
+ */
+const stopNoticeCases: {
+  name: string;
+  next: Partial<AgentSession>[];
+  /** Whether the notice is still shown afterwards. */
+  shown: boolean;
+}[] = [
+  { name: 'the same turn keeps running', next: [{ status: 'running' }], shown: true },
+  {
+    name: 'a follow-up run starts (the conversation names a run)',
+    next: [{ status: 'running', runId: 'run-2' }],
+    shown: false,
+  },
+  {
+    name: 'the turn ends and a follow-up starts that names no run',
+    next: [{ status: 'completed', completedTurnId: 'turn-2' }, { status: 'running' }],
+    shown: false,
+  },
+  {
+    name: 'the turn completes and the next unnamed turn is the first update seen',
+    next: [{ status: 'running', completedTurnId: 'turn-2' }],
+    shown: false,
+  },
+  { name: 'another client stops the turn', next: [{ status: 'cancelled' }], shown: false },
+];
+
+for (const noticeCase of stopNoticeCases) {
+  test(`footer Stop notice: ${noticeCase.name}`, async () => {
+    const { store, bridge, messages } = harness();
+    const unnamed = session(sessionA, 'Question A', {
+      status: 'running',
+      completedTurnId: 'turn-1',
+    });
+    store.update({ sessions: new Map(store.state.sessions).set(sessionA, unnamed) });
+    await settle();
+    bridge.stop(sessionA);
+    await settle();
+    assert.match(lastStatus(messages).inputError ?? '', /Stop is not available/);
+
+    for (const change of noticeCase.next) {
+      const next = session(sessionA, 'Question A', { completedTurnId: 'turn-1', ...change });
+      store.update({ sessions: new Map(store.state.sessions).set(sessionA, next) });
+    }
+    await settle();
+    const notice = lastStatus(messages).inputError ?? '';
+    assert.equal(/Stop is not available/.test(notice), noticeCase.shown, notice);
+    assert.deepEqual(
+      store.pending.filter((request) => request.action.startsWith('stop-agent')),
+      [],
+    );
+  });
+}
+
+test("the page's request for a newer page is never repeated after a failure", async () => {
+  const { store, bridge, messages } = harness();
+  // 1000 rows: the live window holds the newest 200, pages hold 200 each.
+  const rows = [];
+  for (let index = 0; index < 1000; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, {
+      ...full,
+      messages: live.messages,
+      history: live.history,
+    }),
+  });
+  await settle();
+
+  /** Answer every outstanding page request with the real page. */
+  async function answerPages(): Promise<void> {
+    for (const request of store.pending.splice(0)) {
+      const parameters = request.parameters as unknown as PageRequest;
+      request.resolve(
+        historyPage(full, 1, parameters.direction, {
+          index: parameters.index,
+          offset: parameters.offset,
+        }),
+      );
+    }
+    await settle();
+  }
+  // Every page request the bridge makes, in order.
+  const pageRequests: PageRequest[] = [];
+  const request = store.request.bind(store);
+  store.request = (action, parameters) => {
+    if (action === 'agent-history-page') {
+      pageRequests.push(parameters as unknown as PageRequest);
+    }
+    return request(action, parameters);
+  };
+
+  // Live: there is nothing newer to ask for.
+  bridge.history(sessionA, 'newer');
+  await settle();
+  assert.equal(pageRequests.length, 0);
+
+  // Four older pages detach the view (rows 0–599 resident at most).
+  for (let page = 0; page < 4; page++) {
+    bridge.following(sessionA, false);
+    bridge.history(sessionA, 'older');
+    await settle();
+    await answerPages();
+  }
+  assert.equal(lastStatus(messages).history?.detached, true);
+  assert.equal(pageRequests.length, 4);
+
+  // The page asks twice while the first newer page is pending: one request.
+  bridge.history(sessionA, 'newer');
+  bridge.history(sessionA, 'newer');
+  await settle();
+  assert.equal(pageRequests.length, 5);
+  assert.equal(pageRequests[4].direction, 'after');
+
+  // It fails: the page's next request sends nothing, only Retry does.
+  store.pending.splice(0)[0].reject(Error('Synthetic page failure'));
+  await settle();
+  assert.equal(lastStatus(messages).history?.error, 'Synthetic page failure');
+  bridge.history(sessionA, 'newer');
+  await settle();
+  assert.equal(pageRequests.length, 5);
+  bridge.history(sessionA, 'retry');
+  await settle();
+  assert.equal(pageRequests.length, 6);
+  assert.equal(pageRequests[5].direction, 'after');
+  assert.equal(pageRequests[5].index, pageRequests[4].index);
+});
+
+test('a page that arrives reaches the page as rows before the status that ends loading', async () => {
+  const { store, bridge, messages } = harness();
+  // 1000 rows: the live window holds the newest 200, pages hold 200 each.
+  const rows = [];
+  for (let index = 0; index < 1000; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, {
+      ...full,
+      messages: live.messages,
+      history: live.history,
+    }),
+  });
+  await settle();
+
+  bridge.following(sessionA, false);
+  bridge.history(sessionA, 'older');
+  await settle();
+  assert.equal(lastStatus(messages).history?.pending, true);
+  const from = messages.length;
+  const request = store.pending.splice(0)[0];
+  const parameters = request.parameters as unknown as PageRequest;
+  request.resolve(
+    historyPage(full, 1, parameters.direction, {
+      index: parameters.index,
+      offset: parameters.offset,
+    }),
+  );
+  await settle();
+
+  // The first message after the answer that says loading ended comes after
+  // the rows message carrying the new rows (Row 600 is the new first row).
+  const after = messages.slice(from);
+  const settled = after.findIndex(
+    (message) => message.type === 'status' && message.status.history?.pending === false,
+  );
+  const newRows = after.findIndex(
+    (message) => message.type === 'rows' && message.order.some((key) => key.includes('row-600')),
+  );
+  assert.ok(settled >= 0, 'loading ended');
+  assert.ok(newRows >= 0 && newRows < settled, 'the rows came first');
+});
+
+/**
+ * The chat page's paging rule counts every scroll except the page's own and
+ * the browser pulling the view back into a scroll range that shrank
+ * (Chat.tsx `pulledBack`). Each case: the position and largest position at
+ * the previous scroll event, then at this one (CSS pixels, fractional as at
+ * a fractional device scale), and whether it is a pull-back.
+ */
+const pullBackCases: {
+  name: string;
+  previous: { top: number; maximumTop: number };
+  current: { top: number; maximumTop: number };
+  pulledBack: boolean;
+}[] = [
+  {
+    name: 'the transcript grows 200 px taller at the very end',
+    previous: { top: 1200, maximumTop: 1200 },
+    current: { top: 1000, maximumTop: 1000 },
+    pulledBack: true,
+  },
+  {
+    name: 'half a pixel pulled back at a fractional position',
+    previous: { top: 600.5, maximumTop: 650 },
+    current: { top: 600, maximumTop: 600 },
+    pulledBack: true,
+  },
+  {
+    name: 'the reader scrolls up 1 px at the very end',
+    previous: { top: 1200, maximumTop: 1200 },
+    current: { top: 1199, maximumTop: 1200 },
+    pulledBack: false,
+  },
+  {
+    name: 'the reader scrolls up 3 px at the very end',
+    previous: { top: 1200, maximumTop: 1200 },
+    current: { top: 1197, maximumTop: 1200 },
+    pulledBack: false,
+  },
+  {
+    name: 'the range shrinks and the reader lands 1 px before its new end',
+    previous: { top: 900, maximumTop: 900 },
+    current: { top: 799, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'pulled back half a pixel, the whole-pixel range unchanged',
+    previous: { top: 800, maximumTop: 800 },
+    current: { top: 799.5, maximumTop: 800 },
+    pulledBack: true,
+  },
+  {
+    name: 'the reader scrolls up 1 px from the end, the range unchanged',
+    previous: { top: 800, maximumTop: 800 },
+    current: { top: 799, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'pulled back to a fractional end just under the whole-pixel one',
+    previous: { top: 900, maximumTop: 900 },
+    current: { top: 799.6, maximumTop: 800 },
+    pulledBack: true,
+  },
+  {
+    name: 'the range shrinks and the reader lands 3 px before its new end',
+    previous: { top: 900, maximumTop: 900 },
+    current: { top: 797, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'the range shrinks while the reader is far above its end',
+    previous: { top: 300, maximumTop: 900 },
+    current: { top: 250, maximumTop: 800 },
+    pulledBack: false,
+  },
+  {
+    name: 'the reader scrolls down to the end',
+    previous: { top: 1000, maximumTop: 1200 },
+    current: { top: 1200, maximumTop: 1200 },
+    pulledBack: false,
+  },
+];
+
+for (const pullBackCase of pullBackCases) {
+  test(`pull-back: ${pullBackCase.name}`, () => {
+    assert.equal(pulledBack(pullBackCase.previous, pullBackCase.current), pullBackCase.pulledBack);
+  });
+}
+
+test('a failed page request leaves queued rows to their 30 ms coalescing', async () => {
+  const { store, bridge, messages } = harness();
+  const rows = [];
+  for (let index = 0; index < 600; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  const shown = { ...full, messages: live.messages, history: live.history };
+  store.update({ sessions: new Map(store.state.sessions).set(sessionA, shown) });
+  await settle();
+  bridge.following(sessionA, false);
+  bridge.history(sessionA, 'older');
+  await settle();
+
+  // The newest row's text grows (as an answer streams), then the page
+  // request fails before 30 ms passed.
+  const grown = shown.messages.map((message) => {
+    if (message.id === 'row-599') {
+      return { ...message, text: 'Row 599, streamed further' };
+    }
+    return message;
+  });
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, { ...shown, messages: grown }),
+  });
+  const from = messages.length;
+  store.pending.splice(0)[0].reject(Error('Synthetic page failure'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(
+    messages.slice(from).some((message) => message.type === 'rows'),
+    false,
+    'no rows sent at once',
+  );
+  await settle();
+  // The streamed text goes out with the 30 ms timer.
+  const sent = messages.slice(from).filter((message) => message.type === 'rows');
+  assert.equal(sent.length, 1);
+  const delivered = sent[0];
+  assert.ok(delivered.type === 'rows');
+  assert.deepEqual(
+    delivered.changed.map((row) => row.text),
+    ['Row 599, streamed further'],
+  );
+  assert.equal(lastStatus(messages).history?.error, 'Synthetic page failure');
+
+  // A scroll that goes on before the page has shown the failure asks for
+  // the previous page again: nothing is sent. Only Retry repeats it.
+  bridge.history(sessionA, 'older');
+  await settle();
+  assert.equal(store.pending.length, 0, 'not repeated by scrolling');
+  bridge.history(sessionA, 'retry');
+  await settle();
+  assert.equal(store.pending.length, 1, 'repeated by Retry');
+  assert.equal(store.pending[0].action, 'agent-history-page');
+});
+
+test('a page refused because it would trim visible rows leaves queued rows to their coalescing', async () => {
+  const store = new FakeStore();
+  const rows = [];
+  for (let index = 0; index < 1000; index++) {
+    rows.push(chatMessage('row-' + index, 'assistant', 'Row ' + index));
+  }
+  const full = session(sessionA, 'Paged', { messages: rows });
+  const live = historyPage(full, 1);
+  const shown = { ...full, messages: live.messages, history: live.history };
+  store.state.sessions.set(sessionA, shown);
+  store.state.selected = sessionA;
+  // The reader sees every row: trimming any of them is refused.
+  const bridge = new GatewayChatBridge(store as unknown as Store, {
+    visibleIndexes: () => [...Array(1000).keys()],
+    topIndex: () => 0,
+  });
+  const messages: HostMessage[] = [];
+  bridge.message.connect((json) => messages.push(JSON.parse(json) as HostMessage));
+  bridge.ready('synthetic-document');
+  store.update({ engine: { paused: false } });
+  await settle();
+
+  /** Ask for the previous page and answer it with the real one. */
+  async function older(): Promise<void> {
+    bridge.history(sessionA, 'older');
+    await settle();
+    const request = store.pending.splice(0)[0];
+    const parameters = request.parameters as unknown as PageRequest;
+    request.resolve(
+      historyPage(full, 1, parameters.direction, {
+        index: parameters.index,
+        offset: parameters.offset,
+      }),
+    );
+  }
+
+  // Two older pages fit within three pages; the third would need trimming.
+  bridge.following(sessionA, false);
+  await older();
+  await settle();
+  await older();
+  await settle();
+  assert.ok(messages.some((message) => message.type === 'rows'));
+  bridge.history(sessionA, 'older');
+  await settle();
+  const request = store.pending.splice(0)[0];
+  const parameters = request.parameters as unknown as PageRequest;
+
+  // The newest row's text grows (as an answer streams), then the third page
+  // arrives and is refused.
+  const latest = store.state.sessions.get(sessionA)!;
+  const grown = latest.messages.map((message) => {
+    if (message.id === 'row-999') {
+      return { ...message, text: 'Row 999, streamed further' };
+    }
+    return message;
+  });
+  store.update({
+    sessions: new Map(store.state.sessions).set(sessionA, { ...latest, messages: grown }),
+  });
+  const from = messages.length;
+  request.resolve(
+    historyPage(full, 1, parameters.direction, {
+      index: parameters.index,
+      offset: parameters.offset,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(
+    messages.slice(from).some((message) => message.type === 'rows'),
+    false,
+    'no rows sent at once',
+  );
+  await settle();
+  const sent = messages.slice(from).filter((message) => message.type === 'rows');
+  // The streamed text goes out with the 30 ms timer; the refused page's
+  // rows (Row 200–399) never do.
+  assert.equal(sent.length, 1);
+  const delivered = sent[0];
+  assert.ok(delivered.type === 'rows');
+  assert.deepEqual(
+    delivered.changed.map((row) => row.text),
+    ['Row 999, streamed further'],
+  );
+  assert.equal(
+    delivered.order.some((key) => key.includes('row-399')),
+    false,
+  );
+});
+
+/**
+ * The paging rule's decision for one scroll the reader made (Chat.tsx
+ * `pageToAsk`), in a 600 px viewport. The Chromium table in shell.test.ts
+ * tests the same rule through real input; this covers transcripts too short
+ * for a browser test to reach, where both edges are within one viewport.
+ */
+const pageToAskCases: {
+  name: string;
+  top: number;
+  maximumTop: number;
+  towardEnd: boolean;
+  hasOlder: boolean;
+  detached: boolean;
+  expected: 'older' | 'newer' | null;
+}[] = [
+  {
+    name: 'near the top',
+    top: 300,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'older',
+  },
+  {
+    name: 'near the top, nothing older',
+    top: 300,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: false,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'exactly one viewport below the top',
+    top: 600,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'older',
+  },
+  {
+    name: 'just over one viewport below the top',
+    top: 601,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'exactly one viewport above the end',
+    top: 1400,
+    maximumTop: 2000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'just over one viewport above the end',
+    top: 1399,
+    maximumTop: 2000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'in the middle',
+    top: 4000,
+    maximumTop: 9000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: null,
+  },
+  {
+    name: 'near the end of a detached snapshot',
+    top: 8700,
+    maximumTop: 9000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'near the end, moving up',
+    top: 8700,
+    maximumTop: 9000,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'near the end of the live rows',
+    top: 8700,
+    maximumTop: 9000,
+    towardEnd: true,
+    hasOlder: true,
+    detached: false,
+    expected: null,
+  },
+  {
+    name: 'short snapshot, moving toward the end',
+    top: 300,
+    maximumTop: 300,
+    towardEnd: true,
+    hasOlder: true,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'short snapshot, moving toward the start',
+    top: 295,
+    maximumTop: 300,
+    towardEnd: false,
+    hasOlder: true,
+    detached: true,
+    expected: 'older',
+  },
+  {
+    name: 'short snapshot, nothing older, moving up',
+    top: 100,
+    maximumTop: 300,
+    towardEnd: false,
+    hasOlder: false,
+    detached: true,
+    expected: 'newer',
+  },
+  {
+    name: 'short live rows, moving toward the end',
+    top: 300,
+    maximumTop: 300,
+    towardEnd: true,
+    hasOlder: true,
+    detached: false,
+    expected: 'older',
+  },
+];
+
+for (const pagingCase of pageToAskCases) {
+  test(`page to ask: ${pagingCase.name}`, () => {
+    const scroll = {
+      top: pagingCase.top,
+      maximumTop: pagingCase.maximumTop,
+      viewportHeight: 600,
+      towardEnd: pagingCase.towardEnd,
+    };
+    const history = { hasOlder: pagingCase.hasOlder, detached: pagingCase.detached };
+    assert.equal(pageToAsk(scroll, history), pagingCase.expected);
+  });
+}
