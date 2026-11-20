@@ -126,6 +126,21 @@ export function gatewayUrl(path: string, server = ''): string {
   return new URL(path, server || window.location.origin).href;
 }
 
+/**
+ * What one page asks of its connections. Every field is opt-in; without it
+ * the connection behaves exactly as the phone panel's always has.
+ */
+export interface ConnectionOptions {
+  /**
+   * Ask the gateway to make every connection a draft host (`drafts: true`
+   * in `auth`, see src/remote/README.md, "Drafts"): it then receives the
+   * listener's `draft-snapshot` and `draft` events and may send `draft-set`.
+   * A gateway without draft support ignores the field. Off by default (the
+   * phone panel keeps its drafts on the phone); the browser shell turns it on.
+   */
+  drafts?: boolean;
+}
+
 interface Pending {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -157,6 +172,7 @@ export class Connection {
     private readonly onState: (state: ConnectionState) => void,
     /** Called after each successful authentication, before any events. */
     private readonly onOnline: () => void,
+    private readonly options: ConnectionOptions = {},
   ) {
     window.addEventListener('online', () => this.connectNow());
     window.addEventListener('offline', () => this.networkLost());
@@ -341,13 +357,16 @@ export class Connection {
 
     socket.addEventListener('open', () => {
       if (this.socket === socket) {
-        socket.send(
-          JSON.stringify({
-            type: 'auth',
-            token: this.credential?.token ?? '',
-            incrementalSessions: true,
-          }),
-        );
+        const auth: Record<string, unknown> = {
+          type: 'auth',
+          token: this.credential?.token ?? '',
+          incrementalSessions: true,
+        };
+        // Only when asked for: the phone panel's auth message is unchanged.
+        if (this.options.drafts === true) {
+          auth.drafts = true;
+        }
+        socket.send(JSON.stringify(auth));
       }
     });
     socket.addEventListener('message', (event) => {

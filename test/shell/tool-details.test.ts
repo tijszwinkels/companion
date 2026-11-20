@@ -93,6 +93,15 @@ class FakeStore {
 
   setDraft(): void {}
 
+  // Listener drafts (Store.draftUnsaved, Store.draftSource): none here.
+  draftUnsaved(): string {
+    return '';
+  }
+
+  draftSource(): string {
+    return '';
+  }
+
   open(id: string): void {
     this.update({ selected: id });
   }

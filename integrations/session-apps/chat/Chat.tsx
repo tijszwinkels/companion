@@ -1200,6 +1200,15 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
     });
   }
 
+  // Clear (offered next to an agent's proposal when the host allows it):
+  // an ordinary edit to empty text, as if the person had deleted it all.
+  function clearDraft() {
+    if (area.current) {
+      area.current.value = '';
+    }
+    edited('', 0);
+  }
+
   // Reads the editor itself, not render state: an input and Enter can be
   // handled before the page re-renders, and the text sent must be exactly
   // what is on screen (the host checks it is the draft).
@@ -1387,7 +1396,17 @@ function Composer(props: { status: ChatStatus; bridge: NativeBridge; store: Chat
         </div>
       )}
       {draft.source && (
-        <div class="note">Drafted by agent · {draft.source} — review before sending</div>
+        <div class="note">
+          Drafted by agent · {draft.source} — review before sending
+          {/* Only when the host offers it (`draft.clearable`); otherwise the
+              note is exactly as before. Not while this editor holds input
+              the host does not have: Clear would release its only copy. */}
+          {draft.clearable === true && !readOnly && unsynced === null && (
+            <button class="link" onClick={clearDraft}>
+              Clear
+            </button>
+          )}
+        </div>
       )}
       {draft.notice && <div class="note">{draft.notice}</div>}
       {text.length > maximum - 1000 && (

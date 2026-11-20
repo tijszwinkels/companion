@@ -28,6 +28,12 @@
  * took. (The listener's clock is set to noon of the previous calendar day,
  * in this computer's time zone, for that first turn only; see `demoClock`.)
  *
+ * Listener drafts: a stand-in desktop editor on the control socket (it
+ * reports itself as the Qt panel does, `draftHost: true`) has written the
+ * trip conversation's draft, and an agent (the invoice conversation) has
+ * proposed one for the notification rules; the browser shows both from the
+ * listener, with ✎ and "Draft: …" in the list.
+ *
  * It prints the URL and a pairing code. Open the URL in a desktop browser.
  * Nothing reads personal data, starts the production listener, captures the
  * screen or microphone, or binds a non-loopback address. Ctrl+C stops
@@ -37,8 +43,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { rmSync } from 'node:fs';
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createConnection, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -171,6 +179,7 @@ let sessions: AgentSessions | undefined;
 let runtime: DesktopRuntime | undefined;
 let runtimeStarted = false;
 let gateway: Gateway | undefined;
+let desktopEditor: Socket | undefined;
 
 try {
   // The demo's own agent profile, so defaults name the scripted demo models.
@@ -596,6 +605,65 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   );
   continueStartup();
 
+  // ---- Listener drafts ------------------------------------------------------------
+
+  // A stand-in desktop editor: a second connection to the control socket
+  // that reports itself as a draft host, as the Qt panel does. It writes the
+  // trip conversation's draft and stays connected, so the listener has a
+  // reviewer for the agent's proposal below (without any draft host it
+  // would answer `offline`).
+  desktopEditor = createConnection(join(directory, 'control.sock'));
+  await once(desktopEditor, 'connect');
+  continueStartup();
+  desktopEditor.on('data', () => {
+    // Its draft events are not needed; reading keeps the socket flowing.
+  });
+  desktopEditor.write(
+    JSON.stringify({ action: 'panel-state', id: '', composerFocused: false, draftHost: true }) +
+      '\n',
+  );
+  desktopEditor.write(
+    JSON.stringify({
+      action: 'draft-set',
+      id: trip,
+      text: 'Could you add a plan for a rainy afternoon? Museums close at 17:00.',
+      editId: 'demo-desktop-1',
+    }) + '\n',
+  );
+
+  // An agent's proposal, as its `companion_session_draft` call reaches the
+  // listener (the sessions' private entry point; the demo plays the agent).
+  type AgentDraftEntry = {
+    draftFromAgent(
+      request: {
+        id: string;
+        text: string;
+        ifDraftExists: 'reject';
+        focus: boolean;
+        origin: { kind: 'agent'; sessionId: string; title: string; depth: number };
+      },
+      signal: AbortSignal,
+    ): Promise<{ outcome: string }>;
+  };
+  for (let attempt = 0; attempt < 100; attempt++) {
+    continueStartup();
+    const proposal = await (sessions as unknown as AgentDraftEntry).draftFromAgent(
+      {
+        id: rules,
+        text: 'Please also say which rules apply on weekends.',
+        ifDraftExists: 'reject',
+        focus: false,
+        origin: { kind: 'agent', sessionId: invoice, title: '🧾 Invoice export', depth: 1 },
+      },
+      controller.signal,
+    );
+    // `offline` until the stand-in editor's report has been handled.
+    if (proposal.outcome !== 'offline') {
+      break;
+    }
+    await delay(50);
+  }
+
   // ---- Gateway --------------------------------------------------------------------
 
   const port = Number(values.port);
@@ -644,6 +712,7 @@ Press Ctrl+C to stop and delete it.
   if (gateway) {
     await gateway.close();
   }
+  desktopEditor?.destroy();
   if (sessions) {
     await sessions.close();
   }

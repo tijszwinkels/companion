@@ -721,6 +721,14 @@ class FakeStore {
   }
 
   setDraft(): void {}
+
+  draftUnsaved(): string {
+    return '';
+  }
+
+  draftSource(): string {
+    return '';
+  }
 }
 
 function conversation(messages: AgentSession['messages']): AgentSession {

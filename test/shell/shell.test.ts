@@ -27,6 +27,7 @@ import {
   skip,
   text,
   type SocketLog,
+  withGateway,
 } from './page.ts';
 
 /**
@@ -394,9 +395,15 @@ test(
     assert.equal(actions.filter((action) => action === 'send-agent').length, 2);
     for (const action of actions) {
       assert.ok(
-        ['panel-state', 'send-agent', 'choose-agent', 'stop-agent-run', 'close-agent'].includes(
-          action,
-        ),
+        // `draft-set`: the typed text is the listener's draft (README, "Listener drafts").
+        [
+          'panel-state',
+          'draft-set',
+          'send-agent',
+          'choose-agent',
+          'stop-agent-run',
+          'close-agent',
+        ].includes(action),
         `unexpected request ${action}`,
       );
     }
@@ -1105,9 +1112,10 @@ test(
 
     await page.waitFor(`document.querySelector('.connection-banner')`, 5000);
     await page.waitFor(`document.querySelector('.state').textContent === 'Disconnected'`);
-    // The unanswered send keeps its text and says to check before resending.
+    // The unanswered send keeps its text and says to check before resending
+    // (with listener drafts the box then follows the listener's draft).
     await page.waitFor(
-      `document.querySelector('.composer').textContent.includes('check the conversation before sending it again')`,
+      `document.querySelector('.composer').textContent.includes('Check the conversation before sending it again.')`,
     );
     assert.equal(
       await page.evaluate(`document.querySelector('.chat textarea').value`),
@@ -1132,10 +1140,12 @@ test(
 
     await page.waitFor(`!document.querySelector('.connection-banner')`, 20_000);
     await page.waitFor(`document.querySelector('.state').textContent === 'Done'`);
-    assert.equal(
-      await page.evaluate(`document.querySelector('.chat textarea').value`),
-      'Sent once before the restart',
-    );
+    // The text was the listener's draft, and the listener accepted the send
+    // before the gateway stopped: it cleared its draft, which still equalled
+    // the sent text, so the box shows its (empty) draft now; the message is
+    // in the conversation once (README, "Listener drafts", rule 6).
+    await page.waitFor(`document.querySelector('.chat textarea').value === ''`);
+    assert.equal(fixture.desktop.runtime['drafts'].snapshot().length, 0);
     // Only the selection report was sent again: no send was replayed, and
     // the listener has the message exactly once and started no other turn.
     assert.deepEqual(requestActions(sockets, sentBefore), ['panel-state']);
@@ -1194,38 +1204,64 @@ test(
   },
 );
 
-test(
-  'signing out forgets the drafts of this browser before the next pairing',
-  { skip },
-  async (context) => {
-    const { fixture, browser } = await setup(context);
-    fixture.sessions.start({ ...frame, utterance: 'Sign-out fixture' }, signal());
-    await waitFor(() => fixture.runs.length === 1);
-    fixture.runs[0].finish();
-    const { page } = await pairedPage(fixture, browser, 1280, 800);
-    await openConversation(page, 'Sign-out fixture');
-    await click(page, '.chat textarea');
-    await page.type('Private synthetic draft');
-    // Sign out is in the bar of the pages without a conversation.
-    await click(page, '.previous-entry');
-    await clickButton(page, 'Sign out');
-    await page.waitFor(`document.querySelector('#code')`);
+/**
+ * The sign-out tests run twice. Against a gateway without drafts (the
+ * older-gateway proxy) the draft is this browser's and must be gone after
+ * signing out. With listener drafts the typed text is the listener's
+ * draft, shared with the desktop: after pairing again the box shows the
+ * listener's draft as any paired device would, never as text this browser
+ * kept, and this browser's storage holds none of it.
+ */
+const signOutModes = [
+  { mode: 'local drafts (a gateway without drafts)', listenerDrafts: false },
+  { mode: 'listener drafts', listenerDrafts: true },
+];
 
-    const { code } = await fixture.devices.createPairingCode();
-    await click(page, '#code');
-    await page.type(code);
-    await click(page, 'button[type=submit]');
-    await page.waitFor(online, 8000);
-    await openConversation(page, 'Sign-out fixture');
-    assert.equal(await page.evaluate(`document.querySelector('.chat textarea').value`), '');
-    assert.doesNotMatch(await text(page, '.chat'), /Private synthetic draft|only in this editor/);
-    assert.equal(
-      await page.evaluate(`JSON.stringify(localStorage).includes('Private synthetic draft')`),
-      false,
-    );
-    await assertNoViolations(page);
-  },
-);
+for (const { mode, listenerDrafts } of signOutModes) {
+  test(
+    `signing out forgets the drafts of this browser before the next pairing: ${mode}`,
+    { skip },
+    async (context) => {
+      const { fixture: gatewayFixture, browser } = await setup(context);
+      const fixture = await withGateway(gatewayFixture, listenerDrafts, context);
+      fixture.sessions.start({ ...frame, utterance: 'Sign-out fixture' }, signal());
+      await waitFor(() => fixture.runs.length === 1);
+      fixture.runs[0].finish();
+      const { page } = await pairedPage(fixture, browser, 1280, 800);
+      await openConversation(page, 'Sign-out fixture');
+      await click(page, '.chat textarea');
+      await page.type('Private synthetic draft');
+      // Sign out is in the bar of the pages without a conversation.
+      await click(page, '.previous-entry');
+      await clickButton(page, 'Sign out');
+      await page.waitFor(`document.querySelector('#code')`);
+
+      const { code } = await fixture.devices.createPairingCode();
+      await click(page, '#code');
+      await page.type(code);
+      await click(page, 'button[type=submit]');
+      await page.waitFor(online, 8000);
+      await openConversation(page, 'Sign-out fixture');
+      if (listenerDrafts) {
+        await page.waitFor(
+          `document.querySelector('.chat textarea').value === 'Private synthetic draft'`,
+        );
+        assert.doesNotMatch(await text(page, '.chat'), /not saved|only in this editor/);
+      } else {
+        assert.equal(await page.evaluate(`document.querySelector('.chat textarea').value`), '');
+        assert.doesNotMatch(
+          await text(page, '.chat'),
+          /Private synthetic draft|only in this editor/,
+        );
+      }
+      assert.equal(
+        await page.evaluate(`JSON.stringify(localStorage).includes('Private synthetic draft')`),
+        false,
+      );
+      await assertNoViolations(page);
+    },
+  );
+}
 
 /**
  * Wait for `expression` in a tab that reloads itself meanwhile (the second
@@ -1252,54 +1288,65 @@ async function waitThroughReload(page: TestPage, expression: string, timeout: nu
   throw Error(`Timed out waiting for: ${expression}`);
 }
 
-test(
-  'another tab of the same browser is retired when this one signs out',
-  { skip },
-  async (context) => {
-    const { fixture, browser } = await setup(context);
-    fixture.sessions.start({ ...frame, utterance: 'Two-tab fixture' }, signal());
-    await waitFor(() => fixture.runs.length === 1);
-    fixture.runs[0].finish();
-    const first = await pairedPage(fixture, browser, 1280, 800);
-    // A second tab in the same browser profile is paired through storage.
-    const second = await desktopPage(browser, 1280, 800, first.browserContextId);
-    await second.page.navigate(`${fixture.origin}/`);
-    await second.page.waitFor(online, 8000);
-    await openConversation(second.page, 'Two-tab fixture');
-    await click(second.page, '.chat textarea');
-    await second.page.type('Draft of the previous pairing');
+for (const { mode, listenerDrafts } of signOutModes) {
+  test(
+    `another tab of the same browser is retired when this one signs out: ${mode}`,
+    { skip },
+    async (context) => {
+      const { fixture: gatewayFixture, browser } = await setup(context);
+      const fixture = await withGateway(gatewayFixture, listenerDrafts, context);
+      fixture.sessions.start({ ...frame, utterance: 'Two-tab fixture' }, signal());
+      await waitFor(() => fixture.runs.length === 1);
+      fixture.runs[0].finish();
+      const first = await pairedPage(fixture, browser, 1280, 800);
+      // A second tab in the same browser profile is paired through storage.
+      const second = await desktopPage(browser, 1280, 800, first.browserContextId);
+      await second.page.navigate(`${fixture.origin}/`);
+      await second.page.waitFor(online, 8000);
+      await openConversation(second.page, 'Two-tab fixture');
+      await click(second.page, '.chat textarea');
+      await second.page.type('Draft of the previous pairing');
 
-    // Signing out in the first tab returns the second one to pairing too.
-    // (Each tab is brought to the front before it is used: Chromium slows
-    // the timers of background tabs.)
-    await first.page.call('Page.bringToFront');
-    await clickButton(first.page, 'Sign out');
-    await first.page.waitFor(`document.querySelector('#code')`);
-    await second.page.call('Page.bringToFront');
-    await waitThroughReload(second.page, `document.querySelector('#code')`, 8000);
+      // Signing out in the first tab returns the second one to pairing too.
+      // (Each tab is brought to the front before it is used: Chromium slows
+      // the timers of background tabs.)
+      await first.page.call('Page.bringToFront');
+      await clickButton(first.page, 'Sign out');
+      await first.page.waitFor(`document.querySelector('#code')`);
+      await second.page.call('Page.bringToFront');
+      await waitThroughReload(second.page, `document.querySelector('#code')`, 8000);
 
-    // Pair again in the first tab: neither tab offers the earlier draft.
-    const { code } = await fixture.devices.createPairingCode();
-    await first.page.call('Page.bringToFront');
-    await click(first.page, '#code');
-    await first.page.type(code);
-    await click(first.page, 'button[type=submit]');
-    await first.page.waitFor(online, 8000);
-    await second.page.call('Page.bringToFront');
-    await waitThroughReload(second.page, online, 8000);
-    for (const tab of [first.page, second.page]) {
-      await tab.call('Page.bringToFront');
-      await openConversation(tab, 'Two-tab fixture');
-      assert.equal(await tab.evaluate(`document.querySelector('.chat textarea').value`), '');
-      assert.equal(
-        await tab.evaluate(
-          `JSON.stringify(localStorage).includes('Draft of the previous pairing')`,
-        ),
-        false,
-      );
-    }
-  },
-);
+      // Pair again in the first tab: neither tab offers the earlier draft.
+      const { code } = await fixture.devices.createPairingCode();
+      await first.page.call('Page.bringToFront');
+      await click(first.page, '#code');
+      await first.page.type(code);
+      await click(first.page, 'button[type=submit]');
+      await first.page.waitFor(online, 8000);
+      await second.page.call('Page.bringToFront');
+      await waitThroughReload(second.page, online, 8000);
+      for (const tab of [first.page, second.page]) {
+        await tab.call('Page.bringToFront');
+        await openConversation(tab, 'Two-tab fixture');
+        if (listenerDrafts) {
+          // The listener's draft, as on any paired device; nothing unsaved.
+          await tab.waitFor(
+            `document.querySelector('.chat textarea').value === 'Draft of the previous pairing'`,
+          );
+          assert.doesNotMatch(await text(tab, '.chat'), /not saved|only in this editor/);
+        } else {
+          assert.equal(await tab.evaluate(`document.querySelector('.chat textarea').value`), '');
+        }
+        assert.equal(
+          await tab.evaluate(
+            `JSON.stringify(localStorage).includes('Draft of the previous pairing')`,
+          ),
+          false,
+        );
+      }
+    },
+  );
+}
 
 test(
   'screenshots of synthetic conversations at 420, 760, 1280 and 1600 px, strip and full list',

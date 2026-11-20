@@ -84,6 +84,30 @@ class FakeStore {
     this.update({});
   }
 
+  // Listener drafts (Store.draftUnsaved and the rest): set by a test, else none.
+  draftsShared = false;
+  readonly unsaved = new Map<string, string>();
+  readonly sources = new Map<string, string>();
+  readonly savedOrDiscarded: string[] = [];
+
+  draftUnsaved(id: string): string {
+    return this.unsaved.get(id) ?? '';
+  }
+
+  draftSource(id: string): string {
+    return this.sources.get(id) ?? '';
+  }
+
+  saveUnsavedDraft(id: string): boolean {
+    this.savedOrDiscarded.push('save ' + id);
+    return this.unsaved.delete(id);
+  }
+
+  discardUnsavedDraft(id: string): boolean {
+    this.savedOrDiscarded.push('discard ' + id);
+    return this.unsaved.delete(id);
+  }
+
   open(id: string): void {
     this.update({ selected: id });
   }
@@ -168,6 +192,113 @@ test('messages are numbered without gaps and ready() resends everything in full'
   assert.equal(again[0].type === 'rows' && again[0].full, true);
   assert.equal(again[0].seq, before + 1);
   assert.equal(again[1].type, 'status');
+});
+
+/**
+ * The page's latest status once it satisfies `check`: waits for the state
+ * the test means instead of a fixed pause (bounded, so a missing status fails).
+ */
+async function statusWhere(
+  messages: HostMessage[],
+  check: (status: ChatStatus) => boolean,
+): Promise<ChatStatus> {
+  const until = Date.now() + 2000;
+  for (;;) {
+    const statuses = messages.filter((message) => message.type === 'status');
+    const latest = statuses[statuses.length - 1];
+    if (latest && latest.type === 'status' && check(latest.status)) {
+      return latest.status;
+    }
+    if (Date.now() > until) {
+      throw Error('The expected status never reached the page');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+test('listener drafts reach the page: unsaved text, the agent source with Clear, Save, Discard and Close', async () => {
+  const { store, bridge, messages } = harness();
+
+  // Without listener drafts (the Store reports none) the status is as before.
+  let status = await statusWhere(messages, (candidate) => candidate.sessionId === sessionA);
+  assert.equal(status.draftUnsaved, '');
+  assert.equal(status.draft!.source, '');
+  assert.equal('clearable' in status.draft!, false, 'no Clear without an agent source');
+
+  // An agent's unedited proposal: its source, and Clear.
+  store.sources.set(sessionA, 'Planner');
+  store.update({});
+  status = await statusWhere(messages, (candidate) => candidate.draft!.source === 'Planner');
+  assert.equal(status.draft!.clearable, true);
+
+  // Unsaved text: its reason; Close is refused (page and list) until it is
+  // saved or discarded.
+  store.sources.delete(sessionA);
+  store.unsaved.set(sessionA, 'Companion is not connected; your text is not saved yet.');
+  store.update({});
+  status = await statusWhere(messages, (candidate) => candidate.draftUnsaved !== '');
+  assert.equal(status.draftUnsaved, 'Companion is not connected; your text is not saved yet.');
+  assert.equal(status.draft!.source, '');
+  assert.equal('clearable' in status.draft!, false);
+  assert.equal(bridge.canClose(sessionA), false);
+  assert.equal(bridge.canClose(sessionB), true);
+  assert.deepEqual(await ask((callback) => bridge.closeSession(sessionA, callback)), {
+    accepted: false,
+  });
+  assert.equal(store.pending.filter((request) => request.action === 'close-agent').length, 0);
+
+  // Save and Discard act only on the shown conversation.
+  assert.deepEqual(await ask((callback) => bridge.saveDraft(sessionB, callback)), {
+    accepted: false,
+  });
+  assert.deepEqual(await ask((callback) => bridge.saveDraft(sessionA, callback)), {
+    accepted: true,
+  });
+  store.unsaved.set(sessionA, 'refused');
+  assert.deepEqual(await ask((callback) => bridge.discardUnsavedDraft(sessionA, callback)), {
+    accepted: true,
+  });
+  assert.deepEqual(store.savedOrDiscarded, ['save ' + sessionA, 'discard ' + sessionA]);
+  assert.equal(bridge.canClose(sessionA), true);
+});
+
+test('a draft with \\r\\n line breaks reaches the page as the text box keeps it, and can be sent', async () => {
+  const { store, bridge, messages } = harness();
+  store.draftsShared = true;
+  await statusWhere(messages, (candidate) => candidate.sessionId === sessionA);
+
+  // Written elsewhere (an agent's proposal from a Windows file).
+  store.setDraft(sessionA, 'first\r\nsecond\rthird');
+  const status = await statusWhere(messages, (candidate) => candidate.draft!.text !== '');
+  assert.equal(status.draft!.text, 'first\nsecond\nthird');
+
+  // The page sends what its text box holds: written as an edit first, then sent.
+  const answer = await ask((callback) =>
+    bridge.send(sessionA, status.draft!.revision, 'first\nsecond\nthird', callback),
+  );
+  assert.equal(answer.accepted, true);
+  const send = store.pending.find((request) => request.action === 'send-agent')!;
+  assert.equal(send.parameters.text, 'first\nsecond\nthird');
+  assert.equal(store.draft(sessionA), 'first\nsecond\nthird');
+
+  // While the send waits, Close is held (page and list): it would reach the
+  // listener before the send.
+  assert.equal(bridge.canClose(sessionA), false);
+  assert.deepEqual(await ask((callback) => bridge.closeSession(sessionA, callback)), {
+    accepted: false,
+  });
+  send.resolve({});
+  await statusWhere(messages, (candidate) => candidate.pendingSend === false);
+  assert.equal(bridge.canClose(sessionA), true);
+
+  // With drafts kept in this browser (a gateway without them) the send has
+  // left already: Close is admitted while it waits, as before.
+  store.draftsShared = false;
+  store.setDraft(sessionA, 'Local text');
+  const local = await statusWhere(messages, (candidate) => candidate.draft!.text === 'Local text');
+  await ask((callback) => bridge.send(sessionA, local.draft!.revision, 'Local text', callback));
+  assert.equal(store.state.sends.get(sessionA)?.pending, true);
+  assert.equal(bridge.canClose(sessionA), true);
 });
 
 test('a send based on an older draft revision is refused (no second send)', async () => {

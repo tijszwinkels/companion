@@ -13,7 +13,11 @@
  *   rule for a conversation without one (an older listener); see the
  *   README's "Markers";
  * - last line: the latest user or assistant text as one plain line
- *   (`lastText`, `plainPreview`).
+ *   (`lastText`, `plainPreview`);
+ * - draft: the conversation's unsent text as one line, while drafts are
+ *   shared with the listener and the conversation is not the one shown
+ *   (README, "Listener drafts"): the strip marks it with ✎ and the full
+ *   list reads "Draft: …" instead of the last line.
  */
 
 import type { AgentSession } from '../../../../src/agents/types.ts';
@@ -33,6 +37,14 @@ export interface ListEntry {
   caption: string;
   /** The last user or assistant text, as one plain line. */
   lastLine: string;
+  /**
+   * Whether the conversation has unsent text to mark in the list: it is
+   * shared with the listener and the conversation is not the one shown.
+   * Also text of only spaces or line breaks.
+   */
+  hasDraft: boolean;
+  /** That unsent text as one line ('' without one, or for only white space). */
+  draft: string;
   selected: boolean;
   working: boolean;
   unread: boolean;
@@ -100,8 +112,23 @@ export function isWorking(session: AgentSession): boolean {
   return session.status === 'starting' || session.status === 'running';
 }
 
-/** The open conversations in the listener's order, as the list shows them. */
-export function listEntries(state: AppState): ListEntry[] {
+/** Unsent text as one line: whitespace and line breaks collapsed. */
+export function draftLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The open conversations in the listener's order, as the list shows them.
+ * `draftOf` gives a conversation's unsent text for the list ('' for none);
+ * without it no entry shows a draft. `selectionCovered`: the selected
+ * conversation is not shown (the settings screen covers it), so its unsent
+ * text is listed like any other's.
+ */
+export function listEntries(
+  state: AppState,
+  draftOf?: (id: string) => string,
+  selectionCovered = false,
+): ListEntry[] {
   const entries: ListEntry[] = [];
   for (const id of state.order) {
     const session = state.sessions.get(id);
@@ -111,6 +138,11 @@ export function listEntries(state: AppState): ListEntry[] {
     const number = entries.length + 1;
     const title = session.title || 'Untitled';
     const { glyph, caption, emoji } = badgeOf(title, number);
+    const selected = state.selected === id && !state.showingPrevious;
+    let unsent = '';
+    if (draftOf && !(selected && !selectionCovered)) {
+      unsent = draftOf(id);
+    }
     entries.push({
       id,
       number,
@@ -119,7 +151,9 @@ export function listEntries(state: AppState): ListEntry[] {
       emoji,
       caption,
       lastLine: plainPreview(lastText(session)),
-      selected: state.selected === id && !state.showingPrevious,
+      hasDraft: unsent !== '',
+      draft: draftLine(unsent),
+      selected,
       working: isWorking(session),
       unread: state.unread.has(id),
       turnStartedAt: session.turnStartedAt,
@@ -139,6 +173,9 @@ export function entryLabel(entry: ListEntry): string {
   }
   if (entry.unread) {
     label += ', new answer';
+  }
+  if (entry.hasDraft) {
+    label += ', unsent draft';
   }
   return label;
 }

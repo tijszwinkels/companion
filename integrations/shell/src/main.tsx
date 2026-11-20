@@ -90,9 +90,12 @@ const activityOverlay = new ActivityOverlay();
 // missed. The selected conversation is not shown while the settings screen
 // or the narrow Activity column covers it: the page then reports it to the
 // listener as not visible, so its unread mark stays (README "Markers").
+// Conversation drafts are the listener's where the gateway offers them
+// (README, "Listener drafts"), else kept in this browser as before.
 const store = new Store({
   rereadActivityAfterReconnect: true,
   selectionShown: () => !settingsView.shown && !activityOverlay.coversChat,
+  listenerDrafts: true,
 });
 // Either cover coming or going changes what the reader sees: the Store
 // reports again when that changes what it last reported.

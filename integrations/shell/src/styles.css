@@ -505,6 +505,20 @@ body {
   background: var(--unread);
 }
 
+/* Unsent text (listener drafts): a pencil at the badge's top right. */
+.entry-draft {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.conversations.full .entry-draft {
+  display: none;
+}
+
 .entry-text {
   display: flex;
   flex-direction: column;

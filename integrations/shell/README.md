@@ -34,7 +34,11 @@ A paired browser can:
    screen** (see [Settings, turn timers and message times](#settings-turn-timers-and-message-times));
 9. open a tool group in place and read its calls page by page, view a kept
    screenshot over the page, and see and change the conversation's model
-   (see [Tool details, screenshots and the model picker](#tool-details-screenshots-and-the-model-picker)).
+   (see [Tool details, screenshots and the model picker](#tool-details-screenshots-and-the-model-picker));
+10. share each conversation's unsent text with the desktop and other
+    devices through the listener, show an agent's proposed draft, and mark
+    conversations with unsent text in the list (see
+    [listener drafts](#listener-drafts)).
 
 Not yet in the browser: Activity history of earlier listener runs, inserting
 text into desktop applications, and widgets.
@@ -89,8 +93,9 @@ The arrangement is the same at every window width, as in the agreed design:
   width. Previous sessions and the settings screen stay in a centred column
   of at most 860 px.
 - **Selecting** a conversation (click, or Enter/Space on the focused entry)
-  shows it with its own unsent text: drafts are kept per conversation in
-  the phone Store, as in slice 1.
+  shows it with its own unsent text: the listener's draft of that
+  conversation (see [listener drafts](#listener-drafts)), or, with a
+  gateway that offers no drafts, the one kept in this browser as in slice 1.
 - **Closing**: the × that appears on hover or keyboard focus asks for
   `close-agent` (while invisible it takes no input, so a first tap on that
   corner of an entry selects instead of closing unseen); the conversation leaves the list when the listener reports
@@ -1201,6 +1206,192 @@ the viewer at 420, 1280 and 1600 px: no horizontal overflow, the picker and
 the image inside the window. With `COMPANION_SHELL_SCREENSHOTS` set it saves
 screenshots of each.
 
+## Listener drafts
+
+On the desktop the listener keeps each conversation's unsent text, the
+**draft**, in memory: it follows the person between conversations and
+windows, an agent can propose one, and a send clears it (see
+[text-box drafts](../../src/desktop/README.md#text-box-drafts-listener-owned-last-write-wins)
+and the gateway's [drafts](../../src/remote/README.md#drafts)). The browser
+uses the same drafts where the gateway offers them. The rules are applied
+by `../mobile/src/listener-drafts.ts`, which the phone Store uses only with
+its `listenerDrafts` option (the browser turns it on; the phone panel does
+not yet).
+
+### Rules
+
+1. **Asking.** Every connection authenticates with `drafts: true`. Whether
+   that connection shares drafts is learnt from the listener, which sends
+   `draft-snapshot` while it handles the connection's first `panel-state`
+   and before it answers it: a snapshot means **listener drafts**; an
+   accepted `panel-state` answer without one means **local drafts** (an
+   older gateway or listener, or a gateway that answers without the
+   events). Until the new connection has decided, the previous one's mode
+   holds (local on a freshly loaded page).
+2. **Shown text.** The text box shows the listener's draft. A change made
+   elsewhere (another tab, the desktop, another device, an agent, a send
+   that cleared it) is shown at once, the last write winning as on the
+   desktop, with no further notice; except while this page has an edit of
+   that conversation on its way or text waiting to be sent (those were sent
+   after the change, so they win at the listener; once they are answered the
+   box shows the listener's latest draft), or while the box holds unsaved
+   text (rule 4). A change that carries this page's own `editId` is its own
+   echo: it is never applied a second time (the edit is settled by its
+   answer, rule 3). Showing,
+   switching or reopening a conversation writes nothing; each conversation
+   keeps its own draft, and an edit typed just before a switch goes to the conversation it was typed in. Line breaks reach the page as `\n`, as a text box keeps them; a draft written elsewhere with `\r\n` is sent by first writing that `\n` text as an edit, so the listener still clears it after the send.
+3. **Writing.** Every change of the text (typing, a paste, Clear) is one
+   `draft-set` with a new `editId`. Per conversation at most one edit is in
+   flight, from sending until its answer arrives; text typed meanwhile
+   waits, and newer text replaces waiting text, so fast typing never queues
+   stale edits and the listener ends with the final text. A draft edit is
+   never sent again by itself. A new edit replaces unsaved text's Save and
+   Discard while it is written (if it fails, its own reason marks the text
+   again).
+4. **Unsaved text.** Text the listener has not confirmed stays in the box
+   with the chat page's existing line "… not saved … Save · Discard"
+   (`draftUnsaved`): typed while not connected ("Companion is not
+   connected; your text is not saved yet."), refused ("Your text is not
+   saved: …", for example too many edits), unanswered when the connection
+   dropped ("Companion reconnected before this text was confirmed; it may
+   not be saved."), or kept in this browser before (rule 8). It is never
+   written again by itself. The person's next edit or **Save** writes it as
+   a new edit; **Discard** shows the listener's draft. A new connection's
+   snapshot removes the mark where the listener already holds exactly that
+   text. While it is shown the conversation cannot be closed from this page
+   (Close session and the list's ×), as on the desktop. Until the listener
+   confirms it (or it is saved or discarded) this browser also keeps it in
+   `localStorage`, so reloading the page offers it again by rule 8 instead
+   of losing it.
+5. **Agent drafts.** An agent's proposal arrives as an ordinary change with
+   its `source` and is shown with the chat page's note "Drafted by agent ·
+   … — review before sending" and a **Clear** link, which empties the draft
+   (one `draft-set` with empty text). Editing it removes the note at once
+   (the text is then the person's); sending it is accepting it. The browser
+   never switches conversation for a draft (a remote connection is never
+   asked to focus one).
+6. **Sending.** A send names exactly the text shown, as before. While it waits
+   for its answer, `panel-state` reports `pendingSend` for that conversation
+   (reported before `send-agent` leaves, withdrawn when its answer, or its
+   loss, arrives), so the listener refuses agent proposals for it meanwhile
+   (when another conversation's send still waits, that one is reported next; a
+   send that started before the connection's draft snapshot is reported as
+   soon as it arrives). The send leaves only after the edits that were on
+   their way or waiting when it was pressed are answered, so the listener has
+   the sent text as its draft first. Text typed after pressing Send does not
+   delay it and is written only after the send's answer, so the listener's
+   clearing of the sent text cannot take it (the same words typed again stay).
+   A send whose own text could not be written (the edit was refused) is not
+   sent; the text stays unsaved with Save and Discard and the notice says so
+   (the listener could not clear it afterwards, and the box would offer the
+   same text again). A send that was dropped meanwhile (its conversation
+   closed, also when reopened at once) does not leave. Close (the page's and
+   the list's ×) waits for the send's answer, so it cannot reach the listener
+   before the send. A send whose answer was lost says to check the
+   conversation before sending again; the box follows the listener's draft
+   (empty if the send arrived) unless it holds unsaved text. The listener
+   clears the draft after accepting the send if the draft still equals the
+   sent text, and every editor follows; this page never writes an empty draft
+   for a send. If the box still shows the sent text (for example unsaved text
+   that differed from the listener's), it then shows the listener's draft;
+   anything typed meanwhile stays.
+
+7. **In the list.** A conversation that has unsent text and is not the one
+   shown (also the selected one while the settings screen covers it) carries a
+   ✎ on its icon in the strip, and in the full list its second line reads
+   "Draft: …" instead of its last message (also for the person's own unsent
+   text, and for text of only spaces or line breaks); its accessible name ends
+   in "unsent draft".
+
+8. **Migration.** Drafts this browser kept in `localStorage` (the phone
+   Store's draft map: drafts from before listener drafts, from a connection
+   without them, or unsaved text of a page that was reloaded) are offered
+   at the first snapshot of a page that comes from local drafts: each one
+   that differs from the listener's draft stays in its conversation's box
+   as unsaved text ("This text was kept in this browser; it is not saved in
+   Companion yet.") with Save and Discard. They are never written by
+   themselves. Their local copy then belongs to the unsaved text (rule 4):
+   it is deleted when the text is saved, discarded or confirmed, so each is
+   offered once; one equal to the listener's draft is deleted at once. The
+   new-conversation box of the Activity column always stays local.
+9. **Without listener drafts** (rule 1), the browser behaves exactly as
+   before: drafts per conversation in the phone Store, saved in this browser,
+   cleared by a completed send, no `draft-set`, no `pendingSend`, no ✎ or
+   "Draft: …", `draftUnsaved` and the agent note always empty. Drafts of
+   conversations that are no longer open are pruned as before, once the
+   current connection has shown that it offers no drafts (until then such a
+   draft may be offline text that a connection with drafts offers by rule 8).
+   When a reconnect changes the mode, the shown texts carry over: from
+   listener to local drafts they become this browser's drafts (saved locally,
+   no longer marked unsaved); from local to listener drafts they are offered
+   by rule 8.
+
+10. **Lifetime.** Drafts live in the listener's memory: a listener restart
+    loses them (known and accepted, as on the desktop). The listener keeps
+    drafts of closed conversations, so a reopened conversation shows its
+    draft again; text this page had not had confirmed for a conversation
+    closed elsewhere stays kept in this browser and is shown, unsaved, when
+    the conversation is reopened. Signing out forgets everything of the
+    previous pairing.
+
+### Cases
+
+Each table is played row by row against the real phone Store and
+Connection in Node by `test/shell/listener-drafts.test.ts` (a stand-in
+socket answers as the gateway does), and the rows a browser can time are
+played again against the real gateway and listener by
+`test/shell/drafts.test.ts`.
+
+**Draft text shown**
+
+| Case                                                               | The box shows                                                         |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| The listener's draft at the snapshot                               | that draft                                                            |
+| An edit from elsewhere while this page is idle                     | that edit, at once                                                    |
+| An edit from elsewhere while this page types                       | this page's text; after its edits are answered, the listener's latest |
+| This page's own echo (its `editId`), newer text typed since        | the newer text (the echo is not applied)                              |
+| A send from here                                                   | empty once the listener cleared the draft                             |
+| A send from elsewhere of the same text                             | empty (the listener cleared it)                                       |
+| The conversation closed and reopened                               | its draft again                                                       |
+| Switching to another conversation and back, an edit just before it | each conversation its own draft; the edit in its own conversation     |
+
+**Writing**
+
+| Case                                       | Written                                     | The box                                       |
+| ------------------------------------------ | ------------------------------------------- | --------------------------------------------- |
+| One edit                                   | one `draft-set`                             | the text, saved                               |
+| Fast typing (edits while one is in flight) | one at a time, the newest waiting text next | the final text, which the listener holds      |
+| Refused ("not saved")                      | nothing more                                | the text, unsaved, with Save and Discard      |
+| No answer and a reconnect                  | nothing more                                | the text, unsaved, unless the listener has it |
+| Offline typing, then reconnect             | nothing                                     | the text, unsaved, unless the listener has it |
+| Save                                       | one `draft-set` of the shown text           | the text, saved                               |
+| Discard                                    | nothing                                     | the listener's draft                          |
+| Two tabs typing in the same conversation   | each tab its own edits                      | both end with the listener's latest           |
+
+**Agent drafts**
+
+| Case                                          | Result                                                             |
+| --------------------------------------------- | ------------------------------------------------------------------ |
+| A proposal for the shown conversation         | shown with "Drafted by agent · …" and Clear                        |
+| A proposal for another conversation           | not switched to; ✎ and "Draft: …" in the list; the note when shown |
+| A proposal while a send waits (`pendingSend`) | refused by the listener (`conflict`), nothing shown                |
+| Clear                                         | one `draft-set` with empty text; the box and the note empty        |
+| Editing it                                    | the note goes at once; the edit is written                         |
+| Sending it                                    | sent; the listener clears the draft; the note goes                 |
+
+**Migration and fallback**
+
+| Case                                               | Result                                                                               |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Local drafts present, first connection with drafts | offered as unsaved with Save and Discard; local copy deleted once saved or discarded |
+| A local draft equal to the listener's              | nothing offered                                                                      |
+| No local drafts                                    | the listener's drafts                                                                |
+| A later connection or page load                    | nothing offered again                                                                |
+| A page reloaded while its text is unsaved          | that text offered again as unsaved                                                   |
+| A gateway without drafts                           | as before: local drafts, no `draft-set`, no `pendingSend`, no ✎                      |
+| Drafts, then a reconnect without them              | the shown texts become local drafts                                                  |
+| No drafts, then a reconnect with them              | drafts typed meanwhile offered as unsaved                                            |
+
 ## How it works
 
 ```text
@@ -1416,7 +1607,7 @@ page after one it has not shown yet.
 
 ### Changes to the shared chat page
 
-`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Four changes
+`Chat.tsx` is shared with the Qt host (`TrustedChatView.qml`). Five changes
 were made for the browser:
 
 1. Its transcript does not count the end of a **detached** history snapshot
@@ -1458,6 +1649,15 @@ were made for the browser:
    view. The Qt host sends neither, so nothing changes there
    (`chat-heading.test.ts` again compares with the reference drawn before
    the change). The shell's stylesheet styles the details.
+5. The draft may carry one optional field, `clearable` (`protocol.ts`): the
+   page then ends the agent's note ("Drafted by agent · … — review before
+   sending") with a **Clear** link, which empties the editor as an ordinary
+   edit (`editDraft` with empty text); not while the editor is read-only.
+   Without the field (or with `false`) the page's output is exactly what it
+   was: the Qt host never sends it, so the desktop shows no Clear link
+   (`test/shell/chat-composer.test.ts` compares the text box area in every
+   draft state with a reference drawn before the change). `ChatState.mjs`
+   and QML are unchanged.
 
 What the Qt host does at the end of a detached snapshot (`TrustedChatView.qml`,
 `ChatState.mjs`, `../panel/SessionView.qml`):
@@ -1548,7 +1748,7 @@ the chat page:
 | Desktop feature                                | In the browser                                                                                          |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | Recording into the text box                    | `recording.available: false` (no Record button)                                                         |
-| Listener-owned and agent-proposed drafts       | The draft is kept in this page per conversation, as on the phone; `draftUnsaved` is always empty        |
+| Listener-owned and agent-proposed drafts       | The same drafts ([listener drafts](#listener-drafts)); with a gateway without them, kept in this page   |
 | Classic view, widgets                          | The page's Classic view button and widget cards show "not available in the browser yet" in `inputError` |
 | Tool details                                   | In place, as in the classic view (see [tool details](#tool-details))                                    |
 | Session applications                           | `application: null`                                                                                     |
@@ -1557,12 +1757,52 @@ the chat page:
 | Model picker                                   | In the bar above the chat (see [model picker](#model-picker)); no Pi effort picker                      |
 | Pop-out windows, Alt+number, Alt+Shift+Up/Down | Not in the browser; reordering is by dragging                                                           |
 
-Known limit: two tabs of the same browser under the same pairing each keep
-the phone Store's draft map and save it whole, so a draft typed in one tab can
-replace a draft saved by the other (for another conversation) in storage; the
-open tabs keep their own text. This is the phone Store's existing draft
-persistence; scoping it per conversation belongs in that Store, for both
-clients.
+Where listener drafts differ from the desktop:
+
+- **One edit in flight.** The desktop sends every keystroke at once; the
+  browser keeps at most one `draft-set` per conversation on its way and
+  sends the newest text after its answer (the gateway's draft-edit rate is
+  per device, and a slow network would otherwise queue stale edits).
+- **Agent drafts.** The browser offers **Clear** next to the agent's note
+  (the desktop does not yet), and never switches conversation for a draft:
+  `focus` moves only the desktop.
+- **Unsaved text kept across a reload** in this browser's storage (the
+  desktop's unsaved text lives in its process).
+- **The new-conversation box** of the Activity column stays local, as it
+  has no conversation yet.
+
+Known limits:
+
+- Two tabs of the same browser under the same pairing each save the phone
+  Store's draft map whole, so what one tab keeps locally can replace what
+  the other kept (for another conversation): with listener drafts that is
+  only unsaved text and the new-conversation box; with a gateway without
+  drafts every draft, as before. The open tabs keep their own text on
+  screen. Scoping it per conversation belongs in that Store, for both
+  clients.
+- `pendingSend` names one conversation (the listener takes one per
+  connection): with sends waiting in two conversations of the same page at
+  once, only the latest is reported, so an agent could propose a draft for
+  the other meanwhile (it is then shown as an ordinary agent draft).
+- A listener restart loses drafts (memory only, as on the desktop); the
+  browser then shows the new listener's empty drafts, and its own unsaved
+  text stays unsaved.
+- A send waits while its text is written; if the connection drops in that
+  moment the send fails with its notice and is not sent, and if the text
+  box was changed after pressing Send, the unsent text is no longer in it.
+  This needs a drop within one answer's time after Send and new typing in
+  that same moment.
+- A `pendingSend` withdrawal (the report after the send's answer) that the
+  gateway refuses, for example when the device's request allowance is used up,
+  leaves the listener refusing agent proposals for that conversation until
+  this page's next report (another selection, or a reconnect).
+- The browser still sends at most 4,000 characters (`maximumMessageLength`,
+  from before the gateway allowed 8,000): a longer draft written elsewhere is
+  shown, but Send stays unavailable until it is shortened.
+- Text emptied while not connected (an offline Clear) stays empty and
+  unsaved across a reconnect, but not across a reload of the page: this
+  browser keeps no empty text, so after a reload the listener's draft is
+  shown again (no typed text is lost).
 
 The gateway also limits a message to 4,000 characters (the desktop allows
 8,000), so `maximumMessageLength` is 4,000. Copy uses the browser clipboard.
@@ -1590,7 +1830,12 @@ the flaky-test conversation's turn keeps running (its timer counts), and the
 others show how long their last turn took. The bug-fix conversation has a
 tool group (one call's output is long enough to page through), the city
 trip kept its synthetic screenshot (View screenshot), and the bar's model
-picker lists two Pi models. No
+picker lists two Pi models.
+For listener drafts, a stand-in desktop editor on the control socket has
+written a draft for the trip conversation and an agent (the invoice
+conversation) has proposed one for the notification rules: both show ✎ and
+"Draft: …" in the list and their text in the box, the second with the
+agent's note and Clear. No
 model, microphone, screen capture or personal data is involved. Ctrl+C stops
 it and deletes its temporary directory, also while it is still starting (a
 second Ctrl+C during the cleanup deletes the directory at once). `--port N`
@@ -1655,8 +1900,10 @@ latest from a detached snapshot followed by a streamed row; the
 [paging rule](#the-paging-rule) tables; a conversation reopened under the same ID while offline shown at its
 live end; a send whose
 answer was lost in a gateway restart, kept with its notice and not replayed
-after reconnecting; signing out and pairing again without the previous draft, also with a second
-tab of the same browser open;
+after reconnecting (the listener cleared its equal draft, so the box then
+shows the listener's empty draft); signing out and pairing again without
+the previous draft of this browser, also with a second tab of the same
+browser open, each with and without listener drafts;
 that every request and socket goes to the
 gateway's origin only; no Content-Security-Policy violation under the
 gateway's real policy; and no horizontal overflow at 420 px and 1280 px. With
@@ -1812,6 +2059,51 @@ policy violation and no request to another origin; never the unscoped
 `stop-agent`. With `COMPANION_SHELL_SCREENSHOTS=<directory>` it saves the
 column hidden and shown at 420, 760, 1280 and 1600 px.
 
+`listener-drafts.test.ts` plays every row of the four [listener
+drafts](#listener-drafts) tables against the real phone Store and Connection
+in Node, through a stand-in socket and a stand-in gateway and listener that
+follow the drafts protocol (`drafts-listener-stand-in.ts`): snapshots, changes
+from elsewhere while this page is idle or typing, its own echo with newer text
+typed since, sends from here (also while their text is still being written,
+with text typed after pressing Send, the same words typed again, the
+conversation closed and reopened before the send left, and text that could not
+be written) and elsewhere, a conversation closed and reopened, switching; one
+edit, fast typing with answers held back, refused, unanswered at a reconnect
+(also when the listener had applied it), offline typing, an offline Clear,
+typing after a refusal, Save, Discard, two tabs; agent proposals for the shown
+and another conversation, while a send waits, Clear, editing and sending; the
+selected conversation's draft listed under the settings screen; local drafts
+offered or not, a reload with unsaved text (also after its conversation was
+closed elsewhere), a gateway without drafts, and switching between the two
+modes after reconnects. `bridge.test.ts` checks what the page gets
+(`draftUnsaved`, `draft.source` and `clearable`, Save and Discard for the
+shown conversation only, Close refused while text is unsaved).
+
+`drafts.test.ts` plays the rows a browser can time against the real gateway
+and listener: text typed in one page reaching a second page of the same device
+and a desktop-role client on the listener's control socket, and the other way
+round, with a send clearing it everywhere and `pendingSend` reported around
+it; fast typing ending with exactly the final text at the listener, each edit
+leaving only after the previous one's answer (read from the frames the browser
+reports), and a message sent with Enter right after typing it leaving only
+after its last edit, so the box and the listener's draft end empty; an edit
+refused while another connection of the same device uses up the draft-edit
+allowance, kept with Save and Discard and saved or discarded without losing
+text; an agent proposal with its note, Clear, editing and sending, and one for
+another conversation marked in the list without a switch; ✎ in the strip and
+"Draft: …" in the full list; a local draft from before offered once (again
+after a reload while undecided, not after Discard); against a gateway without
+drafts (`older-gateway.ts`, a proxy that drops `drafts` from `auth` as an
+older gateway ignored it) local drafts exactly as before, with no `draft-set`,
+no `pendingSend` and no list marks; and unsaved text, an agent draft and the
+list at 420, 1280 and 1600 px without overflow. With
+`COMPANION_SHELL_SCREENSHOTS=<directory>` it saves those screens.
+`chat-composer.test.ts` draws the chat page's text box area in every draft
+state with and without `clearable` (and none while the editor holds input only
+it has) and compares it with `fixtures/chat-composer-reference.txt`, drawn by
+the base revision's `Chat.tsx` (`chat-composer-page.ts` says how to draw it
+again).
+
 Not covered in the browser: reconnect snapshots (the markers tables' rows
 for them are in `markers.test.ts`); a cancelled
 pointer, lost pointer capture, the window losing focus and a missing order
@@ -1863,6 +2155,7 @@ and the Qt host itself (`npm run test:window`, `test/session-apps-ui/`).
 | `src/times/message-time.ts`            | A message's time text for the reader                                          |
 | `src/times/page-times.ts`              | The page's time parts, handed from `main.tsx` to the workspace                |
 | `src/bridge.ts`                        | `NativeBridge` over the gateway: rows/status messages, request mapping        |
+| `../mobile/src/listener-drafts.ts`     | Listener drafts' rules for the phone Store (`listenerDrafts` option)          |
 | `src/history.ts`                       | Resident history pages (port of SessionView's paging on HistoryRows.mjs)      |
 | `src/rows.ts`                          | Port of `SessionView.rowData()`, through `ChatState.chatRow`                  |
 | `src/tools/tool-details.ts`            | Open tool groups, their pages and requests (port of ToolDetails.qml)          |

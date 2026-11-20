@@ -23,11 +23,17 @@
  *   stop()). View screenshot is handed to the shell's viewer
  *   (`onScreenshot`), which fetches the image from the gateway.
  *
+ * Drafts: the Store shares them with the listener (its `listenerDrafts`
+ * option, ../../mobile/src/listener-drafts.ts): the page's edits become the
+ * Store's draft, which writes them with `draft-set`; the listener's draft and
+ * changes from elsewhere reach the page as host-side draft changes (a new
+ * revision). Text the listener has not confirmed is `draftUnsaved`, with
+ * Save and Discard; an agent's unedited proposal is `draft.source`, with
+ * `draft.clearable` (the page's Clear link). Over a connection without
+ * listener drafts the Store keeps them in this browser as the phone does,
+ * and `draftUnsaved` and `draft.source` stay empty, as before.
+ *
  * Differences from the Qt host (deliberate, see integrations/shell/README.md):
- * - The draft is kept in this page per conversation, as the phone panel does
- *   (its Store saves it in this browser's storage). There is no
- *   listener-owned or agent-proposed draft, so `draftUnsaved` is always
- *   empty and Save/Discard have nothing to do.
  * - Recording, voice target, focus shortcut, session applications, widgets
  *   and the classic view are not available. Recording and applications are
  *   hidden through `status`; the page's Classic view button and widget cards
@@ -630,18 +636,12 @@ export class GatewayChatBridge implements NativeBridge {
       title: session.title || '',
       sessionStatus: session.status || '',
       sessionError: typeof session.error === 'string' ? session.error.slice(0, 2000) : '',
-      // The draft is this page's own; nothing is ever "not saved" elsewhere.
-      draftUnsaved: '',
+      // Text the listener has not confirmed (listener drafts only).
+      draftUnsaved: this.store.draftUnsaved(id),
       running: this.running(session),
       online: this.online,
       paused: paused,
-      draft: {
-        text: draftText,
-        cursor: cursor,
-        revision: this.draftRevision(id),
-        source: '',
-        notice: '',
-      },
+      draft: this.pageDraft(id, draftText, cursor),
       maximumMessageLength: maximumMessageLength,
       editLimit: 2 * maximumMessageLength,
       // The same admission as send(): connected, nothing awaiting an answer.
@@ -668,6 +668,31 @@ export class GatewayChatBridge implements NativeBridge {
       focusShortcut: '',
       application: null,
     };
+  }
+
+  /**
+   * The shown draft for the page. An agent's unedited proposal names its
+   * source and offers Clear (`clearable`, which the Qt host never sets).
+   *
+   * Line breaks are given as the text box keeps them (`\n`): a draft written
+   * elsewhere may contain `\r\n`, which a textarea turns into `\n`, and the
+   * page sends only text that equals what it was given. Sending such a
+   * draft then writes the `\n` text as an edit first (see send()), so the
+   * listener still clears the draft it holds after the send.
+   */
+  private pageDraft(id: string, text: string, cursor: number): ChatStatus['draft'] {
+    const source = this.store.draftSource(id);
+    const draft: NonNullable<ChatStatus['draft']> = {
+      text: text.replace(/\r\n?/g, '\n'),
+      cursor: cursor,
+      revision: this.draftRevision(id),
+      source: source,
+      notice: '',
+    };
+    if (source !== '') {
+      draft.clearable = true;
+    }
+    return draft;
   }
 
   private running(session: AgentSession): boolean {
@@ -1079,13 +1104,40 @@ export class GatewayChatBridge implements NativeBridge {
    * the same refusals as the chat page's Close session.
    */
   canClose(sessionId: string): boolean {
-    const held = this.unresolved !== null && this.unresolved.sessionId === sessionId;
-    return this.online && !held;
+    return this.online && !this.holdsText(sessionId) && !this.closeWaitsForSend(sessionId);
   }
 
-  closeSession(sessionId: string, callback?: (answer: string) => void): void {
+  /**
+   * With listener drafts a send leaves only after its text is written, so a
+   * Close admitted while it waits would reach the listener first and the
+   * send would be refused: Close waits for the send's answer. With drafts
+   * kept in this browser the send has left already, as before.
+   */
+  private closeWaitsForSend(sessionId: string): boolean {
+    return this.store.draftsShared && this.pendingSend(sessionId);
+  }
+
+  /**
+   * Whether the page holds text of the conversation that only it has: input
+   * only the editor holds, or text the listener has not saved (the person
+   * saves or discards it first, as on the desktop).
+   */
+  private holdsText(sessionId: string): boolean {
     const held = this.unresolved !== null && this.unresolved.sessionId === sessionId;
-    if (!this.sameSession(sessionId) || !this.online || held) {
+    return held || this.store.draftUnsaved(sessionId) !== '';
+  }
+
+  /**
+   * Close session. Not while the conversation holds text only this page has,
+   * and not while a send of it waits to leave (see closeWaitsForSend).
+   */
+  closeSession(sessionId: string, callback?: (answer: string) => void): void {
+    if (
+      !this.sameSession(sessionId) ||
+      !this.online ||
+      this.holdsText(sessionId) ||
+      this.closeWaitsForSend(sessionId)
+    ) {
       this.answer(callback, { accepted: false });
       return;
     }
@@ -1134,13 +1186,22 @@ export class GatewayChatBridge implements NativeBridge {
     };
   }
 
-  saveDraft(_sessionId: string, callback?: (answer: string) => void): void {
-    // Never offered: `draftUnsaved` is always empty in the browser.
-    this.answer(callback, { accepted: false });
+  /** Save: the shown conversation's unsaved text is written to the listener. */
+  saveDraft(sessionId: string, callback?: (answer: string) => void): void {
+    if (!this.sameSession(sessionId)) {
+      this.answer(callback, { accepted: false });
+      return;
+    }
+    this.answer(callback, { accepted: this.store.saveUnsavedDraft(sessionId) });
   }
 
-  discardUnsavedDraft(_sessionId: string, callback?: (answer: string) => void): void {
-    this.answer(callback, { accepted: false });
+  /** Discard: the shown conversation's unsaved text goes; the listener's draft is shown. */
+  discardUnsavedDraft(sessionId: string, callback?: (answer: string) => void): void {
+    if (!this.sameSession(sessionId)) {
+      this.answer(callback, { accepted: false });
+      return;
+    }
+    this.answer(callback, { accepted: this.store.discardUnsavedDraft(sessionId) });
   }
 
   toggleRecording(_sessionId: string, callback?: (answer: string) => void): void {

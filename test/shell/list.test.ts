@@ -180,6 +180,8 @@ const allowedActions = [
   'send-agent',
   // The Store reads this run's Activity history for the Activity column.
   'activity-history',
+  // Typed text is the listener's draft (README, "Listener drafts").
+  'draft-set',
 ];
 
 async function assertCleanPage(fixture: Fixture, page: TestPage, sockets: SocketLog) {

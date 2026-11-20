@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { TestBrowser, TestPage, chromiumPath } from '../mobile/browser.ts';
 import { remoteFixture } from '../remote-fixture.ts';
+import { olderGateway } from './older-gateway.ts';
 
 /**
  * Shared helpers of the browser shell's headless suites (shell.test.ts,
@@ -32,6 +33,25 @@ export async function prerequisites(): Promise<string | undefined> {
 export const skip = await prerequisites();
 
 export type Fixture = Awaited<ReturnType<typeof remoteFixture>>;
+
+/**
+ * The fixture as a page sees it: with `listenerDrafts` its own gateway;
+ * without, the same gateway behind the older-gateway proxy, which offers no
+ * drafts (older-gateway.ts). The page then uses the proxy's origin for
+ * everything, pairing included; the rest of the fixture is shared.
+ */
+export async function withGateway(
+  fixture: Fixture,
+  listenerDrafts: boolean,
+  context: { after(callback: () => Promise<void>): void },
+): Promise<Fixture> {
+  if (listenerDrafts) {
+    return fixture;
+  }
+  const older = await olderGateway(fixture.origin);
+  context.after(() => older.close());
+  return { ...fixture, origin: older.origin };
+}
 
 /** WebSocket traffic of one page, recorded through the DevTools protocol. */
 export interface SocketLog {
