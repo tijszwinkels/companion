@@ -49,6 +49,8 @@ Object.assign(globalThis, {
       pushState(state: unknown) {
         this.state = state;
       },
+      // A modal's release goes Back over its entry; nothing to do here.
+      back() {},
     },
   },
   document: {
@@ -114,19 +116,28 @@ interface Report {
 
 /**
  * Make the Store's connection "online" and record its `panel-state` reports
- * (nothing is sent anywhere). `refuseNext` makes the next request fail, as
- * a refusal by the gateway would.
+ * (nothing is sent anywhere). `refuseNext` makes the next request fail
+ * with that message, as a refusal by the gateway would; `refuseVisible`
+ * refuses every report with `visible`, as a gateway older than the shared
+ * mark does.
  */
 function recordReports(store: InstanceType<typeof Store>) {
   const reports: Report[] = [];
-  const control = { refuseNext: false };
+  const control = { refuseNext: '', refuseVisible: false, refuseAll: false };
   const connection = store.connection as unknown as {
     request(action: string, parameters: Record<string, unknown>): Promise<unknown>;
   };
   connection.request = async (action, parameters) => {
     if (control.refuseNext) {
-      control.refuseNext = false;
+      const message = control.refuseNext;
+      control.refuseNext = '';
+      throw Error(message);
+    }
+    if (control.refuseAll) {
       throw Error('Too many requests');
+    }
+    if (control.refuseVisible && 'visible' in parameters) {
+      throw Error('Unknown field: visible');
     }
     if (action === 'panel-state') {
       reports.push({ ...(parameters as unknown as Report) });
@@ -142,12 +153,23 @@ function recordReports(store: InstanceType<typeof Store>) {
   return { reports, control };
 }
 
-/** Let a rejected request's handler and the Store's deferred visible check run. */
-async function settle(context: { mock: { timers: { tick(milliseconds: number): void } } }) {
+/**
+ * Let a rejected request's handler and the Store's deferred visible check
+ * run, and `milliseconds` more of the mocked clock pass (the Store tries a
+ * refused report again after a second).
+ */
+async function settle(
+  context: { mock: { timers: { tick(milliseconds: number): void } } },
+  milliseconds = 0,
+) {
   await Promise.resolve();
   await Promise.resolve();
   context.mock.timers.tick(0);
   await Promise.resolve();
+  if (milliseconds > 0) {
+    context.mock.timers.tick(milliseconds);
+    await Promise.resolve();
+  }
 }
 
 function internals(store: InstanceType<typeof Store>): StoreInternals {
@@ -582,9 +604,12 @@ test('visible report: each row of the README table', async (context) => {
   snapshot(store, conversations);
   assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'reconnect while visible');
 
-  // visible | A, shown | A closed elsewhere, reopened and selected again →
-  // {A, true} again (the listener dropped its report with the close)
+  // visible | A, shown | A closed elsewhere → {"", false}
   internals(store).apply({ type: 'agent-removed', id: 'a' });
+  assert.deepEqual(sent(), [{ id: '', visible: false }], 'closed while shown');
+
+  // visible | none (A was closed) | A reopened and selected again →
+  // {A, true} again (the listener dropped its report with the close)
   internals(store).apply({
     type: 'agent-restored',
     session: marked('a', 'completed', false, 'a1'),
@@ -593,15 +618,116 @@ test('visible report: each row of the README table', async (context) => {
   store.open('a');
   assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'reopened and shown');
 
-  // visible | A, shown, the report was refused | a check without a change →
-  // {A, true} again
+  // visible | B, shown; its report refused (rate) | a second later →
+  // {B, true} again
+  control.refuseNext = 'Too many requests';
   store.open('b');
-  sent();
-  control.refuseNext = true;
-  store.open('a');
   await settle(context);
   assert.deepEqual(sent(), [], 'refused: nothing recorded');
-  store.selectionShownChanged();
+  await settle(context, 1000);
+  assert.deepEqual(sent(), [{ id: 'b', visible: true }], 'sent again a second later');
+
+  // hidden | B; {B, false} refused (rate) | a second later → {B, false}
+  // again: a page that became hidden is never left counted as visible.
+  control.refuseNext = 'Too many requests';
+  setVisibility('hidden');
   await settle(context);
-  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'sent again after the refusal');
+  assert.deepEqual(sent(), [], 'the withdrawal refused');
+  await settle(context, 1000);
+  assert.deepEqual(sent(), [{ id: 'b', visible: false }], 'withdrawn a second later');
+  setVisibility('visible');
+  await settle(context);
+  sent();
+
+  // Refused again and again: tried five more times, a second apart, then
+  // no more until a change; a change is still reported.
+  let attempts = 0;
+  const counting = store.connection as unknown as {
+    request(action: string, parameters: Record<string, unknown>): Promise<unknown>;
+  };
+  const recording = counting.request;
+  counting.request = (action, parameters) => {
+    attempts += 1;
+    return recording(action, parameters);
+  };
+  control.refuseAll = true;
+  store.open('a');
+  for (let second = 0; second < 10; second++) {
+    await settle(context, 1000);
+  }
+  assert.equal(attempts, 6, 'the report and five more attempts');
+  store.open('b');
+  await settle(context);
+  assert.equal(attempts, 7, 'a change is still reported');
+  control.refuseAll = false;
+  counting.request = recording;
+  await settle(context, 1000);
+  store.open('a');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'a', visible: true }], 'accepted again');
+  store.open('b');
+  sent();
+
+  // A report refused while the conversation was closed meanwhile (another
+  // device closed B just as this page selected it): the close reports that
+  // nothing is shown, so the earlier selection is not left counted.
+  store.open('c');
+  sent();
+  control.refuseNext = 'Unknown conversation';
+  store.open('b');
+  internals(store).apply({ type: 'agent-removed', id: 'b' });
+  await settle(context, 1000);
+  assert.deepEqual(sent(), [{ id: '', visible: false }], 'closed while its report was refused');
+
+  // visible | A, shown; gateway without `visible` | the refusal arrives →
+  // {A} alone, from then on (until the next connection)
+  control.refuseVisible = true;
+  store.open('a');
+  await settle(context);
+  assert.deepEqual(sent(), [{ id: 'a' }], 'the selection alone');
+  store.open('c');
+  assert.deepEqual(sent(), [{ id: 'c' }], 'still the selection alone');
+  setVisibility('hidden');
+  setVisibility('visible');
+  await settle(context, 1000);
+  assert.deepEqual(sent(), [], 'visibility is not reported to it');
+  control.refuseVisible = false;
+  internals(store).online();
+  snapshot(store, [marked('a', 'completed', false, 'a1'), marked('c', 'running', false)]);
+  assert.deepEqual(sent(), [{ id: 'c', visible: true }], 'a new connection tries `visible` again');
+});
+
+test('visible report on the phone: a sheet, menu or the screenshot viewer covers the page', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  page.visibilityState = 'visible';
+  // The phone panel's Store: no `selectionShown` option.
+  const store = new Store({ activity: false });
+  const { reports } = recordReports(store);
+  internals(store).online();
+  snapshot(store, [marked('a', 'completed', false, 'a1')]);
+  store.open('a');
+  assert.deepEqual(reports.at(-1), { id: 'a', visible: true });
+
+  // visible | A, shown; phone | a modal opens → {A, false} at once; closed →
+  // {A, true}. (Modal.tsx registers every sheet, menu and the viewer.)
+  const modal = store.navigation.openModal(() => {});
+  assert.deepEqual(reports.at(-1), { id: 'a', visible: false }, 'covered by a modal');
+  modal.release();
+  await settle(context);
+  assert.deepEqual(reports.at(-1), { id: 'a', visible: true }, 'the modal closed');
+
+  // The limit page closes every open modal (it takes the input).
+  let closed = false;
+  store.navigation.openModal(() => {
+    closed = true;
+  });
+  internals(store).connectionChanged({
+    status: 'limited',
+    message: '',
+    retryAt: 0,
+    deviceName: 'Phone',
+    limit: 'device',
+  });
+  assert.equal(closed, true, 'the open modal was closed');
+  assert.equal(store.navigation.modalOpen, false);
 });

@@ -162,11 +162,10 @@ short:
   it loaded).
 - The phone reports `panel-state` `{id, visible}`: `visible` is true while
   the page is visible and a conversation page is the one on screen (the
-  selected conversation). Activity and Previous sessions report no
-  conversation. A sheet (settings, apps) over the conversation page does not
-  count as covering it. The report is sent after each connection's first
-  snapshot and again whenever the selection or `visible` changes, never
-  twice the same.
+  selected conversation, with no sheet, menu or screenshot viewer over
+  it). Activity and Previous sessions report no conversation. The report
+  is sent after each connection's first snapshot and again whenever the
+  selection or `visible` changes, never twice the same.
 - The "… — answer ready" toast stays the phone's own, as before.
 
 What changed for the phone: before, every finished conversation showed as
@@ -185,7 +184,8 @@ already has four Companion tabs connected. Close one you do not need, then
 Retry." or "Companion already has eight browsers and phones connected. Close
 one you do not need, then Retry.", with a Retry button. Nothing reconnects
 by itself while it is shown (no timer, not when the app is foregrounded or
-the network returns); no other tab or phone is closed. A refusal without one
+the network returns); no other tab or phone is closed. An open sheet or
+menu closes when the limit page appears (none holds typed text). A refusal without one
 of these reasons (an older gateway) keeps the earlier behaviour, a retry
 with backoff. The full rule and its table are the browser shell's
 ([the limit page](../shell/README.md#the-limit-page)); the code is shared

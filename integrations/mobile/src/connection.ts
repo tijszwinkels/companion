@@ -439,6 +439,24 @@ export class Connection {
       return;
     }
 
+    // A named limit: say which, and wait for the reader's Retry. An
+    // automatic retry would only be refused again while the other
+    // connections stay open, and open connections are never closed to make
+    // room. Decided before the network check below: a refusal that arrives
+    // while the browser already reports itself offline must not reconnect
+    // by itself when the network returns.
+    if (code === closeCodes.overloaded && (reason === 'device' || reason === 'total')) {
+      clearTimeout(this.retryTimer);
+      this.attempt = 0;
+      this.setState({
+        status: 'limited',
+        message: limitMessages[reason],
+        retryAt: 0,
+        limit: reason,
+      });
+      return;
+    }
+
     if (!navigator.onLine) {
       this.networkLost();
       return;
@@ -453,21 +471,6 @@ export class Connection {
     }
 
     if (code === closeCodes.overloaded) {
-      if (reason === 'device' || reason === 'total') {
-        // A named limit: say which, and wait for the reader's Retry. An
-        // automatic retry would only be refused again while the other
-        // connections stay open, and open connections are never closed to
-        // make room.
-        clearTimeout(this.retryTimer);
-        this.attempt = 0;
-        this.setState({
-          status: 'limited',
-          message: limitMessages[reason],
-          retryAt: 0,
-          limit: reason,
-        });
-        return;
-      }
       this.scheduleRetry('reconnecting', 'Too many phones are connected. Retrying…');
       return;
     }

@@ -102,6 +102,12 @@ function emptyActivity(sessionId = ''): ActivityState {
 
 const draftKey = 'companion.remote.drafts';
 
+/**
+ * How many times in a row a refused selection report is tried again, a
+ * second apart (see `Store.reportRefused`).
+ */
+const reportRetryLimit = 5;
+
 export interface StoreOptions {
   /**
    * Read Activity history pages (`activity-history`) for the current run.
@@ -163,6 +169,16 @@ export class Store {
   private lastReport?: { id: string; visible: boolean };
   /** A deferred check for a selection that became visible (see `visibilityChanged`). */
   private visibleCheck?: ReturnType<typeof setTimeout>;
+  /** A later attempt after a report the gateway refused (see `reportSelection`). */
+  private reportRetry?: ReturnType<typeof setTimeout>;
+  /** Refused reports in a row; the Store tries again at most `reportRetryLimit` times. */
+  private refusedReports = 0;
+  /**
+   * The gateway of this connection refused `visible` as an unknown field (a
+   * gateway from before the shared unread mark): reports carry the
+   * selection only, as before, until the next connection.
+   */
+  private legacyReports = false;
   private receivedSnapshot = false;
   /** Set just before this phone asks to reopen a conversation. */
   revealNextRestore = '';
@@ -209,7 +225,12 @@ export class Store {
       (connection) => this.connectionChanged(connection),
       () => this.online(),
     );
-    this.navigation = new Navigation((page) => this.applyPage(page));
+    this.navigation = new Navigation(
+      (page) => this.applyPage(page),
+      // A modal over the page (phone sheets, menus, the screenshot viewer)
+      // covers the selected conversation.
+      () => this.visibilityChanged(),
+    );
     this.state = { ...this.state, connection: this.connection.state };
     // The page's visibility is half of what this page reports as visible.
     document.addEventListener('visibilitychange', () => this.visibilityChanged());
@@ -326,19 +347,66 @@ export class Store {
     const id = this.state.sessions.has(this.state.selected) ? this.state.selected : '';
     const visible = id !== '' && this.selectionVisible();
     const last = this.lastReport;
-    if (last && last.id === id && last.visible === visible) {
+    if (last && last.id === id && (last.visible === visible || this.legacyReports)) {
       return;
     }
 
     const report = { id, visible };
     this.lastReport = report;
-    void this.request('panel-state', report, { quiet: true }).catch(() => {
-      // Not delivered (connection lost, or refused): the next change is
-      // reported in full. A reconnect reports after its snapshot anyway.
-      if (this.lastReport === report) {
+    let parameters: { id: string; visible?: boolean } = report;
+    if (this.legacyReports) {
+      parameters = { id };
+    }
+    void this.request('panel-state', parameters, { quiet: true }).then(
+      () => {
+        this.refusedReports = 0;
+      },
+      (error: unknown) => {
+        if (this.lastReport !== report) {
+          // A newer report was sent meanwhile; it says what is true now.
+          return;
+        }
         this.lastReport = undefined;
-      }
-    });
+        this.reportRefused(error);
+      },
+    );
+  }
+
+  /**
+   * A report was not delivered. Over a lost connection nothing more is
+   * needed: the listener withdraws the connection's visibility itself, and
+   * the next connection reports after its snapshot. Refused by a gateway
+   * that does not know `visible` (older than the shared unread mark), the
+   * selection is reported again without it, as before. Any other refusal
+   * (the gateway's request rate, or a conversation closed meanwhile) is
+   * tried again a second later with what is true then, so a page that has
+   * become hidden is never left counted as visible; one attempt waits at a
+   * time. After `reportRetryLimit` refusals in a row it stops trying again
+   * by itself until a report is accepted or the page reconnects; changes
+   * are still reported. (A report the gateway always refuses must not be
+   * sent every second for as long as the page is open.)
+   */
+  private reportRefused(error: unknown): void {
+    if (this.state.connection.status !== 'online') {
+      return;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'Unknown field: visible' && !this.legacyReports) {
+      this.legacyReports = true;
+      this.reportSelection();
+      return;
+    }
+    if (this.reportRetry !== undefined) {
+      return;
+    }
+    this.refusedReports += 1;
+    if (this.refusedReports > reportRetryLimit) {
+      return;
+    }
+    this.reportRetry = setTimeout(() => {
+      this.reportRetry = undefined;
+      this.reportSelection();
+    }, 1000);
   }
 
   /**
@@ -384,11 +452,18 @@ export class Store {
     // Nothing was reported on this connection yet.
     this.receivedSnapshot = false;
     this.lastReport = undefined;
+    this.legacyReports = false;
+    this.refusedReports = 0;
   }
 
   private connectionChanged(connection: ConnectionState): void {
     if (connection.status === 'unpaired') {
       this.clearPrivateState();
+    }
+    if (connection.status === 'limited') {
+      // The limit page lies over everything and takes the input: no sheet
+      // or menu (none holds typed text) may stay open under it.
+      this.navigation.closeModals();
     }
     this.update({ connection });
   }
@@ -401,6 +476,8 @@ export class Store {
     this.seen.clear();
     this.ownUnread = new Set();
     this.lastReport = undefined;
+    this.legacyReports = false;
+    this.refusedReports = 0;
     this.receivedSnapshot = false;
     this.revealNextRestore = '';
     this.navigation.reset();
@@ -669,7 +746,9 @@ export class Store {
     }
 
     let selected = this.state.selected;
+    let selectionDropped = false;
     if (selected && !map.has(selected)) {
+      selectionDropped = true;
       this.toast(
         'The selected conversation was closed while disconnected. It is in Previous sessions.',
       );
@@ -712,7 +791,9 @@ export class Store {
     });
 
     this.pruneDrafts(new Set(map.keys()));
-    if (firstSnapshot) {
+    // The first snapshot of a connection reports the selection; a later one
+    // that closed the selected conversation reports that nothing is shown.
+    if (firstSnapshot || selectionDropped) {
       this.reportSelection();
     }
 
@@ -818,6 +899,13 @@ export class Store {
     }
     this.update(change);
     this.pruneDrafts(new Set(sessions.keys()));
+    // The selection went with it: the listener learns that this page shows
+    // nothing now. (It dropped its reports of the closed conversation, but
+    // an earlier report of another conversation, whose replacement it may
+    // have refused, would otherwise stay counted as shown.)
+    if (change.selected === '') {
+      this.reportSelection();
+    }
   }
 
   /**
@@ -846,9 +934,19 @@ export class Store {
     return marks;
   }
 
-  /** Whether the reader sees the selected conversation now: the page is visible and shows it. */
+  /**
+   * Whether the reader sees the selected conversation now: the page is
+   * visible, shows it (`selectionShown`) and no modal (a phone sheet, menu
+   * or the screenshot viewer) lies over it.
+   */
   private selectionVisible(): boolean {
-    return document.visibilityState === 'visible' && this.selectionShown();
+    if (document.visibilityState !== 'visible') {
+      return false;
+    }
+    if (this.navigation.modalOpen) {
+      return false;
+    }
+    return this.selectionShown();
   }
 
   private turnCompleted(id: string): void {

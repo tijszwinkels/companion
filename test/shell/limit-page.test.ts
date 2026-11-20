@@ -144,8 +144,8 @@ const deviceText =
 const totalText =
   'Companion already has eight browsers and phones connected. Close one you do not need, then Retry.';
 
-/** A paired Connection whose first socket the gateway refused with `reason`. */
-function refusedConnection(reason: string) {
+/** A paired Connection, started: its first socket is the last one opened. */
+function startedConnection() {
   memory.set(
     'companion.remote.device',
     JSON.stringify({ token: 'token', deviceId: 'device', deviceName: 'Browser', server: '' }),
@@ -157,9 +157,15 @@ function refusedConnection(reason: string) {
   );
   const first = FakeSocket.opened.length;
   connection.start();
-  const socket = FakeSocket.opened.at(-1)!;
   assert.equal(FakeSocket.opened.length, first + 1);
+  const socket = FakeSocket.opened.at(-1)!;
   socket.accept();
+  return { connection, socket };
+}
+
+/** A paired Connection whose first socket the gateway refused with `reason`. */
+function refusedConnection(reason: string) {
+  const { connection, socket } = startedConnection();
   socket.refuse(4429, reason);
   return { connection, socketsBefore: FakeSocket.opened.length };
 }
@@ -241,6 +247,19 @@ test('limit page: each reason, unknown reasons and Retry against the real Connec
   fire(windowListeners, 'online');
   assert.equal(FakeSocket.opened.length, total.socketsBefore + 1, 'reconnects with the network');
   total.connection.forget();
+
+  // A named refusal that arrives while the browser already reports itself
+  // offline: still the limit page, and the network's return reconnects
+  // nothing.
+  const { connection: offline, socket: handedOver } = startedConnection();
+  network.onLine = false;
+  handedOver.refuse(4429, 'device');
+  assert.equal(offline.state.status, 'limited', 'limited, not offline');
+  const socketsWhileOffline = FakeSocket.opened.length;
+  network.onLine = true;
+  fire(windowListeners, 'online');
+  assert.equal(FakeSocket.opened.length, socketsWhileOffline, 'no reconnect with the network');
+  offline.forget();
 
   // 4429 with an unknown reason or none (an older gateway): the earlier
   // behaviour, the banner's text and a retry with backoff.

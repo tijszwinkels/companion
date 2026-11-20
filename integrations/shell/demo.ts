@@ -107,30 +107,40 @@ function continueStartup(): void {
 }
 
 /**
- * Mark each of these conversations read once its turn has completed, as if
- * a device had shown it then, so the demo starts with only the remaining
- * finished conversation unread (the listener's shared mark,
- * src/desktop/README.md "Unread mark"). Waits at most 60 seconds, checking
- * every 100 ms; stops when the demo stops.
+ * Settle the demo's unread marks before anyone can pair: wait until the
+ * answers of `readIds` and of `unreadId` have completed, and mark each of
+ * `readIds` read, as if a device had shown it then (the listener's shared
+ * mark, src/desktop/README.md "Unread mark"). The demo then starts with
+ * `unreadId` as its one unread conversation. Checks every 50 ms, at most for
+ * 30 seconds (the scripted answers take a few seconds); a stop requested
+ * meanwhile ends the startup (`continueStartup`).
  */
-async function markReadWhenDone(
+async function settleDemoMarks(
   agentSessions: AgentSessions,
-  ids: string[],
-  signal: AbortSignal,
+  readIds: string[],
+  unreadId: string,
 ): Promise<void> {
-  const waiting = new Set(ids);
-  for (let waited = 0; waited < 60_000 && waiting.size > 0; waited += 100) {
-    if (signal.aborted) {
-      return;
-    }
+  const waiting = new Set(readIds);
+  let unreadSettled = false;
+  for (let waited = 0; waited < 30_000; waited += 50) {
+    continueStartup();
     for (const session of agentSessions.snapshot()) {
       const done = session.status === 'completed' && session.turnStartedAt === undefined;
-      if (waiting.has(session.id) && done && session.unread === true) {
+      if (!done || session.unread !== true) {
+        continue;
+      }
+      if (waiting.has(session.id)) {
         agentSessions.markRead(session.id);
         waiting.delete(session.id);
       }
+      if (session.id === unreadId) {
+        unreadSettled = true;
+      }
     }
-    await delay(100);
+    if (waiting.size === 0 && unreadSettled) {
+      return;
+    }
+    await delay(50);
   }
 }
 
@@ -501,7 +511,7 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
   // and one whose turn keeps running (see scriptedRun). Their answers
   // complete before the browser pairs, so the listener marks them unread
   // (no page shows them). All but the city trip are then marked read, as if
-  // read on another device before (see `markReadWhenDone`), so the browser
+  // read on another device before (see `settleDemoMarks`), so the browser
   // shows one unread conversation, also after a reload; opening it marks it
   // read on every page.
   //
@@ -524,14 +534,19 @@ Agent text such as <b>this tag</b> stays literal. That is all synthetic text for
     frame('🐛 Why does the list test fail? Please fix the bug.'),
     controller.signal,
   );
-  sessions.start(frame('🗺️ Plan a two-day city trip for me'), controller.signal, 'quickQuestion');
+  const trip = sessions.start(
+    frame('🗺️ Plan a two-day city trip for me'),
+    controller.signal,
+    'quickQuestion',
+  );
   sessions.start(frame('🧪 Find the flaky test'), controller.signal);
   const rules = sessions.start(
     frame('Notification rules: summarise them'),
     controller.signal,
     'quickQuestion',
   );
-  void markReadWhenDone(sessions, [invoice, bug, rules], controller.signal);
+  await settleDemoMarks(sessions, [invoice, bug, rules], trip);
+  continueStartup();
 
   // ---- Gateway --------------------------------------------------------------------
 

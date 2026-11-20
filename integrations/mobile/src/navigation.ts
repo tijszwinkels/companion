@@ -26,7 +26,15 @@ export class Navigation {
   private deferredPage?: PhonePage;
   private readonly deferredModals = new Set<number>();
 
-  constructor(private readonly onPage: (page: PhonePage) => void) {
+  /**
+   * `onModals` is told after a modal (a sheet, a menu, the screenshot
+   * viewer) opened or closed, so the Store can tell whether the page under
+   * them is on screen (see `modalOpen`).
+   */
+  constructor(
+    private readonly onPage: (page: PhonePage) => void,
+    private readonly onModals: () => void = () => {},
+  ) {
     this.write(true);
     window.addEventListener('popstate', (event) => this.pop(event.state));
   }
@@ -73,9 +81,24 @@ export class Navigation {
     this.write(true);
   }
 
+  /** Whether a modal (a sheet, a menu, the screenshot viewer) is open over the page. */
+  get modalOpen(): boolean {
+    return this.modals.size > 0;
+  }
+
+  /**
+   * Close every open modal, as Back would (the connection's limit page lies
+   * over everything and must take the input). Each modal's own release
+   * then consumes its history entry.
+   */
+  closeModals(): void {
+    this.closeExcept([]);
+  }
+
   openModal(close: () => void): { dismiss(): void; release(): void } {
     const id = ++this.nextModal;
     this.modals.set(id, close);
+    this.onModals();
     if (this.dismissing) {
       // An immediate next menu must not push ahead of an in-flight Back and
       // become the entry that traversal removes. Register it after the pop.
@@ -88,6 +111,7 @@ export class Navigation {
       dismiss: () => {
         if (this.deferredModals.delete(id)) {
           this.modals.delete(id);
+          this.onModals();
           close();
         } else if (this.entry.modals.at(-1) === id && !this.dismissing) {
           this.dismissing = true;
@@ -96,7 +120,9 @@ export class Navigation {
       },
       release: () => {
         this.deferredModals.delete(id);
-        this.modals.delete(id);
+        if (this.modals.delete(id)) {
+          this.onModals();
+        }
         if (this.entry.modals.at(-1) === id && !this.dismissing) {
           // The owner's action may unmount the modal itself (for example,
           // Close session). Consume its Back entry just as the close button
@@ -115,11 +141,16 @@ export class Navigation {
   }
 
   private closeExcept(retained: number[]): void {
+    let closed = false;
     for (const [id, close] of this.modals) {
       if (!retained.includes(id)) {
         this.modals.delete(id);
+        closed = true;
         close();
       }
+    }
+    if (closed) {
+      this.onModals();
     }
   }
 

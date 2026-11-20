@@ -306,8 +306,10 @@ covers in `src/settings/settings-view.ts` and `src/layout/activity-overlay.ts`):
    (`document.visibilityState` is `visible`), a conversation is selected, and
    it is shown to the reader: not covered by the settings screen, and not
    covered by the Activity column lying over the chat in a narrow window
-   (under 640 px). With no conversation selected (the empty view, Previous
-   sessions) it is `false`. Keyboard focus is never needed.
+   (under 640 px); on the phone, no sheet, menu or screenshot viewer lies
+   over its conversation page. With no conversation selected (the empty
+   view, Previous sessions, the phone's Activity page) it is `false`.
+   Keyboard focus is never needed.
 3. The first report on each connection is sent when its first snapshot has
    arrived. After that the page reports again whenever the selection or
    `visible` changes, and only then: never the same report twice on one
@@ -320,39 +322,55 @@ covers in `src/settings/settings-view.ts` and `src/layout/activity-overlay.ts`):
    change of selection (browser Back from the settings screen goes to
    another conversation), and the conversation that was only underneath must
    not be reported as seen in between.
-5. A report that was not delivered (the connection dropped, the gateway
-   refused it) is forgotten, so the next change is reported in full. A
-   conversation closed while reported is forgotten too: the listener drops
-   its reports when it closes, so it is reported again when shown after a
-   reopen.
+5. A report that was not delivered is forgotten, so the next change is
+   reported in full. Over a lost connection nothing more is done (the
+   listener withdraws the connection's visibility itself). Refused by the
+   gateway (its request rate, a conversation closed meanwhile), the page
+   reports again a second later with what is true then, one attempt at a
+   time, so a page that has become hidden never stays counted as visible.
+   After five refusals in a row it stops trying by itself until a report is
+   accepted or the page reconnects; changes are still reported.
+   Refused because the gateway does not know `visible` (a gateway older than
+   the shared mark), the page reports `{"id"}` alone from then on, as
+   before, until it reconnects.
+6. A conversation closed while selected leaves the page showing nothing:
+   the page reports `{"", false}`. The listener drops its reports of a
+   closed conversation, so after a reopen it is reported again when
+   shown.
 
-| Page    | Selected conversation                | What happens next                                  | Sent                                           |
-| ------- | ------------------------------------ | -------------------------------------------------- | ---------------------------------------------- |
-| visible | none                                 | first snapshot after connecting                    | `{"", false}`                                  |
-| visible | none                                 | tab hidden, then visible again                     | nothing                                        |
-| visible | A, shown                             | select A again                                     | nothing                                        |
-| visible | none                                 | select A                                           | `{A, true}` at once                            |
-| visible | A, shown                             | select B                                           | `{B, true}` at once                            |
-| visible | A, shown                             | the gear shows the settings screen                 | `{A, false}` at once                           |
-| visible | A, behind the settings screen        | the gear again                                     | `{A, true}` after the click                    |
-| visible | A, behind the settings screen        | browser Back to B                                  | `{B, true}` only (never `{A, true}`)           |
-| visible | A, behind the settings screen        | B chosen in the list                               | `{B, true}` only (never `{A, true}`)           |
-| visible | A, behind the settings screen        | a started conversation C is selected underneath    | `{C, false}`                                   |
-| visible | A, shown, narrow window              | the Activity column is shown over it               | `{A, false}` at once                           |
-| visible | A, behind the narrow Activity column | the column is hidden                               | `{A, true}`                                    |
-| visible | A, shown, column beside it (wide)    | window narrowed under 640 px, then widened         | `{A, false}`, then `{A, true}`                 |
-| visible | A, shown, column hidden              | window resized across 640 px                       | nothing                                        |
-| visible | A, shown, column beside it           | a divider dragged, the window resized above 640 px | nothing                                        |
-| visible | A, shown                             | tab hidden, then visible again                     | `{A, false}` at once, then `{A, true}`         |
-| hidden  | A                                    | a reconnect                                        | `{A, false}` after the new snapshot            |
-| visible | A, shown                             | a reconnect                                        | `{A, true}` after the new snapshot             |
-| visible | A, shown                             | A closed elsewhere, reopened and selected again    | `{A, true}` again                              |
-| visible | A, shown                             | a report the gateway refused, then the tab hidden  | `{A, false}`; visible again: `{A, true}` again |
+| Page    | Selected conversation                | What happens next                                  | Sent                                         |
+| ------- | ------------------------------------ | -------------------------------------------------- | -------------------------------------------- |
+| visible | none                                 | first snapshot after connecting                    | `{"", false}`                                |
+| visible | none                                 | tab hidden, then visible again                     | nothing                                      |
+| visible | A, shown                             | select A again                                     | nothing                                      |
+| visible | none                                 | select A                                           | `{A, true}` at once                          |
+| visible | A, shown                             | select B                                           | `{B, true}` at once                          |
+| visible | A, shown                             | the gear shows the settings screen                 | `{A, false}` at once                         |
+| visible | A, behind the settings screen        | the gear again                                     | `{A, true}` after the click                  |
+| visible | A, behind the settings screen        | browser Back to B                                  | `{B, true}` only (never `{A, true}`)         |
+| visible | A, behind the settings screen        | B chosen in the list                               | `{B, true}` only (never `{A, true}`)         |
+| visible | A, behind the settings screen        | a started conversation C is selected underneath    | `{C, false}`                                 |
+| visible | A, shown, narrow window              | the Activity column is shown over it               | `{A, false}` at once                         |
+| visible | A, behind the narrow Activity column | the column is hidden                               | `{A, true}`                                  |
+| visible | A, shown, column beside it (wide)    | window narrowed under 640 px, then widened         | `{A, false}`, then `{A, true}`               |
+| visible | A, shown, column hidden              | window resized across 640 px                       | nothing                                      |
+| visible | A, shown, column beside it           | a divider dragged, the window resized above 640 px | nothing                                      |
+| visible | A, shown                             | tab hidden, then visible again                     | `{A, false}` at once, then `{A, true}`       |
+| hidden  | A                                    | a reconnect                                        | `{A, false}` after the new snapshot          |
+| visible | A, shown                             | a reconnect                                        | `{A, true}` after the new snapshot           |
+| visible | A, shown                             | A closed elsewhere                                 | `{"", false}`                                |
+| visible | none (A was closed)                  | A reopened and selected again                      | `{A, true}` again                            |
+| visible | B, shown; its report refused (rate)  | a second later                                     | `{B, true}` again                            |
+| hidden  | A; `{A, false}` refused (rate)       | a second later                                     | `{A, false}` again                           |
+| visible | A, shown; every report refused       | time passes                                        | five more attempts a second apart, then none |
+| visible | A, shown; gateway without `visible`  | the refusal arrives                                | `{A}` (no `visible`), from then on           |
+| visible | A, shown; phone                      | a sheet, menu or the screenshot viewer opens       | `{A, false}` at once; closed: `{A, true}`    |
 
-The phone panel follows the same rule with nothing covering its pages: its
-selected conversation is shown whenever it is selected (its conversation
-page is the one on screen), so `visible` there is the page's visibility while
-a conversation is selected.
+The phone panel follows the same rule. Its conversation page is the one on
+screen while a conversation is selected and no sheet, menu or screenshot
+viewer lies over it (any of them counts as covering, also a sheet that
+leaves part of the page visible: a wrong `true` would clear a mark on every
+device). The browser shell has none of these.
 
 #### Fallback for an older listener
 
@@ -401,8 +419,10 @@ rule. `test/shell/shared-unread.test.ts` checks the shared mark end to end
 in headless Chromium against the real gateway and listener: a turn
 completed while another conversation is shown stays marked after a reload,
 showing it clears the mark in a second tab of the same browser, a hidden tab
-clears nothing, and the narrow Activity column and the settings screen
-count as covering.
+clears nothing, and the narrow Activity column covers the chat (only
+crossing the narrow limit reports). The settings screen's cover is checked
+in the browser by `test/shell/settings.test.ts` ("an answer completed behind
+the settings screen is marked unread; going back clears it").
 
 ## Activity
 
@@ -648,8 +668,9 @@ heading.
   background on the desktop. Not for an audio-only entry or one whose
   screenshot was not kept, nor while the listener offers no conversation
   controls or runs in preview mode. The listener's answer does not name the new
-  conversation, so it appears in the list with the "not seen" marker and is
-  not selected.
+  conversation, so it appears in the list, working, and is not selected; it
+  gets the "not seen" marker if its answer completes while no device shows
+  it.
 - **Correct** and **Incorrect** (`label-history`) label the decision; they
   need a decision (an intent), capture storage on at the listener, and the
   entry's complete saved capture (otherwise the reason is shown, as on the
@@ -752,12 +773,13 @@ on.
    is selected underneath and shown when the settings screen is left; the
    conversation underneath closed elsewhere shows the empty view then).
 4. The conversation underneath is **not shown** while the settings screen
-   covers it: an answer completed meanwhile gets the "answer not seen" mark
-   and the toast, as for a conversation that is not selected (the Store's
-   `selectionShown` option, off on the phone), and a conversation selected
-   underneath it (a started one) keeps its mark. Going back to it with the
-   gear, or by Back and Forward, shows it, which clears the mark, as
-   choosing it does.
+   covers it: the page reports it as not visible (see
+   [visible report](#visible-report)), so an answer completed meanwhile gets
+   the "answer not seen" mark and the toast, as for a conversation that is
+   not selected (the Store's `selectionShown` option), and a conversation
+   selected underneath it (a started one) keeps its mark. Going back to it
+   with the gear, or by Back and Forward, shows it, which clears the mark,
+   as choosing it does.
 5. Text only the chat editor holds is offered there as on Previous sessions
    (Copy, Discard).
 
@@ -1042,6 +1064,7 @@ browser's tabs count for its device), and refuses a newcomer with close code
 | Ninth connection in all (reason `total`)                                 | the limit page with the `total` text and Retry                       |
 | 4429 with an unknown reason or none                                      | the banner "Too many phones are connected. Retrying…", retried       |
 | Limit page shown; time passes, the tab is hidden and shown, network back | no new connection                                                    |
+| Refused (named) while the browser already reports itself offline         | the limit page; the network's return reconnects nothing              |
 | Retry after another tab was closed                                       | connected; the limit page goes                                       |
 | Retry while the limit still holds                                        | refused again; the limit page shows again                            |
 | A second tab opened while the limit page is shown                        | that tab is refused too and shows its own limit page; nothing closes |
