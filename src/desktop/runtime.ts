@@ -176,6 +176,13 @@ const desktopOnlyActions = new Set([
 interface RemoteClient {
   /** Conversation shown by this remote panel, or empty for other pages. */
   selection: string;
+  /**
+   * The selection while this panel's latest report said `visible: true`,
+   * else empty. Only this counts as showing a conversation for the unread
+   * mark. A closed conversation is forgotten here (not in `selection`), so a
+   * stale report never shows the conversation after it is reopened.
+   */
+  visibleSelection: string;
   /** Last actions sent to this client, to avoid resending unchanged controls. */
   lastActionsKey: string;
 }
@@ -268,6 +275,10 @@ export class DesktopRuntime {
   private panelKeyboardClient = 0;
   private panelSession = '';
   private panelClient = 0;
+  // Desktop connections whose latest panel-state said `visible: true`. Only
+  // their main view and pop-out windows show a conversation for the unread
+  // mark (see showsVisibly); a report without `visible` counts as hidden.
+  private readonly visibleDesktopClients = new Set<number>();
   private interactionRevision = 0;
   private navigation?: { clientId: number; token: string };
   private modelDiscovery?: Promise<unknown>;
@@ -377,6 +388,7 @@ export class DesktopRuntime {
           return;
         }
         this.viewActionKeys.delete(clientId);
+        this.visibleDesktopClients.delete(clientId);
         this.draftHosts.delete(clientId);
         this.pendingDraftSends.delete(clientId);
         this.abandonDrafts(clientId, 'The panel disconnected before confirming the draft.');
@@ -426,6 +438,7 @@ export class DesktopRuntime {
       available: () => this.nativeViews.size > 0,
       present: (request, signal) => this.requestPresent(request, signal),
     });
+    options.agents?.setViewers({ showsVisibly: (id) => this.showsVisibly(id) });
     this.unsubscribeAgents = options.agents?.subscribe((event) => {
       if (event.type === 'agent-turn-completed') {
         this.sounds.play('agent-completed');
@@ -437,6 +450,13 @@ export class DesktopRuntime {
       // reports so; an utterance captured for it must not stay current.
       if (event.type === 'agent-removed') {
         this.removeFromNativeViews(event.id);
+        // A remote panel that still reports the closed conversation does not
+        // show it once it is reopened; it has to report it again.
+        for (const remote of this.remoteClients.values()) {
+          if (remote.visibleSelection === event.id) {
+            remote.visibleSelection = '';
+          }
+        }
         // A conversation reopened later (same ID) is not chosen again.
         if (this.navigationSelection?.id === event.id) {
           this.endNavigationSelection();
@@ -775,6 +795,67 @@ export class DesktopRuntime {
 
       remote.lastActionsKey = key;
       this.server.publishTo(clientId, { type: 'remote-agent-actions', actions });
+    }
+  }
+
+  /**
+   * The conversations some connection shows on a visible page right now,
+   * for the shared unread mark ("Unread mark" in the README):
+   *
+   * - the desktop main view: the panel selection (`panelSession`), while the
+   *   connection that owns it last reported `visible: true`. Desktop panels
+   *   report an empty id while hidden or on Activity, Previous sessions or
+   *   the browser, and a pop-out host while its selection is popped out
+   *   (which is when it shows the compact rail);
+   * - every pop-out window of a desktop connection that last reported
+   *   `visible: true` (pop-out reports list visible windows only);
+   * - each remote connection's selection while it reported `visible: true`.
+   *
+   * Focus is never required. Only open conversations are returned.
+   */
+  private visiblyShownConversations(): Set<string> {
+    const shown = new Set<string>();
+
+    if (this.panelSession && this.visibleDesktopClients.has(this.panelClient)) {
+      shown.add(this.panelSession);
+    }
+
+    for (const [clientId, record] of this.nativeViews) {
+      if (!this.visibleDesktopClients.has(clientId)) {
+        continue;
+      }
+      for (const popout of record.report.popouts) {
+        shown.add(popout.id);
+      }
+    }
+
+    for (const remote of this.remoteClients.values()) {
+      if (remote.visibleSelection) {
+        shown.add(remote.visibleSelection);
+      }
+    }
+
+    for (const id of shown) {
+      if (this.options.agents?.has(id) !== true) {
+        shown.delete(id);
+      }
+    }
+    return shown;
+  }
+
+  /** Whether any connection shows `id` on a visible page (AgentSessions asks). */
+  private showsVisibly(id: string): boolean {
+    return this.visiblyShownConversations().has(id);
+  }
+
+  /**
+   * Clear the unread mark of every conversation shown on a visible page.
+   * Called after every panel report, desktop or remote, because only a
+   * report can make a conversation shown; markRead ignores read ones.
+   */
+  private markShownConversationsRead(): void {
+    for (const id of this.visiblyShownConversations()) {
+      this.options.agents?.markRead(id);
     }
   }
 
@@ -1976,7 +2057,11 @@ export class DesktopRuntime {
       ) {
         throw Error('Declare the remote role before reporting desktop panel state');
       }
-      this.remoteClients.set(clientId, { selection: '', lastActionsKey: '' });
+      this.remoteClients.set(clientId, {
+        selection: '',
+        visibleSelection: '',
+        lastActionsKey: '',
+      });
       // A remote panel only ever receives controls for its own selection.
       this.viewActionKeys.delete(clientId);
       this.publishRemoteAgentActions(clientId);
@@ -2406,13 +2491,17 @@ export class DesktopRuntime {
     }
 
     if (request.action === 'panel-state' && remote) {
-      // Remote panels report only which conversation they show. Focus,
-      // navigation and draft fields describe the desktop and are ignored.
+      // Remote panels report which conversation they show and whether their
+      // page is visible. Focus, navigation and draft fields describe the
+      // desktop and are ignored.
       if (
         typeof request.id !== 'string' ||
         (request.id !== '' && !this.options.agents?.has(request.id))
       ) {
         throw Error('Expected a visible agent session id (or empty id)');
+      }
+      if (request.visible !== undefined && typeof request.visible !== 'boolean') {
+        throw Error('Expected visible to be true or false');
       }
       // Pop-out windows are desktop windows; a remote panel cannot claim any.
       if (
@@ -2423,7 +2512,11 @@ export class DesktopRuntime {
         throw Error('Remote panels cannot report pop-out windows');
       }
       remote.selection = request.id;
+      // Every report is complete: one without `visible` (an older phone app)
+      // counts as not visible, so it never reads a conversation.
+      remote.visibleSelection = request.visible === true ? request.id : '';
       this.publishRemoteAgentActions(clientId);
+      this.markShownConversationsRead();
       return 'panel-recorded';
     }
 
@@ -2559,6 +2652,14 @@ export class DesktopRuntime {
         this.viewActionKeys.set(clientId, '');
       }
       this.publishViewAgentActions();
+      // Selecting a conversation while visible, or becoming visible with it
+      // selected, reads it. Validated above, so the report is complete here.
+      if (request.visible === true) {
+        this.visibleDesktopClients.add(clientId);
+      } else {
+        this.visibleDesktopClients.delete(clientId);
+      }
+      this.markShownConversationsRead();
       return 'panel-recorded';
     }
 

@@ -8,7 +8,11 @@ import WebSocket from 'ws';
 
 import { AgentSessions } from '../src/agents/sessions.ts';
 import { CaptureStoragePolicy } from '../src/capture-storage/policy.ts';
-import type { AgentBackend, ClaudeCodeAgentBackend } from '../src/agents/types.ts';
+import type {
+  AgentBackend,
+  AgentModelCatalog,
+  ClaudeCodeAgentBackend,
+} from '../src/agents/types.ts';
 import { DeviceStore } from '../src/remote/devices.ts';
 import { Gateway, type GatewayServiceOptions } from '../src/remote/gateway.ts';
 import type { GatewayMessage } from '../src/remote/protocol.ts';
@@ -47,6 +51,8 @@ export async function remoteFixture(
     captureStorage?: CaptureStoragePolicy;
     /** The listener's wall clock (wakes, turn and message times); real by default. */
     clock?: () => number;
+    /** Replaces the synthetic model catalogue, e.g. to hold `agent-models` open. */
+    models?: () => Promise<AgentModelCatalog>;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'companion-remote-'));
@@ -69,6 +75,9 @@ export async function remoteFixture(
         dependencies: {},
         run,
         async models() {
+          if (options.models) {
+            return options.models();
+          }
           return {
             models: ['local/qwen-synthetic', 'cloud/synthetic-large'],
             pinned: ['local/qwen-synthetic'],

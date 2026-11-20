@@ -82,6 +82,16 @@ import {
   type PreviousSession,
 } from './types.ts';
 
+/**
+ * The desktop runtime's side of the shared unread mark: which conversations
+ * a connected client shows on a visible page right now. The runtime decides
+ * this from panel reports (see "Unread mark" in src/desktop/README.md).
+ */
+export interface ConversationViewers {
+  /** True while at least one connection shows `id` on a visible page. */
+  showsVisibly(id: string): boolean;
+}
+
 interface RunningSession {
   view: AgentSession;
   controller: AbortController;
@@ -252,6 +262,12 @@ export class AgentSessions implements InspectableModule {
   private browserHost?: AgentBrowserHost;
   // ... and the native panel's pop-out conversation windows.
   private presentationHost?: AgentPresentationHost;
+  // ... and knows which conversations a connection shows on a visible page,
+  // which decides whether a completed turn leaves the conversation unread.
+  private viewers?: ConversationViewers;
+  // Saves of a changed unread mark that may still be running. Shutdown waits
+  // for them so a mark set or cleared just before it survives the restart.
+  private readonly unreadWrites = new Set<Promise<void>>();
   // Refuses to close a conversation that is being recorded into (manual
   // recording, core/dictation). Returns the reason, or undefined to allow it.
   private closeGuard?: (id: string) => string | undefined;
@@ -374,6 +390,51 @@ export class AgentSessions implements InspectableModule {
   /** Install (or clear) the route to the native panel's pop-out windows. */
   setPresentationHost(host: AgentPresentationHost | undefined): void {
     this.presentationHost = host;
+  }
+
+  /**
+   * Install (or clear) the check whether a connection shows a conversation
+   * on a visible page. Without one, nobody shows anything: every successful
+   * turn leaves its conversation unread.
+   */
+  setViewers(viewers: ConversationViewers | undefined): void {
+    this.viewers = viewers;
+  }
+
+  /**
+   * Clear the unread mark of an open conversation because a connection now
+   * shows it on a visible page. Publishes the change at once and saves it in
+   * the background (shutdown waits for that save). Does nothing for a
+   * conversation that is not open or not unread, so callers may call it on
+   * every report.
+   */
+  markRead(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session || session.view.unread !== true) {
+      return;
+    }
+
+    session.view.unread = false;
+    this.flush(session);
+    void this.saveUnread(session);
+  }
+
+  /**
+   * Save a conversation after its unread mark changed. Store writes are
+   * serialized per conversation in call order, so this never overwrites a
+   * newer save. A failed write is logged: the live mark stays as published,
+   * and the conversation's next save (every later turn saves) stores it.
+   */
+  private async saveUnread(session: RunningSession): Promise<void> {
+    const write = this.store.save(session.view).catch((error: unknown) => {
+      this.log('agent-history', `Could not save the unread mark: ${String(error)}`);
+    });
+    this.unreadWrites.add(write);
+    try {
+      await write;
+    } finally {
+      this.unreadWrites.delete(write);
+    }
   }
 
   /**
@@ -1471,6 +1532,9 @@ export class AgentSessions implements InspectableModule {
         turnStartedAt: startedAt,
         runId: randomUUID(),
         acceptsFollowUp: false,
+        // A new conversation has nothing to read yet; its first successful
+        // turn decides (see run()).
+        unread: false,
         ...(request.openInBackground ? { openInBackground: true } : {}),
       },
       controller: new AbortController(),
@@ -2061,13 +2125,25 @@ export class AgentSessions implements InspectableModule {
           );
         }
       }
+      // The shared unread mark is decided at the same moment as the
+      // completion signal below: a successful turn that no connection shows
+      // on a visible page leaves the conversation unread. Errors and stops
+      // leave the mark as it was (see "Unread mark" in the desktop README).
+      let markedUnread = false;
       if (completed) {
         // Keep the latest success in live snapshots, including while a queued
         // successor runs. A reconnect can then recover a missed completion.
         // This is UI state, not part of a saved/restored conversation.
         session.view.completedTurnId = turnId;
+
+        const shown = this.viewers?.showsVisibly(session.view.id) === true;
+        if (!shown && session.view.unread !== true) {
+          session.view.unread = true;
+          markedUnread = true;
+        }
       }
       session.heldOutcome = undefined;
+      // One update carries the completed status together with the mark.
       this.flush(session);
       this.log('agent', `${session.view.status}: ${session.view.id}`, frameId);
       // One event per successful turn, after persistence. Repeated snapshots,
@@ -2076,6 +2152,12 @@ export class AgentSessions implements InspectableModule {
         for (const listener of this.listeners) {
           listener({ type: 'agent-turn-completed', id: session.view.id, turnId });
         }
+      }
+      // The turn's own save above ran before the mark existed. Save once
+      // more so a reload or restart finds it; a queued successor waits for
+      // this like for the rest of the turn's bookkeeping.
+      if (markedUnread) {
+        await this.saveUnread(session);
       }
     }
   }
@@ -2920,6 +3002,9 @@ export class AgentSessions implements InspectableModule {
       this.cancelPending(session);
     }
     await this.idle();
+    // Unread marks changed by the last reports and turns are saved before
+    // the store closes, so the restarted listener restores them.
+    await Promise.all([...this.unreadWrites]);
     // After idle(): every drain has ended, so the final `idle` reports are sent.
     await this.liveState?.close();
     await this.sessionTools.close();

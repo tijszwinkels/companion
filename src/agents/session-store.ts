@@ -340,6 +340,9 @@ export class SessionStore {
       error: session.error,
       updatedAt: session.updatedAt,
       ...lastTurnDurationMs,
+      // Only an explicit saved `true` is unread. Older archives have no
+      // field and a damaged value is not a mark: both load as read.
+      unread: session.unread === true,
       messages,
     };
   }

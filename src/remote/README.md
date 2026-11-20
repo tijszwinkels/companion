@@ -180,11 +180,23 @@ page a secure context.
 - **Data minimization.** The desktop's recent-utterance list (latest 100 across
   earlier runs, used for paste recovery) is emptied before snapshots reach phones;
   the phone shows only the current run's Activity.
-- **Limits.** 2 phone relays including draining connections, leaving six of the
-  listener's eight slots for desktop clients. Eight unauthenticated sockets,
-  32 KiB client messages, 30-request bursts at 10/s per phone. Phone output writes
+- **Limits.** 8 authenticated connections in total and at most 4 per paired
+  device (a browser with a few tabs plus a phone), draining connections
+  included, leaving 8 of the listener's 16 client slots for desktop clients. A
+  connection over a limit is refused after authentication with close code 4429
+  and the reason `device` (its own device already has 4) or `total` (the gateway
+  already relays 8); the device limit is reported first. Open connections are
+  never closed to make room, and the reason never names another device. The
+  limits are exported as `maximumConnectionsPerDevice` and
+  `maximumRemoteConnections` from [`protocol.ts`](protocol.ts). Eight
+  unauthenticated sockets (the upgrade is refused with 503 beyond that or beyond
+  16 sockets in all), 32 KiB client messages, 30-request bursts at 10/s per
+  device, shared by all of that device's connections, so more tabs never raise
+  a device's rate ([`request-rate.ts`](request-rate.ts)); a device's bucket is
+  dropped when its last connection has closed. Each connection's output writes
   one message at a time and bounds the waiting queue to 16 MiB / 256 messages;
-  a write stalled for 30 seconds disconnects the phone. Routine state snapshots
+  a write stalled for 30 seconds disconnects it. With 8 connections the gateway
+  may therefore hold up to 8 × 16 MiB of queued output at worst. Routine state snapshots
   coalesce behind a pending write; ordered events and receipts never do. The
   initial full snapshot is ordered and is not subject to the waiting-queue size
   cap (the upstream line limit still applies). A relay admits at most 32 pending
@@ -250,7 +262,16 @@ snapshot or a queued phone write delivers `listenerTime` late by that wait, so
 the phone should refresh its clock offset from every later `state` message.
 
 Desktop-selection events (`agent-actions`, `agent-view-actions`, `agent-draft`,
-`agent-select`) are not relayed; the phone uses `remote-agent-actions` for its own selection. Only the
+`agent-select`) are not relayed; the phone uses `remote-agent-actions` for its own selection.
+
+A connection reports its selection with `panel-state` `{id, visible?}`.
+`visible` is a boolean: whether the page showing `id` is visible to the person
+(for example `document.visibilityState === "visible"`). Send it with every
+selection change and whenever the page's visibility changes. A report without it
+counts as not visible, so an older app never clears unread marks and never marks
+a conversation read. Every conversation carries the listener's shared
+[unread mark](../desktop/README.md#unread-mark), `unread`, which the gateway
+relays unchanged; a visible selection clears it for every device. Only the
 declared remote event set is forwarded, and initial snapshots stay at the gateway
 until the listener confirms the remote role. Reopen and Activity-based starts
 open in the background on the desktop, just like typed phone starts. Activity-based
@@ -276,7 +297,9 @@ listener disconnects first, the receipt records an explicit uncertain-outcome
 error. The phone app never resends an unconfirmed mutation automatically; the
 receipt is a second guard, not an exactly-once guarantee across gateway restarts.
 
-Close codes: 4401 definitively not paired, 4403 revoked, 4429 too many phones,
+Close codes: 4401 definitively not paired, 4403 revoked, 4429 too many
+connections (reason `device` or `total`, see Limits above; older apps ignore the
+reason),
 4408 slow connection/authentication timeout, 4503 listener or device authorization
 unavailable (including unsupported remote role), 4001 gateway stopped. Transient
 4408/4503 failures do not discard the phone credential. Gateway protocol pings
@@ -295,6 +318,12 @@ directory permission and symlink refusal, the lifetime lock, live and unprobeabl
 socket refusal, stale-socket removal, rollback of a failed start, Host 421 /
 Origin 403 / WebSocket 101 over the socket, unauthenticated sockets receiving no
 data, and Funnel and login refusals on every route.
+`test/unit/remote-connection-limits.test.ts` tables the connection limits
+(per device and in total, draining connections, the refused newcomer's reason, a
+slot freed by a close, a revoked device, unauthenticated sockets, the listener's
+16 slots and the shared per-device request rate) and
+`test/unit/listener-unread.test.ts` the unread mark through the gateway and the
+`visible` validation, both against the real gateway and listener.
 `test/unit/remote-serve-check.test.ts` covers the Serve matcher, the read
 retries, and the CLI flags and warnings against a fake `tailscale` script. Real Tailscale is never used.
 The supervised service (`src/remote/service/`) has its own tests; see

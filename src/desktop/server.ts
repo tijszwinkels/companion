@@ -15,6 +15,14 @@ export const maximumBacklogBytes = 16 * 1024 * 1024;
 /** A connection whose socket does not drain for this long is disconnected. */
 export const maximumStallMilliseconds = 30_000;
 
+/**
+ * Client connections the listener serves at once. The remote gateway uses at
+ * most 8 of them (src/remote/protocol.ts, `maximumRemoteConnections`), which
+ * leaves 8 for desktop panels, observers and tools. A connection over the
+ * limit is closed at once, before it receives anything.
+ */
+export const maximumClients = 16;
+
 /** Per-connection outbound bounds; tests use smaller values. */
 export interface OutboundLimits {
   backlogBytes: number;
@@ -313,7 +321,7 @@ export class DesktopServer {
   }
 
   private connected(socket: Socket): void {
-    if (this.clients.size >= 8) {
+    if (this.clients.size >= maximumClients) {
       socket.destroy();
       return;
     }

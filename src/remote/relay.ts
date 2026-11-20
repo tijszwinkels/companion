@@ -53,10 +53,6 @@ const maximumPendingRequests = 32;
 /** Listener lines larger than this are refused (a full snapshot is far below). */
 const maximumUpstreamLineCharacters = 64 * 1024 * 1024;
 
-/** Token bucket for phone requests: short bursts, steady 10 per second. */
-const requestBurst = 30;
-const requestsPerSecond = 10;
-
 const screenshotName = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.png$/;
 
 type Reply = Extract<GatewayMessage, { type: 'result' | 'error' }>;
@@ -73,6 +69,11 @@ export interface RelayOptions {
   sessionsDirectory: string;
   deviceId: string;
   receipts: ReceiptBook;
+  /**
+   * Take one request token from this device's shared rate limit (see
+   * request-rate.ts); false means refuse the message.
+   */
+  takeToken(): boolean;
   /** Negotiated by the gateway, never forwarded as a desktop panel request. */
   incrementalSessions?: boolean;
   /** Remember that this device may fetch a session's screenshot. */
@@ -99,8 +100,6 @@ export class Relay {
   private terminated = false;
   private phoneOpen = true;
   private drainTimer?: ReturnType<typeof setTimeout>;
-  private tokens = requestBurst;
-  private tokensUpdatedAt = Date.now();
 
   constructor(
     private readonly phone: WebSocket,
@@ -276,17 +275,9 @@ export class Relay {
     this.writeUpstream({ ...fields, requestId: upstreamId });
   }
 
+  /** The device's rate limit is shared by all its connections. */
   private takeToken(): boolean {
-    const now = Date.now();
-    const refill = ((now - this.tokensUpdatedAt) / 1000) * requestsPerSecond;
-    this.tokens = Math.min(requestBurst, this.tokens + refill);
-    this.tokensUpdatedAt = now;
-
-    if (this.tokens < 1) {
-      return false;
-    }
-    this.tokens -= 1;
-    return true;
+    return this.options.takeToken();
   }
 
   private sendPhone(message: GatewayMessage, replaceable = false): void {
